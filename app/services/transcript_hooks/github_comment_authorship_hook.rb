@@ -129,11 +129,25 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   # post's own output in a result that also carries another command's (#901, #urls_from).
   COMMENT_URL_LINE_PATTERNS = COMMENT_URL_PATTERNS.transform_values { |pattern| /\A#{pattern.source}\z/ }.freeze
 
-  # Reaching GitHub, which is what it takes to print a comment permalink that the post
-  # did not print. Counted over the segments' #unquoted views, so a permalink a command
-  # merely quotes does not count, and generously — `gh` and `curl` in a shell comment
-  # count too, and over-counting only tightens what the result vouches for.
+  # The two ways a session reaches GitHub from a shell. Counted over the segments'
+  # #unquoted views, so a `gh` a command merely quotes does not count, and loosely —
+  # `gh` in a shell comment counts too, and over-counting only narrows what the result
+  # vouches for. What it does not recognise (`wget`, a Python script, `$GH_BIN`) is the
+  # same residual gap the hook has for posting routes, and lands the same way: the
+  # result is read as the post's.
   GITHUB_INVOCATION_PATTERN = /\bgh\b|\bcurl\b/
+
+  # A comments listing, *named*. Every route that can print somebody else's comment
+  # permalinks says the word somewhere it is visible here — an endpoint path
+  # (`/issues/7/comments`), `gh pr view --json comments`, a GraphQL `comments(first:
+  # 100)` — so a call that says it nowhere did not list a thread. Read off the segments
+  # as written, since `gh api "repos/o/r/issues/7/comments"` is ordinary and a quoted
+  # path must not hide the listing, and read loosely: a body that merely says
+  # "comments" arms the limit below, which costs that call nothing it printed on its
+  # own line. The exception is a route that prints comment permalinks without naming
+  # them (`gh api repos/o/r/issues/7/timeline --jq '.[].html_url'`); see
+  # docs/src/content/docs/limitations.md.
+  COMMENTS_LISTING_PATTERN = /\bcomments\b/
 
   # The PR/issue URL a comment permalink hangs off, used to record which PR the
   # comment landed on.
@@ -221,6 +235,13 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   # them than the call had posting segments means they cannot all be posts and nothing
   # tells which are, so none is recorded: a lost recording costs a comment its
   # suppression, a wrong one costs a human their reply.
+  #
+  # It is set only for a call that NAMES a comments listing (COMMENTS_LISTING_PATTERN),
+  # because a count of posting segments is not a count of posts. One segment posts many
+  # times — `gh pr list --json number --jq '.[].number' | xargs -I{} gh pr comment {}
+  # --body ...` fans out over a whole list — and holding that against a limit of one
+  # gives up every recording in the call. That call lists PRs, not comments, so nothing
+  # it printed is somebody else's comment.
   def urls_from(text, post)
     return html_urls_from_json(text) if post[:kind] == :api
     return permalinks_anywhere(text) if post[:scan] == :whole_result
@@ -244,7 +265,7 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   def permalink_lines(text)
     text.each_line.filter_map do |line|
       stripped = line.strip
-      stripped if COMMENT_URL_LINE_PATTERNS.each_value.any? { |pattern| pattern.match?(stripped) }
+      stripped if COMMENT_URL_LINE_PATTERNS.any? { |_comment_type, pattern| pattern.match?(stripped) }
     end.uniq
   end
 
@@ -308,8 +329,8 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   #   :whole_result — the post was the whole command, and the only thing in it that
   #     reached GitHub, so everything the call printed is the post's own output.
   #   :permalink_lines — the call ran other commands too, so only the shape a post
-  #     prints counts. `limit` is set when one of those commands reached GitHub and
-  #     could therefore have printed permalinks in that same shape.
+  #     prints counts. `limit` is set when the call also names a comments listing, which
+  #     is the one thing that prints permalinks in that same shape.
   #
   # @return [Hash, nil] { kind: :direct, scan:, limit: }, { kind: :api }, or nil
   def posting_call(command)
@@ -321,9 +342,9 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
 
     if posts.any?
       others = github_invocations(segments) - posts.size
-      return { kind: :direct, scan: :whole_result } if rest.empty? && posts.size == 1 && others <= 0
+      return { kind: :direct, scan: :whole_result } if rest.empty? && posts.size == 1 && others.zero?
 
-      { kind: :direct, scan: :permalink_lines, limit: (posts.size if others.positive?) }
+      { kind: :direct, scan: :permalink_lines, limit: (posts.size if lists_comments?(segments)) }
     elsif segments.any? { |written, runs| gh_api_post?(written, runs) }
       { kind: :api }
     end
@@ -334,6 +355,12 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   # could have put a comment permalink in its result.
   def github_invocations(segments)
     segments.sum { |_written, runs| runs.scan(GITHUB_INVOCATION_PATTERN).size }
+  end
+
+  # Whether anything in the call names a comments listing — read off the segments as
+  # written (see COMMENTS_LISTING_PATTERN).
+  def lists_comments?(segments)
+    segments.any? { |written, _runs| written.match?(COMMENTS_LISTING_PATTERN) }
   end
 
   # Whether one command segment posts a comment through the REST API: it runs

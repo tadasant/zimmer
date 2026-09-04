@@ -2761,15 +2761,24 @@ splitter does not unwrap and which nothing in a session does today.
 
 Classification is per command segment; the *output* is not split that way, because a tool result
 arrives as one blob for the whole call. What a post's result vouches for is scoped instead
-([#901](https://github.com/tadasant/zimmer/issues/901)): the whole blob only when the post was the
-only thing in that call that reached GitHub, and otherwise just the permalinks printed alone on a
-line — the shape `gh pr comment` prints, and one a JSON body never has. So the post-then-confirm move
-(`gh pr comment 7 --body x && gh api repos/o/r/issues/7/comments`) records the comment it posted and
-not the thread it then listed. Two edges are left. A call that lists the thread as *bare URLs*
-(`--jq '.[].html_url'`) prints the human's comments in the post's own shape, so nothing tells them
-apart and the post is given up along with them — a lost recording rather than a wrong one. And a
-command that prints a permalink alone on a line without reaching GitHub to get it
-(`cat thread-urls.txt` beside a post) is still read as the post's output.
+([#901](https://github.com/tadasant/zimmer/issues/901)). The whole blob counts only when the post was
+the **whole command** and the only thing in it that reached GitHub; otherwise only the permalinks
+printed alone on a line do — the shape `gh pr comment` prints, and one a JSON body never has. So the
+post-then-confirm move (`gh pr comment 7 --body x && gh api repos/o/r/issues/7/comments`) records the
+comment it posted and not the thread it then listed. A call that *names* a comments listing is capped
+further, at one such line per posting segment, since `--jq '.[].html_url'` prints a whole thread in
+exactly the shape a post prints.
+
+Four edges are left, three of them lost recordings rather than wrong ones. A call that lists the
+thread as bare URLs gives up its own post along with the thread, because nothing tells the lines
+apart. A call that posts twice by *different* routes records only the one that printed a bare
+permalink — a `gh api` reply's JSON in a shared result is indistinguishable from the JSON of a
+comment merely read back, which is the thing that must not be recorded. A post whose URL its own
+command wrapped in other text (`cd /repo && echo posted $(gh pr comment ...)`) is not recorded when
+it shared the call, though it is when the post was the whole command. The one that goes the other
+way: a command that prints a permalink alone on a line without naming a comments listing —
+`cat thread-urls.txt` beside a post, or `gh api repos/o/r/issues/7/timeline --jq '.[].html_url'` —
+is still read as the post's own output.
 
 The same recognition gap sets the cost of the 60-second `ATTRIBUTION_GRACE_SECONDS` hold-down: every
 human comment waits up to a minute longer (on top of the 30-second poll) before it wakes a session.

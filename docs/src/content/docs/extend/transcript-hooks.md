@@ -205,10 +205,13 @@ deliberate here: a comment recorded wrongly is suppressed for every session perm
 What the *result* of a posting call vouches for is scoped the same way since
 [#901](https://github.com/tadasant/zimmer/issues/901), because the result is one blob for the whole
 call rather than one per segment. A `gh pr comment` result is free-text scanned only when the post
-was the only thing in that call that reached GitHub; when it shared the call with something else that
-did — `gh pr comment 7 --body x && gh api repos/o/r/issues/7/comments`, the natural post-then-confirm
-move — only permalinks printed alone on a line count, and no more of them than the call had posting
-segments, so a listing narrowed to bare URLs registers nothing rather than the whole thread.
+was the whole command and the only thing in it that reached GitHub. When the call ran anything else —
+`gh pr comment 7 --body x && gh api repos/o/r/issues/7/comments`, the natural post-then-confirm move —
+only permalinks printed alone on a line count. And when the call *names* a comments listing, no more
+of those than it had posting segments, so a listing narrowed to bare URLs registers nothing rather
+than the whole thread. The naming is what keeps that cap off a fan-out
+(`gh pr list ... | xargs -I{} gh pr comment {} ...`), where one segment posts many times and a count
+of segments would give up every recording in the call.
 
 
 ## Writing one

@@ -503,4 +503,44 @@ class TranscriptHooks::GithubCommentAuthorshipHookTest < ActiveSupport::TestCase
     assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
     assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 50)
   end
+
+  test "records every comment a fan-out posted alongside a listing of PRs" do
+    # One posting segment, many posts, and a `gh` read beside it that lists PRs rather
+    # than comments — so nothing it printed is somebody else's comment, and there is no
+    # count to hold the post's own lines against. Counting posting *segments* against
+    # the lines of a fan-out would give up every recording in the call.
+    run_hook(claude_transcript(
+      command: "gh pr list --json number --jq '.[].number' | xargs -I{} gh pr comment {} --body 'done'",
+      output: "#{AGENT_COMMENT_URL}\n#{HUMAN_COMMENT_URL}\n"
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 50)
+  end
+
+  test "records only the bare-permalink post when a call posts twice, two ways" do
+    # The accepted cost of reading a mixed call by the shape a post prints: the `gh api`
+    # reply's own JSON is indistinguishable, in a shared result, from the JSON of a
+    # comment merely read back — which is the case above, and the one that must not be
+    # recorded. So the reply is given up. A lost recording costs a comment its
+    # suppression; recording the read one costs a human their reply.
+    reply = { "id" => 900, "html_url" => "https://github.com/tadasant/tadasant-internal/pull/281#discussion_r900" }.to_json
+
+    run_hook(claude_transcript(
+      command: "gh pr comment 281 --body 'done' && gh api repos/tadasant/tadasant-internal/pulls/281/comments -f body='[CC Says] ok' -f in_reply_to=5",
+      output: "#{AGENT_COMMENT_URL}\n#{reply}\n"
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "review", comment_id: 900)
+  end
+
+  test "reads a permalink line that ends in a carriage return" do
+    run_hook(claude_transcript(
+      command: "cd /repo && gh pr comment 281 --body 'done'",
+      output: "#{AGENT_COMMENT_URL}\r\n"
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+  end
 end
