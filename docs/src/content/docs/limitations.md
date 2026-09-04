@@ -2630,6 +2630,37 @@ failure is in the Rails log, and nowhere else.
 A crash is the case the ordering does cover. Messages go out before the markers are persisted, so a
 process that dies in between re-sends on the next poll rather than dropping the notification.
 
+### A suppressed conflict notice is never re-sent, and a failed re-read sends it anyway
+
+A queued merge-conflict notice is re-read against GitHub before it is delivered, and dropped if the
+PR now reads mergeable — see
+[Background jobs](/operate/background-jobs/#a-conflict-notice-is-re-read-when-it-comes-off-the-queue-not-when-it-was-written).
+Two edges come with that.
+
+Retiring the notice also calls `GitHubMergeConflictPollerJob.forget_conflict!`, which drops the PR
+from both debounce markers so the poller re-derives its state from scratch. That is what stops a
+suppression from being permanent — but it costs a full debounce cycle. If the conflict was real and
+the `mergeable == true` that suppressed the notice was one of the stale readings the debounce exists
+to filter, the session is told again only after two more consecutive conflicting polls: 4 minutes at
+the base cadence, and up to 8 once `PollBackoff` has stretched the interval. The notice is not lost,
+it is late.
+
+In the other direction the re-read fails open, deliberately: an error, a timeout, a sweep that ran
+past `STALENESS_SWEEP_BUDGET_SECONDS`, or GitHub's still-computing `null` all deliver the notice. A
+force-push leaves `mergeable` as `null` for a while, so a session that resolves its conflicts and is
+handed a turn immediately afterwards can still get the notice it no longer needs. That is the cheap
+failure being chosen over the expensive one — a suppressed genuine notice leaves a session asleep on
+a PR that can never merge.
+
+A retired row is also not labelled with *why* it was retired. The session log records it, but the
+`undelivered` block on the session page can only say that either an archive or the staleness check
+was responsible, because nothing on the row itself distinguishes the two producers.
+
+The re-read is also one extra `gh` call per conflict-notice delivery, on the session's turn
+boundary. It is bounded by `BoundedSubprocess` so it cannot wedge, and it happens only for the
+`automated_merge_conflict` origin, which is rare. It is still a call the three pollers could have
+shared — see [#711](https://github.com/tadasant/zimmer/issues/711).
+
 ### A parked session can hear about its merged PR up to a day late
 
 `PollBackoff` slows each GitHub poller per session according to how long it has been since the user

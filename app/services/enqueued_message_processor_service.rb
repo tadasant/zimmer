@@ -1,6 +1,8 @@
 # Service for processing enqueued messages for a session
 #
 # This service is responsible for:
+# - Retiring queued notices whose reason for existing expired while they sat in
+#   the queue (EnqueuedMessage#stale?)
 # - Atomically claiming the next pending enqueued message
 # - Updating session's goal if the message carries a non-blank one (blank/nil preserves session goal)
 # - Resetting SIGTERM retry state for fresh execution
@@ -20,12 +22,28 @@
 class EnqueuedMessageProcessorService
   include DatabaseRetry
 
+  # How long the whole staleness sweep may spend re-reading GitHub, across all
+  # of a session's queued notices.
+  #
+  # GithubPullRequestMergeability::READ_TIMEOUT_SECONDS bounds ONE `gh` child;
+  # this bounds the loop, which a session with several conflicting PRs would
+  # otherwise multiply out. Past the deadline the remaining notices are treated
+  # as not stale and delivered — the same fail-open answer an unreadable PR gets.
+  STALENESS_SWEEP_BUDGET_SECONDS = 25
+
   attr_reader :session, :log_buffer, :broadcast_service
 
-  def initialize(session, log_buffer: nil, broadcast_service: nil)
+  # @param revalidate [Boolean] whether to re-read poller notices against GitHub
+  #   before claiming one — see #drop_stale_messages. Pass false from a caller
+  #   that has already decided WHICH row to deliver: Sessions::InterruptService
+  #   promotes a specific message to the front and reports on that message by
+  #   name, so a sweep that retired it under the service's feet would make it
+  #   deliver one message and claim it had delivered another.
+  def initialize(session, log_buffer: nil, broadcast_service: nil, revalidate: true)
     @session = session
     @log_buffer = log_buffer
     @broadcast_service = broadcast_service
+    @revalidate = revalidate
   end
 
   # Process the next enqueued message if available
@@ -50,6 +68,8 @@ class EnqueuedMessageProcessorService
   #
   # @return [Boolean] true if a message was processed, false otherwise
   def process_next_message
+    drop_stale_messages
+
     message = nil
     message_content = nil
 
@@ -187,6 +207,81 @@ class EnqueuedMessageProcessorService
   end
 
   private
+
+  # Retire queued notices whose reason for existing has expired, before claiming
+  # one to deliver. This is the point the check has to live at: the poller that
+  # wrote the notice enqueued it because the session was mid-turn or asleep, and
+  # the row then sat here until this turn boundary — minutes in which the state
+  # it reports can have moved on (tadasant/zimmer#835). See
+  # EnqueuedMessage#stale? for what "moved on" means and why it fails open.
+  #
+  # Scoped to `staleness_checked` so the cost is bounded to the origins that
+  # actually have something to re-read: an ordinary `caller` message is somebody
+  # waiting on delivery, and nothing about it can go out of date.
+  #
+  # Runs BEFORE the transaction below, deliberately. EnqueuedMessage#stale?
+  # shells out to GitHub, and a network round trip should not be held inside a
+  # transaction that also holds this session's row lock — every poller that
+  # wants to enqueue against this session takes the same lock.
+  #
+  # No caller reaches this inside a transaction of its own. The one that runs
+  # everything under Session.with_session_lock, Sessions::InterruptService,
+  # passes `revalidate: false` — so the sweep and the outer transaction are
+  # mutually exclusive rather than nested, and the read is bounded twice over
+  # (per call and per sweep) for the paths that do run it.
+  def drop_stale_messages
+    return unless @revalidate
+    # Mirrors the state gate inside the transaction below. A session in any other
+    # state cannot be handed a message however the sweep goes, so paying for a
+    # `gh` round trip — and retiring a notice that was never going to be claimed
+    # — would be work done for nothing.
+    return unless session.needs_input? || session.running? || session.waiting?
+
+    candidates = session.enqueued_messages.pending.staleness_checked.ordered.to_a
+    return if candidates.empty?
+
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + STALENESS_SWEEP_BUDGET_SECONDS
+    retired = candidates.select { |message| stale_within_budget?(message, deadline) && message.retire_as_stale! }
+    return if retired.empty?
+
+    retired.each do |message|
+      add_log(
+        "Queued #{message.origin} message at position #{message.position} was not delivered: the state it " \
+        "reports has moved on since the poller saw it, so it is retired undelivered rather than costing " \
+        "the session a turn",
+        level: "info"
+      )
+    end
+    flush_log_buffer
+    broadcast_service&.enqueued_messages_list(session)
+  end
+
+  # The fail-open boundary, kept as narrow as the thing that can fail.
+  #
+  # Only the GitHub read is wrapped: an unreadable PR must not cost the session
+  # its message, which is the same posture EnqueuedMessage#stale? takes
+  # internally. A failure in the retirement or the logging that follows is NOT
+  # swallowed here — a blanket rescue around the whole sweep would report
+  # "delivering the queue unchanged" after a retirement had already committed,
+  # and would hide a database error rather than let the caller's own handling
+  # see it.
+  def stale_within_budget?(message, deadline)
+    if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      Rails.logger.warn(
+        "[EnqueuedMessageProcessorService] Staleness sweep for session #{session.id} ran past its " \
+        "#{STALENESS_SWEEP_BUDGET_SECONDS}s budget — delivering message #{message.id} unchecked"
+      )
+      return false
+    end
+
+    message.stale?
+  rescue => e
+    Rails.logger.error(
+      "[EnqueuedMessageProcessorService] Could not re-read the state behind message #{message.id} for " \
+      "session #{session.id} (#{e.class}: #{e.message}) — delivering it unchanged"
+    )
+    false
+  end
 
   # Add log entry to session
   # Uses log_buffer if available, otherwise creates log directly

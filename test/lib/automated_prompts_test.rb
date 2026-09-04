@@ -46,6 +46,26 @@ class AutomatedPromptsTest < ActiveSupport::TestCase
     )
   end
 
+  # The re-read that suppresses a stale conflict notice needs the PR the notice
+  # is about, and an EnqueuedMessage row carries only its content. So the reader
+  # has to survive a reworded template — a silent nil here would silently disable
+  # the guard behind tadasant/zimmer#835, not break anything visibly.
+  test "merge_conflict_pr_url reads back the URL merge_conflict_message wrote" do
+    url = "https://github.com/tadasant/zimmer/pull/834"
+
+    assert_equal url, AutomatedPrompts.merge_conflict_pr_url(AutomatedPrompts.merge_conflict_message(url))
+  end
+
+  test "merge_conflict_pr_url claims nothing that is not a merge-conflict message" do
+    assert_nil AutomatedPrompts.merge_conflict_pr_url(nil)
+    assert_nil AutomatedPrompts.merge_conflict_pr_url(:symbol)
+    assert_nil AutomatedPrompts.merge_conflict_pr_url("go fix the build")
+    assert_nil AutomatedPrompts.merge_conflict_pr_url(AutomatedPrompts::HEARTBEAT)
+    assert_nil AutomatedPrompts.merge_conflict_pr_url(
+      AutomatedPrompts.pr_merged_message("https://github.com/tadasant/zimmer/pull/834")
+    )
+  end
+
   test "system_recovery? rejects anything else" do
     assert_not AutomatedPrompts.system_recovery?(nil)
     assert_not AutomatedPrompts.system_recovery?(:symbol)

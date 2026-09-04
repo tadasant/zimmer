@@ -1,14 +1,20 @@
-<%# Messages an archive retired. Rendered outside the follow-up form, which is
-    hidden for an archived session — the state in which these rows exist. They
-    were accepted and never delivered, so hiding them here would be the same
+<%# Messages that were accepted and never delivered. Two things retire a row
+    here: an archive, which ends every path by which it could have been sent,
+    and the delivery-time staleness check, which drops a poller notice whose
+    state had already moved on (EnqueuedMessage#stale?). The second happens to
+    LIVE sessions, so this block is not archive-only and must not claim to be.
+    They were accepted and never delivered, so hiding them would be the same
     silence the terminal status exists to end. Read-only: there is nothing left
     to send, reorder or edit. %>
 <% undelivered = agent_session.enqueued_messages.undelivered.ordered.to_a %>
 <% if undelivered.any? %>
+  <% them = undelivered.one? ? "it" : "them" %>
   <div class="rounded-md border border-amber-200 bg-amber-50 p-3 mb-3">
     <p class="text-xs font-medium text-amber-900">
-      <%= undelivered.one? ? "1 message was" : "#{undelivered.size} messages were" %>
-      never delivered — the session was archived before <%= undelivered.one? ? "it" : "they" %> could be sent.
+      <%= undelivered.one? ? "1 message was" : "#{undelivered.size} messages were" %> never delivered.
+    </p>
+    <p class="mt-1 text-xs text-amber-800">
+      Either the session was archived before <%= them %> could be sent, or Zimmer retired <%= them %> because the state reported had already changed. The session log records which.
     </p>
     <ul class="mt-2 space-y-1">
       <% undelivered.each do |message| %>

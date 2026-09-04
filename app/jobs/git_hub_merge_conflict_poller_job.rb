@@ -43,6 +43,54 @@ class GitHubMergeConflictPollerJob < ApplicationJob
   POLL_BACKOFF_KEY = "github_merge_conflict_poller".freeze
   BASE_POLL_INTERVAL_SECONDS = 120
 
+  # The two custom_metadata keys this job's debounce lives in. Named so the one
+  # other place that has to touch them — #forget_conflict!, below — cannot drift
+  # from the poll body that writes them.
+  CONFIRMED_METADATA_KEY = "github_pull_request_merge_conflicts".freeze
+  SUSPECTED_METADATA_KEY = "github_pull_request_merge_conflicts_suspected".freeze
+
+  # Forget everything the debounce remembers about one PR, so the next poll
+  # re-derives its conflict state from scratch.
+  #
+  # Exists for exactly one caller: the delivery-time re-validation that retires a
+  # conflict notice whose PR now reads mergeable (EnqueuedMessage#stale?). By the
+  # time that happens this job has already recorded the PR as confirmed, and the
+  # confirmed marker is what makes #poll_merge_conflicts skip it — cleared only
+  # by a CLEAN reading. So without this call a suppression would be permanent:
+  # if the `mergeable == true` that justified it was itself one of the stale
+  # readings the two-poll debounce exists because GitHub produces, the PR is
+  # still conflicting, every later poll takes the "already notified" branch, and
+  # the session is never told. That is the silent, strictly-worse failure the
+  # guard is supposed to avoid, reintroduced by the guard.
+  #
+  # Clearing both markers instead makes the guard self-correcting: a conflict
+  # that was real is re-suspected on the next poll and re-confirmed on the one
+  # after, costing one debounce cycle rather than the notice.
+  #
+  # @param session [Session]
+  # @param pr_url [String]
+  # @return [void]
+  def self.forget_conflict!(session, pr_url)
+    # Read and write through a FRESH copy rather than the caller's instance.
+    # merge_custom_metadata! replaces each named key wholesale, so a stale read
+    # of the markers hash would clobber a marker a concurrent poll had just
+    # written for a DIFFERENT PR — and reloading the caller's object under it
+    # would be a side effect it did not ask for.
+    fresh = Session.find_by(id: session.id)
+    return unless fresh
+
+    confirmed = fresh.custom_metadata&.dig(CONFIRMED_METADATA_KEY) || {}
+    suspected = fresh.custom_metadata&.dig(SUSPECTED_METADATA_KEY) || {}
+    return unless confirmed.key?(pr_url) || suspected.key?(pr_url)
+
+    fresh.merge_custom_metadata!(
+      CONFIRMED_METADATA_KEY => confirmed.except(pr_url),
+      SUSPECTED_METADATA_KEY => suspected.except(pr_url)
+    )
+    Rails.logger.info "[GitHubMergeConflictPollerJob] Cleared conflict markers for #{pr_url} on session " \
+      "#{session.id} so the next poll re-derives them"
+  end
+
   def perform
     Session.with_github_prs.find_each do |session|
       unless PollBackoff.should_poll?(session, job_key: POLL_BACKOFF_KEY, base_interval: BASE_POLL_INTERVAL_SECONDS)
@@ -65,8 +113,8 @@ class GitHubMergeConflictPollerJob < ApplicationJob
 
     # Only check open PRs — skip merged/closed PRs since they can't have actionable conflicts
     pr_statuses = session.custom_metadata&.dig("github_pull_request_statuses") || {}
-    current_conflicts = session.custom_metadata&.dig("github_pull_request_merge_conflicts") || {}
-    current_suspected = session.custom_metadata&.dig("github_pull_request_merge_conflicts_suspected") || {}
+    current_conflicts = session.custom_metadata&.dig(CONFIRMED_METADATA_KEY) || {}
+    current_suspected = session.custom_metadata&.dig(SUSPECTED_METADATA_KEY) || {}
     updated_conflicts = current_conflicts.dup
     updated_suspected = current_suspected.dup
     newly_conflicting_prs = []
@@ -125,8 +173,8 @@ class GitHubMergeConflictPollerJob < ApplicationJob
     # Update metadata only for the keys that actually changed, so unchanged polls
     # don't touch the record (and don't pollute it with empty marker hashes).
     metadata_updates = {}
-    metadata_updates["github_pull_request_merge_conflicts"] = updated_conflicts if updated_conflicts != current_conflicts
-    metadata_updates["github_pull_request_merge_conflicts_suspected"] = updated_suspected if updated_suspected != current_suspected
+    metadata_updates[CONFIRMED_METADATA_KEY] = updated_conflicts if updated_conflicts != current_conflicts
+    metadata_updates[SUSPECTED_METADATA_KEY] = updated_suspected if updated_suspected != current_suspected
 
     if metadata_updates.any?
       # The merge happens in PostgreSQL, so there is no stale-read window left for a
