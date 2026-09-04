@@ -2779,10 +2779,14 @@ class AgentSessionJob < ApplicationJob
   # @param log_buffer [LogBuffer, nil]
   # @return [Boolean] true when nothing was started and #perform must return
   def refuse_spawn_after_archive(session, working_directory, log_buffer)
-    session.reload
+    with_db_retry { session.reload }
     return false unless session.archived?
 
-    clone_present = working_directory.present? && @file_system.exists?(working_directory)
+    # `directory?` rather than `exists?`, the same question spawn_continuation asks
+    # of the same volume: a half-unlinked tree can leave a plain file at the path,
+    # and reporting that as a clone still present would be a lie in the one line
+    # anybody reads about this.
+    clone_present = working_directory.present? && @file_system.directory?(working_directory)
     message = "Not spawning an agent for this turn: the session was archived after the turn was " \
               "claimed. An archived session takes no turn, so no agent was started"
     message += clone_present ? "." : ", and its clone has already been cleaned up."
@@ -2796,15 +2800,19 @@ class AgentSessionJob < ApplicationJob
     log_buffer&.add(message, level: "info")
 
     # This job claimed running_job_id on the way in and is about to end without
-    # starting anything, so leave no owner behind on the row. update_columns
-    # because the row is archived and this is bookkeeping, not a state change
-    # anybody should be broadcast about.
+    # starting anything, so leave no owner behind on the row — but only if the
+    # claim is still THIS job's, exactly as monitoring_job_stands_down? releases
+    # its own. The setup this guard sits at the end of is long enough for another
+    # job to have claimed the session meanwhile, and wiping that claim would tell
+    # the concurrency guard and the orphan sweep that nobody is driving a session
+    # somebody is. update_columns because the row is archived and this is
+    # bookkeeping, not a state change anybody should be broadcast about.
     #
     # Rescued separately from the reload: the refusal has already been decided and
     # recorded, and a failed write here is untidy rather than a reason to go on and
     # spawn against the trash.
     begin
-      session.update_columns(running_job_id: nil)
+      session.update_columns(running_job_id: nil) if session.running_job_id == job_id
     rescue ActiveRecord::ActiveRecordError => e
       Rails.logger.warn "[AgentSessionJob] Could not clear running_job_id on session #{session.id}: #{e.message}"
     end

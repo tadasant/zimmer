@@ -253,8 +253,8 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
     run_job_archiving_mid_flight(live)
 
     live.reload
-    assert_not_equal "spawn_failed", live.metadata["failure_reason"],
-                     "an archived session taking no turn is the correct outcome, not a runtime fault"
+    assert_nil live.metadata["failure_reason"],
+               "an archived session taking no turn is the correct outcome, not a runtime fault"
 
     logs = live.logs.reload
     assert_empty logs.select { |entry| entry.level == "error" },
@@ -265,6 +265,38 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
     assert_equal "info", refusal.level
     assert_includes refusal.content, "its clone has already been cleaned up",
                     "the timeline should say the clone was already gone — that is what made this raise"
+  end
+
+  # The archive is the refusal; a clone that happens to still be on disk only
+  # changes what the timeline says about it. Worth pinning both readings, because
+  # "the clone was already gone" is the sentence that explains the ENOENT to
+  # whoever reads this session next.
+  test "an archive with the clone still on disk is refused too, and says so" do
+    live = live_recovery_session
+
+    cli = run_job_archiving_mid_flight(live, delete_clone: false)
+
+    assert_empty cli.executed_commands
+    assert_empty cli.resumed_sessions
+
+    refusal = live.logs.reload.find { |entry| entry.content.include?("archived after the turn was claimed") }
+    assert_not_nil refusal
+    refute_includes refusal.content, "cleaned up",
+                    "the clone was still there, so the timeline must not claim it was collected"
+  end
+
+  # The guard fails OPEN. Refusing on a row it could not read would drop a turn
+  # that may be perfectly live, which is the worse of the two mistakes: the one
+  # this guard prevents costs a wasted process on a session that is already over.
+  # Driven directly rather than through #perform, because a session whose `reload`
+  # raises cannot get through the job's `ensure`, which reloads too.
+  test "a row that cannot be re-read is spawned rather than refused" do
+    live = live_recovery_session
+    live.stubs(:reload).raises(ActiveRecord::RecordNotFound, "row is unreadable")
+    job = build_job(MockClaudeCliAdapter.new)
+
+    refute job.send(:refuse_spawn_after_archive, live, CLONE_PATH, nil),
+           "an unreadable row must not cost a live session its turn"
   end
 
   private
@@ -290,55 +322,75 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
     )
   end
 
-  # Drive a live session's turn, archiving the row and deleting its clone — the way
-  # the cleanup archiving enqueues does — partway through the setup that precedes
-  # the spawn, after every early guard has already read the row and passed it.
-  def run_job_archiving_mid_flight(session)
-    archive_during_setup = lambda do |**_kwargs|
+  # Drive a live session's turn, archiving the row — and, by default, deleting its
+  # clone the way the cleanup archiving enqueues does — partway through the setup
+  # that precedes the spawn, after every early guard has already read the row and
+  # passed it.
+  def run_job_archiving_mid_flight(session, delete_clone: true)
+    run_job(session, AutomatedPrompts.system_recovery(reason: "the job monitoring this session was interrupted"),
+            decision: allowed_decision) do |job|
       Session.where(id: session.id).update_all(
         status: Session.statuses[:archived], archived_at: Time.current
       )
-      @job&.file_system&.rm_rf(CLONE_PATH)
-      "orchestrator system prompt"
-    end
-
-    OrchestratorSystemPromptBuilder.stub(:build, archive_during_setup) do
-      run_job(session, AutomatedPrompts.system_recovery(reason: "the job monitoring this session was interrupted"),
-              decision: allowed_decision)
+      job.file_system.rm_rf(CLONE_PATH) if delete_clone
     end
   end
 
   # Drive the real job for one turn against a stubbed gate decision, with the
   # runtime, the filesystem and the process manager mocked out. Mirrors
   # AgentSessionJobSpotGateTest#run_job so the two read the same way.
-  def run_job(session, prompt, decision:)
+  #
+  # A block, when given, runs partway through the setup that precedes the spawn —
+  # after every early guard has read the row and passed it — and is handed the job
+  # so it can reach the mock filesystem. That is the only way to stage a race that
+  # lands DURING the setup rather than before it.
+  def run_job(session, prompt, decision:, &mid_flight)
     cli = MockClaudeCliAdapter.new
     cli.resume_hook = ->(_opts) { { pid: 12_346, stderr_log_path: "#{CLONE_PATH}/claude_stderr.log" } }
     cli.execute_hook = ->(_opts) { { pid: 12_347, stderr_log_path: "#{CLONE_PATH}/claude_stderr.log" } }
 
-    job = @job = build_job(cli)
+    job = build_job(cli)
     job.file_system.mkdir_p(CLONE_PATH)
     job.file_system.write("#{CLONE_PATH}/claude_stderr.log", "")
     job.process_manager.wait_hook = ->(pid, _flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
 
-    SpotGateService.stub(:evaluate, decision) do
-      GitCloneService.stub(:create_clone, { clone_path: CLONE_PATH, working_directory: CLONE_PATH }) do
-        TranscriptPollerService.stub(:new, ->(_session, file_system: nil, broadcast_service: nil) {
-          poller = Object.new
-          def poller.poll_and_broadcast; end
-          poller
-        }) do
-          Thread.stub(:new, ->(&_block) {
-            thread = Object.new
-            def thread.alive? = false
-            def thread.kill; end
-            def thread.join(*); end
-            thread
+    perform = lambda do
+      SpotGateService.stub(:evaluate, decision) do
+        GitCloneService.stub(:create_clone, { clone_path: CLONE_PATH, working_directory: CLONE_PATH }) do
+          TranscriptPollerService.stub(:new, ->(_session, file_system: nil, broadcast_service: nil) {
+            poller = Object.new
+            def poller.poll_and_broadcast; end
+            poller
           }) do
-            job.perform(session.id, prompt)
+            Thread.stub(:new, ->(&_block) {
+              thread = Object.new
+              def thread.alive? = false
+              def thread.kill; end
+              def thread.join(*); end
+              thread
+            }) do
+              job.perform(session.id, prompt)
+            end
           end
         end
       end
+    end
+
+    if mid_flight
+      # The orchestrator system prompt is built on the spawn path, after the clone,
+      # the AIR prepare and the MCP setup and before the runtime is handed the
+      # turn — so it stands in for "somewhere in the setup" without the test having
+      # to know which step the race actually lands on.
+      built = 0
+      build_and_race = lambda do |**_kwargs|
+        built += 1
+        mid_flight.call(job)
+        "orchestrator system prompt"
+      end
+      OrchestratorSystemPromptBuilder.stub(:build, build_and_race) { perform.call }
+      assert_equal 1, built, "the mid-flight hook must actually have run, or the test proves nothing"
+    else
+      perform.call
     end
 
     cli

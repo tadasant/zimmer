@@ -82,8 +82,10 @@ finished ([#884](https://github.com/tadasant/zimmer/issues/884)). So the job re-
 immediately before handing the turn to `ProcessLifecycleManager`, and an archived session stands
 down there instead — quietly, at `info`, with no `spawn_failed` marker, because a session in the
 trash taking no turn is the correct outcome rather than a fault. A **live** session whose clone
-has gone missing still fails loudly: that session should run, and re-cloning it is
-[#817](https://github.com/tadasant/zimmer/issues/817).
+has gone missing still fails loudly *at this spawn*: that session should run, and re-cloning it is
+[#817](https://github.com/tadasant/zimmer/issues/817). (A continuation spawn — a SIGTERM retry, a
+compaction — answers the same question at `warning` instead; `ProcessLifecycleManager` is deciding
+what to do about a turn that has already run.)
 
 :::caution[Other resumers lock by hand, or not at all]
 `SpotSessionPause.resume!`, `AuthOutageParkService.resume_parked!` and `SpotSessionHold.rearm!` are
