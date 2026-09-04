@@ -97,8 +97,8 @@ class Sessions::AttachmentDescriptorsTest < ActiveSupport::TestCase
       Sessions::AttachmentDescriptors.for_a_job([ params ], keys: IMAGE_KEYS)
   end
 
-  # A size of 0 is a real (if empty) file, and `||` would have thrown away a
-  # `false`-y value the same way.
+  # A size of 0 is a real (if empty) file: the key is present and must survive
+  # the "was this key set at all" check, rather than reading as absent.
   test "a zero size is recorded rather than treated as missing" do
     descriptors = Sessions::AttachmentDescriptors.for_a_job(
       [ { "path" => "/empty.txt", "original_filename" => "empty.txt", "size" => 0 } ],

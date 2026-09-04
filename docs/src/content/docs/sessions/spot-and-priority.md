@@ -542,9 +542,21 @@ to the prompt that referred to it.
 
 Both stores hand a descriptor back with string keys while the CLI adapters index it with symbols
 (`image[:path]`), so the round trip goes through `Sessions::AttachmentDescriptors`, which owns that
-conversion in both directions for the spot-hold record and for `enqueued_messages` alike. A
-descriptor that skipped it would enqueue a turn that looks like it is carrying a screenshot and
-reads as carrying none — the same silent failure wearing the other face.
+conversion in both directions. A descriptor that skipped it would enqueue a turn that looks like it
+is carrying a screenshot and reads as carrying none — the same silent failure wearing the other
+face. `hold!` normalizes once at the door and builds every carrier from the result, because it hands
+one turn's attachments to as many as three of them — the delayed job, the hold record, and the
+`enqueued_messages` row a second refused turn is parked in — and two copies of one turn built from
+different values is how they come to disagree.
+
+The replay also checks the bytes are still there. A hold record outlives the files it names: the
+sweep re-arms records nobody has touched for hours, while the durable-storage cleanup reaps a
+session's attachment tree on its own schedule. Handing the adapter a path that is gone is not a
+missing screenshot — `load_image_as_base64` reads it, the `Errno::ENOENT` surfaces as a failed
+spawn, and the session is stamped `spawn_failed`. A repair path must not be able to do more damage
+than the thing it repairs, so a descriptor whose file has vanished is dropped and the turn comes
+back short an attachment rather than not at all. The `start` branch gets that for free, by reading
+what is on disk in the first place.
 
 **An interrupt no longer mistakes a hold for a stranded session.** A held session is dormant on
 purpose, exactly like a ceiling pause or an auth-outage park, and `AgentSessionJob`'s interrupt
