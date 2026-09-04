@@ -2249,29 +2249,28 @@ class AgentSessionJob < ApplicationJob
           # `directory?` rather than `exists?`, the same question
           # refuse_spawn_after_archive asks of the same volume: a half-unlinked tree
           # can leave a plain file at the path, and that is not a clone anybody can
-          # open. A stat that raises answers nothing, so it claims nothing — the line
-          # is skipped rather than guessed at, because a job that raises while tearing
-          # a failed session down strands it.
+          # open. Neither line claims more than the stat proves — what survives a
+          # session whose tree is gone is the row, and the row is the one thing
+          # nothing here has to check. Everything is wrapped, because a job that
+          # raises while tearing a failed session down strands it.
           if clone_path.present?
             begin
-              if @file_system.directory?(clone_path)
-                log_buffer.add(
-                  "Clone preserved for debugging: #{clone_path}. Archive this session to cleanup the clone directory.",
-                  level: "info"
-                )
-              else
-                log_buffer.add(
-                  "No clone left to preserve: nothing is on disk at #{clone_path}. There is no working tree to " \
-                  "recover from and nothing for an archive to clean up — what remains is on the session record " \
-                  "itself: the prompt it was given and its transcript.",
-                  level: "info"
-                )
-              end
+              message =
+                if @file_system.directory?(clone_path)
+                  "Clone preserved for debugging: #{clone_path}. Archive this session to cleanup the clone directory."
+                else
+                  "No clone to preserve: nothing is on disk at #{clone_path}. There is no working tree to recover " \
+                  "from, and no clone directory left for an archive to delete — what remains is the session record " \
+                  "itself: its prompt, and whatever transcript Zimmer had polled."
+                end
+              log_buffer.add(message, level: "info")
               log_buffer.flush
             rescue StandardError => e
               Rails.logger.warn(
-                "[AgentSessionJob] Could not check clone path for session #{session.id}: #{e.class}: #{e.message}"
+                "[AgentSessionJob] Could not report the clone state for session #{session.id}: " \
+                "#{e.class}: #{e.message}"
               )
+              report_unchecked_clone(session, clone_path, e, log_buffer)
             end
           end
         elsif session.needs_input?
@@ -4272,6 +4271,28 @@ class AgentSessionJob < ApplicationJob
     )
   rescue => e
     Rails.logger.warn "[AgentSessionJob] Could not reconcile runtime_started after termination: #{e.message}"
+  end
+
+  # Say that the clone question went unanswered, rather than answering it.
+  #
+  # The failure teardown's stat is the only thing standing between a reader and a
+  # guess about whether there is anything left to recover, and a stat that raised
+  # proved nothing either way. A Rails log alone would not reach that reader —
+  # operating this deployment involves no shell on the box — so the session's own
+  # timeline gets a hedged line, for the same reason refuse_spawn_after_archive
+  # writes to it. Guarded in turn: this runs from a failure teardown, where
+  # nothing may raise.
+  def report_unchecked_clone(session, clone_path, error, log_buffer)
+    log_buffer.add(
+      "Could not check whether the clone at #{clone_path} is still on disk (#{error.class}), so this line " \
+      "claims neither that it was preserved nor that it is gone.",
+      level: "warning"
+    )
+    log_buffer.flush
+  rescue StandardError => e
+    Rails.logger.warn(
+      "[AgentSessionJob] Could not log the clone check failure for session #{session&.id}: #{e.message}"
+    )
   end
 
   # Check if a process is running

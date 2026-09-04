@@ -22,7 +22,8 @@ require_relative "../support/mock_claude_cli_adapter"
 class AgentSessionJobFailedCloneLogTest < ActiveJob::TestCase
   CLONE_PATH = "/tmp/failed-clone-log-test-clone"
   PRESERVED = "Clone preserved for debugging"
-  NOTHING_LEFT = "No clone left to preserve"
+  NOTHING_LEFT = "No clone to preserve"
+  UNCHECKED = "Could not check whether the clone at"
 
   setup do
     @session = Session.create!(
@@ -87,10 +88,11 @@ class AgentSessionJobFailedCloneLogTest < ActiveJob::TestCase
     assert_not_nil log, "silence would leave the reader to guess; say the tree is gone"
     assert_includes log.content, NOTHING_LEFT
     assert_includes log.content, CLONE_PATH, "name the path that was checked"
-    assert_includes log.content, "the prompt it was given and its transcript",
-                    "the reader needs to know what survives, and it is the session record"
+    assert_includes log.content, "its prompt, and whatever transcript Zimmer had polled",
+                    "the reader needs to know what survives, and it is the session record — hedged, " \
+                    "because neither column was read"
     refute_includes log.content, "Archive this session to cleanup",
-                    "there is no directory to clean up, so do not ask for it"
+                    "there is no clone directory left to delete, so do not ask for it"
     assert_equal "info", log.level
   end
 
@@ -117,10 +119,21 @@ class AgentSessionJobFailedCloneLogTest < ActiveJob::TestCase
     assert_nothing_raised { run_failing_resume(clone_on_disk: false) }
     assert_equal "failed", @session.reload.status
 
-    # The same teardown again, this time with the tree in place.
+    # The same teardown again, this time with the tree in place and the agent
+    # process still alive — so the whole branch runs, terminate_process included,
+    # rather than only the log emission.
     @session.update_columns(status: Session.statuses[:running], session_id: nil)
-    assert_nothing_raised { run_failing_resume(clone_on_disk: true) }
+    job = nil
+    assert_nothing_raised do
+      job = run_failing_resume(clone_on_disk: true) do |j|
+        j.process_manager.set_process_state(4242, :running)
+      end
+    end
+    # Terminated as a process group, so the recorded pid is negated.
+    assert_includes job.process_manager.killed_processes.map { |k| k[:pid].abs }, 4242,
+                    "the live process must still have been terminated"
     assert_equal "failed", @session.reload.status
+    assert_includes all_log_content, PRESERVED
   end
 
   test "a stat that raises claims nothing and does not take the job down" do
@@ -139,6 +152,14 @@ class AgentSessionJobFailedCloneLogTest < ActiveJob::TestCase
     assert_equal "failed", @session.reload.status
     refute_includes all_log_content, PRESERVED, "an unanswered stat must not be reported as an answer"
     refute_includes all_log_content, NOTHING_LEFT, "nor as the opposite answer"
+
+    # Silence would leave the reader to guess, and the Rails log is not somewhere
+    # they can reach. The timeline says the question went unanswered.
+    hedged = @session.logs.reload.find { |entry| entry.content.include?(UNCHECKED) }
+    assert_not_nil hedged, "an unanswered stat must still be visible in the session's own timeline"
+    assert_includes hedged.content, CLONE_PATH
+    assert_includes hedged.content, "ArgumentError", "name what went wrong"
+    assert_equal "warning", hedged.level
   end
 
   # ---------------------------------------------------------------------------
@@ -151,11 +172,14 @@ class AgentSessionJobFailedCloneLogTest < ActiveJob::TestCase
     # A resume with no clone_path recorded cannot proceed at all: the guard above
     # the validation raises, the rescue fails the session, and the teardown then
     # runs with a nil clone_path. That nil is what must not blow the branch up.
-    assert_raises(RuntimeError) { run_failing_resume(clone_on_disk: false) }
+    error = assert_raises(RuntimeError) { run_failing_resume(clone_on_disk: false) }
+    assert_match(/missing process_pid or clone_path/, error.message,
+                 "pin the raise this test means, so an unrelated one cannot keep it green")
 
     assert_equal "failed", @session.reload.status
     refute_includes all_log_content, PRESERVED
     refute_includes all_log_content, NOTHING_LEFT
+    refute_includes all_log_content, UNCHECKED, "there is no path to have a question about"
   end
 
   private
