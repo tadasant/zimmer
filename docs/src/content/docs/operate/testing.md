@@ -345,12 +345,6 @@ by convention:
   and `resume` signatures — checked via `instance_method(:execute).parameters`, so a renamed kwarg fails
   the build rather than failing at spawn time.
 - **`test/contracts/runtime_mcp_credential_writer_contract_test.rb`** does the same for credential writers.
-- **`test/contracts/ostruct_require_contract_test.rb`** asserts every file under `test/` that names
-  `OpenStruct` also requires `ostruct` itself. `ostruct` is a bundled gem, so nothing requires it for
-  you; the whole suite shares one process, so the first file that requires it silently covers every
-  file loaded after it. Without the contract, whether a file works on its own is decided by the order
-  the runner loads files in — which is why the targeted run below is what breaks, and never CI. See
-  [#787](https://github.com/tadasant/zimmer/issues/787).
 
 :::caution[The contract test doesn't cover the whole contract]
 It checks three of the retry strategy's five predicates. `auth_recovery_needed?`, which
@@ -358,6 +352,14 @@ It checks three of the retry strategy's five predicates. `auth_recovery_needed?`
 and still `NoMethodError` in production. See
 [Adding an agent harness](/extend/agent-harness/#retry-strategy-the-five-predicates).
 :::
+
+A second one guards a different kind of contract — not between runtimes, but between a test file and
+the gems it names. **`test/contracts/ostruct_require_contract_test.rb`** parses every `.rb` under
+`test/` with Prism and asserts that a file naming `OpenStruct` requires `ostruct` itself. `ostruct`
+ships with Ruby but is not required for you (a default gem on 3.4, bundled from 3.5), and the suite
+shares one process, so the first file to require it silently covers every file loaded after it.
+Without the contract, whether a file works on its own is decided by the order the runner loads files
+in. See [#787](https://github.com/tadasant/zimmer/issues/787).
 
 ## Running tests
 
@@ -370,11 +372,12 @@ bin/brakeman
 
 The convention in `AGENTS.md`: run **targeted** tests locally, let CI run the full suite.
 
-A targeted run loads only the files you name, so it is the run that exposes a missing `require`. A
-test file has to require the bundled gems it uses — `ostruct` today — rather than inheriting them
-from whatever the full suite happened to load first. The contract test above enforces that for
+A targeted run loads only the files you name, so it is the run that usually exposes a missing
+`require`. A test file has to require the gems it names — `ostruct` today — rather than inheriting
+them from whatever the full suite happened to load first. The contract test above enforces that for
 `ostruct`; `mocha/minitest` is the same hazard and is not yet covered
-([#764](https://github.com/tadasant/zimmer/issues/764)).
+([#874](https://github.com/tadasant/zimmer/issues/874)), which also covers the wrinkle that a require
+landing anywhere in `test/support/**` becomes a de-facto suite-wide one.
 
 ## The philosophy, such as it is
 

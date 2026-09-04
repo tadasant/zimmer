@@ -44,10 +44,11 @@ Run targeted tests locally rather than the whole suite:
 bin/rails test test/models/session_test.rb
 ```
 
-A targeted run loads only the files you name, so a test file must require the bundled gems it uses
-instead of inheriting them from whatever the full suite loaded first. `ostruct` is the one that bites:
-it is not required for you, and a file naming `OpenStruct` without `require "ostruct"` passes in CI and
-raises `NameError` on its own. `test/contracts/ostruct_require_contract_test.rb` enforces the require.
+A targeted run loads only the files you name, so a test file must require the gems it names instead
+of inheriting them from whatever the full suite loaded first. `ostruct` is the one that bites: it
+ships with Ruby but nothing requires it for you, so a file naming `OpenStruct` without
+`require "ostruct"` passes in CI and raises `NameError` on its own.
+`test/contracts/ostruct_require_contract_test.rb` enforces the require.
 
 ### Capturing log output in a test
 
