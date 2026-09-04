@@ -112,7 +112,7 @@
             <h1 class="text-base font-bold text-gray-900 truncate"><%= @session.title %></h1>
           <% end %>
           <div class="flex items-center gap-2">
-            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium <%= status_badge_classes(@session) %>">
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium <%= status_badge_classes(@session.status) %>">
               <%= @session.status.titleize %>
             </span>
             <span class="text-xs text-gray-400 font-mono">#<%= @session.id %></span>
