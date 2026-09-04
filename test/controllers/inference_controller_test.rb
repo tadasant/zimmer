@@ -384,6 +384,29 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
       genesis_class_path(genesis: kind.key, priority_class: SessionGenesis::SPOT)
   end
 
+  # The backlog top-up card sits below the gate, beside the populations its
+  # ceiling counts. Its two clocks were previously visible nowhere at all.
+  test "show renders the backlog top-up card with its three knobs and both clocks" do
+    AppSetting.editable.update!(fleet_idle_max_sessions: 4, fleet_idle_threshold_minutes: 7,
+                                fleet_idle_min_fire_interval_minutes: 30)
+
+    get inference_url
+
+    assert_response :success
+    assert_select "#fleet-top-up"
+    assert_select "h2", "Backlog top-up"
+    assert_select "form[action=?]", fleet_top_up_policy_path
+    assert_select "input[name='app_setting[fleet_idle_max_sessions]'][value=?]", "4"
+    assert_select "input[name='app_setting[fleet_idle_threshold_minutes]'][value=?]", "7"
+    assert_select "input[name='app_setting[fleet_idle_min_fire_interval_minutes]'][value=?]", "30"
+    assert_select "#fleet-top-up-status"
+    assert_select "#fleet-top-up-sentence"
+    assert_select "#fleet-top-up-in-hand"
+    assert_select "#fleet-top-up-idle-since"
+    assert_select "#fleet-top-up-last-fired"
+    assert_select "#fleet-top-up-next-fire"
+  end
+
   # The regression this whole change exists for. With the fleet ahead of the
   # pacing curve the page used to print "running spot sessions are being paused
   # too", which is false: only a spent budget ever pauses a running turn.

@@ -394,6 +394,11 @@ class InferenceController < ApplicationController
     @spot_windows = QuotaCapacityModel.windows(measure: ClaudeAccountPool.measure, setting: @app_setting)
     @genesis_classes = SessionGenesis.effective_classes(@app_setting.genesis_class_overrides)
     @genesis_counts = Session.genesis_counts
+    # The backlog top-up card below the gate: the three numbers
+    # `no_sessions_in_progress` fires on, and where the fleet sits against them.
+    # One reading, shared with `get_spot_policy`, so the page and the tool cannot
+    # disagree about whether a top-up is due.
+    @fleet_top_up = FleetTopUpStatus.current(setting: @app_setting)
   end
 
   # Append a re-rendered spot gate to a refresh response. The card's decision is

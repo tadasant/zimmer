@@ -1,0 +1,140 @@
+<%# Backlog top-up: the three numbers FleetIdleMonitor fires on, and where the
+    fleet currently sits against them.
+
+    It lives on this page because the two populations its ceiling counts — running
+    sessions and the spot queue — are the ones the card above already reports, and
+    because its ceiling is the sibling of the concurrency limit there: one says how
+    much work may run at once, the other how little work means the fleet has room
+    for more. %>
+<div class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6" id="fleet-top-up">
+  <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <h2 class="text-lg font-medium text-gray-900">Backlog top-up</h2>
+    <p class="mt-1 text-sm text-gray-500">
+      When the fleet has room to spare, Zimmer fires the
+      <code class="bg-gray-100 px-1 rounded">no_sessions_in_progress</code> event so a
+      <%= link_to "trigger", triggers_path, class: "text-indigo-600 hover:text-indigo-500" %>
+      can hand it more work. "Room to spare" is a number, not zero: the fleet counts as idle enough
+      while it is holding <strong>fewer than</strong> the ceiling below — running sessions plus spot
+      ones queued behind the gate, counted together. Set the ceiling to <strong>1</strong> and the
+      event means what its name says, nothing running and nothing queued.
+    </p>
+  </div>
+
+  <div class="px-4 py-5 sm:px-6 space-y-6">
+    <%# ---- The policy form ---- %>
+    <%= form_with url: fleet_top_up_policy_path, method: :patch, data: { turbo: false } do %>
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div>
+          <label for="app_setting_fleet_idle_max_sessions" class="block text-sm font-medium text-gray-700 mb-2">
+            Top up while under
+          </label>
+          <input type="number"
+                 name="app_setting[fleet_idle_max_sessions]"
+                 id="app_setting_fleet_idle_max_sessions"
+                 value="<%= @app_setting.fleet_idle_max_sessions %>"
+                 min="1" max="100" step="1"
+                 class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
+          <p class="mt-1 text-xs text-gray-500">
+            Sessions running or queued. Below this many, the fleet counts as idle enough to take more
+            work — so it does not have to empty out completely before topping up.
+          </p>
+        </div>
+        <div>
+          <label for="app_setting_fleet_idle_threshold_minutes" class="block text-sm font-medium text-gray-700 mb-2">
+            For at least (minutes)
+          </label>
+          <input type="number"
+                 name="app_setting[fleet_idle_threshold_minutes]"
+                 id="app_setting_fleet_idle_threshold_minutes"
+                 value="<%= @app_setting.fleet_idle_threshold_minutes %>"
+                 min="1" max="1440" step="1"
+                 class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
+          <p class="mt-1 text-xs text-gray-500">
+            How long it has to stay there first, so the gap between one session ending and the next
+            starting is not mistaken for an idle fleet. Checked once a minute.
+          </p>
+        </div>
+        <div>
+          <label for="app_setting_fleet_idle_min_fire_interval_minutes" class="block text-sm font-medium text-gray-700 mb-2">
+            At most once every (minutes)
+          </label>
+          <input type="number"
+                 name="app_setting[fleet_idle_min_fire_interval_minutes]"
+                 id="app_setting_fleet_idle_min_fire_interval_minutes"
+                 value="<%= @app_setting.fleet_idle_min_fire_interval_minutes %>"
+                 min="1" max="10080" step="1"
+                 class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
+          <p class="mt-1 text-xs text-gray-500">
+            The floor between two fires — <strong><%= @fleet_top_up.cadence_phrase %></strong>.
+            With a ceiling above 1 this, not the ceiling, is what caps how often work gets started.
+          </p>
+        </div>
+      </div>
+
+      <div class="mt-4">
+        <button type="submit" class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+          Save top-up policy
+        </button>
+      </div>
+    <% end %>
+
+    <%# ---- Where the fleet sits against them ----
+        Both of the monitor's clocks, which are readable nowhere else: four states
+        look identical from outside ("it hasn't fired") and clear four different
+        ways. FleetTopUpStatus names which one, and `get_spot_policy` prints the
+        same sentence from the same object. %>
+    <div class="rounded-md border <%= @fleet_top_up.under_ceiling? ? "border-green-200 bg-green-50" : "border-gray-200 bg-gray-50" %> p-4"
+         id="fleet-top-up-status">
+      <div class="flex items-center gap-2">
+        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold <%= @fleet_top_up.under_ceiling? ? "bg-green-100 text-green-800" : "bg-gray-200 text-gray-700" %>">
+          <%= @fleet_top_up.under_ceiling? ? "Room for more work" : "At its work ceiling" %>
+        </span>
+        <span class="text-xs text-gray-500 font-mono"><%= @fleet_top_up.state %></span>
+      </div>
+      <p class="mt-2 text-sm text-gray-700" id="fleet-top-up-sentence"><%= @fleet_top_up.sentence %></p>
+
+      <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4 text-sm">
+        <div>
+          <dt class="text-gray-500">Sessions in hand</dt>
+          <dd class="font-medium text-gray-900" id="fleet-top-up-in-hand">
+            <%= @fleet_top_up.sessions_in_hand %>
+            <span class="text-gray-400 font-normal">of <%= @fleet_top_up.max_sessions %></span>
+            <%# One fire hands out one session, so the headroom is how many more
+                cooldowns it takes to fill the room the fleet has. %>
+            <div class="text-xs text-gray-500 font-normal mt-0.5">
+              <%= pluralize(@fleet_top_up.headroom, "place") %> of headroom
+            </div>
+          </dd>
+        </div>
+        <div>
+          <dt class="text-gray-500">Idle since</dt>
+          <dd class="font-medium text-gray-900" id="fleet-top-up-idle-since">
+            <%= @fleet_top_up.idle_since ? "#{time_ago_in_words(@fleet_top_up.idle_since)} ago" : "—" %>
+          </dd>
+        </div>
+        <div>
+          <dt class="text-gray-500">Last fired</dt>
+          <dd class="font-medium text-gray-900" id="fleet-top-up-last-fired">
+            <%= @fleet_top_up.last_fired_at ? "#{time_ago_in_words(@fleet_top_up.last_fired_at)} ago" : "never" %>
+          </dd>
+        </div>
+        <div>
+          <dt class="text-gray-500">Next fire, at the earliest</dt>
+          <dd class="font-medium text-gray-900" id="fleet-top-up-next-fire">
+            <% if @fleet_top_up.next_fire_at %>
+              <%= @fleet_top_up.next_fire_at <= Time.current ? "at the next check" : "in #{distance_of_time_in_words(Time.current, @fleet_top_up.next_fire_at)}" %>
+            <% else %>
+              <span class="text-gray-400">no clock running</span>
+            <% end %>
+          </dd>
+        </div>
+      </dl>
+
+      <p class="mt-3 text-xs text-gray-500">
+        Two more conditions hold the event off and are not shown here because the rest of this page
+        reports them in their own words: a session parked on an auth outage, and an account pool with
+        nothing left to serve.
+      </p>
+    </div>
+  </div>
+</div>

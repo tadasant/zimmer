@@ -271,9 +271,9 @@ module CronSchedule
       environments: %i[production staging]
     },
     fleet_idle_checker: {
-      cron: "* * * * *", # Every minute — the resolution of FleetIdleMonitor::IDLE_THRESHOLD
+      cron: "* * * * *", # Every minute — the resolution of the fleet idle threshold
       class: "FleetIdleCheckerJob",
-      description: "Fire the no_sessions_in_progress event once the fleet has had nothing to do for 5 minutes",
+      description: "Fire the no_sessions_in_progress event once the fleet has held fewer sessions than its ceiling for the configured stretch",
       environments: %i[production staging]
     },
     spot_ceiling_sweep: {

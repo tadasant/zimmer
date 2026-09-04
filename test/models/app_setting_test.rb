@@ -207,4 +207,59 @@ class AppSettingTest < ActiveSupport::TestCase
     refute setting.extension_enabled?("pty_transport")
     assert setting.extension_enabled?("pty_transport", default: true)
   end
+
+  # The three fleet top-up knobs. A ceiling of 0 is the dangerous one: the test
+  # FleetIdleMonitor makes is `sessions_in_hand < ceiling`, so 0 can never be
+  # satisfied and the event would quietly never fire again.
+  test "the fleet top-up ceiling must be at least one" do
+    setting = AppSetting.new(fleet_idle_max_sessions: 0)
+    assert_not setting.valid?
+    assert setting.errors[:fleet_idle_max_sessions].any?
+
+    setting.fleet_idle_max_sessions = 1
+    setting.valid?
+    assert_empty setting.errors[:fleet_idle_max_sessions],
+      "1 is the nothing-running-and-nothing-queued behaviour and must stay reachable"
+  end
+
+  test "the fleet top-up clocks are bounded in minutes" do
+    setting = AppSetting.new(fleet_idle_threshold_minutes: 0,
+                             fleet_idle_min_fire_interval_minutes: 10_081)
+    assert_not setting.valid?
+    assert setting.errors[:fleet_idle_threshold_minutes].any?,
+      "a stretch shorter than the once-a-minute sweep could not be observed"
+    assert setting.errors[:fleet_idle_min_fire_interval_minutes].any?
+  end
+
+  test "a fresh row ships the documented top-up defaults" do
+    AppSetting.delete_all
+    setting = AppSetting.create!
+
+    assert_equal 3, setting.fleet_idle_max_sessions
+    assert_equal 5, setting.fleet_idle_threshold_minutes
+    assert_equal 60, setting.fleet_idle_min_fire_interval_minutes
+  end
+
+  # A DB-less boot has to answer these without raising: FleetTopUpStatus reads
+  # them straight off whatever AppSetting.current returns.
+  test "the NULL object answers the fleet top-up readers with the shipped defaults" do
+    assert_equal AppSetting::DEFAULT_FLEET_IDLE_MAX_SESSIONS, AppSetting::NULL.fleet_idle_max_sessions
+    assert_equal AppSetting::DEFAULT_FLEET_IDLE_THRESHOLD_MINUTES, AppSetting::NULL.fleet_idle_threshold_minutes
+    assert_equal AppSetting::DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES,
+                 AppSetting::NULL.fleet_idle_min_fire_interval_minutes
+    # Both clocks too: FleetTopUpStatus reads them unconditionally, so a NULL that
+    # answered only the three knobs would raise NoMethodError on the DB-less path
+    # instead of degrading.
+    assert_nil AppSetting::NULL.fleet_idle_since
+    assert_nil AppSetting::NULL.fleet_idle_event_fired_at
+  end
+
+  # The whole point of the readers above: constructing the status object off the
+  # NULL row must not raise.
+  test "FleetTopUpStatus can be built from the NULL object" do
+    status = FleetTopUpStatus.new(setting: AppSetting::NULL, sessions_in_hand: 0)
+
+    assert_equal :clock_not_started, status.state
+    assert status.sentence.present?
+  end
 end

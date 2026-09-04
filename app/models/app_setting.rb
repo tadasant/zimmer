@@ -51,6 +51,29 @@ class AppSetting < ApplicationRecord
   # only spot ones are held by it.
   DEFAULT_SPOT_MAX_CONCURRENT_SESSIONS = 10
 
+  # How few sessions the fleet has to be holding before `no_sessions_in_progress`
+  # counts it as idle enough to take more work. The count is running sessions
+  # plus spot ones queued behind the gate, and the test is strictly BELOW this
+  # number — so 1 means "nothing running and nothing queued", which is the
+  # boolean the threshold replaced.
+  #
+  # 3 is the shipped default: a deployment with ten slots and two sessions in
+  # them has capacity nobody is using, and requiring the last one to finish before
+  # the backlog is topped up holds the fleet at a fifth of what it is paid for.
+  # See FleetIdleMonitor.
+  DEFAULT_FLEET_IDLE_MAX_SESSIONS = 3
+
+  # How long the fleet has to stay under that ceiling before the event fires.
+  # Five minutes is long enough that the gap between one session ending and the
+  # next starting is not mistaken for an idle fleet.
+  DEFAULT_FLEET_IDLE_THRESHOLD_MINUTES = 5
+
+  # The floor between two fires, however many times the fleet dips under the
+  # ceiling in between. Once the ceiling stops being the binding term this is
+  # what caps top-up frequency — at 60 minutes, 24 fires a day. See
+  # FleetIdleMonitor, "Why a cooldown as well as a latch".
+  DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES = 60
+
   # Null-object stand-in used only when the table can't be read (e.g. during a
   # migration run before the table exists, or in a DB-less boot path). It answers
   # the same read interface as a blank record so AgentRootsConfig never crashes on
@@ -94,6 +117,32 @@ class AppSetting < ApplicationRecord
       DEFAULT_SPOT_MAX_CONCURRENT_SESSIONS
     end
 
+    # No persisted row exists, so the fleet top-up policy resolves to its shipped
+    # numbers. A DB-less boot fires nothing anyway — FleetIdleMonitor bails on an
+    # unreadable fleet — but the readers have to answer.
+    def fleet_idle_max_sessions
+      DEFAULT_FLEET_IDLE_MAX_SESSIONS
+    end
+
+    def fleet_idle_threshold_minutes
+      DEFAULT_FLEET_IDLE_THRESHOLD_MINUTES
+    end
+
+    def fleet_idle_min_fire_interval_minutes
+      DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES
+    end
+
+    # No row means no observation, which is what NULL means on a real row too.
+    # FleetTopUpStatus reads both unconditionally, so a DB-less boot needs them to
+    # answer rather than raise.
+    def fleet_idle_since
+      nil
+    end
+
+    def fleet_idle_event_fired_at
+      nil
+    end
+
     def genesis_class_overrides
       {}
     end
@@ -126,6 +175,18 @@ class AppSetting < ApplicationRecord
   # what turning the gate off (or setting a target of 0) is for.
   validates :spot_max_concurrent_sessions,
     numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 100 }
+  # At least one, for the same reason: the test is `sessions_in_hand < ceiling`,
+  # so a ceiling of 0 can never be satisfied and the event would never fire again.
+  # 1 means "nothing running and nothing queued".
+  validates :fleet_idle_max_sessions,
+    numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 100 }
+  # A minute is the cron cadence FleetIdleCheckerJob samples at, so it is the
+  # finest either clock can mean anything at. A day is a generous ceiling on
+  # "how long must it stay quiet"; a week on "how rarely may it fire".
+  validates :fleet_idle_threshold_minutes,
+    numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 1440 }
+  validates :fleet_idle_min_fire_interval_minutes,
+    numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 10_080 }
   validate :genesis_class_overrides_well_formed
 
   class << self

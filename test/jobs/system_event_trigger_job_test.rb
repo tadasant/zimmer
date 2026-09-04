@@ -206,7 +206,7 @@ class SystemEventTriggerJobTest < ActiveJob::TestCase
 
     session = Session.order(:id).last
     assert_equal trigger.id.to_s, session.metadata["trigger_id"].to_s
-    assert_includes session.prompt, "The fleet has run out of work"
+    assert_includes session.prompt, "The fleet has room for more work"
     assert_not_nil trigger.trigger_conditions.first.reload.last_triggered_at
   end
 
