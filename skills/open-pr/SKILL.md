@@ -255,7 +255,7 @@ gh pr edit --add-label "ready to merge"
 gh pr edit --remove-label "ready to merge"
 ```
 
-**Ownership.** This skill owns the label step. The `wait-for-ci` skill does *not* apply it, so a flow that waits on CI several times does not relabel on each pass. This section is the operative one; [The `ready to merge` Label](references/GIT_WORKFLOW.md#the-ready-to-merge-label) in GIT_WORKFLOW.md is the same convention written up as shared prose, for anyone arriving from a repo-specific PR skill rather than from here.
+**Ownership.** This skill owns the label step. The `wait-for-ci` skill deliberately does *not* apply it — its own hand-off section points back here — so a flow that waits on CI several times does not relabel on each pass. This section is the operative one; [The `ready to merge` Label](references/GIT_WORKFLOW.md#the-ready-to-merge-label) in GIT_WORKFLOW.md is the same convention written up as shared prose, for anyone arriving from a repo-specific PR skill rather than from here.
 
 ## Terminal Step 2: Sleep on the PR, Don't Park on It
 
