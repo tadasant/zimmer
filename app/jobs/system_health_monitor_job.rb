@@ -107,11 +107,26 @@ class SystemHealthMonitorJob < ApplicationJob
     )
 
     AlertService.raise_alert(
-      "Queue backlog critical",
+      alert_title(system_health[:status]),
       details: build_details(system_health),
       source: "SystemHealthMonitorJob",
       dedup_key: alert_dedup_key(system_health[:status])
     )
+  end
+
+  # A wedged lane is not a backlog, and the Slack header is the one line a human on
+  # a phone reads before deciding whether to open the thread. "Queue backlog
+  # critical" over a page whose body says the worker is holding a full pool on work
+  # that will not finish sends the responder looking for the wrong thing.
+  #
+  # Keyed off the status `code`, which HealthMonitorService owns, rather than off
+  # its prose — the message is written for a human and is free to be reworded.
+  def alert_title(status)
+    if status.code.to_s.start_with?("#{HealthMonitorService::WEDGED_LANE_CODE_PREFIX}:")
+      "Queue lane wedged"
+    else
+      "Queue backlog critical"
+    end
   end
 
   # Falls back to the bare key for a critical status carrying no code, so a future
@@ -150,24 +165,36 @@ class SystemHealthMonitorJob < ApplicationJob
       "• Oldest ready by queue: #{HealthMonitorService.format_ages(breakdown[:oldest_by_queue])}",
       "• Not backlog: #{stats[:claimed_count]} claimed (executing now), " \
         "#{stats[:scheduled_count]} scheduled (future-dated)",
+      "• In flight by queue: #{HealthMonitorService.format_breakdown(stats[:claimed_count_by_queue])} " \
+        "(threads: #{HealthMonitorService.format_breakdown(HealthMonitorService.lane_thread_counts)})",
+      "• Oldest execution by queue: " \
+        "#{HealthMonitorService.format_ages(stats[:oldest_claimed_age_seconds_by_queue])}",
+      "• Youngest execution by queue: " \
+        "#{HealthMonitorService.format_ages(stats[:youngest_claimed_age_seconds_by_queue])}",
       "• Processing rate: #{stats[:processing_rate_per_hour]}/hour",
       "• Workers: #{workers[:active_workers]} active / #{workers[:total_workers]} registered",
       "",
-      "The line above names either one starved lane or a stall spread across several, " \
-        "because the gate decides per lane rather than on one age across all of them. " \
-        "It does not settle the question on its own: a worker that has stopped " \
-        "entirely leaves its deepest lane over that lane's own bar too, and the " \
-        "starved-lane wording is what you get. Read these ages before you act on it. " \
-        "ONE old queue " \
-        "beside fresh ones is that queue starving: its threads are all held (an " \
-        "`agents` thread lasts as long as its session, and `inference` and " \
-        "`maintenance` run two threads against jobs that block for a minute or " \
-        "more) or blocked on a long external wait, and every other queue will still " \
-        "look healthy — including the processing rate, which is a trailing hour and " \
-        "lags a stall by many minutes. EVERY queue old at once is the worker itself: " \
-        "down, restarting, or starved of database round-trips. The Grafana `not " \
-        "draining` rule reads that same global age, and is gated on throughput so a " \
-        "healthy fleet behind a slow lane does not page twice."
+      "The first line names one of three things: a WEDGED lane, one starved lane, or " \
+        "a stall spread across several. Read the in-flight bullets together before " \
+        "acting, because they settle what the ready ages cannot. A lane whose in-flight " \
+        "count equals its thread count and whose YOUNGEST execution is already hours " \
+        "old is wedged: every thread is held by work that is not coming back, so it " \
+        "can claim nothing — not the backlog behind it, and not a deploy gate's " \
+        "canary. An old oldest beside a fresh youngest is one slow job, not a wedge. " \
+        "A lane " \
+        "with ready work and NO claims is the opposite failure: the worker is not " \
+        "polling that lane at all. Both leave an old head of line and they look " \
+        "identical from the ready side alone, which is why these lines exist. " \
+        "Long holds are normal in some lanes and not others: an `agents` thread lasts " \
+        "as long as its session, `auth` as long as a login CLI is open, while " \
+        "`inference`, `maintenance` and `default` run two threads each against jobs " \
+        "that should finish in seconds to minutes. EVERY queue old at once, with the " \
+        "claims fresh or absent, is the worker itself: down, restarting, or starved of " \
+        "database round-trips. The processing rate is a trailing hour and lags any of " \
+        "these by many minutes, so a healthy-looking rate beside a stuck lane is " \
+        "expected rather than reassuring. The Grafana `not draining` rule reads the " \
+        "global ready age, and is gated on throughput so a healthy fleet behind a slow " \
+        "lane does not page twice."
     ].join("\n")
   end
 
