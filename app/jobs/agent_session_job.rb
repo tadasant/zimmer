@@ -2237,13 +2237,41 @@ class AgentSessionJob < ApplicationJob
           # Preserve clone on failure for debugging and recovery
           # Only terminate the process if it's still running
           terminate_process(session, process_pid, clone_path, log_buffer) if process_pid && process_running?(process_pid)
-          # Log the preserved clone path for user reference
-          if clone_path
-            log_buffer.add(
-              "Clone preserved for debugging: #{clone_path}. Archive this session to cleanup the clone directory.",
-              level: "info"
-            )
-            log_buffer.flush
+          # Say what is on disk, rather than what metadata says was once cloned.
+          #
+          # `metadata["clone_path"]` records where a clone was made; it is not evidence
+          # that the tree is still there, and the failure that most needs this line is
+          # the one where it isn't. Session 12280 failed *because* its clone directory
+          # was missing and was told, four seconds later, that the clone was preserved
+          # for debugging (#816) — the one line anybody reads when deciding whether
+          # there is anything left to recover, stated as fact and wrong.
+          #
+          # `directory?` rather than `exists?`, the same question
+          # refuse_spawn_after_archive asks of the same volume: a half-unlinked tree
+          # can leave a plain file at the path, and that is not a clone anybody can
+          # open. Neither line claims more than the stat proves — what survives a
+          # session whose tree is gone is the row, and the row is the one thing
+          # nothing here has to check. Everything is wrapped, because a job that
+          # raises while tearing a failed session down strands it.
+          if clone_path.present?
+            begin
+              message =
+                if @file_system.directory?(clone_path)
+                  "Clone preserved for debugging: #{clone_path}. Archive this session to cleanup the clone directory."
+                else
+                  "No clone to preserve: nothing is on disk at #{clone_path}. There is no working tree to recover " \
+                  "from, and no clone directory left for an archive to delete — what remains is the session record " \
+                  "itself: its prompt, and whatever transcript Zimmer had polled."
+                end
+              log_buffer.add(message, level: "info")
+              log_buffer.flush
+            rescue StandardError => e
+              Rails.logger.warn(
+                "[AgentSessionJob] Could not report the clone state for session #{session.id}: " \
+                "#{e.class}: #{e.message}"
+              )
+              report_unchecked_clone(session, clone_path, e, log_buffer)
+            end
           end
         elsif session.needs_input?
           # Session is paused or waiting for follow-up - preserve clone for resume.
@@ -4243,6 +4271,28 @@ class AgentSessionJob < ApplicationJob
     )
   rescue => e
     Rails.logger.warn "[AgentSessionJob] Could not reconcile runtime_started after termination: #{e.message}"
+  end
+
+  # Say that the clone question went unanswered, rather than answering it.
+  #
+  # The failure teardown's stat is the only thing standing between a reader and a
+  # guess about whether there is anything left to recover, and a stat that raised
+  # proved nothing either way. A Rails log alone would not reach that reader —
+  # operating this deployment involves no shell on the box — so the session's own
+  # timeline gets a hedged line, for the same reason refuse_spawn_after_archive
+  # writes to it. Guarded in turn: this runs from a failure teardown, where
+  # nothing may raise.
+  def report_unchecked_clone(session, clone_path, error, log_buffer)
+    log_buffer.add(
+      "Could not check whether the clone at #{clone_path} is still on disk (#{error.class}), so this line " \
+      "claims neither that it was preserved nor that it is gone.",
+      level: "warning"
+    )
+    log_buffer.flush
+  rescue StandardError => e
+    Rails.logger.warn(
+      "[AgentSessionJob] Could not log the clone check failure for session #{session&.id}: #{e.message}"
+    )
   end
 
   # Check if a process is running
