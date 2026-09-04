@@ -144,7 +144,7 @@ opening PRs need them.
 | --- | --- | --- | --- |
 | `app`   | built from `Dockerfile.dev` | Rails 8 web + Tailwind watcher; long-lived workspace (`sleep infinity`) | via `/up` after `run.sh` |
 | `db`    | `postgres:16` | `zimmer_development` + `zimmer_development_cable` | `pg_isready` |
-| `redis` | `redis:7-alpine` | cache + Action Cable | `redis-cli ping` |
+| `redis` | `redis:7-alpine` | `Rails.cache` (database 1). Action Cable is `solid_cable`, on Postgres | `redis-cli ping` |
 
 ## Design notes
 

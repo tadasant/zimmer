@@ -30,8 +30,13 @@ Rails.application.configure do
     config.action_controller.perform_caching = false
   end
 
-  # Use Redis cache store in development (database 1 to avoid conflict with other apps)
-  config.cache_store = :redis_cache_store, { url: "#{ENV["REDIS_URL"]}/1" }
+  # Use Redis cache store in development, on database 1 — keeping it clear of the 0
+  # anything else pointed at a bare REDIS_URL gets. Select the database explicitly
+  # rather than appending "/1" to the URL: a REDIS_URL that already names one turns
+  # "redis://redis:6379/0" into "redis://redis:6379/0/1", whose path redis-client
+  # reads as the database number, and every Rails.cache call raises
+  # `ArgumentError: invalid value for Integer(): "0/1"` (#822).
+  config.cache_store = :redis_cache_store, { url: ENV["REDIS_URL"], db: 1 }
 
   # Store uploaded files on the local file system (see config/storage.yml for options).
   config.active_storage.service = :local
