@@ -190,40 +190,42 @@ class AppSetting < ApplicationRecord
   validate :genesis_class_overrides_well_formed
 
   class << self
-    # Run a settings read, degrading to `fallback` when the row can't be queried.
+    # The singleton row for reads. Returns a blank, unsaved record when no row
+    # exists yet, and the NULL object if the table can't be queried — so callers
+    # in the hot path (AgentRootsConfig) never raise.
     #
-    # Every read wrapped here sits somewhere a missing settings row must not
-    # raise: a DB-less boot, a migration run before the table exists, the
-    # session-spawn hot path. The degrade is the point. Two things around it are
-    # not optional, and both are issue #924:
+    # This is the ONLY place a settings read degrades. Everything else — the
+    # class-method wrappers below, ExperimentalSettingsRegistry, QueueRecoveryMode
+    # — reads through here and lets NULL answer, so one failed `SELECT` produces
+    # exactly one log line naming exactly one caller. A second rescue layered on
+    # top would report the same failure twice, which is a smaller copy of the
+    # thing issue #924 was.
     #
-    #   * It logs. The bare `rescue` this replaces was silent, so the originating
-    #     failure never reached production logs at all and triage had only the
-    #     downstream `InFailedSqlTransaction` errors to work from. `context` names
-    #     the caller, because "the settings row could not be read" is only useful
-    #     alongside who was reading it.
+    # Two properties of that degrade are load-bearing, and both are #924:
     #
-    #   * It does not degrade on a poisoned connection. If the failed statement
-    #     aborted an open transaction, Postgres rejects everything later in it
-    #     regardless, so there is nothing to degrade to: returning a default only
-    #     lets the caller run on toward a misleading error. Re-raise, and the
-    #     caller's own rescue reports the real cause.
-    def degrading_to(fallback, context:)
-      yield
+    #   * It logs, at the site that failed. `context` names the caller, because
+    #     "the settings row could not be read" is only useful alongside who was
+    #     reading it — and a silent rescue here is why production held four
+    #     `InFailedSqlTransaction` errors and no record of their cause.
+    #
+    #   * It does not degrade on a poisoned connection. Once the failed statement
+    #     has aborted the transaction, Postgres rejects everything later in it and
+    #     the transaction cannot commit, so there is nothing to degrade to:
+    #     returning a default only lets the caller run on toward a misleading
+    #     error. Re-raise, and the caller's own rescue reports the real cause.
+    #     See DatabaseTransactionState.
+    def current(context: "AppSetting.current")
+      order(:id).first || new
     rescue ActiveRecord::StatementInvalid, ActiveRecord::NoDatabaseError => e
       Rails.logger.warn(
         "[AppSetting] #{context} could not read the settings row: #{e.class}: #{e.message}"
       )
+      # Sentry held all four consequences of #924 and none of the cause. Report
+      # the cause where the consequences already land.
+      Rails.error.report(e, handled: true, severity: :warning, context: { read: context })
       raise if DatabaseTransactionState.aborted_by?(e)
 
-      fallback
-    end
-
-    # The singleton row for reads. Returns a blank, unsaved record when no row
-    # exists yet, and the NULL object if the table can't be queried — so callers
-    # in the hot path (AgentRootsConfig) never raise.
-    def current
-      degrading_to(NULL, context: "AppSetting.current") { order(:id).first || new }
+      NULL
     end
 
     # The singleton row for writes. Like #current but without the NULL fallback,
@@ -239,9 +241,7 @@ class AppSetting < ApplicationRecord
     # This is the single global enablement lookup for every extension — adding an
     # extension needs no new column, only a key in the extension_states JSONB map.
     def extension_enabled?(id, default: false)
-      degrading_to(default, context: "AppSetting.extension_enabled?(#{id})") do
-        current.extension_enabled?(id, default: default)
-      end
+      current(context: "AppSetting.extension_enabled?(#{id})").extension_enabled?(id, default: default)
     end
 
     # Whether spawned Claude Code sessions get MCP tool search. The single global
@@ -249,9 +249,7 @@ class AppSetting < ApplicationRecord
     # back to the shipped default whenever the row can't be read rather than
     # raising mid-spawn.
     def mcp_tool_search_enabled?
-      degrading_to(DEFAULT_MCP_TOOL_SEARCH_ENABLED, context: "AppSetting.mcp_tool_search_enabled?") do
-        current.mcp_tool_search_enabled?
-      end
+      current(context: "AppSetting.mcp_tool_search_enabled?").mcp_tool_search_enabled?
     end
 
     # Whether Claude Code sessions get a per-session CLAUDE_CONFIG_DIR and a
@@ -259,10 +257,7 @@ class AppSetting < ApplicationRecord
     # spawn path, the auth sweep and the /inference render, so it falls back to the
     # shipped default whenever the row can't be read rather than raising.
     def session_scoped_credentials_enabled?
-      degrading_to(
-        DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED,
-        context: "AppSetting.session_scoped_credentials_enabled?"
-      ) { current.session_scoped_credentials_enabled? }
+      current(context: "AppSetting.session_scoped_credentials_enabled?").session_scoped_credentials_enabled?
     end
   end
 

@@ -959,7 +959,17 @@ module SessionStateMachine
   # @param error [Exception] the swallowed error
   # @param alert [Boolean] whether this failure also pages #eng-alerts
   def report_swallowed_side_effect(operation, error, alert:)
-    raise error if DatabaseTransactionState.aborted_by?(error)
+    if DatabaseTransactionState.aborted_by?(error)
+      # Logged before the raise, not instead of it. Whether anything upstream
+      # records this depends on who called the transition, and the one seam whose
+      # job is to make swallowed failures visible must not have an exit that says
+      # nothing.
+      Rails.logger.error(
+        "[SessionStateMachine] Aborting the transition on session #{id}: #{operation} raised " \
+        "#{error.class}: #{error.message}, and the transaction it ran in cannot commit"
+      )
+      raise error
+    end
 
     begin
       Rails.logger.error(

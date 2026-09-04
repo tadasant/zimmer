@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class ExperimentalSettingsRegistryTest < ActiveSupport::TestCase
   test "MCP tool search is registered and reads the live setting" do
@@ -42,13 +43,15 @@ class ExperimentalSettingsRegistryTest < ActiveSupport::TestCase
     values.each_value { |v| assert_includes [ true, false ], v }
   end
 
-  test "a setting whose read fails harmlessly still resolves to nil" do
-    # current_values drops anything it could not read, and a session gets tagged
-    # with the rest. That is the degrade this rescue exists for and it stays.
+  test "a setting whose read fails harmlessly resolves to the shipped default" do
+    # An unreadable settings row must not stop a session spawning, so the read
+    # degrades through AppSetting::NULL to what the setting ships as. Note this
+    # stubs the query, not AppSetting.current — current is the thing that
+    # degrades, so stubbing it out would test nothing this path does.
     setting = ExperimentalSettingsRegistry.find("mcp_tool_search")
-    AppSetting.stubs(:current).raises(ActiveRecord::StatementInvalid, "relation does not exist")
+    AppSetting.stubs(:order).raises(ActiveRecord::StatementInvalid, "relation does not exist")
 
-    assert_nil setting.current_value
+    assert_equal AppSetting::DEFAULT_MCP_TOOL_SEARCH_ENABLED, setting.current_value
   end
 
   test "a setting read inside an aborted transaction raises instead of resolving to nil" do
