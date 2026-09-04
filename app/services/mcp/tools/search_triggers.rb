@@ -19,14 +19,43 @@ module Mcp
       # never happened.
       STATUSES = Trigger::STATUSES
 
+      # A condition's `configuration` mixes the settings a human typed with the
+      # cursors the pollers write back into it. The Slack ones
+      # (TriggerCondition::SLACK_POLL_STATE_KEYS) grow without bound — a long-lived
+      # passive listener carries hundreds of thread cursors, rewritten every minute
+      # by SlackTriggerPollerJob — so serialising them verbatim cost ~15k tokens for
+      # a single trigger, which is what made a fleet-wide audit unaffordable (#858).
+      #
+      # The budget is deliberately generous: an ordinary schedule, ao_event or
+      # github_label configuration is a few hundred characters and renders exactly
+      # as it always has. Only a configuration over the budget is summarised, and
+      # then only the collections inside it that are actually high-cardinality.
+      CONFIGURATION_RENDER_BUDGET = 2_000
+      COLLECTION_SUMMARY_THRESHOLD = 10
+
+      # User-facing lists that stay verbatim however long they get — summarising
+      # them would hide the thing the caller came to read. All are bounded
+      # (MAX_GITHUB_REPOS caps `repos` at 20), so none of them is what makes a
+      # configuration expensive.
+      VERBATIM_CONFIGURATION_KEYS = %w[repos labels exclude_labels allowed_user_ids].freeze
+
+      # Slack cursors are message timestamps ("1788455710.688659"), on their own or
+      # as the tail of a thread key ("C0A6BF8T45R:1788455710.688659"). The newest is
+      # the one value a caller reading a cursor map plausibly wants, so name it.
+      SLACK_TIMESTAMP_TAIL = /(\d{9,11}\.\d{1,6})\z/
+
       tool_name "search_triggers"
 
       description <<~DESC
         Search and list automation triggers.
 
         **Modes:**
-        - **Get by ID**: Provide an id to get trigger details with recent sessions
-        - **List**: List triggers with optional filters (trigger_type, status, pagination)
+        - **Get by ID**: Provide an id to get trigger details with recent sessions. A condition's
+          `configuration` is rendered in full unless it is large, in which case its high-cardinality
+          poller state (Slack thread cursors and the like) is summarised as a count plus its most
+          recent entry; `GET /api/v1/triggers/:id` still serves the exact values.
+        - **List**: List triggers with optional filters (trigger_type, status, pagination). Each row
+          names the trigger's MCP servers, so "which triggers reference server X?" is one call.
         - **Include channels**: Set include_channels=true to also list available Slack channels (useful when creating Slack triggers)
 
         **Filterable trigger types:**
@@ -99,7 +128,7 @@ module Mcp
           "- **Reuse Session:** #{trigger.reuse_session ? 'Yes' : 'No'}",
           "- **Skip While Pending:** #{skip_if_pending_summary(trigger)}",
           "- **Max Sessions/Minute:** #{burst_limit_summary(trigger)}",
-          "- **MCP Servers:** #{trigger.mcp_servers.presence&.join(', ') || '(none)'}"
+          "- **MCP Servers:** #{mcp_servers_summary(trigger)}"
         ]
         lines << "- **Goal:** #{trigger.goal}" if trigger.goal.present?
         if trigger.failed?
@@ -122,9 +151,14 @@ module Mcp
             lines << "- **[id #{condition.id}] #{condition.condition_type}** — #{condition.description}"
             next if condition.configuration.blank?
 
+            rendered, summarised = render_configuration(condition.configuration)
             lines << "  ```json"
-            JSON.pretty_generate(condition.configuration).split("\n").each { |line| lines << "  #{line}" }
+            rendered.split("\n").each { |line| lines << "  #{line}" }
             lines << "  ```"
+            if summarised
+              lines << "  *Summarised: high-cardinality poller state is shown as a count and its most " \
+                       "recent entry. `GET /api/v1/triggers/#{trigger.id}` returns the configuration in full.*"
+            end
           end
         end
 
@@ -169,7 +203,8 @@ module Mcp
             lines << "- **Conditions:** #{condition_types_summary(trigger)} | **Status:** #{trigger.status} | " \
                      "**Sessions:** #{trigger.sessions_created_count} | " \
                      "**Max Sessions/Minute:** #{burst_limit_summary(trigger)} | " \
-                     "**Scheduling Class:** #{scheduling_class_summary(trigger)}"
+                     "**Scheduling Class:** #{scheduling_class_summary(trigger)} | " \
+                     "**MCP Servers:** #{mcp_servers_summary(trigger)}"
             if trigger.missing_fires?
               lines << "- ⚠️ **#{trigger.missed_fire_count} missed fire(s)** — coalesced into an undelivered " \
                        "prompt the re-used session has not consumed."
@@ -201,6 +236,50 @@ module Mcp
           .order(created_at: :desc)
           .limit(10)
           .to_a
+      end
+
+      # Rendered in BOTH modes. A catalog rename audit asks one question of the
+      # whole fleet — which triggers reference MCP server X — and the list is the
+      # only view built for scanning many triggers, so leaving this out of it made
+      # the answer cost one by-id call per trigger (#858).
+      def mcp_servers_summary(trigger)
+        trigger.mcp_servers.presence&.join(", ") || "(none)"
+      end
+
+      # Returns [rendered_json, summarised?]. A configuration inside the budget is
+      # rendered exactly as `JSON.pretty_generate` always did; over it, the
+      # high-cardinality collections are replaced by a count plus the entry a caller
+      # would actually want, and the rest of the hash is left alone.
+      def render_configuration(configuration)
+        verbatim = JSON.pretty_generate(configuration)
+        return [ verbatim, false ] if verbatim.length <= CONFIGURATION_RENDER_BUDGET
+        return [ verbatim, false ] unless configuration.is_a?(Hash)
+
+        summarised = configuration.to_h do |key, value|
+          [ key, summarise_collection?(key, value) ? collection_summary(value) : value ]
+        end
+        return [ verbatim, false ] if summarised == configuration
+
+        [ JSON.pretty_generate(summarised), true ]
+      end
+
+      def summarise_collection?(key, value)
+        return false if VERBATIM_CONFIGURATION_KEYS.include?(key.to_s)
+
+        (value.is_a?(Hash) || value.is_a?(Array)) && value.size > COLLECTION_SUMMARY_THRESHOLD
+      end
+
+      # The shape of the thing, not the thing: how many entries it holds and which
+      # one is newest. The exact values are poller bookkeeping and are stale the
+      # moment they are read; the REST API still serves them in full.
+      def collection_summary(value)
+        entries = value.is_a?(Hash) ? value.values : value.to_a
+        newest = entries.grep(String).select { |entry| entry.match?(SLACK_TIMESTAMP_TAIL) }
+                        .max_by { |entry| entry[SLACK_TIMESTAMP_TAIL, 1].to_f }
+        return "#{value.size} entries, most recent #{newest}" if newest
+
+        sample = value.is_a?(Hash) ? "#{value.keys.first}: #{value.values.first}" : value.first
+        "#{value.size} entries, e.g. #{sample}"
       end
 
       def condition_types_summary(trigger)
