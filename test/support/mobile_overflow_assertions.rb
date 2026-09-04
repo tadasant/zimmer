@@ -16,6 +16,13 @@ module MobileOverflowAssertions
   MOBILE_WIDTH = 375
   MOBILE_HEIGHT = 812
 
+  # The narrowest phone the mobile QA pass asks for. It is a separate width rather
+  # than a lower MOBILE_WIDTH because the two catch different things: 375px is the
+  # width most phones actually report, and 320px is where a fixed minimum — a
+  # `min-w-`, a grid track's floor — stops fitting at all. A layout can pass one
+  # and fail the other, which is exactly what issue #803 was.
+  NARROW_WIDTH = 320
+
   # Returns [document_overflow_px, [clipped control descriptions]].
   def overflow_report
     page.evaluate_script(<<~JS)
@@ -47,10 +54,14 @@ module MobileOverflowAssertions
 
   def assert_no_horizontal_overflow(label)
     doc_overflow, clipped = overflow_report
+    # Measured rather than assumed: the same assertion runs at both MOBILE_WIDTH
+    # and NARROW_WIDTH, so a hard-coded width in the message would name the wrong
+    # viewport for half its failures.
+    width = page.evaluate_script("document.documentElement.clientWidth")
 
     assert doc_overflow <= 0,
-      "#{label} scrolls sideways at #{MOBILE_WIDTH}px: the document is #{doc_overflow}px wider than the viewport."
+      "#{label} scrolls sideways at #{width}px: the document is #{doc_overflow}px wider than the viewport."
     assert_empty clipped,
-      "#{label} has controls clipped out of reach at #{MOBILE_WIDTH}px:\n  #{clipped.join("\n  ")}"
+      "#{label} has controls clipped out of reach at #{width}px:\n  #{clipped.join("\n  ")}"
   end
 end

@@ -108,6 +108,79 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("sessions index with a multi-status filter applied")
   end
 
+  # 320px is the narrowest phone the mobile QA pass asks for, and it is a genuinely
+  # different case from 375px rather than a smaller version of it. The session grid
+  # sizes its tracks with `minmax(<floor>, 400px)`, and a grid track can never
+  # resolve below its own floor — so a 320px floor stops fitting the moment the
+  # grid's content box is narrower than 320px, which the page's own `px-4` gutter
+  # guarantees at a 320px viewport (288px of grid). `justify-center` then centres
+  # the too-wide track by hanging it off *both* edges, and the card breaks out of
+  # the content column every other element on the page stays inside (issue #803).
+  #
+  # What that costs is measured here as containment rather than as document scroll,
+  # because at exactly 320px the two halves of the overhang cancel: the card lands
+  # on 0..320 in a 320px viewport, so `document.scrollWidth` reports nothing wrong
+  # while the card is visibly 16px outside its column on each side — and one pixel
+  # narrower than 320 it *is* a sideways scroll. So both are asserted: the card
+  # stays inside its grid, and the document still does not scroll.
+  #
+  # The 375px test above cannot see any of this: there the track resolves to 343px
+  # and fits, so the bug lives entirely below that width.
+  test "session cards stay inside the page's content column at the narrowest phone width" do
+    create_session(status: :failed)
+    create_session(title: "Short one", status: :needs_input)
+
+    page.driver.browser.manage.window.resize_to(NARROW_WIDTH, MOBILE_HEIGHT)
+
+    visit root_path(every_status_params)
+    assert_text LONG_TOKEN_TITLE
+    assert_text "Short one"
+
+    # The precondition the bug needs, stated rather than assumed. resize_to sizes
+    # the window and the browser subtracts its own furniture, so the viewport this
+    # actually got is whatever it is — what has to hold is that the grid ends up
+    # narrower than the 320px floor, or there is nothing here to regress.
+    grid_width = page.evaluate_script("document.querySelector('#sessions_grid').getBoundingClientRect().width")
+    assert_operator grid_width, :<, 320,
+      "the grid is #{grid_width}px wide at a #{NARROW_WIDTH}px viewport, which is not narrow " \
+      "enough to exercise the track floor this test is about"
+
+    escaped = cards_outside_their_grid
+    assert_empty escaped,
+      "session cards hang outside the page's content column at a #{NARROW_WIDTH}px viewport, " \
+      "so their footer controls sit outside the gutter every other element respects:\n  #{escaped.join("\n  ")}"
+
+    assert_no_horizontal_overflow("sessions index at #{NARROW_WIDTH}px")
+
+    page.save_screenshot(Rails.root.join("tmp/screenshots/proof-sessions-index-320.png").to_s)
+  end
+
+  # How far each session card sticks out of the grid that lays it out, described
+  # only when it sticks out at all.
+  #
+  # This is the probe the 320px case needs and the two page-level ones cannot
+  # give: a grid track wider than its own container overhangs symmetrically under
+  # `justify-center`, so the document's scroll width can be clean while every card
+  # on the page is outside the column. Comparing the card against its grid — not
+  # against the viewport — is what sees that.
+  def cards_outside_their_grid
+    page.evaluate_script(<<~JS)
+      (function () {
+        const grid = document.querySelector("#sessions_grid");
+        if (!grid) return ["no #sessions_grid on the page"];
+        const g = grid.getBoundingClientRect();
+        return Array.from(grid.children)
+          .map((el) => {
+            const b = el.getBoundingClientRect();
+            const out = Math.round(Math.max(g.left - b.left, b.right - g.right));
+            return out > 1 ? out + "px outside the grid: " +
+              JSON.stringify((el.innerText || "").trim().slice(0, 40)) : null;
+          })
+          .filter(Boolean);
+      })()
+    JS
+  end
+
   # The transcript-scan notice is new markup on the busiest page, and it is the one
   # element on it whose text is a full sentence rather than a label — so it is the
   # shape most likely to widen the results header on a phone.
