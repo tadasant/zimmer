@@ -57,10 +57,10 @@ Zimmer it is fatal. **A backgrounded process does not survive session teardown.*
 the session comes to rest, and the process is reaped the next time Zimmer restarts the job
 monitoring the session — which is routine, not rare. The completion notification you were counting
 on is then delivered to a process that no longer exists, so nothing wakes the session and it sits
-until a human notices. That is not hypothetical: a session backgrounded exactly this command on a
-PR, ended its turn saying it would be notified when the watcher finished, and sat ~16 hours on a PR
-whose CI had gone green within minutes — after being interrupted and resumed six times in the
-preceding hour, each of which had already killed the watcher.
+until a human notices. That is not hypothetical: a session backgrounded exactly this command on
+another repo's PR, ended its turn saying it would be notified when the watcher finished, and sat
+~16 hours on a PR whose CI had gone green within minutes — after being interrupted and resumed six
+times in the preceding hour, each of which had already killed the watcher.
 
 The foreground call is what makes waiting safe: it blocks, so the checks resolve *inside* your turn
 and you act on the result while you still hold the context. The hazard is a turn that **ends**, not
@@ -123,7 +123,11 @@ normal completion: long enough to ride out a congested self-hosted runner or a q
 enough that a job no runner ever claims reaches a human within the hour rather than overnight. It
 is deliberately shorter and tighter than `open-pr`'s post-label wake, which waits on a gate
 *session* to be spawned and to rate a PR — a much longer clock than a check already queued on a
-runner. That skill owns its own interval and count; don't copy either number here, and don't copy
+runner. It is also longer than the `wake_me_up_later` tool description's ≤5-minute first wake, and
+deliberately: that cap is for work whose progress you can only learn by looking at it, where an
+over-long first poll burns wall-clock you cannot get back. A GitHub check is not that — it is
+already queued, its duration is known from every previous run of the same workflow, and the six
+wakes below bound the whole wait either way. That skill owns its own interval and count; don't copy either number here, and don't copy
 these there. Do not raise the count and do not start a fresh cycle after coming to rest — an
 unbounded self-wake is the same invisible-forever failure from the other direction. An interval in
 which the platform denied you compute (a quota park) is not charged against the bound: re-arm and
@@ -150,8 +154,8 @@ but **never** as `sleep 30 && gh pr checks …`:
    ```
 
 2. **If you want a real pause first, use your harness's own wait**, never an in-process sleep. In
-   Zimmer that is `wake_me_up_later`; `Bash(sleep *)` is denied there on purpose, in *any*
-   position, so a chained `sleep` would take the retry down with it. That pause **is** a wake, so
+   Zimmer that is `wake_me_up_later`; in a Zimmer Claude Code session `Bash(sleep *)` is denied on
+   purpose, in *any* position, so a chained `sleep` would take the retry down with it. That pause **is** a wake, so
    use the bounded shape above and charge it against the same six. Note that `wake_me_up_later`
    ends the turn and suspends the whole session — appropriate for a multi-minute wait, overkill
    for 30 seconds, and not something to call from inside a subagent, where it would suspend the

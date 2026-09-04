@@ -73,7 +73,9 @@ class SkillsConfigTest < ActiveSupport::TestCase
     body = File.read(File.join(skill.absolute_path, "SKILL.md"))
 
     assert_includes body, "## Run it in the foreground", "wait-for-ci lost the foreground-watch rule"
-    assert_includes body, "schedule a wake first", "wait-for-ci lost the bounded self-wake"
+    assert_includes body, "## If your turn will end with CI unresolved, schedule a wake first",
+      "wait-for-ci lost the bounded self-wake"
+    assert_includes body, "six wakes, ten minutes apart", "wait-for-ci lost the wake bound itself"
     assert_includes body, "## Hand-off: the `ready to merge` label", "wait-for-ci lost the label hand-off"
     assert_includes body, "wake_me_up_later"
     assert_includes body, "needs_input"
