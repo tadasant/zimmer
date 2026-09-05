@@ -336,17 +336,17 @@ session dormant on its own armed wake-up (`paused_until_scheduled_time?`). That 
 whole invariant is about — the `open-pr` skill has a session sleep on a bounded self-wake so it
 does not occupy the human's action queue while its PR is rated, and the merged-PR notice is *queued*
 rather than sent precisely because that session is `waiting`. The notice is what the session is
-asleep waiting for, so consuming the wake to deliver it is the point rather than a cost.
+asleep waiting for, so delivering it early is the point rather than a cost.
 `EnqueuedMessage#stale?` is what keeps that honest: a notice whose subject moved on while it sat in
-the queue is retired rather than delivered, so a wake is only ever spent on a message that still
-says something.
+the queue is retired rather than delivered, so a session is only ever woken early for a message that
+still says something.
 
-One consequence of that is worth stating plainly, because it is wider than the argument for it.
-`resume` cancels **every** unfired one-time wake, not only the schedule wake being argued about
-here — a session-scoped `ao_event` watcher goes with it. That is the same cost any delivery to an
-idle session has always had, and it is [#569](https://github.com/tadasant/zimmer/issues/569)'s
-subject rather than this one's, so nothing here changes it. What is new is that an *automated* drain
-can now spend those wakes on a `waiting` session where previously only a deliberate resume did.
+**Delivering early no longer spends the wake.** The drain resumes the session through
+`Session#resume_for_follow_up!`, which takes the preserving branch of
+`cancel_pending_one_time_wake_triggers`: the message is delivered, the session takes its turn, and
+its own wake-ups — the schedule and any session-scoped `ao_event` watcher — are still armed when
+that turn comes to rest. See [A follow-up does not cancel a
+wake](#a-follow-up-does-not-cancel-a-wake) below for why, and for the paths that still consume.
 
 **The dead-process case.** A drain does not need the old agent process — it enqueues a fresh
 `AgentSessionJob` that resumes the runtime session from `session_id` and the working directory,
@@ -427,10 +427,50 @@ session id to resume into, a live process to reattach to — are established or 
 `failure_reason` when it cannot. The state machine does not re-check them, so a resume you
 ask for is a resume the job gets to attempt.
 Clears a pile of stale state: MCP failure flags, the `paused_by` marker, the
-`blocked_on_elicitation` and `lost_elicitation` markers, any `pending_sleep`, the
-`enqueued_drain_attempts` counter (so each idle spell gets its own retry budget), and,
-importantly, it cancels pending one-time wake-up triggers targeting this session, so a scheduled
-wake doesn't fire on a session you already resumed by hand.
+`blocked_on_elicitation` and `lost_elicitation` markers, any `pending_sleep`, and the
+`enqueued_drain_attempts` counter (so each idle spell gets its own retry budget). It also decides
+what happens to the one-time wake-ups this session was waiting on, which is a decision with four
+answers rather than one.
+
+#### A follow-up does not cancel a wake
+
+`cancel_pending_one_time_wake_triggers` runs on every `resume` and asks one question: **does this
+resume replace the wait the session was on, or add to it?** The kind of resume is carried on three
+transient flags, never persisted, each set by the caller that knows the answer.
+
+| Kind of resume | Set by | What happens to the wakes |
+| --- | --- | --- |
+| A **takeover** — `restart`, restart-from-scratch, a resume of a `failed` session | nothing; the default | **Consumed.** The wait is replaced, so the wakes are moot. Each condition gets `last_triggered_at` stamped, which closes it permanently and lets `CleanupStaleTriggersJob` collect the row as a `Trigger#dead_one_time_wake?`. |
+| A **system-recovery** nudge — a deploy restart, an orphan sweep, a hung-process reap | `Session#resume_for_system_recovery!` | **Preserved**, and the session is put back to sleep afterwards when a still-fireable one-time schedule backstops that re-sleep. The session never chose to wake. |
+| A **wake fire** — the session's own `wake_me_up_later` or state-change watcher firing | `Trigger#follow_up_session!` | **Held** across the woken turn and retired when that turn comes to rest. Consuming them at fire time, before the woken turn has re-armed anything, is the no-trigger window of [#569](https://github.com/tadasant/zimmer/issues/569). |
+| A **follow-up** — a router's `follow_up`, a human's message, a queued message draining, a Slack or GitHub trigger | `Session#resume_for_follow_up!` | **Preserved**, with nothing marked and nothing re-slept. The session takes the turn it was handed and its own wake fires afterwards, from `needs_input`, exactly as it intended. |
+
+The last row is [#898](https://github.com/tadasant/zimmer/issues/898), and it used to be the first
+row. A follow-up sent to a sleeping session consumed the wake that session was counting on, silently
+in both directions: the sender was never told it had just become the only thing that could wake the
+session, and the session — which had usually already written *"my self-wake fires at 08:06"* into
+its own transcript — answered, came to rest in `needs_input`, and sat there indefinitely. Session
+13403 spent the morning of 2026-09-04 like that, holding a nearly-finished PR, until an unrelated
+third session happened to nudge it.
+
+Preserving is deliberately the eager side of that trade. A wake preserved over a follow-up the
+session had already dealt with costs one extra turn, which is visible in the transcript and cheap; a
+wake consumed costs an indefinite strand nobody can see.
+
+Two things keep it honest:
+
+- A wake that can no longer fire is still consumed — a session-scoped `ao_event` whose watched
+  session is archived or gone. Preserving one would leave an `enabled`, unfired row that reads as an
+  armed wake on `/triggers` and is collected by nothing. A one-time schedule is always preserved,
+  including one already overdue, because an overdue schedule is a wake the scheduler has not reached
+  yet rather than a wake that is lost.
+- `archive` retires whatever is left, via `retire_pending_one_time_wakes`. A session with no turns
+  left has no wait left, and a preserved wake that outlived its session would fire into an archived
+  row — which `Trigger#follow_up_session!` answers by *resuscitating* it.
+
+The sender is told, too. `action_session follow_up` adds an **Its own wake-up** line to its result,
+and `POST /api/v1/sessions/:id/follow_up` returns a `pending_wake` object, so a router redirecting a
+sleeping session can see that the session still wakes itself and does not schedule a duplicate.
 
 #### `mcp_servers_status` is reset on resume, not deleted
 

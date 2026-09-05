@@ -468,6 +468,21 @@ the `EnqueuedMessage` and `EnqueuedMessageProcessorService` applies it when it c
 the direct path writes it alongside the prompt. A goal over `GOAL_MAX_LENGTH` (50,000) is rejected
 with a 422 before anything is delivered, on every path.
 
+**`pending_wake` — the session was asleep on a wake-up of its own, and still is.** When the target
+had an armed one-time wake at the moment the follow-up arrived, all three responses carry an extra
+key:
+
+```json
+{ "pending_wake": { "at": "2026-09-05T08:06:00Z", "preserved": true } }
+```
+
+The key is **absent**, not null, when there is no such wake, so a client can test for it. `at` is
+null when the wake is a session-scoped watcher with no wall-clock time. `preserved: true` is the
+statement that matters: a follow-up no longer cancels the target's wake, so sending one does not
+make you responsible for waking that session — it wakes itself, on its own schedule, after the turn
+you just gave it. See [A follow-up does not cancel a
+wake](/sessions/lifecycle/#a-follow-up-does-not-cancel-a-wake).
+
 ### Reporting back to the parent that started you
 
 `POST /sessions/:id/message_parent` is `follow_up` run the other way down the hierarchy, and it
