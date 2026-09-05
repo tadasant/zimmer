@@ -1202,7 +1202,45 @@ not deciding the same thing:
 
 Two residual gaps, in opposite directions — how long a heartbeat-only deployment takes to notice a
 killed worker, and how a live worker can be mistaken for a dead one — are in
-[Known limitations](/limitations/#a-killed-worker-reads-as-alive-for-up-to-5-minutes-and-a-follow-up-sent-in-that-window-is-dropped).
+[Known limitations](/limitations/#a-killed-worker-reads-as-alive-for-up-to-5-minutes-and-a-follow-up-sent-in-that-window-does-not-run).
+
+### Standing down does not throw the prompt away
+
+Standing down is the right answer whenever the recorded job is genuinely live — and until
+[#983](https://github.com/tadasant/zimmer/issues/983) it took the prompt down with it. By the time a
+job reaches this guard the prompt exists **only as that job's argument**: every delivery route has
+already let go of it, and `EnqueuedMessageProcessorService` has destroyed the `enqueued_messages` row
+it came from inside the same transaction that enqueued the job. The guard's else-branch was a bare
+`return`, so nothing re-queued the prompt, nothing retried it, and nothing recorded that it had ever
+existed. Session 13229 lost a `wake_me_up_later` prompt that way and resumed eight minutes later on a
+generic recovery nudge, with the scheduled work never done.
+
+`Sessions::RequeueSkippedPrompt` (`app/services/sessions/requeue_skipped_prompt.rb`) now runs before
+that `return` and parks the prompt — with its images and files — at the tail of the session's durable
+queue. The turn the guard just deferred to drains that queue when it ends, so the prompt is **late
+rather than lost**. Nothing is retried: re-enqueuing the job would either lose the same race again or,
+if it won, run the second agent this guard exists to prevent.
+
+Four prompts are deliberately *not* queued, because for each of them queuing is worse than dropping:
+
+| Prompt | Why it is dropped instead |
+| --- | --- |
+| A nudge (`AutomatedPrompts.nudge?` — `SYSTEM_RECOVERY`, `HEARTBEAT`) | It asks "are you alive, carry on if you were mid-task". The live turn the guard just found **is** the answer, so queuing it barges that turn's rest with a settled question. |
+| An archived session's prompt | `archive` retires the pending queue at the transition, so a row written afterwards is one nothing delivers — and a stranded `caller` row is exactly what the archive-strand alert pages on. |
+| A status-summary fork's prompt | A fork answers one question and refuses every other turn; it must never take a slot in the action queue. |
+| A prompt already in the queue verbatim | Two jobs carrying one prompt is a real shape here, and a second copy costs the session a duplicate turn. |
+
+Every one of those is written to the session's own timeline rather than passed over silently — the
+silence is the defect being fixed, so a *recorded* drop is not this bug. A queue write that fails is
+logged at `error` for the same reason, carrying the whole prompt so it can be re-sent by hand.
+
+One interaction is worth naming, because it points back at the same subsystem. `Trigger#follow_up_session!`
+treats *any* pending queue row as already representing a fire — it coalesces a recurring fire onto one,
+and on its `running?` branch it answers `:skipped_pending_exists`, which counts as a success and lets the
+wake group be held. So for the one turn a parked prompt sits in the queue, a wake or scheduled fire
+landing in that window is coalesced into it rather than delivered on its own. The window is a single turn
+boundary, the same property already held for the two other writers of this queue, and `record_missed_fire!`
+counts and alerts on a run of them — but it is a widening, not a nil change.
 
 ## One live agent process per session
 

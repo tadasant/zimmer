@@ -179,16 +179,20 @@ class AoEventTriggerJob < ApplicationJob
           # ScheduleTriggerJob.
           #
           # CRITICAL: only hand the group over when the wake was actually
-          # delivered or queued. If the wake fired while the requester session was
-          # still running and the trigger didn't queue the message (e.g., a
-          # recurring trigger with enqueue_messages off), the wake was silently
-          # dropped — marking the group held would put it on a turn that is not
-          # going to run, and the requester's next rest would retire wakes that
-          # never delivered anything. Leave them untouched so they can deliver
-          # when their watched events transition (or the deadline backstop fires).
+          # delivered or queued. If #follow_up_session! did neither, the wake was
+          # silently dropped — marking the group held would put it on a turn that
+          # is not going to run, and the requester's next rest would retire wakes
+          # that never delivered anything. Leave them untouched so they can
+          # deliver when their watched events transition (or the deadline
+          # backstop fires).
+          #
+          # A pure wake never reaches this for the `enqueue_messages: false`
+          # reason: #follow_up_session! bypasses that flag for wakes by design.
+          # What DOES reach it is a requester in a state no branch of that method
+          # delivers to. So the log names the outcome rather than a cause.
           if trigger.one_time_reuse_trigger?
             if trigger.last_follow_up_dropped?
-              Rails.logger.info "[AoEventTriggerJob] Trigger #{trigger.id} fired but delivery was dropped (requester still running, no enqueue) — leaving its wake group alone"
+              Rails.logger.info "[AoEventTriggerJob] Trigger #{trigger.id} fired but the prompt was neither delivered nor queued — leaving its wake group alone"
             else
               trigger_id = trigger.id
               requester_id = trigger.last_session_id

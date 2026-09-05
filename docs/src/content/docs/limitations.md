@@ -2485,7 +2485,7 @@ What that does not buy:
   no other writer to race and nothing to merge into. `Session#record_explicit_mcp_servers` is the
   in-memory form for those surfaces; `#record_explicit_mcp_servers!` is the persisted twin.
 
-### A killed worker reads as alive for up to 5 minutes, and a follow-up sent in that window is dropped
+### A killed worker reads as alive for up to 5 minutes, and a follow-up sent in that window does not run
 
 [Stale job supersession](/sessions/spawning/#stale-job-supersession) asks whether the worker holding a
 job's lock is still alive, rather than guessing from the job's age. GoodJob answers that from either an
@@ -2495,13 +2495,17 @@ one applies is GoodJob's `advisory_lock_heartbeat` setting, whose default enable
 only** — so in production and staging the answer comes from the heartbeat alone, and a worker killed by
 SIGKILL or OOM keeps reading as alive until its row expires.
 
-What happens to a follow-up prompt sent inside that window is worth stating plainly, because it is not a
-delay: `AgentSessionJob` sees a live-looking job, logs "Skipping job", and returns. Nothing re-enqueues
-it, so the prompt text is never delivered. It is worse than a dropped message, because
-`deliver_follow_up!` stamps `pending_follow_up_prompt` in the session's metadata first, and
-`CleanupOrphanedSessionsJob` deliberately skips any session carrying that marker — on the assumption
-that a job is about to pick it up. The session can therefore sit `running` with nobody driving it until
-the user sends something else. Outside the 5-minute window the check works and the prompt lands.
+What happens to a follow-up prompt sent inside that window is worth stating plainly. `AgentSessionJob`
+sees a live-looking job, logs "Skipping job", and returns — so the turn does not run. The prompt itself
+is no longer lost: [standing down parks it in the session's durable
+queue](/sessions/spawning/#standing-down-does-not-throw-the-prompt-away), where it is visible on the
+session page, the REST index and the MCP list, and is delivered the moment the session next comes to
+rest. What remains is that *nothing brings this session to rest*: `deliver_follow_up!` stamps
+`pending_follow_up_prompt` in the session's metadata first, and `CleanupOrphanedSessionsJob`
+deliberately skips any session carrying that marker — on the assumption that a job is about to pick it
+up. The session can therefore sit `running` with nobody driving it, and the queued prompt waits with
+it, until the user sends something else or the marker clears. Outside the 5-minute window the check
+works and the prompt lands on the spot.
 
 Enabling `advisory_lock_heartbeat` in production would collapse the window to nothing, at the cost of
 holding an advisory lock on the Notifier's already-retained connection for the life of every worker.
