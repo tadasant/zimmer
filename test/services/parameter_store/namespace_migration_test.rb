@@ -187,6 +187,51 @@ module ParameterStore
       assert resolves_at?(Namespace.legacy_static_namespace(@env), "STRAD_API_KEY")
     end
 
+    # A console-written parameter stores its bytes base64url and declares the
+    # encoding; the resolver hands back the decoded value. WriteClient stores
+    # literal bytes and declares nothing, so copying would store a different
+    # thing than the source holds — and for a value carrying JSON structure it
+    # would land a parameter whose every `:render` is rejected, which fails the
+    # resolve of the WHOLE project. Refuse at the name instead.
+    test "a value stored under a declared encoding is refused rather than copied literally" do
+      @fake.seed_console_secret("STRAD_TOKENS", %([{"id":"1","token":"t"}]),
+        path: legacy_path("STRAD_TOKENS"))
+
+      report = migration(dry_run: false).call
+
+      assert_not report.ok?
+      assert_equal [ :unsupported_encoding ], report.items.map(&:action)
+      assert_equal [ "STRAD_TOKENS" ], report.legacy_remaining
+      assert_not report.complete?
+      # Nothing was written at the canonical path, and the old one still resolves.
+      assert_empty @fake.client.resolve(Namespace.static_namespace(@env))
+      assert_equal %([{"id":"1","token":"t"}]),
+        @fake.client.resolve(Namespace.legacy_static_namespace(@env)).fetch("STRAD_TOKENS")
+    end
+
+    test "one refusal does not stop the variables the writer can carry" do
+      @fake.seed_console_secret("ENCODED", "sk-live-value", path: legacy_path("ENCODED"))
+      seed_legacy("LITERAL", "sk-live-other")
+
+      report = migration(dry_run: false).call
+
+      assert_equal({ unsupported_encoding: 1, migrated: 1 }, report.counts)
+      assert_equal "sk-live-other",
+        @fake.client.resolve(Namespace.static_namespace(@env)).fetch("LITERAL")
+    end
+
+    # Both paths already holding the same value is not a copy, so the encoding
+    # never has to be re-declared and the old pair can just go.
+    test "an encoded value already present at the canonical path still prunes" do
+      @fake.seed_console_secret("STRAD_API_KEY", "sk-live-value", path: legacy_path("STRAD_API_KEY"))
+      @fake.seed_console_secret("STRAD_API_KEY", "sk-live-value", path: canonical_path("STRAD_API_KEY"))
+
+      report = migration(dry_run: false).call
+
+      assert report.complete?
+      assert_equal "sk-live-value", chain.get("STRAD_API_KEY")
+    end
+
     test "a failed verify takes back the pair it just wrote, so the project stays readable" do
       # The poisoned-parameter case, and the reason it is not just this
       # variable's problem: GcpClient#rendered_envelope re-raises any non-404, so

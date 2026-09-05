@@ -48,18 +48,34 @@ class FakeParameterStore
   # Store a secret the way the console does: bytes in Secret Manager, a pointer
   # in the Parameter Manager envelope. `path:` overrides the canonical path,
   # which is how a test seeds the PRE-RENAME namespace.
-  def seed_secret(variable, value, env: Rails.env, path: nil)
+  # @param encoding [String, Symbol, nil] what the envelope DECLARES about the
+  #   Secret Manager bytes. nil omits the field, which means the literal bytes.
+  #   `:null` writes the field as JSON `null`, which a writer emitting the key
+  #   unconditionally produces and which means the same thing.
+  def seed_secret(variable, value, env: Rails.env, path: nil, encoding: nil)
     path ||= ParameterStore::Namespace.parameter_path(variable, env)
     id = ParameterStore::Namespace.parameter_id(path)
 
     @secrets[id] = [ value ]
     @secret_labels[id] = { "managed-by" => ParameterStore::GcpClient::MANAGED_BY }
     @secret_policies[id] = [ self.class.principal_for(id) ]
-    put_parameter(id, { secret: "true" }, {
+    envelope = {
       "path" => path, "secret" => true,
       "value" => %(__REF__("//secretmanager.googleapis.com/projects/#{@project_id}/secrets/#{id}/versions/latest"))
-    })
+    }
+    envelope["encoding"] = encoding == :null ? nil : encoding unless encoding.nil?
+    put_parameter(id, { secret: "true" }, envelope)
     path
+  end
+
+  # A secret written the way strad's Secrets Console writes one: the Secret
+  # Manager bytes are base64url TEXT of the real value, and the envelope declares
+  # it. That is the shape every secret the console writes has — see
+  # `src/secrets/parameters/wire.ts` in tadasant/strad, which states the rule
+  # both trees implement.
+  def seed_console_secret(variable, value, env: Rails.env, path: nil)
+    seed_secret(variable, Base64.urlsafe_encode64(value.to_s, padding: false),
+      env: env, path: path, encoding: ParameterStore::GcpClient::VALUE_ENCODING)
   end
 
   # A non-secret parameter: the value sits in the envelope itself.

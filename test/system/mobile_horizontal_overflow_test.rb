@@ -1035,7 +1035,8 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
   # The store banner in its widest state: a configured Parameter Store, whose
   # namespace-rename line carries two full `/zimmer/{env}/…/static/` paths and a
-  # comma-joined list of the variables still at the old one. Those are exactly the
+  # comma-joined list of the variables still at the old one, plus the held-back
+  # line naming a variable the resolver refuses to serve. Those are exactly the
   # unbreakable tokens signature 4 warns about, and none of them exists in the
   # unconfigured banner the test above measures — so without this the line could
   # run off a phone with the suite green.
@@ -1050,13 +1051,18 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       fake.seed_secret(variable, "value",
         path: ParameterStore::Namespace.legacy_parameter_path(variable))
     end
+    # An envelope declaring an encoding this Zimmer does not implement. The banner
+    # names it on its own line, and that line is the widest state the banner has.
+    fake.seed_secret("SEEDED_BY_A_NEWER_CONSOLE", "value", encoding: "some-future-encoding")
     SecretProviders.stubs(:chain).returns(SecretProviders::Chain.new([ fake.provider ]))
 
     # The whole page, not the frame endpoint: the banner sits inside the page's
     # own padding, and that is the width the line actually has to fit.
     visit connectors_path
     assert_selector "[data-store-legacy-namespace=remaining]"
+    assert_selector "[data-store-undecodable=present]"
     assert_text "STRAD_API_KEY"
+    assert_text "SEEDED_BY_A_NEWER_CONSOLE"
     assert_selector "[data-connector-list-sorted]", wait: 30
 
     assert_no_horizontal_overflow("connectors store banner, mid-migration")
@@ -1075,6 +1081,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.driver.browser.manage.window.resize_to(NARROW_WIDTH, MOBILE_HEIGHT)
     visit connectors_path
     assert_selector "[data-store-legacy-namespace=remaining]"
+    assert_selector "[data-store-undecodable=present]"
     assert_selector "[data-connector-list-sorted]", wait: 30
     assert_no_horizontal_overflow("connectors store banner, mid-migration, at #{NARROW_WIDTH}px")
   end
