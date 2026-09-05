@@ -4087,7 +4087,7 @@ class AgentSessionJob < ApplicationJob
       # An empty failed-server set is not "nothing left to retry" — it is a flagged
       # failure that named no server, and it has always ridden the ladder. Only a set
       # whose every member reached a definitive verdict skips it.
-      nothing_left_to_retry = retryable_failures.empty? && degradations.any?
+      nothing_left_to_retry = retryable_failures.empty? && static_credential_failures.any?
 
       if !nothing_left_to_retry && !MCP_BUDGET.exhausted?(session)
         # Degrade and retry in the same pass. The degraded entries ride along in
