@@ -1507,35 +1507,64 @@ module SessionStateMachine
     Rails.logger.info "[SessionStateMachine] Debug info preserved for session #{id}"
   end
 
-  # Clear stale MCP failure flags from custom_metadata when resuming a session.
-  # This allows MCP connections to be re-checked fresh on restart, even if
-  # the previous attempt failed. Without this, the new job would immediately
-  # see the old should_fail_session=true flag and fail again.
+  # The custom_metadata keys a resume drops outright. Each one is a verdict the
+  # PREVIOUS run reached, and the new one has to reach it for itself.
+  STALE_MCP_FAILURE_KEYS = %w[
+    should_fail_session
+    mcp_connection_checked
+    mcp_failed_servers
+    mcp_failure_reason
+  ].freeze
+
+  # Reset the MCP metadata a resuming session must not inherit from its last run.
   #
-  # Clears: should_fail_session, mcp_connection_checked, mcp_failed_servers,
-  #         mcp_failure_reason, mcp_servers_status
+  # The failure flags in STALE_MCP_FAILURE_KEYS are dropped. Without that, the new
+  # job would immediately see the old should_fail_session=true and fail again
+  # before its servers had any chance to connect.
+  #
+  # `mcp_servers_status` is RESET to `pending` rather than dropped (#465). Its
+  # entries do all have to go — a `connected` recorded by the process that just
+  # exited says nothing about the one about to start — but the key itself must
+  # stay: the REST API and the get_session MCP tool hand `custom_metadata` back
+  # verbatim, so an absent key reads as "no servers configured" rather than
+  # "configured, and this run has not connected them yet", which is what `pending`
+  # says. McpStatusPersisting upgrades each entry as the detector's evidence
+  # arrives, and it is the only writer that ever does — so a key dropped here is
+  # gone for the whole of a turn that never gets far enough to reach it.
+  #
+  # The reset spans the union of the servers this session has wired and the names
+  # already in the hash. Taking `all_mcp_servers` alone would hand the key's
+  # survival to a catalog read that fails soft: `plugin_mcp_servers` returns []
+  # when the AIR catalog cannot be resolved, so a blip at resume time would empty
+  # the reset for a plugin-only session and delete the key — reproducing the
+  # defect on the path meant to fix it. A name that is genuinely gone is pruned by
+  # #forget_mcp_server_status! on the removal path, and every view renders chips
+  # from the session's own server list rather than from these keys.
   def clear_stale_mcp_failure_metadata
-    return unless custom_metadata.present?
+    current = custom_metadata || {}
+    keys_to_clear = STALE_MCP_FAILURE_KEYS & current.keys
+    previous_status = current["mcp_servers_status"] || {}
+    reset_status = (previous_status.keys | all_mcp_servers).index_with { Session::MCP_STATUS_PENDING }
 
-    mcp_keys = %w[
-      should_fail_session
-      mcp_connection_checked
-      mcp_failed_servers
-      mcp_failure_reason
-      mcp_servers_status
-    ]
+    # Nothing to drop and the floor is already what is stored: skip the UPDATE
+    # rather than re-issue an identical one on every resume.
+    return if keys_to_clear.empty? && previous_status == reset_status
 
-    # Only update if there are MCP keys to clear
-    keys_to_clear = mcp_keys & custom_metadata.keys
-    return if keys_to_clear.empty?
+    # The atomic merge, not a whole-column write: it touches only the keys named
+    # here, so a status a still-draining poller writes between the read above and
+    # this line is not erased along with the flags. It also re-dispatches the
+    # session-card broadcast that a raw UPDATE would swallow, and like
+    # `update_column` it runs no validations or save callbacks — which is what
+    # makes it safe inside an AASM transition callback.
+    if reset_status.empty?
+      merge_custom_metadata!({}, STALE_MCP_FAILURE_KEYS + [ "mcp_servers_status" ])
+    else
+      merge_custom_metadata!({ "mcp_servers_status" => reset_status }, STALE_MCP_FAILURE_KEYS)
+    end
 
-    # Note: Using update_column bypasses optimistic locking, but this is acceptable
-    # since resume only happens from non-monitoring states (needs_input, failed, waiting)
-    # where MCP metadata isn't being actively written.
-    cleaned_metadata = custom_metadata.except(*mcp_keys)
-    update_column(:custom_metadata, cleaned_metadata)
-
-    Rails.logger.info "[SessionStateMachine] Cleared stale MCP failure metadata for session #{id}: #{keys_to_clear.join(', ')}"
+    Rails.logger.info "[SessionStateMachine] Reset MCP metadata for session #{id} on resume " \
+                      "(cleared: #{keys_to_clear.presence&.join(', ') || 'none'}; " \
+                      "mcp_servers_status floored to pending for: #{reset_status.keys.presence&.join(', ') || 'none'})"
   rescue => e
     # Alert: this is the callback whose whole purpose is to stop the *next* run
     # from re-failing on a stale should_fail_session flag. Swallowed, the resume

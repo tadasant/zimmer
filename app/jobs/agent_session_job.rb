@@ -1366,6 +1366,23 @@ class AgentSessionJob < ApplicationJob
         # incorrectly use --session-id instead of --resume, causing "Session ID
         # already in use" errors from the Claude CLI.
         session.reload
+
+        # The last point before the process starts at which the EFFECTIVE server set
+        # is fully known: `air prepare` has run above, so `all_mcp_servers` includes
+        # whatever it auto-injected. Floor `mcp_servers_status` here so every one of
+        # those servers is listed as `pending` from the moment the runtime is handed
+        # its config, rather than from whenever the first transcript poll reaches
+        # McpStatusPersisting — which is the only other writer, and which a turn whose
+        # process dies before it writes a transcript never reaches at all. A server
+        # with no entry is one a get_session or REST reader cannot tell from a server
+        # this session does not have (#465).
+        #
+        # After the reload, deliberately: the floor rewrites the whole status sub-hash,
+        # and the attribute this job has been carrying predates a clone and an `air
+        # prepare`. A no-op when every server already has an entry, so a steady-state
+        # turn issues no extra UPDATE.
+        session.seed_mcp_servers_status_floor!
+
         runtime_previously_started = session.metadata&.dig("runtime_started") == true
         # A resume needs an id to resume INTO. `session_id` is nil for a window after
         # a failed-resume fresh start on a runtime that mints its own id: Codex's new
