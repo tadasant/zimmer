@@ -89,7 +89,7 @@ From `config.good_job.cron`:
 | hourly :45 | `SlackTriggerHealthCheckJob` | Detect Slack feeds that silently stopped firing |
 | daily 06:00 | `ClaudeCodeUpdateJob` | Update the Claude Code CLI to the latest version |
 | daily 08:00 | `MangledCloneReportJob` | One line saying how many clones the archive-side mass-deletion guard defused in the last day — see below |
-| — | `ZombieReaperJob`, `EmptyTrashJob`, `DockerCleanupJob`, `OrphanCloneFilesystemCleanupJob`, `SystemHealthMonitorJob`, `CertExpiryMonitorJob`, `EgressHealthCheckJob` | cleanup and monitoring |
+| — | `ZombieReaperJob`, `EmptyTrashJob`, `DockerCleanupJob`, `OrphanCloneFilesystemCleanupJob`, `OrphanTranscriptDirectoryCleanupJob`, `SystemHealthMonitorJob`, `CertExpiryMonitorJob`, `EgressHealthCheckJob` | cleanup and monitoring |
 
 :::note[Sub-minute cron works]
 The `*/30 * * * * *` entries are six-field cron, with a leading seconds field, and they do what they
@@ -221,6 +221,81 @@ sharpest edge of having two by giving both the same last guard; having only one 
 What `StaleCloneCleanupJob` does in the clones base is reap tombstones, which have no owner to
 reason about.
 
+## The transcript directory outlives the clone
+
+A clone is not the only thing a session leaves on disk. Claude Code writes its transcript and
+`tool-results/` to `~/.claude/projects/<derived-from-cwd>/`, and that is a **different volume** from
+the clone — `claude_home`, not `zimmer_data`:
+
+```
+/home/rails/.zimmer/clones/zimmer-main-1785661439-005ceef3
+  -> ~/.claude/projects/-home-rails--zimmer-clones-zimmer-main-1785661439-005ceef3/
+```
+
+The name is a one-way function of the cwd (`PathSanitizer` maps `/`, `.` and `_` all onto `-`, which
+is why `.zimmer` renders as `--zimmer`), so once the clone is deleted nothing left on the box can
+derive it. Before [#434](https://github.com/tadasant/zimmer/issues/434) nothing deleted these at all:
+production carried 6,612 of them (5.6 G, ~99.3% orphaned) and staging 5,098 (27 G) — staging's root
+disk hit 0 bytes free, which is what put Postgres into a crash-recovery loop.
+
+Two mechanisms, and they do different halves of the job:
+
+- **`CloneReaper` takes the transcript with the clone**, via `TranscriptDirectoryReaper`, on every
+  successful reap. That stops the pile growing.
+- **`OrphanTranscriptDirectoryCleanupJob`** works off the backlog that already exists, six-hourly, at
+  `BATCH_LIMIT` (1,000) directories per run. It is not scheduled in development, and refuses to run
+  there even by hand: outside a deployment `~/.claude/projects` is a person's own Claude Code
+  history.
+
+### Classification is forward-only, and uncertainty keeps
+
+Because the name cannot be reversed, `TranscriptDirectoryClassifier` goes the other way: it takes
+every working directory that still exists, runs it through the runtime's own
+`TranscriptSource#transcript_directory` derivation, and compares. Three answers, and only one of
+them deletes:
+
+| Answer | Means | Example |
+| --- | --- | --- |
+| `:live` | a working directory that still exists produced this | a clone still on disk, or one a `reap_protected` session claims |
+| `:orphaned` | positively attributable to a clone that is gone, or to an ephemeral (`/tmp`) cwd | `-tmp-headless-inference-*` — 2,543 of production's directories, which no clone-based sweep would ever reach |
+| `:unknown` | anything else — **kept** | `-rails`, the app root inside the container, which is live |
+
+Two cases a naive sweeper gets wrong, both found by measuring production:
+
+- **The name comes from the cwd, not the clone root.** An agent root with a `subdirectory` runs with
+  cwd `<clone>/<subdir>`, so its transcript directory is the clone's derived name extended by
+  `-<subdir>`. A live clone therefore claims its own name **and** every name extending it by `-…`.
+  Matching on equality alone deletes a running session's transcript — the file `--resume` reads,
+  which exists nowhere else on the box.
+- **Not every transcript directory comes from a clone.** The `/tmp` class is orphaned by a different
+  mechanism entirely (a container restart), so it is reaped on the ephemeral-root rule rather than on
+  clone ownership — while `-rails` falls through to `:unknown` and survives.
+
+The remaining guards are the clone sweep's, for the same reason: liveness is read from the
+filesystem **and** `Session.reap_protected` unioned, and a missing or unreadable clones base aborts
+the run rather than treating every directory as orphaned.
+
+Two of them are worth spelling out because they are not quite the clone sweep's:
+
+- **Two fences, because there are two volumes.** `sweepable_clones_base?` asks whether the volume
+  liveness is *read from* belongs to this deployment — the same question, and the same reasoning, as
+  `OrphanCloneFilesystemCleanupJob#reclaimable_root?`. `sweepable_transcript_root?` asks it again of
+  the volume that is *deleted from*, and it has to be asked separately because the two move
+  independently: `AGENT_CLONES_DIR` relocates the clones base and nothing relocates
+  `~/.claude/projects`. Fencing only on the clones base would *permit* the sweep in exactly the
+  configuration a developer runs.
+- **A 24-hour `AGE_THRESHOLD` against the newest mtime in the directory**, not the directory's own.
+  POSIX bumps a directory's mtime when entries are created or removed in it, never when an existing
+  file is appended to — and Claude Code appends to one `<session_id>.jsonl` for the life of a
+  session, so the directory's own mtime effectively freezes at session start. For the clone-derived
+  class the bar is redundant by design; for the `/tmp` class it is the **only** liveness check there
+  is, since nothing on the box can say whether a `/tmp` cwd still exists, so it has to be the real
+  age of the transcript.
+
+Byte counts are measured against the volume, not summed per directory, and the run log reports count
+and bytes separately — per-directory size differs by more than an order of magnitude between
+deployments (staging ~5.4 MB, production ~330 KB), so count is not a proxy for reclaimable space.
+
 ## Clone pruning has a second, urgent gear
 
 `OrphanCloneFilesystemCleanupJob` is on the six-hourly cleanup cron, and on that schedule it is
@@ -342,6 +417,10 @@ minutes a sweep leaves. That is the honest claim: it is the smallest gap availab
 `GitCloneService.cleanup_clone` routes through it, which covers `DeferredCloneCleanupJob`,
 `EmptyTrashJob` and both of `StaleCloneCleanupJob`'s sweeps at once;
 `OrphanCloneFilesystemCleanupJob` calls it directly.
+
+It is also where the clone's transcript directory goes, after the removal succeeds and never when it
+is refused — see [The transcript directory outlives the
+clone](#the-transcript-directory-outlives-the-clone).
 
 The paths that dispose of a clone directory the caller itself just created and is rolling back go
 through `GitCloneService#discard_failed_clone` and `ForkSessionService#discard_partial_clone`

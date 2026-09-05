@@ -343,6 +343,15 @@ module CronSchedule
       description: "Remove clone directories on disk with no matching session in the database",
       environments: %i[production staging]
     },
+    # Not in development for the same reason as the two entries above, plus a
+    # sharper one: outside a deployment `~/.claude/projects` is a person's own
+    # Claude Code history, not the deployment's transcript volume.
+    orphan_transcript_directory_cleanup: {
+      cron: "45 */6 * * *", # Every 6 hours, offset from the clone sweeps
+      class: "OrphanTranscriptDirectoryCleanupJob",
+      description: "Remove runtime transcript directories whose working directory no longer exists",
+      environments: %i[production staging]
+    },
     cleanup_stale_triggers: {
       cron: "15 * * * *", # Every hour at minute 15 (offset from other hourly jobs)
       class: "CleanupStaleTriggersJob",
