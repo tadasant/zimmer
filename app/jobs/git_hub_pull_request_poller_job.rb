@@ -71,6 +71,27 @@ class GitHubPullRequestPollerJob < ApplicationJob
   # PollBackoff was written for and it is untouched.
   AWAITING_PR_OUTCOME_MAX_POLL_INTERVAL = 30.minutes.to_i
 
+  # How long the cap above is allowed to hold a session at that cadence.
+  #
+  # Without this the cap has no expiry, and "unresolved" is a state a session can
+  # never leave: nothing removes an idle session from `Session.with_github_prs`
+  # (archiving old sessions is an operator action, not a cron job), and a PR that
+  # was deleted, or whose repo the token cannot read, returns nil from
+  # `fetch_pr_status` on every tick so no status is ever recorded for it. Both
+  # leave a session pinned at two polls an hour for the rest of its life, and the
+  # capped population then only ever grows — which is the one way this change
+  # could re-create the pressure PollBackoff exists to relieve. Bounding it keeps
+  # that population proportional to a week of fleet throughput rather than to all
+  # of time.
+  #
+  # A week is well past the point where the cap is buying anything. It exists so
+  # a session waiting on a merge hears about it promptly; a PR still unmerged
+  # after seven days with no human engagement at all is fleet hygiene for the
+  # nightly sweep, not a notification-latency problem. Past the bound the session
+  # falls back to the full curve — still polled, once a day, exactly as it was
+  # before this change.
+  AWAITING_PR_OUTCOME_MAX_IDLE = 7.days
+
   # Wall-clock bounds on the two `gh` children this job spawns, process group
   # killed on deadline. Without them a half-open connection to GitHub blocks the
   # tick forever and, because this job is a `total_limit: 1` singleton, every
@@ -133,6 +154,7 @@ class GitHubPullRequestPollerJob < ApplicationJob
   # transition the merge announcement is conditioned on.
   def max_poll_interval_for(session)
     return nil if session.unresolved_pr_urls.empty?
+    return nil if Time.current - session.last_user_activity_at > AWAITING_PR_OUTCOME_MAX_IDLE
 
     AWAITING_PR_OUTCOME_MAX_POLL_INTERVAL
   end
