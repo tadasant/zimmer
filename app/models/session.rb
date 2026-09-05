@@ -1712,6 +1712,15 @@ class Session < ApplicationRecord
       detail = klass ? " (#{klass})" : ""
       "This turn stopped before the agent started#{detail}, so its prompt was never delivered. " \
         "The prompt is kept on this session's timeline — send it again to run the turn"
+    when Sessions::SilentRecoveryGuard::FAILURE_REASON
+      # `humanize` would render "Recovery produced no output", which states the
+      # symptom and hides the two facts a reader needs: Zimmer already tried this
+      # several times, and restarting is still the thing to do — the give-up is a
+      # bound on the automatic loop, not a verdict that the session is unrecoverable.
+      spent = metadata&.dig(RetryBudget::SILENT_RECOVERY.key).to_i
+      "Zimmer's recovery restarted this session #{spent} times and none of those turns produced " \
+        "a single transcript event — the agent process was never re-established. Failing it rather " \
+        "than reporting `running` forever; restart it to try again"
     else
       reason.humanize
     end

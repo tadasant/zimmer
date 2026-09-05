@@ -46,6 +46,10 @@ class RetryBudgetTest < ActiveSupport::TestCase
     empty_turn: {
       key: "empty_turn_recovery_count", max: 2, stamp: "last_empty_turn_recovery_at",
       clears: %w[empty_turn_recovery_count last_empty_turn_recovery_at]
+    },
+    silent_recovery: {
+      key: "silent_recovery_count", max: 3, stamp: "last_silent_recovery_at",
+      clears: %w[silent_recovery_count last_silent_recovery_at]
     }
   }.freeze
 
@@ -60,8 +64,17 @@ class RetryBudgetTest < ActiveSupport::TestCase
     end
   end
 
-  test "all declares exactly the seven auto-recovery budgets" do
+  test "all declares exactly the eight auto-recovery budgets" do
     assert_equal DECLARED.keys, RetryBudget.all.map(&:name)
+  end
+
+  # The watermark is not budget state and must survive a hand-back: it is the
+  # fingerprint the NEXT judgement compares against, and clearing it makes
+  # Sessions::SilentRecoveryGuard read the following restart as its first — which is
+  # the same as never having judged.
+  test "the silent-recovery budget does not clear the watermark it judges against" do
+    refute_includes RetryBudget::SILENT_RECOVERY.clears,
+      Sessions::SilentRecoveryGuard::WATERMARK_KEY
   end
 
   # The one budget that does NOT share the house window, and the reason it cannot:
@@ -69,10 +82,15 @@ class RetryBudgetTest < ActiveSupport::TestCase
   # "the process is up" is not evidence it is working. A 60-second window inside a
   # 180-second MCP startup timeout would hand the budget back before the restarted
   # process had produced anything, one cycle per timeout, without end.
-  test "only the empty-turn budget departs from the shared 60-second window" do
+  # The silent-recovery budget (#988) shares the departure for the same reason
+  # sharpened: it fires only while the session produces nothing, and in the failure it
+  # bounds there is no process at all, so an in-process stability window would be
+  # decided by whichever unrelated turn happened to run next.
+  test "only the two no-output budgets depart from the shared 60-second window" do
     off_default = RetryBudget.all.reject { |budget| budget.reset_after == RetryBudget::DEFAULT_RESET_AFTER }
 
-    assert_equal [ :empty_turn ], off_default.map(&:name)
+    assert_equal [ :empty_turn, :silent_recovery ], off_default.map(&:name)
+    assert_equal RetryBudget::EMPTY_TURN_RESET_AFTER, RetryBudget::SILENT_RECOVERY.reset_after
     assert_equal 30.minutes.to_i, RetryBudget::EMPTY_TURN.reset_after
     assert RetryBudget::EMPTY_TURN.reset_after > McpStartupTimeout::SECONDS,
       "the window has to clear the whole startup dead zone or it manufactures a restart loop"
