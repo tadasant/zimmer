@@ -842,6 +842,41 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("health dashboard")
   end
 
+  # The two panels the health report grew when it stopped reporting `healthy`
+  # through a total job outage (#428). Both add their longest content only in the
+  # unhealthy state, which is the state nobody looks at on a laptop: Process Health
+  # gains a four-up figure grid and a paragraph explaining that its zeros are "not
+  # knowable from here", and System Health gains a `text-2xl` duration beside two
+  # integers plus the gate's own sentence, which runs to about 140 characters.
+  test "the health panels do not overflow horizontally on a phone during an outage" do
+    session = create_session(status: :running)
+    session.update!(metadata: (session.metadata || {}).merge(
+      "process_pid" => 4242,
+      AgentProcessLiveness::IDENTITY_KEY => {
+        "pid" => 4242, "boot_id" => "another-container-boot",
+        "pid_namespace" => "pid:[4026532888]", "started_at_ticks" => "778899"
+      }
+    ))
+
+    # Throughput that stopped, and ready work that has outlived the stall window.
+    finished = 10.hours.ago
+    GoodJob::Job.insert_all([
+      { queue_name: "default", job_class: "SlackTriggerPollerJob", created_at: finished - 1.second,
+        updated_at: finished, scheduled_at: finished - 1.second, performed_at: finished - 1.second,
+        finished_at: finished },
+      { queue_name: "pollers", job_class: "SlackTriggerPollerJob", created_at: 25.minutes.ago,
+        updated_at: 25.minutes.ago, scheduled_at: 25.minutes.ago }
+    ])
+
+    visit health_dashboard_path
+    assert_text "Nothing is executing"
+
+    assert_no_horizontal_overflow("health dashboard (outage)")
+
+    page.execute_script("document.evaluate(\"//h3[text()='Process Health']\", document, null, 9, null).singleNodeValue.scrollIntoView()")
+    page.save_screenshot("tmp/screenshots/health-outage-panels-375.png")
+  end
+
   # The auth card grows a second line when the pool is recovering — every account
   # still labelled quota_exceeded while its own newer reading says it can serve.
   # That line is the longest string on the card, so it is the one that would push
