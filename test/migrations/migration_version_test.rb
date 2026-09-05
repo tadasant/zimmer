@@ -48,9 +48,22 @@ class MigrationVersionTest < ActiveSupport::TestCase
       "20260202000000_add_widget_to_sessions.rb"
     ) { |dir| MigrationVersionGuard.collisions(dir) }
 
-    assert_equal [ :name ], collisions.map(&:kind)
-    assert_equal "add_widget_to_sessions", collisions.sole.value
+    assert_equal [ :class_name ], collisions.map(&:kind)
+    assert_equal "AddWidgetToSessions", collisions.sole.value
     assert_includes MigrationVersionGuard.report(collisions), "DuplicateMigrationNameError"
+  end
+
+  # Rails groups on `name.camelize`, so the underscore is not what makes these
+  # two distinct. Comparing the snake_cased forms would call this pair fine and
+  # then watch Rails raise on it.
+  test "class names that differ only by an underscore are the same name to Rails" do
+    collisions = in_migration_dir(
+      "20260101000000_add_widget_2.rb",
+      "20260202000000_add_widget2.rb"
+    ) { |dir| MigrationVersionGuard.collisions(dir) }
+
+    assert_equal [ :class_name ], collisions.map(&:kind)
+    assert_equal "AddWidget2", collisions.sole.value
   end
 
   test "a directory of distinct migrations is clean" do
@@ -63,8 +76,8 @@ class MigrationVersionTest < ActiveSupport::TestCase
     assert_equal "", MigrationVersionGuard.report(collisions)
   end
 
-  # Rails only loads files matching its own filename shape, so anything else in
-  # db/migrate is not a migration to collide with. Reporting it would be noise.
+  # Rails' glob is `[0-9]*_*.rb`, so anything else in db/migrate is not a
+  # migration and has no version to collide with. Reporting it would be noise.
   test "files that are not migrations are ignored" do
     migrations = in_migration_dir(
       "20260101000000_add_widget_to_sessions.rb",
@@ -87,48 +100,87 @@ class MigrationVersionTest < ActiveSupport::TestCase
       "test/support/migration_version_guard.rb to match."
   end
 
-  # Rails globs `**/[0-9]*_*.rb` and compares versions as Integers, and it
-  # takes the adapter scope off before comparing names. Each of those is a way
-  # a real collision hides from a guard that only reads 14 digits off the front
-  # of a flat directory listing.
-  test "collisions are found in the same shapes Rails finds them" do
-    hidden = in_migration_dir(
-      # A 13-digit version. Rails' regexp is [0-9]+, not \d{14}.
+  # Rails' regexp is [0-9]+, not \d{14}, and a version it cannot read is a
+  # version it cannot collide — so a hand-typed short timestamp is exactly the
+  # kind of mistake a stricter guard would step over.
+  test "a version that is not fourteen digits still collides" do
+    collisions = in_migration_dir(
       "2026090518000_add_widget_to_sessions.rb",
-      "2026090518000_add_gadget_to_sessions.rb",
-      # Leading zeros. Rails compares version.to_i, so these are one version.
+      "2026090518000_add_gadget_to_sessions.rb"
+    ) { |dir| MigrationVersionGuard.collisions(dir) }
+
+    assert_equal [ :version ], collisions.map(&:kind)
+    assert_equal 2026090518000, collisions.sole.value
+  end
+
+  # Rails compares `version.to_i`, so a leading zero changes the filename and
+  # not the version.
+  test "leading zeros do not make a version distinct" do
+    collisions = in_migration_dir(
       "020260101000000_add_doodad_to_sessions.rb",
       "20260101000000_add_thingummy_to_sessions.rb"
     ) { |dir| MigrationVersionGuard.collisions(dir) }
 
-    assert_equal [ 2026090518000, 20260101000000 ], hidden.map(&:value).sort
-    assert_equal [ :version, :version ], hidden.map(&:kind)
+    assert_equal [ 20260101000000 ], collisions.map(&:value)
+  end
 
-    nested = in_migration_dir("post_deploy/20260101000000_add_widget_to_sessions.rb",
-      "20260101000000_add_gadget_to_sessions.rb") { |dir| MigrationVersionGuard.collisions(dir) }
+  # `Migrator#migration_files` globs `**/[0-9]*_*.rb`, so a subdirectory is not
+  # a hiding place. The report names the path, not just the basename.
+  test "a migration in a subdirectory is found, and reported by path" do
+    collisions = in_migration_dir(
+      "nested/20260101000000_add_widget_to_sessions.rb",
+      "20260101000000_add_gadget_to_sessions.rb"
+    ) { |dir| MigrationVersionGuard.collisions(dir) }
 
-    assert_equal [ 20260101000000 ], nested.map(&:value)
-    assert_includes MigrationVersionGuard.report(nested),
-      "db/migrate/post_deploy/20260101000000_add_widget_to_sessions.rb"
+    assert_equal [ 20260101000000 ], collisions.map(&:value)
+    assert_includes MigrationVersionGuard.report(collisions),
+      "db/migrate/nested/20260101000000_add_widget_to_sessions.rb"
+  end
 
-    scoped = in_migration_dir("20260101000000_add_widget_to_sessions.postgresql.rb",
-      "20260202000000_add_widget_to_sessions.rb") { |dir| MigrationVersionGuard.collisions(dir) }
+  # `..._add_widget_to_sessions.postgresql.rb` is an adapter-scoped migration.
+  # Rails strips the scope before comparing names, so this pair is a name
+  # collision — and a regexp with no scope group would not see the file at all.
+  test "an adapter-scoped filename is read the way Rails reads it" do
+    collisions = in_migration_dir(
+      "20260101000000_add_widget_to_sessions.postgresql.rb",
+      "20260202000000_add_widget_to_sessions.rb"
+    ) { |dir| MigrationVersionGuard.collisions(dir) }
 
-    assert_equal [ :name ], scoped.map(&:kind),
+    assert_equal [ :class_name ], collisions.map(&:kind),
       "the adapter scope is not part of the name Rails groups on"
   end
 
-  test "the guard runs without Rails" do
-    # The whole point: the failure it catches is a Rails boot failure, so the
-    # check has to answer when Rails cannot boot. This is the `lint` job's
-    # command, run in a subshell with no Rails loaded.
+  # The whole point: the failure it catches is a Rails boot failure, so the
+  # check has to answer when Rails cannot boot. The subprocess asserts that for
+  # itself — merely exiting 0 would stay true if the guard quietly required
+  # Rails, since the parent runs under bundler and the require would succeed.
+  test "the guard loads neither Rails nor Active Record" do
+    probe = 'abort("Rails is loaded") if defined?(Rails); ' \
+      'abort("Active Record is loaded") if $LOADED_FEATURES.grep(/active_record/).any?; ' \
+      "print MigrationVersionGuard.report"
+
     output = Dir.chdir(Rails.root) do
-      `ruby -r./test/support/migration_version_guard -e 'puts MigrationVersionGuard.report' 2>&1`
+      `ruby -r./test/support/migration_version_guard -e '#{probe}' 2>&1`
     end
 
     assert_predicate $?, :success?, output
-    assert_equal "", output.strip
-    assert_not_includes output, "rails"
+    assert_equal "", output
+  end
+
+  # The guard is only as good as the set of files it looks at, and every bug
+  # found in review so far was a file it silently skipped rather than a
+  # comparison it got wrong. This is the canary for that class.
+  test "every .rb file in db/migrate is a file the guard reads" do
+    found = MigrationVersionGuard.migrations
+
+    assert_not_empty found, "no migrations found in db/migrate"
+
+    skipped = Dir.children(MigrationVersionGuard::MIGRATION_DIR).grep(/\.rb\z/) -
+      found.map(&:relative_path)
+
+    assert_empty skipped,
+      "the guard does not recognise these, so it cannot see a collision in them: " \
+      "#{skipped.join(", ")}"
   end
 
   # `test-unit` is minutes into CI and needs Postgres to get there; the whole
