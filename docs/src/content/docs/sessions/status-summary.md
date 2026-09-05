@@ -703,10 +703,12 @@ evidence rather than either alone:
   matters most.**
   `SpotSessionHold#hold!` takes custody of the held turn — it *removes* `pending_follow_up_prompt`,
   and `return_to_queue!` clears `running_job_id` — leaving a fork in `waiting`, with no transcript of
-  its own, that is legitimately waiting to run. Under sustained spot pressure that wait can outlast
-  six hours, and [#712](https://github.com/tadasant/zimmer/issues/712) is the open issue that forks
-  compete for that capacity at all. Reaping one is exactly the silent failure the predicate exists to
-  avoid.
+  its own, that is legitimately waiting to run. Reaping one is exactly the silent failure the
+  predicate exists to avoid. The population this protects is now a small one:
+  [#712](https://github.com/tadasant/zimmer/issues/712) stopped a summary fork being held at all, so
+  the only route left into a spot hold is the fallback taken when the discard itself fails (see
+  [A status-summary fork is refused, never queued](/sessions/spot-and-priority/#a-status-summary-fork-is-refused-never-queued)).
+  The clause stays because the state is still reachable, and reaping it would still be silent.
 - Its transcript holds nothing past the fork point, which is the same comparison
   `SessionStatusSummaryHarvestJob` makes to decide a fork wrote nothing of its own. Comparing a raw
   line count against a parsed message index errs the safe way: blank or unparseable lines inflate the
