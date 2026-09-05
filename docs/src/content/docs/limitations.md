@@ -2863,11 +2863,15 @@ session](/operate/background-jobs/#and-what-the-merge-fired). Three edges come w
 **Every run on the merge commit counts, whatever it is.** The lookup asks "which runs exist because
 this merge landed", which is the only question with an unambiguous answer; "which of these is the
 deploy" would be a name-matching guess, and the deploy that motivated this
-(`tadasant/tadasant-internal#1969`) was not called `deploy`. So a repository that runs a slow CI
-suite on pushes to its default branch will keep the merging session asleep for a few minutes of it.
-The wait is bounded (~20 minutes, then the session archives naming the runs) and it is a sleep in
-`waiting` rather than a park in `needs_input`, so it costs a little session time and never a slot in
-the action queue.
+(`tadasant/tadasant-internal#1969`) was not called `deploy`. So a repository that runs anything on
+pushes to its default branch keeps the merging session asleep for the few minutes it takes — and
+that is not the exotic case: Zimmer's own repo has two such workflows (`CI` and `Release image`), so
+most merges here take the wait rather than skipping it. Deliberate, on the view that a red `main` or
+a failed release build is the merging session's business too. The wait is bounded (~20 minutes, then
+the session archives naming the runs) and it is a sleep in `waiting` rather than a park in
+`needs_input`, so it costs a little session time and never a slot in the action queue. Only a
+repository with no default-branch push workflow at all gets the archive-immediately path on every
+merge.
 
 **A run created after the message is not in it.** A deploy chained off CI with `workflow_run` starts
 only when CI finishes, which is minutes after the notification was written. The session watches the
