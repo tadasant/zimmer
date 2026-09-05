@@ -1583,12 +1583,28 @@ tarball store, comes with it. So the packages `bin/preinstall-mcp-packages` warm
 `~/.npm` at build time are not read by any MCP server, and the first launch in a fresh clone fetches
 every one of them from the registry.
 
-Claude and Codex both have room to absorb it — three minutes, from `MCP_TIMEOUT=180000` on Claude
-and `startup_timeout_sec = 180` on every Codex stdio entry
-([#702](https://github.com/tadasant/zimmer/issues/702)) — so on those two the cost is a delay
-rather than a dropped server. The price of the wider budget is that a genuinely hung server holds
-the handshake for three minutes instead of Codex's 30-second default. Pi has no such budget at all
-([#844](https://github.com/tadasant/zimmer/issues/844)).
+All three runtimes have room to absorb it — three minutes, from `MCP_TIMEOUT=180000` on Claude,
+`startup_timeout_sec = 180` on every Codex stdio entry
+([#702](https://github.com/tadasant/zimmer/issues/702)) and `"requestTimeoutMs": 180000` on every
+Pi one ([#844](https://github.com/tadasant/zimmer/issues/844)) — so the cost is a delay rather than
+a dropped server. The price of the wider budget is that a genuinely hung server holds the handshake
+for three minutes instead of Codex's 30-second default or Pi's 60-second one, and on Pi it also
+raises the ceiling on every tool call, because the adapter's one `requestTimeoutMs` covers the
+whole connection rather than just its opening.
+
+**Pi's npx servers get less of that budget than the other two runtimes, and part of their cold
+start is outside Zimmer's reach entirely.** `pi-mcp-adapter` intercepts a `command` of `npx` or
+`npm` and resolves the package to a concrete bin path itself before any transport exists
+(`resolveNpxBinary`, `npx-resolver.ts`), so that phase is not an MCP request and no
+`requestTimeoutMs` applies to it. Two consequences follow. It reads the npm cache of the *Pi
+process* — `NPM_CONFIG_CACHE` on `pi` itself, falling back to `npm config get cache` — rather than
+the entry's own `env`, and `PiRuntimeAdapter` sets no such variable, so the resolver looks in the
+host-shared `~/.npm`, which is the thing the per-entry pinning exists to avoid. And on a cache miss
+it runs `npm exec` under its own hard, non-configurable 30-second cap, killing the install on
+timeout before falling back to plain `npx`. The fallback download is covered by the budget; the
+30 seconds before it are not, and a kill mid-write lands in a cache every session on the box
+shares. Giving the Pi *process* a clone-scoped `NPM_CONFIG_CACHE` would point the resolver at the
+clone and is the obvious next step; it is not done today.
 
 The download itself is still paid, and un-pinning the cache is not the fix — a host-shared cache is
 what [#595](https://github.com/tadasant/zimmer/issues/595) was. Seeding the clone from the image's
