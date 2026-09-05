@@ -464,9 +464,15 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     HarnessModelBurnRate.create!(harness: "zimmer", model: "claude-opus-5", usd_per_minute: burn,
       sample_cost_usd: burn * 100, sample_minutes: 100.0, sample_session_count: 25,
       computed_at: Time.current)
+    GoodJob::Job.where(job_class: "AgentSessionJob").delete_all
     running.times do |i|
-      Session.create!(git_root: "https://github.com/t/r.git", prompt: "running #{i}",
+      record = Session.create!(git_root: "https://github.com/t/r.git", prompt: "running #{i}",
                       genesis: SessionGenesis::WEB_UI, status: :running, agent_runtime: "claude_code")
+      # With a worker on the turn: the gate counts nothing else, and it waives the
+      # pace test entirely on a fleet with nothing running.
+      GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
+        job_class: "AgentSessionJob", serialized_params: { "arguments" => [ record.id ] },
+        scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
     end
     AppSetting.editable.update!(spot_gating_enabled: true, spot_max_concurrent_sessions: 10,
                                 spot_reserve_five_hour_pct: 20, spot_reserve_weekly_pct: 20)

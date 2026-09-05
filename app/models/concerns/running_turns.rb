@@ -16,22 +16,39 @@
 # substantial population of turns that are queued for a worker rather than being
 # run by one.
 #
-# Both populations count. A queued turn is committed demand: it takes a worker
-# slot as soon as one frees, so a ceiling that ignored it would admit more work
-# into the same queue. The split is reported rather than discarded — see
-# FleetTopUpStatus and the /inference cards, where "15 sessions running" was read
-# as a broken counter ([#957](https://github.com/tadasant/zimmer/issues/957))
-# precisely because the page had no way to say "8 on a worker, 7 waiting for
-# one".
+# == The ceilings count worker occupancy, and nothing else
 #
-# == The one population that does not count
+# Only `on_a_worker` counts. A turn that is merely queued has taken nothing yet:
+# the thing it is waiting for is a worker, and how many turns are stacked up
+# behind the pool says how deep the queue is, not how much of the fleet is
+# occupied. A ceiling fed the queue depth stops being a limit on concurrent work
+# and becomes a limit on demand — which is how the deployment came to read
+# "Holding spot sessions: 25 of 10 session slots taken (8 on a worker, 17 waiting
+# for one)" with eight agent processes alive and every spot session held.
+#
+# The queue is still real, so the split is reported rather than discarded — see
+# FleetTopUpStatus, SpotGateService#awaiting_clause and the /inference cards. It
+# is the same number that made "15 sessions running" read as a broken counter in
+# [#957](https://github.com/tadasant/zimmer/issues/957); it is now shown beside
+# the count instead of inside it.
+#
+# **This bounds every ceiling at .worker_slots**, and deliberately so: the
+# counted population is turns a worker is executing, and the pool runs
+# `ConnectionBudget.good_job_queue_threads[:agents]` of them. A ceiling
+# configured above that can never be reached — .effective_ceiling is the number
+# that is actually in force, and both /inference cards and `get_spot_policy` say
+# so when the two differ, rather than printing a limit that does nothing.
+#
+# == The population that is not even in flight
 #
 # A row that is asleep on its own future wake AND has **no AgentSessionJob at
 # all** — none running, none queued. Nothing will happen to that session until
-# its wake fires, so it can consume no capacity in the meantime, and holding a
+# its wake fires, so it is neither on a worker nor waiting for one, and holding a
 # slot in two ceilings against it is what pinned both of the deployment's
 # throughput controls in #957.
 #
+# It is dropped from `awaiting_a_worker` rather than left in it, so the queue
+# figure beside the ceiling stays a count of turns that are genuinely coming.
 # Both conditions are load-bearing, and each rules out a way of being wrong:
 #
 #   * **Asleep**, read exactly the way the start paths read it
@@ -77,34 +94,51 @@ module RunningTurns
   extend ActiveSupport::Concern
 
   # One reading of a scope's `running` rows, split three ways so a caller can
-  # both decide on the total and say where it came from.
+  # both decide on `on_a_worker` and say what the other two hold.
   #
-  # `awaiting_a_worker` is deliberately the wider word. It is every counted row
-  # no worker has started: turns queued in the `agents` lane, and rows between
-  # jobs — the handoff window, a first spawn not yet enqueued, and the orphans
-  # CleanupOrphanedSessionsJob repairs. Calling all of that "queued" would put a
-  # new false claim in place of the one #957 was about.
+  # `awaiting_a_worker` is deliberately the wider word. It is every row with a
+  # turn coming that no worker has started: turns queued in the `agents` lane,
+  # and rows between jobs — the handoff window, a first spawn not yet enqueued,
+  # and the orphans CleanupOrphanedSessionsJob repairs. Calling all of that
+  # "queued" would put a new false claim in place of the one #957 was about.
   #
-  # `total` omits `asleep`: it is the number every ceiling compares against, and
-  # the sleepers are the population this concern exists to drop.
+  # There is deliberately no `total`. Both ceilings compare against
+  # `on_a_worker` alone, and a method that added the queue back would be read as
+  # the number they act on — see "The ceilings count worker occupancy" above. The
+  # other two buckets exist to be REPORTED beside it.
   Reading = Data.define(:on_a_worker, :awaiting_a_worker, :asleep) do
-    def total = on_a_worker + awaiting_a_worker
-
-    # Every `running` row, sleepers included — what the ceilings counted before,
-    # and what /inference needs in order to explain the difference.
-    def rows = total + asleep
+    # Every `running` row, queue and sleepers included — what the ceilings
+    # counted before, and what /inference needs in order to explain the gap
+    # between that number and the one they count now.
+    def rows = on_a_worker + awaiting_a_worker + asleep
   end
 
   EMPTY = Reading.new(on_a_worker: 0, awaiting_a_worker: 0, asleep: 0)
 
   # How many agent turns this deployment can execute at once: the `agents` lane's
-  # own thread count, which is the real ceiling on `on_a_worker` whatever either
+  # own thread count, which is the hard ceiling on `on_a_worker` whatever either
   # policy number is set to. Read here rather than at each call site so the spot
   # gate's hold detail and the /inference cards cannot drift apart.
   def self.worker_slots = ConnectionBudget.good_job_queue_threads[:agents]
 
+  # The ceiling that is actually in force for a configured one. Since the
+  # ceilings count `on_a_worker` and the pool runs .worker_slots of those, a
+  # policy number above the pool is a number the fleet can never reach: the spot
+  # gate would never report `fleet_at_cap` and top-up would always see room.
+  #
+  # Nothing is clamped on the strength of this — the operator's number is theirs
+  # to set, and raising the pool is a deploy away. It exists so /inference and
+  # `get_spot_policy` can print the limit that is really binding next to the one
+  # that was typed, rather than showing a ceiling that does nothing.
+  def self.effective_ceiling(configured) = [ configured, worker_slots ].min
+
+  # Whether a configured ceiling is out of the fleet's reach — the condition
+  # those surfaces render the note on.
+  def self.ceiling_out_of_reach?(configured) = configured > worker_slots
+
   class_methods do
-    # The `running` rows in this scope the fleet can be working on, split.
+    # The `running` rows in this scope, split by what the fleet is actually doing
+    # with them. Only the first bucket is work in progress.
     #
     # Two queries beyond the row read, and both callers memoise the result
     # (SpotGateService#turns, FleetIdleMonitor#check!) because this sits on the
@@ -149,7 +183,8 @@ module RunningTurns
     # .ids_paused_until_scheduled_time deliberately does not rescue, because its
     # other callers are start paths where swallowing the error would strand a
     # session. Here the stakes are reversed: this is a count, and the safe answer
-    # is that nobody is asleep, which leaves the total at every `running` row.
+    # is that nobody is asleep, which reports every uncounted row as a turn still
+    # coming rather than as one nothing will run.
     def ids_asleep_until_a_future_wake(session_ids)
       return Set.new if session_ids.empty?
 

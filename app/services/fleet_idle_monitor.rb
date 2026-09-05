@@ -20,24 +20,30 @@
 # moment it has the least room for it. So three questions, and all three must
 # answer no:
 #
-#   1. Is the fleet RUNNING `fleet_idle_max_sessions` or more sessions already?
-#      One population and one number: sessions with a turn in flight. Every
+#   1. Is a worker EXECUTING `fleet_idle_max_sessions` turns or more already?
+#      One population and one number: sessions a worker is running. Every
 #      runtime, every scheduling class, and Zimmer's own status-summary forks all
 #      count — "is anyone doing anything" is about the deployment's capacity to
 #      take on more, and a running Codex session occupies that as much as a
 #      Claude one. `fleet_idle_max_sessions = 1` means simply "nothing running".
 #
-#      "A turn in flight" is deliberately WIDER than "a worker is executing it",
-#      and RunningTurns is where that is decided. `running` is stamped when a
-#      turn is handed to a session, and the `agents` queue sits between that and
-#      a worker picking it up, so on a busy deployment a real share of the number
-#      is turns waiting for a slot. They still count: a queued turn is committed
-#      demand that will take the next free worker, and topping up on top of it
-#      just deepens the queue. What does NOT count is a row asleep on its own
-#      future wake with no worker on it — Zimmer refuses to start those, so they
-#      can consume nothing. #running_turns reports the split, which is what
-#      /inference shows: "15 sessions" reading as a broken counter when 8 were
-#      executing and 7 were queued is [#957](https://github.com/tadasant/zimmer/issues/957).
+#      That is NARROWER than "a `running` row", and RunningTurns is where the
+#      difference is decided. `running` is stamped when a turn is handed to a
+#      session, and the `agents` queue sits between that and a worker picking it
+#      up, so on a busy deployment a real share of the column is turns waiting
+#      for a slot. Those do not count, and neither does a row asleep on its own
+#      future wake: this ceiling is a statement about how much of the fleet is
+#      occupied, and a queue is a statement about demand. #running_turns reports
+#      both beside the count, which is what /inference shows — the split
+#      [#957](https://github.com/tadasant/zimmer/issues/957) asked for, now
+#      printed next to the number rather than folded into it.
+#
+#      **The `agents` pool therefore bounds this ceiling at
+#      RunningTurns.worker_slots.** A `fleet_idle_max_sessions` above that can
+#      never be reached, so the fleet always reads as having room and the
+#      threshold and cooldown below become the only things pacing top-up.
+#      FleetTopUpStatus says so on the card rather than leaving an operator to
+#      infer it from a ceiling that never binds.
 #
 #      This is a different population from the one the spot gate's concurrency
 #      limit counts, which is Claude Code sessions only and does not skip frozen
@@ -296,7 +302,7 @@ class FleetIdleMonitor
       false
     end
 
-    # How many sessions the fleet is running right now: the number `check!`
+    # How many sessions a worker is running right now: the number `check!`
     # compares against the ceiling, exposed so /inference and `get_spot_policy`
     # can show the same reading the monitor decides on.
     #
@@ -307,15 +313,16 @@ class FleetIdleMonitor
     # why.
     #
     # See "What counts as idle" for why `waiting` sessions are not in this
-    # number, and why a turn merely QUEUED for a worker still is.
+    # number, and why a turn merely QUEUED for a worker is not either.
     def running_sessions
-      running_turns.total
+      running_turns.on_a_worker
     end
 
     # The same reading, split into the populations `running` actually holds:
-    # turns a worker is executing, turns waiting for one behind the `agents`
-    # pool, and sleepers that are dropped from the total. RunningTurns owns the
-    # distinction; this is where /inference and `get_spot_policy` get it.
+    # turns a worker is executing — the only ones the ceiling counts — turns
+    # waiting for one behind the `agents` pool, and sleepers with nothing coming
+    # at all. RunningTurns owns the distinction; this is where /inference and
+    # `get_spot_policy` get it.
     #
     # @return [RunningTurns::Reading]
     def running_turns
@@ -334,7 +341,7 @@ class FleetIdleMonitor
     # is. Ordered cheapest-and-commonest first: on a busy deployment the ceiling
     # test is the only one that runs, and its reading is already taken.
     def fleet_idle?(setting, turns)
-      return false if turns.total >= max_sessions(setting)
+      return false if turns.on_a_worker >= max_sessions(setting)
 
       return false if parked_work?
 
@@ -352,7 +359,7 @@ class FleetIdleMonitor
     # other two questions are asked again because the predicate short-circuits,
     # so it does not always know their answers.
     def not_idle_reason(setting, turns)
-      return "at_work_ceiling" if turns.total >= max_sessions(setting)
+      return "at_work_ceiling" if turns.on_a_worker >= max_sessions(setting)
       return "work_parked_on_auth_outage" if parked_work?
       return "account_pool_empty" unless pool_available?(setting)
 

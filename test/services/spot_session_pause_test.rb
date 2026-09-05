@@ -43,10 +43,15 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     )
   end
 
+  # With a WORKER on its turn, since the fleet cap counts nothing else.
   def running_session(genesis: SessionGenesis::GITHUB_ISSUE, runtime: "claude_code", metadata: {})
-    Session.create!(git_root: "https://github.com/t/r.git", prompt: "work", genesis: genesis,
+    record = Session.create!(git_root: "https://github.com/t/r.git", prompt: "work", genesis: genesis,
                     status: :running, agent_runtime: runtime, session_id: "cli-#{SecureRandom.hex(4)}",
                     metadata: metadata)
+    GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
+      job_class: "AgentSessionJob", serialized_params: { "arguments" => [ record.id ] },
+      scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
+    record
   end
 
   def paused_session(paused_at: 1.hour.ago, genesis: SessionGenesis::GITHUB_ISSUE)

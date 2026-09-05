@@ -297,9 +297,13 @@ class QuotaAvailabilityMonitorTest < ActiveSupport::TestCase
     seed_reading(exceeded, utilization_5h: 0.10, utilization_7d: 0.10)
     QuotaAvailabilityMonitor.check!
     exceeded.update!(status: :active)
-    Session.create!(prompt: "occupying the only slot", agent_runtime: "claude_code", status: :running,
-      git_root: "https://github.com/test/repo.git", branch: "main",
+    occupying = Session.create!(prompt: "occupying the only slot", agent_runtime: "claude_code",
+      status: :running, git_root: "https://github.com/test/repo.git", branch: "main",
       execution_provider: "local_filesystem", session_id: SecureRandom.uuid)
+    # On a worker: the cap counts turns a worker is running, not `running` rows.
+    GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
+      job_class: "AgentSessionJob", serialized_params: { "arguments" => [ occupying.id ] },
+      scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
 
     assert_equal SpotGateService::FLEET_CAP_REASON, SpotGateService.evaluate.reason,
       "the fixture must reproduce a gate held on the cap rather than on a window"
