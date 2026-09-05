@@ -4415,4 +4415,22 @@ class SessionTest < ActiveSupport::TestCase
 
     assert_equal({ images: [ "/tmp/a.png" ], files: [ "/tmp/b.txt" ] }, captured)
   end
+
+  # #538: the session detail page's MCP editor is re-rendered by Turbo broadcast
+  # as well as by a page load. Both have to build the same payload, or the
+  # dropdown quietly loses its availability flags the moment the session's
+  # status changes under it.
+  test "the metadata broadcast locals carry each server's availability" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test")
+
+    locals = with_mixed_availability_catalog { session.send(:metadata_broadcast_locals) }
+    servers = locals[:servers_for_select]
+
+    assert_equal %w[context7 zimmer-self-session strad-secrets-staging-rw strad-secrets-oauth],
+      servers.map { |s| s[:name] }
+    assert_equal true, servers.find { |s| s[:name] == "strad-secrets-staging-rw" }[:unavailable]
+    assert_equal "STRAD_STAGING_API_KEY unresolved",
+      servers.find { |s| s[:name] == "strad-secrets-staging-rw" }[:unavailable_reason]
+    assert_equal false, servers.find { |s| s[:name] == "context7" }[:unavailable]
+  end
 end

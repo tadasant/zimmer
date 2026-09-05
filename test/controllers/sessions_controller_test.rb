@@ -349,6 +349,123 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/2 hours ago/, response.body)
   end
 
+  # --- the picker's availability flag ----------------------------------------
+  #
+  # #538: the form offered every catalog server identically, including ones
+  # Zimmer already knew could not start. Picking one of those is not a soft
+  # failure — an unresolved `${VAR}` raises SecretsInterpolator::MissingVariableError
+  # at prepare time and fails the whole session, not just that server. The
+  # picker's payload now carries the same signal get_configs partitions on.
+
+  # The Stimulus value is JSON in a data attribute; parse it rather than regexing
+  # the escaped HTML, so the assertion is about the payload and not its encoding.
+  def picker_servers
+    value = css_select("[data-mcp-server-select-servers-value]").first["data-mcp-server-select-servers-value"]
+    JSON.parse(value)
+  end
+
+  test "the new session form's picker payload carries each server's availability" do
+    with_mixed_availability_catalog { get new_session_url }
+    assert_response :success
+
+    servers = picker_servers
+
+    healthy = servers.find { |s| s["name"] == "context7" }
+    assert_equal false, healthy["unavailable"]
+    assert_nil healthy["unavailable_reason"]
+
+    unseeded = servers.find { |s| s["name"] == "strad-secrets-staging-rw" }
+    assert_equal true, unseeded["unavailable"]
+    assert_equal "STRAD_STAGING_API_KEY unresolved", unseeded["unavailable_reason"]
+
+    declared = servers.find { |s| s["name"] == "strad-secrets-oauth" }
+    assert_equal true, declared["unavailable"]
+    assert_equal "The endpoint accepts only static bearer tokens and exposes no OAuth discovery.",
+      declared["unavailable_reason"]
+  end
+
+  # Shown and flagged, not hidden. A human can usually fix why a server is
+  # unavailable — "OAuth authorization not completed" is one click away at
+  # /connectors — which is exactly what an agent reading get_configs cannot do,
+  # so where that surface omits the entry this one keeps it and says why.
+  test "the new session form still offers every catalog server" do
+    with_mixed_availability_catalog { get new_session_url }
+    assert_response :success
+
+    assert_equal %w[context7 zimmer-self-session strad-secrets-staging-rw strad-secrets-oauth],
+      picker_servers.map { |s| s["name"] }
+  end
+
+  test "the picker's reason is plain text, not the markdown get_configs renders" do
+    with_mixed_availability_catalog { get new_session_url }
+    assert_response :success
+
+    reason = picker_servers.find { |s| s["name"] == "strad-secrets-staging-rw" }["unavailable_reason"]
+    refute_includes reason, "`", "a backtick renders as a backtick in a dropdown row"
+  end
+
+  # A store outage hits every server at once, so flagging on an indeterminate
+  # answer would paint the whole picker amber for a blip that fixes itself.
+  test "the picker does not flag a server whose secret store could not be reached" do
+    outage = SecretsInterpolator::Resolution.new(
+      state: :unavailable, error: StandardError.new("Parameter Store timed out")
+    )
+    with_mixed_availability_catalog(resolution: outage) { get new_session_url }
+    assert_response :success
+
+    assert_equal false, picker_servers.find { |s| s["name"] == "strad-secrets-staging-rw" }["unavailable"]
+  end
+
+  # The form must render even if readiness cannot be computed at all: a picker
+  # with no flags beats a form that offers nothing.
+  test "the new session form renders its picker when the readiness computation fails" do
+    ConnectorStatusProbe.stubs(:all).raises(StandardError, "probe exploded")
+
+    with_mixed_availability_catalog { get new_session_url }
+    assert_response :success
+
+    servers = picker_servers
+    assert_equal 4, servers.size
+    assert servers.none? { |s| s["unavailable"] }
+  end
+
+  test "the session detail page's MCP editor carries the same flags" do
+    session = sessions(:active_session)
+
+    with_mixed_availability_catalog { get session_url(session) }
+    assert_response :success
+
+    value = css_select("[data-editable-mcp-servers-available-servers-value]")
+      .first["data-editable-mcp-servers-available-servers-value"]
+    servers = JSON.parse(value)
+
+    assert_equal true, servers.find { |s| s["name"] == "strad-secrets-staging-rw" }["unavailable"]
+    assert_equal false, servers.find { |s| s["name"] == "context7" }["unavailable"]
+  end
+
+  # The turbo-stream re-render after a write goes through mcp_partials_locals,
+  # which is a third copy of the payload. Without this the editor would show the
+  # flags on load and lose them the moment you saved a change.
+  test "the turbo-stream re-render after an MCP write carries the flags" do
+    session = sessions(:active_session)
+
+    with_mixed_availability_catalog do
+      patch update_mcp_servers_session_url(session),
+        params: { mcp_servers: [ "context7" ] },
+        headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    end
+    assert_response :success
+
+    value = css_select("[data-editable-mcp-servers-available-servers-value]")
+      .first["data-editable-mcp-servers-available-servers-value"]
+    servers = JSON.parse(value)
+
+    assert_equal true, servers.find { |s| s["name"] == "strad-secrets-staging-rw" }["unavailable"]
+    assert_equal "STRAD_STAGING_API_KEY unresolved",
+      servers.find { |s| s["name"] == "strad-secrets-staging-rw" }["unavailable_reason"]
+    assert_equal false, servers.find { |s| s["name"] == "context7" }["unavailable"]
+  end
+
   # Test create action - success cases
   test "should create session" do
     assert_difference("Session.count") do

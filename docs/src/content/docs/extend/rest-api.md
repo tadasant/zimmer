@@ -927,7 +927,18 @@ curl "$BASE_URL/gate_decisions?gate=pr_merge&surface=zimmer&decision=hold&per_pa
 | **Enqueued messages** | CRUD + `PATCH :id/reorder` (`position` ≥ 1) + `POST :id/interrupt` (pauses a running session first). `content` ≤ 500,000 chars, optional `goal`; `status` ∈ `pending · processing · sent · undelivered`; the read payload also carries `origin` ∈ `caller · automated_pr_merged · automated_merge_conflict · automated_recovery_nudge`, which records who wrote the row. No request can set it: every create site names its attributes literally and no `permit` list mentions it. Zimmer assigns it, and on one internal path (`SpotSessionHold`, for a refused turn it is re-queueing) derives it from the prompt body. Archiving a session is **refused** (422) while any row is `pending`, since the archive would discard it; `force: true` on the archive overrides that and retires the rows to `undelivered` — see [lifecycle](/sessions/lifecycle/). Deleting one re-numbers the positions behind it |
 | **CLIs** | `GET /clis/status` · `POST /clis/refresh` · `POST /clis/clear_cache` |
 | **Transcript archive** | `GET /transcript_archive/download` (zip) · `/status`. `status` returns `{state, generated_at, session_count, file_size_bytes, stale, stale_reason, complete, deferred_count, incomplete_reason}` where `state` is `present`. `complete` is false while the job is still draining a backlog — a partial archive is freshly written, so `stale` is false and `complete` is the only thing that distinguishes it; a 404 carries `state` `never_built` or `missing` plus the `archive_path` it looked at, so "no archive" is a fact you can check rather than a promise to wait. The download's `X-Archive-*` headers carry the same generated-at, session count and staleness. **Not the way to search conversations** — use `/sessions/search?search_contents=true`; the zip is hundreds of megabytes and up to ten minutes stale |
-| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, runtime_models, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) and `runtime_models` is grouped by runtime with each model's `id`, `label`, `default`, and `requires_oauth` · `GET /mcp_servers` → `{name, title, description}` · `GET /skills` |
+| **Config (read-only)** | `GET /configs` → `{mcp_servers, agent_roots, runtime_models, goals}`, where each root is the full `AgentRootsConfig::Root#to_h` (see [Agent roots](/air/agent-roots/)) and `runtime_models` is grouped by runtime with each model's `id`, `label`, `default`, and `requires_oauth` · `GET /mcp_servers` → `{name, title, description, unavailable, unavailable_reason}` · `GET /skills` |
+
+**Both server lists say whether Zimmer can start each entry.** `unavailable` is a boolean and
+`unavailable_reason` a short string that is `null` exactly when `unavailable` is false — the same
+[`ConnectorStatusProbe` computation](/air/mcp-servers/#availability-and-what-an-agent-is-offered)
+the Connectors page and `get_configs` read. It is worth checking before you attach one: an
+unresolved `${VAR}` raises at prepare time and fails the **whole session**, not just that server.
+
+Neither list is filtered. An unavailable server is flagged and kept, because "it exists and is
+broken" and "it does not exist" call for different actions — the second invites registering a
+duplicate. A server whose readiness could not be determined (the secret store did not answer)
+reports as *available*: that state is transient and hits every server at once.
 
 One endpoint lives outside `/api/v1`: `GET /api/secrets/keys` → `{secrets: [{name, description}]}`,
 the secret-name autocomplete. It returns *names and descriptions*, never values, and it sits behind

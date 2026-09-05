@@ -146,7 +146,7 @@ states block a spawn — `missing_configuration`, `needs_authorization`, `needs_
 `declared_unavailable` (the `unavailable` field above). `token_expired` does not, because
 `RefreshMcpOauthTokensJob` renews it unaided.
 
-Both surfaces read that one computation:
+Every surface that offers a server reads that one computation:
 
 - **[The Connectors page](/auth/mcp-oauth/#seeing-where-every-connector-stands)** renders every
   server with its state and what to do about it.
@@ -156,6 +156,32 @@ Both surfaces read that one computation:
   from *this server does not exist*, the latter being an invitation to go and register a duplicate.
   A root default that is currently unavailable is marked `(unavailable)` in the root's own listing,
   since that list is otherwise copied into `start_session` verbatim.
+- **The MCP-server pickers** on the new-session form, the trigger form and the session detail page
+  show an unavailable server with an **Unavailable** badge and its reason, sorted below the ones
+  that work. `McpServerOptions` builds that payload.
+- **`GET /api/v1/configs` and `GET /api/v1/mcp_servers`** carry `unavailable` (a boolean) and
+  `unavailable_reason` (a short string, `null` when startable) on every server.
+
+### Why the pickers flag and `get_configs` omits
+
+The two surfaces express the same fact in the idiom of their reader, and the difference is
+deliberate.
+
+An agent's list is a menu of things it may pass to `start_session`, and an agent can fix none of the
+reasons a server is unavailable — it cannot seed a secret or complete an OAuth consent. Leaving an
+unusable option in that menu only invites the failure, so `get_configs` takes it out and compensates
+with the roster.
+
+A human can fix most of them: "OAuth authorization not completed" is one click away at
+`/connectors`, and "`FOO_TOKEN` unresolved" names the variable to set. For that reader a silent
+absence is worse than a flagged entry — a server that vanishes from the picker reads as a broken
+catalog, not as a credential to go and seed. So the picker keeps the entry, says why, and sorts it
+last.
+
+The picker does not *refuse* the pick. This is the read path: the list's job is to say. Rejecting or
+warning on a selection that names an unavailable server is a separate question about the write path.
+
+Neither surface ever filters on `store_unavailable` or `probe_failed` — see below.
 
 Two signals are deliberately **not** on this path. Nothing here contacts an MCP server, so
 `get_configs` stays fast and deterministic on a routing session's critical path, and a Ready badge
