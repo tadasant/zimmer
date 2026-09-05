@@ -46,6 +46,29 @@ class AutomatedPromptsTest < ActiveSupport::TestCase
     )
   end
 
+  test "lost_clone_recovery names the repository and says the uncommitted work is gone" do
+    prompt = AutomatedPrompts.lost_clone_recovery(
+      git_root: "https://github.com/test/repo.git", branch: "feature/x"
+    )
+
+    assert_includes prompt, "NOT USER INPUT"
+    assert_includes prompt, "https://github.com/test/repo.git"
+    assert_includes prompt, "feature/x"
+    assert_match(/uncommitted work in the old tree is gone/i, prompt,
+      "an agent that does not know this will commit half of what its transcript says it wrote")
+    assert_match(/Do not trust what this conversation says about the state of the tree/, prompt,
+      "the transcript is the misleading part; re-reading the tree is the actionable instruction")
+  end
+
+  # Same reason as the memory-limit prompt: the paths that treat a recovery nudge
+  # specially are reasoning about a different kind of interruption, and this one
+  # carries an instruction of its own.
+  test "system_recovery? does not claim the lost-clone prompt" do
+    assert_not AutomatedPrompts.system_recovery?(
+      AutomatedPrompts.lost_clone_recovery(git_root: "https://example.com/r.git", branch: "main")
+    )
+  end
+
   # ---- What the merge fired (tadasant/tadasant-internal#1969) ----
   #
   # "Merged" is the end of the work for a PR that fires nothing and the halfway point
@@ -229,5 +252,8 @@ class AutomatedPromptsTest < ActiveSupport::TestCase
     assert_not AutomatedPrompts.nudge?(AutomatedPrompts.memory_limit_recovery(limit: "4 GB", peak: "4.1 GB"))
     assert_not AutomatedPrompts.nudge?(AutomatedPrompts.merge_conflict_message("https://example.com/pull/1"))
     assert_not AutomatedPrompts.nudge?(AutomatedPrompts.pr_merged_message("https://example.com/pull/1"))
+    assert_not AutomatedPrompts.nudge?(
+      AutomatedPrompts.lost_clone_recovery(git_root: "https://example.com/r.git", branch: "main")
+    )
   end
 end
