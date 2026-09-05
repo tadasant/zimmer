@@ -334,7 +334,7 @@ flowchart TD
   host["Worker container cgroup — memory.max 10g<br/>protects the host"]
   host --> parent["/zimmer.sessions<br/>the delegated parent, uid 1000"]
   parent --> app["/zimmer.sessions/app<br/>Rails worker, dockerd, containerd"]
-  parent --> pool["/zimmer.sessions/sessions<br/>memory.max 7g — all sessions together"]
+  parent --> pool["/zimmer.sessions/sessions<br/>memory.max 6g — all sessions together"]
   pool --> s1["…/session-12398<br/>memory.max 4g"]
   pool --> s2["…/session-12401<br/>memory.max 4g"]
   s1 --> a1["claude → MCP servers → tool subprocesses"]
@@ -368,7 +368,7 @@ the biggest process in it — `bundle exec good_job start`, at 943 MB. The Rails
 took every in-flight session with it. There was no runaway to catch: the largest process on
 the box was under 1 GB.
 
-So the `sessions` pool carries a second `memory.max` — `ZIMMER_SESSIONS_MEMORY_MAX_MB`, 7168 in
+So the `sessions` pool carries a second `memory.max` — `ZIMMER_SESSIONS_MEMORY_MAX_MB`, 6144 in
 production, 1024 on staging — over every session at once.
 
 **Where the cap sits is the entire point, and the obvious placement is wrong.** A `memory.max`
@@ -381,41 +381,50 @@ processes.
 **It does not stop sessions from being killed.** Under the load that produced #981 the pool
 would have been exhausted and a session's `ruby` would have died. That is the trade, made
 deliberately: one session dies with an attributable cause and a recovery prompt, instead of
-the worker dying and taking all of them. The number is what is left of the container's 10 GiB
-after the two things that must survive a pile-up — the Rails worker in the `app` sibling, and
-the inner `dockerd` with the dev stacks it runs, both *outside* the pool.
+the worker dying and taking all of them.
+
+**The margin under the container cap is the sizing constraint, not the pool itself.** 6144 MB
+leaves 4096 MB of the container's 10240 for the two things that must survive a pile-up, both
+of which live *outside* the pool: the Rails worker in the `app` sibling (943 MB anon at the
+kill, ~1.6 GiB measured with three sessions) and the inner `dockerd` with the dev stacks it
+runs (~1.5 GiB in the same task dump). A pool sized so that sessions can sit just under it
+while the *container* cap fires anyway would be decorative — that OOM selects across the whole
+container and takes the worker, which is #981 recurring with the new mechanism working exactly
+as designed. The pool has to fire first.
 
 **Lowering the per-session bound was not the fix.** Squeezing 4096 until N sessions fit under
 the container cap lands near 1.5 GiB, starts killing sessions that work today, and still has
 to pick an N that no scheduler guarantees. The aggregate is bounded aggregately.
 
-The pool's own `memory.max` is left root-owned, so the aggregate bound cannot be widened from
-inside the container — by the app, or by an agent, which runs as the same uid — without a
-deploy. Everything else about the pool is delegated to uid 1000, which has to create and
-remove session cgroups inside it. `0` means no aggregate cap, with per-session bounds left in
-force; unlike `ZIMMER_SESSION_MEMORY_MAX_MB=0` it does not take the mechanism out of the spawn
-path, because there is no `sh` wrapper here for an operator to need rid of.
+The pool's `memory.max` and `cgroup.subtree_control` are left root-owned: the app creates and
+removes session cgroups inside the pool and migrates processes into them, and never writes
+either. That is hygiene rather than a boundary — uid 1000 still owns `zimmer.sessions` itself,
+so nothing here stops a determined process from leaving the pool, and none of this is a
+sandbox. It means a bug in the app cannot widen or disable the aggregate bound by accident.
+`0` means no aggregate cap, with per-session bounds left in force; unlike
+`ZIMMER_SESSION_MEMORY_MAX_MB=0` it does not take the mechanism out of the spawn path, because
+there is no `sh` wrapper here for an operator to need rid of.
 
 **Sizing.** `ZIMMER_SESSION_MEMORY_MAX_MB` — 4096 in production, 1024 on staging (whose
 worker cap is 2g, so a 4 GiB bound would never trip). It deliberately does *not* sum to the
 container cap: six sessions at 4 GiB is 24 GiB against 10g. It bounds **one** runaway, which
 is the failure that has actually happened; an admission-control budget would have to sit near
 1.5 GiB and would start killing sessions that work today. What N of them add up to is bounded
-separately, by [the pool](#all-sessions-together-get-a-second-bound). A healthy worker was measured at
-1.6 GiB of anonymous memory with three concurrent sessions — the Rails worker included — so
-4 GiB is roughly an order of magnitude of headroom. `0` disables the bound entirely — not by writing `max` into
+separately, by [the pool](#all-sessions-together-get-a-second-bound). A healthy worker was
+measured at 1.6 GiB of anonymous memory with three concurrent sessions — the Rails worker
+included — so 4 GiB is roughly an order of magnitude of headroom. `0` disables the bound entirely — not by writing `max` into
 `memory.max` but by taking the whole mechanism out of the spawn path, since an operator reaching
 for the break-glass in an incident may well be reaching for it because of the wrapper. It is set at
 deploy time, never on the box.
 
-**What you see when it fires.** Three things, depending on what died:
+**What you see when it fires.** Four things, depending on what died and which bound did it:
 
 | What the kernel killed | What happens |
 | --- | --- |
 | A **tool subprocess** — the agent survives | `SessionMemoryWatch` (driven from the monitor loop, every 10s) notices `memory.events`' `oom_kill` counter move and writes a session log saying the limit was reached and that the agent's bare `Killed` / exit 137 is this, not a bug in its command. |
 | The **agent process** itself | `ProcessLifecycleManager#handle_signal_death` reads the same counter. A count that moved *since the last observation* is this death, so the session log names the bound instead of hedging "likely OOM", and the resume carries `AutomatedPrompts.memory_limit_recovery` — which tells the agent what the limit was and to stream large output rather than hold it, instead of nudging it to re-run the command that just died. |
 | Anything, seen from outside | The cgroup is named `session-<id>`, so the kernel's own `oom-kill:` line carries `oom_memcg=/zimmer.sessions/sessions/session-12398`. That is the attribution #815 could not establish: on a shared-cgroup worker there was no path from "a process was OOM-killed" to "this session did it". |
-| The **shared pool** ran out, not this session | `SessionMemoryWatch` compares the session's own `memory.peak` against its own bound. A session killed at 300 MB of its 4 GB is not told to allocate less — the log says what ran out is the memory all sessions share, and gives the pool's usage against the pool's cap. It also warns once, before any kill, when the pool passes 90%. |
+| The **shared pool** ran out, not this session | `memory.events`' `oom` counter moves on the cgroup whose *own* limit was exceeded, and cgroup v2 propagates events upward only — so a session whose `oom_kill` moved while its `oom` did not was killed by an ancestor's limit, which here is the pool. Both readers use that rather than comparing usage fractions (`memory.peak` is a lifetime mark on a cgroup reused across every turn; `memory.current` is read after the victim's memory was freed). A session killed at 300 MB of its 4 GB is not told to allocate less, and its resume prompt says to re-run rather than not to. `SessionMemoryWatch` also warns once, before any kill, when the pool passes 90%. |
 
 There is deliberately **no `memory.high`** watermark. It would reclaim and throttle before
 the hard limit, which sounds gentler — but the memory at issue is anonymous and the worker

@@ -4438,7 +4438,9 @@ The distinction is in the line itself, which is why the cgroups are named after 
 `oom_memcg=/zimmer.sessions/sessions/session-12398` is contained,
 `oom_memcg=/system.slice/docker-….scope` is not. `oom_memcg=/zimmer.sessions/sessions` — the
 shared pool — is a third case: contained in the sense that the Rails worker survives it, and
-worth a human's attention in the sense that the box is over-subscribed. The filter belongs to the alert rule, which lives in the `obs` stack rather than in this
+worth a human's attention in the sense that the box is over-subscribed.
+
+The filter belongs to the alert rule, which lives in the `obs` stack rather than in this
 repo, so it is not fixed here — tracked in a private repo. Until it is, expect a page the first
 time a production session hits its bound.
 

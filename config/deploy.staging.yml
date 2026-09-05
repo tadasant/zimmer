@@ -119,7 +119,7 @@ env:
     # 1024 leaves room for the Rails worker under the 2g cap and still bounds a session.
     ZIMMER_SESSION_MEMORY_MAX_MB: "<%= ENV.fetch("ZIMMER_SESSION_MEMORY_MAX_MB", "1024") %>"
     # The aggregate bound over all sessions at once (tadasant/zimmer#981), sized for
-    # staging's 2g worker rather than copied from production's 7168. Equal to the
+    # staging's 2g worker rather than copied from production's 6144. Equal to the
     # per-session bound on purpose: one session may use its whole 1024, two sessions share
     # it, and the remaining ~1g of the 2g cap is the Rails worker's -- which is the point,
     # since the worker is what #981 killed. It also means two concurrent staging sessions

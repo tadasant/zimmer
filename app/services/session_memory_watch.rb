@@ -49,12 +49,6 @@ class SessionMemoryWatch
   # be on almost all the time and would say nothing.
   POOL_WARN_FRACTION = 0.9
 
-  # How close a session's own peak has to get to its own bound for the kill to be read
-  # as "this session ran out" rather than "the box did". A kill is reported after the
-  # fact, so `memory.peak` has already been charged for the allocation that failed; the
-  # margin covers the difference between the peak the reader sees and the limit.
-  OWN_BOUND_FRACTION = 0.9
-
   # @param session [Session]
   # @param clock [#call] injectable for tests
   def initialize(session, clock: -> { Time.current })
@@ -116,9 +110,11 @@ class SessionMemoryWatch
     killed = @cgroup.unaccounted_oom_kills(@session)
     return if killed.nil? || killed.zero?
 
-    with_db_retry { @cgroup.record_oom_kills!(@session, observed) }
+    # The scope has to be computed before the baseline moves, so #record_oom_kills! is
+    # what computes it and hands it back.
+    scope = with_db_retry { @cgroup.record_oom_kills!(@session, observed) }
 
-    log_buffer.add(oom_kill_message(killed, stats), level: "warning")
+    log_buffer.add(oom_kill_message(killed, stats, scope), level: "warning")
     Rails.logger.warn(
       "[SessionMemoryWatch] session=#{@session.id} oom_kills=#{observed} " \
       "peak=#{stats.peak_bytes} limit=#{stats.limit_bytes}"
@@ -133,44 +129,41 @@ class SessionMemoryWatch
   # out — nothing the agent did is wrong, and telling it to allocate less would be advice
   # for a problem it does not have.
   #
-  # When `memory.peak` is unreadable (a kernel older than 5.19) there is nothing to
-  # compare, so this says the honest thing: the limit was reached, without claiming which.
-  def oom_kill_message(killed, stats)
+  # A scope of nil is a kernel that could not answer, and says the honest thing: the limit
+  # was reached, without claiming which one.
+  def oom_kill_message(killed, stats, scope)
     opening = "The kernel killed #{killed} process(es) in this session. A command that ran " \
       "out of memory exits with a bare \"Killed\" and status 137 — that is this, not a bug " \
       "in the command."
 
-    if own_bound_reached?(stats)
+    case scope
+    when SessionMemoryCgroup::SESSION_SCOPE
       "#{opening} The session reached its own memory limit of " \
         "#{human_bytes(stats.limit_bytes)} (peak #{human_bytes(stats.peak_bytes)}), so " \
         "nothing outside this session was affected."
-    elsif pool_exhausted?
-      "#{opening} This session was well inside its own limit of " \
-        "#{human_bytes(stats.limit_bytes)} (peak #{human_bytes(stats.peak_bytes)}) — what " \
-        "ran out is the memory ALL sessions on this worker share " \
-        "(#{human_bytes(pool_stats.current_bytes)} of #{human_bytes(pool_stats.limit_bytes)}). " \
-        "Retrying is reasonable once the box is quieter; running fewer things at once " \
-        "inside this session (parallel test workers, concurrent builds) makes it less likely."
+    when SessionMemoryCgroup::POOL_SCOPE
+      "#{opening} This session never reached its own limit of " \
+        "#{human_bytes(stats.limit_bytes)} — what ran out is the " \
+        "#{human_bytes(pool_stats.limit_bytes)} of memory that ALL sessions on this worker " \
+        "share. Retrying is reasonable once the box is quieter; running fewer things at " \
+        "once inside this session (parallel test workers, concurrent builds) makes it less " \
+        "likely."
     else
       "#{opening} The session reached a memory limit of " \
         "#{human_bytes(stats.limit_bytes)} (peak #{human_bytes(stats.peak_bytes)})."
     end
   end
 
-  def own_bound_reached?(stats)
-    return false if stats.peak_bytes.nil? || stats.limit_bytes.nil?
-
-    stats.peak_bytes >= stats.limit_bytes * OWN_BOUND_FRACTION
-  end
-
+  # Live pressure on the pool, for the early warning. `memory.current` is the right signal
+  # HERE and the wrong one for attributing a kill — see SessionMemoryCgroup#kill_scope.
   def pool_exhausted?
     return false if pool_stats.current_bytes.nil? || pool_stats.limit_bytes.nil?
 
     pool_stats.current_bytes >= pool_stats.limit_bytes * POOL_WARN_FRACTION
   end
 
-  # Read once per tick, not once per question: three of the branches above consult it and
-  # a fourth polls it, and they must all be looking at the same reading.
+  # Read once per tick, not once per question: the kill message and the pressure warning
+  # both consult it, and they must be looking at the same reading.
   def pool_stats
     @pool_stats ||= SessionMemoryCgroup.pool_stats
   end

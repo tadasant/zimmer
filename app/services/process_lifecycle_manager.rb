@@ -856,6 +856,14 @@ class ProcessLifecycleManager
   # `recently_oom_killed?` catches the kill SessionMemoryWatch consumed a few seconds
   # before this process was noticed dead. Either one attributes the death to the bound.
   #
+  # WHICH bound is a third question, and it changes the advice completely: the session's
+  # own means "you allocated too much, do it differently", while the shared pool means
+  # "the box was busy and you were holding memory" — for which re-running the same command
+  # is entirely reasonable and being told to allocate less is advice for a problem the
+  # session does not have. The scope has to be read before the baseline moves, so
+  # #record_oom_kills! computes it; on the `recent` path the watch already recorded it and
+  # #last_kill_scope reads it back.
+  #
   # Best-effort — an unreadable cgroup means we say what we would have said anyway.
   #
   # @return [Hash{Symbol => String}, nil] :clause for the session log, :prompt for the
@@ -871,10 +879,16 @@ class ProcessLifecycleManager
     recent = cgroup.recently_oom_killed?(session, within: MEMORY_KILL_ATTRIBUTION_WINDOW)
     return nil unless unaccounted.positive? || recent
 
-    with_db_retry { cgroup.record_oom_kills!(session, stats.oom_kills) } if unaccounted.positive?
+    scope = if unaccounted.positive?
+      with_db_retry { cgroup.record_oom_kills!(session, stats.oom_kills) }
+    else
+      cgroup.last_kill_scope(session)
+    end
 
     limit = number_to_human_size(stats.limit_bytes)
     peak = number_to_human_size(stats.peak_bytes)
+    return shared_memory_kill if scope == SessionMemoryCgroup::POOL_SCOPE
+
     {
       clause: "(the session reached its #{limit} memory limit; peak #{peak})",
       prompt: AutomatedPrompts.memory_limit_recovery(limit: limit, peak: peak)
@@ -882,6 +896,18 @@ class ProcessLifecycleManager
   rescue StandardError => e
     @logger.warn("Could not read the session memory cgroup", error: e.message)
     nil
+  end
+
+  # The kill came from the pool every session shares, not from this session's own bound
+  # (tadasant/zimmer#981). The session's own limit and peak are beside the point here —
+  # what ran out is the aggregate — so the message quotes that instead.
+  def shared_memory_kill
+    shared = number_to_human_size(SessionMemoryCgroup.pool_stats.limit_bytes)
+    {
+      clause: "(the #{shared} shared by all sessions on this worker ran out; this session " \
+        "was inside its own limit)",
+      prompt: AutomatedPrompts.shared_memory_limit_recovery(limit: shared)
+    }
   end
 
   def number_to_human_size(bytes)

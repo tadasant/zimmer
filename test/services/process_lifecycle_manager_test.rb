@@ -2354,9 +2354,15 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
   private
 
   # Stand in for the session's memory cgroup, via SessionMemoryCgroupHelpers.
-  def with_session_cgroup(oom_kills:, limit: 4 * 1024 * 1024 * 1024, peak: nil)
+  #
+  # `oom_events: 0` is a kill the SHARED POOL declared: the process died in this cgroup, so
+  # `oom_kill` moved, but this cgroup's own limit was never exceeded.
+  def with_session_cgroup(oom_kills:, oom_events: :match, limit: 4 * 1024 * 1024 * 1024, peak: nil,
+    pool_limit: nil)
     with_delegated_cgroup_parent do
-      write_session_cgroup(@session.id, oom_kills: oom_kills, limit: limit, peak: peak)
+      write_pool_cgroup(limit: pool_limit) if pool_limit
+      write_session_cgroup(@session.id, oom_kills: oom_kills, oom_events: oom_events,
+        limit: limit, peak: peak)
       yield
     end
   end
@@ -2726,6 +2732,58 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
       manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
 
       assert_match(/reached its memory limit/, @mock_cli_adapter.resumed_sessions.last[:prompt])
+    end
+  end
+
+  # #981: the same SIGKILL, from the bound one level up. The session was inside its own
+  # limit and did nothing wrong, so the advice has to be the opposite of the one above —
+  # re-run it — and the session log must not claim a limit the session never reached.
+  test "handle_exit names the shared pool when that is what ran out, not the session's bound" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12_345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+
+    with_session_cgroup(oom_kills: 1, oom_events: 0, peak: 300 * 1024 * 1024,
+      pool_limit: 6 * 1024 * 1024 * 1024) do
+      manager = create_manager
+      manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+      decision = manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
+
+      assert_equal :continue, decision.action
+      prompt = @mock_cli_adapter.resumed_sessions.last[:prompt]
+
+      assert_match(/every agent session on this worker shares/, prompt)
+      assert_no_match(/reached its memory limit/, prompt,
+        "the session stayed inside its own bound — blaming it sends the agent after a bug " \
+        "that is not there")
+      @log_buffer.flush
+      assert_match(/shared by all sessions on this worker ran out/,
+        @session.logs.reload.map(&:content).join("\n"))
+    end
+  end
+
+  # The 10s race again, for the pool case: the watch consumed the delta and recorded the
+  # scope, so this path has to read the recorded answer rather than re-derive it from a
+  # counter that has already moved.
+  test "handle_exit reads back the recorded scope for a pool kill the watch consumed" do
+    @mock_cli_adapter.execute_hook = ->(opts) { { pid: 12_345, stderr_log_path: "/tmp/test-clone/claude_stderr.log" } }
+
+    with_session_cgroup(oom_kills: 1, oom_events: 0, pool_limit: 6 * 1024 * 1024 * 1024) do
+      cgroup = SessionMemoryCgroup.for(@session.id)
+      @session.update!(metadata: @session.metadata.merge(
+        SessionMemoryCgroup::OOM_KILL_COUNT_KEY => 1,
+        SessionMemoryCgroup::OOM_EVENT_COUNT_KEY => 0,
+        SessionMemoryCgroup::LAST_KILL_SCOPE_KEY => SessionMemoryCgroup::POOL_SCOPE,
+        SessionMemoryCgroup::INCARNATION_KEY => cgroup.incarnation,
+        SessionMemoryCgroup::LAST_KILL_AT_KEY => 3.seconds.ago.iso8601
+      ))
+
+      manager = create_manager
+      manager.spawn(prompt: "Hello", working_dir: "/tmp/test-clone")
+
+      manager.handle_exit(MockProcessManager::MockStatus.signaled(9), working_dir: "/tmp/test-clone")
+
+      assert_match(/every agent session on this worker shares/,
+        @mock_cli_adapter.resumed_sessions.last[:prompt])
     end
   end
 

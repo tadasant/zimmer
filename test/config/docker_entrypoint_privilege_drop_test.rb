@@ -504,19 +504,112 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
     end
   end
 
-  # The app needs to create and remove session cgroups in the pool; it does not need to
-  # move the aggregate cap. Leaving memory.max root-owned means the bound cannot be
-  # widened from inside the container -- by the app, or by an agent, which runs as the
-  # same uid -- without a deploy.
-  test "the pool's own memory.max is not handed to uid 1000" do
+  # The app creates and removes session cgroups in the pool and migrates processes into
+  # them; it never writes the pool's own memory.max or its subtree_control, and root has
+  # already written both. Withholding them is hygiene rather than a boundary -- uid 1000
+  # still owns the delegated parent, and none of this is a sandbox -- but it means a bug in
+  # the app cannot widen or disable the aggregate bound by accident.
+  test "the pool's own memory.max and subtree_control are not handed to uid 1000" do
     Dir.mktmpdir do |app_home|
       Dir.mktmpdir do |cgroupfs|
         fake_cgroupfs(cgroupfs)
         _output, _status, stub_log = run_entrypoint(
           app_home: app_home, env: { "HOME" => "/root" }, cgroup_fs_root: cgroupfs
         )
+        pool = File.join(cgroupfs, "zimmer.sessions", "sessions")
 
         refute_match(/CHOWN-ARGV .*memory\.max/, stub_log)
+        refute_match(/CHOWN-ARGV .*#{Regexp.escape(pool)}\/cgroup\.subtree_control/, stub_log)
+        assert_match(/CHOWN-ARGV .*#{Regexp.escape(pool)}\/cgroup\.procs/, stub_log,
+          "without this the app cannot migrate a session's process into its cgroup")
+      end
+    end
+  end
+
+  # Bash reads a non-numeric arithmetic operand as a variable name (0), and a leading zero
+  # as octal. "00" is the sharp one: it passes a digits-only guard, is not string-equal to
+  # "0", and evaluates to 0 -- so a version of this that gated on the STRING would write
+  # `memory.max = 0`, a pool that OOM-kills every session on its first allocation.
+  test "a numeric-looking zero writes no cap rather than a cap of zero" do
+    Dir.mktmpdir do |app_home|
+      Dir.mktmpdir do |cgroupfs|
+        fake_cgroupfs(cgroupfs)
+        output, status = run_entrypoint(
+          app_home: app_home,
+          env: { "HOME" => "/root", "ZIMMER_SESSIONS_MEMORY_MAX_MB" => "00" },
+          cgroup_fs_root: cgroupfs
+        )
+        max = File.join(cgroupfs, "zimmer.sessions", "sessions", "memory.max")
+
+        assert_equal 0, status, output
+        refute File.exist?(max), "wrote #{File.read(max) if File.exist?(max)} into memory.max"
+        assert_match(/no aggregate memory cap/, output)
+      end
+    end
+  end
+
+  # A leading zero must not be read as octal either -- "010" is 10 MB, not 8.
+  test "a zero-padded cap is read in base 10" do
+    Dir.mktmpdir do |app_home|
+      Dir.mktmpdir do |cgroupfs|
+        fake_cgroupfs(cgroupfs)
+        output, status = run_entrypoint(
+          app_home: app_home,
+          env: { "HOME" => "/root", "ZIMMER_SESSIONS_MEMORY_MAX_MB" => "010" },
+          cgroup_fs_root: cgroupfs
+        )
+        max = File.join(cgroupfs, "zimmer.sessions", "sessions", "memory.max")
+
+        assert_equal 0, status, output
+        assert_equal (10 * 1024 * 1024).to_s, File.read(max).strip
+      end
+    end
+  end
+
+  # The pool is now part of the delegation, so a failure to build it turns per-session
+  # bounds off -- bounds that worked before #981. That is the right trade (a pool the app
+  # writes session cgroups into has to exist), but it must be LOUD, for the same reason
+  # every other step here is.
+  test "a pool that cannot be created says so and turns the bounds off rather than half on" do
+    Dir.mktmpdir do |app_home|
+      Dir.mktmpdir do |cgroupfs|
+        fake_cgroupfs(cgroupfs)
+        # A regular file where the pool directory has to go, so `mkdir -p` fails.
+        FileUtils.mkdir_p(File.join(cgroupfs, "zimmer.sessions"))
+        File.write(File.join(cgroupfs, "zimmer.sessions", "sessions"), "not a directory\n")
+
+        output, status = run_entrypoint(
+          app_home: app_home, env: { "HOME" => "/root" }, cgroup_fs_root: cgroupfs
+        )
+
+        assert_equal 0, status, output
+        assert_match(/Per-session memory bounds are OFF: could not create/, output)
+        assert_match(/run unbounded/, output)
+        assert_match(/DROPPED HOME=/, output, "the handover must still happen")
+      end
+    end
+  end
+
+  # The mirror case, and deliberately NOT fatal: a pool without its aggregate cap is the
+  # pre-#981 behaviour -- per-session bounds in force, the pile-up unbounded -- which is
+  # worth strictly more than turning the whole mechanism off.
+  test "a cap that cannot be written leaves the per-session bounds delegated" do
+    Dir.mktmpdir do |app_home|
+      Dir.mktmpdir do |cgroupfs|
+        fake_cgroupfs(cgroupfs)
+        # A directory where memory.max has to go, so the write fails while everything
+        # around it succeeds.
+        FileUtils.mkdir_p(File.join(cgroupfs, "zimmer.sessions", "sessions", "memory.max"))
+
+        output, status, stub_log = run_entrypoint(
+          app_home: app_home, env: { "HOME" => "/root" }, cgroup_fs_root: cgroupfs
+        )
+
+        assert_equal 0, status, output
+        assert_match(/could not write the aggregate memory cap/, output)
+        refute_match(/Per-session memory bounds are OFF/, output,
+          "an unwritable aggregate cap is not a reason to give up the per-session bounds")
+        assert_match(/CHOWN-ARGV .*\b1000\b/, stub_log, "the delegation still has to complete")
       end
     end
   end

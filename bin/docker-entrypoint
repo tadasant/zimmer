@@ -173,19 +173,31 @@ if [ "$(id -u)" = "0" ]; then
   # and the kernel picked the biggest process in it -- which was `bundle exec good_job
   # start`, the Rails worker that runs every session on the box.
   #
-  # 7168 MB is derived from THIS container's 10 GiB cap: ~1.5 GiB for the Rails worker in
-  # the `app` sibling, ~1.5 GiB for the inner dockerd and the dev stacks it runs (both
-  # outside this pool), and the rest for sessions. Override at deploy time.
+  # 6144 MB is derived from THIS container's 10 GiB cap, and the arithmetic has to leave a
+  # real margin or the pool is decorative: 10240 - 6144 = 4096 MB for everything outside
+  # the pool, against ~1.6 GiB measured for the Rails worker in the `app` sibling and
+  # ~1.5 GiB for the inner dockerd and the dev stacks it runs (also outside the pool). A
+  # residual too tight to hold those is a pool that never fires while the CONTAINER cap
+  # does -- which selects across the whole container and takes the worker, the exact
+  # failure this exists to stop. Override at deploy time.
   #
   # `0` means no aggregate cap. The pool is still created, so per-session bounds keep
   # working -- unlike ZIMMER_SESSION_MEMORY_MAX_MB=0, which takes the whole mechanism out
   # of the spawn path, because the break-glass there has to be able to remove the `sh`
   # wrapper and there is no wrapper to remove here.
-  zimmer_sessions_max_mb="${ZIMMER_SESSIONS_MEMORY_MAX_MB:-7168}"
-  # Validated before it is ever used in arithmetic. Bash treats a non-numeric operand as
-  # a variable name and evaluates it to 0, so an unparseable value would otherwise write
-  # `memory.max = 0` -- a pool that OOM-kills every session the instant it allocates,
-  # which is far worse than no cap at all.
+  zimmer_sessions_max_mb="${ZIMMER_SESSIONS_MEMORY_MAX_MB:-6144}"
+  # Converted to bytes ONCE, here, and everything downstream gates on the number rather
+  # than on the string. Three bash arithmetic traps meet in this one expression and each
+  # of them writes a plausible-looking `memory.max` that is catastrophically wrong:
+  #
+  #   "7168MB"  a non-numeric operand is read as a VARIABLE NAME, which is empty, which is 0
+  #   "00"      all digits, not string-equal to "0", and arithmetically 0
+  #   "010"     a leading zero is octal, so this is 8 MiB rather than 10
+  #
+  # A pool at `memory.max = 0` OOM-kills every session the instant it allocates, which is
+  # far worse than no cap at all. `10#` forces base 10; the `case` rejects anything that is
+  # not a run of digits before `10#` can complain about it; and the `-le 0` test below is
+  # what catches "00" without special-casing it.
   case "$zimmer_sessions_max_mb" in
     "" | *[!0-9]*)
       echo "ZIMMER_SESSIONS_MEMORY_MAX_MB='$zimmer_sessions_max_mb' is not a non-negative" >&2
@@ -194,6 +206,7 @@ if [ "$(id -u)" = "0" ]; then
       zimmer_sessions_max_mb=0
       ;;
   esac
+  zimmer_sessions_max_bytes=$(( 10#$zimmer_sessions_max_mb * 1024 * 1024 ))
   # Says which step gave up, and gives up. Silence here would be the worst of the
   # options: the app would run every session unbounded -- the exact state #815 is
   # about -- with nothing in the boot log to say why.
@@ -243,10 +256,10 @@ if [ "$(id -u)" = "0" ]; then
     # Best-effort, and deliberately NOT a zimmer_cgroup_skip. A pool without its aggregate
     # cap is today's behaviour -- per-session bounds in force, the pile-up unbounded --
     # and that is worth strictly more than turning the whole mechanism off.
-    if [ "$zimmer_sessions_max_mb" = "0" ]; then
+    if [ "$zimmer_sessions_max_bytes" -le 0 ]; then
       echo "The sessions pool carries no aggregate memory cap (ZIMMER_SESSIONS_MEMORY_MAX_MB=0)." >&2
-    elif echo "$((zimmer_sessions_max_mb * 1024 * 1024))" > "$zimmer_cgroup_root/sessions/memory.max" 2>/dev/null; then
-      echo "Sessions share an aggregate memory cap of ${zimmer_sessions_max_mb}MB ($zimmer_cgroup_root/sessions)." >&2
+    elif echo "$zimmer_sessions_max_bytes" > "$zimmer_cgroup_root/sessions/memory.max" 2>/dev/null; then
+      echo "Sessions share an aggregate memory cap of $zimmer_sessions_max_bytes bytes ($zimmer_cgroup_root/sessions)." >&2
     else
       echo "Warning: could not write the aggregate memory cap on $zimmer_cgroup_root/sessions." >&2
       echo "Per-session bounds still apply, but a pile-up of in-budget sessions can again" >&2
@@ -270,17 +283,19 @@ if [ "$(id -u)" = "0" ]; then
     # Only now the three files cgroup v2 says to hand over with the directory.
     # Ownership of the directory is what permits mkdir; ownership of cgroup.procs is
     # what permits the migration.
-    # `memory.max` on the pool is deliberately NOT in this list. uid 1000 needs to create
-    # session cgroups inside the pool and migrate processes into them; it does not need to
-    # move the aggregate cap, and leaving that file root-owned means the bound cannot be
-    # widened by the app -- or by an agent, which runs as the same uid -- without a deploy.
+    # Two files on the pool are deliberately NOT in this list: `memory.max`, and
+    # `cgroup.subtree_control`. The app creates and removes session cgroups inside the pool
+    # and migrates processes into them; it never writes either of those, and root has
+    # already written both. Withholding them is hygiene, not a boundary -- uid 1000 still
+    # owns $zimmer_cgroup_root itself, so a process determined to escape the pool can, and
+    # NOTHING here is a sandbox (see app/services/session_memory_cgroup.rb). It just means
+    # a bug in the app cannot widen or disable the aggregate bound by accident.
     chown 1000 "$zimmer_cgroup_root" \
                 "$zimmer_cgroup_root/cgroup.procs" \
                 "$zimmer_cgroup_root/cgroup.subtree_control" \
                 "$zimmer_cgroup_root/cgroup.threads" \
                 "$zimmer_cgroup_root/sessions" \
                 "$zimmer_cgroup_root/sessions/cgroup.procs" \
-                "$zimmer_cgroup_root/sessions/cgroup.subtree_control" \
                 "$zimmer_cgroup_root/sessions/cgroup.threads" 2>/dev/null ||
       { zimmer_cgroup_skip "could not delegate $zimmer_cgroup_root to uid 1000"; return; }
 
