@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfToken } from "lib/csrf"
 
 /**
  * EnqueuedMessageEditController - Handles inline editing and copying of enqueued messages
@@ -122,7 +123,7 @@ export default class extends Controller {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
           "Accept": "text/vnd.turbo-stream.html",
-          "X-CSRF-Token": this.csrfToken
+          "X-CSRF-Token": csrfToken()
         },
         body: new URLSearchParams({
           content: content,
@@ -232,10 +233,5 @@ export default class extends Controller {
       this.copyButtonTarget.classList.remove("text-green-600")
       this.copyButtonTarget.classList.add("text-gray-400")
     }
-  }
-
-  get csrfToken() {
-    const meta = document.querySelector("meta[name='csrf-token']")
-    return meta ? meta.getAttribute("content") : ""
   }
 }

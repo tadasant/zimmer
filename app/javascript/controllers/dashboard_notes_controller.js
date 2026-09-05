@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 
 // Connects to data-controller="dashboard-notes"
 // Manages a slide-in sidebar on the dashboard for editing session notes.
@@ -100,15 +101,9 @@ export default class extends Controller {
 
     // Use keepalive fetch to flush during disconnect/navigation
     const url = `/sessions/${this.activeSessionId}/update_notes`
-    const csrfToken = document.querySelector("[name='csrf-token']")?.content
-    if (!csrfToken) return
-
     fetch(url, {
       method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRF-Token": csrfToken
-      },
+      headers: csrfHeaders(),
       body: JSON.stringify({ session_notes: currentValue }),
       keepalive: true
     }).then(() => {
@@ -182,10 +177,7 @@ export default class extends Controller {
     try {
       const response = await fetch(`/sessions/${sessionId}/update_notes`, {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": document.querySelector("[name='csrf-token']").content
-        },
+        headers: csrfHeaders(),
         body: JSON.stringify({ session_notes: value })
       })
 

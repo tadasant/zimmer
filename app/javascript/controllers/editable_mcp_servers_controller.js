@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 import { byAvailabilityThenOrder, unavailableRowMarkup, unavailableTitle } from "lib/mcp_server_availability"
 
 // Connects to data-controller="editable-mcp-servers"
@@ -93,11 +94,7 @@ export default class extends Controller {
     try {
       const response = await fetch(`/sessions/${this.sessionIdValue}/update_mcp_servers`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content,
-          'Accept': 'text/vnd.turbo-stream.html, application/json'
-        },
+        headers: csrfHeaders({ 'Accept': 'text/vnd.turbo-stream.html, application/json' }),
         body: JSON.stringify({ mcp_servers: serverArray })
       })
 

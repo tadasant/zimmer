@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfToken } from "lib/csrf"
 
 // Floating chat bubble that appears on every page.
 //
@@ -383,7 +384,6 @@ export default class extends Controller {
 
     try {
       const pageContext = this.capturePageContext()
-      const csrfToken = document.querySelector("meta[name='csrf-token']")?.content
 
       // Use FormData to support multipart file uploads alongside text fields.
       const body = new FormData()
@@ -412,7 +412,7 @@ export default class extends Controller {
         method: "POST",
         headers: {
           // Do NOT set Content-Type — the browser will set it (with boundary) for FormData.
-          "X-CSRF-Token": csrfToken,
+          "X-CSRF-Token": csrfToken(),
           "Accept": "application/json"
         },
         body: body

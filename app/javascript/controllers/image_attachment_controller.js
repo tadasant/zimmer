@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 
 // Controller for handling image attachments on session prompts
 // Supports: file input, paste, and drag-and-drop
@@ -189,10 +190,7 @@ export default class extends Controller {
 
           const response = await fetch(this.uploadUrlValue, {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-CSRF-Token": this.getCSRFToken()
-            },
+            headers: csrfHeaders(),
             body: JSON.stringify(requestBody)
           })
 
@@ -318,11 +316,6 @@ export default class extends Controller {
       this.cameraButtonTarget.disabled = false
       this.cameraButtonTarget.classList.remove("opacity-50")
     }
-  }
-
-  // Get CSRF token from meta tag
-  getCSRFToken() {
-    return document.querySelector('meta[name="csrf-token"]')?.content || ""
   }
 
   // Clear all images (called after successful form submission)
