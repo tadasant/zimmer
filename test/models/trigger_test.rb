@@ -1700,6 +1700,36 @@ class TriggerTest < ActiveSupport::TestCase
     @trigger.heal_catalog_references!
   end
 
+  test "the stale hook and plugin alerts keep their derived titles and dedup keys" do
+    # `dedup_noun` for these two is derived from the noun rather than declared,
+    # and nothing else in the suite pins the strings it produces.
+    @trigger.update_column(:catalog_hooks, [ "gone-hook" ])
+    @trigger.update_column(:catalog_plugins, [ "gone-plugin" ])
+    HooksConfig.stubs(:exists?).with("gone-hook").returns(false)
+    PluginsConfig.stubs(:exists?).with("gone-plugin").returns(false)
+
+    raised = []
+    AlertService.stubs(:raise_alert).with do |message, options|
+      raised << [ message, options[:source], options[:dedup_key] ]
+      true
+    end
+
+    @trigger.heal_catalog_references!
+
+    assert_includes raised, [
+      "Trigger self-healed: stale catalog hook(s) removed",
+      "Trigger#create_session!",
+      "trigger_stale_hooks_#{@trigger.id}"
+    ]
+    assert_includes raised, [
+      "Trigger self-healed: stale catalog plugin(s) removed",
+      "Trigger#create_session!",
+      "trigger_stale_plugins_#{@trigger.id}"
+    ]
+    assert_equal [], @trigger.reload.catalog_hooks
+    assert_equal [], @trigger.catalog_plugins
+  end
+
   test "create_session! raises alert when stale MCP servers are removed" do
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo",

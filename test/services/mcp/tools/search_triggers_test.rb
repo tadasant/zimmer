@@ -28,8 +28,10 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
                             "**MCP Servers:** slack-workspace\n"
     assert_includes output, "**MCP Servers:** (none)"
 
-    triggers(:enabled_slack_trigger).update!(mcp_servers: %w[slack-workspace github])
-    assert_includes @tool.call({}), "**MCP Servers:** slack-workspace, github"
+    # Both names have to be in the catalog: a Trigger validates `mcp_servers` at
+    # save the way it validates its other artifact lists.
+    triggers(:enabled_slack_trigger).update!(mcp_servers: %w[slack-workspace linear])
+    assert_includes @tool.call({}), "**MCP Servers:** slack-workspace, linear"
   end
 
   # A small configuration is the whole point of the by-id view — it is rendered
