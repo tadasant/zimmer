@@ -858,12 +858,16 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       }
     ))
 
-    # Throughput that stopped, and ready work that has outlived the stall window.
+    # Throughput that stopped, and ready work on a fast lane that has outlived the
+    # stall window. One `insert_all` per shape: it requires every row to carry the
+    # same keys, and these two differ by `performed_at`/`finished_at`.
     finished = 10.hours.ago
     GoodJob::Job.insert_all([
       { queue_name: "default", job_class: "SlackTriggerPollerJob", created_at: finished - 1.second,
         updated_at: finished, scheduled_at: finished - 1.second, performed_at: finished - 1.second,
-        finished_at: finished },
+        finished_at: finished }
+    ])
+    GoodJob::Job.insert_all([
       { queue_name: "pollers", job_class: "SlackTriggerPollerJob", created_at: 25.minutes.ago,
         updated_at: 25.minutes.ago, scheduled_at: 25.minutes.ago }
     ])
