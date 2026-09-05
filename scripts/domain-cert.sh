@@ -144,18 +144,17 @@ if [ "$need_issue" = "true" ]; then
   # key is created with a 0600 umask so it is never briefly world-readable on disk.
   ssh_box 'cat > /opt/zimmer/certs/cert.pem.new' < "$crt"
   ssh_box '(umask 077; cat > /opt/zimmer/certs/key.pem.new)' < "$key"
-  # shellcheck disable=SC2016  # single-quoted on purpose: this is a script for the remote shell.
   ssh_box 'set -e
     cd /opt/zimmer/certs
     chmod 600 key.pem.new; chmod 644 cert.pem.new
     mv cert.pem.new cert.pem
     mv key.pem.new  key.pem
-    # restart (not `caddy reload`): the Caddyfile sets `admin off`, so the admin
+    # restart (not "caddy reload"): the Caddyfile sets "admin off", so the admin
     # API reload endpoint is unavailable. A restart re-reads the cert files from the
     # bind-mounted /certs; the app keeps serving on :80 through the ~1s blip.
     #
     # Two shapes exist while the Kamal migration rolls out: a Kamal host runs Caddy
-    # as the standalone `zimmer-caddy` container (no compose file), while a not-yet
+    # as the standalone "zimmer-caddy" container (no compose file), while a not-yet
     # -migrated host still runs it as a compose service. Try the Kamal one first and
     # fall back, so this shared script keeps renewing certs on BOTH.
     docker restart zimmer-caddy 2>/dev/null \
