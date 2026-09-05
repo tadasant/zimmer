@@ -5,7 +5,7 @@
 #
 # The problem this exists for: `gh` inside every session authenticates as the
 # human, so an agent's comment carries `user.login == "tadasant"` exactly like a
-# real one. GithubCommentPollerJob dispatches by author, so an agent-posted
+# real one. Github::CommentEvaluator dispatches by author, so an agent-posted
 # comment came back as "GitHub Comment Response Required" — to the session that
 # posted it, and (because routing is by tracked PR URL, not by authorship) to
 # every other session tracking that PR. Each reply would itself be a new comment

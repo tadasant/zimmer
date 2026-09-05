@@ -703,7 +703,7 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     # boundaries cuts the argument into pieces, one of which is the bare literal,
     # and no amount of care about the rest of the segment survives that. The URL
     # went into the session's list beside its real PR, and
-    # GitHubPullRequestPollerJob ran `gh pr view` against a repo that does not
+    # The PR poll pass ran `gh pr view` against a repo that does not
     # exist on every poll from then on.
     @session.update!(git_root: "https://github.com/tadasant/zimmer.git")
 

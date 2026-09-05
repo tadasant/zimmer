@@ -50,15 +50,13 @@ From `config.good_job.cron`:
 | Cadence | Job | What it does |
 | --- | --- | --- |
 | 30s | `HeartbeatSweepJob` | Nudge `needs_input` sessions with a heartbeat enabled |
-| 30s | `GitHubPullRequestPollerJob` | Poll PR state and CI status on sessions with a PR URL; tell a session when its PR merges |
-| 30s | `GithubCommentPollerJob` | Poll PR review comments |
+| 30s | `GithubPrPollPassJob` | One pass over every session tracking a PR. Enumerates once, gates on `PollBackoff` once, parses each PR url once, and takes ONE `gh pr view` reading of each PR — then hands it to three evaluators: `Github::PrStatusEvaluator` (PR state + CI status, and the merged-PR message), `Github::MergeConflictEvaluator` (on its own 2-minute floor inside the pass, because its debounce is tuned to that gap) and `Github::CommentEvaluator` (its two comment endpoints are separate resources, so they stay their own fetch). It replaced three cron entries that each swept the same sessions and re-derived the same facts ([#711](https://github.com/tadasant/zimmer/issues/711)) |
 | 1m | `SlackTriggerPollerJob` | Poll Slack channels for trigger conditions |
 | 1m | `QueueRecoveryModeExpiryJob` | Lift queue recovery mode once its TTL has elapsed |
 | 1m | `ScheduleTriggerJob` | Fire due schedule triggers |
 | 1m | `OutcomeAnalysisBatchPumpJob` | Advance every running Outcomes "Analyze All" batch: reconcile in-flight analyses, spawn the next wave |
 | 1m | `GithubTriggerPollerJob` | Poll GitHub for label-added and new-issue trigger conditions |
 | 1m | `FleetIdleCheckerJob` | Fire the `no_sessions_in_progress` trigger event once the deployment has had fewer turns on a worker than its configured ceiling — 3 by default; `waiting` sessions do not count, and neither does a turn waiting behind the `agents` worker pool or a `running` row asleep on its own future wake with nothing queued for it — for the whole of its configured stretch (5 minutes by default), with nothing parked on an outage and a pool that can serve. Idleness is a level, not an edge, so `FleetIdleMonitor` latches the fire (one per quiet stretch, re-armed only when the fleet reaches its ceiling) under a cooldown floor (60 minutes by default), because the session the fire spawns would otherwise re-qualify it by running. All three numbers are set from the **Backlog top-up** card on `/inference`. Production and staging only — the fire spawns a real session. See [Triggers](/sessions/triggers/#no_sessions_in_progress). |
-| 2m | `GitHubMergeConflictPollerJob` | Detect merge conflicts on open PRs |
 | 2m | `CliStatusRefreshJob` | Refresh the `gh` / `claude` / `codex` version and auth cache. Every check it runs must be free: an auth probe that reaches inference is a health check spending the pooled quota that gates real sessions ([#536](https://github.com/tadasant/zimmer/issues/536)) |
 | 5m | `GithubTriggerHealthCheckJob` | Alert when GitHub trigger polling has silently stopped succeeding |
 | 5m | `CleanupOrphanedSessionsJob` | Sessions marked `running` whose process is gone |
@@ -96,14 +94,14 @@ From `config.good_job.cron`:
 :::note[Sub-minute cron works]
 The `*/30 * * * * *` entries are six-field cron, with a leading seconds field, and they do what they
 look like: fugit parses the field, and `GoodJob::CronEntry#next_at` hands straight through to
-`Fugit::Cron#next_time` with no minute floor, so those three jobs fire every 30 seconds.
+`Fugit::Cron#next_time` with no minute floor, so those jobs fire every 30 seconds.
 
 A five-field expression is the same thing with the seconds field pinned to `0`. So a one-minute
 cadence anywhere in the table is a choice about how often the job should run, not a limit on how
 often it could. `test/config/cron_schedule_test.rb` pins this: it reads every expression out of
 `CronSchedule::ENTRIES`, and for each six-field one it asserts fugit still fires it more than once
 a minute — 30 seconds apart, for the `*/30 * * * * *` the whole config uses. A fugit upgrade that
-stopped reading the seconds field fails CI instead of silently slowing three pollers to a crawl.
+stopped reading the seconds field fails CI instead of silently slowing the pollers to a crawl.
 :::
 
 ### What runs where
@@ -746,7 +744,7 @@ baseline to the cgroup's incarnation rather than trusting it to persist.
 
 ## What the PR comment poller acts on
 
-`GithubCommentPollerJob` records every new comment on a tracked PR in the session's
+`Github::CommentEvaluator` records every new comment on a tracked PR in the session's
 `custom_metadata`, but only some of them wake the session. A comment produces a follow-up prompt
 when all of these hold:
 
@@ -847,7 +845,7 @@ branch rather than prose the commenter typed — see
 
 ## What a merged PR tells the session
 
-`GitHubPullRequestPollerJob` writes each tracked PR's state into
+`Github::PrStatusEvaluator` writes each tracked PR's state into
 `custom_metadata["github_pull_request_statuses"]` on every tick it is allowed to poll — every 30
 seconds for a session the user has touched recently, less often as `PollBackoff` stretches the
 interval out, but never less often than every 30 minutes while the session still holds a PR that
@@ -912,9 +910,9 @@ Three rules keep it quiet:
 - **Once per PR.** `custom_metadata["github_pull_request_merged_notified"]` records which PRs have
   been announced. A session with three PRs is told about each one as it lands, and only then.
 - **No debounce, unlike merge conflicts.** The two-poll confirmation in
-  `GitHubMergeConflictPollerJob` exists because GitHub's `mergeable` field returns transient
-  `false` readings. `mergedAt` has no such failure mode: a PR with a merge timestamp is merged, and
-  stays merged.
+  `Github::MergeConflictEvaluator` exists because GitHub's `mergeable` field returns transient
+  conflicting readings. `mergedAt` has no such failure mode: a PR with a merge timestamp is merged,
+  and stays merged.
 
 The message is delivered before the metadata marker is written, so a crash in between costs one
 duplicate on the next poll rather than a notification that silently never arrives.
@@ -922,7 +920,7 @@ duplicate on the next poll rather than a notification that silently never arrive
 ### How often a waiting session is polled
 
 `PollBackoff` measures **engagement** — time since a human last touched the session — and stretches
-each poller's per-session interval out along a fixed curve, ending at a floor of one poll every 24
+the pass's per-session interval out along a fixed curve, ending at a floor of one poll every 24
 hours once that is more than a day old. It exists because polling every active session's PRs on
 every 30-second tick exhausts GitHub's 5000/hr authenticated limit at around 50 sessions.
 
@@ -934,7 +932,7 @@ bucket exactly when the merge message is the only thing that can release it — 
 activity age, crossed into the 24-hour bucket eighteen minutes later, and so were not due again for
 a full day; their PRs merged eight hours inside that gap.
 
-`GitHubPullRequestPollerJob` closes that by passing `PollBackoff` a `max_interval` — a ceiling on
+`Github::PrPollPass` closes that by passing `PollBackoff` a `max_interval` — a ceiling on
 how far the curve may stretch this session — of `AWAITING_PR_OUTCOME_MAX_POLL_INTERVAL`, 30 minutes,
 whenever `Session#unresolved_pr_urls` is non-empty:
 
@@ -953,14 +951,15 @@ whenever `Session#unresolved_pr_urls` is non-empty:
   the full curve resumes. This matters more than it looks: "unresolved" is a state a session can
   never leave on its own. Nothing removes an idle session from `Session.with_github_prs` — archiving
   old sessions is an operator action, not a cron job — and a PR that was deleted, or whose repo the
-  token cannot read, returns nil from `fetch_pr_status` on every tick, so no status is ever recorded
-  for it. Without an expiry both pin a session at two polls an hour for the rest of its life and the
+  token cannot read, returns nil from `Github::PrSnapshot.fetch` on every tick, so no status is ever
+  recorded for it. Without an expiry both pin a session at two polls an hour for the rest of its life and the
   capped population only ever grows, which is the one way this could re-create the pressure the
   backoff exists to relieve. The bound keeps that population proportional to a week of fleet
   throughput rather than to all of time.
 
-Only the PR *status* poller is capped. `GithubCommentPollerJob` and `GitHubMergeConflictPollerJob`
-ride the full curve — see [Limitations](/limitations/#a-parked-session-can-hear-about-its-merged-pr-up-to-half-an-hour-late).
+Only the pass's own gate is capped. The comment and merge-conflict evaluators keep their own keys
+inside the pass and ride the full curve — see
+[Limitations](/limitations/#a-parked-session-can-hear-about-its-merged-pr-up-to-half-an-hour-late).
 
 ## A conflict notice is re-read when it comes off the queue, not when it was written
 
@@ -990,7 +989,7 @@ is the longest-gap version of the same staleness, since a spot hold lasts hours 
 minutes a turn boundary takes.
 
 Retiring a notice also hands the PR back to the poller's debounce, via
-`GitHubMergeConflictPollerJob.forget_conflict!`. Without that the suppression would be permanent:
+`Github::MergeConflictEvaluator.forget_conflict!`. Without that the suppression would be permanent:
 the poller has already recorded the PR as "confirmed + notified", and it clears that marker only on
 a *clean* reading — so a `mergeable == true` that was itself one of the stale readings the debounce
 exists to filter would silence a real conflict forever. Clearing both markers makes the guard
@@ -1065,13 +1064,12 @@ merely-degraded API would trade a rare wedge for a spurious failure on every 30-
 | --- | --- | --- |
 | `GithubSearchService::REQUEST_TIMEOUT` — `gh api search/issues` | 15s | Search round trip; the original bound the rest follow. |
 | `GithubSearchService::AUTH_STATUS_TIMEOUT` — `gh auth status` | 10s | Single cheap round trip on the poller's preflight. |
-| `GitHubPullRequestPollerJob::PR_STATUS_TIMEOUT` — `gh pr view` | 20s | One REST round trip. |
-| `GitHubPullRequestPollerJob::CI_STATUS_TIMEOUT` — `gh pr checks` | 30s | Resolves the head commit, then aggregates every check run on it. |
-| `GitHubPullRequestPollerJob::MERGE_COMMIT_TIMEOUT` — `gh pr view --json mergeCommit` | 20s | Same round trip as `PR_STATUS_TIMEOUT`, and made only on the `open` → `merged` transition. |
-| `GitHubPullRequestPollerJob::POST_MERGE_RUNS_TIMEOUT` — `gh api …/actions/runs?head_sha=` | 30s | One page of workflow runs on the merge commit, also only on that transition. A failure here reports no runs, which is the "settle it yourself" branch of the merged message. |
-| `GithubCommentPollerJob::COMMENT_PAGE_TIMEOUT` — `gh api …/comments` | 20s | **Per page.** The fetch is a pagination loop; a bound on the whole loop is either too tight for a long thread or bounds nothing. A page that times out ends the loop the way a non-zero exit already does — return the pages already read. |
-| `GithubCommentPollerJob::REACTION_TIMEOUT` — `gh api --method POST …/reactions` | 10s | Best-effort 👀; the follow-up prompt does not depend on it, so waiting on it only delays the prompt. |
-| `GitHubMergeConflictPollerJob::MERGEABLE_TIMEOUT` — `gh api …/pulls/N --jq .mergeable` | 20s | **Per attempt** — the null-retry loop calls it up to four times while GitHub computes mergeability, which it does on demand, so this is not the cheap call it looks. A *timeout* is returned on immediately rather than retried, so a hang costs one attempt and not four. |
+| `Github::PrSnapshot::TIMEOUT` — `gh pr view --json state,mergedAt,mergeable` | 20s | One round trip, and the pass's only read of the PR object. It answers both the PR-status evaluator and the merge-conflict evaluator, which used to be two calls to the same resource thirty seconds apart. |
+| `Github::PrStatusEvaluator::CI_STATUS_TIMEOUT` — `gh pr checks` | 30s | Resolves the head commit, then aggregates every check run on it. |
+| `Github::PrStatusEvaluator::MERGE_COMMIT_TIMEOUT` — `gh pr view --json mergeCommit` | 20s | Same round trip as the snapshot's, and made only on the `open` → `merged` transition. |
+| `Github::PrStatusEvaluator::POST_MERGE_RUNS_TIMEOUT` — `gh api …/actions/runs?head_sha=` | 30s | One page of workflow runs on the merge commit, also only on that transition. A failure here reports no runs, which is the "settle it yourself" branch of the merged message. |
+| `Github::CommentEvaluator::COMMENT_PAGE_TIMEOUT` — `gh api …/comments` | 20s | **Per page.** The fetch is a pagination loop; a bound on the whole loop is either too tight for a long thread or bounds nothing. A page that times out ends the loop the way a non-zero exit already does — return the pages already read. |
+| `Github::CommentEvaluator::REACTION_TIMEOUT` — `gh api --method POST …/reactions` | 10s | Best-effort 👀; the follow-up prompt does not depend on it, so waiting on it only delays the prompt. |
 | `GithubCommentPromptBuilder::VISIBILITY_TIMEOUT` — `gh api repos/{owner}/{repo}` | 10s | Cheap, and cached per builder. This is the one site whose failure branch is not free: it fails **closed**, so a timeout stays a *deferral* — `visibility_lookup_failed?` keeps the comment retryable until `VISIBILITY_RETRY_WINDOW_SECONDS` runs out, rather than dropping it. |
 | `GithubPullRequestMergeability::READ_TIMEOUT_SECONDS` | 20s | Same endpoint, on a session's delivery path rather than a poller tick. |
 | `GateDecisions::LedgerSource::Github::LIST_TIMEOUT` | 15s | The ledger's directory listing — one `gh api …/contents/<dir>` round trip. |
@@ -1124,7 +1122,7 @@ Most short jobs run on `default`. Six kinds of work are deliberately isolated:
   migration and a converging post-deploy task.
 - **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob` and `GithubTriggerPollerJob`, and
   since then the rest of the periodic work that must not queue behind session jobs:
-  `GithubCommentPollerJob`, `GitHubPullRequestPollerJob`, `GitHubMergeConflictPollerJob`,
+  `GithubPrPollPassJob`,
   `CatalogRefreshJob`, `CliStatusRefreshJob`, `WarmSkillsCacheJob`, `EgressHealthCheckJob`,
   `ElicitationEndpointHealthCheckJob`, `SystemHealthMonitorJob`, `MangledCloneReportJob` and
   `LiveCloneIntegrityJob`.

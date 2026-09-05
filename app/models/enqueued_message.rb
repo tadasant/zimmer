@@ -271,7 +271,7 @@ class EnqueuedMessage < ApplicationRecord
 
   # Hand the PR this notice named back to the poller's debounce, so a conflict
   # that turns out to have been real is re-confirmed rather than silently
-  # swallowed. GitHubMergeConflictPollerJob.forget_conflict! carries the full
+  # swallowed. Github::MergeConflictEvaluator.forget_conflict! carries the full
   # reasoning; the short version is that the poller has already marked this PR
   # "confirmed + notified", and that marker is cleared only by a clean reading.
   #
@@ -283,7 +283,7 @@ class EnqueuedMessage < ApplicationRecord
     pr_url = AutomatedPrompts.merge_conflict_pr_url(content)
     return if pr_url.blank? || session.nil?
 
-    GitHubMergeConflictPollerJob.forget_conflict!(session, pr_url)
+    Github::MergeConflictEvaluator.forget_conflict!(session, pr_url)
   rescue => e
     Rails.logger.error(
       "[EnqueuedMessage] Retired message #{id} as stale but could not reset the conflict debounce for " \
