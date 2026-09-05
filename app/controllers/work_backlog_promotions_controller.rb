@@ -28,7 +28,13 @@
 #
 # `issues/_promote` is the form that posts here, on /issues. It is the only thing
 # that does.
+#
+# `pin`, `unpin` and `remove` — the other three human-only operations — are drawn
+# at the same surface for the same reason, in WorkBacklogPinsController and
+# WorkBacklogRemovalsController.
 class WorkBacklogPromotionsController < ApplicationController
+  include IssuesPageReturn
+
   # POST /issues/backlog/:id/promote
   def create
     item = WorkBacklogItem.find(params[:id])
@@ -61,19 +67,10 @@ class WorkBacklogPromotionsController < ApplicationController
 
   private
 
-  # Back to the page the button was on, rebuilt from the query the form carried
-  # rather than from the referrer — the promote form posts the page's own filter
-  # and chart state (see `issues/_promote`), so the URL is reconstructible and
-  # does not depend on a header a browser may strip.
-  #
-  # The new session's id rides in that URL rather than in the flash. The layout
-  # renders EVERY flash key as its own toast, so a `flash[:promoted_session_id]`
-  # shows up as a second, contentless "Promoted Session / 2" popup beside the
-  # real notice. A query param carries the same thing and the page renders one
-  # banner from it, with a link.
+  # The new session's id rides in the return URL rather than in the flash — see
+  # IssuesPageReturn for why — and the page renders one banner from it, with a
+  # link.
   def back(notice: nil, alert: nil, session: nil)
-    view = params.permit(*IssuesController::VIEW_KEYS).to_h.compact_blank
-    view["promoted_session_id"] = session.id if session
-    redirect_to issues_path(view), notice: notice, alert: alert
+    back_to_issues(notice: notice, alert: alert, promoted_session_id: session&.id)
   end
 end

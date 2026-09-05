@@ -3,13 +3,14 @@
 # The Issues page: the fleet's work backlog joined to what is going on in GitHub
 # across the repos the fleet works.
 #
-# READ-ONLY, EXCEPT FOR ONE THING THAT IS NOT HERE. The page's single write —
-# promoting a queued item to a `priority` session — belongs to
-# WorkBacklogPromotionsController, which is where it is for the same reason
-# GateDecisionFeedbacksController exists: it is a human's lever over what the
-# fleet works on next, and it is drawn at the browser surface rather than on the
-# API-key surface an agent session is handed. Read the honest limits of that
-# boundary on that controller.
+# READ-ONLY, EXCEPT FOR FOUR THINGS THAT ARE NOT HERE. The page is the form in
+# front of the work backlog's four human-only operations — promote
+# (WorkBacklogPromotionsController), pin and unpin (WorkBacklogPinsController)
+# and remove (WorkBacklogRemovalsController). They live in their own controllers
+# for the same reason GateDecisionFeedbacksController exists: they are a human's
+# levers over what the fleet works on next, and they are drawn at the browser
+# surface rather than on the API-key surface an agent session is handed. Read the
+# honest limits of that boundary on WorkBacklogPromotionsController.
 #
 # FILTERS COME FROM WorkBacklog::Filters, the same object the REST index and
 # `get_work_backlog` use. A second filtering path here would let the page and the
@@ -26,8 +27,9 @@ class IssuesController < ApplicationController
 
   # What the filter bar, the chart controls and the pager round-trip between
   # them, so changing the window does not reset the filters and vice versa.
-  # WorkBacklogPromotionsController rebuilds this page's URL from the same list —
-  # a promote posts from a page and comes back to it — so there is one copy.
+  # Every write the page offers rebuilds its URL from the same list, through
+  # IssuesPageReturn — a promote, pin, unpin or remove posts from a page and comes
+  # back to it — so there is one copy.
   VIEW_KEYS = (FILTER_KEYS + %i[window segment gh_page]).freeze
 
   # The page.

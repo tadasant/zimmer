@@ -393,13 +393,23 @@ Rails.application.routes.draw do
   # because it costs two `gh` calls per watched repo and must not be re-run by a
   # prefetch.
   #
-  # The promote action is the page's one write, and it is browser-only by design:
-  # WorkBacklogPromotionsController is an ApplicationController descendant, so no
-  # API key and no MCP tool reaches it. Read the honest limits of that boundary on
-  # the controller itself — Zimmer's browser surface authenticates nobody.
+  # The page's four writes are the work backlog's four human-only operations —
+  # promote, pin, unpin, remove — and every one of them is browser-only by design:
+  # each controller is an ApplicationController descendant, so no API key and no
+  # MCP tool reaches it. The same four exist under /api/v1/work_backlog_items,
+  # where Api::BaseController authenticates a key the whole agent fleet shares,
+  # which is exactly why they are re-drawn here. Read the honest limits of that
+  # boundary on WorkBacklogPromotionsController — Zimmer's browser surface
+  # authenticates nobody.
+  #
+  # :id is the row id here, not the item's key: these forms are rendered from
+  # rows the page already loaded, so the id is what they have.
   get "issues", to: "issues#index", as: :issues
   post "issues/refresh", to: "issues#refresh", as: :refresh_issues
   post "issues/backlog/:id/promote", to: "work_backlog_promotions#create", as: :promote_work_backlog_item
+  post "issues/backlog/:id/pin", to: "work_backlog_pins#create", as: :pin_work_backlog_item
+  delete "issues/backlog/:id/pin", to: "work_backlog_pins#destroy", as: :unpin_work_backlog_item
+  post "issues/backlog/:id/remove", to: "work_backlog_removals#create", as: :remove_work_backlog_item
 
   # Connectors page: every catalog MCP server with its auth status. Each row's
   # status is fetched individually by a lazy Turbo Frame hitting #show, so the
