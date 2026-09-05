@@ -200,11 +200,11 @@ exactly four sanctioned reasons to send it:
    back to. When there *is* a parent, the prompt names the route: `action_session` with
    [`message_parent`](/extend/mcp-server/#message_parent-the-one-action-that-exists-only-here),
    which resolves the parent server-side and carries a `wrong_scope` / `missing_tools` reason. The
-   session reports and archives instead of parking. Two checks come before any of that, because
-   missing scope is usually a routing step rather than a dead end: the agent has to name the root
-   or tool it checked and did not find (`get_configs` lists what the connection can reach), and to
-   spawn a session on the root that *does* have the scope when it holds session-spawning tools.
-   Check, then spawn, then park — parking is right only once both come back negative.
+   session reports and archives instead of parking. Two steps come before either ending, because
+   missing scope is often a routing step rather than a dead end: the agent has to name the root or
+   tool it looked for and did not find, and spawn the root that *does* have the scope when it holds
+   session-spawning tools. Check, then spawn, then report, then park — parking is the last of those
+   steps, not the first.
 2. The session opened a PR whose merge disposition is unsettled. *How* it holds is the `open-pr`
    skill's terminal steps rather than this list: asleep in `waiting` on a bounded self-wake while
    the merge gate is still rating the PR, because that is a machine wait. What brings the session

@@ -251,18 +251,28 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
   # Reason 1 used to offer two exits — do it yourself, or report to a parent — and
   # presented missing scope as terminal. A session that could have spawned the root
   # owning the fix parked instead, four times, while an alert kept firing (#859).
+  # The assertions run against reason 1's own text, not the whole prompt: the
+  # neighbouring principle 8 says something similar about reporting upward, and the
+  # point of this test is that the precondition sits on the *parking* route.
   test "reason 1 requires checking and spawning before a session parks on missing scope" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+    reason_one = prompt[/^1\. \*\*You lacked the authorization scope.*?$/]
 
+    assert reason_one.present?, "could not isolate reason 1 from the lifecycle section"
     # The claim has to be verified, not assumed.
-    assert_includes prompt, "**Did you look?** `get_configs` lists the roots and servers this connection can reach"
-    assert_includes prompt, "name the root or tool you checked and did not find"
-    assert_includes prompt, "an unverified \"only a human has this access\" is an assumption, not a finding"
+    assert_includes reason_one, "an unverified \"only a human has this access\" is an assumption, not a finding"
     # Spawning the root that has the scope is the third exit reason 1 omitted.
-    assert_includes prompt, "**Can you spawn it?** If you hold session-spawning tools, start a session on the root that has the scope"
-    # The ordering is the whole point, and parking stays sanctioned once both come back negative.
-    assert_includes prompt, "Check, then spawn, then park"
-    assert_includes prompt, "when the check comes back empty and you cannot spawn, park, which is exactly what this reason is for"
+    assert_includes reason_one, "spawn the root that does have the scope"
+    # The ordering is the whole point, and parking survives it as the last step.
+    assert_includes reason_one, "Check, then spawn, then report, then park — parking is the last of those steps, not the first."
+  end
+
+  # The section's own worked example modelled the unverified claim the reason above
+  # forbids ("I don't have the GCP IAM scope"), which is the assumption, not the check.
+  test "the worked example for naming reason 1 models the check rather than an assumption" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    assert_includes prompt, "no root I can reach or spawn has the GCP IAM scope to grant this"
   end
 
   test "session lifecycle principle bounds the queue to one session per human-initiated goal" do
