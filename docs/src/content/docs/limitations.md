@@ -4776,6 +4776,58 @@ The workaround is the same edit that would have been needed anyway: keep the roo
 the two states apart — and letting a resolved-but-blank fallback mean "clone at the repo root" — is
 the real fix, and it is not implemented.
 
+## `recent_errors` sees only what Zimmer writes to a table
+
+`system_health.recent_errors` is the union of two durable error stores: session error logs (the
+`logs` table) and background job failures (`good_jobs.error`). Between them they cover an error that
+happened inside a session, and an error that a job raised, retried on or was discarded for.
+
+They do not cover an error that only ever reaches **stdout** — a connection failure inside GoodJob's
+own poller, anything raised before a job row could be written, anything in the Rails request cycle
+that Zimmer logs rather than persists. Zimmer has no queryable store of the Rails log; that is what
+the [observability stack](/operate/observability/) is for.
+
+That gap is exactly the shape of the ten-hour outage this field was reported on
+([#428](https://github.com/tadasant/zimmer/issues/428)): the application log emitted a
+database-connection error about 36 times a minute for ten hours and `recent_errors` stayed `[]` the
+whole time, because the errors were never written anywhere it can read. So **`[]` here means "no
+error was recorded", never "nothing is wrong"** — the `/health` panel says so in as many words. It
+is also why the `system_health` *status* does not depend on this field: catching that outage is
+[`execution_stall`](/operate/background-jobs/#when-nothing-is-executing)'s job, and it reads
+completions rather than errors.
+
+## Process health counts only what the container serving the page can see
+
+Every number in the `/health` **Process Health** panel — Active, Tracked, Orphaned — is measured
+inside the operating-system process that renders it, and in production none of them can see an agent
+process:
+
+- **Tracked** reads a `ProcessRegistry`, which is an in-memory Hash belonging to the
+  `SystemProcessManager` instance. `HealthMonitorService#initialize` builds a fresh one per report,
+  so it holds the processes *this report* spawned — none, always.
+- **Active** is a `pgrep` of the current user's processes, which sees one container.
+  `ConnectionBudget` puts GoodJob in `:external` mode in production, so agent CLIs are children of
+  the **worker** container while `/health` is served from **web**.
+- **Orphaned** is derived from Active, so it inherits both.
+
+Before [#428](https://github.com/tadasant/zimmer/issues/428) this was reported as `0 / 0 / 0` with
+the status `healthy — No orphaned processes`, in payloads that said five sessions were running. A
+counter that structurally cannot observe the processes it counts can never report an orphan, and its
+zero means *not knowable from here*, not *none exist*.
+
+The report no longer makes that claim: it reads the one record of an agent process that is durable
+and cross-container — `Session.metadata`'s `process_pid` and `process_identity`, classified by
+`AgentProcessLiveness` — reports it as **Recorded**, and when sessions hold recorded processes that
+none of the local counters can see, the section's status is `unknown` rather than `healthy`. An
+`unknown` sub-check does not colour the overall status green *or* page anyone; `overall_status` says
+"N could not be evaluated" instead of "All systems operational".
+
+What is still **not** fixed is orphan detection itself. On a production deployment, nothing counts
+or reaps orphaned agent processes from the web container, and the "Clean Up Orphaned Processes"
+button there acts on a set that is always empty. `AgentProcessLiveness.ensure_no_live_process!` is
+what actually keeps a stale agent process from surviving into the next turn, and it runs on the
+spawn path in the worker, where the pid means something.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

@@ -122,8 +122,16 @@ class SystemHealthMonitorJob < ApplicationJob
   # Keyed off the status `code`, which HealthMonitorService owns, rather than off
   # its prose — the message is written for a human and is free to be reworded.
   def alert_title(status)
-    if status.code.to_s.start_with?("#{HealthMonitorService::WEDGED_LANE_CODE_PREFIX}:")
+    case status.code.to_s
+    when /\A#{Regexp.escape(HealthMonitorService::WEDGED_LANE_CODE_PREFIX)}:/
       "Queue lane wedged"
+    when HealthMonitorService::EXECUTION_STALL_CODE
+      # Not a backlog at all: nothing anywhere has finished. A responder who reads
+      # "backlog" goes looking for what is deep, and the answer is that nothing is
+      # running. (In the total-outage case this job cannot run either — it is on
+      # `pollers`, which is exactly the hole the external Grafana rule covers — but
+      # a stall confined to the lanes this job does not run on reaches here.)
+      "Nothing is executing"
     else
       "Queue backlog critical"
     end
