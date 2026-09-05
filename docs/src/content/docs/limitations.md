@@ -483,7 +483,7 @@ the breaker, not the pool, so diagnosing *why* still means reading the logs.
 
 The pool is sized at 3 because `solid_cable` leases per `INSERT` and returns the connection, and only
 ~2% of broadcasts also run an autotrim transaction (`SolidCable::TrimJob`, a SKIP-LOCKED delete of ≤100
-rows) — so saturating it would take thousands of broadcasts per second, and sixteen agent sessions
+rows) — so saturating it would take thousands of broadcasts per second, and eight agent sessions
 produce single or double digits. If that estimate is ever wrong, the failure will be quiet. Raise
 `CABLE_DB_POOL` and `app_required_backends` together.
 
@@ -1424,6 +1424,27 @@ that does it has known limits:
   10 against a pool of 8, so a deployment nobody has retuned renders that note from its first boot
   and never holds spot work on `fleet_at_cap`. The top-up ceiling's default of 3 is under the pool
   and behaves normally.
+- **"Growing the pool is a deploy away" is true of the config and, on Tadasant production, false of
+  the machine.** `GOOD_JOB_AGENTS_THREADS` is bounded by the worker's **memory cgroup**, not by the
+  database — each thread runs a whole agent session — and on that deployment 8 already reaches it.
+  Over the 24 hours to 2026-09-05T14:16Z the worker cgroup's **`anon`** — unreclaimable, so this is
+  the number that decides whether N sessions fit — peaked at **9.07 GiB against a 10 GiB
+  `memory.max`**, and `memory.events` recorded `oom_kill`s. (`memory.current` touched the cap to
+  within 94 KB and forced-reclaim events ran to 133,791, but both include reclaimable page cache —
+  `file` peaked at 7.28 GB — so they corroborate rather than prove.)
+  [#981](https://github.com/tadasant/zimmer/issues/981) is the open incident: eight *in-budget*
+  sessions — no runaway, largest process 943 MB — summed over the cap and the kernel OOM-killed the
+  GoodJob worker itself, taking every in-flight `AgentSessionJob` with it. The per-session bound
+  cannot cover this and is not meant to: cgroup v2 is hierarchical, so `zimmer.sessions/session-<id>`
+  sits inside the container's cgroup and charges the same 10 GiB;
+  `ZIMMER_SESSION_MEMORY_MAX_MB` bounds one runaway, and nothing bounds the sum. So the honest shape
+  of the limit **on that deployment** is that the effective concurrency ceiling is 8 and **should not
+  be raised until #981 lands**: a bigger pool converts durable queued rows into a worker kill. A
+  self-hosted deployment with a different worker cap has a different number, arrived at the same way
+  — measure `anon` against `memory.max` under load. Raising it means #981, then a re-measurement,
+  then a matching `app_required_backends` bump. Connections are not what binds first, but they are
+  not roomy either: 15 threads derive 97 required backends, which is the *entire* capacity of a
+  `db-s-2vcpu-4gb` cluster — zero margin.
 - **A turn queued behind the worker pool still reads as a running session on the dashboard.**
   `sessions.status = running` is stamped when a turn is *handed to* a session, not when a worker
   starts it, so on a busy deployment a real share of the `running` rows are turns waiting for a slot.
