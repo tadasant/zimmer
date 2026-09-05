@@ -176,11 +176,11 @@ module SessionStateMachine
           # was woken by must not answer that question — it belongs to the wait
           # that is now over.
           #
-          # A RECOVERY pause is not a turn coming to rest, it is Zimmer admitting
-          # it interrupted one, and it is the exact case #569 is about: retiring
-          # the group here would re-open the no-trigger window at the one moment
-          # it must stay shut.
-          retire_held_wake_triggers unless recovery_pause?
+          # A pause Zimmer entered on a turn's behalf is not a turn coming to
+          # rest, and it is the exact case #569 is about: retiring the group there
+          # would re-open the no-trigger window at the one moment it must stay
+          # shut. See #turn_stood_down_before_it_ran?.
+          retire_held_wake_triggers unless turn_stood_down_before_it_ran?
           execute_pending_sleep
           # Last, and after execute_pending_sleep: a session that just went
           # dormant is not idling on its queue, it is asleep, and the check
@@ -900,6 +900,27 @@ module SessionStateMachine
   # none of them has the auto-continue promise that makes this suppression safe.
   def recovery_pause?
     metadata&.dig("paused_by") == "recovery"
+  end
+
+  # True when the pause this session is entering is Zimmer standing a turn down
+  # before the agent ever ran it, rather than a turn finishing.
+  #
+  # Three markers, three paths, one shape: `paused_by = "recovery"` for a process
+  # Zimmer restarted out from under a live turn; `failure_reason =
+  # "undelivered_turn"` for a turn that raised during setup, which
+  # Sessions::ParkUndeliveredTurn states explicitly writes no `paused_by`; and
+  # `auth_outage_reason` for a turn stood down because the account pool was empty.
+  # All three reach `pause!` with the prompt undelivered.
+  #
+  # #retire_held_wake_triggers is the caller, and undelivered is exactly what
+  # matters to it: a WOKEN turn that never ran has not had its chance to re-arm,
+  # so the wake group handed to it is still the only thing that will wake the
+  # session. All three markers are cleared by the resume that follows, so this is
+  # true for exactly the window in which the turn is owed a re-run.
+  def turn_stood_down_before_it_ran?
+    recovery_pause? ||
+      metadata&.dig("failure_reason") == Sessions::ParkUndeliveredTurn::FAILURE_REASON ||
+      metadata&.dig("auth_outage_reason").present?
   end
 
   # Announce a `needs_input` the `pause` callback deliberately did not.
@@ -1809,15 +1830,26 @@ module SessionStateMachine
   # group is retired at the end of any turn that completes normally, which is the
   # same moment the old code's destroy amounted to, one turn later.
   def hold_pending_one_time_wakes(conditions)
-    trigger_ids = conditions.map(&:trigger_id).uniq
+    # Only a trigger that is NOTHING BUT one-shot wakes can be held, because
+    # holding hands the whole ROW to #retire_held_wake_triggers, which destroys
+    # it. A trigger mixing an unfired one-shot with a recurring schedule or a
+    # Slack condition does other work the requester's next pause has no business
+    # deleting — Trigger#hold_wake_group! and CleanupStaleTriggersJob both make
+    # the same distinction. Its one-shot is consumed as before.
+    held, consumed = conditions.partition { |condition| condition.trigger&.one_time_reuse_trigger? }
+
+    consumed.each { |condition| condition.update!(last_triggered_at: Time.current) }
+    return if held.empty?
+
     held_at = Time.current
-    Trigger.where(id: trigger_ids).where.not(status: "failed")
+    Trigger.where(id: held.map(&:trigger_id).uniq)
            .update_all(wake_held_at: held_at, updated_at: held_at)
 
     Rails.logger.info(
-      "[SessionStateMachine] Held #{conditions.size} pending one-time wake-up(s) across the woken " \
-      "turn of session #{id} (trigger_conditions #{conditions.map(&:id).join(', ')}) — they stay " \
-      "armed until this turn comes to rest"
+      "[SessionStateMachine] Held #{held.size} pending one-time wake-up(s) across the woken " \
+      "turn of session #{id} (trigger_conditions #{held.map(&:id).join(', ')}) — they stay " \
+      "armed until this turn comes to rest" \
+      "#{consumed.any? ? "; consumed #{consumed.size} on trigger(s) that do other work" : ''}"
     )
   end
 
@@ -1833,6 +1865,15 @@ module SessionStateMachine
   # A `failed` trigger is exempt for the same reason it is exempt everywhere else:
   # it is the record of a wake that tried and could not, and it is the user's to
   # clear.
+  #
+  # Called from `pause` and `archive`, and deliberately NOT from `fail`. A failed
+  # session is not reliably a finished one — CleanupOrphanedSessionsJob recovers
+  # `failed` sessions carrying `GoodJob::InterruptError` or the recovery marker,
+  # which is an interrupted turn wearing a different status — so retiring there
+  # would re-open the window for that path. The cost is that a group held on a
+  # session that stays failed lingers: it clears as its conditions spend, on the
+  # deliberate resume of a restart, or when the session is archived, and
+  # CleanupStaleTriggersJob collects it once every one-shot is consumed.
   def retire_held_wake_triggers
     held = Trigger.where(last_session_id: id, reuse_session: true)
                   .where.not(wake_held_at: nil)

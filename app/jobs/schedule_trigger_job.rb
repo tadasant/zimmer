@@ -109,9 +109,10 @@ class ScheduleTriggerJob < ApplicationJob
         requester_id = trigger.last_session_id
         Rails.logger.info "[ScheduleTriggerJob] One-time trigger #{trigger_id} (#{trigger_name}) held after firing, plus #{sibling_count} sibling wake-up trigger(s), for requester session #{requester_id} — retired when its turn comes to rest"
       else
-        # A one-time schedule that SPAWNS rather than reuses is not a wake and has
-        # no requester to hand itself to. It is spent the moment it fires, so it
-        # auto-deletes exactly as it always did.
+        # Anything that is not purely a wake — a one-time schedule that SPAWNS
+        # rather than reuses, or a reuse trigger mixing this schedule with a
+        # recurring or Slack condition — has no wake group to hand to a requester.
+        # It auto-deletes exactly as it always did.
         trigger.destroy!
         Rails.logger.info "[ScheduleTriggerJob] One-time trigger #{trigger_id} (#{trigger_name}) auto-deleted after firing"
       end

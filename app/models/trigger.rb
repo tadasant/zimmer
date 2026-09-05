@@ -799,18 +799,11 @@ class Trigger < ApplicationRecord
 
     held_at = Time.current
     # update_all, not save: `validates :trigger_conditions, presence:` has nothing
-    # to say about a bookkeeping stamp, and a concurrent sibling fire can retire
-    # one of these rows out from under this in-memory instance mid-fan-out.
+    # to say about a bookkeeping stamp, and a concurrent retirement can delete one
+    # of these rows out from under this in-memory instance mid-fan-out.
     Trigger.where(id: siblings.map(&:id) + [ id ]).update_all(wake_held_at: held_at, updated_at: held_at)
-    self.wake_held_at = held_at
 
     siblings.size
-  end
-
-  # True when this wake is being held across a woken turn: armed, already spoken
-  # for by a fire, and owed a retirement by the requester it belongs to.
-  def wake_held?
-    wake_held_at.present?
   end
 
   private
@@ -1699,6 +1692,12 @@ class Trigger < ApplicationRecord
 
     self.failed_at = nil
     self.last_error = nil
+    # A re-arm is a fresh promise, and it is not owed to a turn that ended long
+    # ago. A wake held across a woken turn and then parked `failed` by a raise
+    # keeps its `wake_held_at` (retirement exempts `failed` rows deliberately), so
+    # without this the user's re-arm would be destroyed by the requester's very
+    # next pause — silently, since retirement neither alerts nor asks.
+    self.wake_held_at = nil if status_in_database == "failed"
   end
 
   # Record a spawned session against the current window so a burst notice can

@@ -1616,8 +1616,9 @@ announcement that follows the sweep.
 same requester with `wake_held_at`. They stay `enabled`, stay unfired and can still fire; what the
 mark records is that the requester's *current turn* owes them a retirement. The requester's state
 machine performs it — `SessionStateMachine#retire_held_wake_triggers`, on `pause` and on `archive` —
-and deliberately not when that pause is a [recovery
-pause](/sessions/lifecycle/#which-pauses-announce-themselves). Unless the follow-up was *dropped*,
+and deliberately not when that pause is one Zimmer entered on the turn's behalf: a [recovery
+pause](/sessions/lifecycle/#which-pauses-announce-themselves), an undelivered-turn park, or an
+auth-outage park (`Session#turn_stood_down_before_it_ran?`). Unless the follow-up was *dropped*,
 in which case the group is not touched at all.
 
 The deferral is [#569](https://github.com/tadasant/zimmer/issues/569). These wakes used to be
@@ -1629,9 +1630,11 @@ inert for 4.5 hours until the orphan sweep found it.
 
 Retiring is as load-bearing as holding. A wake that outlived its wait and fires into a later,
 unrelated one is silent in exactly the same way, so the group is gone by the end of any turn that
-came to rest — which is where the old destroy amounted to, one turn later. Wakes the woken turn
-arms *for itself* carry no `wake_held_at` and are untouched by the retirement, which is what lets it
-run at every pause.
+actually ran and came to rest — which is where the old destroy amounted to, one turn later. Wakes
+the woken turn arms *for itself* carry no `wake_held_at` and are untouched by the retirement, which
+is what lets it run at every pause. Only a trigger that is nothing but one-shot wakes is held at
+all: holding hands the whole row to the retirement, and a trigger mixing an unfired one-shot with a
+recurring condition does other work, so its one-shot is consumed the old way instead.
 
 **A wake that lapses unfired is parked, not deleted.** `CleanupStaleTriggersJob` also collects
 one-time schedules whose moment passed more than an hour ago, on the reasoning that

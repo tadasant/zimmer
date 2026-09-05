@@ -272,6 +272,118 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
     assert_not Trigger.exists?(watcher.id)
   end
 
+  # `paused_by = "recovery"` is not the only way a turn reaches `pause` without
+  # having run. Sessions::ParkUndeliveredTurn says so in its own class comment —
+  # it deliberately writes no `paused_by` — and it is reached by a turn that
+  # raised during setup, before the agent process existed. A woken turn that never
+  # started has not had its chance to re-arm.
+  test "a turn parked before the agent ran keeps the wake group" do
+    requester = requester_session
+    child = child_session
+    watcher_for(requester, child)
+    deadline = deadline_for(requester)
+
+    child_reaches_needs_input!(child)
+    assert requester.reload.running?
+
+    requester.update!(metadata: requester.metadata.merge(
+      "failure_reason" => Sessions::ParkUndeliveredTurn::FAILURE_REASON
+    ))
+    requester.pause!
+
+    assert Trigger.exists?(deadline.id),
+      "a turn that stopped before the agent started must not take the wake set with it"
+
+    travel_to 1.hour.from_now do
+      ScheduleTriggerJob.perform_now
+    end
+
+    assert requester.reload.running?, "the backstop must still wake it"
+  end
+
+  # The same shape through the auth-outage park: the account pool was empty, the
+  # CLI stopped without delivering the prompt, and AuthOutageParkService marks the
+  # session `pending_sleep` so the pause carries it to `waiting`. Retiring there
+  # would leave it asleep with nothing — and its own marker excludes it from
+  # StrandedSleepRescue, so no sweep would find it either.
+  test "a turn stood down by an auth outage keeps the wake group" do
+    requester = requester_session
+    child = child_session
+    watcher_for(requester, child)
+    deadline = deadline_for(requester)
+
+    child_reaches_needs_input!(child)
+    requester.reload.update!(metadata: requester.metadata.merge(
+      "auth_outage_reason" => "pool_empty", "pending_sleep" => true
+    ))
+    requester.pause!
+
+    assert requester.reload.waiting?, "precondition: the park slept it"
+    assert Trigger.exists?(deadline.id), "an undelivered turn must not take the wake set with it"
+    assert requester.awaiting_scheduled_wake?, "and it still reads as holding a fireable wake"
+  end
+
+  # Holding hands the whole trigger ROW to the retirement, which destroys it. A
+  # trigger that mixes an unfired one-shot with a recurring condition does other
+  # work, so it must be consumed the old way rather than held — otherwise the
+  # requester's next pause deletes a cron the user set up.
+  test "a trigger that does other work is consumed, not held" do
+    requester = requester_session
+    child = child_session
+    watcher_for(requester, child)
+
+    mixed = Trigger.create!(
+      name: "Wake ##{requester.id}, and also every morning",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "go",
+      reuse_session: true,
+      last_session_id: requester.id,
+      trigger_conditions_attributes: [
+        { condition_type: "ao_event",
+          configuration: { "event_name" => "session_archived", "watched_session_id" => child.id } },
+        { condition_type: "schedule",
+          configuration: { "unit" => "days", "interval" => 1, "time" => "09:00", "timezone" => "UTC" } }
+      ]
+    )
+    assert_not mixed.one_time_reuse_trigger?, "precondition: this trigger is not purely a wake"
+
+    child_reaches_needs_input!(child)
+
+    assert_nil mixed.reload.wake_held_at, "a trigger that does other work is not the turn's to retire"
+    assert_not_nil mixed.trigger_conditions.find_by(condition_type: "ao_event").last_triggered_at,
+      "but its one-shot is consumed, exactly as a resume always consumed it"
+
+    requester.reload.pause!
+
+    assert Trigger.exists?(mixed.id), "and the recurring half survives the pause"
+    assert_nil mixed.reload.trigger_conditions.find_by(condition_type: "schedule").last_triggered_at
+  end
+
+  # A wake parked `failed` keeps its hold mark, because retirement exempts failed
+  # rows. Re-arming it is a fresh promise owed to nobody, so the mark has to go —
+  # otherwise the requester's next pause destroys the wake the user just re-armed.
+  test "re-arming a held wake clears the hold, so the next pause does not destroy it" do
+    requester = requester_session
+    child = child_session
+    watcher_for(requester, child)
+    deadline = deadline_for(requester)
+
+    child_reaches_needs_input!(child)
+    assert_not_nil deadline.reload.wake_held_at
+
+    deadline.mark_failed(StandardError.new("agent root not found"))
+    assert_not_nil deadline.reload.wake_held_at, "a parked wake keeps the record of its hold"
+
+    deadline.toggle!
+    assert_equal "enabled", deadline.reload.status
+    assert_nil deadline.wake_held_at, "a re-arm is owed to nobody"
+
+    requester.reload.pause!
+
+    assert Trigger.exists?(deadline.id), "so the re-armed wake survives the pause"
+  end
+
   # A failed sibling is the record of a wake that tried and could not. It is the
   # user's to clear, so neither the fire nor the retirement may sweep it up.
   test "a failed sibling is neither held nor retired" do
