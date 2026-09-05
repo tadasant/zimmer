@@ -11,7 +11,7 @@ module Sessions
   # `wake_me_up_later` itself keeps the additive behaviour and never goes through
   # here: arming several wakes at once is the documented pattern (a wall-clock
   # backstop beside a `wake_me_up_when_session_changes_state` watcher), whichever
-  # fires first wins, and Trigger#destroy_sibling_wakes! cleans up the rest.
+  # fires first wins, and Trigger#hold_wake_group! cleans up the rest.
   class SupersedePendingWakes
     # @param session [Session]
     # @param note [String] what the session's log calls the thing that replaced

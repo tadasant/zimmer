@@ -106,7 +106,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     pause_and_settle(@watched)
 
     assert @watched.reload.needs_input?
-    assert_not Trigger.exists?(trigger.id), "the wake must be delivered, not dropped"
+    assert_wake_delivered trigger, "the wake must be delivered, not dropped"
     assert @watcher.reload.running?
   end
 
@@ -122,7 +122,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
 
     assert @watched.reload.needs_input?
     assert_equal true, @watched.metadata["pending_sleep"]
-    assert_not Trigger.exists?(trigger.id), "the wake must be delivered, not dropped"
+    assert_wake_delivered trigger, "the wake must be delivered, not dropped"
     assert @watcher.reload.running?
   end
 
@@ -152,7 +152,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
 
     pause_and_settle_on(@watched) { create_blocking_elicitation(@watched) }
 
-    assert_not Trigger.exists?(trigger.id), "the child is asking a human something — that is a real rest"
+    assert_wake_delivered trigger, "the child is asking a human something — that is a real rest"
     assert @watcher.reload.running?
   end
 
@@ -183,7 +183,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
       trigger = watch(@watched, "session_needs_input", reset_watcher: false)
     end
 
-    assert_not Trigger.exists?(trigger.id), "Trigger#fire_ao_event_immediately_if_state_matches delivered it"
+    assert_wake_delivered trigger, "Trigger#fire_ao_event_immediately_if_state_matches delivered it"
     assert @watcher.reload.running?
   end
 
@@ -265,7 +265,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
       AoEventTriggerJob.perform_now(*wakes.first)
     end
 
-    assert_not Trigger.exists?(trigger.id), "the armed wake was delivered, not stranded"
+    assert_wake_delivered trigger, "the armed wake was delivered, not stranded"
     assert @watcher.reload.running?, "the watcher was resumed once the child became a human's problem"
   end
 
@@ -286,7 +286,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
       trigger = watch(@watched, "session_needs_input", reset_watcher: false)
     end
 
-    assert_not Trigger.exists?(trigger.id), "no sweep is coming — this wake is owed now"
+    assert_wake_delivered trigger, "no sweep is coming — this wake is owed now"
     assert @watcher.reload.running?
   end
 
@@ -301,7 +301,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
       trigger = watch(@watched, "session_needs_input", reset_watcher: false)
     end
 
-    assert_not Trigger.exists?(trigger.id)
+    assert_wake_delivered trigger, "a human holding the session is a rest a watcher wants to know about"
     assert @watcher.reload.running?
   end
 
@@ -318,7 +318,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
       trigger = watch(@watched, "session_failed", reset_watcher: false)
     end
 
-    assert_not Trigger.exists?(trigger.id)
+    assert_wake_delivered trigger, "session_failed has no deferral behind it and must deliver"
     assert @watcher.reload.running?
   end
 
@@ -346,8 +346,8 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     pause_and_settle(@watched)
 
     assert @watched.reload.needs_input?
-    assert_not Trigger.exists?(trigger.id),
-      "a delivered one-time wake auto-deletes — this is the wake we wanted"
+    assert_wake_delivered trigger,
+      "a delivered one-time wake is held for the turn it woke — this is the wake we wanted"
     assert @watcher.reload.running?, "the watcher was resumed"
   end
 
@@ -362,7 +362,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
         event_name == "session_failed" ? watched.fail! : watched.archive!
       end
 
-      assert_not Trigger.exists?(trigger.id), "#{event_name} must still deliver immediately"
+      assert_wake_delivered trigger, "#{event_name} must still deliver immediately"
       assert watcher.reload.running?, "#{event_name} must still resume the watcher"
     end
   end
@@ -375,8 +375,8 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     run_deferred_commit_callbacks_inline
     perform_enqueued_jobs(only: AoEventTriggerJob) { @watched.archive! }
 
-    assert_not Trigger.exists?(trigger.id),
-      "the session_archived condition fires on this very archival, and the fire destroys the trigger"
+    assert_wake_delivered trigger,
+      "the session_archived condition fires on this very archival, and the fire hands the trigger to the woken turn"
     assert @watcher.reload.running?, "the watcher was woken by the archival"
   end
 
@@ -392,6 +392,18 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
   end
 
   private
+
+  # A delivered one-time wake no longer auto-deletes on the spot. It is HELD
+  # across the turn it just woke — still armed, so an interrupted turn is not
+  # left with nothing — and the requester's own `pause` retires it
+  # (tadasant/zimmer#569). So "the wake was delivered" is read off the hold mark
+  # and the spent one-shot guard rather than off the row's absence.
+  def assert_wake_delivered(trigger, message)
+    trigger.reload
+    assert_not_nil trigger.wake_held_at, message
+    assert trigger.trigger_conditions.any? { |condition| condition.last_triggered_at.present? },
+      "#{message} (its one-shot guard must be spent)"
+  end
 
   def watch_many(watched, event_names, watcher: @watcher)
     Trigger.create!(

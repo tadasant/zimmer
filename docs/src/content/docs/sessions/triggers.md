@@ -417,14 +417,14 @@ No edit, no re-creation. Every route off `failed` — the toggle, the edit form,
 advertising the failure it recovered from.
 
 One failure does not re-arm, and does not pretend to. A raise from the cleanup that *follows* a
-successful fire (sibling destruction, the auto-delete) arrives with the schedule already consumed
+successful fire (holding the wake group) arrives with the schedule already consumed
 and the session already created, so re-firing would duplicate it. `Trigger#spent_one_shot_wake?`
 is what the trigger page and the alert read to tell the two apart: in that case they say the
 schedule was consumed and ask you to check the session rather than offering a re-arm that would
 deliver nothing.
 
 `CleanupStaleTriggersJob` skips failed triggers in both of its sweeps, and
-`Trigger#destroy_sibling_wakes!` skips them too. A parked trigger is lapsed by definition, so the
+`Trigger#hold_wake_group!` skips them too. A parked trigger is lapsed by definition, so the
 lapsed-schedule ground matches every one of them, and the consumed-wake ground matches a strict
 subset of those sooner — the one failure that does not re-arm is precisely the one that arrives
 with its schedule already spent. And in the triple-wake pattern below, a sibling that fires
@@ -1241,7 +1241,7 @@ through to the paths it would take with no candidate — the same paths an archi
   the trigger on that same fire;
 - a **one-time reuse** trigger ("wake *this* session at 9am") skips silently, because it means that
   one session and a fresh stranger would be no use to it. As with any other undeliverable one-time
-  reuse fire, the schedule is still consumed and the trigger auto-deletes along with its sibling
+  reuse fire, the schedule is still consumed and the trigger is held along with its sibling
   wakes — it is not parked as `failed`, because nothing raised.
 
 Every other unarchive failure still raises and alerts. A clone that will not restore, a database
@@ -1307,8 +1307,9 @@ its one-shot is not already spent (`spent_one_shot_wake?`), and its target sessi
 not paused by a user, and **not already resting on a wake that can still fire**
 (`Session#awaiting_scheduled_wake?` — the same predicate `StrandedSleepRescue` reads). That last term
 matters because a bricked session may since have been rescued and armed a *fresh* wake: firing the
-stale one would resume it early, and the delivery would then take `#destroy_sibling_wakes!` through
-the live wake on its way out. Anything else is left parked.
+stale one would resume it early, and the delivery would then take `#hold_wake_group!` through
+the live wake on its way out — putting a wake the session is genuinely waiting on onto a turn that
+retires it. Anything else is left parked.
 
 **A past-dated wake is re-armed as it is, not retimed.** Nearly every row here is past-dated by
 construction, and for a one-time schedule `TriggerCondition#schedule_due?` answers `now >= scheduled_at`
@@ -1338,10 +1339,10 @@ session transitioned" and "the requester's turn ended", so it keeps the narrower
 The test is `Trigger#purely_recurring?` rather than the negation of `#one_time_reuse_trigger?`, and
 the difference matters for a trigger that *mixes* the two. `#one_time_reuse_trigger?` demands that
 **every** condition be one-shot, so a trigger carrying a recurring schedule alongside a one-time one
-fails it — while `ScheduleTriggerJob` keys its auto-delete on `condition.one_time_schedule?` and
-checks only `#last_follow_up_dropped?` before destroying the trigger. A coalesced fire is not
-`:dropped`, so coalescing that shape would consume the one-shot schedule and delete the trigger having
-delivered nothing. Refusing to coalesce any trigger that carries a one-shot condition at all keeps the
+fails it — while `ScheduleTriggerJob` keys its post-fire bookkeeping on
+`condition.one_time_schedule?` and checks only `#last_follow_up_dropped?` before handing the trigger
+to the requester. A coalesced fire is not `:dropped`, so coalescing that shape would consume the
+one-shot schedule and hand over a trigger that delivered nothing. Refusing to coalesce any trigger that carries a one-shot condition at all keeps the
 previous behaviour intact for those shapes.
 
 ### Why a queue can grow when nothing looks wrong
@@ -1580,7 +1581,7 @@ anchored at the first fire and tumbles, rather than sliding.
 A fire that is burst-suppressed delivered nothing, so it does not count as a fire for the trigger's
 own bookkeeping either: `ScheduleTriggerJob` leaves the schedule due (it fires for real once the
 burst ends), and `AoEventTriggerJob` leaves a session-scoped condition's one-shot guard unspent.
-Neither auto-deletes a one-time trigger on a suppressed fire.
+Neither hands a one-time trigger's wake group to a requester on a suppressed fire.
 
 ## Wake-up semantics
 
@@ -1615,9 +1616,30 @@ would deliver the wake [the pause itself
 declined](/sessions/lifecycle/#which-pauses-announce-themselves). The watcher is left armed for the
 announcement that follows the sweep.
 
-**Sibling cleanup.** After a successful one-time fire, `destroy_sibling_wakes!` deletes the other
-one-time wakes pointing at the same requester — they are moot, since the requester has already been
-resumed. Unless the follow-up was *dropped*, in which case siblings are preserved.
+**Sibling cleanup is deferred to the end of the woken turn.** After a successful one-time fire,
+`Trigger#hold_wake_group!` marks the firing trigger and every other one-time wake pointing at the
+same requester with `wake_held_at`. They stay `enabled`, stay unfired and can still fire; what the
+mark records is that the requester's *current turn* owes them a retirement. The requester's state
+machine performs it — `SessionStateMachine#retire_held_wake_triggers`, on `pause` and on `archive` —
+and deliberately not when that pause is one Zimmer entered on the turn's behalf: a [recovery
+pause](/sessions/lifecycle/#which-pauses-announce-themselves), an undelivered-turn park, or an
+auth-outage park (`Session#turn_stood_down_before_it_ran?`). Unless the follow-up was *dropped*,
+in which case the group is not touched at all.
+
+The deferral is [#569](https://github.com/tadasant/zimmer/issues/569). These wakes used to be
+destroyed at fire time, which is *before* the woken turn has run — and re-arming is that turn's job,
+at the end of it. So between the fire and a successful re-arm the session held nothing, and a turn
+interrupted anywhere in that window left it asleep with no wake, indistinguishable from a session
+sleeping correctly. One production instance lost a 04:52 deadline backstop to a 04:18 fire and sat
+inert for 4.5 hours until the orphan sweep found it.
+
+Retiring is as load-bearing as holding. A wake that outlived its wait and fires into a later,
+unrelated one is silent in exactly the same way, so the group is gone by the end of any turn that
+actually ran and came to rest — which is where the old destroy amounted to, one turn later. Wakes
+the woken turn arms *for itself* carry no `wake_held_at` and are untouched by the retirement, which
+is what lets it run at every pause. Only a trigger that is nothing but one-shot wakes is held at
+all: holding hands the whole row to the retirement, and a trigger mixing an unfired one-shot with a
+recurring condition does other work, so its one-shot is consumed the old way instead.
 
 **A wake that lapses unfired is parked, not deleted.** `CleanupStaleTriggersJob` also collects
 one-time schedules whose moment passed more than an hour ago, on the reasoning that
@@ -1630,7 +1652,7 @@ visible on `/triggers` with the reason, re-armable, and alerting once. Productio
 afterwards could say a wake had been lost at all
 ([#855](https://github.com/tadasant/zimmer/issues/855)). A trigger the user *disabled* is not parked —
 it did not fire because they switched it off — and neither is one that fired and only lost its
-auto-delete; both are destroyed as before.
+retirement; both are destroyed as before.
 
 Parking is about the record, not about the sleeper. A lapsed unfired schedule already fails
 `Session#awaiting_scheduled_wake?` — that predicate reads `schedule_due?`, which stays true for it — so
@@ -1647,12 +1669,16 @@ watched session that merely `failed` still counts (it can be restarted, and it c
 archived), and a watched row that cannot be read counts too. Before it, an `ao_event` condition that
 had missed its only chance kept reporting itself as an armed wake forever.
 
-**A resume consumes a pending wake, and the dead row is collected on sight.** Any deliberate resume
-of the target session — a user follow-up, a restart, `force_immediate`, the wake itself firing —
-runs `cancel_pending_one_time_wake_triggers`, which stamps `last_triggered_at` on every pending
-one-time wake aimed at that session so none of them fires later into live work. That stamp is
-permanent: `schedule_due?` is false forever afterwards, so the trigger never fires and never runs
-the auto-delete that normally removes a spent one-time trigger.
+**A deliberate resume consumes a pending wake, and the dead row is collected on sight.** A user
+follow-up, a restart, `force_immediate` — anything where somebody decided the session should be
+awake — runs `cancel_pending_one_time_wake_triggers`, which stamps `last_triggered_at` on every
+pending one-time wake aimed at that session so none of them fires later into live work. That stamp
+is permanent: `schedule_due?` is false forever afterwards, so the trigger never fires and never runs
+the cleanup that normally removes a spent one-time trigger.
+
+A resume caused by the **wake itself firing** is the exception. It leaves the group armed and takes
+the hold branch above instead, because the requester has been resumed but has not yet *done*
+anything — until its turn ends, the wait it set up is still the only thing that will wake it again.
 
 What is left is a row that can never fire again, sitting in `/triggers` and in `search_triggers` as
 `enabled` with 0 sessions — indistinguishable from an armed wake. `Trigger#dead_one_time_wake?` is
@@ -1757,7 +1783,8 @@ the next tick, the fire consumes the one-shot, and the session it just put to sl
 The check lives in the service rather than the tool so a second surface cannot drift from it.
 
 Wakes are **additive**: a second `wake_me_up_later` leaves the first armed, whichever fires first
-wins, and `Trigger#destroy_sibling_wakes!` cleans up the rest. The one gesture that replaces rather
+wins, and `Trigger#hold_wake_group!` hands the rest to the woken turn, which retires them when it
+comes to rest. The one gesture that replaces rather
 than adds is a park into the spot queue, which runs `Sessions::SupersedePendingWakes` because it
 arms nothing itself — a leftover wake would pull the session straight back out of the queue.
 

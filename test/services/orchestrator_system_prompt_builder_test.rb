@@ -418,7 +418,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     # lone needs_input wake never fires — the reason all three are required.
     assert_includes prompt, "a clean finish self-archives without passing through `needs_input`"
     assert_includes prompt, "plus a `wake_me_up_later` deadline as a backstop"
-    # Trigger#destroy_sibling_wakes! keys on last_session_id — the requester's
+    # Trigger#hold_wake_group! keys on last_session_id — the requester's
     # own wakes are the ones destroyed, not the watched session's.
     assert_includes prompt, "A fired one-time wake still destroys your other one-time wakes"
     assert_includes prompt, "re-register both every round"

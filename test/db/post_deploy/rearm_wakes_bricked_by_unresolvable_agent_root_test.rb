@@ -133,7 +133,8 @@ class RearmWakesBrickedByUnresolvableAgentRootTest < ActiveSupport::TestCase
     session.reload
     assert_not session.waiting?, "the wake should have resumed its session, not left it asleep"
     assert_equal "time to wake up", session.metadata["pending_follow_up_prompt"]
-    assert_nil Trigger.find_by(id: trigger.id), "a fired one-time wake auto-deletes"
+    assert_not_nil trigger.reload.wake_held_at,
+      "a fired one-time wake is held for the turn it woke, and retired when that turn ends"
   end
 
   # --- the rows that MUST NOT be re-armed -----------------------------------
@@ -221,7 +222,7 @@ class RearmWakesBrickedByUnresolvableAgentRootTest < ActiveSupport::TestCase
   # The case StrandedSleepRescue creates: the session was bricked, that sweep
   # nudged it, the agent worked and armed a FRESH wake, and it is `waiting` on
   # purpose again. Firing the stale one would resume it early — and the delivery
-  # would take #destroy_sibling_wakes! through the live wake on the way out.
+  # would take #hold_wake_group! through the live wake on the way out.
   test "leaves a wake alone when its target is already resting on a wake that can still fire" do
     session = a_session
     stale = brick!(wake_trigger(session: session, scheduled_at: 5.days.ago))

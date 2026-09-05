@@ -93,7 +93,7 @@ module Sessions
       # Wakes are ADDITIVE, and deliberately: an agent arming several at once is
       # the documented pattern — `wake_me_up_later` is routinely paired with
       # `wake_me_up_when_session_changes_state` watchers, whichever fires first
-      # wins, and Trigger#destroy_sibling_wakes! cleans up the rest. The one
+      # wins, and Trigger#hold_wake_group! cleans up the rest. The one
       # gesture that replaces rather than adds is a park into the spot queue,
       # which runs Sessions::SupersedePendingWakes itself.
       create_wake_trigger!
