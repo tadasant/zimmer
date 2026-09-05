@@ -506,8 +506,8 @@ class UnarchiveSessionService
   #   session.transcript), :skipped when the runtime has no single-file resume
   #   path, :failed when the write was attempted and raised
   def write_transcript_file(working_directory:, transcript:)
-    transcript_file = TranscriptRuntime.source_for(session, file_system: file_system)
-      .resume_transcript_path(session: session, working_directory: working_directory)
+    source = TranscriptRuntime.source_for(session, file_system: file_system)
+    transcript_file = source.resume_transcript_path(session: session, working_directory: working_directory)
 
     if transcript_file.nil?
       @logger.info("Runtime has no single-file resume transcript path; skipping transcript restore",
@@ -516,7 +516,7 @@ class UnarchiveSessionService
       return :skipped
     end
 
-    return :adopted if adopt_longer_on_disk_transcript(transcript_file, transcript)
+    return :adopted if adopt_longer_on_disk_transcript(source, transcript_file, transcript)
 
     file_system.mkdir_p(File.dirname(transcript_file))
 
@@ -537,44 +537,87 @@ class UnarchiveSessionService
   # than the stored copy, and heal `session.transcript` from it.
   #
   # The restore is normally the authoritative direction — `session.transcript` is
-  # the durable record and the file is gone or stale. But the quick path runs
-  # against a clone that survived, so the file can be the runtime's own, still
-  # holding turns the stored copy never caught. That happens on exactly one
-  # route, and it is not rare: a session that archives ITSELF writes its closing
-  # turn to disk and is killed moments later, so whatever the last poll missed
-  # lives only in this file (session 13908). Overwriting it here would destroy the only
-  # remaining copy — and cost the resumed agent its own last turn, so it wakes
-  # with no memory of the answer it just gave.
+  # the durable record and the file is gone or stale. But a session that archives
+  # ITSELF writes its closing turn to disk and is killed moments later, so
+  # whatever the last poll missed lives only in this file (session 13908).
+  # Overwriting it here would destroy the only remaining copy — and cost the
+  # resumed agent its own last turn, so it wakes with no memory of the answer it
+  # just gave.
   #
-  # Only ever grows the record. A shorter or equal file is the ordinary case and
-  # takes the normal write below, so a genuinely stale file is still replaced.
+  # Both restore paths reach this, and it is right on both. The runtime's
+  # transcript lives under ~/.claude/projects keyed by the SANITIZED WORKING
+  # DIRECTORY and the runtime session id, not inside the clone, so it survives
+  # the clone being deleted and a recreated clone at the same path finds this
+  # session's own file. Nothing else can be there: a fork mints a new session id
+  # and a new clone path, and a from-scratch restart clears the session id.
+  #
+  # Only ever grows the record. A shorter or equal file is the ordinary stale
+  # case and takes the normal write below.
   #
   # @return [Boolean] true when the on-disk file was kept as-is
-  def adopt_longer_on_disk_transcript(transcript_file, transcript)
-    return false unless file_system.exists?(transcript_file)
+  def adopt_longer_on_disk_transcript(source, transcript_file, transcript)
+    on_disk = longer_transcript_on_disk(source, transcript_file, transcript)
+    return false unless on_disk
 
-    on_disk = file_system.read(transcript_file)
-    return false if on_disk.blank?
-    return false unless Session.transcript_regression?(on_disk, transcript)
-
-    stored_lines = Session.transcript_line_count(transcript)
-    disk_lines = Session.transcript_line_count(on_disk)
-
-    @logger.info("Keeping the longer transcript already on disk and healing the stored copy from it",
-      path: transcript_file,
-      stored_lines: stored_lines,
-      on_disk_lines: disk_lines
-    )
-
-    with_db_retry { session.update!(transcript: on_disk) }
+    # Nothing below can change the answer. Once the file is known to hold more of
+    # the conversation it is not ours to overwrite, so the heal is deliberately
+    # outside the decision's rescue: letting a failed copy fall through to the
+    # write would destroy the very turns this exists to save.
+    heal_stored_transcript_from(source, on_disk, transcript, transcript_file)
     true
+  end
+
+  # The transcript on disk, but only when it holds more of the conversation than
+  # the stored copy. nil means "no reason to keep it", including every way the
+  # question could not be answered — the caller then does the normal write, which
+  # is the right fallback when the stored copy is still the best record we have.
+  def longer_transcript_on_disk(source, transcript_file, transcript)
+    return nil unless file_system.exists?(transcript_file)
+
+    # Through the runtime's source, never a bare `file_system.read`: that is
+    # where decompression and secret redaction live, and what lands in
+    # `session.transcript` is rendered by the UI, served by the REST and MCP
+    # APIs, and packaged into the downloadable transcript archive. Redaction
+    # preserves line count exactly, so the comparison below is like-for-like.
+    on_disk = source.read(transcript_file)
+    return nil if on_disk.blank?
+    return nil unless Session.transcript_regression?(on_disk, transcript)
+
+    on_disk
   rescue => e
-    # Never fail an unarchive over this: the stored copy is intact either way, so
-    # fall back to writing it.
-    @logger.warn("Could not adopt the on-disk transcript; falling back to the stored copy",
+    @logger.warn("Could not read the on-disk transcript; falling back to the stored copy",
+      path: transcript_file,
       error: e.message
     )
-    false
+    nil
+  end
+
+  # Copy the longer on-disk transcript into the stored record, so the UI renders
+  # the turns the last poll missed. Best effort: the file is already being kept,
+  # so a failure here leaves a stale stored copy rather than losing anything.
+  def heal_stored_transcript_from(source, on_disk, transcript, transcript_file)
+    # No `broadcast_message_count` to reseed here, unlike the manual refresh
+    # paths: `transition_to_needs_input` drops it a moment later as one of
+    # STALE_RETRY_METADATA_KEYS, and the poller rebuilds it from the STORED
+    # transcript on its next pass — which is this one by then. So the adopted
+    # turns are counted as already sent and are not replayed into a timeline
+    # that has just rendered them. Seeding it would be written and stripped.
+    @logger.info("Keeping the longer transcript already on disk and healing the stored copy from it",
+      path: transcript_file,
+      stored_lines: Session.transcript_line_count(transcript),
+      on_disk_lines: Session.transcript_line_count(on_disk),
+      on_disk_events: source.parse_events(on_disk).length
+    )
+
+    with_db_retry do
+      session.reload
+      session.update!(transcript: on_disk)
+    end
+  rescue => e
+    @logger.warn("Kept the on-disk transcript but could not heal the stored copy from it",
+      path: transcript_file,
+      error: e.message
+    )
   end
 
   def regenerate_mcp_config(working_directory)

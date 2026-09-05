@@ -1669,10 +1669,11 @@ class AgentSessionJob < ApplicationJob
           # same turn as the `action_session` call and in the seconds after it.
           # Without this poll those lines never reach `session.transcript`, which
           # is the only copy the UI renders, and an archived session is never
-          # polled again — so the Transcript panel shows the session stopping
-          # mid-thought, permanently. Session 13908 rendered two timeline items
-          # for a 58-message conversation and lost the answer a human was
-          # waiting on.
+          # polled again by this loop — so the Transcript panel shows the
+          # session stopping mid-thought, and only a human pressing Refresh
+          # (while the file still exists) would ever repair it. Session 13908
+          # rendered two timeline items for a 58-message conversation and lost
+          # the answer a human was waiting on.
           #
           # AFTER the termination, not before, which is the whole point.
           # `terminate_process` blocks until the process is confirmed gone
@@ -1681,7 +1682,12 @@ class AgentSessionJob < ApplicationJob
           # 12 seconds after its archive call. Polling first would capture the
           # archive and still lose the answer. The process is gone by the time we
           # read, so the file is final.
-          poll_and_broadcast_transcript(session)
+          #
+          # Guarded on there being somewhere to read from. Without a working
+          # directory the poll cannot find a transcript and would only log that
+          # it could not — an `error` line naming an archived session, which is
+          # the kind the production alert pages on.
+          poll_and_broadcast_transcript(session) if session.working_directory.present?
           # The clone is left where it is. DeferredCloneCleanupJob owns deleting
           # an archived session's clone — see the ensure block for why.
           return
