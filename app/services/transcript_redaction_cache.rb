@@ -73,12 +73,32 @@ require "digest"
 # `AgentSessionJob#restore_regressed_transcript_if_needed`. `#reusable?` rejects
 # all of those and falls back to a full re-scan.
 #
-# Worth being precise about what it guards, because a stale prefix is *not* a
-# leak: the cached prefix is itself redactor output, so re-emitting one would
-# produce a wrong transcript, never an unredacted one. The only way an
-# incremental scan can UNDER-redact is if the tail begins mid-line, which is why
-# the boundary is re-asserted to be a newline in the content actually being read
-# (`#reusable?`, check 2) rather than merely trusted from last time.
+# Three things can make a reused prefix wrong, and they are guarded separately:
+#
+#   * **The tail beginning mid-line.** Then a pattern match could straddle the
+#     join and be found by neither half. The commit point is therefore
+#     re-asserted to land immediately after a newline IN THE CONTENT BEING READ
+#     NOW, rather than trusted from last time.
+#   * **The prefix being redacted under an older known-credential set.** That set
+#     is not constant — 60-second TTL, and every tier degrades to "missing"
+#     rather than raising. The full re-scan used to give that back for free: a
+#     credential that entered the set late was scrubbed out of every earlier line
+#     on the next poll. `#reusable?` compares
+#     `TranscriptRedactor.known_secrets_fingerprint` so prefix reuse keeps that
+#     property.
+#   * **The prefix's bytes having changed unseen.** The fingerprints below sample
+#     rather than hash the whole prefix, so a rewrite confined to the middle of a
+#     transcript — same length, same head and boundary windows, every line
+#     boundary preserved — would be missed. Usually that only means stale bytes,
+#     which cannot leak: the cached prefix is itself redactor output. But it is
+#     not *only* staleness, and the honest version of the claim is worth writing
+#     down: such a rewrite could also introduce a PEM opener into the prefix,
+#     whose body and `-----END` land in the tail, and the tail's scan would not
+#     see the opener. Nothing in Zimmer rewrites a transcript that way — the
+#     runtime appends, and the restore path rewrites from byte 0 with the stored
+#     (already-redacted, opener-free) bytes — and closing it would mean hashing
+#     the whole prefix on every poll, which is the O(total size) cost this class
+#     exists to remove. Stated in `limitations.md` rather than argued away.
 class TranscriptRedactionCache
   # Below this a full re-scan is already cheap (~16 ms) and an entry is worth
   # neither the memory nor the fingerprinting.
@@ -86,6 +106,11 @@ class TranscriptRedactionCache
 
   # A single transcript larger than this is not cached: one entry must not be
   # able to evict every other entry to make room for itself.
+  #
+  # Gated on the RAW size, while the accounting below is on the redacted size,
+  # and redaction can grow text a little (`[REDACTED:OPENAI_API_KEY]` is longer
+  # than the `sk-…` it replaces). So an entry can sit marginally over this;
+  # MAX_TOTAL_BYTES is what actually bounds the table, and it is twice this.
   MAX_ENTRY_BYTES = 64 * 1024 * 1024
 
   # The ceiling on everything this cache holds, process-wide. The trade it makes
@@ -127,6 +152,7 @@ class TranscriptRedactionCache
     :raw_committed_size,
     :head_digest,
     :boundary_digest,
+    :secrets_fingerprint,
     :touched_at,
     keyword_init: true
   )
@@ -153,8 +179,15 @@ class TranscriptRedactionCache
       content = content.scrub("") if content.is_a?(String) && !content.valid_encoding?
       return TranscriptRedactor.redact(content) unless cacheable?(path, content)
 
+      # Read ONCE and threaded through, so the entry is stamped with the same
+      # generation of the known-credential set the tail is redacted against. If
+      # the set rebuilds in the microseconds between, the stamp is the older one
+      # and the next poll re-scans in full — an unnecessary re-scan, never a
+      # missed one.
+      secrets = TranscriptRedactor.known_secrets_fingerprint
+
       entry = checkout(path)
-      return redact_fully(path, content) unless entry && reusable?(entry, content)
+      return redact_fully(path, content, secrets) unless entry && reusable?(entry, content, secrets)
 
       pending = content.byteslice(entry.raw_committed_size, content.bytesize - entry.raw_committed_size)
       return entry.chunks.join if pending.nil? || pending.empty?
@@ -164,9 +197,9 @@ class TranscriptRedactionCache
       # ever stopped holding, splitting would stop being equivalent — so the
       # cheap version of the check is paid on the tail every poll, and a mismatch
       # drops the entry rather than emitting bytes we cannot vouch for.
-      return redact_fully(path, content) unless redacted_pending.count(NEWLINE) == pending.count(NEWLINE)
+      return redact_fully(path, content, secrets) unless redacted_pending.count(NEWLINE) == pending.count(NEWLINE)
 
-      extend_entry(path, entry, content, pending, redacted_pending)
+      extend_entry(path, entry, content, pending, redacted_pending, secrets)
     end
 
     # Drop everything. For tests, and for anything that wants to measure or prove
@@ -201,12 +234,19 @@ class TranscriptRedactionCache
     end
 
     # Redact the whole thing, and seed an entry so the NEXT read is incremental.
-    def redact_fully(path, content)
+    def redact_fully(path, content, secrets)
       output = TranscriptRedactor.redact(content)
       return output unless output.is_a?(String)
 
       split = commit_split(content, output)
-      return output unless split
+      unless split
+        # Nothing may be committed — a transcript with no newline at all, or one
+        # whose first line opens PEM armor. Drop rather than leave the entry
+        # `checkout` re-inserted: it can never be reused, and its bytes would go
+        # on counting against the ceiling until the idle sweep noticed.
+        forget(path)
+        return output
+      end
 
       raw_commit, redacted_commit = split
       redacted_prefix = output.byteslice(0, redacted_commit)
@@ -218,6 +258,7 @@ class TranscriptRedactionCache
           raw_committed_size: raw_commit,
           head_digest: digest(content.byteslice(0, FINGERPRINT_WINDOW)),
           boundary_digest: boundary_digest(content, raw_commit),
+          secrets_fingerprint: secrets,
           touched_at: monotonic_now
         )
       )
@@ -228,32 +269,32 @@ class TranscriptRedactionCache
     # Answer the read from the cached prefix plus this poll's freshly redacted
     # tail, and move the commit point forward over the part of the tail that is
     # now settled.
-    def extend_entry(path, entry, content, pending, redacted_pending)
-      output = entry.chunks.join + redacted_pending
+    def extend_entry(path, entry, content, pending, redacted_pending, secrets)
+      # One join, not `chunks.join + tail`, which would build the whole prefix
+      # and then copy it again — two full copies of the transcript per poll, in
+      # the hot path this class exists to make cheap.
+      output = (entry.chunks + [ redacted_pending ]).join
       split = commit_split(pending, redacted_pending)
+      return output unless split
 
-      if split
-        raw_advance, redacted_advance = split
-        committed_chunk = redacted_pending.byteslice(0, redacted_advance)
-        chunks = entry.chunks + [ committed_chunk ]
-        chunks = [ chunks.join ] if chunks.length > MAX_CHUNKS
-        raw_committed_size = entry.raw_committed_size + raw_advance
+      raw_advance, redacted_advance = split
+      committed_chunk = redacted_pending.byteslice(0, redacted_advance)
+      chunks = entry.chunks + [ committed_chunk ]
+      chunks = [ chunks.join ] if chunks.length > MAX_CHUNKS
+      raw_committed_size = entry.raw_committed_size + raw_advance
 
-        store(
-          path,
-          Entry.new(
-            chunks: chunks,
-            chunk_bytes: entry.chunk_bytes + committed_chunk.bytesize,
-            raw_committed_size: raw_committed_size,
-            head_digest: entry.head_digest,
-            boundary_digest: boundary_digest(content, raw_committed_size),
-            touched_at: monotonic_now
-          )
+      store(
+        path,
+        Entry.new(
+          chunks: chunks,
+          chunk_bytes: entry.chunk_bytes + committed_chunk.bytesize,
+          raw_committed_size: raw_committed_size,
+          head_digest: entry.head_digest,
+          boundary_digest: boundary_digest(content, raw_committed_size),
+          secrets_fingerprint: secrets,
+          touched_at: monotonic_now
         )
-      else
-        entry.touched_at = monotonic_now
-        store(path, entry)
-      end
+      )
 
       output
     end
@@ -302,9 +343,15 @@ class TranscriptRedactionCache
       offset + 1
     end
 
-    def reusable?(entry, content)
+    def reusable?(entry, content, secrets)
       return false unless entry.raw_committed_size.positive?
       return false if content.bytesize < entry.raw_committed_size
+      # The redactor is a function of the text AND of a 60-second-TTL,
+      # failure-degradable known-credential set. A prefix redacted under an older
+      # generation of that set is thrown away, so a credential that entered the
+      # set late is still scrubbed retroactively out of the whole transcript —
+      # which is what the full re-scan used to do for free.
+      return false unless entry.secrets_fingerprint == secrets
       # The tail must start where a line starts IN THE CONTENT BEING READ NOW.
       # This is the check that makes under-redaction impossible: no pattern can
       # match across a newline, so a tail that begins at one cannot hide the
@@ -319,8 +366,9 @@ class TranscriptRedactionCache
     # With the head fingerprint and the length check, this is what detects a
     # truncated, rotated, restored or replaced file. It samples rather than
     # hashing the whole prefix on purpose: hashing 32 MB per poll would put back
-    # an O(total size) cost, and the consequence of a miss is a stale prefix, not
-    # an unredacted one (see the class comment).
+    # the O(total size) cost this class removes. What a miss would cost is
+    # spelled out in the class comment — usually stale bytes, and in one
+    # unreachable case more than that.
     def boundary_digest(content, committed)
       window = [ committed, FINGERPRINT_WINDOW ].min
       digest(content.byteslice(committed - window, window))
@@ -344,12 +392,24 @@ class TranscriptRedactionCache
     # already makes.
     def checkout(path)
       MUTEX.synchronize do
+        # Swept on read as well as on write, so a Puma process that stops being
+        # asked for transcripts does not sit on the ceiling indefinitely.
+        evict
         entry = entries.delete(path)
         next nil unless entry
 
+        # Stamped here rather than only in `store`, so a transcript that is read
+        # every few seconds but has not grown — a `needs_input` session the UI
+        # keeps polling — is not swept as idle and then made to pay a full
+        # re-scan on its next append.
+        entry.touched_at = monotonic_now
         entries[path] = entry
         entry
       end
+    end
+
+    def forget(path)
+      MUTEX.synchronize { drop(path) }
     end
 
     def store(path, entry)

@@ -98,6 +98,54 @@ class TranscriptRedactionCacheTest < ActiveSupport::TestCase
       "one broken byte must not cost the session its cache entry for the rest of the run"
   end
 
+  # --- The known-credential set is not constant -----------------------------
+
+  test "a credential that enters the known-secret set late is redacted retroactively" do
+    secret = "s3cret-value-with-no-shape-at-all"
+    content = transcript(extra_line: %({"role":"assistant","content":"printed #{secret} to the log"}))
+    server = ServersConfig::Server.new("fake", { "type" => "stdio", "env" => { "TOKEN" => "${FAKE_SECRET_VAR}" } })
+
+    # Poll one: the secret store is unreachable, so the known-value tier is
+    # empty and the secret goes through unredacted.
+    ServersConfig.stub(:all, [ server ]) do
+      SecretProviders.chain.stub(:get, ->(_name) { nil }) do
+        TranscriptRedactor.reset_known_secrets!
+        assert_includes TranscriptRedactionCache.redact(PATH, content), secret
+      end
+    end
+
+    # Poll two: the store is back, the transcript has grown by a line, and the
+    # occurrence in the CACHED PREFIX has to be scrubbed too. The full re-scan
+    # this cache replaced gave that back for free.
+    grown = content + %({"role":"assistant","content":"and then some more"}\n)
+    ServersConfig.stub(:all, [ server ]) do
+      SecretProviders.chain.stub(:get, ->(name) { name == "FAKE_SECRET_VAR" ? secret : nil }) do
+        TranscriptRedactor.reset_known_secrets!
+        result = TranscriptRedactionCache.redact(PATH, grown)
+
+        refute_includes result, secret, "a cached prefix kept a credential the redactor now knows about"
+        assert_equal TranscriptRedactor.redact(grown), result
+      end
+    end
+  end
+
+  test "the known-secret fingerprint changes only when the set does" do
+    TranscriptRedactor.reset_known_secrets!
+    first = TranscriptRedactor.known_secrets_fingerprint
+
+    assert_equal first, TranscriptRedactor.known_secrets_fingerprint,
+      "a rebuild that finds the same credentials must not invalidate every cached prefix"
+
+    server = ServersConfig::Server.new("fake", { "type" => "stdio", "env" => { "TOKEN" => "${FAKE_SECRET_VAR}" } })
+    ServersConfig.stub(:all, [ server ]) do
+      SecretProviders.chain.stub(:get, ->(name) { name == "FAKE_SECRET_VAR" ? "another-value-with-no-shape" : nil }) do
+        TranscriptRedactor.reset_known_secrets!
+
+        refute_equal first, TranscriptRedactor.known_secrets_fingerprint
+      end
+    end
+  end
+
   # --- The one cross-line stage --------------------------------------------
 
   test "a multi-line PEM block that spans two reads is still armored whole" do
@@ -251,22 +299,104 @@ class TranscriptRedactionCacheTest < ActiveSupport::TestCase
   # --- The invariant the whole design rests on ------------------------------
 
   test "no redaction pattern is multiline" do
-    multiline = TranscriptRedactor::PATTERNS.select do |pattern|
-      pattern.regexp.options.anybits?(Regexp::MULTILINE)
-    end
+    multiline = every_regexp.select { |_label, regexp| regexp.options.anybits?(Regexp::MULTILINE) }
 
-    assert_empty multiline.map(&:label),
+    assert_empty multiline.map(&:first),
       "a /m pattern lets `.` match a newline, which would break prefix reuse"
   end
 
-  test "no redaction pattern can match across a newline" do
-    offenders = TranscriptRedactor::PATTERNS.select { |pattern| crosses_newline?(pattern.regexp) }
+  # Exhaustive over the pattern set rather than a probe list, so a rule added
+  # tomorrow is covered too. Every pattern here is hand-written ASCII, which is
+  # what makes a source-level reading of them sound.
+  test "no redaction pattern contains a construct that can match a newline" do
+    offenders = every_regexp.filter_map do |label, regexp|
+      reason = newline_capable_construct(regexp.source)
+      "#{label}: #{reason} in #{regexp.source}" if reason
+    end
 
-    assert_empty offenders.map(&:label),
-      "TranscriptRedactionCache splits transcripts at newlines; these patterns could match across one"
+    assert_empty offenders, <<~MESSAGE
+      TranscriptRedactionCache splits transcripts at newlines and reuses the redacted prefix, which
+      is only equivalent to a full re-scan while no pattern can match across one. These can:
+    MESSAGE
+  end
+
+  # Kept alongside the source-level lint as a behavioral cross-check: the lint
+  # reads the pattern, this runs it.
+  test "no redaction pattern matches across a newline when it is actually run" do
+    offenders = every_regexp.select { |_label, regexp| crosses_newline?(regexp) }
+
+    assert_empty offenders.map(&:first),
+      "these patterns produced a match containing a newline"
   end
 
   private
+
+  # Every regexp the pattern pass runs against transcript text: the rule itself
+  # and, where there is one, the `preceded_by` window check. The window one
+  # matters just as much — the cache's argument that truncating the lookback at a
+  # line start is harmless depends on it being `\z`-anchored and unable to match
+  # a newline.
+  def every_regexp
+    TranscriptRedactor::PATTERNS.flat_map do |pattern|
+      [ [ pattern.label, pattern.regexp ] ] +
+        (pattern.preceded_by ? [ [ "#{pattern.label} (preceded_by)", pattern.preceded_by ] ] : [])
+    end
+  end
+
+  # Reads a regexp's source and names the first construct in it that could match
+  # a newline, or nil when there is none.
+  #
+  # Sound for this pattern set because every rule in it is hand-written ASCII
+  # with no interpolated user input. The rules, in the three contexts that behave
+  # differently:
+  #
+  #   * outside a character class — an unescaped `.`, `\s`, `\n`, `\r`, `\D`,
+  #     `\W`, or the `\Z` anchor (which tolerates a trailing newline)
+  #   * inside a POSITIVE class — any member whose set contains a newline
+  #   * inside a NEGATED class — safe only if the class excludes newline, i.e.
+  #     lists one of `\s`, `\n`, `\r`, `\D`, `\W` (`[^abc]` matches a newline)
+  def newline_capable_construct(source)
+    newline_members = %w[s n r D W]
+    index = 0
+    in_class = false
+    negated = false
+    class_excludes_newline = false
+
+    while index < source.length
+      char = source[index]
+
+      if char == "\\"
+        escape = source[index + 1]
+        if in_class
+          class_excludes_newline = true if newline_members.include?(escape)
+          return "`\\#{escape}` inside a positive character class" if !negated && newline_members.include?(escape)
+        else
+          return "`\\#{escape}`" if newline_members.include?(escape)
+          return "the `\\Z` anchor, which tolerates a trailing newline" if escape == "Z"
+        end
+        index += 2
+        next
+      end
+
+      if in_class
+        if char == "]"
+          return "a negated character class that does not exclude newline" if negated && !class_excludes_newline
+
+          in_class = false
+        end
+      elsif char == "["
+        in_class = true
+        negated = source[index + 1] == "^"
+        class_excludes_newline = false
+      elsif char == "."
+        return "an unescaped `.`"
+      end
+
+      index += 1
+    end
+
+    nil
+  end
 
   # Does this regexp match any string containing a newline? Probed rather than
   # reasoned about: a pattern that can span a line boundary breaks prefix reuse.
