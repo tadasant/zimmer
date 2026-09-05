@@ -3633,6 +3633,16 @@ check at all for the first. That warning is also written once per session and ne
 session that was warned and is then resumed or unarchived — `resume` runs from `failed`,
 `unarchive_to_*` from `archived` — keeps a warning its later PR made obsolete.
 
+A budget of one warning per session means the pause that spends it decides where in the session's
+life the warning lands, and `pause` therefore skips a **recovery pause** — see
+[which pauses announce themselves](/sessions/lifecycle/#which-pauses-announce-themselves). Every
+*other* early pause still spends it: a session that hands back to its human at minute six, then goes
+on to open a PR through a route the hook cannot see, keeps a warning written before the PR existed
+and gets no second one. That is narrower than [#558](https://github.com/tadasant/zimmer/issues/558)
+was — the interrupt pause is the one that carried no information *and* told nobody, since it fires
+no wake and sends no push — but it is the same shape, and re-warning on later PR-shaped work is the
+part that is not implemented.
+
 A fork is read from **one past** `metadata["forked_at_message_index"]`, because everything at or
 before that index — the index is inclusive — is a copy of the source session's conversation and
 shows the *source* opening PRs. Two edges come with that. The fork point is a message index into the
