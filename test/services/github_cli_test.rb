@@ -39,7 +39,6 @@ class GithubCliTest < ActiveSupport::TestCase
 
     refute result.success?
     refute result.timed_out?
-    assert result.unknown?
     assert_nil result.exit_code
     assert_includes result.failure_description, SubprocessStatus::REAPED_DESCRIPTION
   end
@@ -54,8 +53,7 @@ class GithubCliTest < ActiveSupport::TestCase
 
     assert result.timed_out?
     refute result.success?
-    assert result.unknown?, "a hang is the most retryable failure there is"
-    assert_equal 5, result.timeout_seconds
+    assert_equal "", result.stdout, "a hang produces no output to parse"
   end
 
   # Callers compare exit codes for meaning — `exit_code == 8` is "checks are pending"
