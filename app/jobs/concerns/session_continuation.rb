@@ -34,6 +34,10 @@ module SessionContinuation
   # `needs_input` or `waiting` on the ordinary path, still `failed` when the
   # caller was the InterruptError-failed branch — for a human to restart, which is
   # the honest state for a session Zimmer cannot restart on its own.
+  #
+  # With one exception, and it is the permanent case above: a session that never
+  # ran has nothing to hand a human, so `Sessions::ReturnToQueue` sends it back to
+  # `waiting` rather than leaving it in the action queue (#602).
   MAX_CONTINUE_ATTEMPTS = 12
 
   # Counts failed auto-continue attempts. Listed in
@@ -228,6 +232,20 @@ module SessionContinuation
                  "This session will not be retried again — restart it to try once more.",
         level: "error"
       )
+      # A session that never ran has nothing to hand back to a human, and the
+      # `needs_input` this abandonment would leave it in is both a slot in the
+      # action queue and a dead end — every path that starts a session reads
+      # `waiting`. Return it to the queue instead, where StalledSessionStart or
+      # the spot gate's own sweep will re-dispatch it. Declines for a session
+      # that HAS a conversation behind it, which is the case this give-up was
+      # always about: a clone that is gone and a runtime session to resume into
+      # it (#602).
+      Sessions::ReturnToQueue.call(
+        session,
+        reason: "recovery could not continue it (#{error_message})",
+        working_directory: session.metadata&.dig("working_directory")
+      )
+
       # The missing-PR warning the recovery pause deferred (#558) comes due here,
       # and it is due whatever state the session is abandoned in — unlike the
       # announcement below, which is only honest about a session that really is
