@@ -586,6 +586,19 @@ class AgentSessionJob < ApplicationJob
         return
       end
 
+      # A status-summary fork takes ONE turn: the summary request, and nothing
+      # else. See #refuse_non_summary_fork_turn for the incident.
+      #
+      # Placed with the archived guard, and exempted the same way. A
+      # `resume_monitoring` job re-attaches to a process that is already running
+      # and is the thing that cleans it up; a `clone_only` job spends no turn at
+      # all.
+      if !resume_monitoring && !clone_only &&
+         refuse_non_summary_fork_turn(session, follow_up_prompt, log_buffer)
+        log_buffer.flush
+        return
+      end
+
       # A pause outranks every reason there is to start this session.
       #
       # This is the backstop the whole "an armed wake wins" contract rests on. Above
@@ -3037,6 +3050,97 @@ class AgentSessionJob < ApplicationJob
     # A session log rather than only a Rails log: the session's own timeline is
     # where "why did nothing happen to this session" is asked from.
     log_buffer&.add(message, level: follow_up_prompt.present? ? "warning" : "info")
+    true
+  end
+
+  # A status-summary fork answers one question and stops. Refuse any other turn.
+  #
+  # THE BUG THIS PINS (#695). SessionStatusSummaryGenerator forks a session's
+  # CONVERSATION into a throwaway fork and asks it, in one follow-up, to write
+  # the source session's Status panel. The fork therefore holds a copy of the
+  # source's turns, and nothing in Zimmer's automated-continuation machinery knew
+  # that: the quota-park resume, the orphan sweep, the health-monitor retry and
+  # the post-interrupt auto-continue all deliver a generic "you may have been
+  # interrupted, continue where you left off" nudge to whatever session they find
+  # in a resumable state.
+  #
+  # Handed that prompt on top of another session's conversation, the fork does
+  # exactly what it is told: it continues that conversation. On 2026-08-29 and
+  # again on 2026-09-03 a summary fork of a `zimmer-router` session re-polled the
+  # router's child, registered fresh wake triggers ON ITSELF, and filed a GitHub
+  # issue — then was archived by the harvest two minutes later, leaving those
+  # triggers armed on a session in the trash. Two sessions were live for one line
+  # of work, which is the half an operator sees; the half they do not is that
+  # SessionStatusSummaryHarvestJob publishes the LAST assistant message after the
+  # fork point, so the source session's Status panel was overwritten with the
+  # fork's routing disposition instead of a summary.
+  #
+  # The fork also cannot tell this has happened. Its injected header names its
+  # own id while the copied turns above it name the source's, so the identity
+  # looks like it changed mid-conversation — which is how both incidents were
+  # reported.
+  #
+  # Refusing HERE rather than at each sender is the point: a dozen paths can
+  # resume a session and every one of them arrives through this job. The refusal
+  # is not a stand-down either — the fork is brought to rest so the harvest runs,
+  # which publishes whatever answer it did give (both incidents' forks had
+  # already written their summary before the nudge landed) or marks the record
+  # failed so a later sweep re-generates it.
+  #
+  # @param session [Session]
+  # @param follow_up_prompt [String, nil] this turn's prompt as the job carries it
+  # @param log_buffer [LogBuffer, nil]
+  # @return [Boolean] true when nothing was started and #perform must return
+  def refuse_non_summary_fork_turn(session, follow_up_prompt, log_buffer)
+    return false unless session.status_summary_fork?
+
+    # `pending_follow_up_prompt` is where a turn that was enqueued but never
+    # spent is kept (Session#deliver_follow_up!, SigtermRetryService), and the
+    # follow-up arm below reads it in preference to the job's own argument. Ask
+    # the same question of the same text, or a re-delivered summary request would
+    # be refused as if it were a nudge.
+    prompt = follow_up_prompt.presence || session.metadata&.dig("pending_follow_up_prompt").presence
+    return false if SessionStatusSummaryGenerator.fork_prompt?(prompt)
+
+    Rails.logger.info(
+      "[AgentSessionJob] Session #{session.id} not started: it is a status-summary fork of session " \
+      "#{session.status_summary_source_id} and this turn is not the summary request " \
+      "(follow_up=#{prompt.present?})"
+    )
+    # A session log rather than only a Rails log: the session's own timeline is
+    # where "why did nothing happen to this session" is asked from.
+    message = "Not starting this turn: this session is a status-summary fork of session " \
+              "#{session.status_summary_source_id}, and a summary fork answers one question and stops. " \
+              "The conversation it holds is a copy of that session's, so continuing it here would run " \
+              "that session's work a second time."
+    if prompt.present?
+      message += " The prompt it was carrying was not delivered: " \
+                 "#{prompt.to_s.truncate(REFUSED_PROMPT_LOG_MAX_CHARS)}"
+    end
+    log_buffer&.add(message, level: "info")
+
+    # Bring the fork to rest on its own completion signal. `pause` is what the
+    # generator's flow expects — SessionStateMachine's hook enqueues the harvest
+    # for a fork — so a fork that had already answered still gets its answer
+    # published rather than dropped.
+    #
+    # `waiting` is the one resting state that harvests nothing: `sleep` fires no
+    # hook, and a fork reaches it when its own turn armed a wake (which is
+    # precisely what the refused turns were doing). Refusing there without
+    # harvesting would leave the fork asleep forever, holding its clone, so that
+    # state enqueues the harvest directly.
+    #
+    # `needs_input` deliberately does neither. A fork that ran and paused already
+    # enqueued its harvest from that transition; one that has never run is
+    # `needs_input` as ForkSessionService created it, and harvesting there would
+    # race the generator that is about to hand it its prompt. That case is
+    # AbandonedStatusSummaryForkSweepJob's, and its predicate is built to wait
+    # for evidence rather than guess.
+    if session.may_pause?
+      session.pause!
+    elsif session.waiting?
+      SessionStatusSummaryHarvestJob.perform_later(session.id)
+    end
     true
   end
 
