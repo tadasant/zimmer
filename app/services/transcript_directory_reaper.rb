@@ -47,10 +47,15 @@ module TranscriptDirectoryReaper
       root = source.per_working_directory_transcript_root
       next if root.blank? || !File.directory?(root)
 
+      # Derived once, outside the loop: the name is constant across entries and
+      # the root it is matched against holds thousands of them.
+      name = TranscriptDirectoryClassifier.derived_name(
+        transcript_source: source, working_directory: File.expand_path(clone_path.to_s)
+      )
+      next if name.blank?
+
       children(root).each do |entry|
-        next unless TranscriptDirectoryClassifier.derived_from?(
-          transcript_source: source, clone_path: clone_path, entry: entry
-        )
+        next unless TranscriptDirectoryClassifier.covers?(name, entry)
 
         removed += 1 if remove_directory(File.join(root, entry))
       end

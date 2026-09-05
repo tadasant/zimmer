@@ -18,6 +18,7 @@ class MovePendingMaintenanceJobsToLane < ActiveRecord::Migration[8.1]
     EmptyTrashJob
     McpPackageReinstallJob
     OrphanCloneFilesystemCleanupJob
+    OrphanTranscriptDirectoryCleanupJob
     StaleCloneCleanupJob
     TokenUsageBackfillJob
     TranscriptArchiveJob

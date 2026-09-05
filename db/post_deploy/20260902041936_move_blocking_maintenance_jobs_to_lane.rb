@@ -12,6 +12,7 @@ class MoveBlockingMaintenanceJobsToLane < PostDeployTask
     EmptyTrashJob
     McpPackageReinstallJob
     OrphanCloneFilesystemCleanupJob
+    OrphanTranscriptDirectoryCleanupJob
     StaleCloneCleanupJob
     TokenUsageBackfillJob
     TranscriptArchiveJob
