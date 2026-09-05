@@ -1232,7 +1232,8 @@ class AgentSessionJob < ApplicationJob
           if @file_system.exists?(File.join(working_directory, "Gemfile"))
             BundleInstallJob.perform_later(session.id, working_directory)
             log_buffer.add(
-              "Bundle install started in background (Rails commands may not work for ~30s)",
+              "Preparing gems in the background (a clone matching the image is ready at once; " \
+              "otherwise Ruby commands may not work until the install finishes)",
               level: "info"
             )
           end

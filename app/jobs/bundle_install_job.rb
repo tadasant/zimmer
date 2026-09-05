@@ -3,31 +3,32 @@
 # Gives a session's clone a working bundle, in the background, so the agent can start
 # reading and editing immediately instead of waiting on ~300 gems.
 #
-# Two properties are load-bearing here, and both come from zimmer#410. Read them before
-# changing anything in this file, because the obvious simplification breaks one of them.
+# Two invariants are load-bearing (zimmer#410). Read them before changing anything in this
+# file, because the obvious simplification breaks one of them.
 #
 # 1. **A clone is never pinned to a bundle that is not there.**
 #
 #    Bundler reads `<clone>/.bundle/config`, and a `BUNDLE_PATH` in that file **overrides
 #    the environment** — verified, not assumed: with the file saying `vendor/bundle` and
 #    `BUNDLE_PATH=/usr/local/bundle` exported, `bundle config get path` reports the file's
-#    value as "the top value will be used". So writing that file *before* the gems exist is
-#    what turned an interrupted install into a clone where every Ruby command died with
-#    `Bundler::GemNotFound`, listing gems that are plainly installed in the image.
+#    value as "the top value will be used". A config written before the gems exist therefore
+#    pins the clone at a directory that cannot satisfy it, and every Ruby command in that
+#    clone dies with `Bundler::GemNotFound` listing gems that are installed in the image.
 #
-#    Hence: this job passes `BUNDLE_PATH` to its subprocesses **through the environment
-#    only**, and writes `.bundle/config` **last**, after `bundle check` has confirmed the
-#    path it is about to name really does satisfy the Gemfile. `bundle install` driven that
-#    way persists no config of its own (also verified), so a job killed at any point leaves
-#    a partial `vendor/bundle` and *no* config — a clone that is slow, not a clone that is
-#    broken.
+#    So `BUNDLE_PATH` reaches the subprocesses **through the environment only**, and
+#    `.bundle/config` is written **last**, after `bundle check` confirms the path it is
+#    about to name really does satisfy the Gemfile. `bundle install` driven that way
+#    persists no config of its own — a property `bundle install writes no .bundle/config
+#    when BUNDLE_PATH comes from the environment` pins with a real bundler run, because a
+#    Bundler release that changed it would silently restore the whole failure. A job killed
+#    at any point leaves a partial `vendor/bundle` and *no* config: a clone that is slow,
+#    not a clone that is broken.
 #
 # 2. **An interrupted install resumes.**
 #
-#    This job used to be `discard_on StandardError` plus the quiet interrupt discard, so a
-#    deploy or a SIGTERM ended the install for good. It now retries, quietly and boundedly
-#    (see the `rescue_from` below), and a bundle that comes out incomplete raises
-#    `IncompleteBundleError` so that it retries too.
+#    A deploy or a SIGTERM must not end an install for good, so failures retry — quietly
+#    and boundedly, see the `rescue_from` below — and a bundle that comes out incomplete
+#    raises `IncompleteBundleError` so that it retries too.
 #
 # The fast path below usually means there is nothing to interrupt at all: a clone of
 # Zimmer's own repo at a commit that has not touched the Gemfile resolves straight out of
@@ -52,10 +53,11 @@ class BundleInstallJob < ApplicationJob
   # interrupted it has finished, rather than into the tail of the same shutdown.
   RETRY_WAIT = 30.seconds
 
-  # The keys this job writes into `.bundle/config`. A config file whose keys are a subset
-  # of these is one this job (or its pre-#410 self) wrote, which is what makes it safe to
-  # delete when it turns out to name an unusable bundle. A file with any other key belongs
-  # to the repository and is left alone.
+  # The keys this job is willing to own in `.bundle/config` — the two it writes, plus the
+  # one `bundle config set --local deployment` can write alongside them, which is how the
+  # pre-#410 job produced its configs. A file whose keys are a subset of these is one this
+  # job wrote, which is what makes it safe to delete when it turns out to name an unusable
+  # bundle. A file with any other key belongs to the repository and is left alone.
   MANAGED_CONFIG_KEYS = %w[BUNDLE_PATH BUNDLE_DEPLOYMENT BUNDLE_FROZEN].freeze
 
   # Retry quietly instead of `retry_on`.
@@ -67,25 +69,46 @@ class BundleInstallJob < ApplicationJob
   # instrumenting anything, so exhaustion lands at WARN where it belongs.
   #
   # Registered AFTER the inherited `discard_interrupt_quietly` handler, and deliberately
-  # NOT re-registering it: `GoodJob::InterruptError < StandardError`, rescue handlers
+  # not re-registering it: `GoodJob::InterruptError < StandardError`, rescue handlers
   # resolve last-registered-wins, so interrupts land here and are retried. That is the
-  # point — resuming after a deploy is the whole fix. Deploy interrupts stay off the ERROR
-  # channel because this handler never logs above WARN.
+  # point — resuming after a deploy is what invariant 2 is. Deploy interrupts stay off the
+  # ERROR channel because this handler never logs above WARN, and because it never lets an
+  # exception of its own escape: one raised out of a `rescue_from` block is reported by
+  # ActiveJob's LogSubscriber as "Error performing …" at ERROR, which is the one way this
+  # design could still trip the alert it exists to avoid.
   rescue_from(StandardError) do |error|
     if executions < MAX_ATTEMPTS
       Rails.logger.info(
         "[BundleInstallJob] attempt #{executions}/#{MAX_ATTEMPTS} failed with " \
         "#{error.class.name}: #{error.message}. Retrying in #{RETRY_WAIT.to_i}s."
       )
-      retry_job(wait: RETRY_WAIT, error: error)
+      begin
+        retry_job(wait: RETRY_WAIT, error: error)
+      rescue StandardError => e
+        # `retry_job` writes to Postgres. If that write is what failed, GoodJob leaves the
+        # row unfinished and picks it up again anyway, so swallowing this costs nothing and
+        # keeps the ERROR line off the wire.
+        Rails.logger.warn("[BundleInstallJob] could not re-enqueue: #{e.class}: #{e.message}")
+      end
     else
       Rails.logger.warn(
         "[BundleInstallJob] giving up after #{executions} attempts: " \
         "#{error.class.name}: #{error.message}"
       )
+      # Handled, so it does not page — but an unexpected error in here would otherwise
+      # reach nothing at all, the session log line being its only other trace.
+      Rails.error.report(error, handled: true, source: "BundleInstallJob")
       record_give_up(error)
     end
   end
+
+  # Restores what the broad handler above would otherwise shadow. ActiveSupport resolves
+  # rescue handlers last-registered-wins, so without this line a subclass `rescue_from
+  # StandardError` silently replaces `ApplicationJob`'s `retry_on
+  # ActiveRecord::StatementTimeout` — and `DatabaseRetry` excludes `QueryAborted` from its
+  # own retry list precisely *because* that inherited handler is there. A database timeout
+  # is not a bundle problem and does not want this job's flat 30s ladder.
+  retry_on ActiveRecord::StatementTimeout, wait: :exponentially_longer, attempts: 5
 
   # @param session_id [Integer] The session ID (for logging context)
   # @param working_directory [String] The directory containing the Gemfile
@@ -139,7 +162,19 @@ class BundleInstallJob < ApplicationJob
     bundle_path = image_bundle_path
     return false if bundle_path.blank?
     return false unless lockfile_matches_image?
-    return false unless bundle_satisfied?(bundler_env(bundle_path))
+
+    # Reaching here means the clone is byte-identical to the image and the shared bundle
+    # still ought to satisfy it. If it does not — a Gemfile group the image was built
+    # without, a ruby version bump — every clone silently reverts to a two-minute install
+    # and nothing else would say so. Log it: a fast path that has gone quietly dead is
+    # otherwise indistinguishable from one that was never written.
+    unless bundle_satisfied?(bundler_env(bundle_path))
+      Rails.logger.info(
+        "[BundleInstallJob] #{bundle_path} no longer satisfies an identical Gemfile; " \
+        "falling back to a per-clone vendor/bundle"
+      )
+      return false
+    end
 
     write_bundle_config(bundle_path)
     log_to_session(
@@ -174,10 +209,14 @@ class BundleInstallJob < ApplicationJob
     configured = Bundler.settings[:path]
     return nil if configured.blank?
 
-    path = File.expand_path(configured)
     return nil unless Pathname.new(configured).absolute?
-    return nil if path.start_with?(File.expand_path(working_directory) + File::SEPARATOR)
+
+    path = File.expand_path(configured)
     return nil unless File.directory?(path)
+    # Resolved, not merely expanded: a clone reachable through a symlink would otherwise
+    # slip a clone-local directory past this and get an absolute path written into its
+    # config, which is what the relative pin in the slow path exists to avoid.
+    return nil if resolve(path).start_with?(resolve(working_directory) + File::SEPARATOR)
 
     path
   rescue StandardError => e
@@ -185,6 +224,14 @@ class BundleInstallJob < ApplicationJob
     # is not an error — it is a normal install.
     Rails.logger.info("[BundleInstallJob] no image bundle to share: #{e.class}: #{e.message}")
     nil
+  end
+
+  # Symlinks resolved, falling back to plain expansion for a path that cannot be resolved
+  # (a component that does not exist, a permission the session lacks).
+  def resolve(path)
+    File.realpath(path)
+  rescue SystemCallError
+    File.expand_path(path)
   end
 
   # Both files, byte for byte. The lockfile alone is not enough: `bundle check` evaluates
@@ -223,8 +270,11 @@ class BundleInstallJob < ApplicationJob
     # partially written gem) must not get a config written for it, and an install that
     # reports failure after the gems all landed should not be retried for nothing.
     unless bundle_satisfied?(env)
+      # The install's own status is context, not the verdict — it is routinely 0 here,
+      # which is the whole reason `bundle check` is asked as well.
       raise IncompleteBundleError,
-        "bundle check failed after install (#{SubprocessStatus.describe_failure(status, stderr.lines.first(3).join)})"
+        "bundle check says the bundle is incomplete after install (install reported " \
+        "#{SubprocessStatus.describe_failure(status, stderr.lines.first(3).join.truncate(200))})"
     end
 
     # Relative, so the config keeps working if the clone is ever relocated or forked to a
@@ -243,11 +293,19 @@ class BundleInstallJob < ApplicationJob
   # what this job decides is put back. `BUNDLE_APP_CONFIG` aims bundler's config at the
   # clone's own `.bundle`, never `~/.bundle` or the image's.
   #
+  # `GEM_HOME` / `GEM_PATH` go too, for the same reason `CliSpawnEnv` strips them from an
+  # agent's environment: they are the *other* way the app's gems leak into a clone, and
+  # leaving them set would have this job resolve against a bundle the agent's own commands
+  # never see. Matching that environment is what lets the probe in
+  # `discard_unusable_bundle_config` stand in for "what the agent's `bin/rails` would hit".
+  #
   # @param bundle_path [String, nil] where this invocation should resolve (and install)
   #   gems; nil leaves BUNDLE_PATH unset, so the clone's own `.bundle/config` decides
   def bundler_env(bundle_path)
     clean_env = ENV.to_h
-    clean_env.each_key { |k| clean_env[k] = nil if k.start_with?("BUNDLE") || k == "RUBYOPT" }
+    clean_env.each_key do |k|
+      clean_env[k] = nil if k.start_with?("BUNDLE") || %w[RUBYOPT GEM_HOME GEM_PATH].include?(k)
+    end
     clean_env["BUNDLE_APP_CONFIG"] = File.join(working_directory, ".bundle")
     clean_env["BUNDLE_PATH"] = bundle_path
     # The image sets BUNDLE_DEPLOYMENT=1, which would make a clone refuse to install
@@ -266,13 +324,18 @@ class BundleInstallJob < ApplicationJob
   #
   # Written directly rather than through `bundle config set --local`, because that shells
   # out twice more and — the reason that matters — it writes the file as a side effect of
-  # succeeding at something else, which is how the pre-#410 job came to leave one behind
-  # for a bundle that did not exist.
+  # succeeding at something else — which is how a config comes to name a bundle that does
+  # not exist.
   def write_bundle_config(bundle_path)
     FileUtils.mkdir_p(File.dirname(bundle_config_path))
+    # A repository can track `.bundle/config` as a symlink, and `File.write` follows one, so
+    # a clone could otherwise aim this write at any file the session can reach.
+    File.unlink(bundle_config_path) if File.symlink?(bundle_config_path)
+    # Serialized rather than interpolated: a clone path containing a quote or a backslash
+    # would produce YAML bundler reads as something else entirely.
     File.write(
       bundle_config_path,
-      "---\nBUNDLE_PATH: \"#{bundle_path}\"\nBUNDLE_DEPLOYMENT: \"false\"\n"
+      { "BUNDLE_PATH" => bundle_path.to_s, "BUNDLE_DEPLOYMENT" => "false" }.to_yaml
     )
   end
 
@@ -323,7 +386,9 @@ class BundleInstallJob < ApplicationJob
       session.logs.create!(
         content: "Background bundle install failed after #{MAX_ATTEMPTS} attempts " \
                  "(#{error.class.name}: #{error.message.truncate(200)}). Gems are not " \
-                 "installed; run `bundle install` in the clone to finish it.",
+                 "installed. To finish it by hand, run `bundle config set --local path " \
+                 "vendor/bundle && bundle install` in the clone — a bare `bundle install` " \
+                 "has nowhere writable to put them.",
         level: "warning"
       )
     end

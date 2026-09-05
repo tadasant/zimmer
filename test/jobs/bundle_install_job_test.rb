@@ -173,8 +173,8 @@ class BundleInstallJobTest < ActiveJob::TestCase
     assert_equal %w[install check], @bundler.subcommands
     assert_not @bundler.call_for("check").config_existed,
       "the config must not exist yet when the verifying check runs"
-    assert_equal "---\nBUNDLE_PATH: \"vendor/bundle\"\nBUNDLE_DEPLOYMENT: \"false\"\n",
-      File.read(bundle_config_path)
+    assert_equal({ "BUNDLE_PATH" => "vendor/bundle", "BUNDLE_DEPLOYMENT" => "false" },
+      written_config)
   end
 
   test "bundle install is driven by BUNDLE_PATH in the environment, not by a written config" do
@@ -270,7 +270,8 @@ class BundleInstallJobTest < ActiveJob::TestCase
     log = @session.logs.last
     assert_equal "warning", log.level
     assert_match(/failed after #{BundleInstallJob::MAX_ATTEMPTS} attempts/, log.content)
-    assert_match(/run `bundle install`/, log.content)
+    assert_match(/bundle config set --local path vendor\/bundle && bundle install/, log.content,
+      "the advice must be the recovery that actually works — a bare `bundle install` has nowhere writable to go")
   end
 
   test "an exhausted job does not raise out of perform" do
@@ -289,8 +290,8 @@ class BundleInstallJobTest < ActiveJob::TestCase
 
     assert_equal %w[check], @bundler.subcommands, "the fast path must not run an install"
     assert_equal @image_bundle, @bundler.call_for("check").env["BUNDLE_PATH"]
-    assert_equal "---\nBUNDLE_PATH: \"#{@image_bundle}\"\nBUNDLE_DEPLOYMENT: \"false\"\n",
-      File.read(bundle_config_path)
+    assert_equal({ "BUNDLE_PATH" => @image_bundle, "BUNDLE_DEPLOYMENT" => "false" },
+      written_config)
     assert_match(/resolves gems from #{Regexp.escape(@image_bundle)}/, @session.logs.last.content)
   end
 
@@ -304,8 +305,8 @@ class BundleInstallJobTest < ActiveJob::TestCase
     BundleInstallJob.perform_now(@session.id, @working_directory)
 
     assert_equal %w[check install check], @bundler.subcommands
-    assert_equal "---\nBUNDLE_PATH: \"vendor/bundle\"\nBUNDLE_DEPLOYMENT: \"false\"\n",
-      File.read(bundle_config_path)
+    assert_equal({ "BUNDLE_PATH" => "vendor/bundle", "BUNDLE_DEPLOYMENT" => "false" },
+      written_config)
   end
 
   test "a clone whose Gemfile.lock differs from the image installs its own bundle" do
@@ -338,8 +339,8 @@ class BundleInstallJobTest < ActiveJob::TestCase
     BundleInstallJob.perform_now(@session.id, @working_directory)
 
     assert_equal %w[install check], @bundler.subcommands
-    assert_equal "---\nBUNDLE_PATH: \"vendor/bundle\"\nBUNDLE_DEPLOYMENT: \"false\"\n",
-      File.read(bundle_config_path)
+    assert_equal({ "BUNDLE_PATH" => "vendor/bundle", "BUNDLE_DEPLOYMENT" => "false" },
+      written_config)
   end
 
   test "a shared bundle path that is not a directory is never adopted" do
@@ -364,9 +365,71 @@ class BundleInstallJobTest < ActiveJob::TestCase
     assert_equal %w[install check], @bundler.subcommands
   end
 
+  # --- against the real bundler ------------------------------------------------------
+  #
+  # Everything above replaces `Open3.capture3`, which is right for asserting *ordering* but
+  # leaves the load-bearing claim untested: that `bundle install`, driven by BUNDLE_PATH in
+  # the environment, persists no `.bundle/config` of its own. That is a property of Bundler,
+  # not of this job, and a Bundler release that changed it would silently restore #410 —
+  # this job would install, `bundle check` would pass, and the pin written before the check
+  # would be Bundler's rather than ours.
+  #
+  # Offline and sub-second: the Gemfile names one path gem with no dependencies and no
+  # remote source, so `bundle install --local` resolves entirely from disk.
+
+  test "bundle install writes no .bundle/config when BUNDLE_PATH comes from the environment" do
+    write_path_gem_fixture
+
+    env = ENV.to_h
+    env.each_key do |k|
+      env[k] = nil if k.start_with?("BUNDLE") || %w[RUBYOPT GEM_HOME GEM_PATH].include?(k)
+    end
+    env["BUNDLE_APP_CONFIG"] = File.join(@working_directory, ".bundle")
+    env["BUNDLE_PATH"] = File.join(@working_directory, "vendor", "bundle")
+
+    _out, err, status = Open3.capture3(env, "bundle", "install", "--local", chdir: @working_directory)
+
+    assert SubprocessStatus.success?(status), "fixture install failed: #{err}"
+    assert File.directory?(File.join(@working_directory, "vendor", "bundle")),
+      "the fixture must actually install something for this assertion to mean anything"
+    assert_not File.exist?(bundle_config_path),
+      "Bundler persisted a config from an env-driven install — the job's ordering no longer protects anything"
+  end
+
+  test "the job installs a real bundle and pins it only once bundle check passes" do
+    write_path_gem_fixture
+
+    BundleInstallJob.perform_now(@session.id, @working_directory)
+
+    assert_equal({ "BUNDLE_PATH" => "vendor/bundle", "BUNDLE_DEPLOYMENT" => "false" }, written_config)
+    assert_match(/completed successfully/, @session.logs.last.content)
+  end
+
   private
 
+  # A Gemfile whose only dependency is a path gem in the clone: no remote source, no
+  # network, and `bundle install --local` finishes in well under a second.
+  def write_path_gem_fixture
+    gem_dir = File.join(@working_directory, "tiny")
+    FileUtils.mkdir_p(File.join(gem_dir, "lib"))
+    File.write(File.join(gem_dir, "lib", "tiny.rb"), "module Tiny; end\n")
+    File.write(File.join(gem_dir, "tiny.gemspec"), <<~GEMSPEC)
+      Gem::Specification.new do |s|
+        s.name = "tiny"
+        s.version = "0.0.1"
+        s.summary = "fixture"
+        s.authors = [ "zimmer" ]
+        s.files = [ "lib/tiny.rb" ]
+      end
+    GEMSPEC
+    File.write(File.join(@working_directory, "Gemfile"), %(gem "tiny", path: "./tiny"\n))
+  end
+
   def bundle_config_path = File.join(@working_directory, ".bundle", "config")
+
+  # Parsed, not compared byte for byte: what has to hold is that bundler reads the right
+  # path back, not that this job serialises it in one particular style.
+  def written_config = YAML.safe_load_file(bundle_config_path)
 
   # [severity, message] tuples from both loggers — ActiveJob's LogSubscriber writes to its own.
   def capture_log_records
