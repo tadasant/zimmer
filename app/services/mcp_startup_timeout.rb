@@ -23,16 +23,22 @@
 #                 (ClaudeSpawnEnv#configure_mcp_env)
 #   Codex         startup_timeout_sec = 180     per `[mcp_servers.*]` table, seconds
 #                 (CodexConfigTomlPostProcessor#apply_startup_timeouts!)
+#   Pi            requestTimeoutMs = 180000     per `.mcp.json` entry, milliseconds
+#                 (PiMcpConfigPostProcessor#apply_startup_timeouts!)
 #
-# Pi has neither: `PiRuntimeAdapter` exports no timeout variable and nothing
-# Zimmer writes into its `.mcp.json` is read as one, so a Pi session runs on
-# whatever its own client defaults to.
+# Each runtime's own default was measured against the pinned binary rather than
+# read off a doc. Codex's is 30 seconds (`@openai/codex@0.146.0`), which leaves
+# under twice the observed cold-start worst case. Pi's is the MCP SDK's 60
+# seconds, reached through the `pi-mcp-adapter` extension that supplies Pi's
+# whole MCP client — better, and still only about 3x an 18-second worst case
+# measured on an idle box. Three minutes is what Claude gets, and one budget for
+# all three keeps a runtime's default from deciding whether a session's MCP
+# servers connect.
 #
-# Codex's own default is 30 seconds — measured against the pinned
-# `@openai/codex@0.146.0` binary, not read off a doc — which leaves under twice
-# the observed cold-start worst case. Three minutes is what Claude gets, and one
-# budget for both keeps a runtime's default from deciding whether a session's
-# MCP servers connect.
+# Pi's spelling covers more than a startup: `requestTimeoutMs` is the budget for
+# every request on the connection, tool calls included. There is no
+# connect-only key to write instead — see
+# PiMcpConfigPostProcessor#apply_startup_timeouts!.
 #
 # The cost of the wider budget is the same one Claude pays: a server that hangs
 # holds the handshake for three minutes rather than thirty seconds. That is the
@@ -49,6 +55,7 @@ module McpStartupTimeout
   # lose precision is the one the number is written in.
   SECONDS = 180
 
-  # The same budget for Claude's `MCP_TIMEOUT`, which is milliseconds.
+  # The same budget for the two runtimes that spell it in milliseconds: Claude's
+  # `MCP_TIMEOUT` and Pi's `requestTimeoutMs`.
   MILLISECONDS = SECONDS * 1000
 end

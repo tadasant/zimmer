@@ -18,8 +18,8 @@ module ClaudeSpawnEnv
 
   # MCP server startup timeout in milliseconds. 3 minutes allows time for npm
   # package downloads on cold starts; once cached, servers connect in <5s.
-  # Shared with Codex through McpStartupTimeout so the two runtimes cannot drift
-  # into giving the same cold clone different amounts of room.
+  # Shared with Codex and Pi through McpStartupTimeout so the three runtimes
+  # cannot drift into giving the same cold clone different amounts of room.
   MCP_TIMEOUT_MS = McpStartupTimeout::MILLISECONDS
 
   private
