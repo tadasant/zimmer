@@ -46,7 +46,8 @@
 # that produced a successful tool call is never marked failed — because a
 # configured-server failure escalates to a session-level failure.
 class CodexMcpStatusDetector
-  include DatabaseRetry
+  # McpStatusPersisting brings DatabaseRetry with it — this class needs
+  # `with_db_retry` only for the persistence the module does on its behalf.
   include McpStatusPersisting
 
   # codex-rs joins the server name and tool name with this delimiter to form the

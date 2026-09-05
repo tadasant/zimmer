@@ -30,7 +30,7 @@ Core code never says "Claude." It asks `RuntimeRegistry.for(runtime)`.
 | `retry_strategy_class` | `ClaudeRetryStrategy` | `CodexRetryStrategy` | `PiRetryStrategy` |
 | `transcript_source_class` | `ClaudeTranscriptSource` | `CodexTranscriptSource` | `PiTranscriptSource` |
 | `transcript_normalizer_class` | `ClaudeTranscriptNormalizer` | `CodexTranscriptNormalizer` | `PiTranscriptNormalizer` |
-| `mcp_status_detector_class` | `McpLogPollerService` | `CodexMcpStatusDetector` | `nil` |
+| `mcp_status_detector_class` | `McpLogPollerService` | `CodexMcpStatusDetector` | `NullMcpStatusDetector` |
 | `config_post_processor_class` | `ClaudeMcpConfigPostProcessor` | `CodexConfigTomlPostProcessor` | `PiMcpConfigPostProcessor` |
 | `mcp_credential_writer_class` | `ClaudeMcpCredentialWriter` | `CodexMcpCredentialWriter` | `nil` |
 | `prompt_contribution_class` | `ClaudeRuntimePromptContribution` | `nil` | `PiRuntimePromptContribution` |
@@ -58,7 +58,9 @@ two hold a null object: it writes the AIR hooks and plugins config Pi's extensio
 read, which Claude's and Codex's AIR adapters already handle for them. See
 [Pi is the runtime that supplies nothing](#pi-is-the-runtime-that-supplies-nothing).
 
-Two `pi` slots are `nil` for reasons of their own rather than by that convention:
+Two `pi` slots are worth reading in full — one because it is emphatically *not*
+`nil`, the other because it is `nil` for a reason of its own rather than by that
+convention:
 
 - **`mcp_status_detector_class`** — Pi writes no per-server MCP log files, so
   Claude's log poller has nothing to read, and unlike Codex it records no
@@ -73,6 +75,19 @@ Two `pi` slots are `nil` for reasons of their own rather than by that convention
   nothing real to put there supplies a null object.
   `test/contracts/runtime_bundle_slot_contract_test.rb` enforces this for every
   registered runtime and every unconditionally-dereferenced slot.
+
+  **Filling the slot is necessary and not sufficient.** A detector also has to
+  *work*, and the null object's whole job is the inherited half of the interface:
+  `TranscriptPollerService#poll_mcp_logs` calls `update_session_mcp_status` after
+  every `poll`, and for Pi that call is the only thing that seeds the `pending`
+  placeholders keeping a configured server visible in `mcp_servers_status`
+  instead of reading as "not configured". `NullMcpStatusDetector` shipped
+  including `McpStatusPersisting` but not `DatabaseRetry`, so that inherited call
+  raised `NoMethodError` on every poll of the first Pi session to run in
+  production — a filled slot, a successful construction, and a broken runtime.
+  `McpStatusPersisting` now includes `DatabaseRetry` itself, so no includer can
+  repeat it, and the contract test polls *and* persists for every runtime rather
+  than only constructing.
 - **`mcp_credential_writer_class`** — Pi keeps MCP OAuth tokens inside the
   `pi-mcp-adapter` extension's own state, which Zimmer does not write. This slot
   *may* be `nil` because both its callers are guarded:
