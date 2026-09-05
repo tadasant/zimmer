@@ -361,14 +361,20 @@ far enough for `TranscriptPollerService` to reach `McpStatusPersisting`, and a r
 before its transcript appeared never got there. The REST API and the `get_session` MCP tool hand
 `custom_metadata` back verbatim, so an absent key reads as "this session has no MCP servers" —
 and, in the triage that reported the defect, as "the servers never came up". `pending` says what
-is actually true at a resume, and the detector upgrades each entry as its evidence arrives. A
-session with no trackable servers still loses the key, which is the honest answer for it.
+is actually true at a resume, and the detector upgrades each entry as its evidence arrives.
 
-An unchanged floor writes nothing, so an ordinary resume of an already-`pending` session issues no
-extra `UPDATE`. The same floor is applied one more time per turn, in `AgentSessionJob` immediately
-before the spawn — the first point at which `air prepare` has run and `all_mcp_servers` therefore
-includes whatever AIR auto-injected. See
-[A server that fails before it connects is listed as `pending`](/auth/mcp-oauth/#a-server-that-fails-before-it-connects-is-listed-as-pending-not-omitted).
+The reset spans the union of `all_mcp_servers` and the names already in the hash. `all_mcp_servers`
+alone would hand the key's survival to a catalog read that fails soft — `plugin_mcp_servers` returns
+`[]` when the AIR catalog cannot be resolved — so a blip at resume time would empty the reset for a
+plugin-only session and delete the key, which is the defect itself.
+
+An unchanged reset writes nothing, so an ordinary resume of an already-`pending` session issues no
+extra `UPDATE`. `AgentSessionJob` then applies a related but weaker operation immediately before the
+spawn: `Session#seed_mcp_servers_status_floor!`, which adds `pending` **only where no entry exists**
+and so leaves a carried-over status alone. It runs there because that is the first point at which
+`air prepare` has run and `all_mcp_servers` therefore includes whatever AIR auto-injected. The
+[MCP server OAuth page](/auth/mcp-oauth/) has the detector-side half of the same floor, under *"A
+server that fails before it connects is listed as `pending`, not omitted"*.
 
 #### A live execution is not an interruption
 

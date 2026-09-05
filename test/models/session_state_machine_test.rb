@@ -962,9 +962,11 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_nil session.custom_metadata["mcp_failure_reason"], "mcp_failure_reason should be cleared"
 
     # mcp_servers_status is reset, not dropped: the previous run's `failed` verdict
-    # goes, but the configured server stays listed so the key never reads as
-    # "no servers configured" (#465). The fixture configures context7.
-    assert_equal({ "context7" => { "status" => "pending" } },
+    # goes, but the servers stay listed so the key never reads as "no servers
+    # configured" (#465). The fixture configures context7; test-server is carried
+    # over from the hash, since the reset spans the union of the two.
+    assert_equal(
+      { "context7" => { "status" => "pending" }, "test-server" => { "status" => "pending" } },
       session.custom_metadata["mcp_servers_status"],
       "mcp_servers_status should be floored to pending, not deleted")
 
@@ -1014,17 +1016,48 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       "unrelated custom_metadata keys must be preserved"
   end
 
-  test "resume drops mcp_servers_status entirely when the session has no trackable servers" do
+  test "resume drops mcp_servers_status entirely when there is nothing to list" do
     session = sessions(:needs_input) # mcp_servers: [], nothing injected
-    session.update!(
-      custom_metadata: { "mcp_servers_status" => { "gone" => { "status" => "connected" } } }
-    )
+    session.update!(custom_metadata: { "mcp_servers_status" => {}, "should_fail_session" => true })
 
     session.resume!
     session.reload
 
     assert_nil session.custom_metadata["mcp_servers_status"],
-      "a server-less session has no floor to stand on, so the key goes"
+      "a session with no servers and no history has no floor to stand on, so the key goes"
+  end
+
+  # `all_mcp_servers` reaches the AIR catalog through `plugin_mcp_servers`, and
+  # PluginsConfig returns [] when the catalog cannot be resolved. Resetting over
+  # `all_mcp_servers` alone would let that blip delete the key on the very path
+  # this fix exists to protect, so the reset spans the names already in the hash
+  # too.
+  test "resume keeps the key when the server list resolves empty under a catalog failure" do
+    session = sessions(:needs_input)
+    session.update!(
+      custom_metadata: { "mcp_servers_status" => { "context7" => { "status" => "connected" } } }
+    )
+    Session.any_instance.stubs(:all_mcp_servers).returns([])
+
+    session.resume!
+    session.reload
+
+    assert_equal({ "context7" => { "status" => "pending" } },
+      session.custom_metadata["mcp_servers_status"],
+      "a soft-failing catalog read must not be able to delete the status surface")
+  end
+
+  # A plugin-bundled server is neither in the mcp_servers column nor in
+  # injected_mcp_servers; it reaches all_mcp_servers through plugin_mcp_servers.
+  test "resume floors plugin-bundled servers" do
+    session = sessions(:needs_input)
+    Session.any_instance.stubs(:plugin_mcp_servers).returns([ "plugin-bundled-server" ])
+
+    session.resume!
+    session.reload
+
+    assert_equal({ "plugin-bundled-server" => { "status" => "pending" } },
+      session.custom_metadata["mcp_servers_status"])
   end
 
   # The thrash guard: an unchanged floor must not re-issue the write. Without it,
@@ -1048,16 +1081,19 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_equal({ "context7" => { "status" => "pending" } }, session.custom_metadata["mcp_servers_status"])
   end
 
-  test "resume does not fail when custom_metadata is empty" do
+  # An empty custom_metadata is exactly the absent-key state #465 is about, so the
+  # floor has to be written here too rather than skipped for want of a hash to
+  # edit. The fixture configures context7.
+  test "resume floors an empty custom_metadata rather than leaving the key absent" do
     session = sessions(:waiting)
     session.update!(status: :failed, custom_metadata: {})
 
-    # Should not raise an error
     session.resume!
     session.reload
 
     assert session.running?, "Session should be running after resume"
-    assert_equal({}, session.custom_metadata)
+    assert_equal({ "mcp_servers_status" => { "context7" => { "status" => "pending" } } },
+      session.custom_metadata)
   end
 
   test "resume does not fail when custom_metadata is nil" do
@@ -1070,6 +1106,9 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.reload
 
     assert session.running?, "Session should be running after resume"
+    assert_equal({ "context7" => { "status" => "pending" } },
+      session.custom_metadata["mcp_servers_status"],
+      "a nil custom_metadata is still floored, not left absent")
   end
 
   test "resume clears MCP metadata when resuming from needs_input state" do

@@ -650,16 +650,19 @@ every turn, and *forever* on a turn whose process died before it wrote a transcr
 `TranscriptPollerService` returns early when there is no transcript file to read. Worse, `resume` used
 to delete the key outright, so a session that had been reporting `connected` for days went back to
 having no key at all on its next turn ([#465](https://github.com/tadasant/zimmer/issues/465)).
-`Session#seed_mcp_servers_status_floor!` is the same floor with the same "only where no entry exists"
-safety property, applied by the paths that run before any detector can:
+Two paths that run before any detector can therefore write the key themselves, and they are not the
+same operation:
 
-| Where | When |
+| Where | What it does |
 | --- | --- |
-| `SessionStateMachine#clear_stale_mcp_failure_metadata` | on every `resume`, resetting each entry to `pending` instead of dropping the key |
-| `AgentSessionJob`, immediately before the spawn | once `air prepare` has run, so auto-injected servers are in `all_mcp_servers` and get an entry too |
+| `AgentSessionJob`, immediately before the spawn | Calls `Session#seed_mcp_servers_status_floor!` — literally the floor above, `pending` **only where no entry exists**, so a status carried over from an earlier turn survives. It runs once `air prepare` has, so auto-injected servers are in `all_mcp_servers` and get an entry too. |
+| `SessionStateMachine#clear_stale_mcp_failure_metadata` | **Resets** every entry to `pending` on each `resume`. This one deliberately overwrites a real status: a `connected` belongs to the process that just exited, not to the one about to start. |
 
-Both are no-ops when every trackable server already has an entry, so neither adds an `UPDATE` or a
-session-card broadcast to a steady-state turn.
+Both skip the write when what is stored already equals what they would write — the job's floor when
+every server has an entry, the resume when every entry is already `pending` — so neither adds an
+`UPDATE` or a session-card broadcast to a steady-state turn. The resume spans the union of
+`all_mcp_servers` and the names already in the hash, so a soft-failing catalog read (which makes
+`plugin_mcp_servers` return `[]`) cannot empty the reset and delete the key.
 :::
 
 :::note[The runtime credential stores are host-global and shared across sessions]
