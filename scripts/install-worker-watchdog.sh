@@ -90,6 +90,8 @@ SSH_OPTS+=(
 # bodies below get there. `run_q` is the same call with stdin closed -- ssh would
 # otherwise swallow whatever the caller's stdin happens to be (a workflow's, a
 # terminal's) and hand it to a command that never asked for it.
+# shellcheck disable=SC2029  # each caller passes a single-quoted remote script; expanding the
+# wrapper's own "$@" here is what delivers it.
 run() { ssh "${SSH_OPTS[@]}" "root@${HOST}" "$@"; }
 run_q() { ssh -n "${SSH_OPTS[@]}" "root@${HOST}" "$@"; }
 

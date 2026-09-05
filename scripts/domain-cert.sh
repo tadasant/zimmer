@@ -66,6 +66,7 @@ fi
 # feed it with -K. cleanup() tears this down (and the lego tmp dir) on any exit.
 CURL_CFG="$(mktemp)"; chmod 600 "$CURL_CFG"
 printf 'header = "Authorization: Bearer %s"\n' "$CF_API_TOKEN" > "$CURL_CFG"
+# shellcheck disable=SC2317  # reached through the EXIT trap on the next line, not by fallthrough.
 cleanup() { rm -f "${CURL_CFG:-}"; rm -rf "${tmp:-}"; }
 trap cleanup EXIT
 cf() {
@@ -143,6 +144,7 @@ if [ "$need_issue" = "true" ]; then
   # key is created with a 0600 umask so it is never briefly world-readable on disk.
   ssh_box 'cat > /opt/zimmer/certs/cert.pem.new' < "$crt"
   ssh_box '(umask 077; cat > /opt/zimmer/certs/key.pem.new)' < "$key"
+  # shellcheck disable=SC2016  # single-quoted on purpose: this is a script for the remote shell.
   ssh_box 'set -e
     cd /opt/zimmer/certs
     chmod 600 key.pem.new; chmod 644 cert.pem.new
