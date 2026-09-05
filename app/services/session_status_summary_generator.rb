@@ -69,6 +69,28 @@ class SessionStatusSummaryGenerator
   FORCED_MARKER = "status_summary_forced"
   INLINE_TRANSCRIPT_MAX_CHARS = 80.kilobytes
 
+  # The opening both summary prompts share, hoisted for the same reason
+  # STATE_NOT_INTENT_RULE is — and load-bearing for a second reason.
+  #
+  # It is how AgentSessionJob tells the fork's own turn from every other prompt
+  # that can reach a fork: the summary request is the ONLY turn a fork may take,
+  # and any other one is refused and the fork harvested instead (#695). See
+  # AgentSessionJob#refuse_non_summary_fork_turn.
+  #
+  # Matching on the prompt rather than counting turns is deliberate: a turn that
+  # was never spent (a SIGTERM retry, a spot hold, an undelivered-turn
+  # re-delivery) arrives carrying this same text and must still be allowed to
+  # run.
+  FORK_PROMPT_OPENING = "Write the Status panel for this Zimmer session"
+
+  # Whether `prompt` is the summary request this service dispatches a fork with.
+  #
+  # @param prompt [Object]
+  # @return [Boolean]
+  def self.fork_prompt?(prompt)
+    prompt.is_a?(String) && prompt.start_with?(FORK_PROMPT_OPENING)
+  end
+
   # Carried by BOTH summary prompts, which is the point of hoisting it into a
   # constant: the fork and the one-shot path write the same panel, so a rule
   # about what the panel may assert cannot live in only one of them.
@@ -749,7 +771,7 @@ class SessionStatusSummaryGenerator
   # to decline to run, and no transcript beyond what is in the prompt.
   def headless_prompt(excerpt)
     <<~PROMPT
-      Write the Status panel for this Zimmer session (##{session.id}). It is read
+      #{FORK_PROMPT_OPENING} (##{session.id}). It is read
       at a glance, above the transcript, by someone deciding whether this session
       needs them right now.
 
@@ -774,9 +796,15 @@ class SessionStatusSummaryGenerator
 
   def prompt_for(fork)
     <<~PROMPT
-      Write the Status panel for this Zimmer session (##{session.id}). It is read
+      #{FORK_PROMPT_OPENING} (##{session.id}). It is read
       at a glance, above the transcript, by someone deciding whether this session
       needs them right now.
+
+      You are not session ##{session.id}. You are a short-lived fork Zimmer made
+      of its conversation, so everything above this line is a copy of ANOTHER
+      session's turns rather than your own — including any tool result naming a
+      session id. Write the panel and stop; do not pick up the work that
+      conversation was in the middle of.
 
       Rules:
       - 2-3 sentences. Not four. Say where things stand, not how you got here.
