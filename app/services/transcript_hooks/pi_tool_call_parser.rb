@@ -68,6 +68,35 @@ class TranscriptHooks::PiToolCallParser < TranscriptHooks::ToolCallParser
     end
   end
 
+  # Every `toolCall` block, shell and non-shell alike, with its arguments as the
+  # Hash Pi already stores.
+  #
+  # Pi's MCP tools do NOT appear here under their own names: the `pi-mcp-adapter`
+  # extension exposes one `mcp` proxy tool that every server is called through
+  # (see PiRuntimePromptContribution), so an MCP call is a `toolCall` named `mcp`
+  # whose arguments nest the real tool and its arguments. Unwrapping that would
+  # mean guessing at a shape nothing here has verified, so it is left alone: a
+  # hook keying on `mcp__<server>__<tool>` finds nothing on a Pi session rather
+  # than finding something wrong.
+  def structured_tool_calls
+    @structured_tool_calls ||= begin
+      calls = []
+
+      each_message do |message, _index|
+        next unless message["role"] == "assistant"
+
+        tool_call_blocks(message).each do |block|
+          next unless block["id"].is_a?(String) && block["name"].is_a?(String)
+
+          arguments = block["arguments"]
+          calls << { id: block["id"], name: block["name"], input: arguments.is_a?(Hash) ? arguments : {} }
+        end
+      end
+
+      calls
+    end
+  end
+
   def tool_results
     @tool_results ||= begin
       results = []

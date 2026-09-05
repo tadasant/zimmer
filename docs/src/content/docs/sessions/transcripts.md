@@ -424,8 +424,8 @@ transcript messages are broadcast. Sequential, error-isolated per hook, run afte
 is saved. Each hook writes into `session.custom_metadata`.
 
 `GithubPrUrlHook` records the pull requests a session *opened* — read out of create output (`gh pr
-create`, or a REST POST to `repos/OWNER/REPO/pulls`) or the agent's own "opened PR `<url>`" prose —
-into `custom_metadata["github_pull_request_urls"]`.
+create`, a REST POST to `repos/OWNER/REPO/pulls`, or an MCP `create_pull_request` tool call) or the
+agent's own "opened PR `<url>`" prose — into `custom_metadata["github_pull_request_urls"]`.
 That list is what the GitHub PR poller, the comment poller, and the merge-conflict poller all key
 off, so a PR missing from it is invisible to Zimmer, and a PR wrongly on it sends another session's
 comments here. `GithubCommentAuthorshipHook` ships alongside it, recording the comments a session
