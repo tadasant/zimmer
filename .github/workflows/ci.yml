@@ -56,6 +56,15 @@ jobs:
         run: |
           bundle exec ruby -r./test/support/inert_subprocess_timeout_guard \
             -e 'report = InertSubprocessTimeoutGuard.report; abort(report) unless report.empty?'
+      # Two migrations sharing a version kill the suite inside
+      # `maintain_test_schema!`, before any test runs, and reach production
+      # runtime the same way. Detecting it needs no database and no Rails —
+      # which is the point, since the failure it guards against is a Rails boot
+      # failure. Seconds here beats several minutes in `test-unit`.
+      - name: Duplicate migration version guard
+        run: |
+          bundle exec ruby -r./test/support/migration_version_guard \
+            -e 'report = MigrationVersionGuard.report; abort(report) unless report.empty?'
 
   security:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}

@@ -357,6 +357,59 @@ in exactly the same way, and the guard says nothing about them. Their phase 1 is
 down — see [zimmer#722](https://github.com/tadasant/zimmer/issues/722). Treat them with the same
 suspicion by hand.
 
+## Two migrations may not share a version
+
+Rails builds its migration list at boot, not at migrate time, and it raises rather than picking a
+winner: two files whose version prefixes are equal give `ActiveRecord::DuplicateMigrationVersionError`,
+two files declaring the same class name give `DuplicateMigrationNameError`. `maintain_test_schema!`
+walks that list on the way into every test run, so the failure is not one broken test — it is the
+whole suite dying before any test executes.
+
+That shipped on 2026-09-05. Two PRs each hand-wrote a migration numbered `20260905180000` —
+[#1005](https://github.com/tadasant/zimmer/pull/1005) against `trigger_conditions`,
+[#1008](https://github.com/tadasant/zimmer/pull/1008) against `sessions`. Both were green in
+isolation, because the collision did not exist on either branch. It existed on `main` the moment the
+second one merged, and from then on `test-unit` and `test-system` failed identically on every commit
+until the second migration was renumbered — for that window, no commit on `main` was provably
+green.
+
+`MigrationVersionGuard` (`test/support/migration_version_guard.rb`) reports both collisions, naming
+the version or class name and every file claiming it. It reads filenames and nothing else — not even
+the file bodies the two-phase guard parses — so like that guard it needs no Rails, and `lint` runs it
+with no Postgres and no Redis. That is the point: what it detects is a Rails boot failure, so a check
+that had to boot Rails would be silent in the case that matters most. It answers in under a fifth of
+a second over this repo's migrations. `test/migrations/migration_version_test.rb` runs it again
+inside `bin/rails test`, and by hand it is:
+
+```bash
+bundle exec ruby -r./test/support/migration_version_guard -e 'puts MigrationVersionGuard.report'
+```
+
+It carries a copy of Active Record's own `MigrationFilenameRegexp` and glob rather than a stricter
+pattern of its own, and it compares what Rails compares: the version as an Integer, the name
+camelized. Every one of those matters, because each difference is a collision that hides. A guard
+that read 14 digits off a flat directory listing would wave through a 13-digit version, a leading
+zero, an adapter-scoped `..._create_foo.postgresql.rb` and a migration in a subdirectory; one that
+compared the snake_cased names would wave through `add_widget_2` alongside `add_widget2`, which are
+one `AddWidget2` to Rails. Tests assert the copied regexp still matches the constant and that the
+guard reads every `.rb` file in `db/migrate`, since it cannot ask Active Record at the moment it
+runs.
+
+Generating migrations with `bin/rails generate migration` rather than hand-writing the timestamp
+avoids the collision within a branch. Renumbering after the fact means re-dumping `db/schema.rb` too,
+so its `version:` still matches the newest migration on disk — `SchemaDumpTest` asserts that.
+
+**What it does not cover.** Duplicates only. Rails raises `IllegalMigrationNameError` on a file the
+glob matches and the regexp does not — `20260101000000_AddFoo.rb` — at the same point in boot, and
+the guard says nothing about it: one file is enough to trigger it, so there is no pair to report, and
+the fix is a different one. Nor does it look at `db/cable_migrate`, the cable database's configured
+migrations path, which is not a directory in this repo.
+
+More importantly, a branch-local check sees a duplicate that exists *on that branch*. Two
+independent branches each adding `…180000` each pass, which is exactly how the incident happened.
+Closing that requires branches to be up to date with `main` before merging, so the collision is on the
+branch by the time CI runs — a repository setting, not a check this repo can ship.
+
 ## One-time post-deploy tasks
 
 **If the step runs once and then never again, write a post-deploy task.** This is Zimmer's
