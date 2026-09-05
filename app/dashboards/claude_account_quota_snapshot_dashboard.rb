@@ -15,6 +15,8 @@ class ClaudeAccountQuotaSnapshotDashboard < Administrate::BaseDashboard
     reset_5h: Field::DateTime,
     reset_7d: Field::DateTime,
     overage_status: Field::String,
+    overage_disabled_reason: Field::String,
+    active_session_count: Field::Number,
     trigger: Field::String,
     created_at: Field::DateTime,
     updated_at: Field::DateTime
@@ -30,24 +32,7 @@ class ClaudeAccountQuotaSnapshotDashboard < Administrate::BaseDashboard
     created_at
   ].freeze
 
-  SHOW_PAGE_ATTRIBUTES = %i[
-    id
-    claude_account
-    account_email
-    account_runtime
-    subscription_type
-    rate_limit_tier
-    utilization_5h
-    utilization_7d
-    status_5h
-    status_7d
-    reset_5h
-    reset_7d
-    overage_status
-    trigger
-    created_at
-    updated_at
-  ].freeze
+  SHOW_PAGE_ATTRIBUTES = ATTRIBUTE_TYPES.keys.freeze
 
   FORM_ATTRIBUTES = %i[].freeze
 
