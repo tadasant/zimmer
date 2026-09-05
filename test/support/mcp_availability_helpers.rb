@@ -40,6 +40,10 @@ module McpAvailabilityHelpers
   # @param resolution [SecretsInterpolator::Resolution] what the providers say
   #   about STRAD_STAGING_API_KEY. Override it to exercise the states that mean
   #   "Zimmer could not find out" rather than "the answer is no".
+  #
+  # This stubs, so a file calling it needs `require "mocha/minitest"`. The
+  # require belongs there and not here: this file is auto-required by
+  # test_helper.rb, so a require here would be a suite-wide one (#874).
   def with_mixed_availability_catalog(resolution: SecretsInterpolator::Resolution.new(state: :absent))
     AirCatalogService.stubs(:entries_for).returns({})
     AirCatalogService.stubs(:entries_for).with(:mcp).returns(AVAILABILITY_CATALOG)

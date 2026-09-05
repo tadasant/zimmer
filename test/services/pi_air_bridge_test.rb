@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # PiAirBridge writes the config that makes a Pi session's AIR hooks and plugins
 # actually run. Nothing else does: `air prepare pi` ignores hook entries outright

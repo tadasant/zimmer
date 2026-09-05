@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 # Covers what is genuinely ImageStorageService's own: magic-byte sniffing,
 # format/size validation, and base64 retrieval. The lifecycle it shares with

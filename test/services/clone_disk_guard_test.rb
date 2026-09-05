@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class CloneDiskGuardTest < ActiveSupport::TestCase
   # A volume with more room than any requirement can ask for, which is the
