@@ -150,6 +150,28 @@ class SilentRecoveryLoopTest < ActiveJob::TestCase
     assert_equal Sessions::SilentRecoveryGuard::FAILURE_REASON, @session.metadata["failure_reason"]
   end
 
+  # A human's queued message outranks this give-up. `failed` refuses a follow-up, so
+  # failing a session with a message still pending would put it out of reach of the one
+  # turn most likely to be worth running.
+  test "a queued user message is delivered rather than stranded by the give-up" do
+    @session.update!(status: :needs_input)
+    @session.merge_metadata!(
+      BUDGET.key => BUDGET.max,
+      Sessions::SilentRecoveryGuard::WATERMARK_KEY => {
+        "job_started_at" => "2026-09-05T10:00:00Z", "transcript_lines" => 0
+      },
+      "paused_by" => "recovery"
+    )
+    @session.enqueued_messages.create!(content: "actually, do this instead", position: 1)
+
+    RecoveryContinuationJob.perform_now(@session.id)
+
+    @session.reload
+    assert_not_equal "failed", @session.status,
+      "the give-up must not fire while a human message is waiting to be delivered"
+    assert_equal 0, @session.enqueued_messages.pending.count, "the queued message must be delivered"
+  end
+
   # ---- The false-positive direction -------------------------------------------------
 
   test "a session whose restarts DO produce output is restarted indefinitely, as before" do
