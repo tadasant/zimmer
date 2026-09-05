@@ -108,6 +108,7 @@ same PR.** If it introduces a limitation, a hack, or a known-broken edge, add it
 | sshd, the firewall, `admin_ssh_pubkeys`, Tailscale SSH | `operate/ssh-access.md` |
 | `config/goals.json`, `app/services/orchestrator_system_prompt_builder.rb` | `sessions/goals.md` |
 | any cron job (`config/cron_schedule.rb`) | `operate/background-jobs.md` |
+| `BroadcastService`, `BroadcastsThroughService`, any model-side broadcast | `operate/background-jobs.md` (The circuit breaker on the UI) |
 | an ops action that would otherwise need a prod shell | `operate/deploying.md` (Ops actions ship with the deploy) |
 | `db/post_deploy/**`, `PostDeployTask*` | `operate/deploying.md` (One-time post-deploy tasks) |
 | `config/initializers/otel_logs_exporter.rb`, `config/initializers/sentry.rb`, `lib/tasks/obs.rake` | `operate/observability.md` |

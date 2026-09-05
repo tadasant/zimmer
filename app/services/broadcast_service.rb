@@ -98,9 +98,14 @@ class BroadcastService
     end
   end
 
-  def initialize(turbo_channel: Turbo::StreamsChannel)
+  # @param error_context [Hash] extra context attached to every failure this
+  #   instance reports. Model-side callers pass the record they are broadcasting
+  #   for, so a report keeps naming its subject now that every broadcast funnels
+  #   through one report site rather than one per method.
+  def initialize(turbo_channel: Turbo::StreamsChannel, error_context: {})
     @turbo_channel = turbo_channel
-    @logger = StructuredLogger.new({ service: "BroadcastService" })
+    @error_context = error_context
+    @logger = StructuredLogger.new({ service: "BroadcastService" }.merge(error_context))
   end
 
   # Broadcast a timeline message (from transcript)
@@ -398,6 +403,60 @@ class BroadcastService
     )
   end
 
+  # === Generic entry points ===
+  #
+  # The methods above name a specific piece of UI. These three name none: they
+  # are the two shapes model-side broadcasting needs — "render a partial onto a
+  # target" and "put this HTML on a target" — plus a removal. They exist so that
+  # the broadcasts that live on ActiveRecord commit callbacks get the same three
+  # properties every other broadcast in the app has (retry, circuit breaker,
+  # failure isolation) instead of each model re-deciding what to do on failure.
+  #
+  # `action` is the Turbo Stream action, not the method name: :replace, :append,
+  # :prepend or :remove.
+
+  ACTION_METHODS = {
+    replace: :broadcast_replace_to,
+    append: :broadcast_append_to,
+    prepend: :broadcast_prepend_to,
+    remove: :broadcast_remove_to
+  }.freeze
+
+  # Render `partial` with `locals` and apply `action` to `target` on `stream`.
+  def broadcast_partial(action:, stream:, target:, partial:, locals: {})
+    broadcast_with_retry(
+      method: turbo_method_for(action),
+      stream: stream,
+      target: target,
+      partial: partial,
+      locals: locals
+    )
+  end
+
+  # Put HTML on `target`. Pass `html:` when it is already rendered, or a block
+  # when producing it can itself fail — the block runs INSIDE the guard, so a
+  # render error is isolated exactly like a cable error. That matters: most of
+  # the model-side callers render through `SessionsController.render`, and a
+  # partial that raises is the failure mode this service is supposed to absorb.
+  # It also lets a caller do its own lookups in there rather than outside the
+  # guard; a block that returns nil means "nothing to say", and nothing is sent.
+  def broadcast_html(action:, stream:, target:, html: nil, &renderer)
+    raise ArgumentError, "pass either html: or a block" unless html.nil? ^ renderer.nil?
+
+    broadcast_with_retry(
+      method: turbo_method_for(action),
+      stream: stream,
+      target: target,
+      html: html,
+      html_renderer: renderer
+    )
+  end
+
+  # Remove `target` from `stream`.
+  def broadcast_removal(stream:, target:)
+    broadcast_with_retry(method: :broadcast_remove_to, stream: stream, target: target)
+  end
+
   # Check if the circuit breaker is open (thread-safe)
   # @return [Boolean] true if circuit breaker is open
   def circuit_open?
@@ -429,6 +488,13 @@ class BroadcastService
     self.class.clear_published_circuit_open
   end
 
+  # Map a Turbo Stream action onto the channel method that performs it.
+  def turbo_method_for(action)
+    ACTION_METHODS.fetch(action.to_sym) do
+      raise ArgumentError, "unknown broadcast action #{action.inspect}"
+    end
+  end
+
   # Parse timestamp from string
   # @param timestamp_str [String, nil] The timestamp string to parse
   # @return [Time, nil] The parsed time or nil
@@ -447,7 +513,8 @@ class BroadcastService
   # @param partial [String, nil] The partial to render
   # @param locals [Hash] Local variables for the partial
   # @param html [String, nil] Pre-rendered HTML content (alternative to partial)
-  def broadcast_with_retry(method:, stream:, target:, partial: nil, locals: {}, html: nil)
+  # @param html_renderer [Proc, nil] Lazily produces the HTML, inside the guard
+  def broadcast_with_retry(method:, stream:, target:, partial: nil, locals: {}, html: nil, html_renderer: nil)
     # Check circuit breaker first
     if circuit_open?
       @logger.warn("Circuit breaker open, skipping broadcast", stream: stream, target: target)
@@ -456,12 +523,26 @@ class BroadcastService
 
     retries = 0
     begin
-      perform_broadcast(method: method, stream: stream, target: target, partial: partial, locals: locals, html: html)
+      if html_renderer
+        # Rendering is deterministic, so a partial that raises will raise again
+        # on every attempt. Retrying it just spends MAX_RETRIES sleeps on a
+        # thread that is usually inside an after_*_commit — flag it and skip
+        # straight to recording the failure.
+        rendering = true
+        rendered = html_renderer.call
+        rendering = false
+        # A renderer with nothing to say — the record it was going to describe
+        # is gone. Not a failure, and nothing to send.
+        return false if rendered.nil?
+      else
+        rendered = html
+      end
+      perform_broadcast(method: method, stream: stream, target: target, partial: partial, locals: locals, html: rendered)
       record_success
       true
     rescue => e
       retries += 1
-      if retries <= MAX_RETRIES
+      if !rendering && retries <= MAX_RETRIES
         delay = RETRY_BASE_DELAY * (2 ** (retries - 1))
         @logger.debug("Broadcast failed, retrying", attempt: retries, delay: delay, error: e.message)
         sleep delay
@@ -496,28 +577,48 @@ class BroadcastService
     end
   end
 
-  # Record a failed broadcast (thread-safe)
+  # Record a failed broadcast (thread-safe).
+  #
+  # Only the counter and the breaker are touched under the mutex. Logging and
+  # ErrorReporter are deliberately outside it: reporting serializes an event and
+  # hands it to Sentry's background worker, and doing that while holding a
+  # process-global lock would make every *successful* broadcast on every other
+  # thread queue behind it for the length of an outage.
   def record_failure(error, stream:, target:)
+    failures = nil
+    opened = false
+
     self.class.circuit_breaker_mutex.synchronize do
       self.class.circuit_breaker_failures += 1
+      failures = self.class.circuit_breaker_failures
 
-      @logger.error(
-        "Broadcast failed after retries",
-        stream: stream,
-        target: target,
-        error: error.message,
-        exception: error,
-        failures: self.class.circuit_breaker_failures
-      )
-
-      # Open circuit breaker if threshold exceeded
-      if self.class.circuit_breaker_failures >= CIRCUIT_BREAKER_THRESHOLD
+      if failures >= CIRCUIT_BREAKER_THRESHOLD && self.class.circuit_breaker_opened_at.nil?
         self.class.circuit_breaker_opened_at = Time.current
         # Publish to the shared cache so the web process can tell the user their
         # page has stopped updating, instead of freezing it and looking fine.
         self.class.publish_circuit_open(self.class.circuit_breaker_opened_at + CIRCUIT_BREAKER_RESET_TIME)
-        @logger.warn("Circuit breaker opened due to repeated failures", failures: self.class.circuit_breaker_failures)
+        opened = true
       end
     end
+
+    # WARN, not ERROR, and deliberately so. The deployment runs an "any Zimmer
+    # ERROR -> critical" Grafana rule (see ApplicationJob), so an error line here
+    # would page a human for a dropped cable write — the exact condition the
+    # circuit breaker exists to absorb quietly, and the reason #86 built the
+    # breaker and the "live updates paused" banner in the first place. The signal
+    # is not lost: ErrorReporter is not level-based and does not page, so every
+    # failure still lands in GlitchTip with its backtrace.
+    @logger.warn(
+      "Broadcast failed after retries",
+      stream: stream,
+      target: target,
+      error: error.message,
+      failures: failures
+    )
+    ErrorReporter.report_exception(
+      error,
+      context: @error_context.merge(service: "BroadcastService", stream: stream, target: target, failures: failures)
+    )
+    @logger.warn("Circuit breaker opened due to repeated failures", failures: failures) if opened
   end
 end
