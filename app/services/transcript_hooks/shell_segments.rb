@@ -31,6 +31,15 @@ require "strscan"
 #     lines between them and swallow whatever they enclose — including a real
 #     `gh pr create` on its own line.
 #
+# A heredoc body is the one place where lines that are not shell arrive *as*
+# lines, so it is the one place a line is dropped rather than split: `python3 -
+# <<'PY' … PY` feeds its body to Python, and a `gh pr create` literal in there is
+# a Python string (#873). Dropping is the direction that can lose a real create,
+# so the reading gives up rather than guesses — a delimiter it cannot find a
+# terminator for leaves the whole rest of the script read as shell, because a
+# body assumed to run to end-of-input would swallow every command after it and
+# switch the session's GitHub integration off in silence (#89).
+#
 # Used by TranscriptHooks::GithubPrUrlHook and
 # TranscriptHooks::GithubCommentAuthorshipHook, which share the shape but not the
 # classification: one looks for a create against a `/pulls` collection, the other
@@ -58,6 +67,58 @@ module TranscriptHooks::ShellSegments
   # with no partner is not a span, and blanking to the end of the line on the
   # strength of one would delete a command over a stray apostrophe.
   QUOTED_SPAN_PATTERN = /"(?:\\.|[^"\\])*"|'[^']*'/m
+
+  # A run of three or more of the same quote character, which is not a pair of
+  # anything. Python's `"""` is the spelling that turns up in transcripts, and
+  # pairing through it takes the first two as an empty string and hands the third
+  # to the next quote further along — so everything between them, `gh pr create`
+  # included, falls outside every quoted span and reads as a command being run
+  # (#873).
+  #
+  # Taken ahead of QUOTED_SPAN_PATTERN and left exactly as written, so pairing
+  # resumes *after* the run rather than through it. A triple quote is ambiguous
+  # (three quotes to a shell, one delimiter to Python) and this is the cheaper
+  # side of it to be wrong on: the run itself stays visible, so a create sitting
+  # unquoted next to one is still read as a create.
+  QUOTE_RUN_PATTERN = /"{3,}|'{3,}/
+
+  # A Python triple-quoted string, which is what a run of three quotes opens
+  # almost every time one turns up in a transcript. Taken ahead of the bare run so
+  # that a *closed* one is blanked like any other string — `python3 -c """import
+  # x; gh pr create"""` hands Python a string, whatever a shell would make of the
+  # same characters. It has to see its own closing run, so unlike a lone quote it
+  # cannot blank away to the end of the segment; an unclosed one falls through to
+  # QUOTE_RUN_PATTERN.
+  TRIPLE_QUOTED_SPAN_PATTERN = /"""(?:(?!""").)*"""|'''(?:(?!''').)*'''/
+
+  # The spans #unquoted walks, in the order it tries them.
+  UNQUOTED_SPAN_PATTERN = Regexp.union(TRIPLE_QUOTED_SPAN_PATTERN, QUOTE_RUN_PATTERN, QUOTED_SPAN_PATTERN)
+
+  # A span that is nothing but a quote run, which #unquoted keeps rather than
+  # blanks.
+  ENTIRE_QUOTE_RUN_PATTERN = /\A(?:#{QUOTE_RUN_PATTERN})\z/
+
+  # A heredoc redirection: `<<DELIM`, `<<-DELIM`, and the quoted spellings
+  # `<<'DELIM'`, `<<"DELIM"` and `<<\DELIM`. Everything on the lines after the one
+  # carrying it, up to its terminator, is data handed to another program rather
+  # than commands the shell runs.
+  #
+  # `<<<` is a here-*string* and has no body, so it is excluded by the lookbehind
+  # and by requiring the delimiter to start on a word character — which also keeps
+  # the `$(( a << 2 ))` shift out. That same requirement means an exotic delimiter
+  # goes unrecognised and its body is read as shell, which is the direction that
+  # cannot lose a real create.
+  #
+  # `<<-` needs no separate treatment here: it differs only in allowing a
+  # tab-indented terminator, and #heredoc_body_end allows leading whitespace on
+  # the terminator of every form (see there for why the lax reading is the safe
+  # one).
+  HEREDOC_OPERATOR_PATTERN = /(?<!<)<<-?[ \t]*(?<delimiter>'[A-Za-z_]\w*'|"[A-Za-z_]\w*"|\\?[A-Za-z_]\w*)/
+
+  # The quoting a heredoc delimiter may be written with, which is the redirection's
+  # syntax rather than part of the delimiter. `<<'PY'` and `<<PY` end on the same
+  # `PY` line; the quotes only decide whether the body is expanded.
+  HEREDOC_DELIMITER_QUOTING = /\A[\\'"]|['"]\z/
 
   # A backslash-newline is one command wrapped over several lines, so it is folded
   # back into that command rather than splitting it — otherwise a `gh api` and the
@@ -114,17 +175,22 @@ module TranscriptHooks::ShellSegments
   # result is a position in +segment+, which is how a wrapper is told from the
   # mention of one.
   #
+  # A run of three or more quotes is not a pair and is left as written, so pairing
+  # picks up after it (see QUOTE_RUN_PATTERN).
+  #
   # @param segment [String]
   # @return [String]
   def unquoted(segment)
-    segment.to_s.gsub(QUOTED_SPAN_PATTERN) { |span| " " * span.length }
+    segment.to_s.gsub(UNQUOTED_SPAN_PATTERN) do |span|
+      span.match?(ENTIRE_QUOTE_RUN_PATTERN) ? span : " " * span.length
+    end
   end
 
   private
 
-  # +script+ as the commands it runs: split into lines, each line into segments,
-  # each segment normalized — and where a segment hands a script to a shell, that
-  # script split the same way in place of it.
+  # +script+ as the commands it runs: split into the lines a shell would *run*,
+  # each line into segments, each segment normalized — and where a segment hands a
+  # script to a shell, that script split the same way in place of it.
   #
   # The recursion terminates on its own: a wrapped script is what follows the
   # wrapper, so each round is strictly shorter than the one before it.
@@ -132,7 +198,7 @@ module TranscriptHooks::ShellSegments
   # @param script [String]
   # @return [Array<String>]
   def split_script(script)
-    script.split("\n").flat_map { |line| split_line(line) }.flat_map do |segment|
+    shell_lines(script).flat_map { |line| split_line(line) }.flat_map do |segment|
       normalized = segment.sub(KEYWORD_PREFIX_PATTERN, "")
                           .sub(CAPTURE_PREFIX_PATTERN, "")
                           .sub(ENV_PREFIX_PATTERN, "")
@@ -146,6 +212,106 @@ module TranscriptHooks::ShellSegments
         [ normalized ]
       end
     end
+  end
+
+  # +script+'s lines with every heredoc body dropped: the lines a shell would run,
+  # without the ones it feeds to something else.
+  #
+  # A body is dropped rather than blanked because a line of it is not a command in
+  # any reading — `python3 - <<'PY'` hands its body to Python, and a `gh pr create`
+  # literal in a Python string is a string. The redirection's *own* line is kept:
+  # it is a command, it may carry several heredocs, and it may have run something
+  # else before them (`cat <<EOF > f && gh pr create --fill`).
+  #
+  # Gives up rather than guesses. A delimiter whose terminator is nowhere in what
+  # follows — a truncated transcript, a terminator written in a shape this does not
+  # recognise — ends the heredoc reading for the whole script, and everything from
+  # the body onward is read as shell. A body assumed to run to end-of-input instead
+  # would swallow every command after it, so a real `gh pr create` would be
+  # recorded nowhere and every GitHub integration for that session would silently
+  # stop (#89). Reading a body as shell costs a false positive of the kind #873 is
+  # about; reading a command as a body costs the integration.
+  #
+  # @param script [String]
+  # @return [Array<String>]
+  def shell_lines(script)
+    lines = script.split("\n")
+    return lines unless script.include?("<<")
+
+    kept = []
+    index = 0
+
+    while index < lines.length
+      line = lines[index]
+      kept << line
+      index += 1
+
+      delimiters = heredoc_delimiters(line)
+      next if delimiters.empty?
+
+      body_end = heredoc_body_end(lines, index, delimiters)
+
+      if body_end.nil?
+        kept.concat(lines[index..] || [])
+        break
+      end
+
+      index = body_end
+    end
+
+    kept
+  end
+
+  # The heredoc delimiters +line+ opens, in the order their bodies follow it.
+  #
+  # Read off the line as written, but only where the `<<` survives into the
+  # #unquoted view — `<<'PY'` quotes its *delimiter*, which the unquoted view
+  # blanks, while `echo "cat <<EOF"` quotes the redirection itself, which is a
+  # mention rather than one. The views share offsets, so which of the two it is can
+  # be read off the position.
+  #
+  # @param line [String]
+  # @return [Array<String>]
+  def heredoc_delimiters(line)
+    runs = unquoted(line)
+    delimiters = []
+
+    line.scan(HEREDOC_OPERATOR_PATTERN) do
+      match = Regexp.last_match
+      next unless runs[match.begin(0), 2] == "<<"
+
+      delimiters << match[:delimiter].gsub(HEREDOC_DELIMITER_QUOTING, "")
+    end
+
+    delimiters
+  end
+
+  # The index of the first line after the bodies of +delimiters+, or nil if any of
+  # their terminators is missing.
+  #
+  # A terminator is matched with leading and trailing whitespace allowed, for every
+  # form rather than only `<<-`. That is deliberately looser than a shell: a lax
+  # terminator can only end a body *earlier* than the real one, which leaves body
+  # lines read as shell — the harmless direction — where a strict one that walked
+  # past the real terminator would keep swallowing until it found another, taking
+  # real commands with it.
+  #
+  # @param lines [Array<String>]
+  # @param start [Integer] the first body line
+  # @param delimiters [Array<String>]
+  # @return [Integer, nil]
+  def heredoc_body_end(lines, start, delimiters)
+    index = start
+
+    delimiters.each do |delimiter|
+      terminator = /\A[ \t]*#{Regexp.escape(delimiter)}[ \t]*\z/
+      found = (index...lines.length).find { |i| lines[i].match?(terminator) }
+      return nil if found.nil?
+
+      index = found + 1
+    end
+
+    index
   end
 
   # The script +segment+ hands a shell to run, or nil if it hands one nothing.

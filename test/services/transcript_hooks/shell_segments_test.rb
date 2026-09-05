@@ -93,7 +93,7 @@ class TranscriptHooks::ShellSegmentsTest < ActiveSupport::TestCase
                  segments("echo 'unterminated | gh pr create --fill")
   end
 
-  test "leaves a heredoc body's own lines alone and the command after it intact" do
+  test "leaves the command after a heredoc body intact" do
     command = <<~SH
       cat > /tmp/body.md <<'EOF'
       It's ready, and I've rerun CI.
@@ -102,6 +102,116 @@ class TranscriptHooks::ShellSegmentsTest < ActiveSupport::TestCase
     SH
 
     assert_equal "gh pr create --title T --body-file /tmp/body.md", segments(command).last
+  end
+
+  # --- Heredoc bodies ----------------------------------------------------------
+  #
+  # A heredoc body is data handed to another program, not commands the shell runs,
+  # so its lines are dropped rather than split. #873 is what happens when they are
+  # not: session 13059 fed this very file to Python through a `<<'PY'` heredoc, and
+  # the fixture strings it was editing were recorded as pull requests it had opened
+  # — against a repository that does not exist.
+  #
+  # Dropping a line is the direction that can lose a real create, so every test
+  # below has a companion in the other direction: the reading gives up, and reads
+  # the rest as shell, wherever it cannot see the body end.
+
+  test "drops the lines of a heredoc body" do
+    command = <<~SH
+      cat > /tmp/note.md <<'EOF'
+      gh pr create --repo other/proj --fill
+      EOF
+      echo done
+    SH
+
+    assert_equal [ "cat > /tmp/note.md <<'EOF'", "echo done" ], segments(command)
+  end
+
+  test "drops a heredoc body handed to another interpreter" do
+    # #873's reproduction verbatim. Two things had to stack up for the literal
+    # inside to read as a command: the body is not shell, and the `\"\"\"` in front
+    # of it broke the quote pairing that would otherwise have covered it.
+    command = <<~SH
+      python3 - <<'PY'
+      s = s.replace("""      command: "gh pr create --repo other/proj --head fork:b --title T --body B"
+      """, "x")
+      PY
+    SH
+
+    assert_equal [ "python3 - <<'PY'" ], segments(command)
+  end
+
+  test "reads every delimiter spelling" do
+    [ "<<EOF", "<<'EOF'", %q(<<"EOF"), "<<\\EOF", "<< EOF", "<<-EOF" ].each do |redirection|
+      command = "cat #{redirection} > f\ngh pr create --repo other/proj\nEOF\ngh pr create --fill"
+
+      assert_equal [ "cat #{redirection} > f", "gh pr create --fill" ], segments(command), redirection
+    end
+  end
+
+  test "ends a <<- body on its indented terminator" do
+    command = "cat <<-EOF > f\n\tgh pr create --repo other/proj\n\tEOF\ngh pr create --fill"
+
+    assert_equal [ "cat <<-EOF > f", "gh pr create --fill" ], segments(command)
+  end
+
+  test "keeps the line the redirection is written on, which is a command of its own" do
+    command = "cat <<EOF > /tmp/body.md && gh pr create --body-file /tmp/body.md\nthe body\nEOF"
+
+    assert_equal [ "cat <<EOF > /tmp/body.md", "gh pr create --body-file /tmp/body.md" ], segments(command)
+  end
+
+  test "takes the bodies of several heredocs opened on one line in order" do
+    command = "cat <<A <<B > f\nbody a\nA\nbody b\nB\ngh pr create --fill"
+
+    assert_equal [ "cat <<A <<B > f", "gh pr create --fill" ], segments(command)
+  end
+
+  test "drops a heredoc body inside a wrapped script" do
+    # Codex writes every command as `bash -lc "..."`, heredocs included. The
+    # trailing quote on the last segment is the wrapper's own closing one, left
+    # where the line-oriented split found it.
+    command = %(bash -lc "cat <<'EOF' > f\ngh pr create --repo other/proj\nEOF\necho done")
+
+    assert_equal [ "cat <<'EOF' > f", %(echo done") ], segments(command)
+  end
+
+  # --- Heredocs that do not resolve --------------------------------------------
+  #
+  # #89 is the failure this is designed against: a body assumed to run to the end
+  # of the input swallows every command after it, so a real `gh pr create` is
+  # recorded nowhere and the session's whole GitHub integration silently never
+  # engages. Wherever the body's end cannot be seen, the rest is read as shell —
+  # which risks the #873 false positive above, and that is the cheaper mistake.
+
+  test "reads the rest as shell when a heredoc has no terminator" do
+    command = "cat > /tmp/body.md <<'EOF'\nthe body, truncated mid-transcript\ngh pr create --fill"
+
+    assert_equal [ "cat > /tmp/body.md <<'EOF'", "the body, truncated mid-transcript", "gh pr create --fill" ],
+                 segments(command)
+  end
+
+  test "reads the rest as shell when the second of two heredocs has no terminator" do
+    command = "cat <<A <<B > f\nbody a\nA\nbody b\ngh pr create --fill"
+
+    assert_equal [ "cat <<A <<B > f", "body a", "A", "body b", "gh pr create --fill" ], segments(command)
+  end
+
+  test "does not read a here-string as a heredoc" do
+    # `<<<` takes a word, not a body, so nothing after it is data.
+    assert_equal [ "grep x <<<'y'", "gh pr create --fill" ], segments("grep x <<<'y'\ngh pr create --fill")
+  end
+
+  test "does not read a heredoc a command merely quotes" do
+    assert_equal [ %q(echo "cat <<EOF"), "gh pr create --fill" ],
+                 segments(%Q(echo "cat <<EOF"\ngh pr create --fill))
+  end
+
+  test "does not read a left shift as a heredoc" do
+    # A numeric shift cannot open one (a delimiter is a word), and a word shift
+    # opens one whose terminator is nowhere — which gives up rather than swallows.
+    assert_equal [ "echo $(( 1 << 2 ))", "gh pr create --fill" ], segments("echo $(( 1 << 2 ))\ngh pr create --fill")
+    assert_equal [ "echo $(( a << b ))", "gh pr create --fill" ], segments("echo $(( a << b ))\ngh pr create --fill")
   end
 
   # --- Prefixes ---------------------------------------------------------------
@@ -189,5 +299,43 @@ class TranscriptHooks::ShellSegmentsTest < ActiveSupport::TestCase
 
   test "leaves an unquoted command untouched" do
     assert_equal "gh pr create --fill", @splitter.unquoted("gh pr create --fill")
+  end
+
+  # --- #unquoted and runs of three or more quotes ------------------------------
+  #
+  # A run of three is not a pair, and pairing through it takes the first two as an
+  # empty string and hands the third to the next quote along — which leaves
+  # whatever sat between them, `gh pr create` included, outside every quoted span
+  # (#873).
+
+  test "does not pair quotes through a run of three or more" do
+    # The line from #873's reproduction. Pairing through the run gave
+    # `""` + `"      command: "`, which left the create bare; pairing after it
+    # gives the create its own string, which is what it is.
+    string = %q("gh pr create --repo other/proj")
+
+    assert_equal %q{s.replace("""      command: } + " " * string.length,
+                 @splitter.unquoted(%q{s.replace("""      command: } + string)
+  end
+
+  test "blanks a closed triple-quoted string" do
+    # A `"""` almost always opens a Python string, and a closed one is a string
+    # whichever language is reading it.
+    [ '"""', "'''" ].each do |run|
+      string = "#{run}import x; gh pr create#{run}"
+
+      assert_equal "python3 -c #{' ' * string.length}", @splitter.unquoted("python3 -c #{string}"), run
+    end
+  end
+
+  test "leaves a run of three quotes that never closes" do
+    # Nothing pairs with it, so it stays visible rather than blanking the rest of
+    # the segment — the reading that would hide a real create (#89).
+    assert_equal %q(echo """ && gh pr create --fill),
+                 @splitter.unquoted(%q(echo """ && gh pr create --fill))
+  end
+
+  test "still blanks an ordinary pair of quotes" do
+    assert_equal "gh pr create --title    --body   ", @splitter.unquoted(%q(gh pr create --title "" --body ''))
   end
 end
