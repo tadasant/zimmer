@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 
 // Edit a category's name, description and frozen state from a modal on the dashboard.
 //
@@ -109,11 +110,7 @@ export default class extends Controller {
 
     return fetch(url, {
       method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "X-CSRF-Token": this.csrfToken
-      },
+      headers: csrfHeaders({ Accept: "application/json" }),
       body: JSON.stringify({ category: attributes })
     }).then((response) =>
       response.json().then((data) => {
@@ -166,10 +163,5 @@ export default class extends Controller {
   hideError() {
     this.errorTarget.textContent = ""
     this.errorTarget.classList.add("hidden")
-  }
-
-  get csrfToken() {
-    const meta = document.querySelector('meta[name="csrf-token"]')
-    return meta ? meta.content : ""
   }
 }

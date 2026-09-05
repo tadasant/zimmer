@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfToken } from "lib/csrf"
 
 // Mobile session-detail joystick menu.
 //
@@ -396,14 +397,12 @@ export default class extends Controller {
   _touchActivity() {
     const url = this.element.dataset.touchUrl
     if (!url) return
-    // CSRF token is optional: present with forgery protection on (production/
-    // dev), absent in the test environment. Never gate the fetch on it.
-    const headers = {}
-    const token = document.querySelector('meta[name="csrf-token"]')?.content
-    if (token) headers["X-CSRF-Token"] = token
+    // The token is empty with forgery protection off (the test environment
+    // renders no meta tag). Send the header either way and never gate the fetch
+    // on it.
     fetch(url, {
       method: "POST",
-      headers
+      headers: { "X-CSRF-Token": csrfToken() }
     }).catch(() => {
       // Best-effort: a missed touch only means the cadence stays as-is.
     })
@@ -421,14 +420,11 @@ export default class extends Controller {
     // A submission vehicle, not UI, for the beat it spends in the document.
     form.hidden = true
 
-    const token = document.querySelector('meta[name="csrf-token"]')?.content
-    if (token) {
-      const t = document.createElement("input")
-      t.type = "hidden"
-      t.name = "authenticity_token"
-      t.value = token
-      form.appendChild(t)
-    }
+    const t = document.createElement("input")
+    t.type = "hidden"
+    t.name = "authenticity_token"
+    t.value = csrfToken()
+    form.appendChild(t)
     if (method && method.toLowerCase() !== "post") {
       const m = document.createElement("input")
       m.type = "hidden"

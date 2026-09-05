@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 
 // Manages drag-and-drop reordering of enqueued messages
 // Uses HTML5 drag and drop API to allow users to reorder pending messages
@@ -114,10 +115,7 @@ export default class extends Controller {
     try {
       const response = await fetch(url, {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": this.getCsrfToken()
-        },
+        headers: csrfHeaders(),
         body: JSON.stringify({ position: newPosition })
       })
 
@@ -138,12 +136,6 @@ export default class extends Controller {
         window.location.reload()
       }, 2000)
     }
-  }
-
-  // Get CSRF token from meta tag
-  getCsrfToken() {
-    const token = document.querySelector("[name='csrf-token']")
-    return token ? token.content : ""
   }
 
   // Show error message to user

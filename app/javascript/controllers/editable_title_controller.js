@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 
 // Connects to data-controller="editable-title"
 export default class extends Controller {
@@ -56,10 +57,7 @@ export default class extends Controller {
     // Make PATCH request to update title
     fetch(`/sessions/${this.sessionIdValue}/update_title`, {
       method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRF-Token": document.querySelector("[name='csrf-token']").content
-      },
+      headers: csrfHeaders(),
       body: JSON.stringify({ title: newTitle })
     })
     .then(response => {

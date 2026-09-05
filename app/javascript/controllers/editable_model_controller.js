@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 
 // Connects to data-controller="editable-model"
 // Inline editor for the model on the session detail page
@@ -46,14 +47,9 @@ export default class extends Controller {
     this.statusTarget.className = "text-xs text-gray-500 ml-2 self-center"
 
     try {
-      const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content
       const response = await fetch(`/sessions/${this.sessionIdValue}/update_model`, {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken,
-          "Accept": "application/json"
-        },
+        headers: csrfHeaders({ "Accept": "application/json" }),
         body: JSON.stringify({ model: newModel })
       })
 

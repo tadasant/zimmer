@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 
 /**
  * ForkSessionController - Handles forking a session at a specific message
@@ -49,11 +50,7 @@ export default class extends Controller {
     try {
       const response = await fetch(this.urlValue, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-          "X-CSRF-Token": this.csrfToken
-        },
+        headers: csrfHeaders({ "Accept": "application/json" }),
         body: JSON.stringify({
           message_index: this.messageIndexValue
         })
@@ -80,11 +77,6 @@ export default class extends Controller {
     } finally {
       this.isForking = false
     }
-  }
-
-  get csrfToken() {
-    const meta = document.querySelector('meta[name="csrf-token"]')
-    return meta ? meta.getAttribute("content") : ""
   }
 
   showSpinner() {

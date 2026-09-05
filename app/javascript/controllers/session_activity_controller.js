@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfToken } from "lib/csrf"
 
 // Connects to data-controller="session-activity"
 //
@@ -19,18 +20,13 @@ export default class extends Controller {
     const url = this.urlValue
     if (!url) return
 
-    // Include the CSRF token when the page exposes one (production/dev have
-    // forgery protection on, so it's always present). It is intentionally
-    // optional: the test environment disables forgery protection and omits the
-    // meta tag, and the request must still fire there — so we never gate the
+    // The token is empty when the page exposes none — the test environment
+    // disables forgery protection, so `csrf_meta_tags` renders nothing. Send the
+    // header either way: the request must still fire there, so we never gate the
     // fetch on the token's presence.
-    const headers = {}
-    const csrfToken = document.querySelector("meta[name='csrf-token']")?.content
-    if (csrfToken) headers["X-CSRF-Token"] = csrfToken
-
     fetch(url, {
       method: "POST",
-      headers
+      headers: { "X-CSRF-Token": csrfToken() }
     }).catch(() => {
       // Best-effort: a missed activity touch only means this session keeps its
       // current poll cadence. Not worth surfacing to the user.

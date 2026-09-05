@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 
 // Connects to data-controller="session-notes"
 // Manages auto-saving session notes with debounce and manual save.
@@ -98,10 +99,7 @@ export default class extends Controller {
     try {
       const response = await fetch(`/sessions/${this.sessionIdValue}/update_notes`, {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": document.querySelector("[name='csrf-token']").content
-        },
+        headers: csrfHeaders(),
         body: JSON.stringify({ session_notes: currentValue })
       })
 
@@ -123,16 +121,10 @@ export default class extends Controller {
   // Best-effort flush on disconnect. The debounced autosave above is the primary save.
   flushSave(value) {
     const url = `/sessions/${this.sessionIdValue}/update_notes`
-    const csrfToken = document.querySelector("[name='csrf-token']")?.content
-    if (!csrfToken) return
-
     // Use fetch with keepalive to complete during page unload
     fetch(url, {
       method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRF-Token": csrfToken
-      },
+      headers: csrfHeaders(),
       body: JSON.stringify({ session_notes: value }),
       keepalive: true
     }).catch(() => {

@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 import Sortable from "sortablejs"
 
 // Drag-and-drop categorization of session cards on the dashboard.
@@ -181,11 +182,7 @@ export default class extends Controller {
 
     fetch(this.reorderUrlValue, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "X-CSRF-Token": this.csrfToken
-      },
+      headers: csrfHeaders({ Accept: "application/json" }),
       body: JSON.stringify({ ids })
     }).then((response) => {
       if (!response.ok) console.error("Failed to persist category order", response.status)
@@ -251,11 +248,7 @@ export default class extends Controller {
 
     fetch(url, {
       method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "X-CSRF-Token": this.csrfToken
-      },
+      headers: csrfHeaders({ Accept: "application/json" }),
       body: JSON.stringify({ category_id: categoryId })
     })
       .then((response) => {
@@ -389,11 +382,7 @@ export default class extends Controller {
 
     fetch(url, {
       method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "X-CSRF-Token": this.csrfToken
-      },
+      headers: csrfHeaders({ Accept: "application/json" }),
       body: JSON.stringify({ category_id: categoryId })
     })
       .then((response) => {
@@ -425,11 +414,7 @@ export default class extends Controller {
 
     fetch(this.createUrlValue, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "text/vnd.turbo-stream.html",
-        "X-CSRF-Token": this.csrfToken
-      },
+      headers: csrfHeaders({ Accept: "text/vnd.turbo-stream.html" }),
       body: JSON.stringify({ name: name.trim() })
     })
       .then((response) => {
@@ -453,10 +438,5 @@ export default class extends Controller {
   sessionIdFor(item) {
     const match = (item.id || "").match(/session_(\d+)/)
     return match ? match[1] : null
-  }
-
-  get csrfToken() {
-    const meta = document.querySelector('meta[name="csrf-token"]')
-    return meta ? meta.content : ""
   }
 }
