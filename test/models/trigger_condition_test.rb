@@ -644,14 +644,14 @@ class TriggerConditionTest < ActiveSupport::TestCase
   # 2026-05-11 is a Monday and 2026-05-12 a Tuesday; America/Los_Angeles is UTC-7 in May.
 
   test "schedule_due? is false for a never-triggered daily schedule before its configured time" do
-    condition = fresh_daily_condition(created_at: Time.utc(2026, 5, 12, 8, 0)) # 01:00 PT
+    condition = fresh_daily_condition(armed_at: Time.utc(2026, 5, 12, 8, 0)) # 01:00 PT
     travel_to Time.utc(2026, 5, 12, 9, 59) do # 02:59 PT, one minute before the 03:00 slot
       assert_not condition.schedule_due?
     end
   end
 
   test "schedule_due? is true for a never-triggered daily schedule once its configured time arrives" do
-    condition = fresh_daily_condition(created_at: Time.utc(2026, 5, 12, 8, 0)) # 01:00 PT
+    condition = fresh_daily_condition(armed_at: Time.utc(2026, 5, 12, 8, 0)) # 01:00 PT
     travel_to Time.utc(2026, 5, 12, 10, 0) do # 03:00 PT exactly
       assert condition.schedule_due?
     end
@@ -661,7 +661,7 @@ class TriggerConditionTest < ActiveSupport::TestCase
   # ~11:49 UTC instead of at their 03:00 PT slot. The slot had already passed when the
   # schedule was created, so it was not missed — the first run belongs to the next day.
   test "schedule_due? defers a daily schedule created after its configured time to the next day" do
-    condition = fresh_daily_condition(created_at: Time.utc(2026, 5, 12, 11, 35)) # 04:35 PT
+    condition = fresh_daily_condition(armed_at: Time.utc(2026, 5, 12, 11, 35)) # 04:35 PT
 
     travel_to Time.utc(2026, 5, 12, 11, 49) do # 04:49 PT — the observed premature fire
       assert_not condition.schedule_due?, "must not fire on the same day the slot already passed"
@@ -680,7 +680,7 @@ class TriggerConditionTest < ActiveSupport::TestCase
   # against UTC would make this pair indistinguishable — the first instant is hours past
   # 03:00 UTC and the schedule is still not due, because in Los Angeles it is 02:05.
   test "schedule_due? reads the configured time in the condition's timezone, not UTC" do
-    condition = fresh_daily_condition(created_at: Time.utc(2026, 5, 12, 5, 0)) # 05-11 22:00 PT
+    condition = fresh_daily_condition(armed_at: Time.utc(2026, 5, 12, 5, 0)) # 05-11 22:00 PT
 
     travel_to Time.utc(2026, 5, 12, 9, 5) do # 02:05 PT — but 09:05 UTC, long past 03:00 UTC
       assert_not condition.schedule_due?
@@ -700,7 +700,8 @@ class TriggerConditionTest < ActiveSupport::TestCase
       configuration: { "unit" => "days", "interval" => 3, "time" => "03:00",
                       "timezone" => "America/Los_Angeles" },
       last_triggered_at: nil,
-      created_at: Time.utc(2026, 5, 12, 8, 0) # 01:00 PT the same day
+      created_at: Time.utc(2026, 5, 12, 8, 0), # 01:00 PT the same day
+      armed_at: Time.utc(2026, 5, 12, 8, 0)
     )
 
     travel_to Time.utc(2026, 5, 12, 10, 0) do # 03:00 PT, two hours after creation
@@ -721,7 +722,7 @@ class TriggerConditionTest < ActiveSupport::TestCase
   # The boundary is strict: a schedule created in the same minute as its slot, but a second
   # after it, waits for tomorrow rather than firing into a slot it did not exist for.
   test "schedule_due? treats a schedule created exactly at its slot as having missed it" do
-    condition = fresh_daily_condition(created_at: Time.utc(2026, 5, 12, 10, 0)) # 03:00 PT exactly
+    condition = fresh_daily_condition(armed_at: Time.utc(2026, 5, 12, 10, 0)) # 03:00 PT exactly
 
     travel_to Time.utc(2026, 5, 12, 10, 1) do
       assert_not condition.schedule_due?
@@ -733,28 +734,28 @@ class TriggerConditionTest < ActiveSupport::TestCase
   end
 
   test "schedule_due? is false for a never-triggered weekly schedule before its configured time" do
-    condition = fresh_weekly_condition(created_at: Time.utc(2026, 5, 4, 8, 0)) # Mon a week earlier
+    condition = fresh_weekly_condition(armed_at: Time.utc(2026, 5, 4, 8, 0)) # Mon a week earlier
     travel_to Time.utc(2026, 5, 11, 16, 59) do # Monday 09:59 PT, before the 10:00 slot
       assert_not condition.schedule_due?
     end
   end
 
   test "schedule_due? is true for a never-triggered weekly schedule once its configured time arrives" do
-    condition = fresh_weekly_condition(created_at: Time.utc(2026, 5, 4, 8, 0))
+    condition = fresh_weekly_condition(armed_at: Time.utc(2026, 5, 4, 8, 0))
     travel_to Time.utc(2026, 5, 11, 17, 0) do # Monday 10:00 PT exactly
       assert condition.schedule_due?
     end
   end
 
   test "schedule_due? is false for a never-triggered weekly schedule on the wrong day" do
-    condition = fresh_weekly_condition(created_at: Time.utc(2026, 5, 4, 8, 0))
+    condition = fresh_weekly_condition(armed_at: Time.utc(2026, 5, 4, 8, 0))
     travel_to Time.utc(2026, 5, 12, 20, 0) do # Tuesday 13:00 PT — past the time, wrong day
       assert_not condition.schedule_due?
     end
   end
 
   test "schedule_due? defers a weekly schedule created after its configured time to the next week" do
-    condition = fresh_weekly_condition(created_at: Time.utc(2026, 5, 11, 18, 0)) # Mon 11:00 PT
+    condition = fresh_weekly_condition(armed_at: Time.utc(2026, 5, 11, 18, 0)) # Mon 11:00 PT
 
     travel_to Time.utc(2026, 5, 11, 19, 0) do # the same Monday, 12:00 PT
       assert_not condition.schedule_due?
@@ -763,6 +764,214 @@ class TriggerConditionTest < ActiveSupport::TestCase
     travel_to Time.utc(2026, 5, 18, 17, 0) do # the following Monday, 10:00 PT
       assert condition.schedule_due?
     end
+  end
+
+  # --- Arming (#745) -------------------------------------------------------
+  #
+  # `armed_at` is what #armed_before? measures a never-fired days/weeks schedule's
+  # first fire from. #743 used `created_at`, which made creation the only arming
+  # instant: an edit that MOVED the slot, or an enable that made the condition live
+  # after the slot had passed, left it reading as armed for a slot it was never live
+  # for — and it fired once at whatever hour that was, consuming the configured run.
+  #
+  # Dates as above: 2026-05-11 is a Monday, 2026-05-12 a Tuesday, and
+  # America/Los_Angeles is UTC-7 in May.
+
+  test "a new condition is armed at creation" do
+    condition = travel_to Time.utc(2026, 5, 12, 8, 0) do
+      @schedule_condition.trigger.trigger_conditions.create!(
+        condition_type: "schedule",
+        configuration: { "unit" => "days", "interval" => 1, "time" => "03:00",
+                        "timezone" => "America/Los_Angeles" }
+      )
+    end
+
+    assert_equal Time.utc(2026, 5, 12, 8, 0), condition.reload.armed_at
+  end
+
+  # Scenario 2 of #745. "Every day at 23:00" created at 08:00 is correctly not due;
+  # retimed to 09:00 at 10:00, it used to fire at 10:00 because created_at (08:00)
+  # was still before today's 09:00 slot. The condition never existed with a 09:00
+  # slot at the moment 09:00 passed, so its first run is 09:00 tomorrow.
+  test "editing a never-fired schedule's time re-arms it against the new slot" do
+    @schedule_condition.update!(
+      configuration: { "unit" => "days", "interval" => 1, "time" => "23:00",
+                      "timezone" => "America/Los_Angeles" },
+      last_triggered_at: nil,
+      created_at: Time.utc(2026, 5, 12, 15, 0), # 08:00 PT
+      armed_at: Time.utc(2026, 5, 12, 15, 0)
+    )
+
+    travel_to Time.utc(2026, 5, 12, 17, 0) do # 10:00 PT — the retiming edit
+      @schedule_condition.update!(
+        configuration: @schedule_condition.configuration.merge("time" => "09:00")
+      )
+    end
+
+    assert_equal Time.utc(2026, 5, 12, 17, 0), @schedule_condition.reload.armed_at,
+      "moving the slot re-arms the condition against it"
+
+    travel_to Time.utc(2026, 5, 12, 17, 1) do # 10:01 PT, a minute after the edit
+      assert_not @schedule_condition.schedule_due?,
+        "the 09:00 slot passed before this schedule had a 09:00 slot"
+    end
+
+    travel_to Time.utc(2026, 5, 13, 16, 0) do # 09:00 PT the next day
+      assert @schedule_condition.schedule_due?
+    end
+  end
+
+  test "editing a never-fired weekly schedule's day_of_week re-arms it" do
+    condition = fresh_weekly_condition(armed_at: Time.utc(2026, 5, 4, 8, 0)) # Mon a week earlier
+
+    travel_to Time.utc(2026, 5, 12, 20, 0) do # Tuesday 13:00 PT — past the 10:00 slot
+      condition.update!(configuration: condition.configuration.merge("day_of_week" => "tuesday"))
+      assert_not condition.schedule_due?,
+        "Tuesday's 10:00 slot passed before this schedule named Tuesday"
+    end
+
+    travel_to Time.utc(2026, 5, 19, 17, 0) do # the following Tuesday, 10:00 PT
+      assert condition.schedule_due?
+    end
+  end
+
+  # Changing the timezone moves the slot in wall-clock terms exactly as changing the
+  # time does — "03:00 UTC" and "03:00 America/Los_Angeles" are seven hours apart —
+  # so it re-arms for the same reason.
+  test "editing a never-fired schedule's timezone re-arms it against the new slot" do
+    condition = fresh_daily_condition(armed_at: Time.utc(2026, 5, 12, 1, 0)) # 05-11 18:00 PT
+
+    travel_to Time.utc(2026, 5, 12, 9, 0) do # 02:00 PT — before the 03:00 PT slot it was armed for
+      condition.update!(configuration: condition.configuration.merge("timezone" => "UTC"))
+      assert_not condition.schedule_due?,
+        "03:00 UTC passed eight hours before the edit; the condition was not on UTC for it"
+    end
+
+    travel_to Time.utc(2026, 5, 13, 3, 0) do # 03:00 UTC the next day
+      assert condition.schedule_due?
+    end
+  end
+
+  # The crux of #745, and the reason arming is keyed on a scope diff rather than on
+  # `updated_at`. Saving the trigger form again with nothing changed must leave a
+  # pending first fire exactly where it was — a re-arm here would push it out a day
+  # every time anyone pressed Save, which is #447's skipped slot in another costume.
+  test "a no-op re-save does not re-arm a pending first fire" do
+    condition = fresh_daily_condition(armed_at: Time.utc(2026, 5, 12, 8, 0)) # 01:00 PT
+
+    travel_to Time.utc(2026, 5, 12, 9, 0) do # 02:00 PT, an hour before the slot
+      condition.save!
+      condition.update!(configuration: condition.configuration.dup)
+    end
+
+    assert_equal Time.utc(2026, 5, 12, 8, 0), condition.reload.armed_at,
+      "a save that changes nothing is not an arming"
+
+    travel_to Time.utc(2026, 5, 12, 10, 0) do # 03:00 PT — the run it was created for
+      assert condition.schedule_due?
+    end
+  end
+
+  # The form rebuilds the whole `configuration` hash, so "nothing changed" at the UI
+  # is routinely a dirty `configuration` at the model — and a condition created
+  # through `action_trigger` without a `timezone` comes back from the form carrying
+  # "UTC", because the select renders #schedule_timezone's default and submits it.
+  # Comparing raw keys would read that as a moved slot and defer the pending run by a
+  # day, which is the #447 slot-skip this whole mechanism exists to prevent.
+  test "a save that only materialises the default timezone does not re-arm" do
+    @schedule_condition.update!(
+      configuration: { "unit" => "days", "interval" => 1, "time" => "03:00" }, # no timezone
+      last_triggered_at: nil,
+      created_at: Time.utc(2026, 5, 12, 1, 0),
+      armed_at: Time.utc(2026, 5, 12, 1, 0)
+    )
+
+    travel_to Time.utc(2026, 5, 12, 2, 0) do # an hour before the 03:00 UTC slot
+      @schedule_condition.update!(
+        configuration: @schedule_condition.configuration.merge("timezone" => "UTC")
+      )
+    end
+
+    assert_equal Time.utc(2026, 5, 12, 1, 0), @schedule_condition.reload.armed_at,
+      "writing the timezone the condition was already read in is not a moved slot"
+
+    travel_to Time.utc(2026, 5, 12, 3, 0) do # 03:00 UTC — the run it was armed for
+      assert @schedule_condition.schedule_due?
+    end
+  end
+
+  # An edit that leaves the slot where it is is a no-op as far as arming goes, even
+  # though the configuration changed. `interval` is the case that matters: it has no
+  # meaning before a first fire, so re-arming on it would defer a pending run for a
+  # setting that cannot affect it.
+  test "changing a non-arming key does not re-arm a pending first fire" do
+    condition = fresh_daily_condition(armed_at: Time.utc(2026, 5, 12, 8, 0)) # 01:00 PT
+
+    travel_to Time.utc(2026, 5, 12, 9, 0) do # 02:00 PT
+      condition.update!(configuration: condition.configuration.merge("interval" => 3))
+    end
+
+    assert_equal Time.utc(2026, 5, 12, 8, 0), condition.reload.armed_at
+
+    travel_to Time.utc(2026, 5, 12, 10, 0) do # 03:00 PT, as originally armed
+      assert condition.schedule_due?
+    end
+  end
+
+  # A schedule that has fired is governed by `last_triggered_at`, and #armed_before?
+  # is never reached. Re-arming it — by a retiming edit here — must not change when
+  # it next runs.
+  test "arming does not govern a schedule that has already fired" do
+    condition = fresh_daily_condition(armed_at: Time.utc(2026, 5, 12, 8, 0))
+    condition.update!(
+      configuration: condition.configuration.merge("interval" => 3),
+      last_triggered_at: Time.utc(2026, 5, 12, 10, 0) # fired at 03:00 PT
+    )
+
+    travel_to Time.utc(2026, 5, 13, 10, 0) do # the next day — one day of three elapsed
+      condition.update!(configuration: condition.configuration.merge("time" => "03:00"))
+      assert_not condition.schedule_due?, "a re-arm must not shorten the interval"
+    end
+
+    travel_to Time.utc(2026, 5, 15, 10, 0) do # three days after the fire
+      assert condition.schedule_due?, "a re-arm must not lengthen the interval either"
+    end
+  end
+
+  # The backfill's safety net. A row written before `armed_at` existed and somehow
+  # missed by the migration reads exactly as it did under #743 rather than as
+  # "armed" — the old behaviour, not a new off-slot fire.
+  test "a condition with no armed_at falls back to created_at" do
+    condition = fresh_daily_condition(armed_at: Time.utc(2026, 5, 12, 11, 35)) # 04:35 PT
+    condition.update_columns(armed_at: nil)
+
+    travel_to Time.utc(2026, 5, 12, 11, 49) do # 04:49 PT — #447's premature fire
+      assert_not condition.reload.schedule_due?
+    end
+
+    travel_to Time.utc(2026, 5, 13, 10, 0) do # 03:00 PT the next day
+      assert condition.schedule_due?
+    end
+  end
+
+  # Arming is a schedule concept. A Slack condition carries an `armed_at` because
+  # every row gets one on create, but nothing reads it, and editing what it watches
+  # is not an arming.
+  test "a non-schedule condition is armed on create and not re-armed by an edit" do
+    condition = travel_to Time.utc(2026, 5, 12, 8, 0) do
+      @slack_condition.trigger.trigger_conditions.create!(
+        condition_type: "slack",
+        configuration: { "channel_id" => "C0C8DF0T67T", "channel_name" => "eng-releases",
+                        "event_type" => "new_message" }
+      )
+    end
+    assert_equal Time.utc(2026, 5, 12, 8, 0), condition.reload.armed_at
+
+    travel_to Time.utc(2026, 5, 12, 9, 0) do
+      condition.update!(configuration: condition.configuration.merge("channel_name" => "eng-deploys"))
+    end
+
+    assert_equal Time.utc(2026, 5, 12, 8, 0), condition.reload.armed_at
   end
 
   test "schedule_due? returns true when enough days have passed" do
@@ -1624,25 +1833,32 @@ class TriggerConditionTest < ActiveSupport::TestCase
   private
 
   # A never-fired "every day at 03:00 America/Los_Angeles" condition — the shape from
-  # #447 — armed at +created_at+. Persisted, because created_at is what the first fire
-  # is measured from and an in-memory record would have none.
-  def fresh_daily_condition(created_at:)
+  # #447 — created and armed at +armed_at+. Persisted, because the arming instant is
+  # what the first fire is measured from and an in-memory record would have none.
+  #
+  # Both columns are written explicitly. #armed_before? reads `armed_at`, and an
+  # `armed_at` in the same write suppresses TriggerCondition#stamp_armed_at, which
+  # would otherwise re-arm this to the wall clock the moment the configuration
+  # changed — the very re-arm the shape-change tests below exercise on purpose.
+  def fresh_daily_condition(armed_at:)
     @schedule_condition.update!(
       configuration: { "unit" => "days", "interval" => 1, "time" => "03:00",
                       "timezone" => "America/Los_Angeles" },
       last_triggered_at: nil,
-      created_at: created_at
+      created_at: armed_at,
+      armed_at: armed_at
     )
     @schedule_condition
   end
 
   # The weekly twin: "every Monday at 10:00 America/Los_Angeles", never fired.
-  def fresh_weekly_condition(created_at:)
+  def fresh_weekly_condition(armed_at:)
     @weekly_condition.update!(
       configuration: { "unit" => "weeks", "interval" => 1, "time" => "10:00",
                       "day_of_week" => "monday", "timezone" => "America/Los_Angeles" },
       last_triggered_at: nil,
-      created_at: created_at
+      created_at: armed_at,
+      armed_at: armed_at
     )
     @weekly_condition
   end

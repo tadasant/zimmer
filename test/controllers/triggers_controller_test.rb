@@ -206,6 +206,89 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_equal [ "tadasant/zimmer#42" ], condition.github_seen_issue_keys
   end
 
+  # #745, on the path an operator actually takes. The form rebuilds the whole
+  # `configuration` hash and its timezone select always submits a value, so a
+  # condition created through the API without a `timezone` key comes back from a
+  # no-op Save carrying "UTC". If arming compared raw keys that would read as a moved
+  # slot and defer the pending 03:00 run by a day — the #447 slot-skip, produced by
+  # the mechanism meant to prevent it.
+  test "re-saving a schedule from the form does not re-arm it" do
+    trigger = triggers(:enabled_schedule_trigger)
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(
+      configuration: { "unit" => "days", "interval" => 1, "time" => "03:00" }, # no timezone
+      last_triggered_at: nil,
+      armed_at: Time.utc(2026, 5, 12, 1, 0)
+    )
+
+    travel_to Time.utc(2026, 5, 12, 2, 0) do
+      patch trigger_path(trigger), params: {
+        trigger: {
+          name: trigger.name,
+          trigger_conditions_attributes: [
+            {
+              id: condition.id,
+              condition_type: "schedule",
+              # What the form submits for an unchanged daily schedule: every rendered
+              # field, including the timezone select's default.
+              configuration: { unit: "days", interval: "1", time: "03:00", timezone: "UTC", day_of_week: "" }
+            }
+          ]
+        }
+      }
+    end
+
+    assert_equal Time.utc(2026, 5, 12, 1, 0), condition.reload.armed_at,
+      "a Save that changed nothing must not move the pending first fire"
+
+    travel_to Time.utc(2026, 5, 12, 3, 0) do
+      assert condition.schedule_due?, "the 03:00 UTC run it was armed for still happens"
+    end
+  end
+
+  # The other half: the same form submission, but the operator also switches the
+  # trigger back on. The condition edit here deliberately leaves the slot alone — only
+  # `interval` moves — so nothing but the enable can arm it, which is what makes the
+  # assertion mean something. A schedule re-enabled after its slot passed must wait
+  # for the next one rather than firing at the moment of the toggle.
+  test "enabling a schedule while editing it in the same save arms it" do
+    trigger = triggers(:disabled_schedule_trigger)
+    condition = trigger_conditions(:disabled_schedule_condition)
+    condition.update!(
+      configuration: { "unit" => "days", "interval" => 1, "time" => "03:00",
+                      "timezone" => "America/Los_Angeles" },
+      last_triggered_at: nil,
+      armed_at: Time.utc(2026, 5, 11, 16, 0) # Monday 09:00 PT
+    )
+
+    travel_to Time.utc(2026, 5, 12, 22, 0) do # Tuesday 15:00 PT
+      patch trigger_path(trigger), params: {
+        trigger: {
+          name: trigger.name,
+          status: "enabled",
+          trigger_conditions_attributes: [
+            {
+              id: condition.id,
+              condition_type: "schedule",
+              configuration: { unit: "days", interval: "3", time: "03:00", timezone: "America/Los_Angeles", day_of_week: "" }
+            }
+          ]
+        }
+      }
+    end
+
+    assert_predicate trigger.reload, :enabled?
+    assert_equal Time.utc(2026, 5, 12, 22, 0), condition.reload.armed_at
+
+    travel_to Time.utc(2026, 5, 12, 22, 1) do # Tuesday 15:01 PT, past the 03:00 slot
+      assert_not condition.schedule_due?, "an enable is not a fire"
+    end
+
+    travel_to Time.utc(2026, 5, 13, 10, 0) do # 03:00 PT the next day
+      assert condition.schedule_due?
+    end
+  end
+
   test "an explicit empty allowlist still clears it" do
     condition = trigger_conditions(:passive_listen_all_channels_condition)
     condition.update!(configuration: condition.configuration.merge("allowed_user_ids" => %w[U222]))
