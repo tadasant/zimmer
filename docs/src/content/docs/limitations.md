@@ -2013,24 +2013,27 @@ equally unguarded against a session in `needs_input`, but that case is now handl
 refused: an `after_create_commit` hook schedules the delivery, because an idle session is exactly
 the condition the message is waiting for.
 
-### Three states still hold a queued message on an idle session
+### Seven states still hold a queued message on an idle session
 
-A session no longer comes to rest in `needs_input` with a message queued for it — the `pause`
-transition schedules the delivery ([lifecycle](/sessions/lifecycle/)). The invariant has edges.
+A session no longer comes to rest with a message queued for it, in **either** resting state — the
+`pause` transition and the `after_create_commit` hook both schedule the delivery for `needs_input`
+and `waiting` alike ([lifecycle](/sessions/lifecycle/)). The invariant has edges.
 
-`EnqueuedMessageDrainJob` refuses to deliver in three states, and in each the message waits for that
+`EnqueuedMessageDrainJob` refuses to deliver in seven states, and in each the message waits for that
 state to clear rather than for anyone to notice: blocked on an MCP elicitation (the agent process is
-still alive), parked by `AuthOutageParkService` on a quota or auth wall, and `paused_by: "mcp_retry"`
-with a retry already scheduled. Each is the right call — delivering would spawn a second process
-against one clone, or burn the message on the wall that caused the park — and each ends in the
-message going out on the turn that follows. But a park that never clears holds the message
-indefinitely, and nothing says so.
+still alive), parked by `AuthOutageParkService` on a quota or auth wall, `paused_by: "mcp_retry"`
+with a retry already scheduled, and — for a session resting in `waiting` — already driven by a live
+job, holding no runtime session id, held at the spot gate, or paused in the spot queue. Each is the
+right call: delivering would spawn a second process against one clone, burn the message on the wall
+that caused the park, race a live first start, hand it to a fresh start that discards it, or churn
+its position against a gate that is already going to run it. Each ends in the message going out on
+the turn that follows. But a park or a hold that never clears holds the message indefinitely, and
+nothing says so.
 
-Only `needs_input` is covered. A session that pauses straight into a scheduled sleep goes dormant in
-`waiting` with its queue intact, which is correct — it has a wake armed, and that wake's turn drains
-the queue — but a session whose wake is later destroyed keeps the message with it. A session in
-`failed` holds its queue too; the recovery sweeps prefer a queued user message when they
-auto-continue one, so it usually goes out, but only if a sweep reaches the session.
+A session in `failed` holds its queue too; the recovery sweeps prefer a queued message when they
+auto-continue one — and since [#566](https://github.com/tadasant/zimmer/issues/566) so does every
+resume that injects a `SYSTEM_RECOVERY` nudge, at `AgentSessionJob`'s choke point — so it usually
+goes out, but only if something reaches the session at all.
 
 The terminal case is an alert, not a resolution. After three failed attempts the job stops and pages,
 leaving the messages `pending` — deliberately, because they are still deliverable and retiring them
@@ -2058,11 +2061,13 @@ about a state the watched session had already left. If a use case ever does need
 it needs a new option rather than a smaller constant.
 
 There is a second edge in the other direction. The rest check is status-only, so a session whose
-queued message is still undelivered when the window closes — the three states below — **does** wake
-its watchers. That is deliberate: nothing re-emits this event, so suppressing there would lose the
-wake rather than delay it. The consequence is that the three states below now also mean a watcher
-gets woken about a session that is idle with work stuck behind it, which is the honest signal but not
-a finished one.
+queued message is still undelivered when the window closes — the three refusals that can hold a
+session in `needs_input`, above — **does** wake its watchers. That is deliberate: nothing re-emits
+this event, so suppressing there would lose the wake rather than delay it. The consequence is that
+those three states also mean a watcher gets woken about a session that is idle with work stuck
+behind it, which is the honest signal but not a finished one. The other four refusals are
+`waiting`-only, and `resting_in_needs_input?` is false for them, so they cannot produce this wake at
+all.
 
 ### 🔴 Every turn a session finishes costs a second agent turn, for the Status summary
 

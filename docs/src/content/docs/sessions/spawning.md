@@ -125,6 +125,14 @@ through the claim. The queued-message branch above the guard
 and `EnqueuedMessageProcessorService` takes its own lock and refuses an archived session.
 :::
 
+`#perform` carries one further guard, below the archived guard, the pause guard and the spot gate
+and above the point where the job records itself as started: a turn being resumed with an
+`AutomatedPrompts::SYSTEM_RECOVERY` nudge is handed to the session's queued message instead, when it
+has one. It is the choke point every automated resume funnels through, and the reasoning — why it is
+scoped to the nudge, why the session has to be `running` for the handoff to be safe, and what
+happens to the session's armed wakes — is in
+[A queued message outranks an injected recovery nudge](/sessions/lifecycle/#a-queued-message-outranks-an-injected-recovery-nudge).
+
 ## What gets spawned
 
 **Claude Code:**

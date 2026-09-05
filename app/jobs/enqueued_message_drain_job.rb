@@ -2,13 +2,20 @@
 
 # Delivers the message a session came to rest on top of.
 #
-# The invariant this enforces is the `needs_input` half of the one
+# The invariant this enforces is the idle half of the one
 # Sessions::ArchiveGuard enforces for `archive`: a session must not idle with a
 # message still queued for it. Where the archive half refuses the transition —
 # archiving ends every delivery path, so the only honest answer is not to
-# archive — `needs_input` is recoverable. The session is idle, which is exactly
-# the condition under which a queued message is supposed to be delivered, so the
-# fix is to deliver it and let the session keep running.
+# archive — an idle session is recoverable. It is idle, which is exactly the
+# condition under which a queued message is supposed to be delivered, so the fix
+# is to deliver it and let the session keep running.
+#
+# "Idle" is BOTH resting states, not just `needs_input`. That was the gap behind
+# #566: the three create surfaces all promise the caller delivery "when the
+# session becomes idle", and a session resting in `waiting` — asleep on an
+# `open-pr` self-wake, slept by `action_session sleep`, dormant after a park —
+# already is. Nothing came back for those rows at all. #skip_reason is where the
+# populations of `waiting` that genuinely cannot take a message are named.
 #
 # AgentSessionJob already drains the queue at its four turn-end paths, and does
 # it BEFORE `pause!` so the session never flaps running → needs_input → running.
@@ -139,8 +146,20 @@ class EnqueuedMessageDrainJob < ApplicationJob
   # second agent process against one clone or re-run the session straight back
   # into the wall it just hit.
   def skip_reason(session)
-    return "no longer needs_input (#{session.status})" unless session.needs_input?
+    return "no longer idle (#{session.status})" unless session.idle_for_queued_delivery?
     return "queue is empty" unless session.enqueued_messages.pending.exists?
+
+    # Everything from here to the `nil` is about a session resting in `waiting`
+    # rather than `needs_input`. `needs_input` has exactly one meaning — the turn
+    # ended and nobody is coming — while `waiting` is the resting state Zimmer
+    # puts a session in for four different reasons, and three of them are "asleep
+    # on purpose, with something already scheduled to wake it". Handing a message
+    # to one of those is not an early delivery, it is a fight with whatever owns
+    # the wake.
+    if session.waiting?
+      dormant = dormant_by_design_reason(session)
+      return dormant if dormant
+    end
 
     # The agent process is STILL RUNNING and blocked on a synchronous MCP
     # elicitation. Resuming would spawn a second process and orphan the
@@ -173,6 +192,76 @@ class EnqueuedMessageDrainJob < ApplicationJob
     # be delivered, and pausing the current turn is not the same as withdrawing
     # the next one. The invariant was stated without an exception, so this has
     # none; a caller who wants the message gone deletes it.
+    nil
+  end
+
+  # Why a `waiting` session is asleep on purpose, or nil when it is merely idle.
+  #
+  # `needs_input` never reaches here: it has one meaning and this job is the
+  # answer to it. `waiting` is the overloaded one.
+  #
+  # NOT on this list, deliberately: a session dormant on its own armed wake-up
+  # (`paused_until_scheduled_time?`). That is the case this whole issue is about
+  # — the `open-pr` skill has a session sleep on a bounded self-wake so it does
+  # not occupy the human's action queue while its PR is rated, and the merged-PR
+  # notice is queued rather than sent precisely because the session is `waiting`
+  # rather than `needs_input`. The notice IS what that session is asleep waiting
+  # for, so consuming the wake to deliver it is the point, not a cost.
+  # EnqueuedMessage#stale? is what keeps that honest: a notice whose subject has
+  # moved on is retired rather than delivered, so a wake is only ever spent on a
+  # message that still says something.
+  def dormant_by_design_reason(session)
+    # A job is already driving it. `waiting` is not only a resting state: it is
+    # also where a session sits for the whole of its FIRST START, from the moment
+    # AgentSessionJob claims `running_job_id` through the clone, the session-id
+    # write and the spawn, until the transition to `running` at the far end. That
+    # window is seconds to tens of seconds, and in it the session looks idle by
+    # every other test here — it has a session id, it is not held, nothing is
+    # parked.
+    #
+    # Delivering into it loses the message outright rather than merely delivering
+    # it early. EnqueuedMessageProcessorService would take its `resume!` branch
+    # (the handoff branch, the only one that clears `running_job_id`, is selected
+    # by the session already being `running`), claim and destroy the row, and
+    # enqueue a fresh AgentSessionJob — which the concurrency guard at the top of
+    # #perform then refuses as a duplicate of the live first-start job. Queue
+    # empty, no turn behind it, and the drain counts it a success so nothing
+    # retries or alerts.
+    #
+    # Costs nothing on the paths this job is for: `pause` clears the marker
+    # through cleanup_running_job, and SpotSessionHold#return_to_queue! and
+    # AuthOutageParkService.resume_parked! clear it too, so a session genuinely at
+    # rest carries no job id. Deliberately scoped to `waiting` rather than asked
+    # of both states — a `needs_input` session with a stale job id is the case
+    # this job's whole bounded-retry-and-alert path already exists to report.
+    return "a job is already driving it" if session.running_job_id.present?
+
+    # No runtime session id. A follow-up prompt into a session with none is
+    # reclassified by AgentSessionJob as a FRESH START, which runs the session's
+    # own prompt and DISCARDS the follow-up — so "delivering" here would destroy
+    # the message. It drains at the end of that first turn like any other,
+    # through AgentSessionJob's ordinary end-of-turn path.
+    #
+    # `session_id.blank?`, deliberately, and NOT `never_ran?`. The two differ by
+    # `transcript.blank?`, and the reclassification this guards against keys on
+    # the session id ALONE — so `never_ran?` is the strictly narrower question
+    # and it misses the population that matters most: a session that HAS run,
+    # and therefore has a transcript, whose stale runtime id was released
+    # (AgentSessionJob's failed-resume recovery and
+    # ProcessLifecycleManager#release_stale_runtime_session_id! both write
+    # `session_id = nil` on a session with a full transcript). Such a session
+    # rests in `waiting` looking idle by every other test here, and draining
+    # into it spends the message on a turn that runs `session.prompt` instead
+    # and throws the message away — while the drain logs a delivery.
+    return "has no runtime session id to resume" if session.session_id.blank?
+
+    # Held or paused at the spot quota gate. Delivering would enqueue a turn that
+    # SpotSessionHold refuses at the door and re-queues as a fresh row — the
+    # message survives, but it churns position and origin on every pass, and the
+    # gate's own re-check is already the thing that will run it.
+    return "held at the spot quota gate" if SpotSessionHold.held?(session)
+    return "paused in the spot queue" if SpotSessionPause.paused?(session)
+
     nil
   end
 
@@ -234,7 +323,7 @@ class EnqueuedMessageDrainJob < ApplicationJob
       level: "error"
     )
 
-    alert_on_undeliverable_queue(session.id, count)
+    alert_on_undeliverable_queue(session.id, count, session.status)
   rescue => e
     # This method IS the loud part. It failing silently is the defect again.
     Rails.logger.error(
@@ -243,19 +332,22 @@ class EnqueuedMessageDrainJob < ApplicationJob
     )
   end
 
-  # Posted AFTER the transaction commits, for a sharper version of the reason
+  # Posted AFTER any open transaction commits, for a sharper version of the reason
   # SessionStateMachine#report_swallowed_side_effect gives: AlertService talks to
-  # Slack synchronously (5s connect / 10s read), and everything in this job runs
-  # inside Session.with_session_lock — a transaction that also holds a
-  # per-session advisory lock. Alerting inline would pin both across a network
-  # round trip, blocking any concurrent interrupt on the one session already in
-  # trouble. after_all_transactions_commit runs the block immediately when no
-  # transaction is open, so nothing is deferred that does not need to be.
-  def alert_on_undeliverable_queue(session_id, count)
+  # Slack synchronously (5s connect / 10s read), and this method is reached from
+  # give_up, whose caller may be inside EnqueuedMessageProcessorService's
+  # transaction on a failed delivery. Alerting inline would pin that transaction —
+  # and the `lock!` it holds on this session's row — across a network round trip,
+  # blocking any concurrent interrupt on the one session already in trouble.
+  # after_all_transactions_commit runs the block immediately when no transaction
+  # is open, which is the ordinary case here, so nothing is deferred that does not
+  # need to be. (This job opens no transaction and takes no advisory lock of its
+  # own — see the class header.)
+  def alert_on_undeliverable_queue(session_id, count, status)
     ActiveRecord.after_all_transactions_commit do
       AlertService.raise_alert(
         "Session idle with an undeliverable queued message",
-        details: "Session #{session_id} is in `needs_input` with #{count} message(s) still queued. " \
+        details: "Session #{session_id} is at rest (#{status}) with #{count} message(s) still queued. " \
                  "#{MAX_ATTEMPTS} attempts to deliver them failed, so the session is sitting idle on work " \
                  "it was given. The messages are still `pending` and will go out on the next turn the " \
                  "session takes — but nothing is going to give it one on its own.\n\n" \
