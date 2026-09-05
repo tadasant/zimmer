@@ -246,6 +246,22 @@ module CronSchedule
       description: "Reap orphaned UI login attempts and prune old terminal rows",
       environments: %i[production staging]
     },
+    # Everywhere, including development: this is the only thing that bounds the
+    # `logs` table, and a developer database grows the same way a deployed one
+    # does. It spends no money and no quota, and it reaps rows rather than the
+    # droplet's disk, so neither of the development exclusions above applies.
+    #
+    # Every 10 minutes rather than hourly because of the first run: a deployment
+    # that has never had retention meets a table with years of rows in it, and
+    # LogRetentionJob drains it a bounded slice at a time. Ten minutes is what
+    # turns that backlog into hours rather than weeks. Steady state is two
+    # primary-key lookups and no deletes.
+    log_retention: {
+      cron: "*/10 * * * *",
+      class: "LogRetentionJob",
+      description: "Delete log rows past their retention window, so the logs table is bounded by time rather than by fleet activity",
+      environments: %i[production staging development]
+    },
     empty_trash: {
       cron: "0 * * * *", # Every hour
       class: "EmptyTrashJob",
