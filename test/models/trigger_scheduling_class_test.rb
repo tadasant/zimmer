@@ -160,16 +160,145 @@ class TriggerSchedulingClassTest < ActiveSupport::TestCase
     assert_equal SessionGenesis::PRIORITY, notice.scheduling_class
   end
 
-  test "changing the selector does not move sessions the trigger already spawned" do
+  # --- what a change to the selector reaches (#480) ---------------------------
+
+  test "changing the selector moves the trigger's already-spawned waiting sessions" do
     @schedule.update!(scheduling_class: SessionGenesis::SPOT)
     stub_agent_root_for(@schedule)
     already_spawned = @schedule.create_session!(prompt: "Test")
+    assert already_spawned.waiting?
     assert already_spawned.spot?
 
     @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
 
-    assert_equal SessionGenesis::SPOT, already_spawned.reload.scheduling_class,
-      "the selector is read once, when the trigger fires — the documented contract"
-    assert already_spawned.spot?
+    assert_equal SessionGenesis::PRIORITY, already_spawned.reload.scheduling_class,
+      "an operator flipping a trigger to priority during a backlog means the backlog"
+    assert already_spawned.priority?
+    assert_equal 1, @schedule.reclassified_session_count
+    assert_equal "1 already-spawned waiting session moved to priority.", @schedule.reclassification_summary
+  end
+
+  test "a demotion moves them the other way too" do
+    @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+    stub_agent_root_for(@schedule)
+    already_spawned = @schedule.create_session!(prompt: "Test")
+    assert already_spawned.priority?
+
+    @schedule.update!(scheduling_class: SessionGenesis::SPOT)
+
+    assert already_spawned.reload.spot?
+    assert_equal 1, @schedule.reclassified_session_count
+  end
+
+  test "clearing the selector returns already-spawned waiting sessions to deriving" do
+    @slack.update!(scheduling_class: SessionGenesis::SPOT)
+    stub_agent_root_for(@slack)
+    already_spawned = @slack.create_session!(prompt: "Test")
+    assert_equal SessionGenesis::SPOT, already_spawned.scheduling_class
+
+    @slack.update!(scheduling_class: "")
+
+    assert_nil already_spawned.reload.scheduling_class,
+      "the stamp follows the trigger's, including back to 'derive it'"
+    assert already_spawned.priority?, "a slack session derives priority"
+    assert_equal 1, @slack.reclassified_session_count
+  end
+
+  test "the reclassification is scoped to THIS trigger, not the genesis it shares" do
+    # The blast radius of the one-click workaround is the whole point of #480:
+    # `promote_genesis` sweeps every session of a kind, and five of the eight
+    # kinds restate a condition type. A sibling trigger's work is not this
+    # operator's to promote.
+    other = Trigger.create!(
+      name: "Another scheduled trigger",
+      agent_root_name: @schedule.agent_root_name,
+      prompt_template: "Test",
+      status: "enabled",
+      scheduling_class: SessionGenesis::SPOT,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "interval" => 2, "unit" => "hours" } }
+      ]
+    )
+    stub_agent_root_for(other)
+    @schedule.update!(scheduling_class: SessionGenesis::SPOT)
+    stub_agent_root_for(@schedule)
+
+    sibling = other.create_session!(prompt: "Sibling work")
+    mine = @schedule.create_session!(prompt: "My work")
+    assert_equal sibling.genesis, mine.genesis, "both derive the same genesis — that is the trap"
+
+    @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    assert mine.reload.priority?
+    assert_equal SessionGenesis::SPOT, sibling.reload.scheduling_class,
+      "a sibling trigger's session is not this operator's to promote"
+    assert_equal 1, @schedule.reclassified_session_count
+  end
+
+  test "a session that has already started keeps the class it ran with" do
+    @schedule.update!(scheduling_class: SessionGenesis::SPOT)
+    stub_agent_root_for(@schedule)
+    started = @schedule.create_session!(prompt: "Test")
+    started.update_column(:status, "running")
+
+    @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    assert_equal SessionGenesis::SPOT, started.reload.scheduling_class,
+      "it is past the gate this setting governs"
+    assert_equal 0, @schedule.reclassified_session_count
+    assert_equal "No already-spawned waiting sessions needed moving.", @schedule.reclassification_summary
+  end
+
+  test "a session an operator already moved by hand stays where they put it" do
+    @schedule.update!(scheduling_class: SessionGenesis::SPOT)
+    stub_agent_root_for(@schedule)
+    moved_by_hand = @schedule.create_session!(prompt: "Test")
+    moved_by_hand.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    @schedule.update!(scheduling_class: "")
+
+    assert_equal SessionGenesis::PRIORITY, moved_by_hand.reload.scheduling_class,
+      "a per-session choice outranks a trigger-wide one"
+    assert_equal 0, @schedule.reclassified_session_count
+  end
+
+  test "a reclassified session records why its class changed" do
+    @schedule.update!(scheduling_class: SessionGenesis::SPOT)
+    stub_agent_root_for(@schedule)
+    session = @schedule.create_session!(prompt: "Test")
+
+    @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    log = session.logs.reload.find { |l| l.content.include?("Scheduling class set to priority") }
+    assert log, "the session should say why its class moved"
+    assert_includes log.content, @schedule.name
+  end
+
+  test "a save that leaves the class alone reports nothing" do
+    @schedule.update!(scheduling_class: SessionGenesis::SPOT)
+    stub_agent_root_for(@schedule)
+    session = @schedule.create_session!(prompt: "Test")
+
+    @schedule.update!(name: "Renamed")
+
+    assert_nil @schedule.reclassified_session_count
+    assert_nil @schedule.reclassification_summary
+    assert_equal SessionGenesis::SPOT, session.reload.scheduling_class
+  end
+
+  test "a rewrite that resolves to the same class is not counted as a move" do
+    # The schedule trigger's condition type already derives spot, so naming it
+    # explicitly moves nothing. Saying "1 session reclassified" would overstate
+    # what the click did.
+    stub_agent_root_for(@schedule)
+    session = @schedule.create_session!(prompt: "Test")
+    assert_nil session.scheduling_class
+    assert session.spot?
+
+    @schedule.update!(scheduling_class: SessionGenesis::SPOT)
+
+    assert_equal SessionGenesis::SPOT, session.reload.scheduling_class, "the stamp still follows the trigger's"
+    assert session.spot?
+    assert_equal 0, @schedule.reclassified_session_count
   end
 end
