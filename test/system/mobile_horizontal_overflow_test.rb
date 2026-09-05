@@ -483,6 +483,41 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert clipped <= 1, "#{label} is clipped by #{clipped}px instead of wrapping"
   end
 
+  # The "drawn under" pill is a SIXTH control on a node row, and it only appears
+  # on the rare node whose indentation is not a spawn edge — so the test above,
+  # whose uncle is deliberately a sibling, never renders it. This builds the
+  # shape that does: the junior's own spawn parent sits deeper than its uncle,
+  # so the walk reaches it through the uncle and the row has to say so.
+  test "a node drawn under an uncle stays within the viewport on a phone" do
+    origin = with_agent_root(create_session(title: "Origin", status: :needs_input), "zimmer-orchestrator")
+    spawn_parent = with_agent_root(
+      create_session(title: "Router that actually spawned it", status: :needs_input, parent_session_id: origin.id),
+      "zimmer-orchestrator"
+    )
+    # Keeps LONG_TOKEN_TITLE, so the widest row is also the one carrying the pill.
+    junior = with_agent_root(create_session(status: :running, parent_session_id: spawn_parent.id), "zimmer")
+    senior = with_agent_root(create_session(title: "Senior that interrupted it", status: :needs_input), "zimmer-orchestrator")
+    SessionUncleLink.create!(session: junior, uncle_session: senior, source: "test")
+
+    list = "#session_#{junior.id}_hierarchy"
+
+    visit session_path(junior)
+    assert_text "Session hierarchy"
+    within(list) { assert_text "drawn under" }
+
+    scroll_into_center(find(list))
+    page.save_screenshot("tmp/screenshots/proof-drawn-under-375.png")
+
+    assert_no_horizontal_overflow("session detail with an uncle-drawn node")
+
+    past_edge = elements_past_right_edge(list)
+    assert_empty past_edge,
+      "the drawn-under row ends past the #{MOBILE_WIDTH}px viewport, out of reach:\n  #{past_edge.join("\n  ")}"
+
+    # The pill names a session, so it has to be reachable, not merely on-screen.
+    assert_selector "#{list} li[data-redrawn] a", text: "##{senior.id}"
+  end
+
   test "session hierarchy nodes stay within the viewport on a phone, unchanged at desktop width" do
     origin = with_agent_root(
       create_session(title: "Gate and claim the mobile overflow bug", status: :needs_input),

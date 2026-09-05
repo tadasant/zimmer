@@ -148,6 +148,15 @@ module ApiSessionSerialization
           status: node.status,
           depth: node.depth,
           parent_session_id: node.parent_id,
+          # The node this one is drawn under, which is what `depth` plus the
+          # array order expresses. Normally the spawn parent; an uncle only when
+          # the walk could not reach this session through a spawn edge at that
+          # level, which `spawn_edge` says. A consumer rebuilding the tree from
+          # `depth` alone would otherwise have to guess, and guessing is what
+          # made every child of a sibling batch read as a child of the last
+          # sibling (#571).
+          render_parent_session_id: node.render_parent_id,
+          spawn_edge: node.spawn_edge?,
           uncle_session_ids: node.uncles,
           current: node.current?,
           genesis: node.genesis,
