@@ -20,9 +20,9 @@ module Mcp
     #
     # The upsert semantics are not a stylistic choice. Every Slack condition carries
     # live poller cursors inside its `configuration`
-    # (TriggerCondition::SLACK_POLL_STATE_KEYS: channel_timestamps,
-    # thread_timestamps, bot_activity_timestamps, participating_threads,
-    # dm_timestamps — plus allowed_user_ids), which `preserve_slack_poll_state`
+    # (every key in TriggerCondition::SLACK_POLL_STATE_KEYS bar the user-facing
+    # allowed_user_ids, which rides along there for its own reason), which
+    # `preserve_slack_poll_state`
     # keeps only by merging back the keys an incoming configuration OMITS. A replace
     # would destroy the row and take its cursors with it, silently re-baselining a
     # live trigger; an omitted-means-untouched upsert cannot. The GitHub conditions

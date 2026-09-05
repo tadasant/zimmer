@@ -829,6 +829,200 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     end
   end
 
+  # --- Tracked-thread re-check rotation (#518) ---
+  #
+  # MAX_TRACKED_THREAD_RECHECKS is a per-poll BUDGET, not a coverage cap. Truncating
+  # it — keeping the 20 most-recently-active aged-out threads and dropping the rest,
+  # every poll — leaves most of a live condition's hundreds of tracked threads never
+  # re-checked at all, unrecoverably: the ranking is by tracked activity, and a reply
+  # nobody fetches never advances a tracked timestamp. These pin the rotation that
+  # spends the same budget so every eligible thread comes round instead.
+
+  # Seed `count` aged-out tracked threads in one channel, ordered so that thread key
+  # order and tracked-activity order agree: index 0 is BOTH the lowest key and the
+  # least-recently-active, index count-1 the highest and the most recent. That makes
+  # "which threads does poll N re-check" predictable from the index alone.
+  def seed_tracked_threads(condition, channel_id, count)
+    base = Time.current.to_f - 40.days.to_i
+    parents = (0...count).map { |i| format("%.6f", base + i) }
+    condition.configuration["thread_timestamps"] = parents.each_with_index.to_h do |parent_ts, i|
+      [ "#{channel_id}:#{parent_ts}", format("%.6f", base + 10.days.to_i + i) ]
+    end
+    condition.save!
+    parents
+  end
+
+  test "bot_mention condition fires on a reply in a tracked thread outside the top slice by activity" do
+    SlackService.stubs(:configured?).returns(true)
+    SlackService.stubs(:bot_user_id).returns("U_BOT_123")
+    SlackService.stubs(:list_dm_channels).returns([])
+
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    condition.configuration["allowed_user_ids"] = %w[U222]
+    # 25 tracked threads against a budget of 20: five more than one poll can hold.
+    parents = seed_tracked_threads(condition, condition.channel_id, 25)
+
+    # The LEAST recently active of the 25 — rank 25 of 25, so the old truncation
+    # dropped it every poll and the mention below was never seen.
+    target_parent_ts = parents.first
+    target_tracked_ts = condition.thread_timestamps["#{condition.channel_id}:#{target_parent_ts}"]
+    mention_ts = format("%.6f", Time.current.to_f - 1.minute.to_i)
+
+    SlackService.stubs(:get_messages_since).returns([])
+    # No parent is in the recent-50 window: every one of these is aged out.
+    SlackService.stubs(:get_channel_history).with(condition.channel_id, limit: 50).returns([])
+    SlackService.stubs(:get_thread_replies).returns([])
+    SlackService.stubs(:get_thread_replies)
+      .with(condition.channel_id, target_parent_ts, oldest: target_tracked_ts)
+      .returns([
+        OpenStruct.new(ts: mention_ts, text: "<@U_BOT_123> still waiting on this", bot_id: nil,
+                       thread_ts: target_parent_ts, user: "U222")
+      ])
+    SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/rotated-in")
+    SlackService.stubs(:get_user_name).returns("Test User")
+    AgentRootsConfig.stubs(:find!).returns(
+      OpenStruct.new(url: "https://github.com/test/repo", default_branch: "main", subdirectory: nil)
+    )
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+
+    assert_equal mention_ts, condition.reload.thread_timestamps["#{condition.channel_id}:#{target_parent_ts}"]
+  end
+
+  test "thread condition fires on a reply in a tracked thread outside the top slice by activity" do
+    condition = stub_passive_listening(event_type: "passive_listen_thread")
+    condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(3.hours) }
+    parents = seed_tracked_threads(condition, PASSIVE_CHANNEL, 25)
+
+    target_parent_ts = parents.first
+    target_tracked_ts = condition.thread_timestamps["#{PASSIVE_CHANNEL}:#{target_parent_ts}"]
+    reply_ts = passive_ts(1.minute)
+
+    # Zimmer is already known to be in the thread, so the reply qualifies passively.
+    condition.configuration["participating_threads"] = [ "#{PASSIVE_CHANNEL}:#{target_parent_ts}" ]
+    condition.save!
+
+    SlackService.stubs(:get_messages_since).returns([])
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([])
+    SlackService.stubs(:get_thread_replies).returns([])
+    SlackService.stubs(:get_thread_replies)
+      .with(PASSIVE_CHANNEL, target_parent_ts, oldest: target_tracked_ts)
+      .returns([ passive_message(reply_ts, thread_ts: target_parent_ts) ])
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+
+    # The rotation only advances because the cursor written mid-sweep survives the
+    # batched configuration write the caller makes after the thread loop. Snapshot
+    # `configuration` before that loop and the rotation freezes on poll 1 forever,
+    # with every other assertion in this file still passing.
+    condition.reload
+    assert_equal "#{PASSIVE_CHANNEL}:#{parents[9]}", condition.thread_recheck_cursors[PASSIVE_CHANNEL]
+    assert_equal reply_ts, condition.thread_timestamps["#{PASSIVE_CHANNEL}:#{target_parent_ts}"]
+  end
+
+  test "a rotating thread that receives a reply is promoted into the always-checked band" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    channel_id = condition.channel_id
+    parents = seed_tracked_threads(condition, channel_id, 25)
+
+    # The least-recently-active thread: bottom of the rotation, nowhere near the hot
+    # band. Give it a reply newer than every other tracked timestamp, which is what
+    # a re-check that found something would have recorded.
+    woken = parents.first
+    condition.configuration["thread_timestamps"]["#{channel_id}:#{woken}"] =
+      format("%.6f", Time.current.to_f)
+    condition.save!
+
+    slice = SlackTriggerPollerJob.new.send(:aged_out_thread_parents, condition, channel_id, []).map(&:ts)
+
+    # Promotion is what stops the rotation from being a 17-minute cadence for a live
+    # conversation: the wake-up costs one sweep, the rest of the exchange does not.
+    hot = slice.first(SlackTriggerPollerJob::HOT_TRACKED_THREAD_RECHECKS)
+    assert_includes hot, woken
+  end
+
+  test "the rotation wraps back to the start of the band once a sweep completes" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    channel_id = condition.channel_id
+    # 30 eligible: 10 hot and 20 rotating through 10 slots, so the second poll lands
+    # exactly on the last key of the band and the third has to wrap rather than
+    # running off the end.
+    seed_tracked_threads(condition, channel_id, 30)
+
+    job = SlackTriggerPollerJob.new
+    polls = 3.times.map { job.send(:aged_out_thread_parents, condition.reload, channel_id, []).map(&:ts) }
+
+    assert_equal polls[0], polls[2], "the third poll should restart the sweep the first one began"
+    assert_empty polls[0] & (polls[1] - polls[0].first(SlackTriggerPollerJob::HOT_TRACKED_THREAD_RECHECKS)),
+                 "the two rotating bands of a single sweep must not overlap"
+  end
+
+  test "every tracked thread inside the horizon is re-checked within a bounded number of polls" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    channel_id = condition.channel_id
+    # 45 eligible threads: 10 hot + 35 rotating through 10 slots => a full sweep
+    # every 4 polls, and 5 threads the old truncation would never have visited.
+    parents = seed_tracked_threads(condition, channel_id, 45)
+
+    job = SlackTriggerPollerJob.new
+    polls = 4.times.map do
+      slice = job.send(:aged_out_thread_parents, condition.reload, channel_id, []).map(&:ts)
+      # The budget is what bounds Slack API pressure: it must hold on every poll,
+      # not on average.
+      assert_equal SlackTriggerPollerJob::MAX_TRACKED_THREAD_RECHECKS, slice.size
+      assert_equal slice.uniq, slice, "a poll must not spend two calls on the same thread"
+      slice
+    end
+
+    assert_equal parents.sort, polls.flatten.uniq.sort,
+                 "every eligible tracked thread should be visited within a full rotation"
+
+    # The most-recently-active band is not starved by the rotation: it is re-checked
+    # on every poll, so a live conversation still answers at the poll cadence.
+    hot = parents.last(SlackTriggerPollerJob::HOT_TRACKED_THREAD_RECHECKS)
+    polls.each { |slice| assert_equal hot.sort, (slice & hot).sort }
+  end
+
+  test "a channel tracking fewer threads than the budget re-checks them all and stores no cursor" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    channel_id = condition.channel_id
+    parents = seed_tracked_threads(condition, channel_id, 5)
+
+    slice = SlackTriggerPollerJob.new.send(:aged_out_thread_parents, condition, channel_id, [])
+
+    assert_equal parents.sort, slice.map(&:ts).sort
+    # Rotation state is only paid for by channels that need it — a small channel
+    # keeps the old behaviour and the old write profile exactly.
+    assert_empty condition.reload.thread_recheck_cursors
+  end
+
+  test "rotation resumes after the previous poll's last thread rather than restarting" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    channel_id = condition.channel_id
+    parents = seed_tracked_threads(condition, channel_id, 25)
+
+    job = SlackTriggerPollerJob.new
+    first = job.send(:aged_out_thread_parents, condition, channel_id, []).map(&:ts)
+
+    cursor = condition.reload.thread_recheck_cursors[channel_id]
+    assert_equal "#{channel_id}:#{first.last}", cursor,
+                 "the cursor should name the last thread of the rotating band"
+
+    second = job.send(:aged_out_thread_parents, condition, channel_id, []).map(&:ts)
+
+    # 25 eligible: 10 hot, re-checked on both polls, and 15 rotating through 10
+    # slots. The second poll must therefore reach EXACTLY the five the first could
+    # not — restarting the rotation instead would re-check the same ten and leave
+    # those five permanently unvisited, which is the bug.
+    assert_equal (parents - first).sort, (second - first).sort
+    assert_equal parents.sort, (first | second).sort
+  end
+
   # --- Thread-scoped new_message condition tests ---
   #
   # When a new_message condition has thread_ts configured, it monitors new REPLIES
@@ -1528,6 +1722,42 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     assert_difference("Session.count", 2) do
       SlackTriggerPollerJob.new.send(:process_condition, condition)
     end
+  end
+
+  test "thread condition clamps a thread whose OWN cursor went stale, not just a first-sight one" do
+    condition = stub_passive_listening(event_type: "passive_listen_thread")
+    parent_ts = passive_ts(30.days)
+
+    # A thread Zimmer is already in, with a cursor of its own — but one that fell 10
+    # days behind, which is what a thread starved by a truncated re-check budget (or
+    # met across a deploy or an outage) looks like when the rotation finally reaches
+    # it. Without the clamp, the whole 10-day backlog fires a session apiece.
+    stale_cursor_ts = passive_ts(10.days)
+    ancient_reply_ts = passive_ts(5.days)
+    backfilled_reply_ts = passive_ts(10.hours)
+    fresh_reply_ts = passive_ts(1.minute)
+
+    condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(3.hours) }
+    condition.configuration["thread_timestamps"] = { "#{PASSIVE_CHANNEL}:#{parent_ts}" => stale_cursor_ts }
+    condition.configuration["participating_threads"] = [ "#{PASSIVE_CHANNEL}:#{parent_ts}" ]
+    condition.save!
+
+    SlackService.stubs(:get_messages_since).returns([])
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([])
+    SlackService.stubs(:get_thread_replies).with(PASSIVE_CHANNEL, parent_ts, oldest: stale_cursor_ts).returns([
+      OpenStruct.new(ts: ancient_reply_ts, text: "five days of backlog", user: "U222", bot_id: nil, thread_ts: parent_ts),
+      OpenStruct.new(ts: backfilled_reply_ts, text: "ten hours ago", user: "U222", bot_id: nil, thread_ts: parent_ts),
+      OpenStruct.new(ts: fresh_reply_ts, text: "still broken", user: "U222", bot_id: nil, thread_ts: parent_ts)
+    ])
+
+    # Only the two inside THREAD_BACKFILL_HORIZON fire; the 5-day-old one is dropped.
+    assert_difference("Session.count", 2) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+
+    # The cursor still advances past everything fetched, dropped replies included, so
+    # the backlog is not re-offered on the next sweep.
+    assert_equal fresh_reply_ts, condition.reload.thread_timestamps["#{PASSIVE_CHANNEL}:#{parent_ts}"]
   end
 
   test "thread condition does not re-check a tracked thread beyond the recheck horizon" do
