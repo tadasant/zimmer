@@ -6,6 +6,7 @@ class TriggerConditionDashboard < Administrate::BaseDashboard
     trigger: Field::BelongsTo,
     condition_type: Field::String,
     configuration: Field::String.with_options(searchable: false),
+    armed_at: Field::DateTime,
     last_polled_at: Field::DateTime,
     last_triggered_at: Field::DateTime,
     last_message_ts: Field::String,
@@ -25,6 +26,7 @@ class TriggerConditionDashboard < Administrate::BaseDashboard
     trigger
     condition_type
     configuration
+    armed_at
     last_polled_at
     last_triggered_at
     last_message_ts

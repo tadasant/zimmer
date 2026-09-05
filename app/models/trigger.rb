@@ -217,6 +217,18 @@ class Trigger < ApplicationRecord
   # instance must not echo the first one's figure.
   after_update :reclassify_spawned_waiting_sessions
 
+  # A schedule that was switched off when its slot came round did not miss that
+  # slot — it was not live for it. Enabling re-arms it, so its first fire is the
+  # next configured slot rather than the next poller tick.
+  #
+  # Keyed on the status transition rather than on #enable!, for the same reason
+  # #clear_failure_state_when_leaving_failed is: `status` is a permitted param on
+  # the toggle, the edit form, PATCH /api/v1/triggers and action_trigger, and all
+  # four have to re-arm. Declared after `has_many :trigger_conditions` so the
+  # autosave of any nested condition edited in the same write has already run —
+  # the enable is the later arming and must win.
+  after_update :rearm_schedule_conditions_on_enable
+
   # When a trigger is created with a target session and a one-time schedule,
   # automatically transition the target session into the waiting (dormant)
   # state. This is the "per-session wake-up" path: API callers can schedule a
@@ -1772,6 +1784,27 @@ class Trigger < ApplicationRecord
     # without this the user's re-arm would be destroyed by the requester's very
     # next pause — silently, since retirement neither alerts nor asks.
     self.wake_held_at = nil if status_in_database == "failed"
+  end
+
+  # Re-arm this trigger's schedule conditions when it is switched back on.
+  #
+  # Only `schedule` conditions carry an arming anchor — TriggerCondition#armed_at
+  # is read by #armed_before? and by nothing else — so this touches nothing a
+  # Slack or GitHub condition depends on. It is also inert for a schedule that has
+  # already fired: `last_triggered_at` governs that one and #armed_before? is
+  # never reached.
+  #
+  # `update_all` on purpose. Arming is a single column and re-validating a batch
+  # of conditions inside the trigger's own save is a re-entrancy hazard for no
+  # gain; `updated_at` rides along so the row still reads as touched. The
+  # association is reset because those rows have just changed underneath it.
+  def rearm_schedule_conditions_on_enable
+    return unless saved_change_to_status?
+    return unless enabled?
+
+    now = Time.current
+    trigger_conditions.schedule.update_all(armed_at: now, updated_at: now)
+    trigger_conditions.reset
   end
 
   # Record a spawned session against the current window so a burst notice can
