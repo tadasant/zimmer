@@ -742,7 +742,7 @@ class Trigger < ApplicationRecord
   #   nil                    — #follow_up_session! was not called on this instance
   #
   # Callers (AoEventTriggerJob, ScheduleTriggerJob) use this to decide whether
-  # destroying sibling wake triggers is safe. If the wake was dropped, the
+  # holding sibling wake triggers is safe. If the wake was dropped, the
   # siblings may yet deliver and must not be cleaned up. See the race-window
   # comment in #follow_up_session! for the full motivation.
   attr_reader :last_follow_up_status
@@ -754,22 +754,38 @@ class Trigger < ApplicationRecord
     @last_follow_up_status == :dropped
   end
 
-  # When a one-time wake fires, sibling wakes scheduled against the same
-  # requester session are now moot — the requester has already been resumed,
-  # so the other "wake me up when X" triggers will never have anything useful
-  # to do. Destroys all OTHER one-time-reuse triggers that target the same
-  # last_session_id and returns the count destroyed (for logging).
+  # When a one-time wake fires, the wake group it belongs to — this trigger and
+  # every sibling wake aimed at the same requester session — is HELD rather than
+  # destroyed. Returns the number of siblings held (for logging).
   #
-  # This implements the "triple-wake plus deadline backstop" cleanup pattern:
-  # agents typically schedule needs_input + failed + archived + a deadline
-  # backstop sibling group, and only one of them ever fires usefully.
+  # This is the "triple-wake plus deadline backstop" pattern: agents schedule
+  # needs_input + failed + archived + a deadline backstop, and only one of them
+  # ever fires usefully. The other three used to be destroyed right here, at fire
+  # time — which is BEFORE the woken turn has run, let alone re-armed anything. A
+  # turn interrupted in that window (a deploy restart, a killed process, a
+  # transient failure) left the requester with no wake at all: asleep, and
+  # indistinguishable from a session sleeping correctly
+  # (https://github.com/tadasant/zimmer/issues/569).
+  #
+  # A held wake is still `enabled`, still unfired and still fireable. What the
+  # mark changes is WHO retires it and WHEN: the requester's own state machine
+  # does it (SessionStateMachine#retire_held_wake_triggers) when the woken turn
+  # comes to rest, and deliberately not when that rest is a recovery pause. So the
+  # group survives exactly the interruption it has to survive, and is gone by the
+  # end of any turn that completed — no stale wake outlives the wait it belonged
+  # to.
+  #
+  # This trigger holds ITSELF too, in place of the auto-delete the firing jobs
+  # used to do. Its fired condition is spent, but a
+  # `wake_me_up_when_session_changes_state` watcher is ONE trigger carrying three
+  # conditions, and the two that did not fire are the rest of the wait.
   #
   # A sibling in the `failed` status is exempt. It is not a moot wake — it is the
   # record of a wake that TRIED and could not, parked by ScheduleTriggerJob so the
-  # user would see it. Destroying it here would delete that evidence as a side
+  # user would see it. Sweeping it up here would delete that evidence as a side
   # effect of a later sibling succeeding, which is the silent loss this whole
   # mechanism exists to prevent. Only the user clears a failed trigger.
-  def destroy_sibling_wakes!
+  def hold_wake_group!
     return 0 unless one_time_reuse_trigger?
     return 0 if last_session_id.blank?
 
@@ -781,11 +797,20 @@ class Trigger < ApplicationRecord
       .to_a
       .select(&:one_time_reuse_trigger?)
 
-    return 0 if siblings.empty?
+    held_at = Time.current
+    # update_all, not save: `validates :trigger_conditions, presence:` has nothing
+    # to say about a bookkeeping stamp, and a concurrent sibling fire can retire
+    # one of these rows out from under this in-memory instance mid-fan-out.
+    Trigger.where(id: siblings.map(&:id) + [ id ]).update_all(wake_held_at: held_at, updated_at: held_at)
+    self.wake_held_at = held_at
 
-    sibling_ids = siblings.map(&:id)
-    Trigger.where(id: sibling_ids).destroy_all
-    sibling_ids.size
+    siblings.size
+  end
+
+  # True when this wake is being held across a woken turn: armed, already spoken
+  # for by a fire, and owed a retirement by the requester it belongs to.
+  def wake_held?
+    wake_held_at.present?
   end
 
   private
@@ -1235,7 +1260,19 @@ class Trigger < ApplicationRecord
         )
         @last_follow_up_status = :skipped_pending_exists
       elsif session.needs_input? || session.waiting?
-        session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
+        # Tell the resume that a WAKE is what woke this session, so its
+        # cancel_pending_one_time_wake_triggers callback holds the rest of the
+        # wake group instead of consuming it. Consuming it there is right for a
+        # deliberate resume — a human follow-up, a restart — and wrong here: the
+        # requester has been resumed but has not yet DONE anything, and until its
+        # turn ends the wait it set up is the only thing that will wake it again.
+        # See SessionStateMachine#hold_pending_one_time_wakes.
+        session.wake_fire_resume = one_time_reuse_trigger?
+        begin
+          session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
+        ensure
+          session.wake_fire_resume = false
+        end
         @last_follow_up_status = :delivered
       elsif session.running?
         # Wake-up triggers (one_time_reuse_trigger?) must deliver durably across
@@ -1273,10 +1310,11 @@ class Trigger < ApplicationRecord
       # last_triggered_at without re-running create-time/presence validations
       # (e.g. `validates :trigger_conditions, presence:`). Those validations are
       # irrelevant to a tracking-timestamp bump and, worse, can spuriously raise
-      # RecordInvalid in a benign race: a sibling wake firing concurrently can
-      # call #destroy_sibling_wakes!, which destroys this trigger and
-      # cascade-deletes its conditions (has_many ..., dependent: :destroy) out
-      # from under this still-in-memory instance. A full-validation save! would
+      # RecordInvalid in a benign race: the requester coming to rest concurrently
+      # runs SessionStateMachine#retire_held_wake_triggers, which destroys this
+      # trigger and cascade-deletes its conditions (has_many ...,
+      # dependent: :destroy) out from under this still-in-memory instance —
+      # as does CleanupStaleTriggersJob. A full-validation save! would
       # then see zero conditions and raise. update_columns issues a direct
       # UPDATE (a no-op if the row is already gone), matching the heal_* methods
       # which deliberately use update_column for the same reason.

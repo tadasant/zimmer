@@ -171,29 +171,29 @@ class AoEventTriggerJob < ApplicationJob
           end
 
           # One-time wake-up triggers (only session-scoped ao_events and/or
-          # one-time schedules) auto-delete after firing — they've done their
-          # job and there's nothing left to fire. Mirrors ScheduleTriggerJob.
+          # one-time schedules) hand their whole group over to the requester
+          # after firing: held now, retired by the requester's own state machine
+          # when the woken turn comes to rest. This used to be a destroy right
+          # here, which voided the group before the woken turn had run — see
+          # Trigger#hold_wake_group! and tadasant/zimmer#569. Mirrors
+          # ScheduleTriggerJob.
           #
-          # CRITICAL: only destroy the trigger and its siblings when the wake
-          # was actually delivered or queued. If the wake fired while the
-          # requester session was still running and the trigger didn't queue
-          # the message (e.g., recurring trigger with enqueue_messages off),
-          # the wake was silently dropped — destroying siblings would leave
-          # the requester with no wakes at all. Leave siblings in place so
-          # they can deliver when their watched events transition (or the
-          # deadline backstop fires).
+          # CRITICAL: only hand the group over when the wake was actually
+          # delivered or queued. If the wake fired while the requester session was
+          # still running and the trigger didn't queue the message (e.g., a
+          # recurring trigger with enqueue_messages off), the wake was silently
+          # dropped — marking the group held would put it on a turn that is not
+          # going to run, and the requester's next rest would retire wakes that
+          # never delivered anything. Leave them untouched so they can deliver
+          # when their watched events transition (or the deadline backstop fires).
           if trigger.one_time_reuse_trigger?
             if trigger.last_follow_up_dropped?
-              Rails.logger.info "[AoEventTriggerJob] Trigger #{trigger.id} fired but delivery was dropped (requester still running, no enqueue) — preserving siblings and skipping auto-delete"
+              Rails.logger.info "[AoEventTriggerJob] Trigger #{trigger.id} fired but delivery was dropped (requester still running, no enqueue) — leaving its wake group alone"
             else
               trigger_id = trigger.id
               requester_id = trigger.last_session_id
-              sibling_count = trigger.destroy_sibling_wakes!
-              trigger.destroy!
-              Rails.logger.info "[AoEventTriggerJob] One-time trigger #{trigger_id} auto-deleted after firing"
-              if sibling_count > 0
-                Rails.logger.info "[AoEventTriggerJob] Destroyed #{sibling_count} sibling wake-up trigger(s) for requester session #{requester_id}"
-              end
+              sibling_count = trigger.hold_wake_group!
+              Rails.logger.info "[AoEventTriggerJob] One-time trigger #{trigger_id} held after firing, plus #{sibling_count} sibling wake-up trigger(s), for requester session #{requester_id} — retired when its turn comes to rest"
             end
           end
         rescue => e

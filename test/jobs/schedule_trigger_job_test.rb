@@ -373,7 +373,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
   end
 
   # The condition is advanced BEFORE the post-fire cleanup runs, so a raise from
-  # #destroy_sibling_wakes! or the auto-delete arrives with the schedule already
+  # #hold_wake_group! or the auto-delete arrives with the schedule already
   # spent and the session already created. Parking is still right — the error
   # must not vanish — but promising a re-arm would be a lie, and acting on it
   # would duplicate the session.
@@ -385,7 +385,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     trigger = one_time_condition.trigger
     one_time_condition.update!(last_triggered_at: nil)
 
-    Trigger.any_instance.stubs(:destroy_sibling_wakes!).raises(StandardError.new("sibling cleanup blew up"))
+    Trigger.any_instance.stubs(:destroy!).raises(StandardError.new("auto-delete blew up"))
 
     captured_details = nil
     AlertService.stubs(:raise_alert).with do |_title, **kwargs|
@@ -408,7 +408,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     assert_match(/will NOT re-fire/, captured_details)
 
     # And re-arming really does not duplicate the session.
-    Trigger.any_instance.unstub(:destroy_sibling_wakes!)
+    Trigger.any_instance.unstub(:destroy!)
     trigger.toggle!
 
     travel_to Time.zone.parse("2026-04-15 19:05:00 UTC") do
@@ -442,7 +442,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
       "the alert should link the trigger the user has to re-arm"
   end
 
-  test "destroys sibling wake triggers when one-time schedule fires" do
+  test "holds sibling wake triggers when one-time schedule fires, and retires them at the pause" do
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
 
@@ -495,9 +495,15 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
       ScheduleTriggerJob.perform_now
     end
 
-    assert_not Trigger.exists?(firing_trigger.id), "firing one-time trigger destroyed"
-    assert_not Trigger.exists?(sibling_needs_input.id), "ao_event sibling destroyed"
-    assert_not Trigger.exists?(sibling_deadline.id), "schedule sibling destroyed"
+    assert_not_nil firing_trigger.reload.wake_held_at, "firing one-time trigger held"
+    assert_not_nil sibling_needs_input.reload.wake_held_at, "ao_event sibling held"
+    assert_not_nil sibling_deadline.reload.wake_held_at, "schedule sibling held"
+
+    requester.reload.pause!
+
+    assert_not Trigger.exists?(firing_trigger.id), "firing one-time trigger retired with the turn"
+    assert_not Trigger.exists?(sibling_needs_input.id), "ao_event sibling retired"
+    assert_not Trigger.exists?(sibling_deadline.id), "schedule sibling retired"
   end
 
   test "does not destroy siblings when one-time trigger firing fails" do

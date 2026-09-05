@@ -5060,6 +5060,28 @@ windows are the only thing standing between "bounded table" and "history a perso
 constants on `Log` (`RETENTION`, `VERBOSE_RETENTION`) with no runtime override — changing them is a
 deploy, not a setting.
 
+## A held wake can fire into the turn it woke, if that turn runs long
+
+A fired one-time wake now [holds its group](/sessions/triggers/#wake-up-semantics) rather than
+destroying it, so an interrupted turn is not left with nothing. The group stays *fireable* for the
+duration of that turn, which is what makes it a rescue — and it means a member of it can fire while
+the turn is still running.
+
+Two shapes reach it. A deadline backstop set 15 minutes out, on a turn that takes 20. Or a watched
+session reaching a second state (`archived` after `needs_input`) while the requester is still working
+on the first. In both cases `Trigger#follow_up_session!` sees a `running` session and *queues* the
+prompt, so the turn is not interrupted — the requester simply takes one more turn afterwards, on a
+wake it would previously never have heard about.
+
+That extra turn is the deliberate trade. The alternative shape of the same race is worse and is what
+the old behaviour did: the requester re-arms a watcher for a transition that already happened, and
+sleeps on a wake that can never fire. `StrandedSleepRescue` catches that within ~20 minutes; nothing
+catches a wait the fleet has silently stopped waiting on.
+
+A held wake is also visible at `/triggers` as an ordinary enabled wake for the length of the turn.
+There is no "held" badge — the row is gone again once the turn comes to rest, and adding a UI state
+for a window measured in minutes was not worth the surface.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

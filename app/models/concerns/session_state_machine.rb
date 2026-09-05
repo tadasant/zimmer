@@ -45,6 +45,17 @@ module SessionStateMachine
   # Session#resume_for_system_recovery!.
   attr_accessor :system_recovery_resume
 
+  # True for exactly the resume a one-time WAKE caused — a `wake_me_up_later`
+  # deadline or a `wake_me_up_when_session_changes_state` watcher firing through
+  # Trigger#follow_up_session!.
+  #
+  # It selects the third branch of #cancel_pending_one_time_wake_triggers: hold
+  # the rest of the wake group rather than consuming it. A deliberate resume (a
+  # human follow-up, a restart, force_immediate) leaves this false and consumes
+  # as before, because a session someone deliberately woke has no wait left to
+  # protect. Transient, never persisted, cleared in an `ensure` by its one writer.
+  attr_accessor :wake_fire_resume
+
   # Metadata marker written alongside `pending_sleep` by the system-recovery
   # preserve branch. It means "sleep only if something is still armed to wake
   # you", and distinguishes that conditional intent from a deliberate sleep,
@@ -160,6 +171,16 @@ module SessionStateMachine
             enqueue_session_inference_if_needed
             enqueue_status_summary_refresh
           end
+          # Before execute_pending_sleep, which asks #armed_one_time_wake? whether
+          # a preserved re-sleep still has something to undo it. A wake this turn
+          # was woken by must not answer that question — it belongs to the wait
+          # that is now over.
+          #
+          # A RECOVERY pause is not a turn coming to rest, it is Zimmer admitting
+          # it interrupted one, and it is the exact case #569 is about: retiring
+          # the group here would re-open the no-trigger window at the one moment
+          # it must stay shut.
+          retire_held_wake_triggers unless recovery_pause?
           execute_pending_sleep
           # Last, and after execute_pending_sleep: a session that just went
           # dormant is not idling on its queue, it is asleep, and the check
@@ -290,6 +311,11 @@ module SessionStateMachine
           dismiss_notifications
           fire_ao_event_triggers("session_archived")
           cleanup_watched_session_ao_event_triggers
+          # The other side of the same bookkeeping: the wakes this session was
+          # itself waiting on. An archive is a rest like any other, so a group
+          # held across a turn is retired here rather than lingering as enabled
+          # rows against a session nobody will follow up into.
+          retire_held_wake_triggers
           set_trash_expiry
           # Same reasoning as on `fail`: a session trashed straight from
           # `needs_input` is one nobody comes back to, and the trash bookkeeping
@@ -1671,9 +1697,15 @@ module SessionStateMachine
   # which makes the firing path skip it. The trigger itself stays enabled (it
   # may have other conditions).
   #
-  # A system-recovery resume is the exception and takes the preserve branch: the
-  # session did not choose to wake, so its wake-ups are not moot. See
-  # #system_recovery_resume.
+  # Two resumes are exceptions, and both leave the wake-ups armed:
+  #
+  # - A SYSTEM-RECOVERY resume takes the preserve branch. The session did not
+  #   choose to wake, so its wake-ups are not moot. See #system_recovery_resume.
+  # - A WAKE-FIRE resume takes the hold branch. The wake-ups ARE moot, but only
+  #   once the woken turn has actually run — consuming them here, before it has,
+  #   is the no-trigger window of
+  #   https://github.com/tadasant/zimmer/issues/569. See
+  #   #hold_pending_one_time_wakes.
   #
   # Scoped to: conditions on triggers where this session is the reuse target,
   # that haven't fired yet, and that are one-time wake-ups — either a one-time
@@ -1687,6 +1719,7 @@ module SessionStateMachine
     return if conditions.empty?
 
     return preserve_pending_one_time_wakes(conditions) if system_recovery_resume
+    return hold_pending_one_time_wakes(conditions) if wake_fire_resume
 
     conditions.each do |condition|
       condition.update!(last_triggered_at: Time.current)
@@ -1701,7 +1734,9 @@ module SessionStateMachine
     # do alert: on the cancel branch an uncancelled one-time wake stays armed and
     # fires later against an already-active session, injecting a wake-up prompt
     # into live work; on the preserve branch a session that should have gone back
-    # to sleep comes to rest in needs_input instead.
+    # to sleep comes to rest in needs_input instead; on the hold branch the group
+    # is left armed and unmarked, so nothing retires it at the end of the turn and
+    # it fires into a later, unrelated wait.
     report_swallowed_side_effect(__method__, e, alert: true)
   end
 
@@ -1749,6 +1784,72 @@ module SessionStateMachine
         "#{backstopped ? 'returning to waiting after this turn' : 'no scheduled backstop, so this session will rest in needs_input'}",
       level: "info"
     )
+  end
+
+  # Hold this session's wake group across the turn a wake just woke it for.
+  #
+  # THE WINDOW THIS CLOSES (#569). A fired wake used to void the rest of its
+  # group at fire time, in two places at once: this callback consumed every
+  # pending one-time wake condition aimed at the session, and the firing job then
+  # destroyed the sibling trigger rows. Both ran BEFORE the woken turn had done
+  # anything. Re-arming is the woken turn's job and happens at the END of that
+  # turn, so between the fire and a successful re-arm the session held nothing at
+  # all — and a turn interrupted anywhere in there (deploy restart, killed
+  # process, transient failure) left it asleep with no wake, looking exactly like
+  # a session sleeping correctly. In the filed instance a 04:52 deadline backstop
+  # was voided by a 04:18 fire and the session sat inert until an orphan sweep
+  # found it 4.5 hours later.
+  #
+  # Holding leaves the conditions unfired and the triggers `enabled` — they can
+  # still fire, which is the whole point — and marks the trigger rows
+  # `wake_held_at` so #retire_held_wake_triggers knows which rows belong to the
+  # wait that just ended rather than to a wait the woken turn has since armed.
+  #
+  # What holding is NOT is a licence for a stale wake to survive its wait. The
+  # group is retired at the end of any turn that completes normally, which is the
+  # same moment the old code's destroy amounted to, one turn later.
+  def hold_pending_one_time_wakes(conditions)
+    trigger_ids = conditions.map(&:trigger_id).uniq
+    held_at = Time.current
+    Trigger.where(id: trigger_ids).where.not(status: "failed")
+           .update_all(wake_held_at: held_at, updated_at: held_at)
+
+    Rails.logger.info(
+      "[SessionStateMachine] Held #{conditions.size} pending one-time wake-up(s) across the woken " \
+      "turn of session #{id} (trigger_conditions #{conditions.map(&:id).join(', ')}) — they stay " \
+      "armed until this turn comes to rest"
+    )
+  end
+
+  # Retire the wake group a fire held across this turn.
+  #
+  # The other half of #hold_pending_one_time_wakes, and the half that keeps
+  # holding from becoming an accumulation of stale wakes. A turn that reached a
+  # normal rest is a turn that got to re-arm whatever it wanted; anything still
+  # carrying `wake_held_at` belongs to the wait that woke it and has no business
+  # firing into the next one. Wakes the turn armed for itself carry no mark and
+  # are untouched.
+  #
+  # A `failed` trigger is exempt for the same reason it is exempt everywhere else:
+  # it is the record of a wake that tried and could not, and it is the user's to
+  # clear.
+  def retire_held_wake_triggers
+    held = Trigger.where(last_session_id: id, reuse_session: true)
+                  .where.not(wake_held_at: nil)
+                  .where.not(status: "failed")
+    ids = held.pluck(:id)
+    return if ids.empty?
+
+    Trigger.where(id: ids).destroy_all
+    Rails.logger.info(
+      "[SessionStateMachine] Retired #{ids.size} held wake trigger(s) (#{ids.join(', ')}) for " \
+      "session #{id} — the turn they were held across has come to rest"
+    )
+  rescue => e
+    # Alert: swallowed, the held group stays armed with nothing left to retire it,
+    # and one of its members fires into whatever the session is doing next — the
+    # stale-wake regression that holding exists to avoid.
+    report_swallowed_side_effect(__method__, e, alert: true)
   end
 
   # Whether any one-time wake-up is still armed against this session — asked with

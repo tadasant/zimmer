@@ -22,12 +22,15 @@
 #
 #    Unlike (3), this ground can match a trigger a firing job is still working
 #    through: it goes true the instant ScheduleTriggerJob or AoEventTriggerJob
-#    advances last_triggered_at, which is before their own sibling cleanup and
-#    auto-delete run. That race is benign in both directions — delivery has
-#    already happened by then, #destroy_sibling_wakes! reads last_session_id off
-#    an in-memory trigger rather than re-finding the row, and a #destroy! of a row
-#    this job already deleted affects zero rows without raising. Losing the race
-#    just means this job did the auto-delete the firing job was about to do.
+#    advances last_triggered_at, which is before their own #hold_wake_group! call
+#    runs. That race is benign in both directions — delivery has already happened
+#    by then, #hold_wake_group! reads last_session_id off an in-memory trigger
+#    rather than re-finding the row, and an UPDATE of a row this job already
+#    deleted affects zero rows without raising. Losing the race just means this
+#    job collected a fully-spent wake before its requester got round to retiring
+#    it. A wake that is HELD but not spent — the watcher whose other two events
+#    are still armed — fails this ground, which is what keeps holding from being
+#    undone by the hourly sweep.
 # 3. Lapsed one-time schedules — every condition is a one-time schedule whose
 #    scheduled_at is more than 1 hour in the past. ScheduleTriggerJob should have
 #    destroyed these on its next tick; if they linger, something went wrong.
