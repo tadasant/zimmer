@@ -56,6 +56,15 @@
 # empty directory" — which `transient_clone_error?` does not classify as
 # transient, turning a retryable clone failure into a permanent session failure.
 # Those paths call `AtomicCloneRemoval.remove` directly, and must keep doing so.
+# They also have no transcript to reap: nothing has been spawned in a clone that
+# is being rolled back before it was ever handed to a session.
+#
+# What else goes with the clone
+# -----------------------------
+# The runtime's transcript directory (`~/.claude/projects/<derived-from-cwd>`),
+# via TranscriptDirectoryReaper. It is on a different volume, it is named for a
+# path that stops existing the moment the clone does, and so it is only ever
+# deletable from here — see zimmer#434 and the reaper's own header.
 module CloneReaper
   module_function
 
@@ -79,7 +88,19 @@ module CloneReaper
       return :refused
     end
 
-    AtomicCloneRemoval.remove(path, file_system: file_system) ? :removed : :absent
+    outcome = AtomicCloneRemoval.remove(path, file_system: file_system) ? :removed : :absent
+
+    # The clone's transcript directory lives on a different volume (`claude_home`,
+    # not `zimmer_data`) and is named for the cwd the runtime was spawned from, so
+    # once this directory is gone nothing left on the box can derive that name
+    # (zimmer#434). It has to go here, in the same breath as the clone, or it
+    # never goes at all.
+    #
+    # After the removal, not before: if the removal is refused above we must not
+    # have deleted the transcript of a session that still owns its clone.
+    TranscriptDirectoryReaper.reap_for_clone(path) if outcome == :removed
+
+    outcome
   end
 
   # The still-protected session that owns `path`, re-read from the database right
