@@ -144,8 +144,8 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 | `POST` | `/sessions/:id/refresh` | re-read transcript from disk. A shorter filesystem transcript never overwrites a longer stored one — that happens when the clone was recreated at a new path, and the stored history wins |
 | `POST` | `/sessions/refresh_all` | → `{message, refreshed, restarted, continued, errors}`. Max 50 restarts/continues. Sessions in a frozen category are parked and excluded |
 | `POST` | `/sessions/bulk_archive` | `session_ids[]` → `archived_count` and any `errors`. A session with a queued message lands in `errors` and is left alone; `force: true` applies to the whole batch, not one member of it |
-| `PATCH` | `/sessions/:id/mcp_servers` | max 50, validated against the catalog. Replaces the set; `[]` clears it and is recorded as deliberate, so the [backfill](/air/agent-roots/#a-list-you-pass-replaces-the-roots-defaults) does not restore the root's defaults |
-| `PATCH` | `/sessions/:id/catalog_skills` · `/catalog_hooks` · `/catalog_plugins` | max 100 / 100 / 50 |
+| `PATCH` | `/sessions/:id/mcp_servers` | max 50, validated against the catalog. Replaces the set; `[]` clears it and is recorded as deliberate, so the [backfill](/air/agent-roots/#a-list-you-pass-replaces-the-roots-defaults) does not restore the root's defaults. Takes effect on the session's next prepare — see [Changing a session's artifacts takes effect on its next prepare](#changing-a-sessions-artifacts-takes-effect-on-its-next-prepare) |
+| `PATCH` | `/sessions/:id/catalog_skills` · `/catalog_hooks` · `/catalog_plugins` | max 100 / 100 / 50, validated against the catalog. Replaces the set; same next-prepare rule |
 | `PATCH` | `/sessions/:id/model` | validated against `ModelCatalog` for the session's runtime |
 | `PATCH` | `/sessions/:id/notes` | `session_notes` ≤ 50,000; empty string clears |
 | `PATCH` | `/sessions/:id/heartbeat` | `enabled` and/or `interval_seconds` (30–86,400, default 60); omit either to leave it unchanged |
@@ -161,6 +161,32 @@ left half-queued, and the call answers 404, 409, 422, or 500.
 
 `goal` on `follow_up` lands on every path — see
 [Following up, and the `goal` that rides along](#following-up-and-the-goal-that-rides-along) below.
+
+### Changing a session's artifacts takes effect on its next prepare
+
+The four artifact endpoints — `PATCH /sessions/:id/mcp_servers`, `/catalog_skills`,
+`/catalog_hooks`, `/catalog_plugins` — persist the new list and stop there. They do **not** rewrite
+the session's runtime config in its clone. The change lands the next time that config is prepared:
+the session's next turn, a restart, or an unarchive, each of which re-runs AIR against the clone.
+
+One rule covers all four endpoints, the same four editors in the web UI, and `action_session`'s
+`change_mcp_servers` / `change_skills` / `change_hooks` / `change_plugins` on the [MCP
+server](/extend/mcp-server/). The same request means the same thing whichever door it comes through.
+
+Regenerating on the write buys nothing. A running agent has already launched its MCP servers, so
+rewriting `.mcp.json` underneath it changes nothing about that process, and an idle session
+re-prepares before its next turn anyway — while the regeneration itself is a shell-out inside the
+request.
+
+**So a change does not reconfigure a live process.** To make one take effect immediately, restart
+the session.
+
+`mcp_servers` and `catalog_plugins` are the two lists that can bring in an MCP server, so those two
+responses also carry `oauth_required` and `oauth_required_servers`. When a newly selected server has
+no usable token, Zimmer parks the session (`failure_reason: "oauth_required"`) so the Authorize
+buttons appear on its page — those two fields are how a REST caller knows that is why the status
+moved. A session that is mid-turn is never parked this way; its already-running process cannot see
+the change either way.
 
 ### Board visibility
 

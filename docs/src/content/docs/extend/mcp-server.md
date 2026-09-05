@@ -456,9 +456,17 @@ config-editing actions — `change_mcp_servers`, `change_model`, `change_skills`
 (`mcp_servers`, `skills`, `hooks`, `plugins`) use **replace, not merge** semantics, and every id is
 validated against its catalog, so an unknown skill/hook/plugin id is rejected with the valid options
 listed rather than persisted (a bad value would otherwise fail AIR prepare on the next unarchive).
-Like `change_mcp_servers`, these persist to the session and take effect the next time its runtime
-config is prepared — they do not hot-reconfigure a running process. An empty array is a value, not
-an absence, on both sides of a session's life: `change_mcp_servers` with `[]` clears the list, and
+
+All four persist to the session and take effect the next time its runtime config is prepared — the
+session's next turn, a restart, or an unarchive. They do not hot-reconfigure a running process, and
+neither do the web UI's editors or the [REST endpoints](/extend/rest-api/#changing-a-sessions-artifacts-takes-effect-on-its-next-prepare):
+one rule, whichever door the request comes through. Rewriting `.mcp.json` under a live agent would
+change nothing anyway — the CLI launches its MCP servers when the process starts. To make a change
+take effect immediately, restart the session.
+
+**`change_mcp_servers` and `change_plugins` can move the target session's status, and that is deliberate.** Those two are the lists that can bring in an MCP server, so both probe the newly selected set for one nobody has authorized yet. When there is one, the answer names it under **Needs authorization** and the session is moved to `failed` with `failure_reason: "oauth_required"` — which is what puts the Authorize buttons on its page for a human. A session that is currently *running* is never moved this way: its already-spawned process cannot see the change either way, and killing a live turn over a config edit would be worse than waiting. Read a `failed` status after one of these calls as "a human has to authorize something", not as a crash.
+
+An empty array is a value, not an absence, on both sides of a session's life: `change_mcp_servers` with `[]` clears the list, and
 `start_session` with `[]` launches with none — the same request means the same thing at launch time
 and at change time. `start_session` names the same four lists (`mcp_servers`, `skills`, `plugins`,
 `hooks`), so a hook that is noise for the task is dropped at launch rather than corrected by a
