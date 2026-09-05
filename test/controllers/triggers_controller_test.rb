@@ -1379,4 +1379,36 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_equal "STRAD_STAGING_API_KEY unresolved", unseeded["unavailable_reason"]
     assert_equal false, servers.find { |s| s["name"] == "context7" }["unavailable"]
   end
+
+  # zimmer#853's other half. The heal keeps a name the catalog stopped
+  # resolving, and the form is where an operator meets it — so the form's
+  # control posts it back (see `preserve_unknown` on the select controllers) and
+  # the server has to accept that round-trip. If it did not, an edit to some
+  # other field would silently delete the very name the alert told them to remap.
+  test "an unresolvable MCP server survives an edit that posts it back unchanged" do
+    ServersConfig.stubs(:exists?).returns(true)
+    ServersConfig.stubs(:exists?).with("slack-workspace").returns(false)
+    @trigger.update_column(:mcp_servers, [ "keeper", "slack-workspace" ])
+
+    patch trigger_path(@trigger), params: {
+      trigger: { name: "Renamed by the operator", mcp_servers: [ "keeper", "slack-workspace" ] }
+    }
+
+    @trigger.reload
+    assert_equal "Renamed by the operator", @trigger.name
+    assert_equal [ "keeper", "slack-workspace" ], @trigger.mcp_servers
+  end
+
+  # ...and taking it off is still how a DELETION is repaired. The operator's
+  # judgement is the whole point: the heal cannot tell a rename from a removal,
+  # so it defers, and this is the deferral being exercised.
+  test "an unresolvable MCP server is removed when the operator omits it" do
+    ServersConfig.stubs(:exists?).returns(true)
+    ServersConfig.stubs(:exists?).with("slack-workspace").returns(false)
+    @trigger.update_column(:mcp_servers, [ "keeper", "slack-workspace" ])
+
+    patch trigger_path(@trigger), params: { trigger: { mcp_servers: [ "keeper" ] } }
+
+    assert_equal [ "keeper" ], @trigger.reload.mcp_servers
+  end
 end

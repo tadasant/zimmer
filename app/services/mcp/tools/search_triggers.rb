@@ -268,7 +268,26 @@ module Mcp
       # only view built for scanning many triggers, so leaving this out of it made
       # the answer cost one by-id call per trigger (#858).
       def mcp_servers_summary(trigger)
-        trigger.mcp_servers.presence&.join(", ") || "(none)"
+        names = catalog_names_with_unresolvable_marked(trigger, :mcp_servers)
+        names.presence&.join(", ") || "(none)"
+      end
+
+      # The names as configured, with the ones a fire has found the catalog
+      # cannot resolve marked. A reference the catalog stopped carrying is KEPT
+      # on the trigger and filtered out of the sessions it spawns (zimmer#853),
+      # so without the marker a broken reference reads here exactly like a
+      # working one — and this is the view a catalog-rename audit scans.
+      #
+      # Read from the trigger's own `unresolved_catalog_references`, which the
+      # heal writes, rather than by asking the catalog per name: this renders a
+      # whole list of triggers and a per-name catalog lookup would not be free.
+      # It therefore reports what fires have actually found, so a trigger that
+      # has not fired since the rename shows nothing yet.
+      def catalog_names_with_unresolvable_marked(trigger, attribute)
+        unresolvable = (trigger.unresolved_catalog_references || {})[attribute.to_s] || {}
+        trigger.public_send(attribute).map do |name|
+          unresolvable.key?(name) ? "#{name} (⚠ not in catalog)" : name
+        end
       end
 
       # The by-id view only: what a trigger equips the sessions it spawns with.
@@ -277,7 +296,7 @@ module Mcp
       # that is what Session.create_from_agent_root! does with it.
       def catalog_lists_summary(trigger)
         %i[catalog_skills catalog_hooks catalog_plugins].map do |attribute|
-          list = trigger.public_send(attribute).presence
+          list = catalog_names_with_unresolvable_marked(trigger, attribute).presence
           "#{attribute.to_s.delete_prefix('catalog_')}: #{list ? list.join(', ') : '(agent root defaults)'}"
         end.join(" | ")
       end

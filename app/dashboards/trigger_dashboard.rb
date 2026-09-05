@@ -12,6 +12,12 @@ class TriggerDashboard < Administrate::BaseDashboard
     catalog_skills: Field::String.with_options(searchable: false),
     catalog_plugins: Field::String.with_options(searchable: false),
     catalog_hooks: Field::String.with_options(searchable: false),
+    # What the fire-time heal could not resolve in the four columns above, and
+    # when it first could not: `{"mcp_servers" => {"slack-workspace" => "..."}}`.
+    # Bookkeeping, so one unresolvable name is announced once rather than on
+    # every fire — the name itself stays in its own column. Read-only here; the
+    # heal owns it.
+    unresolved_catalog_references: Field::String.with_options(searchable: false),
     goal: Field::Text,
     prompt_template: Field::Text,
     # How the sessions this trigger spawns are scheduled. `scheduling_class` is

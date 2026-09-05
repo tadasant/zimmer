@@ -30,7 +30,7 @@ flowchart LR
     GL -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
     GI -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
 
-    T --> H["heal stale catalog refs<br/>(agent root repointed, never raised)"]
+    T --> H["reconcile catalog refs<br/>(unresolvable ones kept but filtered;<br/>agent root repointed, never raised)"]
     H --> D{"reuse_session?"}
     D -->|"yes + session is<br/>needs_input/running/waiting"| FU["follow_up_session!"]
     D -->|"resuscitate_archived<br/>+ archived<br/>+ the session started"| RS["unarchive + follow up"]
@@ -1231,24 +1231,76 @@ and the `action_trigger` MCP tool alike. The check is scoped to the column that 
 persisted before a name went stale still saves when the edit is to some other column — otherwise the
 catalog moving would lock an operator out of editing anything else about the trigger.
 
-**Healed at fire** is what cleans those up. `Trigger#heal_catalog_references!` runs at the top of
-`#create_session!`, on the reuse path as well as the spawn path — `#follow_up_session!` syncs all
-four columns onto the reused session, so a stale name is load-bearing either way. It drops the names
-the catalog no longer knows, `update_column`s the survivors so the next fire does not re-discover
-them, and raises one deduped alert per artifact kind naming what it removed and what remains.
+**Healed at fire** is what keeps a fire working when one of them stops resolving.
+`Trigger#heal_catalog_references!` runs at the top of `#create_session!`, on the reuse path as well
+as the spawn path — `#follow_up_session!` syncs all four columns onto the reused session, so an
+unresolvable name is load-bearing either way.
+
+It is **not destructive**, and that is the whole of
+[#853](https://github.com/tadasant/zimmer/issues/853). A name the catalog cannot resolve is *kept on
+the trigger*; the fire filters it out in memory and spawns from `resolvable_<column>`, so the
+session never receives a name the catalog does not know, and the trigger never loses one:
+
+| | What happens |
+| --- | --- |
+| The trigger row | Untouched. The name the operator wrote stays written. |
+| The session it spawns | Gets only the names the catalog resolves — a genuinely deleted artifact is dropped from the *session*, which is where dropping it is right. |
+| `unresolved_catalog_references` | Records which names are unresolvable and when each was first seen that way. Bookkeeping, so the alert fires **once** and not once per fire. |
+| The alert | One deduped `#eng-alerts` notice per artifact kind, naming what does not resolve, what still does, and the two repairs — remap a rename, remove a deletion. |
+
+The heal used to `update_column` the survivors instead. A catalog **rename** is indistinguishable
+from a deletion here — the old slug simply stops resolving — and renames are far the commoner of the
+two, so the destructive reading lost the one piece of information needed to repair the row. When
+`slack-workspace` became `slack-zimmer` on 2026-09-03, six live triggers were stripped of Slack one
+fire at a time over the following hours, and each name survived only in the alert that announced its
+deletion. Keeping it means a reverted rename or a re-added artifact also *fixes itself* on the next
+fire, with no edit at all.
+
+What the heal deliberately does **not** do is decide which repair was meant. Unlike
+`agent_root_name`, which has a `git_root` + subdirectory match to find its successor with, nothing
+here can tell a rename from a deletion, so the row is left mid-repair for an operator's judgement.
 
 Healing **skips entirely when a catalog resolves empty**. A catalog that fails to load leaves the
 config facade an empty list ([#112](https://github.com/tadasant/zimmer/issues/112)), and against an
-empty catalog every reference looks stale — healing on that reading would strip all four columns on
-every trigger in the deployment. An empty catalog is never evidence that a reference is gone.
+empty catalog every reference looks stale — healing on that reading would page once per trigger and
+hand every session an empty list. An empty catalog is never evidence that a reference is gone, so
+the column passes through untouched and a spawn fails loudly on it instead.
 
-That guard is narrower than it reads, and this is the limit of what it buys. A *degraded* resolve
-usually leaves the facade non-empty: `AirCatalogService` serves a last-known-good tree, which can
-predate a rename, so a name that is perfectly valid today can still look stale to a fire. The
-session-side scrub in `AirPrepareService#scrubbed_catalog_skills` refuses to persist a drop while
-`AirCatalogService.degraded?` for exactly that reason; the trigger heal has never made that second
-check, and a heal that drops a renamed reference does not repoint it —
-[#853](https://github.com/tadasant/zimmer/issues/853) covers both.
+A *degraded* resolve is the softer version of the same problem, and it gets the softer answer.
+`AirCatalogService` serves a last-known-good tree, which can predate a rename, so a name that is
+perfectly valid today can still look unresolvable to a fire. While `AirCatalogService.degraded?` the
+heal still filters in memory — the fire has to spawn something — but records nothing and announces
+nothing, which is the same call the session-side scrub in
+`AirPrepareService#scrubbed_catalog_skills` makes before persisting a drop.
+
+**Where an operator meets it.** Keeping the name is only worth anything if the surfaces show it, so
+each one marks an unresolvable reference rather than rendering it like a working one:
+
+- the **trigger page** renders it as a red `name (not in catalog)` chip;
+- the **edit form**'s server/skill/hook/plugin controls pre-select it, marked the same way, and post
+  it back — the form submits the whole list, so a control that dropped the name would delete it from
+  the row on the next unrelated save, which is the destruction this issue is about wearing a
+  different hat. Removing that chip is how a **deletion** is repaired; replacing it with the new
+  name is how a **rename** is. Adding a server while leaving the unresolvable chip in place is
+  refused at save with `contains invalid server(s): …`, because at that point the column *has*
+  changed and the save-time validation applies;
+- `GET /api/v1/triggers/:id` carries `unresolved_catalog_references`, and `search_triggers` marks
+  the name inline in both its list and by-id views — the view a catalog-rename audit scans.
+
+All of those read the recorded bookkeeping rather than asking the catalog per name, so they report
+what fires have found: a trigger that has not fired since the rename shows nothing yet.
+
+**The alert is announced once; the log line is not.** Every fire that finds an unresolvable
+reference writes a `WARN` naming it, whether or not that fire announces it. `AlertService` throttles
+a repeated dedup key for an hour and swallows an alert outright when alerting is off, so the alert
+alone is not a durable record — and the alert's dedup key carries a digest of *which* names are
+unresolvable, so a second artifact going missing inside that hour is a new key rather than a
+suppressed duplicate.
+
+**A trigger whose whole list stops resolving takes the agent root's defaults**, because
+`Session.create_from_agent_root!` reads an empty list as "no opinion" — the same thing that happened
+before this change, when the heal emptied the column. It is worth knowing that the trigger page can
+therefore show a server the fire is not using.
 
 The four columns are declared once each, on both `Trigger` and `Session`, by the
 `CatalogArtifactReferences` concern; the validators and the heal are generated from those
@@ -1447,7 +1499,7 @@ A trigger does not have to wait for a condition. All three surfaces can fire one
 
 All three go through `Triggers::ManualFire` into `Trigger#create_session!`, the same chokepoint a
 poller-driven fire uses. So a manual fire is a real fire: the session is linked to the trigger,
-counts toward its fire counter, heals stale catalog references (the [agent root only where it is
+counts toward its fire counter, reconciles the catalog references (the [agent root only where it is
 actually used](#the-agent-root-is-resolved-only-where-it-is-used)), reuses the target session if the
 trigger is a reuse trigger, and is subject to the [burst cap](#burst-control) — over it, you get a
 burst-notice session or nothing at all, and each surface says which.
