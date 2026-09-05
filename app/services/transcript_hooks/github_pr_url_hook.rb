@@ -271,17 +271,29 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # a session that dies mid-turn, or is trashed straight from `needs_input`,
   # would otherwise be recorded nowhere at all (#313).
   #
+  # Not every `pause` is a hand-back, and the ones that are not do not call this.
+  # A recovery pause is Zimmer restarting its own interrupted process — a deploy,
+  # a re-picked job row — and the session is resumed from it within seconds by a
+  # sweep that promised to. The state machine defers the call there on the same
+  # test it defers the pause's wake and push on
+  # (SessionStateMachine#announcement_deferred_to_recovery_sweep?), and
+  # SessionContinuation makes it when that promise expires.
+  #
   # `failed` and `archived` are not literally terminal — `resume` runs from
   # `failed` and `unarchive_to_*` from `archived` — so this shares `pause`'s
   # point-in-time honesty: the warning states what was true when it was written
   # ("no PR URL yet") and is never retracted if the session is revived and does
   # open one.
   #
-  # Repeats are the dedup guard's job, not the call site's. The guard below
-  # looks for an existing MISSING_PR_URL_WARNING_MARKER log on the session, so
-  # every call site shares one budget of one warning per session: a session that
-  # pauses, warns, and later archives says it once. That is why adding call
-  # sites costs nothing in timeline spam.
+  # Repeats are the dedup guard's job; *which* rest state spends the budget is
+  # the call site's. The guard below looks for an existing
+  # MISSING_PR_URL_WARNING_MARKER log on the session, so every call site shares
+  # one budget of one warning per session: a session that pauses, warns, and
+  # later archives says it once. Adding a call site therefore costs nothing in
+  # timeline spam — but a call site that fires at a moment the session is not
+  # actually at rest costs the whole budget, and the warning it writes is stale
+  # by the time it is true. That is #558, and it is why the call sites are the
+  # rest states rather than the transitions: one budget only buys one shot.
   #
   # Never raises: a warning that breaks a state transition would be worse than
   # the thing it warns about — and on `fail` and `archive` it would break a
