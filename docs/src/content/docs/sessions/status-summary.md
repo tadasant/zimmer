@@ -112,9 +112,16 @@ would go and do that.
 ### The fork takes exactly one turn
 
 The summary request is the only prompt a fork will run, and `AgentSessionJob` refuses every other
-one — logging the refusal on the fork's timeline and bringing it to rest so the harvest still lifts
-whatever it did answer. The refusal is in the job rather than at each sender because roughly a dozen
-paths can resume a session and all of them arrive there.
+one, logging the refusal on the fork's timeline. The refusal is in the job rather than at each
+sender because roughly a dozen paths can resume a session and all of them arrive there.
+
+Refusing is not standing down. A `running` fork is paused, which is its own completion signal, so
+the harvest still lifts whatever it did answer — both incidents below had written their blurb before
+the nudge landed. A `waiting` fork is the one resting state that harvests nothing, so the refusal
+enqueues the harvest itself rather than leave the fork asleep forever holding its clone. A fork
+already in `needs_input` is left exactly where it is: one that ran enqueued its harvest from that
+transition, and one that never ran is the abandoned-fork sweep's, whose predicate waits for evidence
+rather than guessing.
 
 The reason is the same one that strips the inherited goal, arriving from the other direction. A fork
 holds a **copy of another session's conversation**, and Zimmer's recovery machinery — the quota-park

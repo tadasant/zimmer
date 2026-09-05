@@ -195,8 +195,8 @@ class AgentSessionJobUndeliveredTurnTest < ActiveJob::TestCase
     @session.merge_metadata!(SessionStatusSummaryGenerator::FORK_MARKER => 4242)
 
     # The summary request, because that is the only turn a fork gets: every other
-    # prompt is refused before the runtime now, so a fork could not reach `air
-    # prepare` carrying one. See AgentSessionJob#refuse_non_summary_fork_turn.
+    # prompt is refused before the runtime, so a fork cannot reach `air prepare`
+    # carrying one. See AgentSessionJob#refuse_non_summary_fork_turn.
     deliver_follow_up_that_dies_at_air_prepare(
       prompt: "#{SessionStatusSummaryGenerator::FORK_PROMPT_OPENING} (#4242). It is read at a glance."
     )
