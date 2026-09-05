@@ -3,8 +3,8 @@ require "test_helper"
 # Direct coverage for the scaffolding the four recovery services share.
 #
 # The four services exercise it end to end in their own tests; this file pins the
-# pieces those tests reach only incidentally — the log sentences every service now
-# emits, and the long-delay slicing that a service with a short delay never enters.
+# pieces those tests reach only incidentally — the log sentences all four share, and
+# the long-delay slicing that a service with a short delay never enters.
 class RespawnScaffoldTest < ActiveSupport::TestCase
   # A minimal host: the readers the module requires, plus its label.
   class TestHost
@@ -73,7 +73,9 @@ class RespawnScaffoldTest < ActiveSupport::TestCase
                         on_sleep: ->(seconds) { travel_to(Time.current + seconds, with_usec: true) })
 
     assert host.verify(4242, 1)
-    assert_equal RespawnScaffold::SUCCESS_THRESHOLD, host.slept.sum
+    # Ten half-second checks, not one early return: success is only declared after the
+    # full stretch. Literals rather than the constant, so a broken threshold fails here.
+    assert_equal [ 0.5 ] * 10, host.slept
     assert_empty logged
   end
 
@@ -111,6 +113,14 @@ class RespawnScaffoldTest < ActiveSupport::TestCase
 
   test "wait_with_status_checks sleeps a short delay in one go and checks once at the end" do
     assert_nil @host.wait(30)
+    assert_equal [ 30 ], @host.slept
+  end
+
+  test "wait_with_status_checks aborts a short delay when the session stopped running" do
+    # The only branch AuthRecoveryService ever takes, since its RETRY_DELAY is 2.
+    @session.update!(status: :needs_input)
+
+    assert_equal :aborted, @host.wait(30)
     assert_equal [ 30 ], @host.slept
   end
 
