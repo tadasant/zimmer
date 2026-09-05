@@ -391,6 +391,30 @@ two constants is ever summarised (`repos`, `labels`, `exclude_labels` and `allow
 included), and a large configuration with no high-cardinality poller state is still printed in full.
 `GET /api/v1/triggers/:id` serves every cursor exactly for a caller that needs the values.
 
+`action_trigger` also sets what a trigger's *sessions* get, not only when it fires:
+`catalog_skills`, `catalog_hooks` and `catalog_plugins` are the AIR-catalog lists stamped onto every
+session it spawns, and each id is validated against the catalog exactly as `action_session`'s
+`change_skills` / `change_hooks` / `change_plugins` validate theirs — an unknown id is rejected with
+the valid ones listed, rather than persisted and left to break the next spawn. A key you do not
+send is left alone.
+
+**An empty list is not "none".** `Session.create_from_agent_root!` resolves each list as
+`catalog_skills.presence || agent_root.default_skills`, and a fire onto a *re-used* session skips
+the sync entirely (`Trigger#sync_session_artifact!` refuses to let an empty trigger list strip a
+live session's artifacts — the session-9563 incident). So a trigger with `catalog_skills: []` spawns
+sessions carrying the agent root's default skills, not sessions carrying none. Sending `[]` resets
+the trigger to saying nothing about that artifact; there is no way to spell "spawn with no skills at
+all" from here. `search_triggers` and `action_trigger` both render an empty list as
+`(agent root defaults)` for that reason.
+
+`enqueue_messages` and `resuscitate_archived` both require `reuse_session`, and the tool **rejects**
+them without it rather than accepting a value the model then clears
+(`clear_enqueue_messages_without_reuse_session` runs before the paired validation, so a `save` with
+either one set and reuse off succeeds silently). That silence is what the rejection is for: with
+`enqueue_messages` off, a fire that lands on a still-running session is
+[dropped](/sessions/triggers/#coalescing-a-repeated-fire), which is exactly the failure a session is
+usually sent to `action_trigger` to fix. Send `reuse_session: true` in the same call, or drop the flag.
+
 `action_trigger`'s `invoke` fires a trigger now, without waiting for a condition to match — the MCP
 half of `POST /api/v1/triggers/:id/invoke`, and the same fire the **Run Now** button on the trigger
 page performs. Pass `variables` to fill in the template's placeholders. The session is linked to the

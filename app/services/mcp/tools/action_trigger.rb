@@ -221,6 +221,19 @@ module Mcp
           status: { type: "string", enum: STATUSES, description: "Trigger status." },
           goal: { type: "string", description: "Goal for triggered sessions." },
           reuse_session: { type: "boolean", description: "Whether to reuse existing sessions." },
+          enqueue_messages: {
+            type: "boolean",
+            description: "Requires reuse_session. When the reused session is still running, queue the fire's " \
+                         "prompt for it to pick up instead of dropping the fire on the floor. Default false, " \
+                         "which means a fire that lands on a busy session is discarded. Rejected — not " \
+                         "silently ignored — when reuse_session is off."
+          },
+          resuscitate_archived: {
+            type: "boolean",
+            description: "Requires reuse_session. When the reused session has been archived, unarchive it and " \
+                         "deliver the fire rather than skipping. Default false. Rejected — not silently " \
+                         "ignored — when reuse_session is off."
+          },
           skip_if_pending_session: {
             type: "boolean",
             description: "When true, the trigger spawns nothing while a session it already created is still " \
@@ -247,6 +260,28 @@ module Mcp
             type: "array",
             items: { type: "string" },
             description: "MCP servers for triggered sessions."
+          },
+          catalog_skills: {
+            type: "array",
+            items: { type: "string" },
+            description: "Catalog skill IDs for the sessions this trigger spawns. Replaces the list, never " \
+                         "merges; an omitted key leaves it alone. Unknown IDs are rejected — call get_configs " \
+                         "for the valid ones. [] does NOT mean \"no skills\": an empty list means the trigger " \
+                         "says nothing about skills, so a spawned session takes the agent root's defaults and " \
+                         "a re-used session keeps what it has."
+          },
+          catalog_hooks: {
+            type: "array",
+            items: { type: "string" },
+            description: "Catalog hook IDs for the sessions this trigger spawns. Same replace semantics, " \
+                         "unknown-ID rejection, and empty-means-root-defaults rule as catalog_skills."
+          },
+          catalog_plugins: {
+            type: "array",
+            items: { type: "string" },
+            description: "Catalog plugin IDs for the sessions this trigger spawns. Same replace semantics, " \
+                         "unknown-ID rejection, and empty-means-root-defaults rule as catalog_skills. Not " \
+                         "settable on a connection restricted to specific agent roots."
           },
           variables: {
             type: "object",
@@ -324,20 +359,29 @@ module Mcp
         enforce_allowed_root!(args["agent_root_name"])
         reject_conflicting_condition_args!(args)
 
-        trigger = Trigger.new(
+        reuse_session = args.fetch("reuse_session", false)
+        reject_reuse_dependent_flags!(args, reuse_session)
+
+        attributes = {
           name: args["name"],
           agent_root_name: args["agent_root_name"],
           prompt_template: args["prompt_template"],
           status: args["status"].presence || "enabled",
           goal: args["goal"],
-          reuse_session: args.fetch("reuse_session", false),
+          reuse_session: reuse_session,
+          # `|| false` as well as the fetch default: an explicit JSON null would
+          # otherwise reach a NOT NULL column as nil and raise past ToolError.
+          enqueue_messages: args.fetch("enqueue_messages", false) || false,
+          resuscitate_archived: args.fetch("resuscitate_archived", false) || false,
           skip_if_pending_session: args.fetch("skip_if_pending_session", false),
           max_sessions_per_minute: max_sessions_per_minute_for(args),
           scheduling_class: args["scheduling_class"].presence,
           precedence: trigger_precedence(args),
           mcp_servers: args["mcp_servers"] || [],
           trigger_conditions_attributes: created_condition_attributes(args)
-        )
+        }.merge(catalog_list_attributes(args))
+
+        trigger = Trigger.new(attributes)
         trigger.save!
 
         <<~TEXT.strip
@@ -348,6 +392,8 @@ module Mcp
           - **Conditions:** #{condition_types_summary(trigger)}
           - **Status:** #{trigger.status}
           - **Agent Root:** #{trigger.agent_root_name}
+          - **Reuse Session:** #{trigger.reuse_session ? 'yes' : 'no'} (enqueue messages: #{trigger.enqueue_messages ? 'yes' : 'no'}, resuscitate archived: #{trigger.resuscitate_archived ? 'yes' : 'no'})
+          - **Skills / Hooks / Plugins:** #{catalog_lists_summary(trigger)}
           - **Skip While Pending:** #{trigger.skip_if_pending_session ? 'yes' : 'no'}
           - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
           - **Scheduling Class:** #{scheduling_class_summary(trigger)}
@@ -389,6 +435,14 @@ module Mcp
         attributes[:status] = args["status"] if args["status"].present?
         attributes[:goal] = args["goal"] if args.key?("goal")
         attributes[:reuse_session] = args["reuse_session"] if args.key?("reuse_session")
+        # Both of these are cleared by the model when reuse_session is off, so a
+        # caller that set one without it would be told "updated" and get nothing —
+        # and for enqueue_messages "nothing" means every fire onto a busy session
+        # is dropped. Rejected up front instead.
+        effective_reuse = args.key?("reuse_session") ? args["reuse_session"] : trigger.reuse_session
+        reject_reuse_dependent_flags!(args, effective_reuse)
+        attributes[:enqueue_messages] = args["enqueue_messages"] if args.key?("enqueue_messages")
+        attributes[:resuscitate_archived] = args["resuscitate_archived"] if args.key?("resuscitate_archived")
         attributes[:skip_if_pending_session] = args["skip_if_pending_session"] if args.key?("skip_if_pending_session")
         # An explicit null clears the cap (back to unbounded); an omitted key means "no opinion".
         attributes[:max_sessions_per_minute] = args["max_sessions_per_minute"].presence if args.key?("max_sessions_per_minute")
@@ -400,6 +454,7 @@ module Mcp
         # Only assign artifact lists the caller actually sent: an omitted key means
         # "no opinion", never "clear the trigger's servers".
         attributes[:mcp_servers] = args["mcp_servers"] if args["mcp_servers"].is_a?(Array)
+        attributes.merge!(catalog_list_attributes(args))
 
         reject_conflicting_condition_args!(args)
 
@@ -418,6 +473,8 @@ module Mcp
           - **ID:** #{trigger.id}
           - **Name:** #{trigger.name}
           - **Status:** #{trigger.status}
+          - **Reuse Session:** #{trigger.reuse_session ? 'yes' : 'no'} (enqueue messages: #{trigger.enqueue_messages ? 'yes' : 'no'}, resuscitate archived: #{trigger.resuscitate_archived ? 'yes' : 'no'})
+          - **Skills / Hooks / Plugins:** #{catalog_lists_summary(trigger)}
           - **Skip While Pending:** #{trigger.skip_if_pending_session ? 'yes' : 'no'}
           - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
           - **Scheduling Class:** #{scheduling_class_summary(trigger)}
@@ -490,6 +547,85 @@ module Mcp
         # tool error it can act on; an unresolvable agent root must too, rather
         # than escaping as a protocol-level error the model never sees.
         raise ToolError, "Invalid agent_root: #{e.message}"
+      end
+
+      # `enqueue_messages` and `resuscitate_archived` only mean anything on a
+      # trigger that re-uses a session, and the model enforces that by CLEARING
+      # them (`clear_enqueue_messages_without_reuse_session`) before the paired
+      # validation ever runs. So a `save!` with either one set and reuse_session
+      # off succeeds, and the flag the caller asked for is simply gone.
+      #
+      # That is the wrong answer for a machine surface. For `enqueue_messages`
+      # especially: with it off, a fire that lands on a still-running session is
+      # dropped (Trigger#follow_up_session! returns :dropped), which is silent —
+      # the exact failure an agent is usually sent here to fix. Say no instead.
+      # Cast rather than test truthiness: "false" and 0 are truthy in Ruby and
+      # falsey to ActiveRecord, so a bare `if args[flag]` would wave through
+      # exactly the values the model then clears.
+      def reject_reuse_dependent_flags!(args, reuse_session)
+        return if boolean(reuse_session)
+
+        %w[enqueue_messages resuscitate_archived].each do |flag|
+          next unless boolean(args[flag])
+
+          raise ToolError, "\"#{flag}\" requires \"reuse_session\" — a trigger that spawns a new session " \
+                           "each time has nothing to #{flag == 'enqueue_messages' ? 'enqueue onto' : 'resuscitate'}. " \
+                           "Send reuse_session: true in the same call, or drop #{flag}."
+        end
+      end
+
+      def boolean(value)
+        ActiveModel::Type::Boolean.new.cast(value)
+      end
+
+      # The three AIR-catalog lists, validated exactly the way action_session's
+      # change_skills / change_hooks / change_plugins validate them — an unknown
+      # id is rejected here, naming the valid ones, rather than reaching the
+      # model and coming back as a bare RecordInvalid.
+      #
+      # Same omitted-vs-sent rule the trigger's other artifact list follows: only
+      # a key the caller actually sent is assigned, so omitting one never clears
+      # it. An explicit [] does clear it.
+      def catalog_list_attributes(args)
+        CATALOG_LISTS.keys.each_with_object({}) do |attribute, attrs|
+          key = attribute.to_s
+          # Gate on "the caller named the key", not on "the value is an array" —
+          # a gate on shape would swallow `catalog_skills: "open-pr"` and answer
+          # "updated" for a list it never wrote. validated_catalog_list! rejects it.
+          next unless args.key?(key)
+
+          reject_restricted_plugin_list!(attribute)
+          attrs[attribute] = validated_catalog_list!(attribute, args[key], key)
+        end
+      end
+
+      # Plugins can bundle MCP servers (Session#derive_mcp_servers_from_plugins),
+      # so on a restricted connection setting them is a way around the agent-root
+      # MCP lock — the same reasoning that makes action_session refuse
+      # `change_plugins` there. Skills and hooks carry no server expansion.
+      #
+      # This does not make the trigger surface airtight: `mcp_servers` on a
+      # trigger has never carried the guard that start_session's
+      # enforce_root_constraints! applies, so a restricted connection can already
+      # reach the same place more directly. That gap predates this tool's catalog
+      # lists and is not widened here — but a NEW door onto it is not one to open.
+      def reject_restricted_plugin_list!(attribute)
+        return unless attribute == :catalog_plugins && context.restricted?
+
+        raise ToolError, "\"catalog_plugins\" cannot be set when this connection is restricted to specific " \
+                         "agent roots. Plugins can add MCP servers, which are locked to the defaults " \
+                         "configured for each allowed agent root."
+      end
+
+      # An empty list is NOT "no skills" — Session.create_from_agent_root! reads it
+      # as `catalog_skills.presence || agent_root.default_skills`, and a fire onto a
+      # re-used session skips the sync entirely (Trigger#sync_session_artifact!).
+      # Rendering it as "(none)" would tell the caller the opposite of what happens.
+      def catalog_lists_summary(trigger)
+        CATALOG_LISTS.keys.map do |attribute|
+          list = trigger.public_send(attribute).presence
+          "#{CATALOG_LISTS.fetch(attribute)[:label].downcase}: #{list ? list.join(', ') : '(agent root defaults)'}"
+        end.join(" | ")
       end
 
       # The flat pair and the array describe the same thing two different ways, so

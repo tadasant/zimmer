@@ -141,8 +141,16 @@ module Mcp
           "- **Reuse Session:** #{trigger.reuse_session ? 'Yes' : 'No'}",
           "- **Skip While Pending:** #{skip_if_pending_summary(trigger)}",
           "- **Max Sessions/Minute:** #{burst_limit_summary(trigger)}",
-          "- **MCP Servers:** #{mcp_servers_summary(trigger)}"
+          "- **MCP Servers:** #{mcp_servers_summary(trigger)}",
+          "- **Skills / Hooks / Plugins:** #{catalog_lists_summary(trigger)}"
         ]
+        # Only meaningful on a reuse trigger — the model clears both otherwise —
+        # and worth reading before changing either, because with enqueue_messages
+        # off a fire onto a busy session is dropped without a trace.
+        if trigger.reuse_session
+          lines << "- **Enqueue Messages:** #{trigger.enqueue_messages ? 'Yes' : 'No — a fire onto a busy session is dropped'}"
+          lines << "- **Resuscitate Archived:** #{trigger.resuscitate_archived ? 'Yes' : 'No'}"
+        end
         lines << "- **Goal:** #{trigger.goal}" if trigger.goal.present?
         if trigger.failed?
           lines << "- **Failed At:** #{trigger.failed_at&.iso8601 || 'unknown'}"
@@ -260,6 +268,17 @@ module Mcp
       # the answer cost one by-id call per trigger (#858).
       def mcp_servers_summary(trigger)
         trigger.mcp_servers.presence&.join(", ") || "(none)"
+      end
+
+      # The by-id view only: what a trigger equips the sessions it spawns with.
+      # One line rather than three, because this view is already budgeted (#858).
+      # An empty list reads as "(agent root defaults)" and not "(none)" because
+      # that is what Session.create_from_agent_root! does with it.
+      def catalog_lists_summary(trigger)
+        %i[catalog_skills catalog_hooks catalog_plugins].map do |attribute|
+          list = trigger.public_send(attribute).presence
+          "#{attribute.to_s.delete_prefix('catalog_')}: #{list ? list.join(', ') : '(agent root defaults)'}"
+        end.join(" | ")
       end
 
       # Returns [rendered_json, summaries]. A configuration inside the budget is

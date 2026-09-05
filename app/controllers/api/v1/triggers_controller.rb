@@ -7,6 +7,11 @@
 class Api::V1::TriggersController < Api::BaseController
   before_action :set_trigger, only: [ :show, :update, :destroy, :toggle, :invoke ]
 
+  # The AIR-catalog lists a trigger stamps onto the sessions it spawns. Every id
+  # is validated against the catalog by the Trigger model, so an unknown one
+  # comes back 422 rather than being persisted and breaking the next spawn.
+  CATALOG_LIST_PARAMS = %i[catalog_skills catalog_hooks catalog_plugins].freeze
+
   # GET /api/v1/triggers
   # List all triggers with optional filtering and pagination.
   #
@@ -63,6 +68,19 @@ class Api::V1::TriggersController < Api::BaseController
   #     cap is exceeded the trigger spawns one burst-notice session and then suppresses
   #     spawns until the burst subsides.
   #   - mcp_servers: Array of MCP server names
+  #   - catalog_skills / catalog_hooks / catalog_plugins: Arrays of AIR catalog ids
+  #     stamped onto the sessions this trigger spawns. Each id is validated against
+  #     the catalog; an unknown one fails the write with 422. An omitted key leaves
+  #     the trigger's current list alone. [] is not "none": an empty list means the
+  #     trigger says nothing about that artifact, so a spawned session falls back to
+  #     the agent root's defaults and a re-used session keeps what it already has.
+  #   - enqueue_messages: Boolean (default false). Requires reuse_session — when the
+  #     reused session is still running, queue the fire's prompt instead of dropping
+  #     it. Sent without reuse_session it is cleared, and the response payload
+  #     reports the false that was stored.
+  #   - resuscitate_archived: Boolean (default false). Requires reuse_session — when
+  #     the reused session is archived, unarchive it and deliver the fire. Same
+  #     cleared-without-reuse_session rule.
   #   - last_session_id: Existing session to target (requires reuse_session: true).
   #     When set on a trigger with a one-time schedule condition, the target
   #     session is automatically transitioned to waiting (dormant) until the
@@ -216,12 +234,21 @@ class Api::V1::TriggersController < Api::BaseController
       :last_session_id, :max_sessions_per_minute, :skip_if_pending_session,
       :scheduling_class, :precedence,
       mcp_servers: [],
+      catalog_skills: [], catalog_hooks: [], catalog_plugins: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
         configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [] ]
       ]
     )
     permitted[:mcp_servers] ||= []
+    # Unlike mcp_servers, an omitted catalog list is left untouched rather than
+    # defaulted to []: a PATCH that says nothing about a trigger's skills must not
+    # rewrite them. Blanks are dropped from the ones that ARE sent, so a caller
+    # echoing a form-shaped array does not persist an empty id the catalog will
+    # never match.
+    CATALOG_LIST_PARAMS.each do |key|
+      permitted[key] = permitted[key].reject(&:blank?) if permitted.key?(key)
+    end
     permitted
   end
 
@@ -258,6 +285,13 @@ class Api::V1::TriggersController < Api::BaseController
       effective_scheduling_class: trigger.effective_scheduling_class,
       precedence: trigger.precedence,
       mcp_servers: trigger.mcp_servers,
+      # What the sessions this trigger spawns are configured with. Reported so a
+      # caller can read a trigger's artifact set, not only overwrite it. An empty
+      # list means the trigger says nothing about that artifact, so its sessions
+      # take the agent root's defaults — it does not mean "none".
+      catalog_skills: trigger.catalog_skills,
+      catalog_hooks: trigger.catalog_hooks,
+      catalog_plugins: trigger.catalog_plugins,
       conditions: trigger.trigger_conditions.map { |c| condition_json(c) },
       last_session_id: trigger.last_session_id,
       last_triggered_at: trigger.last_triggered_at&.iso8601,
