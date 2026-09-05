@@ -49,6 +49,42 @@ class WorkBacklogRemovalsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/needs a reason/, flash[:alert])
   end
 
+  # THE RACE THIS CONTROLLER'S LOCK DISCIPLINE EXISTS FOR, and the worst version
+  # of it anywhere on this page. `with_lock` is stubbed to start the item first
+  # and then run the block — exactly what a groomer's pull holding the advisory
+  # lock does to a click that arrived a moment earlier. A guard read BEFORE the
+  # lock passes here, and the removal would then write `removed` over a row with
+  # a live session against it: the item silently leaves `in_flight`, so the WIP
+  # ceiling undercounts and the fleet over-spawns while that session runs on.
+  test "an item a pull starts while the click is in flight is not removed over" do
+    item = backlog_item(key: "zimmer#498")
+    started_by_the_pull = sessions(:running)
+
+    real = WorkBacklog::Ranking.method(:with_lock)
+    fired = false
+    stub = lambda do |&block|
+      real.call do
+        unless fired
+          fired = true
+          WorkBacklogItem.find(item.id).mark_started!(session: started_by_the_pull, by: nil)
+        end
+        block.call
+      end
+    end
+
+    WorkBacklog::Ranking.stub(:with_lock, stub) do
+      post remove_work_backlog_item_path(item), params: { reason: "not worth doing" }
+    end
+
+    item.reload
+    assert item.started?, "the pull's start stands"
+    assert_equal started_by_the_pull.id, item.started_session_id
+    assert_nil item.removal_reason
+    assert_empty WorkBacklogItem.removed, "nothing was removed"
+    assert_includes WorkBacklogItem.in_flight, item, "the started item stays in flight"
+    assert_match(/is started, so it cannot be removed/, flash[:alert])
+  end
+
   test "an item that is not queued cannot be removed again" do
     started = backlog_item(key: "zimmer#498")
     started.mark_started!(session: sessions(:running), by: nil)
