@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class Api::V1::ConfigsControllerTest < ActionDispatch::IntegrationTest
   setup do
@@ -255,5 +256,89 @@ class Api::V1::ConfigsControllerTest < ActionDispatch::IntegrationTest
     json["agent_roots"].each do |root|
       assert root["default_mcp_servers"].is_a?(Array), "Agent root default_mcp_servers should be an array"
     end
+  end
+
+  # --- MCP server availability -----------------------------------------------
+  #
+  # This endpoint is how an API client discovers what it may attach to a
+  # session. Until #538 it described every catalog server identically, including
+  # ones Zimmer already knew could not start — and attaching one of those raises
+  # SecretsInterpolator::MissingVariableError at prepare time, failing the whole
+  # session rather than just that server.
+
+  test "every mcp_server carries an availability flag" do
+    get api_v1_configs_path, headers: @headers
+    assert_response :success
+
+    JSON.parse(response.body)["mcp_servers"].each do |server|
+      assert server.key?("unavailable"), "Server should have unavailable field"
+      assert server.key?("unavailable_reason"), "Server should have unavailable_reason field"
+      assert [ true, false ].include?(server["unavailable"]), "unavailable should be a boolean"
+    end
+  end
+
+  test "flags a server whose required variable does not resolve, and names the variable" do
+    with_mixed_availability_catalog do
+      get api_v1_configs_path, headers: @headers
+    end
+    assert_response :success
+
+    servers = JSON.parse(response.body)["mcp_servers"]
+
+    unseeded = option_for(servers, "strad-secrets-staging-rw")
+    assert_equal true, unseeded["unavailable"]
+    assert_equal "STRAD_STAGING_API_KEY unresolved", unseeded["unavailable_reason"]
+  end
+
+  test "flags a server the catalog declares unavailable with the catalog's own reason" do
+    with_mixed_availability_catalog do
+      get api_v1_configs_path, headers: @headers
+    end
+    assert_response :success
+
+    declared = option_for(JSON.parse(response.body)["mcp_servers"], "strad-secrets-oauth")
+    assert_equal true, declared["unavailable"]
+    assert_equal "The endpoint accepts only static bearer tokens and exposes no OAuth discovery.",
+      declared["unavailable_reason"]
+  end
+
+  test "leaves a startable server unflagged and its reason null" do
+    with_mixed_availability_catalog do
+      get api_v1_configs_path, headers: @headers
+    end
+    assert_response :success
+
+    healthy = option_for(JSON.parse(response.body)["mcp_servers"], "context7")
+    assert_equal false, healthy["unavailable"]
+    assert_nil healthy["unavailable_reason"]
+  end
+
+  # The response describes the catalog; it does not filter it. Dropping an
+  # unavailable server would tell a client it does not exist, and the useful
+  # instruction is the opposite one — it exists, do not register a replacement.
+  test "does not drop unavailable servers from the list" do
+    with_mixed_availability_catalog do
+      get api_v1_configs_path, headers: @headers
+    end
+    assert_response :success
+
+    names = JSON.parse(response.body)["mcp_servers"].map { |s| s["name"] }
+    assert_equal %w[context7 zimmer-self-session strad-secrets-staging-rw strad-secrets-oauth], names
+  end
+
+  # "The secret store did not answer" is not "this secret is not set". Flagging
+  # on an indeterminate answer would empty a client's options during a store
+  # blip, so ConnectorStatusProbe deliberately reports those as available.
+  test "does not flag a server whose secret store could not be reached" do
+    outage = SecretsInterpolator::Resolution.new(
+      state: :unavailable, error: StandardError.new("Parameter Store timed out")
+    )
+    with_mixed_availability_catalog(resolution: outage) do
+      get api_v1_configs_path, headers: @headers
+    end
+    assert_response :success
+
+    unreachable = option_for(JSON.parse(response.body)["mcp_servers"], "strad-secrets-staging-rw")
+    assert_equal false, unreachable["unavailable"]
   end
 end

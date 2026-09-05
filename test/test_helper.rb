@@ -218,6 +218,7 @@ module ActiveSupport
     include BroadcastHelpers
     include LogCaptureHelpers
     include McpOauthTestHelpers
+    include McpAvailabilityHelpers
     include SessionMemoryCgroupHelpers
 
     # The sessions dashboard shows `needs_input` only until the user filters. A
