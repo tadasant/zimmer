@@ -350,12 +350,20 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Click to open the dropdown
     find("[data-mcp-server-select-target='input']").click
+    assert_selector ".server-item", minimum: 2
 
-    # Each server (up to 10 shown) should have a title and slug/name visible in dropdown
-    # The compact format shows title on left, slug on right
-    ServersConfig.all.first(10).each do |server|
-      assert_text server.title
-      assert_text server.name # slug shown on right side
+    # Every row the dropdown shows carries a title on the left and its slug on the
+    # right. Asserted against the rows actually rendered rather than against
+    # `ServersConfig.all.first(10)`: the picker sorts servers Zimmer cannot start
+    # below the ones it can (#538), so the visible ten are the first ten *usable*
+    # entries, not the first ten in catalog order. Which servers are startable
+    # depends on which secrets the environment has — in CI none are — so pinning
+    # the catalog's own order made this test a function of the runner's config.
+    all(".server-item").each do |row|
+      server = ServersConfig.find(row["data-name"])
+      assert_not_nil server, "dropdown row #{row['data-name'].inspect} is not a catalog server"
+      assert_includes row.text, server.title
+      assert_includes row.text, server.name # slug shown on right side
     end
   end
 
