@@ -566,9 +566,15 @@ per card:
   [The Status summary](/sessions/status-summary/).
 - `session_hierarchy` — the lineage graph this session belongs to: `origin_session_id`,
   `root_session_ids`, `truncated`, `truncation_reason`, and `nodes[]` each with `id`, `title`,
-  `agent_root`, `status`, `depth`, `parent_session_id`, `uncle_session_ids`, `current`, `genesis`
-  and `priority_class`.
+  `agent_root`, `status`, `depth`, `parent_session_id`, `render_parent_session_id`, `spawn_edge`,
+  `uncle_session_ids`, `current`, `genesis` and `priority_class`.
   `parent_session_id` is the **spawn** edge and means "spawned", NOT "most recently talked to".
+  `render_parent_session_id` is the node this one is drawn *under* — what `depth` plus the array
+  order expresses — and `spawn_edge` is `false` on the rare node the walk could only reach through an
+  uncle. Rebuild the tree from `render_parent_session_id`, never from `depth` alone: `nodes[]` is
+  ordered depth-first so each node follows the one it hangs from, but a consumer that infers the
+  parent from indentation is the bug that made every child of a sibling batch read as a child of the
+  last sibling.
   `uncle_session_ids` are the sessions that queued or interrupted this one and are therefore treated
   as additional seniors — self-declared by the caller, so a claim rather than a fact.
   `origin_session_id` is the spawn origin and stays single-valued; `root_session_ids` is every root

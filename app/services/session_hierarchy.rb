@@ -59,9 +59,19 @@ class SessionHierarchy
   # `uncle_ids` is the additional seniors, which a renderer must show separately
   # — indentation can only express one parent, so an uncle edge is invisible in
   # the outline unless it is named.
+  #
+  # `render_parent_id` is the node this one is drawn UNDER, which is the whole
+  # of what indentation asserts. It is normally the spawn parent; it is an uncle
+  # only when the walk reached this session through one and its spawn parent was
+  # not in the level above. `via_uncle` says which, so a renderer never lets
+  # indentation claim a spawn edge that does not exist.
   Node = Struct.new(:id, :title, :agent_root, :status, :depth, :parent_id, :uncle_ids, :current,
-                    :genesis, :priority_class, keyword_init: true) do
+                    :genesis, :priority_class, :render_parent_id, :via_uncle, keyword_init: true) do
     def current? = current
+
+    # True when the indentation under this node's rendered parent really is a
+    # spawn edge — which is what every surface documents indentation to mean.
+    def spawn_edge? = !via_uncle
 
     def label = title.presence || "Session ##{id}"
 
@@ -155,11 +165,14 @@ class SessionHierarchy
 
   def root_ids = roots.map(&:id)
 
-  # The whole graph from `roots` down, breadth-first, each node carrying its
-  # depth relative to the roots. Always includes the requested session.
+  # The whole graph from `roots` down, each node carrying its depth relative to
+  # the roots. Always includes the requested session.
   #
-  # Breadth-first is load-bearing now that this is a DAG: a session reachable by
-  # two paths is rendered once, at the shallower of the two depths.
+  # Breadth-first DISCOVERY is load-bearing now that this is a DAG: a session
+  # reachable by two paths is rendered once, at the shallower of the two depths.
+  # The ORDER is depth-first over that same set, so each node immediately
+  # follows the one it hangs from — see #order_depth_first for why the two
+  # cannot be the same thing.
   def nodes
     @nodes ||= build_nodes
   end
@@ -203,13 +216,18 @@ class SessionHierarchy
   # and this graph has more than one, so a session's extra seniors are spelled
   # out on its line. Without that they would be silently invisible here while
   # visibly widening which human messages the record carries.
+  #
+  # A node the walk could only reach through an uncle is drawn under that uncle
+  # and says so, since indentation alone would assert a spawn edge that does not
+  # exist — the exact failure this outline was fixed for.
   def to_outline
     nodes.map do |node|
       marker = node.current? ? " ← this session" : ""
       root = SessionHumanMessages.sanitize_for_markdown_line(node.agent_root_label)
       label = SessionHumanMessages.sanitize_for_markdown_line(node.label)
       uncles = node.uncles? ? " (#{node.uncle_summary})" : ""
-      "#{'  ' * node.depth}- ##{node.id} [#{root}] {#{node.genesis_summary}} #{label}#{uncles}#{marker}"
+      via = node.spawn_edge? ? "" : " (shown under uncle ##{node.render_parent_id}, not its spawn parent)"
+      "#{'  ' * node.depth}- ##{node.id} [#{root}] {#{node.genesis_summary}} #{label}#{uncles}#{via}#{marker}"
     end.join("\n")
   end
 
@@ -336,6 +354,11 @@ class SessionHierarchy
     # graph can be fetched in one query at the end instead of one per node.
     collected = seeds.map { |root| [ root, 0 ] }
     seen = Set.new(seeds.map(&:id))
+    # child id => the id of the session in the level above it was reached
+    # through. Without this the walk knows a level's juniors only as a flat set
+    # and the render has nothing to hang them from — see #order_depth_first.
+    attached_to = {}
+    @via_uncle = Set.new
     frontier = seeds
     depth = 0
 
@@ -376,10 +399,14 @@ class SessionHierarchy
         admitted << child
       end
 
+      attached_to.merge!(attachments_for(admitted, frontier.map(&:id)))
+
       break if ceiling_hit
 
       frontier = admitted
     end
+
+    ordered = order_depth_first(collected, seeds, attached_to)
 
     # The requested session must always be visible, even if the ceiling cut the
     # branch it lives on — a detail page that omits the session you are looking
@@ -388,12 +415,95 @@ class SessionHierarchy
       # Rendered one level below the last node we did collect rather than at the
       # root: claiming depth 0 would draw it as a sibling of the origin, which
       # is a worse lie than an approximate depth.
-      collected << [ session, (collected.last&.last || 0) + 1 ]
+      ordered << [ session, (ordered.last&.last || 0) + 1 ]
       @truncated = true
     end
 
-    uncles = uncle_ids_for(collected.map { |record, _| record.id })
-    collected.map { |record, node_depth| node_for(record, depth: node_depth, uncle_ids: uncles[record.id] || []) }
+    uncles = uncle_ids_for(ordered.map { |record, _| record.id })
+    ordered.map do |record, node_depth|
+      node_for(record, depth: node_depth, uncle_ids: uncles[record.id] || [], render_parent_id: attached_to[record.id])
+    end
+  end
+
+  # Which session in the level above each newly discovered session hangs from.
+  #
+  # `children_of` answers "who are the juniors of this whole level" as one flat
+  # set, which is all the WALK needs — but every surface draws this graph with
+  # indentation alone, so a level appended in id order silently reads as the
+  # children of whichever session happened to sort last. That is issue #571: the
+  # rows were right and the picture was wrong. Recording the session each junior
+  # was actually reached through is what lets the render put it under that one.
+  #
+  # Spawn beats uncle when both are in the level above, because indentation is
+  # documented as the spawn edge on all three surfaces; an uncle is only ever
+  # drawn under when there is no spawn edge into this level to draw.
+  def attachments_for(children, parent_ids)
+    return {} if children.empty?
+
+    above = parent_ids.to_set
+    attachments = {}
+    unresolved = []
+
+    children.each do |child|
+      spawn_parent = child.lineage_parent_candidate_ids.find { |id| above.include?(id) }
+      if spawn_parent
+        attachments[child.id] = spawn_parent
+      else
+        unresolved << child.id
+      end
+    end
+
+    if unresolved.any?
+      SessionUncleLink.where(session_id: unresolved, uncle_session_id: parent_ids)
+                      .order(:uncle_session_id)
+                      .pluck(:session_id, :uncle_session_id)
+                      .each do |child_id, uncle_id|
+        next if attachments.key?(child_id)
+
+        attachments[child_id] = uncle_id
+        @via_uncle << child_id
+      end
+    end
+
+    attachments
+  end
+
+  # The collected graph reordered so that every session immediately follows the
+  # one it hangs from, with its whole subtree ahead of the next sibling.
+  #
+  # Discovery has to stay breadth-first — that is what renders a session
+  # reachable by two paths once, at its shallowest depth — but the OUTPUT of a
+  # breadth-first walk is grouped by level, and a renderer that indents by depth
+  # reads a level as belonging to the last node of the level above it. So the
+  # set and every depth come from the breadth-first walk and only the order
+  # changes here.
+  #
+  # Anything collected but unattached — the roots, and the requested session
+  # when the ceiling cut its branch — is emitted after the tree rather than
+  # dropped. This reorders the node set; it must never change it, since that set
+  # is the scope the human-message record is gathered over.
+  def order_depth_first(collected, seeds, attached_to)
+    by_parent = Hash.new { |hash, key| hash[key] = [] }
+    collected.each do |pair|
+      parent_id = attached_to[pair.first.id]
+      by_parent[parent_id] << pair if parent_id
+    end
+
+    seed_ids = seeds.map(&:id).to_set
+    stack = collected.select { |record, _| seed_ids.include?(record.id) }.reverse
+    ordered = []
+    emitted = Set.new
+
+    until stack.empty?
+      pair = stack.pop
+      record = pair.first
+      next unless emitted.add?(record.id)
+
+      ordered << pair
+      stack.concat(by_parent[record.id].reverse)
+    end
+
+    ordered.concat(collected.reject { |record, _| emitted.include?(record.id) })
   end
 
   # Uncle edges for every session in the graph, in one query. Only edges whose
@@ -409,7 +519,7 @@ class SessionHierarchy
                     .transform_values { |pairs| pairs.map(&:last) }
   end
 
-  def node_for(record, depth:, uncle_ids: [])
+  def node_for(record, depth:, uncle_ids: [], render_parent_id: nil)
     Node.new(
       id: record.id,
       title: record.title,
@@ -420,7 +530,9 @@ class SessionHierarchy
       uncle_ids: uncle_ids,
       current: record.id == session.id,
       genesis: record.genesis_key,
-      priority_class: record.priority_class(genesis_overrides)
+      priority_class: record.priority_class(genesis_overrides),
+      render_parent_id: render_parent_id,
+      via_uncle: @via_uncle.include?(record.id)
     )
   end
 
