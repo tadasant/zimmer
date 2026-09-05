@@ -287,6 +287,7 @@ module SessionStateMachine
           else
             fire_ao_event_triggers("session_failed")
             enqueue_failure_push_notification
+            enqueue_orphaned_trigger_fire_report
             enqueue_session_inference_if_needed
             enqueue_status_summary_refresh
           end
@@ -2162,6 +2163,28 @@ module SessionStateMachine
     # Log-only: push delivery is best-effort by construction (WebPushService
     # no-ops without subscriptions or VAPID keys), and the failed session is
     # already on the user's homepage queue regardless.
+    report_swallowed_side_effect(__method__, e, alert: false)
+  end
+
+  # A session a trigger created is that fire's only carrier: the fire is spent
+  # the moment the session exists (a `github_label` item is recorded as seen, a
+  # Slack cursor moves, an `ao_event` wake is consumed), and a `failed` session
+  # can be neither messaged nor woken. So this failure is a work item dropped
+  # with nothing left pointing at it, and nothing said so — a `ready to merge`
+  # label sat ungated for eleven hours behind exactly this (#632).
+  #
+  # The predicate is asked here rather than in the job so an ordinary session
+  # failure — nearly all of them — costs one hash lookup and enqueues nothing.
+  # The report itself is deferred because it ends in a synchronous Slack post,
+  # and this callback runs inside the transition's transaction.
+  def enqueue_orphaned_trigger_fire_report
+    return unless OrphanedTriggerFire.candidate?(self)
+
+    OrphanedTriggerFireJob.perform_later(id)
+  rescue => e
+    # Log-only, like its neighbour: the session is already `failed` with a reason
+    # on it, and an enqueue that fails must not unwind the transition that is
+    # recording the failure.
     report_swallowed_side_effect(__method__, e, alert: false)
   end
 
