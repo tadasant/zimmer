@@ -217,14 +217,43 @@ semantics are deliberately asymmetric:
 
 - **Priority sessions are never held by it.** A priority session starts whenever it is ready, even
   with every slot taken.
-- **Priority sessions still count toward it.** The number counted is every running Claude Code
-  session, whatever its class. (Codex sessions spend nothing against a Claude account, so they do not
-  take a slot.)
+- **Priority sessions still count toward it.** The number counted is every Claude Code session with a
+  turn in flight, whatever its class. (Codex sessions spend nothing against a Claude account, so they
+  do not take a slot.)
 - **So ten running priority sessions leave zero spot slots** — priority work is meant to crowd spot
   work out, and that is the intent rather than a side effect.
 
 It is checked **when a session starts** and never again. Lowering the limit under a running fleet
 holds the next start; it never interrupts work already underway.
+
+#### What "in flight" counts, and what it does not
+
+`sessions.status = running` is stamped when a turn is **handed to** a session — by a fired wake
+trigger, a follow-up, a poller, or the end-of-turn handoff to a queued message — not when a worker
+starts executing it. Between the two sits the `agents` GoodJob queue, which is only
+`GOOD_JOB_AGENTS_THREADS` (default 8) deep. On a busy deployment that gap runs to minutes, so
+`running` holds two populations at once:
+
+| Population | Counts? | Why |
+| --- | --- | --- |
+| A turn a worker is executing | Yes | It is the fleet doing work. |
+| A turn queued for a worker | Yes | Committed demand: it takes the next free slot, so admitting more on top of it only deepens the queue. |
+| A `running` row asleep on its own **future wake**, with no worker on it | **No** | Every start path refuses to start it before that wake (`AgentSessionJob#paused_until_scheduled_time?` stands down and does not re-enqueue), so the fleet cannot spend a worker on it. |
+
+Both halves of that last rule are load-bearing. Arming a wake mid-turn is the ordinary orchestrator
+pattern — a router calls `wake_me_up_later` and then keeps working — so "has a wake armed" *alone*
+would stop counting a session at the moment it is busiest. A row reaches `running`-while-asleep when
+its turn ends with something else already in flight for it: a queued message the handoff path picks
+up, or a recovery job `CleanupOrphanedSessionsJob` enqueued.
+
+Both `/inference` cards print the split — "8 on a worker, 7 queued for one behind the 8-slot agents
+pool" — because the total on its own reads as a broken counter when half that many agent processes
+are alive. That is exactly how [#957](https://github.com/tadasant/zimmer/issues/957) was reported.
+`RunningTurns` is the one place the distinction is made; both ceilings read through it.
+
+Note the consequence for tuning: **Max sessions at once** above `GOOD_JOB_AGENTS_THREADS` does not buy
+concurrency, it buys queue. The pool is the real ceiling on executing turns, and the cards name it
+next to the number you configured.
 
 ### Its sibling: the backlog top-up ceiling
 
@@ -234,14 +263,17 @@ holds the next start; it never interrupts work already underway.
 read together: raising the concurrency limit without raising the top-up ceiling buys slots nothing
 fills them, which is exactly what left a ten-slot fleet running at two.
 
-Its count is **sessions actually running**, and nothing else: a backed-up spot queue does **not**
-suppress top-up, and sessions in `waiting` do not count against it, of any class. Both ceilings are
-therefore about running work — "hold spot work above 10 running, top up below 3 running" — but they
-are **not the same count**, so do not expect the two numbers on the page to match. The concurrency
-limit reads `Session.running_claude_code_count`: Claude Code sessions only, frozen categories
-included. The top-up ceiling reads `FleetIdleMonitor.running_sessions`: every runtime, frozen
-categories excluded. A fleet running Codex work shows up in the second and not the first. The full
-rules live under [`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress).
+Its count is **sessions with a turn in flight**, on the same reading the concurrency limit uses (see
+[What "in flight" counts](#what-in-flight-counts-and-what-it-does-not)): a backed-up *spot* queue does
+**not** suppress top-up, and sessions in `waiting` do not count against it, of any class. Both
+ceilings are therefore about work in flight — "hold spot work above 10 in flight, top up below 3" —
+but they are **not the same count**, so do not expect the two numbers on the page to match. The
+concurrency limit reads `Session.running_claude_code_count`: Claude Code sessions only, frozen
+categories included. The top-up ceiling reads `FleetIdleMonitor.running_sessions`: every runtime,
+frozen categories excluded. A fleet running Codex work shows up in the second and not the first. Both
+go through `RunningTurns`, so they agree about what a `running` row *means* and differ only on runtime
+and frozen categories. The full rules live under
+[`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress).
 
 ### Read across the whole pool, not one account
 

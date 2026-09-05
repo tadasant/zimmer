@@ -18,15 +18,22 @@ class FleetTopUpStatus
   STATES = %i[at_ceiling clock_not_started inside_threshold latched cooling_down due].freeze
 
   attr_reader :setting, :running_sessions, :max_sessions, :threshold, :min_fire_interval,
-    :idle_since, :last_fired_at, :now
+    :idle_since, :last_fired_at, :now, :turns
 
   def self.current(setting: AppSetting.current, now: Time.current)
-    new(setting: setting, running_sessions: FleetIdleMonitor.running_sessions, now: now)
+    new(setting: setting, turns: FleetIdleMonitor.running_turns, now: now)
   end
 
-  def initialize(setting:, running_sessions:, now: Time.current)
+  # Takes either the split reading or a bare count. The bare form is for callers
+  # that already have a number and only want the state arithmetic — chiefly
+  # tests and AppSetting's own ceiling validation — and it reports the whole
+  # count as executing, since a caller with one number has no split to offer.
+  def initialize(setting:, running_sessions: nil, turns: nil, now: Time.current)
     @setting = setting
-    @running_sessions = running_sessions
+    @turns = turns || RunningTurns::Reading.new(
+      on_a_worker: running_sessions.to_i, queued_for_a_worker: 0, asleep: 0
+    )
+    @running_sessions = @turns.total
     @now = now
     @max_sessions = FleetIdleMonitor.max_sessions(setting)
     @threshold = FleetIdleMonitor.idle_threshold(setting)
@@ -47,6 +54,24 @@ class FleetTopUpStatus
   def headroom
     [ max_sessions - running_sessions, 0 ].max
   end
+
+  # The two halves of #running_sessions. `running` is stamped when a turn is
+  # handed to a session and the `agents` queue sits between that and a worker
+  # picking it up, so the total is executing turns plus turns waiting for a
+  # worker — see RunningTurns. Reported because "the fleet is running 15
+  # sessions" is what an operator disbelieves when 8 processes are alive.
+  def executing_sessions = turns.on_a_worker
+  def queued_sessions = turns.queued_for_a_worker
+
+  # `running` rows dropped from the total: asleep on their own future wake with
+  # no worker on them, so Zimmer will not start them before that wake.
+  def asleep_sessions = turns.asleep
+
+  # How many agent turns this deployment can execute at once — the worker pool
+  # behind the `agents` queue, and the real ceiling on #executing_sessions
+  # whatever either policy number is set to. An operator reading a queue that
+  # never drains needs this number next to the one they configured.
+  def worker_slots = ConnectionBudget.good_job_queue_threads[:agents]
 
   def state
     return :at_ceiling unless under_ceiling?
@@ -117,11 +142,11 @@ class FleetTopUpStatus
   def sentence
     case state
     when :at_ceiling
-      "The fleet is running #{sessions} — at or over its ceiling of #{max_sessions}, so no top-up is due. " \
-        "The clock starts again when it drops below #{max_sessions}."
+      "The fleet has #{sessions} in flight#{split_clause} — at or over its ceiling of #{max_sessions}, " \
+        "so no top-up is due. The clock starts again when it drops below #{max_sessions}."
     when :clock_not_started
-      "The fleet is running #{sessions}, under its ceiling of #{max_sessions}. The idle clock starts at " \
-        "the next check, and the event is due #{threshold.inspect} after that.#{cooldown_clause}"
+      "The fleet has #{sessions} in flight#{split_clause}, under its ceiling of #{max_sessions}. The idle " \
+        "clock starts at the next check, and the event is due #{threshold.inspect} after that.#{cooldown_clause}"
     when :inside_threshold
       "The fleet has been under its ceiling of #{max_sessions} for " \
         "#{distance_words(now - idle_since)} of the #{threshold.inspect} it needs.#{cooldown_clause}"
@@ -132,8 +157,9 @@ class FleetTopUpStatus
       "Past the threshold and waiting out the #{min_fire_interval.inspect} cooldown — " \
         "#{distance_words(last_fired_at + min_fire_interval - now)} left."
     when :due
-      "The fleet is running #{sessions} and has been under its ceiling past the threshold: the event " \
-        "fires at the next check, unless something is parked on an auth outage or the account pool is empty."
+      "The fleet has #{sessions} in flight#{split_clause} and has been under its ceiling past the " \
+        "threshold: the event fires at the next check, unless something is parked on an auth outage or " \
+        "the account pool is empty."
     end
   end
 
@@ -151,6 +177,17 @@ class FleetTopUpStatus
 
   def sessions
     "#{running_sessions} #{"session".pluralize(running_sessions)}"
+  end
+
+  # Says where the number came from, and only when the two halves are actually
+  # different — on a fleet whose every turn has a worker the split is noise, and
+  # on one where it is not, "queued" is the whole explanation for a count that
+  # looks too high.
+  def split_clause
+    return "" unless queued_sessions.positive?
+
+    " (#{executing_sessions} on a worker, #{queued_sessions} queued for one behind " \
+      "the #{worker_slots}-slot agents pool)"
   end
 
   def distance_words(seconds)
