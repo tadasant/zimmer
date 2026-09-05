@@ -98,8 +98,9 @@ locally, GoodJob runs in-process with Puma, so `bin/dev` is enough.
 ## If it fails with `oauth_required`
 
 The session went to `failed` because one of its MCP servers needs OAuth and has no valid credential.
-The UI will show Authorize buttons. Click through the flow and the session resumes automatically,
-replaying the original prompt. See [MCP server OAuth](/auth/mcp-oauth/).
+The UI will show Authorize buttons. Click through the flow and the session resumes automatically —
+replaying the original prompt, or delivering the follow-up it was blocked on if you had already sent
+one. See [MCP server OAuth](/auth/mcp-oauth/).
 
 ## Useful session controls
 

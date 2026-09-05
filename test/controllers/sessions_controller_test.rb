@@ -4619,6 +4619,83 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "/tmp/test", recovery_paused.metadata["working_directory"]
   end
 
+  # #887: the two catalog-edit doors reach `failed` + `oauth_required` on a
+  # session that may already be holding a turn a human sent, and the resume that
+  # follows the authorization must deliver THAT turn rather than replaying the
+  # session's original prompt.
+  def session_holding_an_undelivered_turn(working_directory)
+    Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Do the original work",
+      status: :needs_input,
+      session_id: SecureRandom.uuid,
+      transcript: { "type" => "user", "message" => { "content" => "Do the original work" } }.to_json,
+      metadata: {
+        "working_directory" => working_directory,
+        "pending_follow_up_prompt" => "Now check the deploy logs"
+      }
+    )
+  end
+
+  def authorize_linear!
+    McpOauthCredential.create!(
+      server_name: "linear",
+      server_url: "https://mcp.linear.app/mcp",
+      credential_key: "linear|cccccccccccccccc",
+      client_id: "test-client",
+      access_token: "fresh-token",
+      token_endpoint: "https://mcp.linear.app/oauth/token",
+      expires_at: 1.hour.from_now
+    )
+  end
+
+  test "editing mcp_servers into an OAuth block keeps the held turn, and the resume delivers it" do
+    Dir.mktmpdir do |dir|
+      session = session_holding_an_undelivered_turn(dir)
+      McpOauthProbe.any_instance.stubs(:servers_needing_oauth).returns(
+        [ { server_name: "linear", server_url: "https://mcp.linear.app/mcp", credential_key: "linear|cccccccccccccccc" } ]
+      )
+
+      patch update_mcp_servers_session_url(session), params: { mcp_servers: [ "linear" ] }, as: :json
+
+      assert_response :success
+      session.reload
+      assert_equal "failed", session.status
+      assert_equal "oauth_required", session.metadata["failure_reason"]
+      assert_equal "Now check the deploy logs", session.metadata["pending_follow_up_prompt"],
+        "the escalation must not consume the turn the session is owed"
+
+      authorize_linear!
+      assert_equal :resumed, McpOauthResumeService.new(session).call
+
+      assert_enqueued_with(job: AgentSessionJob, args: [ session.id, "Now check the deploy logs" ])
+      assert session.reload.running?
+    end
+  end
+
+  test "editing catalog_plugins into an OAuth block resumes the same way" do
+    Dir.mktmpdir do |dir|
+      session = session_holding_an_undelivered_turn(dir)
+      McpOauthProbe.any_instance.stubs(:servers_needing_oauth).returns(
+        [ { server_name: "linear", server_url: "https://mcp.linear.app/mcp", credential_key: "linear|cccccccccccccccc" } ]
+      )
+
+      patch update_catalog_plugins_session_url(session),
+            params: { catalog_plugins: [ "figma-design-workflow" ] },
+            as: :json
+
+      assert_response :success
+      session.reload
+      assert_equal "failed", session.status
+      assert_equal "oauth_required", session.metadata["failure_reason"]
+
+      authorize_linear!
+      assert_equal :resumed, McpOauthResumeService.new(session).call
+
+      assert_enqueued_with(job: AgentSessionJob, args: [ session.id, "Now check the deploy logs" ])
+    end
+  end
+
   # Test update_mcp_servers action
   test "should update session mcp_servers" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", mcp_servers: [ "playwright-custom" ])
