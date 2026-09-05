@@ -34,8 +34,11 @@ class ClaudeCodeUpdateJobTest < ActiveJob::TestCase
     end
   end
 
-  test "defines UPDATE_TIMEOUT constant" do
-    assert_equal 120, ClaudeCodeUpdateJob::UPDATE_TIMEOUT
+  # Both bounds are real now (zimmer#908), so they are ENV-tunable and the test
+  # pins the default rather than a literal repeated in three places.
+  test "the update and version bounds have sane defaults" do
+    assert_equal 600, ClaudeCodeUpdateJob::UPDATE_TIMEOUT
+    assert_equal 30, ClaudeCodeUpdateJob::VERSION_TIMEOUT
   end
 
   test "both subprocesses run under BoundedSubprocess with their own bound" do
@@ -68,13 +71,16 @@ class ClaudeCodeUpdateJobTest < ActiveJob::TestCase
     stub_version("2.1.87 (Claude Code)")
     BoundedSubprocess.stubs(:run)
       .with(UPDATE_CMD, timeout: ClaudeCodeUpdateJob::UPDATE_TIMEOUT)
-      .raises(BoundedSubprocess::TimeoutError, "command timed out after 120s (process group killed): claude update")
+      .raises(BoundedSubprocess::TimeoutError, "command timed out (process group killed): claude update")
 
     logs = nil
     assert_nothing_raised { logs = capture_job_log { ClaudeCodeUpdateJob.perform_now } }
 
-    assert_includes logs, "Update timed out after 120s (process group killed)"
+    assert_includes logs,
+      "Update timed out after #{ClaudeCodeUpdateJob::UPDATE_TIMEOUT}s (process group killed)"
+    # The composite line must not blame the #271 reaping race for a watchdog kill.
     assert_includes logs, "Update command failed"
+    assert_includes logs, "process group SIGKILLed"
   end
 
   test "a missing claude binary is reported, not raised" do
@@ -105,7 +111,7 @@ class ClaudeCodeUpdateJobTest < ActiveJob::TestCase
   private
 
   def ok_status
-    stub(success?: true, exitstatus: 0)
+    fake_process_status(exitstatus: 0)
   end
 
   def stub_version(output)

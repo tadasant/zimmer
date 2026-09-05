@@ -340,6 +340,11 @@ database, so `lint` runs it directly and answers in seconds. That is also how yo
 bundle exec ruby -r./test/support/two_phase_column_drop_guard -e 'puts TwoPhaseColumnDropGuard.report'
 ```
 
+`lint` runs a second guard of the same shape for the same reason — `InertSubprocessTimeoutGuard`,
+which fails when a `Timeout.timeout` encloses an `Open3` call that joins its wait thread in an
+`ensure`. It is documented in
+[background-jobs.md](/operate/background-jobs/#timeouttimeout-around-open3capture3-bounds-nothing).
+
 Seven migrations that dropped columns before the guard existed are named in its `GRANDFATHERED`
 list. That list is closed, and a `GRANDFATHER_CUTOFF` assertion keeps it that way: a new drop gets
 the two deploys, not an eighth entry. The newest entry is the case for the guard — `#680` dropped

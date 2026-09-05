@@ -67,8 +67,14 @@ class AirPrepareService
   AIR_PREPARE_TIMEOUT_SECONDS = Integer(ENV.fetch("AIR_PREPARE_TIMEOUT_SECONDS", "600"))
 
   # Bound on the post-install `air --version` health probe. A functional binary
-  # answers in milliseconds; anything near this is a wedged one.
-  AIR_VERSION_PROBE_TIMEOUT_SECONDS = 10
+  # answers in milliseconds, so this only has to outlast a loaded box — and it
+  # has to, because a false from air_binary_healthy? is fatal: install_air_cli!
+  # reads it as a broken npm publish and raises, failing the session. The same
+  # contention ensure_air_installed! already warns about below (32 parallel CI
+  # workers) is what a 10s bound would fire on, and until #908 the bound was
+  # inert so it never could. Overridable via ENV for ops tuning.
+  AIR_VERSION_PROBE_TIMEOUT_SECONDS =
+    Integer(ENV.fetch("AIR_VERSION_PROBE_TIMEOUT_SECONDS", "30"))
 
   # Backoff (seconds) between retries when `air prepare` fails transiently — e.g.
   # the catalog clone hits a github.com `ETIMEDOUT` or stalls and is watchdog-

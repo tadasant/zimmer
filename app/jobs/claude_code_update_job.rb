@@ -18,10 +18,19 @@ class ClaudeCodeUpdateJob < ApplicationJob
   # Singleton: only one update at a time.
   include SingletonSweep
 
-  # 2-minute timeout for the update command
-  UPDATE_TIMEOUT = 120
+  # Bound on `claude update`. Raised from 120s when the bound stopped being
+  # decorative (#908): what it used to do was let the installer finish and then
+  # relabel the result, and what it does now is SIGKILL the process group
+  # part-way through a download-and-extract into the volume-mounted
+  # ~/.local/share/claude/versions/. A killed installer is a worse outcome than
+  # a slow one — nobody can reach a shell on the box to repair a half-written
+  # binary — so the bound is set where it still catches a genuine wedge and
+  # cannot plausibly fire on a contended droplet. Overridable via ENV for ops
+  # tuning, like AirPrepareService's.
+  UPDATE_TIMEOUT = Integer(ENV.fetch("CLAUDE_UPDATE_TIMEOUT_SECONDS", "600"))
 
-  # Bound on the `claude --version` probe taken either side of the update.
+  # Bound on the `claude --version` probe taken either side of the update. A
+  # working binary answers in milliseconds; this only has to outlast a loaded box.
   VERSION_TIMEOUT = 30
 
   def perform
@@ -70,6 +79,9 @@ class ClaudeCodeUpdateJob < ApplicationJob
     [ nil, "claude binary not found", nil ]
   rescue BoundedSubprocess::TimeoutError
     Rails.logger.error "[ClaudeCodeUpdateJob] Update timed out after #{UPDATE_TIMEOUT}s (process group killed)"
-    [ nil, "timeout", nil ]
+    # The status is nil, so SubprocessStatus.describe_failure reaches for its
+    # generic "child reaped before its waiter" wording — true of the #271 race
+    # and not of this. The stderr slot is what corrects it in the same line.
+    [ nil, "timed out after #{UPDATE_TIMEOUT}s; process group SIGKILLed", nil ]
   end
 end

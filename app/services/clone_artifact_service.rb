@@ -39,11 +39,10 @@ class CloneArtifactService
   #
   # 120s is the number DockerComposeCleanupService::COMPOSE_DOWN_TIMEOUT uses for
   # the other subprocess on this job's path, and leaves a wide margin over the
-  # slowest command measured on a large clone. Only the number is shared: that
-  # one is `Timeout.timeout` around `Open3.capture3`, which unwinds through
-  # `popen_run`'s ensure and waits for the child regardless, so it bounds
-  # nothing (#908). This one bounds, because BoundedSubprocess kills the
-  # process group rather than raising in the caller.
+  # slowest command measured on a large clone. Both bound for real: that one was
+  # `Timeout.timeout` around `Open3.capture3`, which unwinds through
+  # `popen_run`'s ensure and waits for the child regardless, and #908 moved it
+  # onto BoundedSubprocess alongside this one.
   GIT_TIMEOUT_SECONDS = Integer(ENV.fetch("CLONE_ARTIFACT_GIT_TIMEOUT_SECONDS", "120"))
 
   # A working tree that is almost entirely deletions of tracked files is not

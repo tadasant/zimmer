@@ -1086,8 +1086,8 @@ as its WARN lines.
 
 ## `Timeout.timeout` around `Open3.capture3` bounds nothing
 
-`BoundedSubprocess.run(command, timeout:)` is the **only** way to bound a subprocess in this
-codebase. The plausible-looking alternative does not work:
+`BoundedSubprocess.run(command, timeout:)` is the only mechanism in this codebase that bounds a
+subprocess. The plausible-looking alternative does not work:
 
 ```ruby
 # Inert. The child is never signalled.
@@ -1109,10 +1109,20 @@ session launch path, which is the hazard `BoundedSubprocess` was written for in 
 `AirPrepareService.air_binary_healthy?` (the post-install `air --version` probe) and
 `DockerComposeCleanupService` (`docker compose down`, whose 120s bound
 `OrphanCloneFilesystemCleanupJob` budgets its disk-pressure sweep against). The rest were
-queue-thread hazards of the same shape. All seven now run under the watchdog and rescue
-`BoundedSubprocess::TimeoutError` where they used to rescue `Timeout::Error`; the timeout *values*
-are unchanged, so the only behavioural difference is that they now actually fire, and the child's
-process group is SIGKILLed rather than left running.
+queue-thread hazards of the same shape. All seven now run under the watchdog; six name
+`BoundedSubprocess::TimeoutError` at the rescue that used to name `Timeout::Error`, and
+`DockerComposeCleanupService` still swallows it into `false` through the blanket `rescue
+StandardError` in `cleanup`, which is what keeps a failed teardown from blocking clone cleanup.
+
+The behavioural difference is that the bounds now fire, and that the child's process group is
+SIGKILLed rather than left running. Five values are unchanged. Two were **raised**, because a bound
+that has never fired is not evidence that its number is safe to fire *at*:
+`ClaudeCodeUpdateJob::UPDATE_TIMEOUT` (120s → 600s) would otherwise SIGKILL an installer part-way
+through writing the volume-mounted `~/.local/share/claude/versions/`, and nobody can reach a shell on
+the box to repair a half-written binary; `AirPrepareService::AIR_VERSION_PROBE_TIMEOUT_SECONDS`
+(10s → 30s) sits on the launch path where a *false* is fatal — `install_air_cli!` reads it as a
+broken npm publish and raises — and `ensure_air_installed!`'s own comment already warns that this
+probe "can spuriously fail" under 32 parallel workers. Both are `ENV`-overridable for ops tuning.
 
 | Call | Bound |
 | --- | --- |
@@ -1134,7 +1144,7 @@ Two neighbours look like the pattern and are not it, so leave them alone.
 with Prism and fails if a `Timeout.timeout` call encloses any `Open3` call that routes through
 `popen_run` — `capture3` and the whole `capture*`/`popen*` family. It is Rails-free, so CI's `lint`
 job runs it directly (seconds, no Postgres, no Redis) as well as `InertSubprocessTimeoutTest`
-wiring it into `bin/rails test`;
+wiring it into `bin/rails test`. By hand,
 
 ```
 bundle exec ruby -r./test/support/inert_subprocess_timeout_guard \
@@ -1144,6 +1154,12 @@ bundle exec ruby -r./test/support/inert_subprocess_timeout_guard \
 is the same check by hand. The pattern is caught by parsing rather than grepping because the
 question is syntactic: the two calls sit on different lines with anything in between, and a mention
 in a comment or a string is not a call.
+
+**What the guard does not reach, and is still outstanding.** It finds a bound that does not work; it
+says nothing about a call that never had one. `CliStatusService#check_command` and `#check_auth` shell
+out with a bare `system(command)` — a shell, and no bound at all — on the same refresh path
+`get_version` is now bounded on. Several `Open3.capture3` calls elsewhere are unbounded in the same
+way. Those are the [#458](https://github.com/tadasant/zimmer/issues/458) shape rather than this one.
 
 ## Queues
 
