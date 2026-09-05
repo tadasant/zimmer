@@ -172,6 +172,7 @@ entirely. See the Codex note under [What the existing runtimes get wrong](#what-
 
 ```ruby
 transcript_directory(working_directory:)
+per_working_directory_transcript_root                  # default nil = "not sweepable"
 resume_transcript_path(session:, working_directory:)   # default nil = "no single-file restore"
 locate(session:, working_directory:)
 read(path)
@@ -185,6 +186,18 @@ find_main_transcript(transcript_directory:, session:)
 there, like the rest of the required surface. `TranscriptPollerService` calls it on every poll, so a
 source that skipped it used to `NoMethodError` on its first poll instead of failing at the seam
 (#56).
+
+`per_working_directory_transcript_root` is the other default-`nil` method, and `nil` there is a
+**refusal to be swept**, not a gap. It answers "is there a root under which every child is a
+transcript directory attributable to the one working directory that produced it" — which is what
+lets `OrphanTranscriptDirectoryCleanupJob` enumerate that root and delete the children whose cwd is
+gone. Only Claude Code answers non-`nil` (`~/.claude/projects`). Codex writes every session into one
+date-partitioned tree that ignores the cwd, so deleting a child would take other sessions' rollouts
+with it; Pi writes inside the clone, so its transcripts already go when the clone does. Override it
+only if your runtime's layout genuinely has that one-directory-per-cwd shape — and derive the name
+through `transcript_directory`, never by re-implementing the slug. See [The transcript directory
+outlives the
+clone](/operate/background-jobs/#the-transcript-directory-outlives-the-clone).
 
 `resume_transcript_path` is the one with a meaningful default. It answers "where do I write the
 stored transcript so `--resume` reads the whole conversation", and the base class returns `nil` —

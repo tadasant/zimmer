@@ -12,14 +12,36 @@
 class ClaudeTranscriptSource < TranscriptSource
   require "path_sanitizer"
 
+  # The root that holds one directory per working directory Claude Code has been
+  # spawned from — `~/.claude/projects`.
+  #
+  # Resolved at call time (never memoized) so a stubbed HOME is honored without a
+  # process restart, matching ClonesDirectory.base.
+  #
+  # @return [String]
+  def self.projects_root
+    File.join(File.expand_path("~"), ".claude", "projects")
+  end
+
+  # @see TranscriptSource#per_working_directory_transcript_root
+  def per_working_directory_transcript_root
+    self.class.projects_root
+  end
+
   # @see TranscriptSource#transcript_directory
+  #
+  # The ONE place the cwd -> transcript-directory rule is written. The reapers
+  # (CloneReaper via TranscriptDirectoryReaper, and
+  # OrphanTranscriptDirectoryCleanupJob) derive the directory NAME from this same
+  # method rather than re-implementing the slug — the rule is subtler than it
+  # reads (PathSanitizer maps `_` to `-` as well as `/` and `.`, which is why
+  # `.zimmer` renders as `--zimmer`), and a second copy that drifted would delete
+  # a live session's transcript.
   def transcript_directory(working_directory:)
     return nil unless working_directory.present?
 
-    home_dir = File.expand_path("~")
-    claude_projects_dir = File.join(home_dir, ".claude", "projects")
     sanitized_path = PathSanitizer.sanitize(working_directory)
-    File.join(claude_projects_dir, sanitized_path)
+    File.join(self.class.projects_root, sanitized_path)
   rescue => e
     Rails.logger.error "[ClaudeTranscriptSource] Failed to compute transcript directory: #{e.message}"
     nil

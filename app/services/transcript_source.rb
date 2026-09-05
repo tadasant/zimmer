@@ -30,6 +30,31 @@ class TranscriptSource
     raise NotImplementedError, "#{self.class}#transcript_directory"
   end
 
+  # The directory under which this runtime creates ONE transcript directory per
+  # distinct working directory, named by a pure function of that working
+  # directory — i.e. the root a sweeper may enumerate, where every child is
+  # attributable to the cwd that produced it.
+  #
+  # nil is the default and means "not laid out that way", which is a refusal to
+  # be swept rather than a missing implementation:
+  #
+  #   * CodexTranscriptSource writes every session into ONE date-partitioned
+  #     tree that ignores the cwd entirely, so its children are not attributable
+  #     and deleting one would take other sessions' rollouts with it.
+  #   * PiTranscriptSource writes inside the clone, so its transcripts are
+  #     already deleted by the clone's own removal and there is nothing left over
+  #     to reap.
+  #
+  # Only ClaudeTranscriptSource answers non-nil (~/.claude/projects), and that is
+  # why OrphanTranscriptDirectoryCleanupJob can sweep it: the directory name is
+  # `File.basename(transcript_directory(working_directory:))`, so a child can be
+  # tied back to a working directory that still exists — or found to have none.
+  #
+  # @return [String, nil] the enumerable root, or nil when there is not one
+  def per_working_directory_transcript_root
+    nil
+  end
+
   # The on-disk path where Zimmer should re-materialize the canonical stored
   # transcript so the runtime's `--resume` reads the complete conversation
   # history. This is the file the runtime actually reads on resume — distinct
