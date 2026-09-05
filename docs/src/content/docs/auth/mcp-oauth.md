@@ -110,6 +110,50 @@ the text. A server that brokers a downstream OAuth of its own can report *its* p
 force a re-auth that cannot fix anything. An unrecognized phrasing costs nothing — it falls
 through to the retry path.
 
+## What the server advertised, recorded
+
+Two places actually ask a remote server whether it requires OAuth: the spawn gate above, and
+`McpOauthProbe`, which re-checks a session's servers whenever its MCP-server or plugin selection
+changes. Both run RFC 9728 / RFC 8414 discovery and an unauthenticated `GET` against the server
+URL. Every *other* surface — the Connectors page, `get_configs`, the injector's own accounting —
+cannot afford a network call, and used to fall back to a guess: a remote server with no static
+credential header and no stored token *might* need OAuth, so assume it does.
+
+`McpServerOauthRequirement` is where the answer is kept, so the surfaces that cannot ask read a
+recorded fact instead. One row per server *config* — keyed on the same `{type, url, headers}`
+digest as the credential, so a catalog edit that invalidates the credential key invalidates the
+determination with it — carrying one of three values:
+
+| Determination | What it means | Recorded when |
+| --- | --- | --- |
+| `advertised_required` | The server advertises OAuth | Discovery resolved an authorization server, or the unauthenticated `GET` came back `401` with a `Bearer` challenge |
+| `advertised_not_required` | The server served us without a token | The unauthenticated `GET` returned **2xx** |
+| `undetermined` | We asked and could not tell | A connection error, a timeout, a `401` whose challenge is not `Bearer`, or **any other status** |
+
+`undetermined` still means what the guess used to mean: assume OAuth might be required. That
+fallback is deliberate and load-bearing in the other direction. Deciding "this server does not
+need OAuth" and being wrong is the worse failure, because it is silent — the server never gets
+credentials and fails at the point of use, where an over-eager assumption merely offers an
+Authorize button nobody needed. Two rules keep the quiet direction narrow:
+
+- **Only a 2xx records `advertised_not_required`.** A `400`, `404`, `405` or `5xx` is
+  `undetermined`. A streamable-HTTP server that answers a bare `GET` with `400 missing session id`
+  before it ever looks at a token has told us nothing about authorization.
+- **`advertised_not_required` expires** after seven days and degrades back to `undetermined`, so a
+  server that starts requiring OAuth cannot be permanently believed not to. `advertised_required`
+  does not expire; the failure it causes is a visible button, not a silent one.
+
+Nothing about *which* servers block a spawn changes: the gate still probes live and acts on its own
+answer, and the Connectors page still offers the Authorize button on every OAuth-capable server
+with no credential. What the record buys is that the state is inspectable. "The agent says it needs
+to authorize this server" has three distinct causes — this guess,
+[a credential key that stopped matching](#the-credential-key-is-a-copy-of-claude-codes-private-algorithm),
+and [a server that issues no refresh token](#known-problems) — and a **Needs authorization** row now
+says which branch it took: silent when the server advertised the requirement, and explicit that
+Zimmer is assuming when nothing has come back. The spawn log says the same thing, naming
+*"advertised: not required"* apart from *"could not determine whether OAuth is required"* rather
+than reporting both as "does not require OAuth".
+
 ## The authorization flow
 
 ```mermaid
@@ -384,7 +428,7 @@ order, so a connector reported **Ready** is one that will actually connect:
 | State | Meaning |
 | --- | --- |
 | **Ready** | OAuth is complete and the credential saved, or every required `${VAR}` resolves |
-| **Needs authorization** | An OAuth-capable server with no stored credential. The row carries an **Authorize** button |
+| **Needs authorization** | An OAuth-capable server with no stored credential. The row carries an **Authorize** button, and says whether the requirement was [advertised or assumed](#what-the-server-advertised-recorded) |
 | **Token expired** | Expired, but has a refresh token — `RefreshMcpOauthTokensJob` will renew it |
 | **Needs re-auth** | Expired with no refresh token; the row carries a **Re-authorize** button that replaces the credential in place |
 | **Missing configuration** | A required `${VAR}` has no value. The row says where it goes — see [The Secrets Console](/operate/secrets-parameter-store/#the-secrets-console-and-which-project-it-administers) |

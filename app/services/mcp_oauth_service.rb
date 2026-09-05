@@ -19,8 +19,18 @@ class McpOauthService
   # User agent for OAuth requests
   USER_AGENT = "Zimmer/1.0".freeze
 
-  # Result of checking a server's OAuth requirements
-  OAuthRequirement = Struct.new(:required, :metadata, :error, keyword_init: true)
+  # Result of checking a server's OAuth requirements.
+  #
+  # `required` is the answer a caller acts on: true only when the server
+  # advertised OAuth. `determination` says *how we know*, which is what
+  # distinguishes "the server said no" from "we could not tell" — two cases that
+  # both leave `required` false and mean very different things. It is one of
+  # McpServerOauthRequirement::DETERMINATIONS, and it is what gets recorded.
+  OAuthRequirement = Struct.new(:required, :metadata, :error, :determination, keyword_init: true) do
+    # Reads as "undetermined" for a requirement built before determinations
+    # existed, so a caller never has to nil-check the answer.
+    def determination = self[:determination].presence || McpServerOauthRequirement::UNDETERMINED
+  end
 
   # OAuth metadata from a server
   OAuthMetadata = Struct.new(
@@ -51,7 +61,10 @@ class McpOauthService
     # First try to fetch protected resource metadata (RFC 9728)
     metadata = fetch_oauth_metadata(server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret, configured_redirect_uri: configured_redirect_uri)
     if metadata
-      return OAuthRequirement.new(required: true, metadata: metadata, error: nil)
+      return OAuthRequirement.new(
+        required: true, metadata: metadata, error: nil,
+        determination: McpServerOauthRequirement::ADVERTISED_REQUIRED
+      )
     end
 
     # Probe the server with a request to check for 401
@@ -59,7 +72,10 @@ class McpOauthService
     probe_result
   rescue => e
     Rails.logger.error "[McpOauthService] Error checking OAuth requirement for #{server_url}: #{e.message}"
-    OAuthRequirement.new(required: false, metadata: nil, error: e.message)
+    OAuthRequirement.new(
+      required: false, metadata: nil, error: e.message,
+      determination: McpServerOauthRequirement::UNDETERMINED
+    )
   end
 
   # Fetches OAuth metadata from a server using RFC 9728 and RFC 8414 discovery.
@@ -401,20 +417,45 @@ class McpOauthService
         if resource_metadata_url
           metadata = fetch_oauth_metadata_from_url(resource_metadata_url, server_url: server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret, configured_redirect_uri: configured_redirect_uri)
           if metadata
-            return OAuthRequirement.new(required: true, metadata: metadata, error: nil)
+            return OAuthRequirement.new(
+              required: true, metadata: metadata, error: nil,
+              determination: McpServerOauthRequirement::ADVERTISED_REQUIRED
+            )
           end
         end
 
         # Fall back to standard discovery
         metadata = fetch_oauth_metadata(server_url, configured_client_id: configured_client_id, configured_client_secret: configured_client_secret, configured_redirect_uri: configured_redirect_uri)
-        return OAuthRequirement.new(required: true, metadata: metadata, error: nil)
+        return OAuthRequirement.new(
+          required: true, metadata: metadata, error: nil,
+          determination: McpServerOauthRequirement::ADVERTISED_REQUIRED
+        )
       end
     end
 
-    OAuthRequirement.new(required: false, metadata: nil, error: nil)
+    # Only a 2xx is the server telling us it needs no token: it served an
+    # unauthenticated request. Every other answer — a 401 whose challenge is not
+    # Bearer, a 400 from a streamable-HTTP server that wants a session id before
+    # it looks at auth, a 404, a 5xx — says nothing about authorization, and
+    # recording it as "not required" is the one mistake that fails silently.
+    # `required` stays false throughout, exactly as before; what changes is
+    # whether we claim to know why.
+    determination = if response.code.to_s.start_with?("2")
+      McpServerOauthRequirement::ADVERTISED_NOT_REQUIRED
+    else
+      McpServerOauthRequirement::UNDETERMINED
+    end
+
+    OAuthRequirement.new(
+      required: false, metadata: nil, error: nil,
+      determination: determination
+    )
   rescue => e
     Rails.logger.warn "[McpOauthService] Probe failed for #{server_url}: #{e.message}"
-    OAuthRequirement.new(required: false, metadata: nil, error: e.message)
+    OAuthRequirement.new(
+      required: false, metadata: nil, error: e.message,
+      determination: McpServerOauthRequirement::UNDETERMINED
+    )
   end
 
   # Extracts resource_metadata URL from WWW-Authenticate header
