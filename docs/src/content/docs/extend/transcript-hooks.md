@@ -110,10 +110,11 @@ file* through a `<<'PY'` heredoc recorded its own fixture strings as pull reques
 against a repository that does not exist.
 
 Dropping a line is the one thing here that can lose a real create, so the heredoc reading gives up
-rather than guesses: a delimiter whose terminator it cannot find leaves the whole rest of the script
-read as shell, and a terminator is matched with leading whitespace allowed so it can only end a body
-*early*. A body assumed to run to end-of-input would swallow every command after it and switch a
-session's whole GitHub integration off in silence
+rather than guesses. A delimiter whose terminator it cannot find leaves the rest of the script read
+as shell; a terminator is matched with surrounding whitespace allowed, so it can only end a body
+*early*; and a line whose own quoting never resolves opens nothing, since a `<<` inside an unclosed
+argument is not a redirection. A body assumed to run to end-of-input would swallow every command
+after it and switch a session's whole GitHub integration off in silence
 ([#89](https://github.com/tadasant/zimmer/issues/89)).
 
 The create is then matched **anywhere** in what is left, rather than at the front of the segment.

@@ -124,7 +124,14 @@ module TranscriptHooks::ShellSegments
   # back into that command rather than splitting it — otherwise a `gh api` and the
   # flags continued underneath it land in different segments and neither means
   # anything.
-  LINE_CONTINUATION_PATTERN = /\\\n/
+  #
+  # Folded while the lines are being walked for heredocs rather than in one pass
+  # over the whole script, because a heredoc body is not a place a continuation
+  # applies: a `<<'EOF'` body is literal, so a backslash ending its last line is
+  # part of the text. Folding first glues the terminator onto that line, the body
+  # then runs on to wherever the delimiter appears next, and every real command in
+  # between is dropped — #89, out of the fix for #873.
+  LINE_CONTINUATION = "\\"
 
   # `out=$(gh api ...)`, `$(gh api ...)`, `` `gh api ...` ``: a command whose output
   # is being captured is still that command. Stripped before the environment
@@ -163,7 +170,7 @@ module TranscriptHooks::ShellSegments
   # @param command [String]
   # @return [Array<String>]
   def shell_segments(command)
-    split_script(command.to_s.gsub(LINE_CONTINUATION_PATTERN, " "))
+    split_script(command.to_s)
   end
 
   # +segment+ with every closed quoted string blanked out: what the command runs,
@@ -214,8 +221,8 @@ module TranscriptHooks::ShellSegments
     end
   end
 
-  # +script+'s lines with every heredoc body dropped: the lines a shell would run,
-  # without the ones it feeds to something else.
+  # +script+'s lines as a shell would run them: continuations folded back into the
+  # command they continue, and every heredoc body dropped.
   #
   # A body is dropped rather than blanked because a line of it is not a command in
   # any reading — `python3 - <<'PY'` hands its body to Python, and a `gh pr create`
@@ -223,11 +230,17 @@ module TranscriptHooks::ShellSegments
   # it is a command, it may carry several heredocs, and it may have run something
   # else before them (`cat <<EOF > f && gh pr create --fill`).
   #
+  # The two are done in one walk because they disagree about what a line is. A
+  # continuation joins *command* lines, so it is applied before a line is read for
+  # heredocs — `cat <<EOF \` continued onto `&& gh pr create` is one command and
+  # the body starts under it. Inside a body it does not apply at all, which is why
+  # body lines are skipped whole rather than folded (see LINE_CONTINUATION).
+  #
   # Gives up rather than guesses. A delimiter whose terminator is nowhere in what
   # follows — a truncated transcript, a terminator written in a shape this does not
-  # recognise — ends the heredoc reading for the whole script, and everything from
-  # the body onward is read as shell. A body assumed to run to end-of-input instead
-  # would swallow every command after it, so a real `gh pr create` would be
+  # recognise — ends the heredoc reading for the rest of the script, and everything
+  # from the body onward is read as shell. A body assumed to run to end-of-input
+  # instead would swallow every command after it, so a real `gh pr create` would be
   # recorded nowhere and every GitHub integration for that session would silently
   # stop (#89). Reading a body as shell costs a false positive of the kind #873 is
   # about; reading a command as a body costs the integration.
@@ -236,24 +249,31 @@ module TranscriptHooks::ShellSegments
   # @return [Array<String>]
   def shell_lines(script)
     lines = script.split("\n")
-    return lines unless script.include?("<<")
-
+    heredocs = script.include?("<<")
     kept = []
     index = 0
 
     while index < lines.length
       line = lines[index]
-      kept << line
       index += 1
+
+      while line.end_with?(LINE_CONTINUATION) && index < lines.length
+        line = "#{line.delete_suffix(LINE_CONTINUATION)} #{lines[index]}"
+        index += 1
+      end
+
+      kept << line
+      next unless heredocs
 
       delimiters = heredoc_delimiters(line)
       next if delimiters.empty?
 
       body_end = heredoc_body_end(lines, index, delimiters)
 
+      # No terminator: read the rest as shell rather than swallowing it.
       if body_end.nil?
-        kept.concat(lines[index..] || [])
-        break
+        heredocs = false
+        next
       end
 
       index = body_end
@@ -270,10 +290,24 @@ module TranscriptHooks::ShellSegments
   # mention rather than one. The views share offsets, so which of the two it is can
   # be read off the position.
   #
+  # A line whose quoting does not resolve opens nothing, which is the same bet the
+  # split makes on such a line: the quoting is unreadable, so the crude answer is
+  # the one to trust, and here the crude answer is "not a heredoc". Otherwise
+  # `git commit -m "mentions << EOF` opens one, and a later line that happens to be
+  # the bare delimiter drops every command in between (#89).
+  #
+  # The exception is a line that hands a script to a shell. Codex writes every
+  # command as `bash -lc "…"`, so the opening quote is the wrapper's syntax rather
+  # than the line's, and the body lives on the lines *after* it where the recursion
+  # into that script cannot reach. Declining here would leave every Codex heredoc
+  # body read as shell.
+  #
   # @param line [String]
   # @return [Array<String>]
   def heredoc_delimiters(line)
     runs = unquoted(line)
+    return [] if unresolved_quoting?(runs) && !runs.match?(WRAPPED_SCRIPT_PATTERN)
+
     delimiters = []
 
     line.scan(HEREDOC_OPERATOR_PATTERN) do
@@ -284,6 +318,17 @@ module TranscriptHooks::ShellSegments
     end
 
     delimiters
+  end
+
+  # Whether +runs+ — a line's #unquoted view — still holds a quote that never
+  # closed. Every closed span is blanked out of that view, so a quote surviving
+  # into it opened something the line did not finish. A run of three or more is not
+  # a pair and is not evidence either way, so it is taken out first.
+  #
+  # @param runs [String]
+  # @return [Boolean]
+  def unresolved_quoting?(runs)
+    runs.gsub(QUOTE_RUN_PATTERN, "").match?(/["']/)
   end
 
   # The index of the first line after the bodies of +delimiters+, or nil if any of
