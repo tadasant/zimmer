@@ -1507,6 +1507,80 @@ skip is "the work is already in hand", not "the event was dropped":
 The trigger detail page and `search_triggers` both say when a trigger is *currently* skipping and
 which session it is deferring to — without that, a trigger spawning nothing looks dead.
 
+## Coalescing a burst of Slack messages
+
+A Slack trigger fires per **message**. On 2026-08-29 one MCP `bulk_archive` call posted seven alerts
+to `#alerts` in three seconds, and the `#alerts` → router trigger spawned seven priority sessions in
+nine seconds. Each one booted a clone, loaded the router root, read Slack and worked out it was a
+duplicate; six archived within three minutes and the seventh failed. One event, seven sessions' worth
+of quota and wall-clock, one conclusion.
+
+**Coalescing window** (`Trigger#coalesce_window_seconds`, on the triggers form, the REST API, and
+both trigger MCP tools) is the answer to that. Slack messages that land in the same channel, thread
+or DM within the window of each other are **one event**: they spawn **one** session, and every
+message in the group is named — with its link and its author — in that session's prompt.
+
+```
+There is a new message in Slack, channel alerts.
+
+Link: https://tadasant.slack.com/archives/C0BG.../p1756500000
+
+...the rest of the trigger's template...
+
+---
+
+6 more messages landed in #alerts within 60s of the one above, so Zimmer folded them into this
+session rather than starting one session each. Treat them as part of the same event and read all
+of them before deciding what to do — the first message is not necessarily the whole story:
+
+- 20:40:35 UTC — Obs Alerts: [production] Queued messages stranded by an archive — https://...
+- 20:40:35 UTC — Obs Alerts: [production] Queued messages stranded by an archive — https://...
+```
+
+Three properties are worth stating explicitly, because the failure mode of getting this wrong is
+**silence** — an alert that gets no session announces nothing.
+
+- **Nothing is dropped.** A folded message is carried in the surviving session's prompt, and its
+  human author is still recorded against that session (`HumanMessageCapture`). This is what separates
+  coalescing from the other two controls: past its cap, [burst control](#burst-control) drops the
+  events it suppresses, and [skip while pending](#skip-while-a-session-is-still-pending) drops the
+  fire it defers.
+- **A group is anchored on its first message, not chained off the previous one.** A group therefore
+  spans at most the window. Chaining would let a channel posting steadily just inside the window
+  merge an hour of unrelated alerts into one session.
+- **Only messages in the same conversation, from the same author, are grouped.** The poller hands one
+  channel's, thread's or DM's new messages to the grouper at a time, so two alerts landing in the same
+  second in two different channels are never each other's duplicates — and inside one channel the
+  author has to match too, because a burst is one producer repeating itself. Two people @mentioning
+  Zimmer twenty seconds apart are two requests; two apps alerting at once are two incidents. The key
+  is Slack's `user`, falling back to `bot_id` and then `username` so an app posting through a webhook
+  still coalesces its own burst. A message Slack attributes to nobody at all is never folded into
+  another one: no identity is no evidence of a shared producer, and the safe direction is a session
+  too many.
+
+The window is **on by default at 60 seconds** (`Trigger::DEFAULT_COALESCE_WINDOW_SECONDS`), which is
+where it differs from its two neighbours. Both of those can stop a trigger spawning anything, so both
+are opt-in; this one cannot lose a message, and leaving it off by default would mean every trigger
+kept fanning out until somebody edited a row by hand.
+
+| Stored value | Meaning |
+| --- | --- |
+| `null` (the default) | Inherit `Trigger::DEFAULT_COALESCE_WINDOW_SECONDS` — 60 seconds. |
+| `0` | Off. Every message spawns its own session, which is how triggers behaved before this setting existed. |
+| `N` | Group messages that land within N seconds of the message that opened the group. Capped at an hour. |
+
+The trigger page, the REST payload and `search_triggers` all report the window **and where the number
+came from**, because an inherited default and a value someone typed read identically otherwise. A
+value stored on a trigger with no Slack condition is reported as **inert**: only the Slack poller
+groups messages, since it is the only firing path that walks a list of events inside a single fire.
+
+:::note[Grouping happens within one poll pass]
+The poller ticks once a minute and groups the messages that pass carried. A burst that straddles a
+tick boundary — some messages fetched by one pass, the rest by the next — produces one session per
+pass rather than one overall. Two sessions for a burst instead of seven is the intended improvement;
+one is not guaranteed across the boundary.
+:::
+
 ## Burst control
 
 A trigger can cap how many sessions it spawns per minute: **max sessions per minute**
@@ -1518,6 +1592,13 @@ It exists because nothing bounded a trigger before. A burst of messages in a wat
 spawned one session per message — 50 of them, trashed by hand — and a sustained outage generating
 alerts could have spawned sessions until the fleet was overwhelmed. A single Slack poll tick can
 carry many messages, so the cap has to bound spawns *within* a tick, not just across ticks.
+
+The two controls sit **in series, coalescing first**: on a Slack trigger the cap counts the events
+that survive [coalescing](#coalescing-a-burst-of-slack-messages), not the raw messages. Twenty alerts
+from one app inside the window are one event, so a cap of three is never approached and no burst
+notice is sent — which is the outcome you want, since the cap would have reached it by *dropping*
+seventeen messages. What still reaches the cap is a tick carrying many *distinct* events: several
+producers, or messages spread wider than the window.
 
 The cap is enforced at `Trigger#create_session!` — the one chokepoint every condition type funnels
 through — so it covers `slack`, `schedule`, and `ao_event` triggers at once.

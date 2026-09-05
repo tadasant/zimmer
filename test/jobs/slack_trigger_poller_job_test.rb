@@ -2285,8 +2285,16 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
   # poller spawned one session per message. A single tick can carry many
   # messages, so the cap has to bound spawns WITHIN a tick, not just across
   # ticks.
+  #
+  # These tests turn message coalescing OFF, because they are about the RATE cap
+  # and the two controls sit in series: coalescing runs first and hands the cap
+  # events rather than messages, so a 20-message burst one second apart is one
+  # event and never reaches the cap at all. That composition is pinned by its own
+  # test at the end of this section; leaving it on here would test it twice and
+  # the cap not at all.
 
   def stub_slack_burst(messages)
+    @trigger.update!(coalesce_window_seconds: 0)
     SlackService.stubs(:configured?).returns(true)
     SlackService.stubs(:get_messages_since).returns(messages)
     SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/123")
@@ -2365,6 +2373,24 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
 
     sessions = Session.where("metadata->>'trigger_id' = ?", @trigger.id.to_s).to_a
     assert_empty sessions.select { |s| s.metadata["burst_notice"] }
+  end
+
+  test "coalescing runs before the cap, so a 20-message burst is one event and never trips it" do
+    # The two controls are in series and this is the order. With coalescing on
+    # (the default), the cap counts EVENTS: 20 messages a second apart are one
+    # burst from one author, so one session is spawned, the cap of 3 is never
+    # approached, and no burst notice is sent. Without this the cap would be
+    # doing the work and dropping 17 messages to do it.
+    stub_slack_burst(alert_messages(20))
+    @trigger.update!(max_sessions_per_minute: 3, coalesce_window_seconds: 60)
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, @condition)
+    end
+
+    sessions = Session.where("metadata->>'trigger_id' = ?", @trigger.id.to_s).to_a
+    assert_empty sessions.select { |s| s.metadata["burst_notice"] }
+    assert_not @trigger.reload.bursting?
   end
 
   # --- Deferral on transient Slack failures (#77) ----------------------------

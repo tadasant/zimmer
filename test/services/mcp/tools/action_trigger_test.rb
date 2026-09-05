@@ -207,6 +207,47 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_not Trigger.find_by!(name: "Quiet Watcher").skip_if_pending_session
   end
 
+  test "creates a trigger with a coalescing window, and 0 turns it off without becoming the default" do
+    output = @tool.call(
+      "action" => "create",
+      "name" => "Coalescing Watcher",
+      "trigger_type" => "slack",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "New message: {{link}}",
+      "coalesce_window_seconds" => 120,
+      "configuration" => { "channel_id" => "C123", "channel_name" => "alerts" }
+    )
+
+    trigger = Trigger.find_by!(name: "Coalescing Watcher")
+    assert_equal 120, trigger.coalesce_window_seconds
+    assert_includes output, "- **Coalescing Window:** 120s"
+
+    # 0 must survive as 0. `.presence` on the way in would read it as "say
+    # nothing", which means the opposite: inherit the default window.
+    off_output = @tool.call("action" => "update", "id" => trigger.id, "coalesce_window_seconds" => 0)
+    assert_equal 0, trigger.reload.coalesce_window_seconds
+    assert_includes off_output, "- **Coalescing Window:** off"
+
+    default_output = @tool.call("action" => "update", "id" => trigger.id, "coalesce_window_seconds" => nil)
+    assert_nil trigger.reload.coalesce_window_seconds
+    assert_includes default_output, "- **Coalescing Window:** #{Trigger::DEFAULT_COALESCE_WINDOW_SECONDS}s (default)"
+  end
+
+  test "a trigger created without a coalescing window inherits the default" do
+    @tool.call(
+      "action" => "create",
+      "name" => "Inheriting Watcher",
+      "trigger_type" => "slack",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "New message: {{link}}",
+      "configuration" => { "channel_id" => "C123", "channel_name" => "alerts" }
+    )
+
+    trigger = Trigger.find_by!(name: "Inheriting Watcher")
+    assert_nil trigger.coalesce_window_seconds
+    assert_equal Trigger::DEFAULT_COALESCE_WINDOW_SECONDS, trigger.effective_coalesce_window_seconds
+  end
+
   test "creates a one-time schedule trigger" do
     @tool.call(
       "action" => "create",
