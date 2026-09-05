@@ -199,9 +199,22 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   #
   # Unlike #wait_for_turbo_streams_connected this does not require a source to
   # exist: most pages in the suite broadcast nothing, and a page with no sources
-  # has nothing to wait for.
-  def connect_turbo_cable_stream_sources
-    TurboStreamConnectionWait.wait(require_source: false) do
+  # has nothing to wait for. It also gets the shorter of the two ceilings, because
+  # it is spent after every navigation in the suite rather than where a test has
+  # said it depends on a broadcast.
+  #
+  # The keyword and block parameters match the gem's signature so a turbo-rails
+  # release that starts passing Capybara filter options cannot break every `visit`
+  # in the suite with an ArgumentError. They are refused rather than ignored: this
+  # poll reads the whole document, so there is nothing honest to do with a filter.
+  def connect_turbo_cable_stream_sources(**options, &block)
+    if options.any? || block
+      raise ArgumentError,
+        "ApplicationSystemTestCase#connect_turbo_cable_stream_sources takes no filters; " \
+        "got #{options.inspect}. See test/support/turbo_stream_connection_wait.rb."
+    end
+
+    TurboStreamConnectionWait.wait(timeout: TurboStreamConnectionWait::POST_VISIT_TIMEOUT, require_source: false) do
       page.evaluate_script(TurboStreamConnectionWait::READING_SCRIPT)
     end
   end
