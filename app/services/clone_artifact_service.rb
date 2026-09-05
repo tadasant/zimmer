@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "open3"
-
 # Service for preserving and restoring unpushed git artifacts from session clones.
 #
 # When a session is archived, instead of keeping the full clone on disk, this service:
@@ -19,6 +17,34 @@ require "open3"
 #
 class CloneArtifactService
   ARTIFACTS_BASE_DIR = ".zimmer/artifacts"
+
+  # Raised when a git subprocess exceeds GIT_TIMEOUT_SECONDS and BoundedSubprocess
+  # kills its process group.
+  class GitTimeoutError < StandardError; end
+
+  # Wall-clock bound on every git subprocess this service runs.
+  #
+  # Every git command here is local — status, rev-parse, bundle create, add,
+  # diff, apply — so none of them waits on a network the way GitCloneService's
+  # clone does, and the measured cost on a real 21k-file session clone is
+  # milliseconds. The bound is not for the happy path.
+  #
+  # It is for the lane. DeferredCloneCleanupJob runs this service on
+  # `maintenance`, which has two threads, and an unbounded `Open3.capture3`
+  # there is an unbounded hold on half of them: a git wedged on stuck volume
+  # I/O or on its own lock never returns, the thread is never given back, and
+  # two such runs stop clone reclamation entirely while archived clones keep
+  # arriving. That is the same class of failure #998 bounded for the periodic
+  # sweeps, on the one path in this job it did not reach.
+  #
+  # 120s is the number DockerComposeCleanupService::COMPOSE_DOWN_TIMEOUT uses for
+  # the other subprocess on this job's path, and leaves a wide margin over the
+  # slowest command measured on a large clone. Only the number is shared: that
+  # one is `Timeout.timeout` around `Open3.capture3`, which unwinds through
+  # `popen_run`'s ensure and waits for the child regardless, so it bounds
+  # nothing (#908). This one bounds, because BoundedSubprocess kills the
+  # process group rather than raising in the caller.
+  GIT_TIMEOUT_SECONDS = Integer(ENV.fetch("CLONE_ARTIFACT_GIT_TIMEOUT_SECONDS", "120"))
 
   # A working tree that is almost entirely deletions of tracked files is not
   # uncommitted work — it is a clone whose tree was mangled by an interrupted
@@ -81,13 +107,21 @@ class CloneArtifactService
 
   attr_reader :file_system, :logger
 
-  def initialize(file_system: nil, logger: nil)
+  # @param git_timeout [Numeric] wall-clock bound for each git subprocess.
+  #   Injectable so a test can prove the watchdog actually kills a wedged git
+  #   without sitting through GIT_TIMEOUT_SECONDS.
+  def initialize(file_system: nil, logger: nil, git_timeout: GIT_TIMEOUT_SECONDS)
     @file_system = file_system || RealFileSystemAdapter.new
     @logger = logger || StructuredLogger.new({ service: "CloneArtifactService" })
+    @git_timeout = git_timeout
   end
 
   # Check if a clone has any unpushed state (uncommitted changes or unpushed commits).
-  # On error, returns clean to never block cleanup.
+  #
+  # On error, returns clean so a broken inspection never blocks cleanup — with one
+  # exception. A git we had to *kill* returns dirty instead, because "clean" here
+  # authorizes the caller to delete the clone, and a timeout is precisely the case
+  # where we do not know what the clone holds. See the GitTimeoutError rescue.
   def check_dirty_state(clone_path)
     unless clone_path && file_system.directory?(clone_path)
       return DirtyCheckResult.new(dirty?: false, has_uncommitted?: false,
@@ -125,6 +159,23 @@ class CloneArtifactService
       has_unpushed_commits?: has_unpushed,
       details: details.join("; ")
     )
+  rescue GitTimeoutError => e
+    # A git command we had to kill tells us nothing about whether this clone
+    # holds unpushed work — and the caller *deletes* whatever we call clean. So
+    # the safe answer is "dirty": preservation is attempted, and if that times
+    # out too the clone is held for the reversible window instead of being
+    # deleted on the strength of a question we could not ask. Holding a clone
+    # costs disk for four days; the other error destroys the only copy of
+    # someone's unpushed work, and is not undoable.
+    #
+    # .warn, not .error: the outcome here is a clone preserved, which is the
+    # conservative branch working as designed. The timeout is still loud, one
+    # level up — DeferredCloneCleanupJob logs "Failed to preserve artifacts" at
+    # .error when the create_artifacts this leads to comes back unsuccessful.
+    @logger.warn("Dirty-state check timed out; treating the clone as dirty so it is not deleted",
+      clone_path: clone_path, error: e.message)
+    DirtyCheckResult.new(dirty?: true, has_uncommitted?: false,
+      has_unpushed_commits?: false, details: "dirty-state check timed out (#{e.message})")
   rescue => e
     # A clone that vanishes between the early-return guard above and the git
     # invocation below is a benign, expected race: the caller is about to delete
@@ -154,6 +205,17 @@ class CloneArtifactService
       @logger.info("Clone path is gone before artifact creation, nothing to preserve",
         clone_path: clone_path, session_id: session_id)
       return CreateResult.new(success?: false, clone_missing?: true, error: "Clone path does not exist")
+    end
+
+    # git has already had to be killed on this clone during the dirty check, and
+    # nothing since then can have unwedged it. Re-asking costs another
+    # GIT_TIMEOUT_SECONDS of a two-thread lane to arrive at the same answer, so
+    # decline now and let the caller hold the clone for the reversible window.
+    if @git_timed_out_on == clone_path
+      @logger.warn("Declining artifact creation: git already timed out on this clone",
+        clone_path: clone_path, session_id: session_id)
+      return CreateResult.new(success?: false, clone_missing?: false,
+        error: "git timed out on this clone during the dirty-state check")
     end
 
     artifacts_dir = artifacts_path_for(session_id)
@@ -388,8 +450,8 @@ class CloneArtifactService
   # so this asks the disk rather than reading the exception.
   #
   # Errno::ENOENT is tempting as a proxy and is the wrong test. `run_git` is
-  # Open3.capture3(..., chdir: clone_path), which raises it both when the chdir
-  # target is gone — the race — and when the `git` executable is not on PATH,
+  # BoundedSubprocess.run(..., cwd: clone_path), which raises it both when the
+  # chdir target is gone — the race — and when the `git` executable is not on PATH,
   # which is a real failure on a clone that is still there. A recursive delete
   # unlinks the directory itself last, so whenever a chdir does raise for the
   # race, the path is already gone and this returns true anyway.
@@ -557,28 +619,62 @@ class CloneArtifactService
     false
   end
 
-  # Run a git command safely using Open3 array syntax (prevents shell injection).
+  # Run a git command safely using array syntax (prevents shell injection), under
+  # the GIT_TIMEOUT_SECONDS watchdog.
+  #
+  # BoundedSubprocess rather than a bare Open3.capture3: it starts the child as
+  # its own process-group leader and SIGKILLs the whole group on deadline, which
+  # matters because git spawns helpers (pack-objects, index-pack) that have to
+  # die with it. The deadline governs the pipe-drain loop, so the guarantee is
+  # "bounded while the child's pipes are open" rather than unconditional — git
+  # holds its descriptors until it exits, so every command here is covered.
   #
   # Git output is raw bytes: branch names, diffs, and status can contain
   # non-UTF-8 sequences (e.g. a staged binary file or a file name in a
-  # non-UTF-8 locale). Open3.capture3 tags stdout/stderr with the default
-  # external encoding (UTF-8), so calling String methods that validate
-  # encoding (strip, =~, present?) on that output raises
+  # non-UTF-8 locale). Calling String methods that validate encoding (strip,
+  # =~, present?) on bytes tagged UTF-8 raises
   # Encoding::CompatibilityError "invalid byte sequence in UTF-8".
   #
   # binmode: false (default) — scrub stdout/stderr to valid UTF-8 (invalid
   #   bytes become U+FFFD). Safe for text output that flows into String ops,
   #   metadata, and JSON.pretty_generate.
-  # binmode: true — capture raw bytes (ASCII-8BIT) untouched. Use when the
+  # binmode: true — keep the raw bytes (ASCII-8BIT) untouched. Use when the
   #   output must round-trip byte-for-byte, e.g. a diff written as a patch.
   def run_git(*args, cwd:, binmode: false)
     command = [ "git" ] + args.map(&:to_s)
     @logger.debug("Running git command", command: command.join(" "), cwd: cwd)
-    stdout, stderr, status = Open3.capture3(*command, chdir: cwd, binmode: true)
-    unless binmode
+    stdout, stderr, status = BoundedSubprocess.run(command, cwd: cwd, timeout: @git_timeout)
+    # A command that came back is evidence git is not wedged here after all, so
+    # the short-circuit below must not outlive the timeout that set it. Clone
+    # paths are reused (SessionClonePath.for_recreate), which is what makes a
+    # latch keyed on one a thing that could go stale rather than merely unused.
+    @git_timed_out_on = nil if @git_timed_out_on == cwd
+    if binmode
+      # BoundedSubprocess accumulates into a UTF-8 buffer that Ruby promotes to
+      # ASCII-8BIT only once a chunk actually carries a high byte, so the
+      # encoding it hands back is data-dependent: BINARY for a patch containing
+      # a binary blob, UTF-8 for one that happens to be all ASCII. The bytes are
+      # identical either way; `.b` just states the encoding the caller is
+      # promised, so a patch written to disk from this cannot depend on its own
+      # contents for its tag.
+      # force_encoding, not `.b`: BoundedSubprocess hands back a fresh unshared
+      # buffer, so retagging it in place is safe and avoids copying a patch that
+      # has no useful size bound.
+      stdout = stdout.force_encoding(Encoding::BINARY)
+      stderr = stderr.force_encoding(Encoding::BINARY)
+    else
       stdout = stdout.dup.force_encoding(Encoding::UTF_8).scrub
       stderr = stderr.dup.force_encoding(Encoding::UTF_8).scrub
     end
     [ stdout, stderr, status ]
+  rescue BoundedSubprocess::TimeoutError => e
+    # Remember which clone this was, so create_artifacts does not spend another
+    # GIT_TIMEOUT_SECONDS of the same two-thread lane re-asking a question that
+    # has just failed to arrive. DeferredCloneCleanupJob memoizes one service
+    # per run, so this lives exactly as long as the clone it describes; keying
+    # it by path rather than setting a bare boolean keeps it honest if an
+    # instance is ever reused across clones.
+    @git_timed_out_on = cwd
+    raise GitTimeoutError, e.message.sub(/\Acommand /, "git command ")
   end
 end
