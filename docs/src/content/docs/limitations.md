@@ -724,13 +724,15 @@ login flow), and the GoodJob dashboard.
 The `/supervisor` Administrate panel is the exception, and the reason is its blast radius — it renders
 `claude_accounts`, `mcp_oauth_credentials`, `x_oauth_credentials`, and `runtime_login_attempts` as
 *editable* resources, and `mcp_oauth_credentials.access_token` / `.refresh_token` / `.client_secret`
-are among the fields it puts in an edit form. Two credential columns are held back deliberately, and
-each is listed in its dashboard's `DELIBERATELY_OMITTED` with the reason: `claude_accounts.oauth_config`
-(the plaintext Anthropic and OpenAI access and refresh tokens the whole fleet runs on) and
-`runtime_login_attempts.pasted_code`. It now sits behind an HTTP Basic realm keyed on `SUPERVISOR_PASSWORD` (with an optional
+are among the fields it puts in an edit form. It sits behind an HTTP Basic realm keyed on `SUPERVISOR_PASSWORD` (with an optional
 `SUPERVISOR_USERNAME`, default `supervisor`), compared in constant time, and it **fails closed**: with
 the variable unset or blank, every dashboard returns 401 and the refusal is logged. An unconfigured deployment gets no panel rather than an
 open one.
+
+Two credential columns are held back from the panel entirely, each listed in its dashboard's
+`DELIBERATELY_OMITTED` with the reason written next to it: `claude_accounts.oauth_config`, the
+plaintext Anthropic and OpenAI tokens the whole fleet runs on, and
+`runtime_login_attempts.pasted_code`.
 
 Two things that follow, in both directions:
 

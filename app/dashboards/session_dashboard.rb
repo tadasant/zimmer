@@ -118,13 +118,17 @@ class SessionDashboard < Administrate::BaseDashboard
   # written by the state machine, the scheduler or the runtime, and a generic
   # form that lets an operator hand-edit `archived_at`, `job_id` or
   # `heartbeat_last_beat_at` is a way to corrupt a session, not to operate one.
-  # `session_notes` is left out for a sharper reason: every writer of it also
-  # stamps `session_notes_updated_at`, which a generic form would not, so an
-  # edit here would silently date the notes wrong. The purpose-built surfaces
-  # (/sessions/:id, the REST API, the MCP tools) own all of these; this panel
-  # reads them.
+  # Two fields are left out for a sharper reason than that, and they are the
+  # same reason twice: each has a companion the generic form would not write.
+  # Every writer of `session_notes` also stamps `session_notes_updated_at`, so
+  # an edit here would silently date the notes wrong. Every writer of `title`
+  # also clears `metadata["auto_generated_title"]`, which is the flag
+  # SessionTitleJob reads to decide whether it may re-title a session — so a
+  # title typed here would be quietly overwritten by the next titling run.
+  #
+  # The purpose-built surfaces (/sessions/:id, the REST API, the MCP tools) own
+  # all of these; this panel reads them.
   FORM_ATTRIBUTES = %i[
-    title
     agent_runtime
     branch
     config
