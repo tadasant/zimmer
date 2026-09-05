@@ -301,13 +301,25 @@ gh pr view <number> --repo <owner>/<repo> --json state,mergedAt,labels,comments 
 
 | What you find | What it means | What you do |
 |---|---|---|
-| `state: MERGED` | The work is over | **Archive yourself**, saying the PR merged |
+| `state: MERGED` | The work is over — unless the merge fired a deploy (see below) | **Archive yourself**, saying the PR merged. If the merge fired post-merge automation, wait for it first |
 | `state: CLOSED`, not merged | The work is over, differently | **Archive yourself**, saying it was closed unmerged |
 | Open, with a **fresh** gate verdict reading `HELD` | The gate decided a human must look — the disposition is genuinely unsettled | **Come to rest in `needs_input`**, naming the hold test and summarising the gate's rationale. **Do not sleep again**: this is exactly what the queue is for |
 | Open, `ready to merge` no longer on the PR | Nothing will rate it, so the machine wait is over | **Come to rest in `needs_input`**, saying the label came off and you did not remove it |
 | Open, no fresh verdict, wakes remaining | Still a machine wait | **Re-schedule** the next wake (increment the counter) and end your turn |
 | Open, no fresh verdict, **wake 3 of 3 has fired** | The gate is not coming | **Come to rest in `needs_input`**, saying the PR has sat ~90 minutes with no gate verdict |
 | The `gh` call itself failed | You know nothing about the PR | Retry once. Still failing → **come to rest in `needs_input`** with the exact command and error; never infer a state you could not read |
+
+**A merge that fires a deploy is the halfway point, not the end.** Merging is where some PRs start building and shipping — a release image, a production deploy, CI on the base branch — and that automation runs for minutes after the merge and can fail on a path your PR's own CI never exercised. You hold more context about this change than anyone else does, so archiving at the moment the merge lands throws that context away exactly when it is worth most (tadasant/tadasant-internal#1969). So on `state: MERGED`, before you archive:
+
+```bash
+gh run list --commit <merge commit sha> --repo <owner>/<repo> --limit 10
+```
+
+Zimmer's merge notification, if that is what woke you, already carries this reading and tells you which case you are in — trust it and skip the command. Either way:
+
+- **Nothing listed** — the merge fired nothing. Archive, as the table says.
+- **Runs still going** — sleep on them with `wake_me_up_later` (~2 minutes at a time, ~10 wakes, ~20 minutes total), re-checking with `gh run view <id>`. This is a machine wait: do **not** come to rest in `needs_input` for it. Archive once they are all green; if the budget runs out first, name the runs in your final message and archive anyway.
+- **A run failed** — read its log, then either fix it (a follow-up PR through this skill) or say in your final message what failed and why it is not yours to fix. Never archive silently on a red run.
 
 Three things decide whether a verdict counts, and the query returns all three so you can check them rather than guess:
 
@@ -327,7 +339,7 @@ The one legitimate restart is a **re-labelled PR**: if you removed the label, pu
 
 Zimmer's poller already messages this session when its PR merges. That is a different mechanism and the two do not fight:
 
-- **The poller's message resumes the session, which consumes the pending one-time wake.** Whichever arrives first wins, and both paths start with the same PR-state check above, so they converge on the same decision.
+- **The poller's message resumes the session, which consumes the pending one-time wake.** Whichever arrives first wins, and both paths start with the same PR-state check above, so they converge on the same decision. The poller's message says more than "it merged": it names the workflow runs the merge fired, which is the deploy check above already done for you.
 - **The wake is the backstop for everything the poller cannot tell you.** The poller reports *merges* — it says nothing about a PR closed unmerged or one the gate held — and it only knows about PRs it saw you open, so a PR created by a route it does not recognise is invisible to it and no message can ever arrive. The wake covers all three. The gate's own `## 🚀 Merge gate` comment does **not** wake you either; Zimmer was deliberately changed so gate comments stop resuming sessions, which is precisely why the hold case needs this wake rather than a notification.
 - **If the merge gate archives you before your wake fires, that is fine and expected** — on the merge path it may instead leave a `waiting` session alone precisely so your own wake does the archiving and no trigger is left behind.
 - **Do not reach for `wake_me_up_when_session_changes_state` here.** It watches a *session*, and nothing you are waiting on is one — the merge gate is spawned per-PR and you have no id for it. `wake_me_up_later` is the right tool. Neither of them is `sleep`, and that is deliberate: a foreground `sleep` is denied by the harness, and a backgrounded one dies with the session at teardown, so the wait disappears without ever firing.
