@@ -13,8 +13,23 @@
 # Including classes must provide:
 # - `@session`  — the Session being tracked
 # - `@logger`   — a StructuredLogger
-# - `with_db_retry` — from the DatabaseRetry concern
+#
+# `with_db_retry` is deliberately NOT a third item on that list: the module
+# includes DatabaseRetry itself, so an includer gets it whether or not it
+# remembers to ask. A dependency a module can satisfy for itself is not one to
+# ask callers for — asking cost the Pi runtime every MCP status it had, because
+# NullMcpStatusDetector included this module and not DatabaseRetry, and the call
+# below raised NoMethodError on every poll (GlitchTip issue 85).
+#
+# Plain `include`, not `extend ActiveSupport::Concern`. Concern overrides
+# `append_features` but not `extend_object`, so under it DatabaseRetry lands in
+# each includer's ancestors while staying out of this module's own — and
+# `obj.extend(McpStatusPersisting)` would reproduce exactly the NoMethodError
+# above. A plain include puts DatabaseRetry in the real ancestor chain, where
+# both `include` and `extend` reach it.
 module McpStatusPersisting
+  include DatabaseRetry
+
   # Update session's custom_metadata with MCP server statuses
   # @param server_statuses [Hash] Server name => { status:, error:, connected_at:, failed_at: }
   # @return [Boolean] true if any configured server changed to failed

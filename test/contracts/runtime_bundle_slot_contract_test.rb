@@ -64,6 +64,55 @@ class RuntimeBundleSlotContractTest < ActiveSupport::TestCase
     end
   end
 
+  # Non-nil was never the whole contract, and this is the test that says so.
+  #
+  # NullMcpStatusDetector passed every assertion above and still broke the Pi
+  # runtime in production the first time a Pi session polled: it included
+  # McpStatusPersisting without DatabaseRetry, so `update_session_mcp_status` —
+  # which TranscriptPollerService#poll_mcp_logs calls on EVERY poll, immediately
+  # after `poll` — had no `with_db_retry` to call and raised NoMethodError. The
+  # slot was filled, construction succeeded, and the runtime was still broken.
+  #
+  # It stayed invisible because poll_mcp_logs rescues everything and logs: a
+  # detector that raises there costs the runtime its MCP status silently. So this
+  # calls the two methods directly, where a raise is a test failure rather than a
+  # log line, and asserts the persistence step's actual product — not that some
+  # `include` is present, which the next detector would forget just as easily.
+  RuntimeRegistry.registered_runtimes.each do |runtime|
+    test "#{runtime}'s MCP status detector can poll AND persist, not just construct" do
+      session = sessions(:active_session)
+      session.update!(agent_runtime: runtime)
+      assert session.all_mcp_servers.any?, "fixture must have trackable servers for this to test anything"
+
+      detector = RuntimeRegistry.for(runtime).mcp_status_detector_class.new(
+        session, file_system: MockFileSystemAdapter.new, min_timestamp: nil
+      )
+
+      # No assert_nothing_raised around `poll`: a raise here fails the test on its
+      # own, and wrapping it would over-claim — CodexMcpStatusDetector#poll has a
+      # blanket rescue, so the assertion could never fail for that runtime anyway.
+      # The persist call is the one that broke, and it has no rescue of its own.
+      result = detector.poll(transcript_content: nil)
+      assert_nothing_raised do
+        detector.update_session_mcp_status(result[:server_statuses])
+      end
+
+      # What the persistence step is FOR: every trackable server is present in
+      # mcp_servers_status, at worst as `pending`. A server missing here reads as
+      # "not configured" to the REST API and the get_session MCP tool, which is
+      # exactly what a detector that raises leaves behind.
+      persisted = session.reload.custom_metadata["mcp_servers_status"] || {}
+      session.all_mcp_servers.each do |server_name|
+        entry = persisted[server_name]
+
+        assert entry.is_a?(Hash) && entry["status"].present?,
+          "#{runtime}'s detector (#{detector.class}) left #{server_name.inspect} without a status " \
+          "in mcp_servers_status (got #{entry.inspect}). Every trackable server must be seeded, " \
+          "at minimum as pending."
+      end
+    end
+  end
+
   # Every runtime must resolve through the three registries that bypass the
   # bundle. RuntimeAuthProvider.for RAISES for an unregistered runtime and is
   # called with a session's raw agent_runtime from several runtime-agnostic call
