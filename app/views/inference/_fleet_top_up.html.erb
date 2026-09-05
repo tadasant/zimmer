@@ -16,9 +16,10 @@
       while <strong>fewer than</strong> the ceiling below have a <strong>turn in flight</strong>.
       Sessions sitting in <code class="bg-gray-100 px-1 rounded">waiting</code> do not count — most
       of them are asleep on their own wake, holding a finished PR rather than queueing for a slot.
-      A turn that is queued for a worker <em>does</em> count: it takes the next free slot in the
-      agents pool, so topping up on top of it only deepens the queue. A session asleep on its own
-      future wake never counts, whichever status it is sitting in.
+      A turn that is waiting for a worker <em>does</em> count: it takes the next free slot in the
+      agents pool, so topping up on top of it only deepens the queue. What never counts is a session
+      asleep on its own future wake with nothing queued for it — nothing will happen to it before
+      that wake, whichever status the row is sitting in.
       Set the ceiling to <strong>1</strong> and the event means what its name says: nothing running.
     </p>
   </div>
@@ -38,7 +39,7 @@
                  min="1" max="100" step="1"
                  class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
           <p class="mt-1 text-xs text-gray-500">
-            Sessions with a turn in flight — running on a worker, or queued for one. Below this many,
+            Sessions with a turn in flight — running on a worker, or waiting for one. Below this many,
             the fleet counts as idle enough to take more work, so it does not have to empty out
             completely before topping up.
           </p>
@@ -111,10 +112,10 @@
                 between that and a worker starting it. tadasant/zimmer#957 was
                 this number read as "sessions running" while half that many agent
                 processes were alive. %>
-            <% if @fleet_top_up.queued_sessions.positive? %>
+            <% if @fleet_top_up.awaiting_sessions.positive? %>
               <div class="text-xs text-gray-500 font-normal mt-0.5" id="fleet-top-up-split">
                 <%= @fleet_top_up.executing_sessions %> on a worker ·
-                <%= @fleet_top_up.queued_sessions %> queued
+                <%= @fleet_top_up.awaiting_sessions %> waiting for one
                 (the pool runs <%= @fleet_top_up.worker_slots %> at once)
               </div>
             <% end %>

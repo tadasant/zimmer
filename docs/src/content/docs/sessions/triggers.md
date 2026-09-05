@@ -647,7 +647,7 @@ has least room for it — so three questions all have to answer no:
 
 | Question | Why it counts |
 | --- | --- |
-| Does the fleet have `fleet_idle_max_sessions` or more **turns in flight**? | One population and one number, every runtime and every scheduling class — a running Codex session occupies the deployment as much as a Claude one. Sessions in `waiting` do not count, of any class, and neither does a `running` row asleep on its own future wake. A turn merely QUEUED for a worker does — see [What "in flight" counts](/sessions/spot-and-priority/#what-in-flight-counts-and-what-it-does-not) |
+| Does the fleet have `fleet_idle_max_sessions` or more **turns in flight**? | One population and one number, every runtime and every scheduling class — a running Codex session occupies the deployment as much as a Claude one. Sessions in `waiting` do not count, of any class, and neither does a `running` row asleep on its own future wake with nothing queued for it. A turn merely waiting for a worker does — see [What "in flight" counts](/sessions/spot-and-priority/#what-in-flight-counts-and-what-it-does-not) |
 | Any session parked on an auth outage, **either class**? | A park is the clearest statement Zimmer makes that work exists and cannot run. Deliberately **not** a threshold and not scoped to spot: an outage parks priority sessions too, `QuotaResetCheckerJob` resumes those on its own schedule, and one parked session is evidence about the *pool* rather than about how busy the fleet is |
 | Can the account pool serve anything? | Asked of the pool directly, via `QuotaAvailabilityMonitor.pool_available?`. An empty pool makes a quiet fleet a symptom rather than an opportunity. Deliberately **not** `AppSetting#quota_pool_available`: that column is an *announcement latch*, held at `false` through a recovery whose event has not fired yet, and a recovery deferred at the spot gate says nothing about whether the pool can serve |
 
@@ -655,9 +655,10 @@ has least room for it — so three questions all have to answer no:
 
 `running` is stamped when a turn is **handed to** a session, not when a worker starts executing it,
 and the `agents` queue (default 8 threads) sits between the two. So the column holds turns being
-executed and turns queued for a worker at once — both count, because a queued turn takes the next
-free slot — plus a third population that does not: a row asleep on its own future wake with no worker
-on it. Zimmer refuses to start those before the wake, so they can consume nothing.
+executed and turns waiting for a worker at once — both count, because a waiting turn takes the next
+free slot — plus a third population that does not: a row asleep on its own future wake with no
+`AgentSessionJob` at all, running or queued. Nothing will happen to those until the wake fires, so
+they can consume nothing in the meantime.
 
 [#957](https://github.com/tadasant/zimmer/issues/957) is what named this. A fleet reporting 15
 sessions at a ceiling of 7 had 8 agent processes alive; the rest were turns queued behind the pool,

@@ -24,16 +24,10 @@ class FleetTopUpStatus
     new(setting: setting, turns: FleetIdleMonitor.running_turns, now: now)
   end
 
-  # Takes either the split reading or a bare count. The bare form is for callers
-  # that already have a number and only want the state arithmetic — chiefly
-  # tests and AppSetting's own ceiling validation — and it reports the whole
-  # count as executing, since a caller with one number has no split to offer.
-  def initialize(setting:, running_sessions: nil, turns: nil, now: Time.current)
+  def initialize(setting:, turns:, now: Time.current)
     @setting = setting
-    @turns = turns || RunningTurns::Reading.new(
-      on_a_worker: running_sessions.to_i, queued_for_a_worker: 0, asleep: 0
-    )
-    @running_sessions = @turns.total
+    @turns = turns
+    @running_sessions = turns.total
     @now = now
     @max_sessions = FleetIdleMonitor.max_sessions(setting)
     @threshold = FleetIdleMonitor.idle_threshold(setting)
@@ -61,7 +55,7 @@ class FleetTopUpStatus
   # worker — see RunningTurns. Reported because "the fleet is running 15
   # sessions" is what an operator disbelieves when 8 processes are alive.
   def executing_sessions = turns.on_a_worker
-  def queued_sessions = turns.queued_for_a_worker
+  def awaiting_sessions = turns.awaiting_a_worker
 
   # `running` rows dropped from the total: asleep on their own future wake with
   # no worker on them, so Zimmer will not start them before that wake.
@@ -179,15 +173,20 @@ class FleetTopUpStatus
     "#{running_sessions} #{"session".pluralize(running_sessions)}"
   end
 
-  # Says where the number came from, and only when the two halves are actually
-  # different — on a fleet whose every turn has a worker the split is noise, and
-  # on one where it is not, "queued" is the whole explanation for a count that
-  # looks too high.
+  # Says where the number came from, and only when there is something to say —
+  # on a fleet whose every turn has a worker and nothing is asleep, the split is
+  # the same number twice. Where it is not, the queue behind the worker pool is
+  # the whole explanation for a count that looks too high.
   def split_clause
-    return "" unless queued_sessions.positive?
+    parts = []
+    if awaiting_sessions.positive?
+      parts << "#{executing_sessions} on a worker, #{awaiting_sessions} waiting for one behind " \
+               "the #{worker_slots}-slot agents pool"
+    end
+    parts << "#{asleep_sessions} more asleep on a wake and not counted" if asleep_sessions.positive?
+    return "" if parts.empty?
 
-    " (#{executing_sessions} on a worker, #{queued_sessions} queued for one behind " \
-      "the #{worker_slots}-slot agents pool)"
+    " (#{parts.join('; ')})"
   end
 
   def distance_words(seconds)

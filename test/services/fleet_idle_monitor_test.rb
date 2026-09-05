@@ -37,23 +37,6 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
                     session_id: "cli-#{SecureRandom.hex(4)}", metadata: metadata)
   end
 
-  # Arms a one-time wake against `session` for a time that has not come, without
-  # the after_create hooks that would sleep or immediately fire it.
-  def arm_wake!(session, at:)
-    Trigger.new(
-      name: "Wake session ##{session.id}",
-      status: "enabled",
-      agent_root_name: "zimmer",
-      prompt_template: "wake up",
-      reuse_session: true,
-      last_session_id: session.id,
-      trigger_conditions_attributes: [
-        { condition_type: "schedule",
-          configuration: { "scheduled_at" => at.utc.strftime("%Y-%m-%dT%H:%M:%S"), "timezone" => "UTC" } }
-      ]
-    ).save!(validate: true)
-  end
-
   def setting
     AppSetting.current.reload
   end
@@ -590,15 +573,15 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     assert_not FleetIdleMonitor.running_sessions > 2
   end
 
-  # The split the ceiling is compared against does NOT drop a turn merely queued
+  # The split the ceiling is compared against does NOT drop a turn merely waiting
   # for a worker. It is committed demand that takes the next free slot, so
   # topping up on top of it would only deepen the queue.
-  test "a turn queued for a worker still counts toward the ceiling" do
+  test "a turn waiting for a worker still counts toward the ceiling" do
     ceiling(1)
     session(status: :running)
 
     assert_equal 1, FleetIdleMonitor.running_sessions
-    assert_equal 1, FleetIdleMonitor.running_turns.queued_for_a_worker
+    assert_equal 1, FleetIdleMonitor.running_turns.awaiting_a_worker
     assert_not FleetIdleMonitor.check!, "a fleet with a turn queued is not idle"
   end
 
