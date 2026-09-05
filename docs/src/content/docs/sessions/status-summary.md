@@ -110,6 +110,44 @@ summary against no summary at all, which is why it exists as
 a goal is an instruction to act — a summarizer still carrying "open a PR and label it ready to merge"
 would go and do that.
 
+### The fork takes exactly one turn
+
+The summary request is the only prompt a fork will run, and `AgentSessionJob` refuses every other
+one, logging the refusal on the fork's timeline. The refusal is in the job rather than at each
+sender because roughly a dozen paths can resume a session and all of them arrive there.
+
+Refusing is not standing down. A `running` fork is paused, which is its own completion signal, so
+the harvest still lifts whatever it did answer — both incidents below had written their blurb before
+the nudge landed. A `waiting` fork is the one resting state that harvests nothing, so the refusal
+enqueues the harvest itself rather than leave the fork asleep forever holding its clone. A fork
+already in `needs_input` is left exactly where it is: one that ran enqueued its harvest from that
+transition, and one that never ran is the abandoned-fork sweep's, whose predicate waits for evidence
+rather than guessing.
+
+The reason is the same one that strips the inherited goal, arriving from the other direction. A fork
+holds a **copy of another session's conversation**, and Zimmer's recovery machinery — the quota-park
+resume, the orphan sweep, the health-monitor retry, the post-interrupt auto-continue — delivers a
+generic *"you may have been interrupted, continue where you left off"* nudge to any session it finds
+in a resumable state. Handed that on top of a conversation it did not have, a fork continues that
+conversation.
+
+That is not hypothetical. On 2026-08-29 and again on 2026-09-03 a summary fork of a `zimmer-router`
+session was nudged seconds after writing its blurb, and went on to re-poll the router's child,
+register fresh wake triggers **on itself**, and file a GitHub issue — then was archived by the
+harvest two minutes later, leaving those triggers armed on a session in the trash. Two sessions were
+live for one line of work. The half nobody saw is that the harvest publishes the *last* assistant
+message after the fork point, so the source session's Status panel was overwritten with the fork's
+routing disposition. See [#695](https://github.com/tadasant/zimmer/issues/695).
+
+A fork cannot tell that this has happened, either: its injected session header names its own id
+while the copied turns above it name the source's, so its identity looks like it changed
+mid-conversation. Both incidents were reported that way. The fork's prompt now says plainly that it
+is a fork of another session's conversation and that the turns above it are not its own.
+
+The rule is expressed as "the prompt is the summary request" rather than "the fork has already taken
+a turn", because a turn that was *never spent* — a SIGTERM retry, a spot hold, an undelivered-turn
+re-delivery — arrives carrying that same prompt and must still be allowed to run.
+
 **The fork is never credited with the source's pull requests.** `GithubPrUrlHook` decides which PRs a
 session opened by reading its transcript, and a summary fork's transcript is a copy of the source's —
 so the source's own `gh pr create` output sits in it as the strongest evidence the hook recognises.
