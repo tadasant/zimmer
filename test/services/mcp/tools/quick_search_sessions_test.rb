@@ -215,7 +215,7 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
 
     assert_includes description, "a leading prefix of the prompt"
     assert_includes description, "an identifier named later in the prompt is not shown"
-    assert_includes description, "the first #{length} characters of the prompt, then `...`"
+    assert_includes description, "a preview of the first #{length} characters"
   end
 
   test "prompt preview is truncated to the documented leading prefix" do
@@ -224,9 +224,90 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     # An identifier past the prefix is exactly what the description warns is not shown.
     session.update!(prompt: "#{'x' * length}https://github.com/test/repo/issues/4321")
 
-    output = @tool.call("id" => session.id)
+    output = @tool.call("id" => session.id, "verbose" => true)
 
     assert_includes output, "- **Prompt:** #{'x' * length}..."
     assert_not_includes output, "issues/4321"
+  end
+
+  # ==========================================================================
+  # Payload size: the compact row, and what it says it left out (#652)
+  # ==========================================================================
+
+  # The contract the schema states. `per_page: 100` is advertised, so a full page
+  # has to be returnable — with the full row it was 54,034 characters and the
+  # runtime refused it outright.
+  test "a full page of the advertised per_page fits well inside a tool result" do
+    100.times do |i|
+      Session.create!(
+        title: "Wake spot sessions parked on an auth outage in precedence order (issue ##{600 + i})",
+        prompt: "p" * 4_000, git_root: "https://github.com/tadasant/zimmer.git", branch: "main",
+        agent_runtime: "claude_code", status: :waiting, scheduling_class: SessionGenesis::SPOT,
+        precedence: 1_000 - i, mcp_servers: %w[playwright-custom context7 remote-fs-screenshots]
+      )
+    end
+
+    compact = @tool.call("status" => "waiting", "agent_runtime" => "claude_code",
+                         "priority_class" => "spot", "order" => "precedence", "per_page" => 100)
+    verbose = @tool.call("status" => "waiting", "agent_runtime" => "claude_code",
+                         "priority_class" => "spot", "order" => "precedence", "per_page" => 100,
+                         "verbose" => true)
+
+    assert_includes compact, "(issue #600)"
+    assert_includes compact, "(issue #699)"
+    assert compact.length < verbose.length / 1.8,
+      "compact page should be well under half the verbose one (#{compact.length} vs #{verbose.length})"
+  end
+
+  test "the compact row keeps every scheduling field and drops the six it names" do
+    session = sessions(:running)
+    session.update!(prompt: "the whole brief", mcp_servers: [ "playwright-custom" ])
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Status:** running"
+    assert_includes output, "- **Agent Runtime:** claude_code"
+    assert_includes output, "- **Precedence:** #{session.precedence}"
+    assert_includes output, "- **Created:**"
+    assert_includes output, "- **Updated:**"
+    assert_not_includes output, "- **Repository:**"
+    assert_not_includes output, "- **Branch:**"
+    assert_not_includes output, "- **Prompt:**"
+    assert_not_includes output, "- **MCP Servers:**"
+  end
+
+  # A row that quietly dropped six fields would read exactly like a session that
+  # has none of them set, so the omission is named in every response that has one.
+  test "every compact response names what it omitted and how to get it back" do
+    notice = "*Compact rows: slug, category, repository, branch, prompt, mcp_servers are omitted"
+
+    assert_includes @tool.call("id" => sessions(:running).id), notice
+    assert_includes @tool.call("status" => "running"), notice
+    assert_includes @tool.call("query" => "hello", "search_contents" => true), notice
+  end
+
+  test "verbose restores the full row and drops the notice" do
+    session = sessions(:running)
+    session.update!(prompt: "the whole brief", mcp_servers: [ "playwright-custom" ])
+
+    output = @tool.call("id" => session.id, "verbose" => true)
+
+    assert_includes output, "- **Repository:** #{session.git_root}"
+    assert_includes output, "- **Branch:** #{session.branch}"
+    assert_includes output, "- **Prompt:** the whole brief"
+    assert_includes output, "- **MCP Servers:** playwright-custom"
+    assert_not_includes output, "*Compact rows:"
+  end
+
+  # Compactness is about per-session detail, never about why a session is or is
+  # not startable — those lines are the reason a fleet agent pages this listing.
+  test "the paused and visibility lines survive a compact row" do
+    session = sessions(:running)
+    session.update!(status: :waiting, visibility: :hidden)
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Visibility:**"
+    assert_includes output, "presentation only"
   end
 end
