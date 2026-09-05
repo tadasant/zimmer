@@ -1,11 +1,12 @@
 require "test_helper"
+require "automated_prompts"
 
 # Direct coverage for the scaffolding the four recovery services share.
 #
 # The four services exercise it end to end in their own tests; this file pins the
 # pieces those tests reach only incidentally — the log sentences all four share, and
 # the long-delay slicing that a service with a short delay never enters.
-class RespawnScaffoldTest < ActiveSupport::TestCase
+class RespawnScaffoldTest < ActiveJob::TestCase
   # A minimal host: the readers the module requires, plus its label.
   class TestHost
     include RespawnScaffold
@@ -22,8 +23,8 @@ class RespawnScaffoldTest < ActiveSupport::TestCase
 
     # The module's methods are private; the tests drive them through these.
     def verify(pid, attempt) = verify_process_running(pid, attempt)
-    def wait(delay) = wait_with_status_checks(delay)
-    def status_check = check_session_status
+    def wait(delay, **kwargs) = wait_with_status_checks(delay, **kwargs)
+    def status_check(**kwargs) = check_session_status(**kwargs)
 
     private
 
@@ -61,6 +62,27 @@ class RespawnScaffoldTest < ActiveSupport::TestCase
   def logged
     @log_buffer.flush
     @session.logs.reload.map { |log| [ log.level, log.content ] }
+  end
+
+  # Turn @session into a status-summary fork of a freshly created source.
+  def make_fork
+    @source = Session.create!(
+      prompt: "Route user requests to agent sessions",
+      agent_runtime: "claude_code",
+      status: :running,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      session_id: SecureRandom.uuid
+    )
+    @session.update!(
+      metadata: (@session.metadata || {}).merge(SessionStatusSummaryGenerator::FORK_MARKER => @source.id)
+    )
+  end
+
+  # The prompt SessionStatusSummaryGenerator dispatches a fork with.
+  def summary_request
+    "#{SessionStatusSummaryGenerator::FORK_PROMPT_OPENING} (##{@source.id}). It is read at a glance."
   end
 
   test "verify_process_running returns true once the process has been up for the threshold" do
@@ -103,6 +125,79 @@ class RespawnScaffoldTest < ActiveSupport::TestCase
     assert_empty logged
   end
 
+  # THE SECOND DOOR (#724). The four services that mix this in respawn the runtime
+  # from INSIDE a turn that is already running, so
+  # `AgentSessionJob#refuse_non_summary_fork_turn` never sees them. A status-summary
+  # fork holds a copy of its source's conversation, so a continuation prompt tells
+  # it to continue the source's task — which is how router 4388's single
+  # `start_session` call became sessions 11386 and 11391.
+  test "check_session_status refuses a continuation prompt aimed at a status-summary fork" do
+    make_fork
+
+    assert_equal :aborted, @host.status_check(resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY),
+                 "resuming here replays the source's task and re-issues its side effects"
+
+    level, content = logged.find { |(_, text)| text.include?("status-summary fork") }
+    assert_not_nil content, "refused is not the same as silent"
+    assert_equal "warning", level
+    assert_includes content, "session #{@source.id}",
+                    "the timeline should name whose work the resume would have continued"
+
+    # THE HALF THAT IS EASY TO GET WRONG. `:aborted` means "somebody else owns this
+    # exit", and every host maps it to an ExitDecision the job logs and walks away
+    # from without transitioning anything. Returning it while leaving the fork
+    # `running` would leave a fork with a dead process holding a full clone until a
+    # sweep collected it. Pausing is what makes the `:aborted` claim true.
+    refute @session.reload.running?, "a fork left `running` with a dead process is nobody's"
+    assert @session.needs_input?, "pause is the fork's own completion transition"
+  end
+
+  # The load-bearing claim of the whole disposal: pausing is what fires the
+  # harvest. Without this, reordering the pause hook's `after` block breaks the
+  # blurb silently.
+  test "the refused fork is harvested" do
+    make_fork
+
+    assert_enqueued_with(job: SessionStatusSummaryHarvestJob) do
+      @host.status_check(resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY)
+    end
+  end
+
+  # THE OTHER DIRECTION, and the reason the test is the prompt rather than the
+  # fork. A turn that was never spent arrives carrying the summary request and must
+  # still run — `SigtermRetryService` prefers a `pending_follow_up_prompt` over the
+  # recovery nudge, and for a fork interrupted before it consumed its prompt that
+  # pending prompt IS the summary request. Refusing on the marker alone would cost
+  # a blurb every time a deploy landed mid-generation.
+  test "a fork's own summary request is not refused, so a never-spent turn still runs" do
+    make_fork
+
+    assert_nil @host.status_check(resume_prompt: summary_request),
+               "refusing this costs the blurb the fork exists to write"
+    assert @session.reload.running?, "and the fork must not be brought to rest either"
+  end
+
+  # `/compact` is what ContextLengthRetryService resumes with. It is not the
+  # summary request, so it is refused like any other continuation.
+  test "a compact resume is refused for a fork like any other continuation" do
+    make_fork
+
+    assert_equal :aborted, @host.status_check(resume_prompt: ContextLengthRetryService::COMPACT_PROMPT)
+  end
+
+  # A caller with no prompt to offer has not offered the summary request.
+  test "an absent resume prompt is refused for a fork" do
+    make_fork
+
+    assert_equal :aborted, @host.status_check
+  end
+
+  test "the fork test does not fire for an ordinary session, whatever the prompt" do
+    assert_nil @host.status_check(resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY),
+               "the interruption machinery is what rescues stranded sessions; it must be untouched"
+    assert_empty logged
+  end
+
   test "wait_with_status_checks does nothing at all for a zero delay" do
     # This is the case ContextLengthRetryService is in: no delay schedule, so no
     # wait and no status check here — it checks directly before spawning instead.
@@ -131,7 +226,7 @@ class RespawnScaffoldTest < ActiveSupport::TestCase
 
   test "wait_with_status_checks abandons a long delay as soon as the session stops running" do
     slept = @host.slept
-    @host.define_singleton_method(:check_session_status) { slept.length >= 2 ? :aborted : nil }
+    @host.define_singleton_method(:check_session_status) { |**| slept.length >= 2 ? :aborted : nil }
 
     assert_equal :aborted, @host.wait(300)
     assert_equal [ 10, 10 ], slept

@@ -87,12 +87,12 @@ module RespawnScaffold
   #
   # @param delay [Integer] Total delay in seconds
   # @return [Symbol, nil] :aborted if session state changed, nil otherwise
-  def wait_with_status_checks(delay)
+  def wait_with_status_checks(delay, resume_prompt: nil)
     return nil unless delay.positive?
 
     if delay <= 30
       sleep(delay)
-      return check_session_status
+      return check_session_status(resume_prompt: resume_prompt)
     end
 
     remaining = delay
@@ -101,23 +101,76 @@ module RespawnScaffold
       sleep(sleep_time)
       remaining -= sleep_time
 
-      abort_result = check_session_status
+      abort_result = check_session_status(resume_prompt: resume_prompt)
       return abort_result if abort_result == :aborted
     end
 
     nil
   end
 
-  # Check whether the session is still running.
+  # Check whether the session is still running, and whether the prompt this
+  # respawn is about to carry may be delivered to it at all.
   #
-  # @return [Symbol, nil] :aborted if session state changed, nil if still running
-  def check_session_status
+  # THE SECOND DOOR (#724). `AgentSessionJob#refuse_non_summary_fork_turn` closed
+  # the one a status-summary fork is handed a fresh turn through. This is the other
+  # one: the four services that mix this in respawn the RUNTIME inside a turn that
+  # is already running, so they never reach that guard. A fork holds a copy of its
+  # SOURCE's conversation, so a resume prompt that says "continue where you left
+  # off" tells it to continue the source's task — and that is how one
+  # `start_session` call became two sessions.
+  #
+  # THE TEST IS THE PROMPT, not the fork. It is deliberately the same one the
+  # job-entry guard applies — `SessionStatusSummaryGenerator.fork_prompt?` — and
+  # for the same reason: a turn that was NEVER SPENT arrives carrying the summary
+  # request and must still run. `SigtermRetryService` is exactly that case, since
+  # it prefers `pending_follow_up_prompt` over the recovery nudge, and for a fork
+  # interrupted before it consumed its prompt that pending prompt IS the summary
+  # request. Refusing on the fork alone would cost a blurb every time a deploy
+  # landed mid-generation — the case the Status summary docs single out as one
+  # that must be allowed to run.
+  #
+  # A fork whose respawn would replay its source is brought to rest instead: the
+  # `pause` hook harvests it, and the blurb is re-driven without the fork ever
+  # being told to carry on.
+  #
+  # @param resume_prompt [String, nil] the prompt this respawn will carry. nil
+  #   means the caller has none to offer, which is not the summary request.
+  # @return [Symbol, nil] :aborted if the session may not be resumed, nil if still running
+  def check_session_status(resume_prompt: nil)
     session.reload
     unless session.running?
       add_log(
         "Session state changed to #{session.status} during #{recovery_label}, aborting",
         level: "warning"
       )
+      return :aborted
+    end
+    if session.status_summary_fork? && !SessionStatusSummaryGenerator.fork_prompt?(resume_prompt)
+      add_log(
+        "Not resuming during #{recovery_label}: this is a status-summary fork of session " \
+        "#{session.status_summary_source_id}, and the prompt this respawn carries would tell it to continue " \
+        "that session's work rather than its own. Coming to rest so the summary is harvested instead.",
+        level: "warning"
+      )
+      # Flushed before the pause, not after it. `pause!` writes "Session paused,
+      # waiting for input" straight to the database, while a buffered line is
+      # stamped at flush time — so without this the explanation lands after the
+      # event it explains, on the one line a reader consults to find out why the
+      # fork stopped.
+      log_buffer&.flush
+      # Brought to rest HERE, not left for the caller. `:aborted` means "somebody
+      # else owns this exit", and every host maps it to an ExitDecision the job
+      # logs and walks away from without transitioning anything — so returning it
+      # on a fork nobody else owns would leave the fork `running` with a dead
+      # process for a sweep to collect later, holding its clone meanwhile.
+      # Pausing makes the claim true: it is the fork's own completion transition,
+      # and the state machine's pause hook harvests it.
+      #
+      # `pause!` rather than `fail!`, matching AgentSessionJob's job-entry guard,
+      # so a fork that had already written its blurb before the process died still
+      # publishes it. One disposal rule for a summary fork that stops, wherever it
+      # is stopped from. `running?` is established above, so `may_pause?` holds.
+      session.pause!
       return :aborted
     end
     nil

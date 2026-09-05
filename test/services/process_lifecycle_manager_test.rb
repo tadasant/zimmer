@@ -2,7 +2,7 @@ require "test_helper"
 require "mocha/minitest"
 require "tmpdir"
 
-class ProcessLifecycleManagerTest < ActiveSupport::TestCase
+class ProcessLifecycleManagerTest < ActiveJob::TestCase
   setup do
     @session = Session.create!(
       prompt: "Test prompt",
@@ -3776,6 +3776,134 @@ class ProcessLifecycleManagerTest < ActiveSupport::TestCase
     assert_empty @mock_cli_adapter.resumed_sessions,
       "resume must be short-circuited before touching the deleted clone"
     assert_equal :idle, manager.current_state
+  end
+
+  # ===========================================================================
+  # A status-summary fork is never continued (#724)
+  # ===========================================================================
+  #
+  # THE SECOND DOOR. `AgentSessionJob#refuse_non_summary_fork_turn` stops a summary
+  # fork being handed a fresh turn. It cannot see this one: every respawn routed
+  # through spawn_continuation happens INSIDE a turn that guard already admitted —
+  # a compaction, a signal death, an account rotation. Each carries a continuation
+  # prompt ("continue where you left off", "Continue with the previous task"), and
+  # a summary fork holds a copy of its SOURCE's conversation, so each reads as
+  # "resume your source's task". That is how router 4388's single `start_session`
+  # call became sessions 11386 and 11391.
+
+  # Turn @session into a status-summary fork of a freshly created source.
+  def make_fork
+    source = Session.create!(
+      prompt: "Route user requests to agent sessions",
+      agent_runtime: "claude_code",
+      status: :running,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      session_id: SecureRandom.uuid
+    )
+    @session.update!(
+      metadata: (@session.metadata || {}).merge(SessionStatusSummaryGenerator::FORK_MARKER => source.id)
+    )
+    source
+  end
+
+  test "a status-summary fork is not continued, and never reaches the runtime" do
+    source = make_fork
+
+    manager = create_manager
+    # Production always enters from :handling_exit, and the method's contract is
+    # that it leaves :running or :idle — so the state assertion below has to start
+    # somewhere other than :idle to mean anything.
+    manager.instance_variable_set(:@state, :handling_exit)
+
+    decision = manager.send(:spawn_continuation, working_dir: "/tmp/test-clone",
+                                                 prompt: AutomatedPrompts::SYSTEM_RECOVERY,
+                                                 reason: "signal death")
+
+    assert_empty @mock_cli_adapter.resumed_sessions,
+                 "the replayed turn that re-issued the source's start_session must not happen"
+    # Not `:failed`: the job renders that as "<runtime> CLI failed: …" at ERROR
+    # level and stamps `failure_reason`, which is what alerting reads — a page for
+    # a refusal working exactly as designed.
+    assert_equal :aborted, decision.action, "nothing failed here — Zimmer declined"
+    assert_nil decision.error_message
+    assert_equal :idle, manager.current_state, "the manager must not be left claiming a live process"
+
+    # `:aborted` tells the job this exit is already owned, and the job then
+    # transitions nothing. The pause is what makes that claim true — without it the
+    # fork sits `running` with a dead process, holding a full clone until a sweep
+    # collects it.
+    refute @session.reload.running?, "a refusal that walks away leaves the fork for the next sweep"
+    assert @session.needs_input?, "pause is the fork's own completion transition"
+
+    @log_buffer.flush
+    refusal = @session.logs.reload.find { |entry| entry.content.include?("status-summary fork") }
+    assert_not_nil refusal, "refused is not the same as silent"
+    assert_equal "warning", refusal.level
+    assert_includes refusal.content, "session #{source.id}",
+                    "the timeline should name whose work the continuation would have resumed"
+  end
+
+  # The load-bearing claim of the disposal: pausing is what fires the harvest.
+  # Without this, reordering the pause hook's `after` block loses the blurb
+  # silently.
+  test "the refused fork is harvested" do
+    make_fork
+
+    assert_enqueued_with(job: SessionStatusSummaryHarvestJob) do
+      create_manager.send(:spawn_continuation, working_dir: "/tmp/test-clone",
+                                               prompt: AutomatedPrompts::SYSTEM_RECOVERY,
+                                               reason: "signal death")
+    end
+  end
+
+  # `waiting` is the one resting state that harvests nothing, so the refusal has to
+  # enqueue it directly — the same second arm the job-entry guard carries. Reachable
+  # here because spawn_continuation performs no state re-check and two of its
+  # callers do not either.
+  test "a waiting fork is harvested directly rather than left asleep on its clone" do
+    make_fork
+    @session.update!(status: :waiting)
+
+    assert_enqueued_with(job: SessionStatusSummaryHarvestJob) do
+      create_manager.send(:spawn_continuation, working_dir: "/tmp/test-clone",
+                                               prompt: AutomatedPrompts::SYSTEM_RECOVERY,
+                                               reason: "compact")
+    end
+    assert_empty @mock_cli_adapter.resumed_sessions
+  end
+
+  # Asked BEFORE the rotation. Both of attempt_account_rotation's exits end in
+  # spawn_continuation, which refuses the fork — but by then `rotate_for_quota!`
+  # has moved the whole runtime onto a fresh account, a fleet-wide once-per-account
+  # move spent on a session that is about to stop, on the one resource the fleet is
+  # short of.
+  test "a status-summary fork does not burn an account rotation before being refused" do
+    make_fork
+    RuntimeAuthProvider.expects(:for).never
+
+    decision = create_manager.send(:attempt_account_rotation, "/tmp/test-clone")
+
+    assert_equal :aborted, decision.action
+    assert_empty @mock_cli_adapter.resumed_sessions
+    assert @session.reload.needs_input?, "the fork still comes to rest and is harvested"
+  end
+
+  # The other direction, and the one that matters most: the guard reads a marker
+  # only SessionStatusSummaryGenerator writes. An ordinary session's continuation —
+  # the mechanism that carries real work across a compaction or an OOM kill — is
+  # untouched, and nothing anywhere surfaces a respawn that quietly stopped.
+  test "an ordinary session is still continued" do
+    manager = create_manager
+
+    decision = manager.send(:spawn_continuation, working_dir: "/tmp/test-clone",
+                                                 prompt: "Continue with the previous task",
+                                                 reason: "compact")
+
+    assert_equal :continue, decision.action
+    assert_equal 1, @mock_cli_adapter.resumed_sessions.length,
+                 "continuation is what carries a real session across a compaction"
   end
 
   test "account rotation continuation still logs at error when the clone exists but the resume genuinely fails" do
