@@ -1,5 +1,3 @@
-require "open3"
-
 # Job that polls GitHub PR comments for sessions with associated PRs
 # Runs every 30 seconds via GoodJob cron configuration
 #
@@ -118,6 +116,23 @@ class GithubCommentPollerJob < ApplicationJob
   # Per-session backoff key + base cadence; see PollBackoff for the curve.
   POLL_BACKOFF_KEY = "github_comment_poller".freeze
   BASE_POLL_INTERVAL_SECONDS = 30
+
+  # Wall-clock bounds on the `gh` children this job spawns, process group killed on
+  # deadline. This job is a `total_limit: 1` singleton, so an unbounded hang holds the
+  # only slot and every later tick is a no-op enqueue — comments stop waking sessions
+  # with nothing raised and no watchdog to notice (#458).
+  #
+  # PER PAGE, not per fetch. The comment read is a pagination loop, and a bound on the
+  # whole loop would either be too tight for a long thread or so loose it stopped
+  # bounding anything. Each page is one `gh api` round trip and gets its own deadline;
+  # a page that times out ends the loop exactly the way a non-zero exit already does —
+  # return the pages we have, ask again next tick.
+  COMMENT_PAGE_TIMEOUT = 20
+
+  # The 👀 reaction is a single cheap POST and it is best-effort by design: the
+  # follow-up prompt goes out whether or not the reaction lands. Shorter than the
+  # reads, because waiting on it delays a prompt that does not depend on it.
+  REACTION_TIMEOUT = 10
 
   def perform
     Session.with_github_prs.find_each do |session|
@@ -349,19 +364,19 @@ class GithubCommentPollerJob < ApplicationJob
         "--jq", "."
       ]
 
-      stdout, stderr, status = Open3.capture3(*command)
+      result = GithubCli.run(command, timeout: COMMENT_PAGE_TIMEOUT)
 
-      # SubprocessStatus, not `status.success?`: the status is nil when ZombieReaperJob
-      # reaps this `gh` child before capture3's waiter does, and a nil status is a failed
-      # fetch, not a successful one. Falling into this branch gives the tick the same
-      # outcome it already has for a non-zero exit — return what we have, retry next tick.
-      unless SubprocessStatus.success?(status)
+      # Every way this page can fail to produce a trustworthy answer — a non-zero exit,
+      # an exit code lost to a reap, a page that hung until its deadline — lands here and
+      # gives the tick the outcome it already has for a non-zero exit: return what we
+      # have, retry next tick. See GithubCli.
+      unless result.success?
         Rails.logger.warn "[GithubCommentPollerJob] Failed to fetch comments from #{api_path} " \
-          "(page #{page}): #{SubprocessStatus.describe_failure(status, stderr)}"
+          "(page #{page}): #{result.failure_description}"
         return all_comments.any? ? all_comments : nil
       end
 
-      page_comments = JSON.parse(stdout)
+      page_comments = JSON.parse(result.stdout)
       break if page_comments.empty?
 
       all_comments.concat(page_comments)
@@ -501,11 +516,15 @@ class GithubCommentPollerJob < ApplicationJob
       "-f", "content=eyes"
     ]
 
-    stdout, stderr, status = Open3.capture3(*command)
+    result = GithubCli.run(command, timeout: REACTION_TIMEOUT)
 
-    unless SubprocessStatus.success?(status)
+    # A hung reaction arrives here as an ordinary failed call rather than an exception,
+    # so it is logged and dropped like every other reaction failure. The `rescue
+    # StandardError` below would have swallowed it either way — the point of routing it
+    # through this branch is that it is logged with the same wording as the rest.
+    unless result.success?
       Rails.logger.warn "[GithubCommentPollerJob] Failed to add eyes reaction to comment #{comment_id}: " \
-        "#{SubprocessStatus.describe_failure(status, stderr)}"
+        "#{result.failure_description}"
     end
   rescue StandardError => e
     # Don't let reaction failures prevent the follow-up prompt from being enqueued

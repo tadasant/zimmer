@@ -60,9 +60,9 @@ module GithubPullRequestMergeability
   # The PR's `state` and `mergeable` as a hash with string keys, or nil when the
   # call could not be completed.
   #
-  # Goes through BoundedSubprocess rather than a bare Open3 so this read — the
-  # one that runs on a session's delivery path rather than a poller's own tick —
-  # cannot wedge. See tadasant/zimmer#458 for the pollers' own bare calls.
+  # Goes through GithubCli, like every other `gh` invocation in Zimmer, so this
+  # read — the one that runs on a session's delivery path rather than a poller's
+  # own tick — cannot wedge.
   def fetch_pull_request(owner, repo, pr_number)
     command = [
       "gh", "api",
@@ -70,21 +70,19 @@ module GithubPullRequestMergeability
       "--jq", "{state: .state, mergeable: .mergeable}"
     ]
 
-    stdout, stderr, status = BoundedSubprocess.run(command, timeout: READ_TIMEOUT_SECONDS)
+    result = GithubCli.run(command, timeout: READ_TIMEOUT_SECONDS)
 
-    # A nil status (this `gh` child reaped by ZombieReaperJob before the waiter
-    # got to it) is a failed call, not a successful one — see SubprocessStatus.
-    unless SubprocessStatus.success?(status)
+    # Anything short of a demonstrable exit 0 — a non-zero exit, an exit code lost
+    # to a reap, a call that hung until its deadline — means no reading. nil says
+    # that, and every caller fails open on it.
+    unless result.success?
       Rails.logger.warn "[GithubPullRequestMergeability] gh api failed for #{owner}/#{repo}##{pr_number}: " \
-        "#{SubprocessStatus.describe_failure(status, stderr)}"
+        "#{result.failure_description}"
       return nil
     end
 
-    parsed = JSON.parse(stdout.to_s)
+    parsed = JSON.parse(result.stdout.to_s)
     parsed.is_a?(Hash) ? parsed : nil
-  rescue BoundedSubprocess::TimeoutError => e
-    Rails.logger.warn "[GithubPullRequestMergeability] #{e.message}"
-    nil
   rescue => e
     Rails.logger.warn "[GithubPullRequestMergeability] gh api raised for #{owner}/#{repo}##{pr_number}: " \
       "#{e.class}: #{e.message}"
