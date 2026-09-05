@@ -358,6 +358,8 @@ usage() {
 
 main() {
   local cmd="${1:-}"
+  # shellcheck disable=SC2015  # not an if-then-else: `|| true` is there so a no-arg invocation
+  # (where `shift` fails) does not trip `set -e`.
   [[ $# -gt 0 ]] && shift || true
   case "$cmd" in
     clone)   cmd_clone   "$@" ;;
