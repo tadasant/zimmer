@@ -90,10 +90,8 @@ module SessionContinuation
       outcome = session.claim_system_recovery_turn! do
         # Clear stale retry metadata before resuming.
         # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
-        session.update!(
-          running_job_id: nil,
-          metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
-        )
+        session.remove_metadata!(Session::STALE_RETRY_METADATA_KEYS)
+        session.update!(running_job_id: nil)
       end
 
       next unless outcome == :claimed
@@ -184,16 +182,14 @@ module SessionContinuation
   #   (caller then falls back to the automated recovery prompt)
   def continue_with_queued_user_message(session)
     stale_keys_except_paused_by = Session::STALE_RETRY_METADATA_KEYS - %w[paused_by]
-    session.update!(
-      running_job_id: nil,
-      metadata: (session.metadata || {}).except(*stale_keys_except_paused_by)
-    )
+    session.remove_metadata!(stale_keys_except_paused_by)
+    session.update!(running_job_id: nil)
 
     return false unless EnqueuedMessageProcessorService.new(session).process_next_message
 
     session.reload
     if session.metadata&.dig("paused_by").present?
-      session.update!(metadata: session.metadata.except("paused_by"))
+      session.remove_metadata!("paused_by")
     end
 
     session.logs.create!(

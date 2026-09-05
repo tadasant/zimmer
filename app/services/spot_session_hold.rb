@@ -358,7 +358,7 @@ class SpotSessionHold
     def clear(session)
       return if METADATA_KEYS.none? { |k| (session.metadata || {}).key?(k) }
 
-      session.update_columns(metadata: (session.metadata || {}).except(*METADATA_KEYS))
+      session.remove_metadata!(METADATA_KEYS)
     rescue StandardError => e
       Rails.logger.warn("[SpotSessionHold] Could not clear hold on session #{session.id}: #{e.message}")
     end

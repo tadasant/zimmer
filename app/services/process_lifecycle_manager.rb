@@ -950,14 +950,12 @@ class ProcessLifecycleManager
     # occurs during the continuation, it will be detected and handled appropriately.
     # Without this reset, we might miss new errors that occur after compact succeeded.
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).except(
-          "pending_compact_continuation",
-          "context_length_last_checked_line",
-          "prompt_too_long_hang_detected_at_line",
-          "prompt_too_long_hang_detected"
-        )
-      )
+      session.remove_metadata!(%w[
+        pending_compact_continuation
+        context_length_last_checked_line
+        prompt_too_long_hang_detected_at_line
+        prompt_too_long_hang_detected
+      ])
     end
 
     spawn_continuation(
@@ -1705,7 +1703,7 @@ class ProcessLifecycleManager
 
   def remember_terminal_api_error_line(line)
     with_db_retry do
-      session.update!(metadata: (session.metadata || {}).merge(TERMINAL_API_ERROR_LINE_KEY => line))
+      session.merge_metadata!(TERMINAL_API_ERROR_LINE_KEY => line)
     end
   rescue => e
     # Worst case the same dead turn is failed twice; that must not stop it being

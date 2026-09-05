@@ -960,7 +960,7 @@ rebuilding the whole column from a snapshot — `update!(metadata: session.metad
 erases any key another writer set since that snapshot was read. `session.reload` first narrows the
 window; it does not close it.
 
-Some of those writers use `Session#merge_metadata!` / `#remove_metadata!` (and the
+Every writer in `app/` uses `Session#merge_metadata!` / `#remove_metadata!` (and the
 `custom_metadata` equivalents) instead. Those push the merge into PostgreSQL as one statement —
 `(metadata::jsonb - ARRAY[…]) || '{…}'::jsonb` — so keys the caller never named survive.
 
@@ -976,23 +976,24 @@ What that buys and what it doesn't:
   and a "Send now" terminates nothing), `pending_follow_up_prompt` (lose it and a user's message never
   reaches the agent), and `github_pull_request_urls` (lose it and no GitHub integration engages)
   survive *that* writer.
-- **Doesn't:** serialize two writers of the *same* key — last writer still wins. And atomicity is a
-  property of *every* writer to the row, not of one key: a caller that still does a whole-column
-  read-modify-write can erase a key no matter how carefully that key was written.
+- **Doesn't:** serialize two writers of the *same* key — last writer still wins.
 
-Most of the app is still that caller. Counted against this commit, `app/` holds 34 atomic call sites
-across 15 files and 93 whole-column read-modify-writes across 27 files; `AgentSessionJob` alone has 23
-of the latter against 11 of the former. The conversion is a long way from done — see
-[Not every session `metadata` writer is atomic](/limitations/#not-every-session-metadata-writer-is-atomic-and-the-whole-column-writers-are-the-majority)
-for which of the 93 are harmless and which are not, and
-[#70](https://github.com/tadasant/zimmer/issues/70) for the work itself.
+Atomicity is a property of *every* writer to the row, not of one key: one caller doing a
+whole-column read-modify-write erases a key no matter how carefully that key was written. That is why
+the rule is enforced rather than recommended. `NoWholeColumnMetadataWritersTest`
+(`test/models/concerns/no_whole_column_metadata_writers_test.rb`) scans every file under `app/` on
+each CI run and fails on the whole-column shape, so a new one costs whoever adds it a line in that
+test's allowlist and a reason the site cannot race. The allowlist holds creation paths, where the row
+does not exist yet, and two value objects with a `metadata` field of their own.
 
-The one worth knowing here: **`TranscriptPollerService`** batches `metadata` into the same `update!`
-as `transcript` and `last_timeline_entry_at` on every poll of a live turn, making it the worker's
-single most frequent metadata writer. A key set in the window between its `reload` and its `update!`
-is still lost, so `interrupt_terminate_pid` is *harder* to lose than it was, not impossible.
-Splitting that batched write is what would close it, at the cost of a second write and an extra index
+**`TranscriptPollerService`** is the one worth knowing about, because it is the worker's single most
+frequent metadata writer — it writes on every poll of a live turn. Its metadata merge is its own
+statement, and `transcript` and `last_timeline_entry_at` go in a second one, which is what makes a key
+set between its `reload` and its write survive. The cost is that second write and an extra index
 broadcast on the hottest loop in the app.
+
+What is left is in
+[Two writers of the same key](/limitations/#two-writers-of-the-same-session-metadata-key-still-lose-one-of-them).
 
 Two deliberate differences from `update!`: model validations don't run (which is what makes these
 usable on terminal paths, where a stale-catalog validation error would otherwise block a session from

@@ -125,11 +125,6 @@ module Sessions
 
       old_values = @session.public_send(@attribute) || []
 
-      # Clearing the list has to be recorded as deliberate, or McpServerBackfill
-      # reads the empty column as an accident and restores the root's defaults
-      # the next time the config is regenerated.
-      @session.record_explicit_mcp_servers(values) if @attribute == :mcp_servers
-
       # The write is retried the way the web copies always retried it, and the
       # REST and MCP copies did not. A dropped PG connection is a transport
       # failure, not a rejected request, so it comes back as its own error code
@@ -140,6 +135,13 @@ module Sessions
         return database_unavailable_error(e)
       end
       return update_failed_error(values) unless persisted
+
+      # Clearing the list has to be recorded as deliberate, or McpServerBackfill
+      # reads the empty column as an accident and restores the root's defaults
+      # the next time the config is regenerated. Written after the list itself
+      # lands, and in its own statement, so a rejected change records nothing and
+      # a concurrent metadata writer keeps its keys.
+      with_db_retry { @session.record_explicit_mcp_servers!(values) } if @attribute == :mcp_servers
 
       added = values - old_values
       removed = old_values - values
@@ -200,11 +202,9 @@ module Sessions
 
       best_effort do
         @session.reload
-        @session.update!(
-          metadata: (@session.metadata || {}).merge(
-            "failure_reason" => "oauth_required",
-            "oauth_required_servers" => needing
-          )
+        @session.merge_metadata!(
+          "failure_reason" => "oauth_required",
+          "oauth_required_servers" => needing
         )
         @session.fail! if @session.may_fail?
 
@@ -220,7 +220,7 @@ module Sessions
 
       best_effort do
         @session.reload
-        @session.update!(metadata: (@session.metadata || {}).except("failure_reason", "oauth_required_servers"))
+        @session.remove_metadata!("failure_reason", "oauth_required_servers")
       end
     end
 

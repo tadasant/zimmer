@@ -864,9 +864,7 @@ class HealthMonitorService
               outcome = session.claim_system_recovery_turn! do
                 # Clear stale retry metadata for fresh execution.
                 # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
-                session.update!(
-                  metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
-                )
+                session.remove_metadata!(Session::STALE_RETRY_METADATA_KEYS)
               end
 
               next unless outcome == :claimed

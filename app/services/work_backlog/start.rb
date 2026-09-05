@@ -107,10 +107,8 @@ module WorkBacklog
         # The title the groomer gave its sessions. `update_columns` so the
         # title-inference job, which keys on `auto_generated_title`, leaves the
         # stable, greppable one in place.
-        session.update_columns(
-          title: item.session_title,
-          metadata: (session.metadata || {}).except("auto_generated_title")
-        )
+        session.remove_metadata!("auto_generated_title")
+        session.update_columns(title: item.session_title)
         session
       end
     end

@@ -814,7 +814,8 @@ class AgentSessionJob < ApplicationJob
             level: "error"
           )
           log_buffer.flush
-          session.update!(running_job_id: nil, metadata: (session.metadata || {}).merge("failure_reason" => validation_result[:reason]))
+          session.merge_metadata!("failure_reason" => validation_result[:reason])
+          session.update!(running_job_id: nil)
           session.fail! if session.may_fail?
           return
         end
@@ -900,10 +901,8 @@ class AgentSessionJob < ApplicationJob
           # RestartUnstartedTurn::ABANDONED_KEY recording why, and announces the
           # `needs_input` the recovery carve-out would otherwise have swallowed.
           if restart.abandoned?
-            session.update!(
-              running_job_id: nil,
-              metadata: (session.metadata || {}).merge("failure_reason" => "unstarted_turn_not_recoverable")
-            )
+            session.merge_metadata!("failure_reason" => "unstarted_turn_not_recoverable")
+            session.update!(running_job_id: nil)
             # No `announce_deferred_needs_input!` here, and the absent marker is why:
             # `announcement_deferred_to_recovery_sweep?` reads `paused_by`, so without
             # it the `pause` callback makes the announcement itself. Adding a second
@@ -916,10 +915,8 @@ class AgentSessionJob < ApplicationJob
             return
           end
 
-          session.update!(
-            running_job_id: nil,
-            metadata: (session.metadata || {}).merge("paused_by" => "recovery")
-          )
+          session.merge_metadata!("paused_by" => "recovery")
+          session.update!(running_job_id: nil)
           session.pause! if session.may_pause?
           # A recovery pause promises a sweep will continue this session. Ask for that
           # continuation directly, on a short delay, rather than leaving the promise to
@@ -1003,10 +1000,8 @@ class AgentSessionJob < ApplicationJob
 
             log_buffer.add("Git clone failed during follow-up: #{e.message}", level: "error")
             log_buffer.flush
-            session.update!(
-              running_job_id: nil,
-              metadata: (session.metadata || {}).merge("failure_reason" => "git_clone_failed")
-            )
+            session.merge_metadata!("failure_reason" => "git_clone_failed")
+            session.update!(running_job_id: nil)
             session.fail! if session.may_fail?
             return
           end
@@ -1023,13 +1018,11 @@ class AgentSessionJob < ApplicationJob
             )
           end
 
-          session.update!(
-            metadata: (session.metadata || {}).merge(
-              "clone_path" => clone_path,
-              "working_directory" => working_directory,
-              "full_clone_path" => working_directory,
-              "clone_recreated" => true
-            )
+          session.merge_metadata!(
+            "clone_path" => clone_path,
+            "working_directory" => working_directory,
+            "full_clone_path" => working_directory,
+            "clone_recreated" => true
           )
 
           # The transcript is NOT written here. `restore_regressed_transcript_if_needed`
@@ -1064,10 +1057,8 @@ class AgentSessionJob < ApplicationJob
             level: "error"
           )
           log_buffer.flush
-          session.update!(
-            running_job_id: nil,
-            metadata: (session.metadata || {}).merge("failure_reason" => "transcript_regression_unrecovered")
-          )
+          session.merge_metadata!("failure_reason" => "transcript_regression_unrecovered")
+          session.update!(running_job_id: nil)
           session.fail! if session.may_fail?
           return
         end
@@ -1242,10 +1233,8 @@ class AgentSessionJob < ApplicationJob
               level: "debug"
             )
             log_buffer.flush
-            session.update!(
-              running_job_id: nil,
-              metadata: (session.metadata || {}).merge("failure_reason" => "git_clone_failed")
-            )
+            session.merge_metadata!("failure_reason" => "git_clone_failed")
+            session.update!(running_job_id: nil)
             session.fail! if session.may_fail?
             return  # Handle completely here, don't re-raise to avoid duplicate state transitions
           end
@@ -1259,10 +1248,8 @@ class AgentSessionJob < ApplicationJob
               level: "debug"
             )
             log_buffer.flush
-            session.update!(
-              running_job_id: nil,
-              metadata: (session.metadata || {}).merge("failure_reason" => "clone_validation_failed")
-            )
+            session.merge_metadata!("failure_reason" => "clone_validation_failed")
+            session.update!(running_job_id: nil)
             session.fail! if session.may_fail?
             return  # Handle completely here, don't raise to avoid duplicate state transitions
           end
@@ -1311,12 +1298,13 @@ class AgentSessionJob < ApplicationJob
           # working_directory: actual working directory (may be subdirectory)
           # full_clone_path: full path including subdirectory if present (for copy button)
           # Clear any transient-clone-retry counter now that the clone succeeded.
-          session.update!(
-            metadata: (session.metadata || {}).except("clone_retry_count").merge(
+          session.merge_metadata!(
+            {
               "clone_path" => clone_path,
               "working_directory" => working_directory,
               "full_clone_path" => working_directory
-            )
+            },
+            [ "clone_retry_count" ]
           )
 
           # Use AIR CLI to generate MCP configuration and inject catalog skills.
@@ -1633,10 +1621,8 @@ class AgentSessionJob < ApplicationJob
             level: "error"
           )
           log_buffer.flush
-          session.update!(
-            running_job_id: nil,
-            metadata: (session.metadata || {}).merge("failure_reason" => "spawn_failed")
-          )
+          session.merge_metadata!("failure_reason" => "spawn_failed")
+          session.update!(running_job_id: nil)
           session.fail! if session.may_fail?
           return
         end
@@ -1713,10 +1699,8 @@ class AgentSessionJob < ApplicationJob
             level: "error"
           )
           log_buffer.flush
-          session.update!(
-            running_job_id: nil,
-            metadata: (session.metadata || {}).merge("failure_reason" => "spawn_failed")
-          )
+          session.merge_metadata!("failure_reason" => "spawn_failed")
+          session.update!(running_job_id: nil)
           session.fail! if session.may_fail?
           return
         end
@@ -1898,12 +1882,13 @@ class AgentSessionJob < ApplicationJob
         # guarantees we only ever kill the exact turn the interrupt targeted; the
         # interrupting turn spawns with a different pid and is never affected.
         #
-        # This flag is a best-effort FAST PATH. session.metadata is a
-        # read-modify-write JSON blob written from multiple places, so the flag
-        # can in principle be clobbered before we read it. The guarantee against
-        # orphaning a superseded turn lives in the running_job_id ownership
-        # backstop (branch 1c) below. Compare pids numerically because metadata
-        # round-trips through JSON and can hold either an Integer or a String.
+        # This flag is a best-effort FAST PATH. Every writer to session.metadata
+        # merges in PostgreSQL, so no writer that does not name this key can erase
+        # it — but two writers of the SAME key still race, and the guarantee
+        # against orphaning a superseded turn lives in the running_job_id
+        # ownership backstop (branch 1c) below either way. Compare pids
+        # numerically because metadata round-trips through JSON and can hold
+        # either an Integer or a String.
         interrupt_pid = session.metadata&.dig("interrupt_terminate_pid")
         if process_pid && interrupt_pid && interrupt_pid.to_i == process_pid.to_i
           log_buffer.add(
@@ -2114,11 +2099,7 @@ class AgentSessionJob < ApplicationJob
                   "Session paused: #{exit_decision.error_message}",
                   level: "warning"
                 )
-                session.update!(
-                  metadata: (session.metadata || {}).merge(
-                    "exit_status" => exit_decision.error_message
-                  )
-                )
+                session.merge_metadata!("exit_status" => exit_decision.error_message)
               else
                 log_buffer.add(
                   "#{runtime_label} CLI completed turn successfully",
@@ -2145,14 +2126,12 @@ class AgentSessionJob < ApplicationJob
                 "#{runtime_label} CLI failed: #{exit_decision.error_message}",
                 level: "error"
               )
-              session.update!(
-                metadata: (session.metadata || {}).except(
-                  "transcript_recovery_expected",
-                  "transcript_recovery_base_line_count"
-                ).merge(
+              session.merge_metadata!(
+                {
                   "failure_reason" => failure_reason_for(exit_decision.error_message),
                   "exit_status" => exit_decision.error_message
-                )
+                },
+                %w[transcript_recovery_expected transcript_recovery_base_line_count]
               )
               session.fail! if session.may_fail?
             when :aborted
@@ -2224,14 +2203,12 @@ class AgentSessionJob < ApplicationJob
               "#{runtime_label} CLI failed: #{exit_decision.error_message}",
               level: "error"
             )
-            session.update!(
-              metadata: (session.metadata || {}).except(
-                "transcript_recovery_expected",
-                "transcript_recovery_base_line_count"
-              ).merge(
+            session.merge_metadata!(
+              {
                 "failure_reason" => failure_reason_for(exit_decision.error_message),
                 "exit_status" => exit_decision.error_message
-              )
+              },
+              %w[transcript_recovery_expected transcript_recovery_base_line_count]
             )
             session.fail! if session.may_fail?
           when :aborted
@@ -2257,11 +2234,7 @@ class AgentSessionJob < ApplicationJob
                 level: "warning"
               )
               if exit_decision&.error_message.present?
-                session.update!(
-                  metadata: (session.metadata || {}).merge(
-                    "exit_status" => exit_decision.error_message
-                  )
-                )
+                session.merge_metadata!("exit_status" => exit_decision.error_message)
               end
             else
               log_buffer.add(
@@ -2317,9 +2290,7 @@ class AgentSessionJob < ApplicationJob
               level: "error"
             )
             log_buffer.flush
-            session.update!(
-              metadata: (session.metadata || {}).merge("failure_reason" => "transcript_unavailable")
-            )
+            session.merge_metadata!("failure_reason" => "transcript_unavailable")
             session.fail! if session.may_fail?
             remove_running_loader(session)
             log_buffer.add(
@@ -2473,14 +2444,12 @@ class AgentSessionJob < ApplicationJob
           # Bypass validations — if the original error was a validation failure
           # (e.g. stale MCP server catalog), update! would re-trigger the same
           # validation and prevent the session from reaching a terminal state.
-          session.update_columns(
-            running_job_id: nil,
-            metadata: (session.metadata || {}).merge(
-              "failure_reason" => "exception",
-              "exception_class" => e.class.name,
-              "exception_message" => e.message.to_s.truncate(EXCEPTION_MESSAGE_MAX_CHARS)
-            )
+          session.merge_metadata!(
+            "failure_reason" => "exception",
+            "exception_class" => e.class.name,
+            "exception_message" => e.message.to_s.truncate(EXCEPTION_MESSAGE_MAX_CHARS)
           )
+          session.update_columns(running_job_id: nil)
           session.reload
           session.fail! if session.may_fail?
         end
@@ -2690,9 +2659,7 @@ class AgentSessionJob < ApplicationJob
     )
     log_buffer.flush
 
-    session.update!(
-      metadata: (session.metadata || {}).merge("clone_retry_count" => next_attempt)
-    )
+    session.merge_metadata!("clone_retry_count" => next_attempt)
 
     retry_job = yield(delay)
 
@@ -2910,10 +2877,8 @@ class AgentSessionJob < ApplicationJob
       end
     end
 
-    session.update_columns(
-      running_job_id: nil,
-      metadata: (session.metadata || {}).merge("paused_by" => "recovery")
-    )
+    session.merge_metadata!("paused_by" => "recovery")
+    session.update_columns(running_job_id: nil)
     session.reload
 
     # `pause` is running → needs_input, so a case-3 session stays in `waiting`
@@ -2963,13 +2928,11 @@ class AgentSessionJob < ApplicationJob
         content: "Start job interrupted #{count - 1} times without ever running — giving up rather than re-queuing again",
         level: "error"
       )
-      session.update_columns(
-        running_job_id: nil,
-        metadata: (session.metadata || {}).merge(
-          "failure_reason" => "Session never started: its start job was interrupted " \
-                              "#{count - 1} times before it could run"
-        )
+      session.merge_metadata!(
+        "failure_reason" => "Session never started: its start job was interrupted " \
+                            "#{count - 1} times before it could run"
       )
+      session.update_columns(running_job_id: nil)
       session.reload
       session.fail! if session.may_fail?
       Rails.logger.error(
@@ -2981,7 +2944,7 @@ class AgentSessionJob < ApplicationJob
     delay = INTERRUPTED_START_REQUEUE_DELAY + rand(INTERRUPTED_START_REQUEUE_JITTER.to_i).seconds
     retry_job = self.class.set(wait: delay).perform_later(*arguments)
 
-    updates = { metadata: (session.metadata || {}).merge(INTERRUPTED_START_REQUEUE_COUNT => count) }
+    session.merge_metadata!(INTERRUPTED_START_REQUEUE_COUNT => count)
 
     # Hand ownership to the replacement only if this job held it. A spot-held
     # session carries no `running_job_id` at all — SpotSessionHold re-enqueues
@@ -2992,9 +2955,7 @@ class AgentSessionJob < ApplicationJob
     # still alive, so a stale pointer would make the *next* interrupt stand down
     # in favour of a job that finished long ago — severing the re-check chain
     # exactly as the bug this method fixes did.
-    updates[:running_job_id] = retry_job.job_id if session.running_job_id == job_id
-
-    session.update_columns(**updates)
+    session.update_columns(running_job_id: retry_job.job_id) if session.running_job_id == job_id
 
     session.logs.create!(
       content: "Session had not started yet, so nothing needed recovering — " \
@@ -3480,10 +3441,8 @@ class AgentSessionJob < ApplicationJob
       outcome = session.claim_system_recovery_turn! do
         # Clear stale retry metadata before resuming.
         # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
-        session.update!(
-          running_job_id: nil,
-          metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
-        )
+        session.remove_metadata!(Session::STALE_RETRY_METADATA_KEYS)
+        session.update!(running_job_id: nil)
       end
 
       next unless outcome == :claimed
@@ -4163,11 +4122,9 @@ class AgentSessionJob < ApplicationJob
         level: "warning"
       )
 
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "failure_reason" => "oauth_required",
-          "oauth_required_servers" => oauth_required_servers
-        )
+      session.merge_metadata!(
+        "failure_reason" => "oauth_required",
+        "oauth_required_servers" => oauth_required_servers
       )
     else
       # Everything that is not "a human must click Authorize" is handled here, and it
@@ -4548,14 +4505,12 @@ class AgentSessionJob < ApplicationJob
       "paused_by" => "mcp_retry",
       "mcp_failed_servers" => failed_servers
     )
-    # Folded into the same UPDATE rather than written separately, so a server the
+    # Folded into the same merge rather than written separately, so a server the
     # caller wrote off in this same pass cannot be lost between two statements.
     retry_metadata["mcp_degraded_servers"] = degraded_entries if degraded_entries
 
-    session.update!(
-      running_job_id: nil,
-      metadata: (session.metadata || {}).merge(retry_metadata)
-    )
+    session.merge_metadata!(retry_metadata)
+    session.update!(running_job_id: nil)
     session.pause! if session.may_pause?
 
     # Remove the running loader since we're pausing
@@ -4642,13 +4597,11 @@ class AgentSessionJob < ApplicationJob
     log_mcp_degradations(degradations, log_buffer)
     log_buffer.flush
 
-    session.update!(
-      running_job_id: nil,
-      metadata: (session.metadata || {}).merge(
-        "paused_by" => "recovery",
-        "mcp_degraded_servers" => entries
-      )
+    session.merge_metadata!(
+      "paused_by" => "recovery",
+      "mcp_degraded_servers" => entries
     )
+    session.update!(running_job_id: nil)
     session.pause! if session.may_pause?
 
     remove_running_loader(session)
@@ -5356,12 +5309,8 @@ class AgentSessionJob < ApplicationJob
 
     log_buffer.add(message, level: "warning")
     log_buffer.flush
-    session.update!(
-      running_job_id: nil,
-      metadata: (session.metadata || {}).merge(
-        { "failure_reason" => failure_reason }.merge(extra_metadata)
-      )
-    )
+    session.merge_metadata!({ "failure_reason" => failure_reason }.merge(extra_metadata))
+    session.update!(running_job_id: nil)
     session.fail! if session.may_fail?
   end
 
@@ -5537,13 +5486,11 @@ class AgentSessionJob < ApplicationJob
 
     log_buffer.add(blocked_message, level: "warning")
     log_buffer.flush
-    session.update!(
-      running_job_id: nil,
-      metadata: (session.metadata || {}).merge(
-        "failure_reason" => "oauth_required",
-        "oauth_required_servers" => oauth_result[:missing_servers]
-      )
+    session.merge_metadata!(
+      "failure_reason" => "oauth_required",
+      "oauth_required_servers" => oauth_result[:missing_servers]
     )
+    session.update!(running_job_id: nil)
     session.fail! if session.may_fail?
     true
   end
