@@ -3583,15 +3583,25 @@ class AgentSessionJob < ApplicationJob
   # stays in place either way, so a session that is later restored from the trash
   # is still swept by the cron.
   #
+  # The third, `:superseded`, says the work moved while this job was being
+  # interrupted: another session was created to replace this one and is carrying
+  # its task (#801). It leaves the recovery pause in place like the others, so a
+  # human's follow-up still resumes the session if the handoff was wrong.
+  #
   # @param session [Session] the session whose claim was refused; already
   #   reloaded by claim_system_recovery_turn!, so `status` is the row's
-  # @param outcome [Symbol] :archived or :not_resumable
+  # @param outcome [Symbol] :archived, :not_resumable or :superseded
   # @return [nil]
   def refuse_auto_continue(session, outcome)
     message =
-      if outcome == :archived
+      case outcome
+      when :archived
         "Not auto-continuing this session after the job interruption: it is in the trash. " \
         "An archived session takes no turn, so no agent was started."
+      when :superseded
+        "Not auto-continuing this session after the job interruption: " \
+        "#{session.replacement_refusal_clause}. Resuming would re-do work another session has " \
+        "already taken over, so no agent was started."
       else
         "Not auto-continuing this session after the job interruption: it is #{session.status} " \
         "and cannot be resumed. Something else is already driving it, so no second agent was started."
