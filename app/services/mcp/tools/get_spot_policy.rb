@@ -179,7 +179,7 @@ module Mcp
           # same thing about which ceiling is holding and what lifts it.
           *explanation.lines.map { |line| "- **#{line.label}:** #{line.sentence}" },
           "- **Claude Code sessions with a turn in flight:** #{decision.active_sessions}" \
-          "#{decision.queued_sessions.to_i.positive? ? " (#{decision.active_sessions - decision.queued_sessions} on a worker, #{decision.queued_sessions} queued for one)" : ""}",
+          "#{decision.queued_sessions.to_i.positive? ? " (#{decision.active_sessions.to_i - decision.queued_sessions.to_i} on a worker, #{decision.queued_sessions} queued for one)" : ""}",
           "- **Fleet burn rate:** #{rate(decision.fleet_burn_usd_per_minute)} " \
           "(every running session, priority included — they spend against the same windows)",
           "- **One more session would add:** #{rate(decision.candidate_burn_usd_per_minute)} " \

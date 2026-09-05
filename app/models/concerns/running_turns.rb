@@ -69,6 +69,12 @@ module RunningTurns
 
   EMPTY = Reading.new(on_a_worker: 0, queued_for_a_worker: 0, asleep: 0)
 
+  # How many agent turns this deployment can execute at once: the `agents` lane's
+  # own thread count, which is the real ceiling on `on_a_worker` whatever either
+  # policy number is set to. Read here rather than at each call site so the spot
+  # gate's hold detail and the /inference cards cannot drift apart.
+  def self.worker_slots = ConnectionBudget.good_job_queue_threads[:agents]
+
   class_methods do
     # The `running` rows in this scope the fleet can be working on, split.
     #
@@ -88,12 +94,6 @@ module RunningTurns
         queued_for_a_worker: idle.size - asleep.size,
         asleep: asleep.size
       )
-    rescue ActiveRecord::ActiveRecordError => e
-      # The outer rescue covers the `pluck` itself. Nothing readable means
-      # nothing to report; the callers each decide what an unreadable fleet
-      # means to them.
-      Rails.logger.warn("[RunningTurns] Could not read the running fleet: #{e.class}: #{e.message}")
-      raise
     end
 
     private

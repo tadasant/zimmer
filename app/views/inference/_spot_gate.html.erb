@@ -185,9 +185,9 @@
             <% end %>
             <% if @spot_decision.queued_sessions.to_i.positive? %>
               <div class="text-xs text-gray-500 font-normal mt-0.5" id="spot-active-sessions-split">
-                <%= @spot_decision.active_sessions - @spot_decision.queued_sessions %> on a worker ·
+                <%= @spot_decision.active_sessions.to_i - @spot_decision.queued_sessions.to_i %> on a worker ·
                 <%= @spot_decision.queued_sessions %> queued
-                (the pool runs <%= ConnectionBudget.good_job_queue_threads[:agents] %> at once)
+                (the pool runs <%= RunningTurns.worker_slots %> at once)
               </div>
             <% end %>
           </dd>
