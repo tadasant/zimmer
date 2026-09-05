@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 
 // Connects to data-controller="editable-goal"
 // Inline editor for goal on the session detail page.
@@ -217,11 +218,7 @@ export default class extends Controller {
     try {
       const response = await fetch(`/sessions/${this.sessionIdValue}/update_goal`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content,
-          'Accept': 'application/json'
-        },
+        headers: csrfHeaders({ 'Accept': 'application/json' }),
         body: JSON.stringify({ goal: value })
       })
 
