@@ -1275,6 +1275,59 @@ invisible: the messages are still retired to `undelivered`, the archive line sti
 the discard is [recorded on the log plane](#a-forced-archive-records-it-does-not-page) — so what was
 thrown away stays readable afterwards. What it does not do is page.
 
+#### Archiving *someone else's* running turn is refused too
+
+A queued message is not the only thing an archive can throw away. Archiving a session that has an
+agent turn **in flight** terminates that process mid-turn — `AgentSessionJob`'s monitoring loop
+reloads the session, sees `archived?`, SIGTERMs the runtime and lets the clone go — so whatever the
+turn had not committed is lost.
+
+[#400](https://github.com/tadasant/zimmer/issues/400) is the incident. A status-summary fork,
+resumed into a copy of another session's pre-archive conversation, decided the work it was reading
+was finished and called `action_session` `archive` with **that session's** id. The target had been
+handed a new prompt 45 seconds earlier and was working on it. Its transcript ends
+`[Request interrupted by user]`; its clone was deleted. From outside, the caller saw `running` with
+a growing message count and then `archived` — nothing distinguished the work completing from the
+work being destroyed, so polling the status could not catch it.
+
+So the MCP `archive` and `bulk_archive` actions ask `Sessions::LiveTurn` as well:
+
+```
+Cannot archive session 3567: an agent turn is in flight on it right now. Archiving terminates that
+process mid-turn and deletes its clone, so whatever it has not committed is lost — and nothing
+afterwards distinguishes that from a session that finished.
+
+You are not that session, so you cannot know what it is in the middle of. If you are trying to
+redirect it, send it a "follow_up" instead (with "force_immediate": true to get ahead of the turn
+it is in) — it keeps the conversation and the work. If you want it to stop, "pause" it and archive
+once it has come to rest.
+
+Only if you have decided to destroy the running turn: re-call with "force": true.
+```
+
+Three things bound it, and each matters:
+
+- **A session archiving itself is never refused.** That is the normal ending, its own turn is the
+  one in flight, and it is the only caller that knows whether that turn is finished — refusing it
+  would break the completion signal the whole lifecycle policy rests on. Identity comes from the connection, not the request body:
+  `RuntimeConfigPostProcessor` stamps `session_id` onto the URL of the Zimmer server it injects into
+  a session's own runtime config, `Mcp::Context` carries it, and nothing a caller sends can forge it.
+  It is the same check `SelfSessionActionSession#enforce_self_report!` already makes for
+  `message_parent`. A connection that names *no* session is refused rather than waved through — it
+  is not the session either, and `force` is one call away while the turn is not.
+- **Only a turn a worker has actually picked up counts.** A turn still queued in the `agents` lane
+  is *cancelled* by an archive, not destroyed, and that is what the caller asked for.
+- **`force` still works, and the loss stops being silent.** A forced archive over a live turn writes
+  a `warning` on the target's own timeline — *"Archived by … while an agent turn was in flight — the
+  running process was terminated mid-turn and its uncommitted work discarded. This was not the
+  session finishing."* — and the tool's answer says the same thing back to the caller. The session
+  cannot report this itself; it is the thing being terminated.
+
+The system-initiated archives (`HealthMonitorService`'s stale sweep, the status-summary fork
+cleanup, `SessionStatusSummaryHarvestJob`) do **not** consult it, for the same reason they do not
+consult `Sessions::ArchiveGuard`: a refusal none of them could reconsider would be a fleet-wide
+stuck state with no human in the loop to clear it.
+
 #### A forced archive records, it does not page
 
 The alert exists for a message that was **discarded without anyone reading it**. `force` is the

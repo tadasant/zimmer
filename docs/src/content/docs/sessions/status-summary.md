@@ -379,6 +379,45 @@ It is reached from the four places a fork is known not to be able to deliver:
   cheaper direction over the whole episode: the fork being deferred was going to spend a full agent
   turn eventually, and until it did, its source session sat on the homepage with no blurb.
 
+- **Any generation at all, forced included, on a conversation that is still moving.** See
+  [A live conversation gets no fork](#a-live-conversation-gets-no-fork) below.
+
+### A live conversation gets no fork
+
+A fork is a **second agent** on a session's conversation, and it is dispatched with `--resume`, so
+the runtime injects its own `"Continue from where you left off."` scaffolding on top of a transcript
+copied at a fixed message index. Nothing in what the summarizer reads says the session has moved on
+since that copy was taken.
+
+[#400](https://github.com/tadasant/zimmer/issues/400) is what that costs. A session was unarchived
+and handed a new prompt; one second earlier, a summary fork had been taken of its pre-archive
+conversation. The fork read 737 messages that all said the work was finished, concluded — correctly,
+from inside that context — that nothing was left, and called `action_session` `archive` with the
+source session's id. `AgentSessionJob`'s monitoring loop saw `archived?` and terminated the live
+process mid-tool-call, 45 seconds into the turn that had the new prompt, and its clone was deleted.
+
+So `Sessions::LiveTurn` is asked first, and a session whose conversation is **live** is summarized by
+the one-shot path instead of by a fork. Live means any of:
+
+| Signal | Read from |
+| --- | --- |
+| A turn a worker has picked up | `PendingAgentTurns` — the `good_jobs` rows, not `sessions.running_job_id`, which is written from inside `perform` |
+| A turn queued for a worker | the same rows, without `performed_at` |
+| A prompt accepted and not yet delivered | a `pending` `EnqueuedMessage`, or `metadata["pending_follow_up_prompt"]` |
+
+It is not a refusal, because there is a right way to do it: the one-shot answers from the same
+transcript, spends no agent turn and boots no MCP server, so there is no second agent to act on
+anything. "The session is busy right now" is also the moment an operator most wants to read the
+panel, so refusing would be the wrong way round.
+
+`force` does not override it. `force` overrides the reasons that are about *waste*; this one is about
+a second agent on a live conversation, and pressing **Regenerate** does not make that safe.
+
+The read fails **closed** — an unreadable `good_jobs` counts as a live turn — which is the opposite of
+[`RunningTurns`](/sessions/spot-and-priority/), whose counts fail toward counting. The asymmetry is
+the point: a monitoring gap that downgrades one generation to a terser blurb costs nothing, and one
+that stands a second agent up on a live conversation cost a destroyed turn.
+
 Concurrency is bounded by the two-thread `inference` queue this job shares with `SessionTitleJob` and
 needs-input notification blurbs — see [Blocking inference waits in a lane](/operate/background-jobs/#blocking-inference-waits-in-a-lane-it-does-not-retry-for-admission).
 A headless run blocks a worker thread on a subprocess for up to `HEADLESS_TIMEOUT`; excess generations
