@@ -169,6 +169,69 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
       "the stored transcript must be left as it was"
   end
 
+  # The file has already been judged the longer record by the time the heal runs,
+  # and that verdict does not depend on the database write succeeding. Falling
+  # back to the plain write here would overwrite the longer file with the shorter
+  # stored copy — destroying exactly the turns the guard exists to save.
+  test "keeps the longer transcript on disk even when healing the stored copy fails" do
+    @mock_fs.mkdir_p(@clone_path)
+
+    transcript_path = File.join(
+      File.expand_path("~"), ".claude", "projects",
+      PathSanitizer.sanitize(@working_directory), "#{@session.session_id}.jsonl"
+    )
+    closing = JSON.generate(
+      "type" => "assistant",
+      "message" => { "role" => "assistant", "content" => [ { "type" => "text", "text" => "THE ANSWER, written just before the kill." } ] },
+      "timestamp" => "2024-01-01T10:00:04Z"
+    )
+    on_disk = @transcript_content + closing + "\n"
+    @mock_fs.mkdir_p(File.dirname(transcript_path))
+    @mock_fs.write(transcript_path, on_disk)
+
+    # Break the heal from the inside, at its first step, rather than stubbing
+    # Session#update! — the state transition writes through that too.
+    ClaudeTranscriptSource.any_instance.stubs(:parse_events).raises(RuntimeError, "heal exploded")
+
+    result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
+
+    assert result.success?, "a failed heal must not fail the unarchive"
+    assert_equal on_disk, @mock_fs.read(transcript_path),
+      "the longer file must survive a heal that could not be written"
+    assert_equal @transcript_content, @session.reload.transcript,
+      "the stored copy is merely stale after a failed heal — nothing is destroyed"
+  end
+
+  # `session.transcript` is rendered by the UI, served by the REST and MCP APIs
+  # and packaged into the transcript archive, so what lands in it has to come
+  # through the runtime's source — where redaction lives — rather than a bare
+  # read of the file. Redaction preserves line count, so this case is invisible
+  # to the length comparison and needs its own test.
+  test "redacts secrets out of the transcript it adopts from disk" do
+    @mock_fs.mkdir_p(@clone_path)
+
+    transcript_path = File.join(
+      File.expand_path("~"), ".claude", "projects",
+      PathSanitizer.sanitize(@working_directory), "#{@session.session_id}.jsonl"
+    )
+    leaky = JSON.generate(
+      "type" => "assistant",
+      "message" => { "role" => "assistant", "content" => [ { "type" => "text", "text" => "exported ANTHROPIC_API_KEY=sk-ant-api03-ZZZZfakefakefakefakefake0123456789" } ] },
+      "timestamp" => "2024-01-01T10:00:04Z"
+    )
+    @mock_fs.mkdir_p(File.dirname(transcript_path))
+    @mock_fs.write(transcript_path, @transcript_content + leaky + "\n")
+
+    result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
+
+    assert result.success?
+    stored = @session.reload.transcript
+    assert_includes stored, "THE ANSWER".sub("THE ANSWER", "exported ANTHROPIC_API_KEY="),
+      "the adopted turn itself must still be stored"
+    refute_includes stored, "sk-ant-api03-ZZZZfakefakefakefakefake0123456789",
+      "a secret in the file must not be written into the stored transcript"
+  end
+
   test "full unarchive when clone was deleted recreates clone" do
     # Clone does NOT exist (deleted during archive)
     # Mock GitCloneService to return success

@@ -532,8 +532,10 @@ streaming flag. The transcript file on disk is the only source of truth.
 
 The loop leaves through several doors — the session was archived, it was paused into
 `needs_input`, an interrupt asked for this turn, another job took ownership, the process exited on
-its own. **Every one of them polls the transcript before it stops supervising.** The reason is the
-same each time: the runtime writes to the JSONL continuously, so whatever landed since the last
+its own. **Every door that ends the turn polls the transcript before it stops supervising.** (The
+one exception proves the rule: the elicitation-blocked branch that finds the agent process already
+dead just breaks, because the tool call it was guarding is lost either way.) The reason is the same
+each time: the runtime writes to the JSONL continuously, so whatever landed since the last
 routine poll exists only in that file, and `session.transcript` — the copy the UI renders — would
 stop short of it.
 
@@ -541,8 +543,9 @@ The `archived?` door is the one where that loss is permanent, and it is also the
 The ordinary way a session reaches it is the agent **archiving itself**, so the closing message a
 human is waiting to read is written in the same turn as the `action_session` call, and in the
 seconds after it. Nothing polls an archived session again, so anything missed here is missed for
-good. Session 13908 rendered two timeline items for a 58-message conversation, and the answer a
-human was waiting on was gone.
+good, short of a human pressing **Refresh** on the session while the file is still there. Session
+13908 rendered two timeline items for a 58-message conversation, and the answer a human was waiting
+on was gone.
 
 That door polls **after** `terminate_process`, not before, which is the whole point. The runtime
 keeps writing while it is being shut down: session 13918 archived itself at 23:48:27 and wrote its
