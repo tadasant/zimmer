@@ -163,9 +163,9 @@ Both sweep channels exactly like `bot_mention` — one channel if `channel_id` i
 channel the bot is a member of — and keep the same cursors: per-channel in `channel_timestamps`,
 per-thread in `thread_timestamps` (`"channel_id:thread_ts" => last_reply_ts`), advanced for
 everything fetched whether or not it fired, so a quiet spell never replays as a burst. Aged-out
-threads are re-visited under the same `MAX_TRACKED_THREAD_RECHECKS` (20 per channel per poll) cap,
-reading only the tail since each thread's cursor. What changes is the filter: participation instead
-of mention.
+threads are re-visited under the same `MAX_TRACKED_THREAD_RECHECKS` (20 per channel per poll)
+budget, reading only the tail since each thread's cursor. What changes is the filter: participation
+instead of mention.
 
 A `passive_listen_channel` condition never reads threads at all, and a `passive_listen_thread`
 condition never reads or writes the channel-engagement signal. Each pays only for the thread and
@@ -274,6 +274,34 @@ precisely so that saving the form does not *destroy* them.
 `bot_mention`: the condition fans out across many channels, each with its own cursor, so there is no
 single "newest message" to compare against.
 :::
+
+#### Re-checking more threads than one poll can afford
+
+A thread whose parent has scrolled past the last 50 top-level messages is only reachable through its
+`thread_timestamps` entry, and each one costs a `conversations.replies` call — the synthesized parent
+carries no `latest_reply`, so the cheap "nothing new here" skip cannot fire for it. Slack rate-limits
+that method hard enough to have taken the whole poller down before, so the number of those calls per
+channel per poll is fixed at `MAX_TRACKED_THREAD_RECHECKS`.
+
+That number is a **budget, not a coverage cap**. A live condition here tracks hundreds of threads
+across its channels, most of them inside the 45-day `RECHECK_HORIZON`, so spending the budget on the
+20 most-recently-active and
+dropping the rest — which is what the poller used to do — meant most tracked threads were never
+re-checked at all, and could not be: the ranking is by tracked activity, and a reply nobody fetches
+never advances a tracked timestamp ([#518](https://github.com/tadasant/zimmer/issues/518)).
+
+The budget is now split, per channel:
+
+- `HOT_TRACKED_THREAD_RECHECKS` (10) go to the most-recently-active tracked threads, **every poll**.
+  A conversation that is actually live answers at the poll cadence.
+- The remaining 10 walk everything else in a stable order, resuming from where the previous poll
+  stopped — the position is remembered per channel in `thread_recheck_cursors`.
+
+So a channel with *n* eligible tracked threads sweeps all of them every `ceil((n - 10) / 10)` polls
+— 17 minutes for 172 threads at the one-minute cadence — for exactly the API cost of the old
+truncation. The wait is latency, not loss: a thread's cursor is untouched while it waits its turn,
+so when its slot comes up the fetch still starts from the last reply Zimmer saw. A channel tracking
+fewer threads than the budget rotates nothing and writes no cursor.
 
 #### A passive-listening prompt template
 
