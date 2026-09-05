@@ -1000,7 +1000,55 @@ class ProcessLifecycleManager
   # @param prompt [String] The continuation prompt to send
   # @param reason [String] Human-readable reason for logging (e.g., "compact")
   # @return [ExitDecision] Decision on what to do next
+  # Stop a status-summary fork instead of continuing it, and say so.
+  #
+  # THE SECOND DOOR (#724). `AgentSessionJob#refuse_non_summary_fork_turn` stops a
+  # summary fork being handed a fresh turn. It cannot see any of this: every
+  # respawn here happens INSIDE a turn that guard already admitted — a compaction,
+  # a signal death, an account rotation, a SIGTERM retry. Each carries a
+  # continuation instruction ("continue where you left off", "Continue with the
+  # previous task"), and a fork holds a copy of its SOURCE's conversation, so each
+  # reads as "resume your source's task". That is how router 4388's single
+  # `start_session` call, which carried an `idempotency_key`, became two sessions.
+  #
+  # Coming to rest is the repair, not a loss: `pause!` is the fork's own completion
+  # transition, so the state machine's pause hook harvests it — publishing the
+  # blurb if the fork wrote one before the process died, marking the record if it
+  # did not, and archiving the fork either way. `pause!` rather than `fail!`
+  # deliberately, matching the job-entry guard: one disposal rule for a summary
+  # fork that stops, wherever it is stopped from.
+  #
+  # `:aborted`, not `:failed`. Nothing failed — Zimmer declined — and `:failed` is
+  # rendered on the timeline as "<runtime> CLI failed: …" at ERROR level and
+  # stamped into `failure_reason`, which is what alerting reads; it would page for
+  # a refusal working exactly as designed. `:aborted` means "this exit is already
+  # owned", and the `pause!` is what makes that claim true. Returning it without
+  # transitioning anything would leave the fork `running` with a dead process —
+  # the state this guard exists to avoid, reached the long way round.
+  #
+  # @param reason [String] the respawn that was declined, for the log line
+  # @return [ExitDecision]
+  def refuse_summary_fork_continuation(reason)
+    add_log(
+      "Not continuing after #{reason}: this is a status-summary fork of session " \
+      "#{session.status_summary_source_id}, and the continuation prompt would tell it to resume that " \
+      "session's work rather than its own. Coming to rest so the summary is harvested instead.",
+      level: "warning"
+    )
+    @logger.warn("#{reason.capitalize} continuation refused — session is a status-summary fork")
+    with_db_retry { session.pause! if session.may_pause? }
+    @mutex.synchronize { @state = :idle }
+    ExitDecision.new(action: :aborted)
+  end
+
   def spawn_continuation(working_dir:, prompt:, reason:)
+    # A status-summary fork is never continued: every prompt that reaches here is a
+    # continuation instruction, and a fork reads all of them as "resume your
+    # source's task". See #refuse_summary_fork_continuation. Only the fork stops
+    # here — nothing about its source session's own recovery passes through this
+    # method.
+    return refuse_summary_fork_continuation(reason) if session&.status_summary_fork?
+
     # Guard: the session's clone directory can be removed out from under us by the
     # clone GC (DeferredCloneCleanupJob/StaleCloneCleanupJob) once the session is
     # torn down — a routine, expected condition. If that has happened, resuming is
@@ -1964,6 +2012,14 @@ class ProcessLifecycleManager
   # quota-exceeded exit. Returns an ExitDecision if rotation succeeded, nil if no
   # accounts available.
   def attempt_account_rotation(working_dir)
+    # Asked BEFORE the rotation, not after it. Both exits below end in
+    # `spawn_continuation`, which refuses a summary fork — but by the time it does,
+    # `rotate_for_quota!` has already moved the whole runtime onto a fresh account
+    # and recorded the identity. That is a fleet-wide, once-per-account move, spent
+    # on a session that is about to stop, on the one resource the fleet is actually
+    # short of.
+    return refuse_summary_fork_continuation("account rotation") if @session&.status_summary_fork?
+
     provider = RuntimeAuthProvider.for(@session&.agent_runtime)
     result = provider.rotate_for_quota!(
       triggered_by: @session ? "session:#{@session.id}" : nil,

@@ -1278,6 +1278,15 @@ Once `running_job_id` names another job, the exit being handled is very often on
 (the spawn guard terminating this turn's process is exactly that), so a respawn would put a second
 agent back on the clone the guard just cleared. `handle_exit` stands down with `:aborted` instead.
 
+One session is never respawned by any of them: a **status-summary fork**. Those branches, and the
+four services that mix in `RespawnScaffold`, resume with a continuation instruction — *"continue
+where you left off"*, *"Continue with the previous task"* — and a summary fork holds a copy of its
+source session's conversation, so every one of them reads as "resume your source's task". They
+refuse it and bring the fork to rest, which fires the harvest; standing down with a bare `:aborted`
+would leave it `running` with a dead process for the orphan sweep to nudge, which is the same defect
+one step later. See [The fork takes exactly one
+turn](/sessions/status-summary/#the-fork-takes-exactly-one-turn).
+
 ### The owner that replaces nothing
 
 The monitoring loop's backstop rests on a premise: the job that took `running_job_id` did so because
