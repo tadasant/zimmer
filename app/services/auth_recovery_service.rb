@@ -376,7 +376,7 @@ class AuthRecoveryService
     end
 
     with_db_retry do
-      session.update!(metadata: (session.metadata || {}).merge(updates))
+      session.merge_metadata!(updates)
     end
   end
 
@@ -502,10 +502,8 @@ class AuthRecoveryService
   # re-detect the same entry.
   def advance_checked_line(working_directory)
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge(
-          "auth_error_last_checked_line" => get_transcript_line_count(working_directory)
-        )
+      session.merge_metadata!(
+        "auth_error_last_checked_line" => get_transcript_line_count(working_directory)
       )
     end
   rescue => e

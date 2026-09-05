@@ -125,17 +125,25 @@ module Sessions
 
       old_values = @session.public_send(@attribute) || []
 
-      # Clearing the list has to be recorded as deliberate, or McpServerBackfill
-      # reads the empty column as an accident and restores the root's defaults
-      # the next time the config is regenerated.
-      @session.record_explicit_mcp_servers(values) if @attribute == :mcp_servers
-
       # The write is retried the way the web copies always retried it, and the
       # REST and MCP copies did not. A dropped PG connection is a transport
       # failure, not a rejected request, so it comes back as its own error code
       # for the surface to answer 503 to rather than as a validation failure.
+      #
+      # Clearing the list also has to be recorded as deliberate, or
+      # McpServerBackfill reads the empty column as an accident and restores the
+      # root's defaults the next time the config is regenerated. It is its own
+      # statement — a jsonb merge, so a concurrent metadata writer keeps its keys
+      # — but it shares the transaction: a list written without its marker is the
+      # state the backfill silently reverts.
+      persisted = nil
       begin
-        persisted = with_db_retry { @session.update(@attribute => values) }
+        with_db_retry do
+          @session.transaction do
+            persisted = @session.update(@attribute => values)
+            @session.record_explicit_mcp_servers!(values) if persisted && @attribute == :mcp_servers
+          end
+        end
       rescue *DatabaseRetry::RETRYABLE_EXCEPTIONS => e
         return database_unavailable_error(e)
       end
@@ -200,11 +208,9 @@ module Sessions
 
       best_effort do
         @session.reload
-        @session.update!(
-          metadata: (@session.metadata || {}).merge(
-            "failure_reason" => "oauth_required",
-            "oauth_required_servers" => needing
-          )
+        @session.merge_metadata!(
+          "failure_reason" => "oauth_required",
+          "oauth_required_servers" => needing
         )
         @session.fail! if @session.may_fail?
 
@@ -220,7 +226,7 @@ module Sessions
 
       best_effort do
         @session.reload
-        @session.update!(metadata: (@session.metadata || {}).except("failure_reason", "oauth_required_servers"))
+        @session.remove_metadata!("failure_reason", "oauth_required_servers")
       end
     end
 

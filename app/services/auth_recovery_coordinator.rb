@@ -131,11 +131,9 @@ class AuthRecoveryCoordinator
   def self.record_identity!(session, account)
     return unless session && account.respond_to?(:email) && account.email.present?
 
-    session.update!(
-      metadata: (session.metadata || {}).merge(
-        IDENTITY_KEY => account.email,
-        IDENTITY_AT_KEY => Time.current.iso8601
-      )
+    session.merge_metadata!(
+      IDENTITY_KEY => account.email,
+      IDENTITY_AT_KEY => Time.current.iso8601
     )
   rescue => e
     # Best effort: a missing marker degrades one recovery decision to "rotate",
@@ -162,7 +160,7 @@ class AuthRecoveryCoordinator
       updates[IDENTITY_AT_KEY] = Time.current.iso8601
     end
 
-    session.update!(metadata: (session.metadata || {}).merge(updates))
+    session.merge_metadata!(updates)
   rescue => e
     Rails.logger.info "[AuthRecoveryCoordinator] Could not record spawn credentials: #{e.message}"
   end

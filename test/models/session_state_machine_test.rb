@@ -1321,11 +1321,16 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
     session.pause!
 
-    assert_equal 4, broadcasts_called.length, "All 4 broadcast methods should be called"
+    # Five calls, not four: `broadcast_header_actions` fires twice. Once for the
+    # transition, and once more because the pause callback bumps
+    # `custom_metadata["needs_input_count"]`, and every custom_metadata write
+    # re-renders that partial. The counter goes through merge_custom_metadata!,
+    # which re-dispatches the broadcasts a raw UPDATE would have skipped.
+    assert_equal 5, broadcasts_called.length, "All 4 broadcast methods should be called"
+    assert_equal 2, broadcasts_called.count(:broadcast_header_actions)
     assert_includes broadcasts_called, :broadcast_status_badge
     assert_includes broadcasts_called, :broadcast_follow_up_form
     assert_includes broadcasts_called, :broadcast_running_loader
-    assert_includes broadcasts_called, :broadcast_header_actions
   end
 
   test "start! triggers broadcasts to update Turbo Stream clients" do
@@ -2512,7 +2517,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
   test "a failed counter bump skips the push rather than sending it ungated" do
     session = sessions(:waiting)
     session.update!(status: :running, push_notifications_enabled: true)
-    session.stubs(:update_column).raises(StandardError, "database is unhappy")
+    session.stubs(:merge_custom_metadata!).raises(StandardError, "database is unhappy")
 
     ActiveRecord.stubs(:after_all_transactions_commit).yields
 

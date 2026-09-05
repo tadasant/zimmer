@@ -93,15 +93,14 @@ class DeferredCloneCleanupJob < ApplicationJob
         artifacts_preserved = true
         Rails.logger.info "[DeferredCloneCleanupJob] Preserved artifacts for session #{session_id}"
 
-        # Set trash_after and store artifacts path in a single DB update to avoid race conditions
+        # Re-read before both writes: the deadline is derived from `archived_at`,
+        # and a re-archive landing during the filesystem walk above moves it.
         with_db_retry do
-          new_metadata = (session.reload.metadata || {})
-            .merge("artifacts_path" => create_result.artifacts_path)
-            .merge(mangled_clone_metadata(create_result))
-          session.update_columns(
-            trash_after: trash_deadline_for(session),
-            metadata: new_metadata
+          session.reload
+          session.merge_metadata!(
+            { "artifacts_path" => create_result.artifacts_path }.merge(mangled_clone_metadata(create_result))
           )
+          session.update_columns(trash_after: trash_deadline_for(session))
         end
       elsif create_result.clone_missing? && !File.directory?(clone_path)
         # The clone went away between the dirty check and the preservation —

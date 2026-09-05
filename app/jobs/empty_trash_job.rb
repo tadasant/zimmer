@@ -144,12 +144,8 @@ class EmptyTrashJob < ApplicationJob
 
     # Clear trash_after and artifacts_path from metadata
     with_db_retry do
-      if session.metadata&.dig("artifacts_path").present?
-        new_metadata = session.metadata.except("artifacts_path")
-        session.update_columns(trash_after: nil, metadata: new_metadata)
-      else
-        session.update_column(:trash_after, nil)
-      end
+      session.remove_metadata!("artifacts_path") if session.metadata&.dig("artifacts_path").present?
+      session.update_column(:trash_after, nil)
     end
 
     if cleaned_anything

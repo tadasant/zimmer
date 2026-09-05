@@ -163,12 +163,11 @@ class DeploymentRecoveryJob < ApplicationJob
         level: "info"
       )
       # Clear the failure metadata and mark for recovery continuation
-      session.update!(
-        running_job_id: nil,
-        metadata: (session.metadata || {}).except(
-          "failure_reason", "oauth_required_servers", "exception_class", "exception_message"
-        ).merge("paused_by" => "recovery")
+      session.merge_metadata!(
+        { "paused_by" => "recovery" },
+        %w[failure_reason oauth_required_servers exception_class exception_message]
       )
+      session.update!(running_job_id: nil)
       # Transition from failed → running (via resume) will happen in continue_recovered_session
     end
 

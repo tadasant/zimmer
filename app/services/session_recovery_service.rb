@@ -190,9 +190,7 @@ class SessionRecoveryService
     # the monitoring loop detects the SIGKILL exit and transitions to failed
     # before we can transition to needs_input.
     with_db_retry do
-      session.update!(
-        metadata: (session.metadata || {}).merge("recovery_termination_initiated" => true)
-      )
+      session.merge_metadata!("recovery_termination_initiated" => true)
     end
 
     # Terminate the hung process
@@ -340,12 +338,11 @@ class SessionRecoveryService
       # needs_input → waiting. But recovery registers no wake trigger, so the
       # session would be stranded in waiting forever — the auto-continue path only
       # rescues needs_input. Clearing the flag here keeps recovery deterministic.
-      session.update!(
-        running_job_id: nil,
-        metadata: (session.metadata || {})
-          .except("recovery_termination_initiated", "pending_sleep")
-          .merge("paused_by" => "recovery")
+      session.merge_metadata!(
+        { "paused_by" => "recovery" },
+        %w[recovery_termination_initiated pending_sleep]
       )
+      session.update!(running_job_id: nil)
       session.pause! if session.may_pause?
     end
   end
@@ -385,10 +382,8 @@ class SessionRecoveryService
         outcome = session.claim_system_recovery_turn! do
           # Clear stale retry metadata before restarting.
           # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
-          session.update!(
-            running_job_id: nil,
-            metadata: (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
-          )
+          session.remove_metadata!(Session::STALE_RETRY_METADATA_KEYS)
+          session.update!(running_job_id: nil)
         end
 
         next unless outcome == :claimed

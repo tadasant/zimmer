@@ -457,14 +457,12 @@ class SessionStatusSummaryGenerator
   # FORK_MARKER is NOT set here — it is passed to the fork service so it is
   # present on the very first commit, before the dashboard broadcast fires.
   def prepare_fork(fork)
-    metadata = fork.metadata.to_h
-    metadata["runtime_started"] = false unless resumable_fork?(fork)
+    fork.merge_metadata!("runtime_started" => false) unless resumable_fork?(fork)
 
     fork.update!(
       goal: nil,
       title: "Status summary for session ##{session.id}",
-      heartbeat_enabled: false,
-      metadata: metadata
+      heartbeat_enabled: false
     )
     fork
   end

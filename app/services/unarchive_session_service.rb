@@ -108,10 +108,7 @@ class UnarchiveSessionService
   # failing to stamp must not fail the unarchive, and the grace period bounds a
   # stamp that is never cleared.
   def mark_unarchive_in_flight!
-    session.update_column(
-      :metadata,
-      (session.metadata || {}).merge(Session::UNARCHIVE_IN_FLIGHT_KEY => Time.current.utc.iso8601)
-    )
+    session.merge_metadata!(Session::UNARCHIVE_IN_FLIGHT_KEY => Time.current.utc.iso8601)
   rescue StandardError => e
     @logger.warn("Could not mark the unarchive in flight", error: e.message)
   end
@@ -123,7 +120,7 @@ class UnarchiveSessionService
     session.reload
     return if session.metadata&.dig(Session::UNARCHIVE_IN_FLIGHT_KEY).blank?
 
-    session.update_column(:metadata, session.metadata.except(Session::UNARCHIVE_IN_FLIGHT_KEY))
+    session.remove_metadata!(Session::UNARCHIVE_IN_FLIGHT_KEY)
   rescue StandardError => e
     @logger.warn("Could not clear the unarchive-in-flight marker", error: e.message)
   end
@@ -377,10 +374,7 @@ class UnarchiveSessionService
       # Without this, artifacts would be orphaned on disk since unarchive
       # clears trash_after, so EmptyTrashJob would never find this session.
       artifact_service.cleanup_artifacts(session.id)
-      if session.metadata&.dig("artifacts_path").present?
-        new_metadata = session.metadata.except("artifacts_path")
-        session.update_column(:metadata, new_metadata)
-      end
+      session.remove_metadata!("artifacts_path") if session.metadata&.dig("artifacts_path").present?
     else
       @logger.warn("Failed to apply some artifacts, keeping on disk for manual recovery",
         error: apply_result.error,
@@ -475,23 +469,21 @@ class UnarchiveSessionService
 
   def update_session_metadata(clone_path:, working_directory:)
     with_db_retry do
-      new_metadata = (session.metadata || {}).merge(
-        "clone_path" => clone_path,
-        "working_directory" => working_directory,
-        "full_clone_path" => working_directory,
-        "unarchived_at" => Time.current.iso8601,
-        "clone_recreated" => true
-      )
-
       # Clear old process state and stale retry metadata since we're starting fresh.
-      # See Session::STALE_RETRY_METADATA_KEYS for the retry metadata keys.
-      new_metadata = new_metadata.except(
-        "process_pid",
-        "exception_class",
-        *Session::STALE_RETRY_METADATA_KEYS
+      # See Session::STALE_RETRY_METADATA_KEYS for the retry metadata keys. The
+      # removals happen before the merge, and none of them names a key written
+      # here, so the set the row lands on is the same one the whole-column write
+      # produced.
+      session.merge_metadata!(
+        {
+          "clone_path" => clone_path,
+          "working_directory" => working_directory,
+          "full_clone_path" => working_directory,
+          "unarchived_at" => Time.current.iso8601,
+          "clone_recreated" => true
+        },
+        [ "process_pid", "exception_class" ] + Session::STALE_RETRY_METADATA_KEYS
       )
-
-      session.update!(metadata: new_metadata)
     end
     true
   rescue => e
@@ -680,9 +672,7 @@ class UnarchiveSessionService
   # runs don't leak into the regenerated state.
   def store_injected_mcp_servers(injected_servers)
     with_db_retry do
-      session.reload
-      merged = (session.custom_metadata || {}).merge("injected_mcp_servers" => injected_servers)
-      session.update!(custom_metadata: merged)
+      session.merge_custom_metadata!("injected_mcp_servers" => injected_servers)
     end
   rescue => e
     @logger.warn("Failed to store injected_mcp_servers", error: e.message)
@@ -739,13 +729,10 @@ class UnarchiveSessionService
           )
         end
 
-        cleaned_metadata = (session.metadata || {}).except(
-          "process_pid",
-          "exception_class",
-          *Session::STALE_RETRY_METADATA_KEYS,
-          *also_clear
+        session.remove_metadata!(
+          "process_pid", "exception_class", Session::STALE_RETRY_METADATA_KEYS, also_clear
         )
-        session.update!(archived_at: nil, metadata: cleaned_metadata)
+        session.update!(archived_at: nil)
 
         # Always transition to needs_input regardless of the session's
         # pre-archive status. This is intentional: the user wants to continue

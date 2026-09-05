@@ -285,9 +285,13 @@ class SessionTitleJob < ApplicationJob
   def apply_title(session, title, title_source)
     return if title.blank?
 
-    updated_metadata = (session.metadata || {}).except("auto_generated_title")
     with_db_retry do
-      session.update!(title: title, metadata: updated_metadata)
+      session.update!(title: title)
+      # After the title lands, never before: both re-title gates key on this
+      # marker, so dropping it first and then failing the write (the stale-catalog
+      # RecordInvalid is the live case) would leave the session unnamed and
+      # ineligible to be named again.
+      session.remove_metadata!("auto_generated_title")
     end
 
     with_db_retry do
