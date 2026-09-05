@@ -1817,16 +1817,31 @@ Reading those as lost is how `StrandedSleepSweepJob` came to announce that a hea
 "could never fire" eight seconds before it fired, resume the session, and lose the prompt the wake
 was carrying.
 
-**A deliberate resume consumes a pending wake, and the dead row is collected on sight.** A user
-follow-up, a restart, `force_immediate` — anything where somebody decided the session should be
-awake — runs `cancel_pending_one_time_wake_triggers`, which stamps `last_triggered_at` on every
-pending one-time wake aimed at that session so none of them fires later into live work. That stamp
-is permanent: `schedule_due?` is false forever afterwards, so the trigger never fires and never runs
-the cleanup that normally removes a spent one-time trigger.
+**A takeover consumes a pending wake, and the dead row is collected on sight.** A restart, a
+restart-from-scratch, a resume of a `failed` session — anything that *replaces* the wait rather than
+adding to it — runs `cancel_pending_one_time_wake_triggers`, which stamps `last_triggered_at` on
+every pending one-time wake aimed at that session so none of them fires later into live work. That
+stamp is permanent: `schedule_due?` is false forever afterwards, so the trigger never fires and never
+runs the cleanup that normally removes a spent one-time trigger.
 
-A resume caused by the **wake itself firing** is the exception. It leaves the group armed and takes
-the hold branch above instead, because the requester has been resumed but has not yet *done*
-anything — until its turn ends, the wait it set up is still the only thing that will wake it again.
+Two resumes are exceptions, and neither consumes anything.
+
+A resume caused by the **wake itself firing** leaves the group armed and takes the hold branch above
+instead, because the requester has been resumed but has not yet *done* anything — until its turn
+ends, the wait it set up is still the only thing that will wake it again.
+
+A **follow-up** — a router's `follow_up`, a human's message, a queued message draining, a Slack or
+GitHub trigger — leaves the wake armed with nothing marked at all. A message sent to a sleeping
+session adds to its wait; it does not end it, and the sender rarely knows a wake was armed in the
+first place. Consuming there is what stranded session 13403 on 2026-09-04: it answered the follow-up,
+came to rest in `needs_input` believing its 08:06 self-wake would collect it, and sat idle holding a
+nearly-finished PR ([#898](https://github.com/tadasant/zimmer/issues/898)). The full table of who
+consumes what is in [A follow-up does not cancel a
+wake](/sessions/lifecycle/#a-follow-up-does-not-cancel-a-wake).
+
+`archive` is where a wake nothing else spent finally goes — `retire_pending_one_time_wakes` stamps
+whatever is still pending, because a session with no turns left has no wait left either, and a
+preserved wake that outlived its session would fire into an archived row and resuscitate it.
 
 What is left is a row that can never fire again, sitting in `/triggers` and in `search_triggers` as
 `enabled` with 0 sessions — indistinguishable from an armed wake. `Trigger#dead_one_time_wake?` is

@@ -56,6 +56,34 @@ module SessionStateMachine
   # protect. Transient, never persisted, cleared in an `ensure` by its one writer.
   attr_accessor :wake_fire_resume
 
+  # True for a resume that delivers SOMEBODY ELSE'S prompt to a session which was
+  # resting or asleep — a router's `follow_up`, a human's message from the web UI
+  # or the REST API, a queued message draining, a Slack or GitHub trigger firing.
+  #
+  # It selects the fourth branch of #cancel_pending_one_time_wake_triggers:
+  # preserve the session's own pending wake-ups rather than consuming them.
+  #
+  # THE STRAND THIS CLOSES (#898). Consuming here reads the resume as "somebody
+  # has taken this session over, so its wait is moot" — and for a restart, which
+  # replaces the wait, that is true. For a follow-up it is not: a message sent to
+  # a sleeping session is additive, the sender usually has no idea a wake was
+  # armed, and the session it lands in has already told its own transcript that
+  # its wake fires at T. So the session answers, comes to rest in `needs_input`
+  # (the correct thing to do), and sits there forever holding a wait nothing will
+  # ever end. It is silent in both directions: the sender is not told it has
+  # taken on responsibility for waking the session, and the session is not told
+  # its wake is gone. In the filed instance session 13403 was mid-`wait-for-ci`
+  # with a self-wake due at 08:06, a router followed up at 08:06, and the session
+  # sat idle with a nearly-finished PR until an unrelated third session nudged it.
+  #
+  # Preserving is deliberately the eager side of that trade. A wake preserved
+  # over a follow-up the session had already handled costs one extra turn, which
+  # is visible in the transcript and cheap; a wake consumed costs an indefinite
+  # strand nobody can see. Loud beats quiet.
+  #
+  # Transient, never persisted, cleared in an `ensure` by Session#resume_for_follow_up!.
+  attr_accessor :follow_up_resume
+
   # Metadata marker written alongside `pending_sleep` by the system-recovery
   # preserve branch. It means "sleep only if something is still armed to wake
   # you", and distinguishes that conditional intent from a deliberate sleep,
@@ -364,6 +392,13 @@ module SessionStateMachine
           # held across a turn is retired here rather than lingering as enabled
           # rows against a session nobody will follow up into.
           retire_held_wake_triggers
+          # And the wakes nothing held: a session with no turns left has no wait
+          # left either. Without this a wake preserved across a follow-up
+          # (#preserve_pending_wakes_across_follow_up) outlives the session that
+          # armed it and fires into an archived row, where Trigger#follow_up_session!
+          # cannot reuse it and resuscitates it instead — an archived session back
+          # from the dead on a wait it already finished.
+          retire_pending_one_time_wakes
           set_trash_expiry
           # Same reasoning as on `fail`: a session trashed straight from
           # `needs_input` is one nobody comes back to, and the trash bookkeeping
@@ -1841,7 +1876,7 @@ module SessionStateMachine
   # which makes the firing path skip it. The trigger itself stays enabled (it
   # may have other conditions).
   #
-  # Two resumes are exceptions, and both leave the wake-ups armed:
+  # Three resumes are exceptions, and all three leave the wake-ups armed:
   #
   # - A SYSTEM-RECOVERY resume takes the preserve branch. The session did not
   #   choose to wake, so its wake-ups are not moot. See #system_recovery_resume.
@@ -1850,6 +1885,13 @@ module SessionStateMachine
   #   is the no-trigger window of
   #   https://github.com/tadasant/zimmer/issues/569. See
   #   #hold_pending_one_time_wakes.
+  # - A FOLLOW-UP resume takes the follow-up preserve branch. Somebody sent this
+  #   session a message; nobody cancelled its wait. See #follow_up_resume and
+  #   https://github.com/tadasant/zimmer/issues/898.
+  #
+  # What is left on the consuming branch is the TAKEOVER: a restart, a
+  # restart-from-scratch, a resume of a failed session. Those replace the wait
+  # rather than adding to it, so the wake-ups really are moot.
   #
   # Scoped to: conditions on triggers where this session is the reuse target,
   # that haven't fired yet, and that are one-time wake-ups — either a one-time
@@ -1864,6 +1906,7 @@ module SessionStateMachine
 
     return preserve_pending_one_time_wakes(conditions) if system_recovery_resume
     return hold_pending_one_time_wakes(conditions) if wake_fire_resume
+    return preserve_pending_wakes_across_follow_up(conditions) if follow_up_resume
 
     conditions.each do |condition|
       condition.update!(last_triggered_at: Time.current)
@@ -1880,7 +1923,8 @@ module SessionStateMachine
     # into live work; on the preserve branch a session that should have gone back
     # to sleep comes to rest in needs_input instead; on the hold branch the group
     # is left armed and unmarked, so nothing retires it at the end of the turn and
-    # it fires into a later, unrelated wait.
+    # it fires into a later, unrelated wait; on the follow-up branch the session
+    # loses the wake it is still counting on and strands in needs_input (#898).
     report_swallowed_side_effect(__method__, e, alert: true)
   end
 
@@ -1926,6 +1970,57 @@ module SessionStateMachine
     logs.create!(
       content: "Recovered from a system interruption with #{conditions.size} wake-up(s) still armed — " \
         "#{backstopped ? 'returning to waiting after this turn' : 'no scheduled backstop, so this session will rest in needs_input'}",
+      level: "info"
+    )
+  end
+
+  # Leave a followed-up session's own wake-ups armed.
+  #
+  # The third leaving-armed branch, and the narrowest of the three: nothing is
+  # marked, nothing is re-slept, nothing is retired later. The conditions are
+  # simply not consumed, so the wait the session set up for itself is still the
+  # wait it is on when the turn it was just handed comes to rest. A one-time
+  # schedule fires at its wall time — before the turn ends, in which case
+  # Trigger#follow_up_session! queues it durably onto the running session, or
+  # after it, in which case it resumes the session from `needs_input` exactly as
+  # the session intended.
+  #
+  # Deliberately NOT the #preserve_pending_one_time_wakes treatment: that branch
+  # also writes `pending_sleep`, because a system-recovered session never chose to
+  # be awake at all. Here somebody asked this session a question, and putting it
+  # straight back to sleep after it answers would hide the answer. It rests in
+  # `needs_input` and its wake collects it later.
+  #
+  # A wake that can no longer fire is consumed rather than preserved. Preserving
+  # one would leave an `enabled`, unfired row that reads as an armed wake on
+  # /triggers and in `search_triggers` and is collected by nothing — the exact row
+  # Trigger#dead_one_time_wake? exists to retire. Only the shapes that cannot fire
+  # qualify: a session-scoped `ao_event` whose watched session is archived or
+  # gone. A one-time schedule is always preserved, even one already overdue,
+  # because an overdue schedule is a wake the scheduler has not reached yet
+  # (SCHEDULE_FIRE_SETTLE) or one it will reach late — and consuming a late wake
+  # is the same strand this branch exists to close.
+  def preserve_pending_wakes_across_follow_up(conditions)
+    watched = self.class.watched_session_states(conditions)
+    preserved, consumed = conditions.partition do |condition|
+      condition.one_time_schedule? || self.class.one_time_wake_pending?(condition, watched_states: watched)
+    end
+
+    consumed.each { |condition| condition.update!(last_triggered_at: Time.current) }
+    return if preserved.empty?
+
+    Rails.logger.info(
+      "[SessionStateMachine] Preserved #{preserved.size} pending one-time wake-up(s) across a " \
+      "follow-up resume of session #{id} (trigger_conditions #{preserved.map(&:id).join(', ')}) — " \
+      "the follow-up added to this session's wait, it did not end it" \
+      "#{consumed.any? ? "; consumed #{consumed.size} that could no longer fire" : ''}"
+    )
+
+    at = pending_wake_at
+    logs.create!(
+      content: "Resumed by a follow-up while #{preserved.size} wake-up(s) of its own were still armed — " \
+        "#{at ? "the next fires at #{at.utc.iso8601}" : 'they fire when the sessions they watch transition'}. " \
+        "The follow-up did not cancel them.",
       level: "info"
     )
   end
@@ -2013,6 +2108,39 @@ module SessionStateMachine
     # Alert: swallowed, the held group stays armed with nothing left to retire it,
     # and one of its members fires into whatever the session is doing next — the
     # stale-wake regression that holding exists to avoid.
+    report_swallowed_side_effect(__method__, e, alert: true)
+  end
+
+  # Consume every one-time wake-up still aimed at this session, because the
+  # session is over.
+  #
+  # The counterpart to #retire_held_wake_triggers on the `archive` path, for the
+  # wakes that were never held: the ones a session armed for itself and the ones
+  # #preserve_pending_wakes_across_follow_up left standing. Both are waits, and an
+  # archived session is not waiting for anything.
+  #
+  # Consumed rather than destroyed, and that is the same choice
+  # #cancel_pending_one_time_wake_triggers makes: the trigger row may carry other
+  # conditions that still do real work, so stamping the condition closes the wake
+  # without deleting anything. A row left with nothing but spent one-shots becomes
+  # a Trigger#dead_one_time_wake? and CleanupStaleTriggersJob collects it.
+  #
+  # Deliberately NOT called from `fail`, for the reason #retire_held_wake_triggers
+  # gives: a `failed` session is not reliably a finished one.
+  def retire_pending_one_time_wakes
+    conditions = pending_one_time_wake_conditions.select do |condition|
+      condition.one_time_schedule? || condition.session_scoped_ao_event?
+    end
+    return if conditions.empty?
+
+    conditions.each { |condition| condition.update!(last_triggered_at: Time.current) }
+    Rails.logger.info(
+      "[SessionStateMachine] Retired #{conditions.size} pending one-time wake-up(s) " \
+      "(trigger_conditions #{conditions.map(&:id).join(', ')}) on archive of session #{id}"
+    )
+  rescue => e
+    # Alert: swallowed, a wake survives the session it belonged to and fires into
+    # an archived row, which Trigger#follow_up_session! answers by resuscitating it.
     report_swallowed_side_effect(__method__, e, alert: true)
   end
 

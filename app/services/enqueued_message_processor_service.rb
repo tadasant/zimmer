@@ -149,7 +149,13 @@ class EnqueuedMessageProcessorService
         # up running_job_id (cleanup_running_job from the prior pause) and reset the
         # elapsed-time counter. When may_resume? is false (handoff path), apply those
         # effects manually below.
-        session.resume! if session.may_resume?
+        #
+        # A follow-up resume, not a plain one: the message being delivered came
+        # from somewhere other than this session's own wait — a router's queued
+        # `follow_up`, a human's message typed while the agent was busy — so the
+        # session's pending wake-ups survive it (#898). Delivery through the queue
+        # is the SAME event as a direct follow-up; only the timing differs.
+        session.resume_for_follow_up!
 
         if handoff_from_running
           # Handoff path: clear the outgoing job's lock and refresh the

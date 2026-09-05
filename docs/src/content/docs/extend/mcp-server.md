@@ -624,6 +624,13 @@ And `session_needs_input` no longer fires on a turn boundary the watched session
 once. Zimmer settles it first, so a wake that reaches you is a session that actually came to rest →
 [a turn boundary is not a rest](/sessions/lifecycle/#a-turn-boundary-is-not-a-rest).
 
+**A follow-up does not cancel either wake.** If somebody prompts a sleeping session before its wake
+is due — a router's `follow_up`, a human's message, a queued message draining — the session takes
+that turn and the wake stays armed to fire afterwards. Only a takeover ends it: `restart`, a restart
+from scratch, or archiving the session. `follow_up`'s own result says so, with an **Its own wake-up**
+line naming the time, so a router redirecting a sleeper can see it does not have to wake it →
+[A follow-up does not cancel a wake](/sessions/lifecycle/#a-follow-up-does-not-cancel-a-wake).
+
 ### `get_costs`
 
 Reads Zimmer's token-spend ledger: what inference cost, by agent root, model, session, and kind of

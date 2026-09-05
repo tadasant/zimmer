@@ -1432,6 +1432,34 @@ class Session < ApplicationRecord
     self.system_recovery_resume = false
   end
 
+  # Resume this session to deliver somebody else's prompt into it — a follow-up,
+  # a queued message, a Slack or GitHub trigger — rather than because anyone
+  # decided its own wait was over.
+  #
+  # Going through `resume!` directly consumes the session's pending one-time
+  # wake-ups. That is right for a takeover (a restart replaces the wait) and wrong
+  # here: a follow-up ADDS to the session's wait. The sender rarely knows a wake
+  # was armed, and the session it lands in has usually already told its transcript
+  # that its wake fires at T — so it answers, comes to rest, and strands with
+  # nothing scheduled to bring it back. See
+  # SessionStateMachine#follow_up_resume and
+  # https://github.com/tadasant/zimmer/issues/898.
+  #
+  # The flag is cleared in an ensure block so it can never leak into a later,
+  # genuinely deliberate resume of the same in-memory instance.
+  #
+  # @return [Boolean] true when the session was resumed, false when it was not in
+  #   a resumable state
+  def resume_for_follow_up!
+    return false unless may_resume?
+
+    self.follow_up_resume = true
+    resume!
+    true
+  ensure
+    self.follow_up_resume = false
+  end
+
   # Claim a turn for an automated recovery sweep — under a row lock, against the
   # row as it actually stands.
   #
@@ -1576,7 +1604,20 @@ class Session < ApplicationRecord
     stale = Array(clear_metadata_keys)
     remove_metadata!(stale) if stale.any? { |key| metadata&.dig(key).present? }
 
-    resume! if may_resume?
+    # The default here is the follow-up resume: every caller of this method is
+    # delivering a prompt from somewhere other than this session's own wait — a
+    # human's follow-up form, a trigger, a poller, a child reporting to its
+    # parent — so the session's own pending wake-ups survive it (#898). The two
+    # callers that have already said what kind of resume this is keep their
+    # answer: Trigger#follow_up_session! sets `wake_fire_resume` when the wake
+    # itself is what woke the session, and a recovery path sets
+    # `system_recovery_resume`. Both branches leave the wake-ups armed too, by
+    # their own rules.
+    if wake_fire_resume || system_recovery_resume
+      resume! if may_resume?
+    else
+      resume_for_follow_up!
+    end
 
     updates = metadata_updates.to_h
     updates = updates.merge("pending_follow_up_prompt" => prompt) if stamp_pending_prompt
