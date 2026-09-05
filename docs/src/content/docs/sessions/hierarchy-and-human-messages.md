@@ -150,6 +150,36 @@ hierarchy renders exactly as it did before uncle edges existed.
 Because a session can now be reached by more than one path, the downward walk is breadth-first and
 each session is rendered **once, at its shallowest depth**.
 
+### Discovery is breadth-first; the ORDER is depth-first
+
+Those are two different things, and conflating them was a real bug ([#571](https://github.com/tadasant/zimmer/issues/571)).
+
+Every surface draws this graph with indentation and nothing else — the outline, the detail page, both
+provenance MCP tools — so the order of `nodes` *is* the parent-child claim a reader gets. A
+breadth-first walk emits a whole level at a time, in id order, which made every child of a batch of
+sibling routers read as a child of whichever sibling sorted last: eight routers spawned from one
+trigger, each spawning one child, and all the children appeared under router number eight. The
+`parent_session_id` rows were correct throughout. Only the picture was wrong, and a wrong picture here
+is load-bearing — it decides which session believes it has a child in flight and must not archive.
+
+So discovery stays breadth-first, because that is what renders a session reachable by two paths once
+at its shallowest depth, and every node's `depth` still comes from that walk. The **order** is then
+depth-first over the same set: each node immediately follows the one it hangs from, with its whole
+subtree ahead of the next sibling. Reordering never changes the node set — that set is the scope the
+human-message record is gathered over, so a node gained here would be a human message a session could
+read that it could not before.
+
+Each node records `render_parent_id`, the session it is drawn under. That is normally the spawn
+parent. It is an uncle only when the walk could not reach the session through a spawn edge at that
+level — the junior's own spawn parent sits deeper than the uncle does — and then `spawn_edge?` is
+false and the outline says so rather than letting indentation assert a spawn edge that does not
+exist:
+
+```
+- #101 [zimmer-router] {web_ui · priority} Senior
+  - #104 [zimmer] {web_ui · priority} Junior (also senior: #101) (shown under uncle #101, not its spawn parent)
+```
+
 ### Depth and cycles
 
 The walk is bounded twice: `MAX_DEPTH` of 8 levels and `MAX_NODES` of 150 sessions. Deep enough for

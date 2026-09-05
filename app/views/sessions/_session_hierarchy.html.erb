@@ -52,8 +52,16 @@
               is the unchanged depth × 20px. Two custom properties rather than one
               expression: the breakpoint has to live in a class and the depth has to
               live in the style, so a property per width is the readable split. %>
+          <%# `data-render-parent-id` is the node this row is indented under, which is
+              all indentation asserts. Machine-readable rather than drawn: the row
+              already shows the id and the uncle pill, and the ordering of
+              `hierarchy.nodes` is what puts the row in the right place. It is here so
+              the structure a reader infers from indentation can be asserted against
+              the edge that produced it (#571). %>
           <li class="pl-[var(--node-indent-phone)] sm:pl-[var(--node-indent)]"
               data-depth="<%= node.depth %>"
+              data-render-parent-id="<%= node.render_parent_id %>"
+              <%= "data-via-uncle" unless node.spawn_edge? %>
               <%= "data-current" if node.current? %>
               style="--node-indent-phone: <%= node.depth * 8 %>px; --node-indent: <%= node.depth * 20 %>px">
             <%# Two classes carry this row. `max-w-full` caps the inline-flex container,

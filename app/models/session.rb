@@ -724,13 +724,20 @@ class Session < ApplicationRecord
   #
   # This is spawn lineage. A session is routinely followed up by a router other
   # than the one that spawned it, so this is NOT "who talked to me last".
-  def lineage_parent_id
-    return parent_session_id if parent_session_id.present?
+  def lineage_parent_id = lineage_parent_candidate_ids.first
 
+  # Every id this session records as its spawner, in that same precedence order.
+  # Normally one — #lineage_parent_id is that one.
+  #
+  # Both are worth having separately because SessionHierarchy matches juniors on
+  # BOTH representations, so when it renders the graph it has to know which of
+  # them actually reached a given session, not just which one wins.
+  def lineage_parent_candidate_ids
+    ids = []
+    ids << parent_session_id if parent_session_id.present?
     derived = custom_metadata&.dig("router_session_id")
-    return nil if derived.blank?
-
-    Integer(derived, exception: false)
+    ids << Integer(derived, exception: false) if derived.present?
+    ids.compact
   end
 
   # The whole family of sessions this one belongs to — origin at the root, every

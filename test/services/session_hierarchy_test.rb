@@ -418,4 +418,179 @@ class SessionHierarchyTest < ActiveSupport::TestCase
     assert_includes SessionHierarchy.new(target).session_ids, senior.id
     assert_includes SessionHierarchy.new(senior).session_ids, target.id
   end
+
+  # --- Which parent a node is DRAWN under (#571) ------------------------------
+  #
+  # Every surface — the outline, the detail page, both provenance MCP tools —
+  # draws this graph with indentation and nothing else, so the ORDER of `nodes`
+  # is the parent-child claim a reader actually gets. The walk discovers a whole
+  # level at once and used to emit it in id order, which made every child of the
+  # level read as a child of whichever sibling sorted last. The rows were right
+  # and the picture was wrong.
+
+  # Reads the outline the way a reader does: indentation, and nothing else.
+  # Returns { session_id => the id of the line it is nested under }.
+  def outline_parents(hierarchy)
+    stack = {}
+    hierarchy.to_outline.each_line.with_object({}) do |line, parents|
+      indent = line[/\A */].length / 2
+      id = line[/- #(\d+)/, 1].to_i
+      parents[id] = stack[indent - 1]
+      stack[indent] = id
+    end
+  end
+
+  # The shape from every reported occurrence: one trigger creates a batch of
+  # sibling routers in the same second, several of them spawn exactly one child
+  # each with its own explicit parent_session_id, and the children all collapse
+  # onto the last sibling. A test with one parent and one child passes
+  # throughout this bug's life, which is why this one has eight and four.
+  test "each of a batch of siblings keeps its own spawn child" do
+    trigger = create_session(title: "Backlog top-up")
+    routers = Array.new(8) { |i| create_session(parent: trigger, title: "Router #{i}") }
+    spawners = routers.values_at(0, 1, 2, 3)
+    children = spawners.map { |router| create_session(parent: router, title: "Child of ##{router.id}") }
+
+    hierarchy = SessionHierarchy.new(routers.last)
+    drawn = outline_parents(hierarchy)
+
+    spawners.zip(children).each do |router, child|
+      assert_equal router.id, child.reload.parent_session_id, "precondition: the row itself is correct"
+      assert_equal router.id, drawn[child.id],
+                   "##{child.id} is drawn under ##{drawn[child.id]}, but ##{router.id} spawned it"
+    end
+
+    (routers - spawners).each do |childless|
+      refute_includes drawn.values, childless.id,
+                      "##{childless.id} spawned nothing and must be drawn with no children"
+    end
+  end
+
+  # Node#render_parent_id is the same claim without going through the text.
+  test "a node names the parent it is drawn under" do
+    trigger = create_session
+    first = create_session(parent: trigger)
+    second = create_session(parent: trigger)
+    child_of_first = create_session(parent: first)
+
+    nodes = SessionHierarchy.new(second).nodes.index_by(&:id)
+
+    assert_equal first.id, nodes[child_of_first.id].render_parent_id
+    assert_equal first.id, nodes[child_of_first.id].parent_id
+    assert nodes[child_of_first.id].spawn_edge?
+    assert_nil nodes[trigger.id].render_parent_id, "a root hangs from nothing"
+  end
+
+  # The original #6709 report: the child was drawn under a sibling created after
+  # it. Ids are monotonic, so an id higher than the child's is impossible for a
+  # spawn parent — but that tell only exists because this batch sorted that way,
+  # which is why the test above does not rely on it.
+  test "a child is never drawn under a sibling created after it" do
+    origin = create_session(title: "Origin")
+    real_parent = create_session(parent: origin, title: "Real parent")
+    child = create_session(parent: real_parent, title: "Child")
+    later_sibling = create_session(parent: origin, title: "Created after the child")
+
+    drawn = outline_parents(SessionHierarchy.new(later_sibling))
+
+    assert_equal real_parent.id, drawn[child.id]
+    refute_equal later_sibling.id, drawn[child.id],
+                 "a session cannot have been spawned by one that did not yet exist"
+    assert_operator drawn[child.id], :<, child.id
+  end
+
+  # The metadata representation is a spawn edge too, so it has to hang from the
+  # same place the column does.
+  test "a batch recorded in custom_metadata is attributed the same way" do
+    trigger = create_session
+    routers = Array.new(4) { create_session(parent: trigger) }
+    children = routers.map { |router| create_session(router_metadata: router) }
+
+    drawn = outline_parents(SessionHierarchy.new(routers.last))
+
+    routers.zip(children).each { |router, child| assert_equal router.id, drawn[child.id] }
+  end
+
+  # Depth is what the breadth-first walk decided; only the order moves. A node
+  # reachable by two paths still renders once, at the shallower depth.
+  test "reordering preserves the depth of every node" do
+    trigger = create_session
+    routers = Array.new(3) { create_session(parent: trigger) }
+    children = routers.map { |router| create_session(parent: router) }
+    grandchild = create_session(parent: children.first)
+
+    depths = SessionHierarchy.new(routers.last).nodes.to_h { |n| [ n.id, n.depth ] }
+
+    assert_equal 0, depths[trigger.id]
+    routers.each { |router| assert_equal 1, depths[router.id] }
+    children.each { |child| assert_equal 2, depths[child.id] }
+    assert_equal 3, depths[grandchild.id]
+  end
+
+  # Reordering must never change the node SET: that set is the scope the
+  # human-message record is gathered over, so a node gained here is a human
+  # message a session may read that it could not before.
+  test "reordering changes the order and not the set" do
+    trigger = create_session
+    routers = Array.new(5) { create_session(parent: trigger) }
+    children = routers.map { |router| create_session(parent: router) }
+    expected = ([ trigger ] + routers + children).map(&:id)
+
+    hierarchy = SessionHierarchy.new(routers.first)
+
+    assert_equal expected.sort, hierarchy.session_ids.sort
+    assert_equal expected.size, hierarchy.size
+    assert_equal hierarchy.session_ids.uniq, hierarchy.session_ids
+  end
+
+  # A subtree is contiguous: a reader scanning down from a node sees that node's
+  # descendants before the next sibling, which is what indentation promises.
+  test "a subtree is emitted contiguously" do
+    trigger = create_session
+    first = create_session(parent: trigger)
+    second = create_session(parent: trigger)
+    first_child = create_session(parent: first)
+    first_grandchild = create_session(parent: first_child)
+    second_child = create_session(parent: second)
+
+    ids = SessionHierarchy.new(trigger).session_ids
+
+    assert_equal [ trigger.id, first.id, first_child.id, first_grandchild.id, second.id, second_child.id ], ids
+  end
+
+  # Indentation is documented as the spawn edge on all three surfaces, so a node
+  # the walk could only reach through an uncle has to say that is what it is.
+  test "a node drawn under an uncle says so rather than implying a spawn edge" do
+    # The uncle sits at depth 0 while the junior's own spawn parent sits a level
+    # deeper, so the downward walk reaches the junior through the uncle first and
+    # renders it there — at its shallowest depth, which is the DAG rule. The row
+    # still records the spawn parent; it is the indentation that cannot show it.
+    origin = create_session(title: "Origin")
+    spawn_parent = create_session(parent: origin, title: "Spawn parent")
+    junior = create_session(parent: spawn_parent, title: "Junior")
+    senior = create_session(title: "Senior")
+    link(junior, senior)
+
+    hierarchy = SessionHierarchy.new(junior)
+    node = hierarchy.nodes.find { |n| n.id == junior.id }
+
+    assert_equal senior.id, node.render_parent_id
+    assert_equal spawn_parent.id, node.parent_id, "the spawn edge is still recorded on the node"
+    refute node.spawn_edge?
+    assert_includes hierarchy.to_outline, "shown under uncle ##{senior.id}"
+  end
+
+  test "a spawn parent in the level above beats an uncle in the same level" do
+    origin = create_session
+    spawn_parent = create_session(parent: origin)
+    uncle = create_session(parent: origin)
+    child = create_session(parent: spawn_parent)
+    link(child, uncle)
+
+    node = SessionHierarchy.new(origin).nodes.find { |n| n.id == child.id }
+
+    assert_equal spawn_parent.id, node.render_parent_id
+    assert node.spawn_edge?
+    assert_equal [ uncle.id ], node.uncles, "the uncle is still named, just not drawn under"
+  end
 end
