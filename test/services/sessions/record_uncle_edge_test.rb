@@ -48,6 +48,19 @@ class Sessions::RecordUncleEdgeTest < ActiveSupport::TestCase
     assert edge?(target, actor)
   end
 
+  # `acting_session_id` reads the same identifiers as every other session
+  # parameter, because both go through `Session.locate`.
+  test "a declared slug is accepted, and a digit-leading one names its own session" do
+    actor = create_session
+    decoy = create_session
+    target = create_session
+    actor.update!(slug: "#{decoy.id}-the-actor-20260830-1102")
+
+    assert_equal :created, record(target, actor.slug).action
+    assert edge?(target, actor)
+    refute edge?(target, decoy), "the leading digits of a slug are not an id"
+  end
+
   # The load-bearing limitation: nothing about the request identifies the
   # caller, so an absent declaration must record nothing rather than guess.
   test "no declared actor records nothing" do

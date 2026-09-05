@@ -136,6 +136,29 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :not_found
   end
 
+  # #731. `Session.find_by(slug:) || Session.find(param)` integer-cast the
+  # fallback, so a MISS on a digit-leading slug — stale, renamed, mistyped —
+  # returned the session whose id those digits spell, on `GET`, `PATCH` and
+  # `DELETE` alike. `Session.locate!` 404s instead.
+  test "a digit-leading slug that matches nothing is a 404, not the session its digits spell" do
+    decoy = sessions(:running)
+
+    get api_v1_session_path("#{decoy.id}-no-such-slug-20260830-1102"), headers: @headers
+
+    assert_response :not_found
+  end
+
+  # A slug of all digits would shadow that id everywhere, including in the URL
+  # `to_param` builds, so it is refused at the model.
+  test "should reject an all-digit slug with 422" do
+    post api_v1_sessions_path,
+         params: { prompt: "Test", git_root: "https://github.com/test/repo.git", slug: "728" },
+         headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_match(/only digits/, JSON.parse(response.body)["message"])
+  end
+
   test "should include transcript when requested" do
     session = sessions(:with_transcript)
     get api_v1_session_path(session.id), params: { include_transcript: "true" }, headers: @headers

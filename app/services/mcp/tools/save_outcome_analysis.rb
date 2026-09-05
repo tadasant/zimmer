@@ -120,10 +120,13 @@ module Mcp
       # An analyzer id that names nothing is dropped rather than failing the save.
       # The analysis is the valuable artifact; the provenance link is a nicety,
       # and losing a whole tree over a stale session id would be the wrong trade.
+      #
+      # `Session.locate` is what makes the dropping real, and the digits-only
+      # guard is load-bearing here in particular: analyzer sessions are titled
+      # after the session they analyze, so their slugs lead with digits, and
+      # `"728-something-20260830-1102".to_i` is 728 — a stranger, silently.
       def find_analyzer(identifier)
-        return nil if identifier.blank?
-
-        Session.find_by(id: identifier.to_i) || Session.find_by(slug: identifier.to_s)
+        Session.locate(identifier)
       end
 
       def format_result(result, session)

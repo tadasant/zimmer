@@ -35,7 +35,7 @@ class OutcomesController < ApplicationController
 
   # The flamegraph drilldown for one analyzed session.
   def show
-    @session = find_session!(params[:id])
+    @session = Session.locate!(params[:id])
     @analysis = OutcomeAnalysis.current.find_by(session_id: @session.id)
 
     if @analysis.nil?
@@ -61,7 +61,7 @@ class OutcomesController < ApplicationController
 
   # POST — spawn one analysis session for one archived transcript.
   def analyze
-    session = find_session!(params[:id])
+    session = Session.locate!(params[:id])
     analysis_session = OutcomeAnalyses::SpawnAnalysisSession.call(session: session)
 
     redirect_back_to_ledger(
@@ -107,17 +107,6 @@ class OutcomesController < ApplicationController
     @agent_root_options = AgentRootsConfig.all.map(&:name).sort
     @runtime_options = RuntimeRegistry.registered_runtimes
     @model_options = OutcomeAnalyses::LedgerQuery.model_options
-  end
-
-  def find_session!(identifier)
-    session = if identifier.to_s.match?(/\A\d+\z/)
-      Session.find_by(id: identifier.to_i)
-    else
-      Session.find_by(slug: identifier.to_s)
-    end
-    raise ActiveRecord::RecordNotFound, "No session #{identifier.inspect}" unless session
-
-    session
   end
 
   # Every write action lands the user back on the ledger they clicked from, with

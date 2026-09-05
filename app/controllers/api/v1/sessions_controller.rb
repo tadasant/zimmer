@@ -1295,8 +1295,7 @@ class Api::V1::SessionsController < Api::BaseController
   end
 
   def set_session
-    # Try to find by slug first, then by ID
-    @session = Session.find_by(slug: params[:id]) || Session.find(params[:id])
+    @session = Session.locate!(params[:id])
   end
 
   # `agent_root` is permitted here alongside the rest of the create payload, but

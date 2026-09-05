@@ -159,7 +159,7 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
   private
 
   def set_session
-    @session = Session.find_by(slug: params[:session_id]) || Session.find(params[:session_id])
+    @session = Session.locate!(params[:session_id])
   end
 
   def set_enqueued_message

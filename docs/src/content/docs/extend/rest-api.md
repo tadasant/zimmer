@@ -122,7 +122,14 @@ Passing `agent_root` is the recommended way to spawn on a configured root.
 
 ## Sessions
 
-`:id` resolves slug first, then numeric id.
+`:id` is a numeric id or a slug, resolved by `Session.locate` — the single implementation the
+web UI, this API and the [MCP tools](/extend/mcp-server/) all share. **An all-digit `:id` is
+always an id**, never retried as a slug; anything else is a slug. That guard is load-bearing:
+slugs are `title.parameterize` plus a `-YYYYMMDD-HHMM` stamp, so a session titled after an issue
+number gets a slug like `728-fix-the-poller-20260830-1102`, and parsing it as a number would
+resolve it to session #728. A slug that matches nothing is a **404**, never the session its
+leading digits spell. For the same reason a slug may not be all digits — it would be unreachable —
+and the model refuses to write one, answering `422`.
 
 | Method | Path | Notes |
 | --- | --- | --- |

@@ -106,13 +106,10 @@ class Api::V1::GateDecisionsController < Api::BaseController
   # A stale id is dropped rather than failing the write; the decision is the
   # valuable artifact and the link is a nicety.
   def writing_session
-    identifier = params[:writing_session_id].to_s
-    return nil if identifier.blank?
-
     # Numeric-only means an id. Slugs are `title.parameterize` plus a timestamp,
     # so a title beginning with a digit produces one that `to_i` would silently
-    # resolve to a different session.
-    identifier.match?(/\A\d+\z/) ? Session.find_by(id: identifier.to_i) : Session.find_by(slug: identifier)
+    # resolve to a different session — see `Session.locate`.
+    Session.locate(params[:writing_session_id])
   end
 
   def decision_json(decision, include_payload: false)

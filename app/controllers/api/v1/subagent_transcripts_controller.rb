@@ -87,8 +87,7 @@ class Api::V1::SubagentTranscriptsController < Api::BaseController
   private
 
   def set_session
-    # Try to find by slug first, then by ID
-    @session = Session.find_by(slug: params[:session_id]) || Session.find(params[:session_id])
+    @session = Session.locate!(params[:session_id])
   end
 
   def set_transcript

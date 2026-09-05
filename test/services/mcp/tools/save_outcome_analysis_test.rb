@@ -87,6 +87,21 @@ class Mcp::Tools::SaveOutcomeAnalysisTest < ActiveSupport::TestCase
     assert_equal analyzer.id, OutcomeAnalysis.current.find_by(session_id: @session.id).analyzer_session_id
   end
 
+  # The #731 regression. Parsing the identifier with `to_i` credits whichever
+  # session holds the id the leading digits spell — a stranger — instead of the
+  # session the slug names, and does it silently.
+  test "an analyzer slug that begins with digits credits that session, not the id those digits spell" do
+    analyzer = sessions(:waiting)
+    decoy = sessions(:running)
+    analyzer.update!(slug: "#{decoy.id}-analyze-the-archived-one-20260830-1102")
+
+    @tool.call("session_id" => @session.id, "analyzer_session_id" => analyzer.slug, "root" => tree)
+
+    analysis = OutcomeAnalysis.current.find_by(session_id: @session.id)
+    assert_equal analyzer.id, analysis.analyzer_session_id
+    assert_not_equal decoy.id, analysis.analyzer_session_id
+  end
+
   test "a stale analyzer id costs the provenance link, not the analysis" do
     @tool.call("session_id" => @session.id, "analyzer_session_id" => 999_999_999, "root" => tree)
 
