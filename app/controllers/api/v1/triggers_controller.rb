@@ -311,6 +311,11 @@ class Api::V1::TriggersController < Api::BaseController
       catalog_skills: trigger.catalog_skills,
       catalog_hooks: trigger.catalog_hooks,
       catalog_plugins: trigger.catalog_plugins,
+      # Which of the four lists above the catalog can no longer resolve, and
+      # when each name was first seen that way. The names stay in their own
+      # columns and the trigger keeps firing without them, so this is the only
+      # place a caller can tell a configured artifact from a broken one.
+      unresolved_catalog_references: trigger.unresolved_catalog_references,
       conditions: trigger.trigger_conditions.map { |c| condition_json(c) },
       last_session_id: trigger.last_session_id,
       last_triggered_at: trigger.last_triggered_at&.iso8601,

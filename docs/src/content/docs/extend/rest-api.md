@@ -624,6 +624,14 @@ limit 10) · `POST` · `PATCH` · `DELETE` · `POST /triggers/:id/toggle` ·
 
 Conditions are nested via `trigger_conditions_attributes`.
 
+A trigger payload carries **`unresolved_catalog_references`**, read-only: which of the four artifact
+lists name something the catalog can no longer resolve, and when each name was first seen that way
+(`{"mcp_servers": {"slack-workspace": "2026-09-03T15:35:11Z"}}`). The heal keeps such a name on the
+trigger and filters it out of the sessions it spawns rather than deleting it (see [Stale catalog
+references](/sessions/triggers/#stale-catalog-references)), so this field is how a
+caller tells a configured artifact from a broken one. It reflects what fires have found: a trigger
+that has not fired since the rename reports `{}`.
+
 `POST /triggers/:id/invoke` fires the trigger now, without waiting for one of its conditions to
 match — the same fire the Invoke button on the trigger page performs, through the same code path. The
 session is linked to the trigger, counts toward `sessions_created_count`, and a reuse trigger follows

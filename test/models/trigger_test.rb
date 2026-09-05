@@ -1865,6 +1865,114 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal [ "keeper", "maybe-gone" ], @trigger.mcp_servers
   end
 
+  # The alert is throttled and can be swallowed; the WARN is the durable record,
+  # so it has to fire on every degraded fire rather than only the announcing one.
+  test "every fire that finds an unresolvable reference logs it, even after the alert has been spent" do
+    @trigger.update_column(:mcp_servers, [ "keeper", "gone-server" ])
+    ServersConfig.stubs(:exists?).with("keeper").returns(true)
+    ServersConfig.stubs(:exists?).with("gone-server").returns(false)
+    AlertService.stubs(:raise_alert)
+
+    logged = []
+    Rails.logger.stubs(:warn).with { |line| logged << line.to_s; true }
+
+    2.times { @trigger.heal_catalog_references! }
+
+    matching = logged.grep(/cannot resolve MCP server\(s\) \["gone-server"\]/)
+    assert_equal 2, matching.size, "expected one WARN per fire, got: #{logged.inspect}"
+    assert_match(/KEPT on the trigger/, matching.first)
+  end
+
+  # A second artifact going missing inside AlertService's one-hour dedup window
+  # used to be swallowed AND marked announced, so it was never reported at all.
+  test "a different set of unresolvable references gets a different dedup key" do
+    @trigger.update_column(:mcp_servers, [ "gone-a", "still-here" ])
+    ServersConfig.stubs(:exists?).with("gone-a").returns(false)
+    ServersConfig.stubs(:exists?).with("still-here").returns(true)
+
+    keys = []
+    AlertService.stubs(:raise_alert).with { |_message, options| keys << options[:dedup_key]; true }
+
+    @trigger.heal_catalog_references!
+    ServersConfig.stubs(:exists?).with("still-here").returns(false)
+    @trigger.heal_catalog_references!
+
+    assert_equal 2, keys.size
+    assert_not_equal keys.first, keys.last, "a changed set must not reuse the throttled key"
+    assert_equal "trigger_stale_mcp_#{@trigger.id}_#{Digest::SHA256.hexdigest('gone-a')[0, 8]}", keys.first
+    assert_equal "trigger_stale_mcp_#{@trigger.id}_#{Digest::SHA256.hexdigest('gone-a,still-here')[0, 8]}", keys.last
+  end
+
+  # The degraded guard suppresses the WRITE, and must not be read as "the name
+  # resolves again" — that would clear a real record and re-announce later.
+  test "a degraded catalog leaves an already-recorded reference recorded" do
+    @trigger.update_column(:mcp_servers, [ "gone-server" ])
+    ServersConfig.stubs(:exists?).with("gone-server").returns(false)
+    AlertService.stubs(:raise_alert)
+
+    @trigger.heal_catalog_references!
+    recorded = @trigger.reload.unresolved_catalog_references
+
+    AirCatalogService.stubs(:degraded?).returns(true)
+    @trigger.heal_catalog_references!
+
+    assert_equal recorded, @trigger.reload.unresolved_catalog_references
+  end
+
+  # An empty catalog is not evidence of anything, so it must not clear a record
+  # made when the catalog was healthy either.
+  test "an empty catalog leaves an already-recorded reference recorded" do
+    @trigger.update_column(:mcp_servers, [ "gone-server" ])
+    ServersConfig.stubs(:exists?).with("gone-server").returns(false)
+    AlertService.stubs(:raise_alert)
+
+    @trigger.heal_catalog_references!
+    recorded = @trigger.reload.unresolved_catalog_references
+    assert_equal [ "gone-server" ], recorded["mcp_servers"].keys
+
+    ServersConfig.stubs(:all).returns([])
+    @trigger.heal_catalog_references!
+
+    assert_equal recorded, @trigger.reload.unresolved_catalog_references
+  end
+
+  # Pre-existing behaviour that the preserve-don't-delete policy inherits rather
+  # than introduces: Session.create_from_agent_root! reads an empty list as
+  # "take the root's defaults". Pinned because the trigger page now shows the
+  # unresolvable name while the fire runs the root's defaults instead.
+  test "a trigger whose every server is unresolvable spawns with the agent root's defaults" do
+    mock_agent_root = OpenStruct.new(url: "https://github.com/test/repo", default_branch: "main",
+      subdirectory: nil, default_mcp_servers: [ "root-default-server" ])
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AlertService.stubs(:raise_alert)
+
+    ServersConfig.stubs(:exists?).with("gone-server").returns(false)
+    ServersConfig.stubs(:exists?).with("root-default-server").returns(true)
+    @trigger.update_column(:mcp_servers, [ "gone-server" ])
+
+    session = @trigger.create_session!(prompt: "Test prompt")
+
+    assert_equal [ "root-default-server" ], session.mcp_servers
+    assert_equal [ "gone-server" ], @trigger.reload.mcp_servers
+  end
+
+  test "the unresolvable predicate reads the recorded bookkeeping" do
+    @trigger.update_column(:mcp_servers, [ "keeper", "gone-server" ])
+    ServersConfig.stubs(:exists?).with("keeper").returns(true)
+    ServersConfig.stubs(:exists?).with("gone-server").returns(false)
+    AlertService.stubs(:raise_alert)
+
+    assert_not @trigger.unresolved_catalog_reference?(:mcp_servers, "gone-server"),
+      "nothing is known until a fire has looked"
+
+    @trigger.heal_catalog_references!
+
+    assert @trigger.unresolved_catalog_reference?(:mcp_servers, "gone-server")
+    assert_not @trigger.unresolved_catalog_reference?(:mcp_servers, "keeper")
+    assert_not @trigger.unresolved_catalog_reference?(:catalog_skills, "gone-server")
+  end
+
   test "the bookkeeping drops a name the operator has taken off the trigger" do
     @trigger.update_column(:mcp_servers, [ "gone-server" ])
     ServersConfig.stubs(:exists?).with("gone-server").returns(false)
@@ -1887,7 +1995,10 @@ class TriggerTest < ActiveSupport::TestCase
     AlertService.expects(:raise_alert).with do |message, options|
       assert_equal "Trigger degraded: MCP server(s) missing from the catalog", message
       assert_equal "Trigger#create_session!", options[:source]
-      assert_equal "trigger_stale_mcp_#{@trigger.id}", options[:dedup_key]
+      # Keyed on the row AND the set, so a second artifact going missing inside
+      # AlertService's one-hour dedup window is not swallowed unretried.
+      digest = Digest::SHA256.hexdigest("gone-server")[0, 8]
+      assert_equal "trigger_stale_mcp_#{@trigger.id}_#{digest}", options[:dedup_key]
       assert_includes options[:details], "Trigger *#{@trigger.name}* (ID: #{@trigger.id})"
       assert_includes options[:details], "• Unresolvable: gone-server"
       assert_includes options[:details], "• Still resolving: keeper"
@@ -1921,12 +2032,12 @@ class TriggerTest < ActiveSupport::TestCase
     assert_includes raised, [
       "Trigger degraded: catalog hook(s) missing from the catalog",
       "Trigger#create_session!",
-      "trigger_stale_hooks_#{@trigger.id}"
+      "trigger_stale_hooks_#{@trigger.id}_#{Digest::SHA256.hexdigest('gone-hook')[0, 8]}"
     ]
     assert_includes raised, [
       "Trigger degraded: catalog plugin(s) missing from the catalog",
       "Trigger#create_session!",
-      "trigger_stale_plugins_#{@trigger.id}"
+      "trigger_stale_plugins_#{@trigger.id}_#{Digest::SHA256.hexdigest('gone-plugin')[0, 8]}"
     ]
     # Every kind is preserved, not only MCP servers — the policy lives in the
     # concern, so it is the same policy for all four declarations.
@@ -1955,7 +2066,7 @@ class TriggerTest < ActiveSupport::TestCase
       "Trigger degraded: MCP server(s) missing from the catalog",
       has_entries(
         source: "Trigger#create_session!",
-        dedup_key: "trigger_stale_mcp_#{@trigger.id}"
+        dedup_key: "trigger_stale_mcp_#{@trigger.id}_#{Digest::SHA256.hexdigest('gone-server')[0, 8]}"
       )
     ).once
 
@@ -2405,7 +2516,7 @@ class TriggerTest < ActiveSupport::TestCase
       "Trigger degraded: catalog skill(s) missing from the catalog",
       has_entries(
         source: "Trigger#create_session!",
-        dedup_key: "trigger_stale_skills_#{@trigger.id}"
+        dedup_key: "trigger_stale_skills_#{@trigger.id}_#{Digest::SHA256.hexdigest('gone-skill')[0, 8]}"
       )
     ).once
 

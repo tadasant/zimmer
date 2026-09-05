@@ -12,8 +12,20 @@ export default class extends Controller {
     servers: Array,
     agentRootDefaults: Object, // Mapping of agent root names to default MCP server arrays
     defaultServers: Array, // Default servers for the initially selected agent root
+    // Whether `defaultServers` is a STORED selection (a trigger's own column) or
+    // an agent root's defaults. A stored selection may name a server the catalog
+    // no longer carries — a rename or a removal — and that name must survive the
+    // round-trip: the form posts the whole list, so a name this control drops is
+    // a name the next save deletes from the row (zimmer#853). A root's defaults
+    // get the old behaviour, because a root naming an unknown server is a
+    // catalog-authoring bug and not the operator's configuration to preserve.
+    preserveUnknown: { type: Boolean, default: false },
     inputName: { type: String, default: "session[mcp_servers][]" } // Name attribute for hidden inputs
   }
+
+  // What a chip says when the catalog does not carry the selected name at all.
+  static MISSING_TITLE = "Not in this deployment's catalog — it was renamed or removed. " +
+    "Replace it with its new name, or remove it. It is kept until you do."
 
   connect() {
     this.serversList = this.serversValue || []
@@ -25,7 +37,7 @@ export default class extends Controller {
     // Pre-select default servers for the initial agent root
     const defaultServers = this.defaultServersValue || []
     defaultServers.forEach(name => {
-      if (this.serversList.some(s => s.name === name)) {
+      if (this.preserveUnknownValue || this.serversList.some(s => s.name === name)) {
         this.selectedServers.add(name)
       }
     })
@@ -208,23 +220,30 @@ export default class extends Controller {
 
     // Add a tag for each selected server
     this.selectedServers.forEach(name => {
-      const server = this.serversList.find(s => s.name === name)
+      // A selected name the catalog does not carry is a stored reference that has
+      // gone unresolvable. It is MARKED, not dropped — see `preserveUnknown`.
+      const server = this.serversList.find(s => s.name === name) ||
+        (this.preserveUnknownValue ? { name, title: name, missing: true } : null)
       if (server) {
+        const flagged = Boolean(server.unavailable || server.missing)
         const tag = document.createElement("span")
         // An unavailable server can still arrive here — an agent root's defaults are
         // pre-selected wholesale, and what the root declares is a fact about the root,
         // so it is marked rather than silently dropped (the same choice get_configs
         // makes for a root's defaults). Marking it is what gives the human the chance
         // to remove it before submitting.
-        tag.className = server.unavailable
-          ? "inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-sm font-medium bg-amber-100 text-amber-900 mr-2 mb-2"
-          : "inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-sm font-medium bg-indigo-100 text-indigo-800 mr-2 mb-2"
-        if (server.unavailable) tag.title = unavailableTitle(server)
+        // Three states, three tones: red for a name the catalog does not carry at
+        // all, amber for one it carries and declares unavailable, indigo for a
+        // working one.
+        const tone = server.missing ? "bg-red-100 text-red-900" : (server.unavailable ? "bg-amber-100 text-amber-900" : "bg-indigo-100 text-indigo-800")
+        tag.className = `inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-sm font-medium ${tone} mr-2 mb-2`
+        if (server.missing) tag.title = this.constructor.MISSING_TITLE
+        else if (server.unavailable) tag.title = unavailableTitle(server)
         tag.innerHTML = `
-          ${server.unavailable ? `<svg class="h-3.5 w-3.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" /></svg>` : ''}
-          ${this.escapeHtml(server.title)}
+          ${flagged ? `<svg class="h-3.5 w-3.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" /></svg>` : ''}
+          ${this.escapeHtml(server.title)}${server.missing ? ' (not in catalog)' : ''}
           <button type="button"
-                  class="${server.unavailable ? 'text-amber-700 hover:text-amber-900' : 'text-indigo-600 hover:text-indigo-800'} focus:outline-none"
+                  class="${server.missing ? 'text-red-700 hover:text-red-900' : (server.unavailable ? 'text-amber-700 hover:text-amber-900' : 'text-indigo-600 hover:text-indigo-800')} focus:outline-none"
                   data-action="click->mcp-server-select#removeServerFromTag"
                   data-name="${this.escapeHtml(name)}">
             <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
