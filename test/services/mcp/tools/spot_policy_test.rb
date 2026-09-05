@@ -108,8 +108,13 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
       sample_cost_usd: 500.0, sample_utilization: 0.5, observation_count: 5, computed_at: Time.current)
     HarnessModelBurnRate.create!(harness: "zimmer", model: "claude-opus-5", usd_per_minute: 4.0,
       sample_cost_usd: 400.0, sample_minutes: 100.0, sample_session_count: 25, computed_at: Time.current)
-    Session.create!(git_root: "https://github.com/t/r.git", prompt: "running", status: :running,
+    # On a worker, because that is the only population the gate counts — and the
+    # pace test is waived on a fleet with nothing running at all.
+    running = Session.create!(git_root: "https://github.com/t/r.git", prompt: "running", status: :running,
                     genesis: SessionGenesis::WEB_UI, agent_runtime: "claude_code")
+    GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
+      job_class: "AgentSessionJob", serialized_params: { "arguments" => [ running.id ] },
+      scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
     AppSetting.editable.update!(spot_gating_enabled: true, spot_max_concurrent_sessions: 10,
                                 spot_reserve_five_hour_pct: 20, spot_reserve_weekly_pct: 20)
 
@@ -199,7 +204,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
 
       # The line renders with an empty count and, crucially, no split clause —
       # `nil - nil` would have raised.
-      assert_match(/- \*\*Claude Code sessions with a turn in flight:\*\* *\n/, output)
+      assert_match(/- \*\*Claude Code sessions on a worker:\*\* *\n/, output)
     end
   end
 
@@ -501,9 +506,34 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_equal 30, setting.fleet_idle_min_fire_interval_minutes
 
     policy = get_policy
-    assert_match(/Fires while the fleet has fewer turns in flight than:\*\* 5 sessions/, policy)
+    assert_match(/Fires while the fleet has fewer turns on a worker than:\*\* 5 sessions/, policy)
     assert_match(/For at least:\*\* 10 minutes/, policy)
     assert_match(/At most once every:\*\* 30 minutes \(at most 48 top-ups a day/, policy)
+  end
+
+  # UI/MCP parity for the disclosure both /inference cards render: a ceiling above
+  # the `agents` worker pool is one the fleet can never reach, since both ceilings
+  # count only the turns those workers are running. An agent reading this tool has
+  # to be told, or it will keep raising a limit that does nothing.
+  test "get_spot_policy says when a ceiling is above the worker pool, on both ceilings" do
+    slots = RunningTurns.worker_slots
+    AppSetting.editable.update!(spot_max_concurrent_sessions: slots + 2,
+                                fleet_idle_max_sessions: slots + 3)
+
+    policy = get_policy
+    assert_equal 2, policy.scan(/#{slots} is the effective ceiling/).size,
+      "both the concurrency limit and the top-up ceiling carry the note"
+    assert_match(/Max sessions at once:\*\* #{slots + 2} .*cannot be reached and #{slots} is the effective/,
+      policy)
+    assert_match(/fewer turns on a worker than:\*\* #{slots + 3} .*cannot be reached and #{slots} is the effective/,
+      policy)
+  end
+
+  test "get_spot_policy stays silent about the worker pool when both ceilings are reachable" do
+    slots = RunningTurns.worker_slots
+    AppSetting.editable.update!(spot_max_concurrent_sessions: slots, fleet_idle_max_sessions: 1)
+
+    assert_no_match(/effective ceiling/, get_policy)
   end
 
   test "set_top_up leaves omitted knobs alone" do

@@ -40,17 +40,19 @@ module Mcp
           curve that reaches 100% of the non-reserved capacity exactly as the window rolls over. So a
           higher reserve means less spot work, not a lower stopping line — spot work still fills
           whatever is left, just more slowly. `get_spot_policy` shows the dollar figure each percentage
-          currently derives. `max_concurrent_sessions` bounds the fleet: every running session counts
-          toward it, priority included, but only spot sessions are held by it. With gating off, spot
-          sessions start like any other.
+          currently derives. `max_concurrent_sessions` bounds the fleet: every session a WORKER IS
+          RUNNING counts toward it, priority included, but only spot sessions are held by it. A turn
+          merely queued behind the `agents` pool does not count, so a cap above that pool's size can
+          never be reached. With gating off, spot sessions start like any other.
         - **set_top_up**: Tune when the `no_sessions_in_progress` trigger event fires — the event that
           hands a fleet with spare capacity more work. Any of `max_running_sessions`, `idle_minutes` and
           `min_fire_interval_minutes` may be given; omitted ones are left alone.
 
-          The fleet counts as idle enough while FEWER THAN `max_running_sessions` sessions have a
-          TURN IN FLIGHT — running on a worker, or queued behind the `agents` pool for one — so it
-          does not have to empty out completely before topping up. Sessions in `waiting` do not
-          count, of any class: most of them are asleep on their own wake rather than queueing for a
+          The fleet counts as idle enough while FEWER THAN `max_running_sessions` sessions are ON A
+          WORKER, so it does not have to empty out completely before topping up. A turn queued behind
+          the `agents` pool for a worker does NOT count — it is occupying nothing — which also means a
+          ceiling above that pool's size can never be reached. Sessions in `waiting` do not count
+          either, of any class: most of them are asleep on their own wake rather than queueing for a
           slot. Neither does a `running` row asleep on its own future wake, since no start path will
           run it before that wake. 1 means literally nothing running.
           `idle_minutes` is how long it must stay under that ceiling first; `min_fire_interval_minutes`

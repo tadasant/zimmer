@@ -17,6 +17,7 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     # The fixtures ship sessions in `running` and in `waiting`, which is exactly
     # the state this class reads. Every case states its own fleet.
     Session.delete_all
+    GoodJob::Job.where(job_class: "AgentSessionJob").delete_all
     AppSetting.editable.update!(fleet_idle_since: nil, fleet_idle_event_fired_at: nil,
                                 quota_pool_available: true,
                                 fleet_idle_max_sessions: AppSetting::DEFAULT_FLEET_IDLE_MAX_SESSIONS,
@@ -31,11 +32,33 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     AppSetting.editable.update!(fleet_idle_max_sessions: count)
   end
 
-  def session(status:, genesis: SessionGenesis::GITHUB_ISSUE, scheduling_class: nil, metadata: {})
-    Session.create!(git_root: "https://github.com/t/r.git", prompt: "work", genesis: genesis,
+  # A `running` session gets a WORKER on its turn by default, because that is the
+  # only population the ceiling counts. The two cases about a row the ceiling
+  # deliberately skips pass `on_a_worker: false` and say why.
+  def session(status:, genesis: SessionGenesis::GITHUB_ISSUE, scheduling_class: nil, metadata: {},
+    on_a_worker: true)
+    record = Session.create!(git_root: "https://github.com/t/r.git", prompt: "work", genesis: genesis,
                     status: status, scheduling_class: scheduling_class,
                     session_id: "cli-#{SecureRandom.hex(4)}", metadata: metadata)
+    on_a_worker && status == :running ? on_a_worker!(record) : record
   end
+
+  # The `agents` job row a worker leaves behind while it is performing: picked up
+  # (`performed_at`) and not finished. `performed_at: nil` is the same row still
+  # sitting in the queue, which is what RunningTurns tells apart — it reads the
+  # job rows rather than `sessions.running_job_id`, since that column is written
+  # from inside `perform`.
+  def turn_row!(session, performed_at: nil)
+    GoodJob::Job.create!(
+      active_job_id: SecureRandom.uuid, queue_name: "agents", job_class: "AgentSessionJob",
+      serialized_params: { "arguments" => [ session.id ] },
+      scheduled_at: 2.minutes.ago, performed_at: performed_at
+    )
+    session
+  end
+
+  def on_a_worker!(session) = turn_row!(session, performed_at: 1.minute.ago)
+  def queued_for_a_worker!(session) = turn_row!(session)
 
   def setting
     AppSetting.current.reload
@@ -109,7 +132,10 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
       # never ran. The hook has its own test below. Enough of them to reach the
       # ceiling, since that is what the sweep reads.
       running = Array.new(3) { session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY) }
-      running.each { |s| s.update_columns(status: Session.statuses[:running]) }
+      running.each do |s|
+        s.update_columns(status: Session.statuses[:running])
+        on_a_worker!(s)
+      end
 
       travel 1.minute
       assert_not FleetIdleMonitor.check!
@@ -561,7 +587,8 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
   test "a running session asleep on its own future wake does not hold the ceiling" do
     ceiling(2)
     2.times { session(status: :running) }
-    asleep = session(status: :running)
+    # No worker and nothing queued: the row this rule is about.
+    asleep = session(status: :running, on_a_worker: false)
     arm_wake!(asleep, at: 20.minutes.from_now)
 
     assert_equal 2, FleetIdleMonitor.running_sessions
@@ -573,16 +600,44 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     assert_not FleetIdleMonitor.running_sessions > 2
   end
 
-  # The split the ceiling is compared against does NOT drop a turn merely waiting
-  # for a worker. It is committed demand that takes the next free slot, so
-  # topping up on top of it would only deepen the queue.
-  test "a turn waiting for a worker still counts toward the ceiling" do
+  # THE CEILING CHANGE. A turn merely queued behind the `agents` pool occupies
+  # nothing, so it does not hold the fleet at its ceiling — it is reported beside
+  # the count instead, and a fleet with only queued turns is idle enough to top
+  # up.
+  test "a turn waiting for a worker does not count toward the ceiling" do
     ceiling(1)
-    session(status: :running)
+    queued_for_a_worker!(session(status: :running, on_a_worker: false))
 
-    assert_equal 1, FleetIdleMonitor.running_sessions
-    assert_equal 1, FleetIdleMonitor.running_turns.awaiting_a_worker
-    assert_not FleetIdleMonitor.check!, "a fleet with a turn queued is not idle"
+    assert_equal 0, FleetIdleMonitor.running_sessions
+    assert_equal 1, FleetIdleMonitor.running_turns.awaiting_a_worker, "still reported"
+
+    freeze_time do
+      FleetIdleMonitor.check!
+      travel FleetIdleMonitor.idle_threshold
+      assert_enqueued_with(job: SystemEventTriggerJob, args: [ "no_sessions_in_progress" ]) do
+        assert FleetIdleMonitor.check!, "a fleet whose turns are all queued is idle enough"
+      end
+    end
+  end
+
+  # The consequence of counting worker occupancy: a ceiling above the `agents`
+  # pool can never be reached, so the fleet always reads as having room. Zimmer
+  # does not clamp the setting — /inference and `get_spot_policy` disclose it —
+  # so this pins that the arithmetic really does behave that way.
+  test "a ceiling above the worker pool leaves the fleet permanently under it" do
+    slots = RunningTurns.worker_slots
+    ceiling(slots + 1)
+    slots.times { session(status: :running) }
+
+    assert_equal slots, FleetIdleMonitor.running_sessions
+
+    freeze_time do
+      FleetIdleMonitor.check!
+      travel FleetIdleMonitor.idle_threshold
+      assert_enqueued_with(job: SystemEventTriggerJob, args: [ "no_sessions_in_progress" ]) do
+        assert FleetIdleMonitor.check!, "every worker is busy, and the ceiling still has not been reached"
+      end
+    end
   end
 
   # Every runtime, not just Claude Code — the load-bearing difference between

@@ -243,16 +243,16 @@ semantics are deliberately asymmetric:
 
 - **Priority sessions are never held by it.** A priority session starts whenever it is ready, even
   with every slot taken.
-- **Priority sessions still count toward it.** The number counted is every Claude Code session with a
-  turn in flight, whatever its class. (Codex sessions spend nothing against a Claude account, so they
-  do not take a slot.)
+- **Priority sessions still count toward it.** The number counted is every Claude Code session a
+  worker is running, whatever its class. (Codex sessions spend nothing against a Claude account, so
+  they do not take a slot.)
 - **So ten running priority sessions leave zero spot slots** — priority work is meant to crowd spot
   work out, and that is the intent rather than a side effect.
 
 It is checked **when a session starts** and never again. Lowering the limit under a running fleet
 holds the next start; it never interrupts work already underway.
 
-#### What "in flight" counts, and what it does not
+#### What the ceiling counts, and what it does not
 
 `sessions.status = running` is stamped when a turn is **handed to** a session — by a fired wake
 trigger, a follow-up, a poller, or the end-of-turn handoff to a queued message — not when a worker
@@ -262,11 +262,12 @@ starts executing it. Between the two sits the `agents` GoodJob queue, which is o
 
 | Population | Counts? | Why |
 | --- | --- | --- |
-| A turn a worker is executing | Yes | It is the fleet doing work. |
-| A turn queued for a worker, or a row between jobs | Yes | Committed demand: it takes the next free slot, so admitting more on top of it only deepens the queue. |
-| A `running` row asleep on its own **future wake** with **no AgentSessionJob at all** — none running, none queued | **No** | Nothing will happen to that session until its wake fires, so it can consume no capacity in the meantime. |
+| A turn a worker is executing | Yes | It is the fleet doing work, and it is the only population that is. |
+| A turn queued for a worker, or a row between jobs | **No** | It has taken nothing yet. What it is waiting for is a worker, so counting it makes the ceiling a limit on how much work is *waiting* rather than on how much is *running*. |
+| A `running` row asleep on its own **future wake** with **no AgentSessionJob at all** — none running, none queued | **No** | Nothing will happen to that session until its wake fires, so it is not even waiting for a worker. |
 
-Both halves of that last rule are load-bearing, and the second is the one that is easy to get wrong.
+The two uncounted rows are still told apart, and both halves of the sleeper rule are load-bearing —
+the second is the one that is easy to get wrong.
 "Asleep" alone is not enough, and neither is "a start path would refuse it": `AgentSessionJob`'s
 pause guard is conjoined with `session.waiting?`, so it does **not** fire for a `running` row — a
 queued job would run the session and take a worker while the ceiling had stopped counting it. So the
@@ -281,16 +282,24 @@ A row reaches `running`-while-asleep when its turn ends with something else alre
 — a queued message the handoff path picks up, or a recovery job `CleanupOrphanedSessionsJob`
 enqueued — and that something then finishes without pausing it.
 
-Both `/inference` cards print the split — "8 on a worker, 7 waiting for one behind the 8-slot agents
-pool" — because the total on its own reads as a broken counter when half that many agent processes
-are alive. *Waiting for one* rather than *queued*, deliberately: the second bucket is every counted
-row no worker has started, which is turns in the `agents` lane plus rows between jobs (the handoff
-window, a first spawn not yet enqueued, and the orphans `CleanupOrphanedSessionsJob` repairs). That is exactly how [#957](https://github.com/tadasant/zimmer/issues/957) was reported.
+Both `/inference` cards print what the count leaves out — "17 more waiting for one of the 8 worker
+slots · not counted" — because a queue that is invisible is the whole explanation for why nothing of
+yours is moving. *Waiting for one* rather than *queued*, deliberately: that bucket is every row with a
+turn coming that no worker has started, which is turns in the `agents` lane plus rows between jobs
+(the handoff window, a first spawn not yet enqueued, and the orphans `CleanupOrphanedSessionsJob`
+repairs). Reading the count *with* the queue folded in is exactly how
+[#957](https://github.com/tadasant/zimmer/issues/957) was reported.
 `RunningTurns` is the one place the distinction is made; both ceilings read through it.
 
-Note the consequence for tuning: **Max sessions at once** above `GOOD_JOB_AGENTS_THREADS` does not buy
-concurrency, it buys queue. The pool is the real ceiling on executing turns, and the cards name it
-next to the number you configured.
+**The consequence for tuning: the `agents` pool is a hard bound on both ceilings.** The count is
+turns a worker is running and the pool runs `GOOD_JOB_AGENTS_THREADS` (default 8) of them, so a
+ceiling above that can never be reached — the spot gate would never report `fleet_at_cap`, and top-up
+would always see the fleet as having room, while work keeps queueing behind the same eight workers.
+Nothing clamps the setting: the number you type is yours, and growing the pool is a deploy away. Both
+`/inference` cards and `get_spot_policy` say so when your number is above the pool, and print the
+effective ceiling — `min(configured, GOOD_JOB_AGENTS_THREADS)` — beside it. Note that the **default**
+of 10 is itself above the default pool of 8, so an un-retuned deployment sees that note from the
+start.
 
 ### Its sibling: the backlog top-up ceiling
 
@@ -300,11 +309,12 @@ next to the number you configured.
 read together: raising the concurrency limit without raising the top-up ceiling buys slots nothing
 fills them, which is exactly what left a ten-slot fleet running at two.
 
-Its count is **sessions with a turn in flight**, on the same reading the concurrency limit uses (see
-[What "in flight" counts](#what-in-flight-counts-and-what-it-does-not)): a backed-up *spot* queue does
-**not** suppress top-up, and sessions in `waiting` do not count against it, of any class. Both
-ceilings are therefore about work in flight — "hold spot work above 10 in flight, top up below 3" —
-but they are **not the same count**, so do not expect the two numbers on the page to match. The
+Its count is **sessions a worker is running**, on the same reading the concurrency limit uses (see
+[What the ceiling counts](#what-the-ceiling-counts-and-what-it-does-not)): a backed-up *spot* queue
+does **not** suppress top-up, and sessions in `waiting` do not count against it, of any class. Both
+ceilings are therefore about work actually executing — "hold spot work above 10 on a worker, top up
+below 3" — but they are **not the same count**, so do not expect the two numbers on the page to
+match. The
 concurrency limit reads `Session.running_claude_code_count`: Claude Code sessions only, frozen
 categories included. The top-up ceiling reads `FleetIdleMonitor.running_sessions`: every runtime,
 frozen categories excluded. A fleet running Codex work shows up in the second and not the first. Both

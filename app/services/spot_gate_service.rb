@@ -50,12 +50,20 @@
 # single-session burn rate exceeds its sustainable rate still does work in a duty
 # cycle instead of doing none. QuotaCapacityModel documents both.
 #
-# == The cap counts everything, and holds only spot
+# == The cap counts worker occupancy, and holds only spot
 #
-# Every running Claude Code session counts against the concurrency cap and
-# against the projected burn, priority included, but only spot sessions are held.
-# Priority work crowds spot work out of the slots and out of the budget, which is
-# the intent: that is what the reserve is protecting.
+# Every Claude Code session a WORKER IS RUNNING counts against the concurrency
+# cap, priority included, but only spot sessions are held. Priority work crowds
+# spot work out of the slots and out of the budget, which is the intent: that is
+# what the reserve is protecting.
+#
+# The cap and the burn deliberately read different populations. The cap asks how
+# much of the fleet is occupied, so a turn queued behind the `agents` pool does
+# not fill a slot — see RunningTurns. The projected burn asks what is being
+# SPENT, and a session spends from the moment it is handed a turn, so
+# .running_claude_code_burn_keys prices every `running` row. Both numbers are on
+# the /inference card and they are legitimately different; #awaiting_clause is
+# what explains the gap.
 #
 # == The pool decides, not one account
 #
@@ -525,17 +533,22 @@ class SpotGateService
   #
   # RunningTurns::Reading rather than a bare count: `running` holds both turns a
   # worker is executing and turns queued behind the `agents` pool waiting for
-  # one, and the gate's own explanation has to be able to say which — "15 of 10
-  # slots taken" on a deployment with 8 live agent processes reads as a broken
-  # counter, which is exactly how #957 was reported. The CAP still compares
-  # against the total: a queued turn is committed demand that takes the next free
-  # worker, so admitting more spot work on the strength of it only deepens the
-  # queue.
+  # one, and only the first of those occupies a slot. So the cap counts
+  # `on_a_worker` and the queue is reported beside it (#awaiting_clause) rather
+  # than inside it: "25 of 10 slots taken" on a deployment with 8 live agent
+  # processes measures the depth of the queue rather than the size of the fleet,
+  # and holds every spot session while eight workers run.
   def turns = @turns ||= Session.running_claude_code_turns
 
-  def active_sessions = turns.total
+  def active_sessions = turns.on_a_worker
 
   def awaiting_sessions = turns.awaiting_a_worker
+
+  # Every turn this fleet has been handed, on a worker or waiting for one. NOT
+  # what the cap compares against — that is #active_sessions — but the population
+  # that is spending, and therefore the one the pacing waiver and
+  # SpotSessionPause's resume budget have to reason about. See the class comment.
+  def fleet_in_flight = active_sessions + awaiting_sessions
 
   # What every Claude Code session running right now is burning, in $/min.
   #
@@ -589,7 +602,7 @@ class SpotGateService
       allowed: true, reason: "unavailable",
       detail: "Could not evaluate the spot gate (#{error.class}); allowing the session.",
       five_hour: nil, weekly: nil,
-      active_sessions: @turns&.total, awaiting_sessions: @turns&.awaiting_a_worker,
+      active_sessions: @turns&.on_a_worker, awaiting_sessions: @turns&.awaiting_a_worker,
       fleet_cap: nil, accounts_read: nil, pool_size: nil,
       fleet_burn_usd_per_minute: nil, candidate_burn_usd_per_minute: nil,
       pool_capacity: nil
@@ -634,7 +647,7 @@ class SpotGateService
     decision(
       allowed: false, reason: FLEET_CAP_REASON,
       detail: "Holding spot sessions: #{slots_phrase(fleet_cap)} taken#{awaiting_clause}. Every session " \
-              "with a turn in flight counts, priority included — priority work is meant to crowd spot " \
+              "a worker is running counts, priority included — priority work is meant to crowd spot " \
               "work out. Raise the limit on /inference to widen it.",
       pool: pool, fleet_cap: fleet_cap
     )
@@ -656,18 +669,18 @@ class SpotGateService
     "#{active_sessions} of #{fleet_cap} session #{'slot'.pluralize(fleet_cap)}"
   end
 
-  # Where the slot count came from, when it is not simply "that many agents are
-  # running". Silent when no turn is waiting, because then the two are the same
-  # number and the clause is noise.
+  # The queue the slot count does NOT include, so an operator comparing this
+  # against how much work the deployment has can see where the rest of it went.
+  # Silent when no turn is waiting, because then there is nothing to say.
   #
-  # "Waiting for one" rather than "queued": the population is every counted row
-  # no worker has started, which is turns in the `agents` lane plus rows between
-  # jobs. See RunningTurns::Reading.
+  # "Waiting for one" rather than "queued": the population is every row with a
+  # turn coming that no worker has started, which is turns in the `agents` lane
+  # plus rows between jobs. See RunningTurns::Reading.
   def awaiting_clause
     return "" unless awaiting_sessions.positive?
 
-    " (#{turns.on_a_worker} on a worker, #{awaiting_sessions} waiting for one behind the " \
-      "#{RunningTurns.worker_slots}-slot agents pool)"
+    " (#{awaiting_sessions} more #{"turn".pluralize(awaiting_sessions)} waiting for one of the " \
+      "#{RunningTurns.worker_slots} worker slots, not counted)"
   end
 
   # Why one window refused, in money when the model has money and in percentages
@@ -723,7 +736,13 @@ class SpotGateService
     # pacing curve is waived so the deployment still does SOME work whatever its
     # sustainable rate. The cap is not waived — the reserve is protected either
     # way. See QuotaCapacityModel.
-    waived = active_sessions.zero?
+    #
+    # Asked of #fleet_in_flight rather than of the cap's own count, because the
+    # waiver's question is whether anything is SPENDING. A turn queued for a
+    # worker takes no slot but is already priced into `burn` above, so waiving on
+    # the cap's number would skip the pace test against a burn rate the same
+    # sessions produced.
+    waived = fleet_in_flight.zero?
 
     PoolReading.new(
       five_hour: reading(windows[QuotaCapacityEstimate::FIVE_HOUR], burn, waived),

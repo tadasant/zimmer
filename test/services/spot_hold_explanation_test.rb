@@ -10,6 +10,7 @@ class SpotHoldExplanationTest < ActiveSupport::TestCase
     ClaudeAccountQuotaSnapshot.delete_all
     ClaudeAccount.update_all(is_current: false)
     Session.where(status: :running).update_all(status: Session.statuses[:needs_input])
+    GoodJob::Job.where(job_class: "AgentSessionJob").delete_all
     HarnessModelBurnRate.delete_all
     @account = ClaudeAccount.create!(
       email: "explainer-test@example.com", runtime: "claude_code",
@@ -45,9 +46,16 @@ class SpotHoldExplanationTest < ActiveSupport::TestCase
                                  sample_session_count: 25, computed_at: Time.current)
   end
 
+  # With a WORKER on its turn: the gate counts nothing else, so a session without
+  # one is invisible to both the fleet cap and the idle-fleet pace waiver.
   def running_session(index)
-    Session.create!(git_root: "https://github.com/t/r.git", prompt: "running #{index}",
+    record = Session.create!(git_root: "https://github.com/t/r.git", prompt: "running #{index}",
                     genesis: SessionGenesis::WEB_UI, status: :running, agent_runtime: "claude_code")
+    GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
+                         job_class: "AgentSessionJob",
+                         serialized_params: { "arguments" => [ record.id ] },
+                         scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
+    record
   end
 
   def explain(decision, paused_count: 0)
@@ -112,7 +120,7 @@ class SpotHoldExplanationTest < ActiveSupport::TestCase
     assert_equal :fleet_cap, decision.ceiling
 
     lines = explain(decision).lines
-    assert_match(/Every session slot is taken — 2 of 2/, lines.first.sentence)
+    assert_match(/Every session slot is taken — 2 of 2 being run by a worker right now/, lines.first.sentence)
     assert_match(/No quota window is holding anything/, lines.first.sentence)
     assert_match(/A slot frees up when a running session finishes/, lines.last.sentence)
   end
