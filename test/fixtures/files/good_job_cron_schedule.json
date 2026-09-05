@@ -150,6 +150,11 @@
       "class": "StatusSummaryBackstopJob",
       "description": "Re-run a status-summary generation that never landed, for sessions already at rest"
     },
+    "abandoned_status_summary_fork_sweep": {
+      "cron": "17 * * * *",
+      "class": "AbandonedStatusSummaryForkSweepJob",
+      "description": "Archive status-summary forks that were created and never given their summary prompt"
+    },
     "quota_reset_checker": {
       "cron": "*/15 * * * *",
       "class": "QuotaResetCheckerJob",
@@ -396,6 +401,11 @@
       "cron": "*/5 * * * *",
       "class": "StatusSummaryBackstopJob",
       "description": "Re-run a status-summary generation that never landed, for sessions already at rest"
+    },
+    "abandoned_status_summary_fork_sweep": {
+      "cron": "17 * * * *",
+      "class": "AbandonedStatusSummaryForkSweepJob",
+      "description": "Archive status-summary forks that were created and never given their summary prompt"
     },
     "quota_reset_checker": {
       "cron": "*/15 * * * *",
