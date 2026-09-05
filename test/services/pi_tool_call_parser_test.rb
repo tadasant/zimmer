@@ -115,6 +115,45 @@ class PiToolCallParserTest < ActiveSupport::TestCase
     assert_equal [], p.shell_calls
     assert_equal [], p.tool_results
     assert_equal [], p.assistant_texts
+    assert_equal [], p.structured_tool_calls
+  end
+
+  # #structured_tool_calls is how a hook sees a tool call that is not a shell
+  # command — GithubPrUrlHook reads an MCP `create_pull_request` through it.
+  test "structured_tool_calls reports every tool call with its arguments as a Hash" do
+    entry = assistant_tool_call("git status")
+
+    assert_equal [ { id: "call_1", name: "bash", input: { "command" => "git status" } } ],
+      build_parser([ entry ]).structured_tool_calls
+  end
+
+  test "structured_tool_calls reports a non-shell tool call that shell_calls skips" do
+    entry = assistant_tool_call("ignored")
+    entry["message"]["content"][0]["name"] = "read"
+    entry["message"]["content"][0]["arguments"] = { "path" => "README.md" }
+    p = build_parser([ entry ])
+
+    assert_equal [], p.shell_calls
+    assert_equal [ { id: "call_1", name: "read", input: { "path" => "README.md" } } ], p.structured_tool_calls
+  end
+
+  # Pi's MCP tools are called through the `pi-mcp-adapter` extension's single
+  # `mcp` proxy tool rather than under their own names, so a Pi transcript
+  # carries no `mcp__<server>__<tool>` for a hook to key on. It is reported as
+  # what it is — a call to `mcp` — rather than unwrapped into a shape nothing
+  # here has verified.
+  test "structured_tool_calls reports an MCP proxy call as the proxy tool, not the tool inside it" do
+    entry = {
+      "type" => "message", "id" => "ee55", "message" => {
+        "role" => "assistant",
+        "content" => [ {
+          "type" => "toolCall", "id" => "call_mcp", "name" => "mcp",
+          "arguments" => { "tool" => "create_pull_request", "args" => { "owner" => "owner", "repo" => "repo" } }
+        } ]
+      }
+    }
+
+    assert_equal [ "mcp" ], build_parser([ entry ]).structured_tool_calls.map { |call| call[:name] }
   end
 
   private
