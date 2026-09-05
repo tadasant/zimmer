@@ -2734,19 +2734,32 @@ boundary. It is bounded by `BoundedSubprocess` so it cannot wedge, and it happen
 `automated_merge_conflict` origin, which is rare. It is still a call the three pollers could have
 shared — see [#711](https://github.com/tadasant/zimmer/issues/711).
 
-### A parked session can hear about its merged PR up to a day late
+### A parked session can hear about its merged PR up to half an hour late
 
 `PollBackoff` slows each GitHub poller per session according to how long it has been since the user
-last touched that session. Past 24 hours of no user activity the floor is 24 hours between polls,
-so the merged-PR message rides that same curve.
+last touched that session, and past 24 hours of no user activity the floor is 24 hours between
+polls. The session most likely to be waiting on a merge is exactly the one with stale user activity:
+it did its work, said so, and has been sitting in `needs_input` — or asleep in `waiting` on the
+`open-pr` skill's self-wake — ever since. Riding that curve is what left sessions
+[4419 and 4422](https://github.com/tadasant/zimmer/issues/494) unpolled through their own merges.
 
-The session most likely to be waiting on a merge is exactly the one with stale user activity: it did
-its work, said so, and has been sitting in `needs_input` — or asleep in `waiting` on the `open-pr`
-skill's self-wake — ever since. It can therefore wait a long time to learn that the PR it was
-blocked on landed. The backoff exists because polling every active session's PRs on every tick
-exhausts GitHub's 5000/hr authenticated rate limit at around 50 sessions, and that is the trade
-being made. Touching the session resets the curve to the 30-second
-cadence.
+`GitHubPullRequestPollerJob` therefore caps the interval at
+`AWAITING_PR_OUTCOME_MAX_POLL_INTERVAL` (30 minutes) for a session still holding a PR Zimmer has
+not seen reach a terminal state — the 8–24 hr bucket's own floor, so a waiting session holds the
+cadence it had at 23:59 of idleness rather than falling off a cliff at 24:00. A session whose every
+tracked PR has merged or closed is waiting on nothing and keeps the full curve, 24-hour floor
+included; that is the case the backoff was written for, and the rate limit it protects is
+unchanged. Touching the session still resets the curve to the 30-second cadence.
+
+So the residual delay is up to 30 minutes rather than up to a day. Three caveats. Only the PR
+*status* poller is capped: `GithubCommentPollerJob` and `GitHubMergeConflictPollerJob` still ride
+the full curve, so a comment or a conflict notice on the PR of a long-idle session can still be a
+day late. The cap is not a guarantee of delivery — the cases in
+[A PR session waits for a merge message that three cases can prevent](#a-pr-session-waits-for-a-merge-message-that-three-cases-can-prevent)
+are untouched by it. And the cap itself expires after `AWAITING_PR_OUTCOME_MAX_IDLE` (7 days) of no
+user activity, because nothing removes an idle session from `Session.with_github_prs` and a deleted
+or unreadable PR never resolves — so past a week the old 24-hour delay is back, deliberately, rather
+than pinning a session at two polls an hour forever.
 
 ---
 
@@ -4232,10 +4245,12 @@ guarantee.
 
 **The poller never saw the PR open.** The announcement fires only on an observed open → merged
 transition (`status == "merged" && current_statuses[pr_url] == "open"`). `PollBackoff` stretches
-the per-session interval to 5 minutes, 30 minutes, and eventually 24 hours based on time since the
-last *human* activity — which for a router-spawned session counts from `created_at`. A merge gate
-that merges inside that window can land the PR before the poller ever recorded it as open, and the
-session waits forever. Documented from the poller's side in
+the per-session interval to 5 minutes and then 30 minutes based on time since the last *human*
+activity — which for a router-spawned session counts from `created_at`. A merge gate that merges
+inside that window can land the PR before the poller ever recorded it as open, and the session
+waits forever. The window is bounded at 30 minutes rather than 24 hours, because a PR url with no
+recorded status counts as unresolved and so takes the same cap a PR recorded as `open` does — but
+bounded is not closed. Documented from the poller's side in
 [background jobs](/operate/background-jobs/).
 
 **The delivery threw.** A failed `deliver_follow_up!` is swallowed while the status write advances
