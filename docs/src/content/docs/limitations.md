@@ -2224,17 +2224,25 @@ and writes a `warning` to the session's own log.
 
 ### A status-summary fork's working directory is empty, and does not know it
 
-A summary fork gets a scaffolded empty `git init` directory rather than a copy of the source
-session's clone, because the summarizer reads a conversation and never builds, boots or opens
-anything ([#771](https://github.com/tadasant/zimmer/issues/771)). One edge comes with that: the
-prompt tells the fork not to run tools, but that is an instruction, not a constraint, so a fork that
-ignores it finds no repository — not a stale one, and not a half-installed one, but no files at all.
-It fails immediately and visibly rather than reporting on the wrong tree, which is the better of the
-two failures, and it is the same directory a forced regeneration has always been given for a session
-whose clone was reclaimed long ago.
+A summary fork gets a scaffolded `git init` directory rather than a copy of the source session's
+clone, because the summarizer reads a conversation and never builds, boots or opens anything
+([#771](https://github.com/tadasant/zimmer/issues/771)). Two edges come with that:
 
-None of this affects a user-initiated fork, which copies the tree whole apart from the directories no
-copy can relocate — see below.
+- The prompt tells the fork not to run tools, but that is an instruction, not a constraint. A fork
+  that ignores it finds an **empty repository** — one commit-less `git init`, plus Zimmer's own
+  `.mcp.json` and whatever `air prepare` injected beside it, and nothing of the source repo. It fails
+  immediately and visibly rather than reporting on the wrong tree, which is the better of the two
+  failures, and it is the same directory a forced regeneration has always been given for a session
+  whose clone was reclaimed long ago.
+- That directory reads as **dirty** to `CloneArtifactService` — an untracked `.mcp.json` in a
+  commit-less repository is a non-empty `git status --porcelain` — so `DeferredCloneCleanupJob`
+  preserves artifacts and holds the clone for `TRASH_RETENTION_PERIOD` instead of deleting it
+  immediately. This is not new: a summary fork's clone was already dirty by way of the source's
+  uncommitted work. What changed is that the preserved artifacts are now near-empty rather than a
+  real bundle and patch, which is strictly less to keep.
+
+Neither affects a user-initiated fork, which copies the tree whole apart from the directories no copy
+can relocate — see below.
 
 ### A copied clone drops the virtualenv, and only the virtualenv
 

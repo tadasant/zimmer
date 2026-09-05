@@ -1335,6 +1335,26 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     assert_not copied, "no copy is attempted"
   end
 
+  # The two flags stay independent, and this is the combination that proves it:
+  # not copying the tree does not make a MISSING tree acceptable. It is what
+  # SessionStatusSummaryGenerator's automatic path relies on — a clone that is
+  # gone is the cheapest evidence that nobody is looking at the session, so the
+  # fork must still refuse — and `scaffold_clone?`'s early return must not reach
+  # back and cancel `validate_source_clone`.
+  test "copy_source_tree: false still fails on a missing source clone unless it is also allowed" do
+    @mock_fs.rm_rf(@clone_path)
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs,
+      copy_source_tree: false
+    )
+
+    assert_not result.success?
+    assert_equal "Source clone directory does not exist", result.error
+  end
+
   # A scaffold that was ASKED for is the normal path, not the rarer substitute
   # for a copy that `scaffold_missing_clone` falls through to. Logging it at
   # `warn` would put a line in #alerts for every automatic summary generation.

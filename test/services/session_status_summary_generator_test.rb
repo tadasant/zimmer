@@ -49,6 +49,27 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     Session.where("metadata->>? = ?", SessionStatusSummaryGenerator::FORK_MARKER, @session.id.to_s).sole
   end
 
+  # A fork service that runs `during` inside the call, then delegates to the real
+  # one — the seam every race test below drives.
+  #
+  # The window it opens is the one between this run taking the claim and its fork
+  # existing: long enough in production for the session to reach the trash, for a
+  # second generation to land, or for a newer runner to take the claim over. It
+  # used to be held open by the clone copy, and a `cp_r` stub was how these tests
+  # reached it. A summary fork copies nothing now (#771), so the copy is not a
+  # seam any more — but the window is not the copy, and closing it to milliseconds
+  # does not make a concurrent generation impossible. Injecting at the fork
+  # service reaches the same window without depending on how the fork's directory
+  # gets made.
+  def fork_service_running(&during)
+    Class.new do
+      define_singleton_method(:call) do |**args|
+        during.call
+        ForkSessionService.call(**args)
+      end
+    end
+  end
+
   # --- The fork-backed path -------------------------------------------------
 
   test "generation forks the session at its last transcript message and prompts the fork" do
@@ -139,7 +160,7 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   # --- The pool-independent path --------------------------------------------
   #
   # THE DEFECT THIS SECTION EXISTS FOR. The fork path needs a login-pool account,
-  # a copy of the clone and an agent turn. Under sustained quota pressure the
+  # a working directory and an agent turn. Under sustained quota pressure the
   # fork is parked before it answers, and the repair sweep that would retry it
   # used to stand down for the same outage — so a session at rest never got a
   # blurb at all, and the panel read "the summary fork was parked, it will be
@@ -220,9 +241,10 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   end
 
   # The automatic FORK path refuses a session whose clone has been reclaimed,
-  # because a fork needs a tree to copy. The one-shot path does not, so that
-  # refusal must not apply to it — a session whose clone is gone is exactly the
-  # kind someone opens later to ask what happened.
+  # reading the missing tree as evidence that nobody is looking at the session.
+  # The one-shot path costs no fork at all, so that refusal must not apply to it —
+  # a session whose clone is gone is exactly the kind someone opens later to ask
+  # what happened.
   test "the headless path does not need a clone on disk" do
     @session.update!(metadata: @session.metadata.merge("clone_path" => "/gone"))
 
@@ -278,7 +300,7 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   # The parity gap this closes: the panel's Regenerate button, the REST endpoint
   # and the MCP `action_session` regenerate action are all FORCED, and none of
   # them consults the login pool. Before this, pressing Regenerate during an
-  # outage paid for a clone copy, watched the fork park, and reported a failure.
+  # outage stood a fork up, watched it park, and reported a failure.
   test "a forced generation falls back to the one-shot path when the pool is empty" do
     ClaudeAccount.update_all(status: ClaudeAccount.statuses[:quota_exceeded])
     inference = FakeInference.new("Where things stand.")
@@ -517,8 +539,8 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
 
   # Archive is how a Zimmer session FINISHES, and a finished session is exactly
   # the one someone opens later to ask what happened. The panel is what answers
-  # that, so an operator pressing Regenerate on it gets a summary — the fork only
-  # needs a clone, and the clone outlives the archive.
+  # that, so an operator pressing Regenerate on it gets a summary. The fork reads
+  # the conversation rather than the tree, so being archived stops nothing.
   test "an archived session with a clone still on disk regenerates when asked" do
     @session.update_column(:status, Session.statuses[:archived])
 
@@ -530,8 +552,8 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   end
 
   # The other half: nothing enqueues an automatic generation for a session in the
-  # trash on purpose, and paying for a clone copy on a session heading for
-  # deletion is waste. Only the deliberate override gets through.
+  # trash on purpose, and standing a fork up for a session heading for deletion is
+  # waste. Only the deliberate override gets through.
   test "an archived session is still skipped by an automatic generation" do
     @session.update_column(:status, Session.statuses[:archived])
 
@@ -542,9 +564,9 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   # The headline case, and the one #463 was filed for: DeferredCloneCleanupJob
   # reclaims an archived session's clone about ten seconds after it goes to the
   # trash, so every archived session an operator actually opens later has no tree
-  # left. The fork does not need one — it answers from the conversation it was
-  # forked with — so it is given an empty working directory and the summary is
-  # written anyway.
+  # left. That must not stop a FORCED generation. The fork reads no file in the
+  # tree anyway, so the only thing a missing one could do is fail the fork's
+  # validation, and `scaffold_missing_clone` is what stops it doing that.
   test "an archived session whose clone is gone regenerates into a scaffolded fork" do
     @session.update_column(:status, Session.statuses[:archived])
     @fs.rm_rf(@clone_path)
@@ -571,11 +593,13 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   end
 
   # The safety property, pinned at the argument boundary rather than only at the
-  # refusal upstream of it: an automatic generation must never ask the fork
-  # service to scaffold. A "simplification" of `scaffold_missing_clone: force` to
-  # a bare `true` would start paying to stand a fork up for sessions nobody is
-  # looking at, and every other test here would still pass.
-  test "only a forced generation asks the fork service to scaffold" do
+  # refusal upstream of it. With no copy to make, `scaffold_missing_clone` governs
+  # exactly one thing for this caller: whether a source clone that is GONE fails
+  # the fork. It must, for an automatic run — a missing tree is the cheapest
+  # evidence that this is a session nobody is looking at. A "simplification" of
+  # `scaffold_missing_clone: force` to a bare `true` would start standing forks up
+  # for those sessions, and every other test here would still pass.
+  test "only a forced generation tolerates a source clone that is gone" do
     asked = []
     recorder = Class.new do
       define_singleton_method(:call) do |**args|
@@ -643,17 +667,14 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
       "the three request surfaces ask as the forced run they perform, and a missing clone does not stop one"
   end
 
-  # The post-copy re-check, from the forced side. The copy SUCCEEDED, so there is
-  # a fork holding its own copy of the clone — the source reaching the trash
-  # during the copy costs that fork nothing, and an operator is waiting on it.
-  test "a forced generation whose session archives during a successful copy still dispatches the fork" do
+  # The post-fork re-check, from the forced side. The fork was MADE, so the
+  # source reaching the trash behind it costs that fork nothing — the fork holds
+  # the conversation, which is all it reads — and an operator is waiting on it.
+  test "a forced generation whose session archives while the fork is made still dispatches it" do
     session = @session
-    @fs.define_singleton_method(:cp_r) do |src, dest, exclude: []|
-      session.update_column(:status, Session.statuses[:archived])
-      super(src, dest, exclude: exclude)
-    end
+    service = fork_service_running { session.update_column(:status, Session.statuses[:archived]) }
 
-    result = generate(force: true)
+    result = generate(force: true, fork_service: service)
 
     assert_equal :started, result.outcome
     assert_not summary_fork.archived?, "the fork is dispatched, not abandoned"
@@ -662,38 +683,34 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   end
 
   # The race the pre-flight cannot close: the clone is there when the button is
-  # pressed and gone by the time the copy walks it. A forced run does not need
-  # the tree, so losing the race costs it the copy and not the generation.
-  test "a forced generation whose clone the trash deletes during the copy scaffolds instead" do
+  # pressed and gone by the time the fork is made. A forced run does not need the
+  # tree at all, so losing the race costs it nothing.
+  test "a forced generation whose clone the trash deletes mid-flight still scaffolds" do
     session = @session
     clone = @clone_path
-    @fs.define_singleton_method(:cp_r) do |_src, _dest, exclude: []|
+    fs = @fs
+    service = fork_service_running do
       session.update_column(:status, Session.statuses[:archived])
-      rm_rf(clone)
-      raise Errno::ENOENT.new(File.join(clone, ".git/objects/e8"))
+      fs.rm_rf(clone)
     end
 
-    result = generate(force: true)
+    result = generate(force: true, fork_service: service)
 
     assert_equal :started, result.outcome
     assert_equal true, result.fork_session.metadata["clone_scaffolded"]
     assert_equal "pending", @session.reload.status_summary.state
   end
 
-  # The copy takes real time — tens of seconds on a repo with an installed
-  # bundle — and the session can reach the trash during it. In production it did:
-  # the source clone was deleted 12 seconds after the copy ended.
-  test "a session that archives during the clone copy abandons the fork" do
+  # A session can reach the trash while its fork is being stood up. In production
+  # it did: the source clone was deleted 12 seconds after the fork was made.
+  test "a session that archives while the fork is made abandons it" do
     session = @session
-    @fs.define_singleton_method(:cp_r) do |src, dest, exclude: []|
-      session.update_column(:status, Session.statuses[:archived])
-      super(src, dest, exclude: exclude)
-    end
+    service = fork_service_running { session.update_column(:status, Session.statuses[:archived]) }
 
-    result = generate
+    result = generate(fork_service: service)
 
     assert_equal :skipped, result.outcome
-    assert summary_fork.archived?, "an abandoned fork must be archived so its copied clone is reclaimed"
+    assert summary_fork.archived?, "an abandoned fork must be archived so its clone is reclaimed"
 
     record = @session.reload.status_summary
     assert_equal "idle", record.state, "the claim is released rather than left pending with no fork behind it"
@@ -711,12 +728,9 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
       summary: "All good.", transcript_line_count: 1, generated_at: Time.current
     )
     session = @session
-    @fs.define_singleton_method(:cp_r) do |src, dest, exclude: []|
-      session.update_column(:status, Session.statuses[:archived])
-      super(src, dest, exclude: exclude)
-    end
+    service = fork_service_running { session.update_column(:status, Session.statuses[:archived]) }
 
-    assert_equal :skipped, generate.outcome
+    assert_equal :skipped, generate(fork_service: service).outcome
 
     record = @session.reload.status_summary
     assert_equal "failed", record.state
@@ -726,21 +740,23 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   end
 
   # The other side of the same race, and the one that paged in production on
-  # 2026-08-12. The archived-check above can only run on a copy that SUCCEEDED;
-  # when DeferredCloneCleanupJob reaches the tree first, the copy dies on an
-  # unlinked path and the generation ended as :failed with a paging `.error`
-  # behind it — about a summary nobody was ever going to read.
-  test "a source clone the trash deletes during the copy is skipped, not failed" do
+  # 2026-08-12. The archived-check above can only run on a fork that was MADE;
+  # when DeferredCloneCleanupJob reaches the tree first, the fork service refuses
+  # on a source clone that is no longer there, and the generation ended as
+  # :failed with a paging `.error` behind it — about a summary nobody was ever
+  # going to read. An automatic run still asks for a tree it does not read, as
+  # the liveness proxy the refusal exists to be, so it can still lose this race.
+  test "a source clone the trash deletes before the fork is made is skipped, not failed" do
     session = @session
     clone = @clone_path
-    @fs.define_singleton_method(:cp_r) do |_src, _dest, exclude: []|
+    fs = @fs
+    service = fork_service_running do
       session.update_column(:status, Session.statuses[:archived])
-      rm_rf(clone)
-      raise Errno::ENOENT.new(File.join(clone, ".git/objects/e8"))
+      fs.rm_rf(clone)
     end
 
     result = nil
-    entries = capture_log_entries { result = generate }
+    entries = capture_log_entries { result = generate(fork_service: service) }
 
     assert_equal :skipped, result.outcome
     assert_empty entries.select { |severity, message|
@@ -748,7 +764,7 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     }, "a generation the trash made moot must not page"
 
     assert_equal 0, Session.where("metadata->>? = ?", SessionStatusSummaryGenerator::FORK_MARKER, @session.id.to_s).count,
-      "the copy never finished, so there is no fork to abandon"
+      "the fork was never made, so there is none to abandon"
 
     record = @session.reload.status_summary
     assert_equal "idle", record.state, "the claim is released rather than left pending"
@@ -759,7 +775,7 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
 
   # A fork that is made and then never dispatched is invisible to every operator
   # list and its clone is skipped by OrphanCloneFilesystemCleanupJob (a session
-  # row still claims it), so it would hold a full copy of a repository forever.
+  # row still claims it), so it would sit on disk forever.
   test "a fork that cannot be dispatched is archived rather than left holding a clone" do
     Session.any_instance.stubs(:deliver_follow_up!).raises(RuntimeError, "spawn refused")
 
@@ -770,17 +786,23 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_equal "failed", @session.reload.status_summary.state
   end
 
-  # The summarizer reads the transcript and is told not to run tools, so the
-  # installed-dependency trees are pure copy cost — and the copy window is what
-  # makes a concurrent-mutation race likely at all.
-  test "a summary fork does not copy installed-dependency trees" do
+  # The summarizer reads the conversation and is told not to run tools, so it
+  # opens no file in the source tree and is given none of it — not the installed
+  # dependency trees, and not the working tree either. Copying what nobody reads
+  # is what held both `inference` threads for half an hour (#771).
+  test "a summary fork's clone carries nothing from the source tree" do
     @fs.write(File.join(@clone_path, "Gemfile"), "source 'https://rubygems.org'")
+    @fs.write(File.join(@clone_path, "app/models/session.rb"), "class Session; end")
     @fs.write(File.join(@clone_path, "vendor/bundle/ruby/3.4.0/gems/rails-8.1.3/README.md"), "gem")
     @fs.write(File.join(@clone_path, "node_modules/turbo/index.js"), "js")
 
-    clone = generate.fork_session.metadata["clone_path"]
+    result = generate
+    clone = result.fork_session.metadata["clone_path"]
 
-    assert @fs.exists?(File.join(clone, "Gemfile")), "the working tree itself is still copied"
+    assert_equal true, result.fork_session.metadata["clone_scaffolded"]
+    assert @fs.directory?(clone), "the fork still gets a directory to be spawned in"
+    assert_not @fs.exists?(File.join(clone, "Gemfile")), "the working tree is not copied either"
+    assert_not @fs.exists?(File.join(clone, "app/models/session.rb"))
     assert_not @fs.exists?(File.join(clone, "vendor/bundle/ruby/3.4.0/gems/rails-8.1.3/README.md"))
     assert_not @fs.exists?(File.join(clone, "node_modules/turbo/index.js"))
   end
@@ -788,9 +810,9 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   # --- Concurrency ----------------------------------------------------------
   #
   # The production defect: the record was read-or-BUILT before the fork and
-  # inserted only after the clone copy had finished, so a second generation
-  # landing inside that window saw no row, built its own, and lost on the unique
-  # index — a PG::UniqueViolation page, plus a second full copy of a repository.
+  # inserted only after the fork had been made, so a second generation landing
+  # inside that window saw no row, built its own, and lost on the unique index —
+  # a PG::UniqueViolation page, plus a second fork nobody would read.
   #
   # Two of these reproduce that defect against the unfixed generator: the
   # competing generation below (which raises the production PG::UniqueViolation
@@ -813,22 +835,22 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_equal :started, generate.outcome, "the connection is still usable afterwards"
   end
 
-  test "a second generation landing during the clone copy neither forks nor collides" do
+  test "a second generation landing while the first fork is made neither forks nor collides" do
     session_id = @session.id
     competitor_fs = MockFileSystemAdapter.new
     competitor_fs.mkdir_p(@clone_path)
     competitor = nil
 
     # A second worker, on its own Session instance and its own filesystem, runs
-    # while the first one's copy is in flight — the window the race lived in.
-    @fs.define_singleton_method(:cp_r) do |src, dest, exclude: []|
+    # after the first has claimed the record and before its fork exists — the
+    # window the race lived in.
+    service = fork_service_running do
       competitor ||= SessionStatusSummaryGenerator.call(
         session: Session.find(session_id), force: true, file_system: competitor_fs
       )
-      super(src, dest, exclude: exclude)
     end
 
-    result = generate(force: true)
+    result = generate(force: true, fork_service: service)
 
     assert_equal :started, result.outcome, result.message
     assert_equal :pending, competitor.outcome, "the second runner must not start a second fork"
@@ -839,12 +861,12 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
 
   # A claim is not eternal: once it ages past PENDING_TIMEOUT another runner may
   # take the record over. The runner that lost it must not stomp the newer
-  # generation, and must not leave its fork holding a copy of a repository.
-  test "a generation whose claim is taken over during the copy abandons its fork" do
+  # generation, and must not leave its fork on the floor holding a clone.
+  test "a generation whose claim is taken over while its fork is made abandons the fork" do
     session_id = @session.id
     taken_over = false
 
-    @fs.define_singleton_method(:cp_r) do |src, dest, exclude: []|
+    service = fork_service_running do
       unless taken_over
         taken_over = true
         # A takeover, compressed: in production this run's claim first ages past
@@ -854,10 +876,9 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
         # the row that is not the one this run wrote.
         SessionStatusSummary.find_by(session_id: session_id).update!(requested_at: 1.second.from_now)
       end
-      super(src, dest, exclude: exclude)
     end
 
-    result = generate(force: true)
+    result = generate(force: true, fork_service: service)
 
     assert_equal :pending, result.outcome
     record = @session.reload.status_summary

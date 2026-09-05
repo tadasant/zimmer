@@ -366,13 +366,17 @@ class ForkSessionService
   # working directory that does not exist fails the fork at the process rather
   # than here.
   #
-  # The `warn` branch is narrow on purpose, and reaching it means the scaffold
-  # was a *substitute* for a copy this fork wanted: `scaffold_missing_clone` fell
-  # through on a source that is not in the trash, which is StaleCloneCleanupJob
-  # reclaiming a FAILED session's clone after 24 hours — a day-old failed session
-  # being exactly the kind an operator opens to press Regenerate. A caller that
-  # asked for no copy at all is not that case and logs at `info`: an empty tree
-  # is what it wanted, and a live source is the normal thing for it to have.
+  # Which branch logs is decided by WHY the tree is empty, because the two are
+  # not the same event.
+  #
+  # A caller that asked for no copy got what it asked for, and a live source is
+  # the normal thing for it to have — `info`. The other two are a scaffold
+  # standing in for a copy the caller DID want, which only a caller passing both
+  # `copy_source_tree: true` and `scaffold_missing_clone: true` can reach: the
+  # source is archived and its tree already reclaimed (expected, `info`), or it is
+  # not in the trash and the tree is gone anyway (`warn` — StaleCloneCleanupJob
+  # reclaims a FAILED session's clone after 24 hours, and a day-old failed session
+  # is exactly the kind an operator opens to press Regenerate).
   def scaffold_clone(new_clone_path)
     if !copy_source_tree
       @logger.info("Scaffolding an empty clone for a fork that does not copy the source tree",
