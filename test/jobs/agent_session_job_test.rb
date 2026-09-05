@@ -7488,7 +7488,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   # down, so a poll placed before `terminate_process` would still lose the answer.
   # This test writes the closing message from inside the termination for exactly
   # that reason.
-  test "a session that archives itself keeps the closing turn it wrote before the kill" do
+  test "a session that archives itself keeps the closing turn it wrote as it was killed" do
     working_directory = "/tmp/archived-final-poll-clone"
     stderr_path = File.join(working_directory, "claude_stderr.log")
 
