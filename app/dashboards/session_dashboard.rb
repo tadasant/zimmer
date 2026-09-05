@@ -97,6 +97,7 @@ class SessionDashboard < Administrate::BaseDashboard
     id
     title
     status
+    prompt
     git_root
     created_at
   ].freeze
