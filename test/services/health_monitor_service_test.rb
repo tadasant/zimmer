@@ -158,6 +158,36 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert health[:status].healthy?
   end
 
+  # `process_pid` is a single metadata slot that is never cleared at turn end, so
+  # every parked session still names a process that exited hours ago. Counting those
+  # would hold the report at `unknown` for ever on an instance with no agent process
+  # on it — a permanent caveat reads as noise and gets ignored exactly like the false
+  # `healthy` it replaced.
+  test "a parked session's stale pid is not counted as a recorded agent process" do
+    session_with_agent_process(pid: 4242).update!(status: :waiting)
+
+    health = with_no_local_claude_processes { @service.process_health }
+
+    assert_equal 0, health[:recorded_count]
+    assert health[:status].healthy?
+  end
+
+  # `AgentProcessLiveness.classify` answers `:none` when no identity was recorded at
+  # all, which is as unobservable as `:unknown` — reading it as evidence that this
+  # process looked and found nothing restores the false green.
+  test "a recorded pid with no identity is not evidence that anything was observed" do
+    session = Session.create!(prompt: "Test", agent_runtime: "claude_code", status: :running,
+                              git_root: "https://github.com/test/repo.git", branch: "main",
+                              execution_provider: "local_filesystem")
+    session.update!(metadata: session.metadata.merge("process_pid" => 4242))
+
+    health = with_no_local_claude_processes { @service.process_health }
+
+    assert_equal 1, health[:recorded_count]
+    refute health[:observable], "an unrecorded identity is 'cannot tell', not an answer"
+    assert health[:status].unknown?
+  end
+
   test "overall_status names an unevaluated check instead of claiming all systems operational" do
     session_with_agent_process(pid: 4242)
 
@@ -675,16 +705,15 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   # === Nothing is executing ===
   #
   # The branch that does not read a backlog. On 2026-08-13 the Tadasant production
-  # deployment executed nothing for ten hours — zero triggers, zero polls, zero
-  # sessions started — and this report said `healthy`, then eventually `warning:
-  # queue backlog elevated`, because every gate it had was sized against a pile
-  # that takes hours to grow (zimmer#428). "Nothing has finished anywhere, while
-  # work sat ready" was true from the first minutes.
+  # deployment executed nothing for ten hours — zero triggers fired, zero polls ran,
+  # zero sessions started — and this report said `healthy`, then eventually
+  # `warning: queue backlog elevated`, because every gate it had was sized against a
+  # pile that takes hours to grow (zimmer#428). "Nothing has finished anywhere" was
+  # true from the first minutes.
   #
-  # Every case here is written against the SAME shape the outage had — ready work
-  # older than the window, no completion inside it — so that the conjuncts that
-  # keep this from firing on a healthy instance are each pinned by a case that
-  # differs in exactly one of them.
+  # Every case here is written against the SAME shape the outage had, so the
+  # conjuncts that keep this from firing on a healthy instance are each pinned by a
+  # case that differs in exactly one of them.
 
   # A job that ran and finished `ago` ago. `finished_at` takes the row out of every
   # pending population, so this is evidence of throughput and nothing else.
@@ -696,21 +725,24 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "a queue with ready work and nothing finishing anywhere is critical" do
+  test "a fast lane that has picked nothing up, with nothing finishing anywhere, is critical" do
+    register_workers(1)
     complete_good_jobs(500, ago: 3.hours)
-    enqueue_ready_jobs(4, waiting_for: 20.minutes)
+    enqueue_ready_jobs(4, waiting_for: 20.minutes, queue: "pollers")
 
     status = @service.system_health[:status]
 
-    assert status.critical?, "no job has finished in three hours while work sat ready for twenty minutes"
+    assert status.critical?, "no job has finished in three hours while a millisecond lane sat for twenty minutes"
     assert_equal HealthMonitorService::EXECUTION_STALL_CODE, status.code
     assert_includes status.message, "Nothing is executing"
+    assert_includes status.message, "pollers"
     assert_includes status.message, "3h"
   end
 
   test "the outage is critical far below any backlog threshold" do
+    register_workers(1)
     complete_good_jobs(500, ago: 45.minutes)
-    enqueue_ready_jobs(3, waiting_for: 11.minutes)
+    enqueue_ready_jobs(3, waiting_for: 11.minutes, queue: "default")
 
     stats = @service.system_health[:queue_stats]
     status = @service.system_health[:status]
@@ -720,9 +752,24 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert status.critical?, "the signal is the silence, not the depth"
   end
 
-  test "a worker that is still finishing work is not stalled, however old the head of one lane is" do
+  # GoodJob runs cron IN the worker, so a worker container that dies stops enqueuing
+  # too. A healthy instance clears its queue in milliseconds, so `ready_count` at the
+  # moment of death is routinely zero and then stays zero for ever — and a gate that
+  # waits for a backlog waits for one that will never arrive.
+  test "a dead worker fleet is critical even with an empty queue" do
+    complete_good_jobs(500, ago: 3.hours)
+
+    status = @service.system_health[:status]
+
+    assert status.critical?, "no heartbeat and nothing finished for three hours is an outage, backlog or not"
+    assert_equal HealthMonitorService::EXECUTION_STALL_CODE, status.code
+    assert_includes status.message, "no worker is reporting a heartbeat"
+  end
+
+  test "a worker that is still finishing work is not stalled, however old a lane's head is" do
+    register_workers(1)
     complete_good_jobs(5, ago: 30.seconds)
-    enqueue_ready_jobs(3, waiting_for: 90.minutes)
+    enqueue_ready_jobs(3, waiting_for: 90.minutes, queue: "default")
 
     status = @service.system_health[:status]
 
@@ -731,8 +778,9 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   end
 
   test "ready work that has only just arrived is not a stall" do
+    register_workers(1)
     complete_good_jobs(5, ago: 40.minutes)
-    enqueue_ready_jobs(3, waiting_for: 20.seconds)
+    enqueue_ready_jobs(3, waiting_for: 20.seconds, queue: "default")
 
     status = @service.system_health[:status]
 
@@ -740,16 +788,36 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       "a worker mid-restart has ready work and no completions for a moment; that is a deploy, not an outage"
   end
 
-  test "an idle instance that finishes nothing because nothing is waiting is healthy" do
+  # QUEUE_LANE_CRITICAL_THRESHOLDS records that a ready AgentSessionJob waiting hours
+  # is admission control working as designed. `oldest_ready_age_seconds` is the
+  # maximum across every lane, so reading the age off it would make this conjunct
+  # permanently true on any instance with a standing `agents` queue — and the gate
+  # would collapse to "nothing finished in ten minutes", which an eleven-minute
+  # migration satisfies with nothing wrong.
+  test "a standing agents queue does not make an eleven-minute deploy read as an outage" do
+    register_workers(1)
+    complete_good_jobs(500, ago: 11.minutes)
+    enqueue_lane("agents", 4, head_waiting_for: 3.hours)
+
+    stats = @service.system_health[:queue_stats]
+    status = @service.system_health[:status]
+
+    assert_operator stats[:oldest_ready_age_seconds], :>, HealthMonitorService::EXECUTION_STALL_CRITICAL_AGE,
+      "the global head age is over the window, which is exactly the trap"
+    refute status.critical?, "an agents lane waiting hours is admission control, not a lane that stopped"
+  end
+
+  test "an idle instance with a live worker and nothing waiting is healthy" do
+    register_workers(1)
     complete_good_jobs(5, ago: 6.hours)
 
     status = @service.system_health[:status]
 
-    assert status.healthy?, "silence with an empty queue is an idle instance"
+    assert status.healthy?, "silence with an empty queue and a live worker is an idle instance"
   end
 
   test "a deployment that has never finished a job has no baseline to have stopped from" do
-    enqueue_ready_jobs(3, waiting_for: 45.minutes)
+    enqueue_ready_jobs(3, waiting_for: 45.minutes, queue: "default")
 
     status = @service.system_health[:status]
 
@@ -758,28 +826,76 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_nil @service.system_health[:queue_stats][:seconds_since_last_finished]
   end
 
-  test "a stall under a deliberate halt is reported as a warning, naming the paused lanes" do
+  test "a stall confined to deliberately paused lanes is a warning, naming them" do
+    register_workers(1)
     complete_good_jobs(5, ago: 40.minutes)
-    enqueue_ready_jobs(3, waiting_for: 20.minutes)
+    enqueue_ready_jobs(3, waiting_for: 20.minutes, queue: "pollers")
 
-    QueueRecoveryMode.stubs(:paused_queues).returns([ "default", "pollers" ])
+    QueueRecoveryMode.stubs(:paused_queues).returns([ "pollers", "triggers" ])
     status = @service.system_health[:status]
 
     refute status.critical?, "an operator who halted the queues must not be paged for the silence they asked for"
     assert status.warning?
     assert_includes status.message, "Nothing is executing"
-    assert_includes status.message, "default, pollers"
+    assert_includes status.message, "pollers, triggers"
+  end
+
+  # `paused_queues` reads GoodJob's own pause rows, which include a lane an operator
+  # paused by hand and forgot, or one `exit!` failed to lift. Treating "anything is
+  # paused" as an explanation lets one stray row disarm the page for an outage on a
+  # lane nobody paused — permanently, since SystemHealthMonitorJob deletes its streak
+  # key on every non-critical tick.
+  test "a stray paused lane does not explain a stall somewhere else" do
+    register_workers(1)
+    complete_good_jobs(5, ago: 40.minutes)
+    enqueue_ready_jobs(3, waiting_for: 20.minutes, queue: "default")
+
+    QueueRecoveryMode.stubs(:paused_queues).returns([ "inference" ])
+    status = @service.system_health[:status]
+
+    assert status.critical?, "the `default` lane is stalled and nobody paused it"
+    assert_equal HealthMonitorService::EXECUTION_STALL_CODE, status.code
   end
 
   test "the stall is reported ahead of a backlog deep enough to be critical on its own" do
+    register_workers(1)
     complete_good_jobs(500, ago: 2.hours)
-    enqueue_ready_jobs(200, waiting_for: 30.minutes)
+    enqueue_ready_jobs(200, waiting_for: 30.minutes, queue: "default")
 
     status = @service.system_health[:status]
 
     assert status.critical?
     assert_equal HealthMonitorService::EXECUTION_STALL_CODE, status.code,
       "'nothing is executing' is a stronger and more actionable statement than 'the queue is deep'"
+  end
+
+  # `wedged_lane` says a lane's pool is held by work that is not returning. That is a
+  # statement about one lane; "nothing has finished anywhere" is a statement about the
+  # whole worker, and it is the one a responder needs first.
+  test "the stall is reported ahead of a wedged lane" do
+    complete_good_jobs(500, ago: 2.hours)
+    wedge_inference_lane
+    # A fast lane sitting still too: the wedge is on `inference`, and what makes this
+    # the whole worker rather than that one lane is `default` picking nothing up
+    # either.
+    enqueue_ready_jobs(2, waiting_for: 20.minutes, queue: "default")
+
+    status = @service.system_health[:status]
+
+    assert status.critical?
+    assert_equal HealthMonitorService::EXECUTION_STALL_CODE, status.code
+  end
+
+  # And the mirror: a wedged lane on a worker that is otherwise turning work over is
+  # still reported as a wedge, not swallowed by the broader branch.
+  test "a wedged lane on a working fleet is still reported as a wedge" do
+    complete_good_jobs(5, ago: 30.seconds)
+    wedge_inference_lane
+
+    status = @service.system_health[:status]
+
+    assert status.critical?
+    assert status.code.to_s.start_with?(HealthMonitorService::WEDGED_LANE_CODE_PREFIX)
   end
 
   test "queue_statistics reports when anything last finished, not just an hourly rate" do
