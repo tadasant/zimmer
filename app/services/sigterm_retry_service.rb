@@ -87,7 +87,12 @@ class SigtermRetryService
     log_buffer.flush
 
     # Wait for the retry delay, checking session status periodically for long delays
-    abort_result = wait_with_status_checks(retry_delay)
+    # The pending prompt is read again at the spawn, where it is consumed; here it
+    # only decides whether this wait may end in a respawn at all.
+    abort_result = wait_with_status_checks(
+      retry_delay,
+      resume_prompt: session.metadata&.dig("pending_follow_up_prompt").presence || AutomatedPrompts::SYSTEM_RECOVERY
+    )
     return :aborted if abort_result == :aborted
 
     # Record retry attempt in metadata
@@ -117,7 +122,17 @@ class SigtermRetryService
     # where user sends a follow-up prompt between wait_with_status_checks and here.
     # This is the last opportunity to abort before spawning an automated recovery
     # process that would race with the user's follow-up prompt.
-    abort_result = check_session_status
+    # Read before the status check rather than inside the branch below, because
+    # the check has to be told which prompt this respawn will actually carry —
+    # for a status-summary fork interrupted before it consumed its prompt, this
+    # pending one IS the summary request, and refusing it would cost a blurb
+    # every time a deploy landed mid-generation. Read only; it is still consumed
+    # and cleared where it is used.
+    pending_prompt = session.metadata&.dig("pending_follow_up_prompt")
+
+    abort_result = check_session_status(
+      resume_prompt: pending_prompt.presence || AutomatedPrompts::SYSTEM_RECOVERY
+    )
     return :aborted if abort_result == :aborted
 
     # Check if there's an existing conversation to resume
@@ -127,7 +142,6 @@ class SigtermRetryService
       # Check for pending follow-up prompt that was lost due to race condition.
       # This happens when the user sends a follow-up, the job is enqueued, but
       # SIGTERM retry kicks in before the job processes the prompt.
-      pending_prompt = session.metadata&.dig("pending_follow_up_prompt")
       resume_prompt = if pending_prompt.present?
         add_log("Using pending follow-up prompt instead of automated recovery prompt", level: "info")
         # Clear the pending prompt and sent_at now that we're using it
