@@ -501,6 +501,7 @@ class Session < ApplicationRecord
     stranded_sleep_rescues
     stranded_sleep_abandoned
     deliberate_sleep_at
+    orphaned_trigger_fire_reported_at
   ] + SpotSessionPause::METADATA_KEYS).freeze
 
   # Records that a human (or an API caller) put this session to sleep on purpose
