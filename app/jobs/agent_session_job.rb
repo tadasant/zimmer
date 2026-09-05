@@ -1140,11 +1140,17 @@ class AgentSessionJob < ApplicationJob
 
         # Check for OAuth requirements and inject credentials for follow-up prompts.
         # Necessary when MCP servers are added mid-session.
+        #
+        # This turn's prompt goes with the block. It was consumed out of
+        # `pending_follow_up_prompt` above and exists nowhere else but this job's
+        # arguments, so blocking without handing it back drops a human's message
+        # and resumes the session on its original prompt instead (#887).
         return if gate_and_inject_oauth!(
           session,
           working_directory,
           log_buffer,
-          blocked_message: "Follow-up blocked: OAuth authorization required for MCP servers"
+          blocked_message: "Follow-up blocked: OAuth authorization required for MCP servers",
+          undelivered_prompt: follow_up_prompt
         )
       else
         # Check if we already have a clone from a previous attempt (e.g., job retry)
@@ -5605,11 +5611,22 @@ class AgentSessionJob < ApplicationJob
   # the CLI reads it, rather than letting the CLI pick up a stale token from a
   # prior session and fail with invalid_grant/401.
   #
+  # @param undelivered_prompt [String, nil] the prompt THIS turn was carrying and
+  #   has not delivered, when the caller has one. A follow-up exists only as this
+  #   job's argument: the job returns when the gate blocks, nothing re-queues it,
+  #   and the resume that follows the human's authorization builds its own job —
+  #   so a prompt not written down here is a message that disappears (#887). It is
+  #   handed back to the session as `pending_follow_up_prompt`, the marker every
+  #   recovery path already reads as "handed to a job, not yet delivered", and
+  #   McpOauthResumeService#resume! consults it to decide which prompt the resume
+  #   carries. Pass the RAW text, never `active_follow_up_prompt`: that key holds
+  #   `build_prompt_with_goal` output, and the job that eventually delivers this
+  #   wraps the goal block around whatever it is given.
   # @return [Boolean] true when the session was blocked (transitioned to failed
   #   with failure_reason "oauth_required") — the caller MUST return from
   #   #perform. false when there is nothing to gate or credentials were injected
   #   successfully and the spawn may proceed.
-  def gate_and_inject_oauth!(session, working_directory, log_buffer, blocked_message:)
+  def gate_and_inject_oauth!(session, working_directory, log_buffer, blocked_message:, undelivered_prompt: nil)
     # A spawn is reached, so the agent process the "re-authorized — reconnects on
     # the next turn" notice was about is gone and the notice is spent — whichever
     # way the gate goes, and whether or not there is anything left to inject. It
@@ -5624,11 +5641,26 @@ class AgentSessionJob < ApplicationJob
     return false unless oauth_result[:blocked]
 
     log_buffer.add(blocked_message, level: "warning")
-    log_buffer.flush
-    session.merge_metadata!(
+
+    blocked_metadata = {
       "failure_reason" => "oauth_required",
       "oauth_required_servers" => oauth_result[:missing_servers]
-    )
+    }
+
+    held_prompt = undelivered_prompt.presence
+    if held_prompt
+      blocked_metadata["pending_follow_up_prompt"] = held_prompt
+      blocked_metadata["pending_follow_up_sent_at"] = Time.current.utc.iso8601
+      log_buffer.add(
+        "The message this turn was carrying has NOT been delivered to the agent. It is held on the " \
+        "session and is what gets sent once the authorization above completes — the session does not " \
+        "go back to replaying its original prompt.",
+        level: "warning"
+      )
+    end
+
+    log_buffer.flush
+    session.merge_metadata!(blocked_metadata)
     session.update!(running_job_id: nil)
     session.fail! if session.may_fail?
     true

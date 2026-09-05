@@ -34,7 +34,8 @@ flowchart TD
 
 A session that needs OAuth fails fast: it goes to `failed` with
 `failure_reason: oauth_required` instead of hanging or prompting, and the UI turns that into Authorize buttons. Completing the flow
-resumes it.
+resumes it — with the turn it was blocked on, which is not always its first
+([which prompt the resume delivers](#which-prompt-the-resume-delivers)).
 
 The **post-spawn** MCP-failure classifier (`AgentSessionJob#check_and_handle_mcp_failure`)
 applies the same rule. An auth-shaped error (`401`, `Unauthorized`, `Supported scopes`,
@@ -113,6 +114,40 @@ the text. A server that brokers a downstream OAuth of its own can report *its* p
 `invalid_grant` while Zimmer's credential for that server is healthy, and retiring it there would
 force a re-auth that cannot fix anything. An unrecognized phrasing costs nothing — it falls
 through to the retry path.
+
+### Which prompt the resume delivers
+
+`oauth_required` is not exclusively a first-turn failure, so a resume is not exclusively "replay the
+stored prompt". Three doors reach `failed` + `oauth_required`, and two of them can do it to a session
+that is already owed a message a human sent:
+
+| Door | What it fails | What the session is owed |
+| --- | --- | --- |
+| `AgentSessionJob`'s pre-spawn gate on a **first turn** | a session whose prompt was never delivered | nothing — the stored prompt is the turn |
+| `AgentSessionJob`'s pre-spawn gate on a **follow-up** (*"Follow-up blocked: OAuth authorization required for MCP servers"*) | the turn carrying a human's message | that message |
+| **Edit MCP servers** / **Edit plugins** (`Sessions::UpdateCatalogSelection`) | an idle session, never a `running` one | whatever undelivered turn it was already holding |
+
+A follow-up exists only as its `AgentSessionJob`'s argument. The job returns when the gate blocks,
+nothing re-queues it, and the resume builds a job of its own — so before failing the session the gate
+hands the prompt back as `pending_follow_up_prompt`, the marker every recovery path already reads as
+"handed to a job, not yet delivered", and says in the session's timeline that the message has **not**
+been delivered yet. `McpOauthResumeService#resume!` then asks that marker first:
+
+- **owed a turn** → `Session#deliver_follow_up!` — the session resumes to `running` and the job
+  carries that prompt;
+- **owed nothing** → `AgentSessionJob.enqueue_new_session` — the session goes back to `waiting` and
+  the stored prompt is replayed, exactly as it always did.
+
+Before [#887](https://github.com/tadasant/zimmer/issues/887) the resume always took the second
+branch, so a human who sent a follow-up, saw the Authorize banner, and authorized got their session
+back running its *original* prompt, with the message dropped and nothing in the log saying so — and
+on a session with a clone that meant re-running work it had already done.
+
+The one case the resume cannot honour is a session with **no runtime `session_id`**: there is no
+conversation for a follow-up to continue, and `AgentSessionJob` would reclassify it as a fresh start
+and run the stored prompt anyway. It resumes the first turn, keeps the message in
+`pending_follow_up_prompt`, and writes a warning into the session's own timeline quoting the text so
+it can be re-sent. Saying so is the point — a silent substitution is the defect this closes.
 
 ## What the server advertised, recorded
 
@@ -680,7 +715,7 @@ session).
 :::
 
 :::note[The replayed turn carries its attachments — when there is still a first turn to replay]
-`McpOauthResumeService` resumes by re-queuing the *original* run, and `AgentSessionJob` receives
+When `McpOauthResumeService` resumes by re-queuing the *original* run, `AgentSessionJob` receives
 images and files exclusively as job arguments, so a bare re-queue replayed "here is the screenshot,
 fix this" with the prompt and without the screenshot. The resume now reads them back off the durable
 volume through `Sessions::FirstTurnAttachments`
@@ -692,6 +727,10 @@ MCP-failure classifier sets it after the process has run. On a session that has 
 everything on its volume includes attachments earlier turns consumed, so the resume carries none —
 and the spawn it re-queues resumes the existing conversation rather than replaying the prompt, so
 there is no turn there to put them on.
+
+A resume that delivers a **held follow-up** rather than the first turn carries none either, for the
+same reason read the other way: those attachments belong to the first turn, and this is not it. When
+there were any to leave behind, the session's timeline says so.
 :::
 
 :::caution[Authorizing from the Connectors page does not release a session parked on that server]
