@@ -284,7 +284,7 @@ class SpotGateService
   end
 
   Decision = Data.define(:allowed, :reason, :detail, :five_hour, :weekly,
-                         :active_sessions, :fleet_cap, :accounts_read, :pool_size,
+                         :active_sessions, :awaiting_sessions, :fleet_cap, :accounts_read, :pool_size,
                          :fleet_burn_usd_per_minute, :candidate_burn_usd_per_minute,
                          :pool_capacity) do
     def allowed? = allowed
@@ -399,6 +399,7 @@ class SpotGateService
         ceiling: ceiling,
         detail: detail,
         active_sessions: active_sessions,
+        awaiting_sessions: awaiting_sessions,
         fleet_cap: fleet_cap,
         accounts_read: accounts_read,
         pool_size: pool_size,
@@ -416,7 +417,7 @@ class SpotGateService
   ALWAYS_ALLOWED = Decision.new(
     allowed: true, reason: "priority",
     detail: "Priority sessions are never gated on quota or on the fleet cap.",
-    five_hour: nil, weekly: nil, active_sessions: nil, fleet_cap: nil,
+    five_hour: nil, weekly: nil, active_sessions: nil, awaiting_sessions: nil, fleet_cap: nil,
     accounts_read: nil, pool_size: nil,
     fleet_burn_usd_per_minute: nil, candidate_burn_usd_per_minute: nil,
     pool_capacity: nil
@@ -520,7 +521,21 @@ class SpotGateService
 
   private
 
-  def active_sessions = @active_sessions ||= Session.running_claude_code_count
+  # The fleet cap's population, read once per decision.
+  #
+  # RunningTurns::Reading rather than a bare count: `running` holds both turns a
+  # worker is executing and turns queued behind the `agents` pool waiting for
+  # one, and the gate's own explanation has to be able to say which — "15 of 10
+  # slots taken" on a deployment with 8 live agent processes reads as a broken
+  # counter, which is exactly how #957 was reported. The CAP still compares
+  # against the total: a queued turn is committed demand that takes the next free
+  # worker, so admitting more spot work on the strength of it only deepens the
+  # queue.
+  def turns = @turns ||= Session.running_claude_code_turns
+
+  def active_sessions = turns.total
+
+  def awaiting_sessions = turns.awaiting_a_worker
 
   # What every Claude Code session running right now is burning, in $/min.
   #
@@ -574,7 +589,8 @@ class SpotGateService
       allowed: true, reason: "unavailable",
       detail: "Could not evaluate the spot gate (#{error.class}); allowing the session.",
       five_hour: nil, weekly: nil,
-      active_sessions: @active_sessions, fleet_cap: nil, accounts_read: nil, pool_size: nil,
+      active_sessions: @turns&.total, awaiting_sessions: @turns&.awaiting_a_worker,
+      fleet_cap: nil, accounts_read: nil, pool_size: nil,
       fleet_burn_usd_per_minute: nil, candidate_burn_usd_per_minute: nil,
       pool_capacity: nil
     )
@@ -584,7 +600,8 @@ class SpotGateService
     Decision.new(
       allowed: true, reason: reason, detail: detail,
       five_hour: nil, weekly: nil,
-      active_sessions: active_sessions, fleet_cap: nil, accounts_read: nil, pool_size: nil,
+      active_sessions: active_sessions, awaiting_sessions: awaiting_sessions,
+      fleet_cap: nil, accounts_read: nil, pool_size: nil,
       fleet_burn_usd_per_minute: nil, candidate_burn_usd_per_minute: nil,
       pool_capacity: nil
     )
@@ -616,9 +633,9 @@ class SpotGateService
   def at_fleet_cap(pool, fleet_cap)
     decision(
       allowed: false, reason: FLEET_CAP_REASON,
-      detail: "Holding spot sessions: #{slots_phrase(fleet_cap)} taken. Every running session " \
-              "counts, priority included — priority work is meant to crowd spot work out. Raise the " \
-              "limit on /inference to widen it.",
+      detail: "Holding spot sessions: #{slots_phrase(fleet_cap)} taken#{awaiting_clause}. Every session " \
+              "with a turn in flight counts, priority included — priority work is meant to crowd spot " \
+              "work out. Raise the limit on /inference to widen it.",
       pool: pool, fleet_cap: fleet_cap
     )
   end
@@ -627,7 +644,7 @@ class SpotGateService
     Decision.new(
       allowed: allowed, reason: reason, detail: detail.squish,
       five_hour: pool.five_hour, weekly: pool.weekly,
-      active_sessions: active_sessions, fleet_cap: fleet_cap,
+      active_sessions: active_sessions, awaiting_sessions: awaiting_sessions, fleet_cap: fleet_cap,
       accounts_read: pool.read_count, pool_size: pool.account_count,
       fleet_burn_usd_per_minute: fleet_burn_usd_per_minute,
       candidate_burn_usd_per_minute: candidate_burn_usd_per_minute,
@@ -637,6 +654,20 @@ class SpotGateService
 
   def slots_phrase(fleet_cap)
     "#{active_sessions} of #{fleet_cap} session #{'slot'.pluralize(fleet_cap)}"
+  end
+
+  # Where the slot count came from, when it is not simply "that many agents are
+  # running". Silent when no turn is waiting, because then the two are the same
+  # number and the clause is noise.
+  #
+  # "Waiting for one" rather than "queued": the population is every counted row
+  # no worker has started, which is turns in the `agents` lane plus rows between
+  # jobs. See RunningTurns::Reading.
+  def awaiting_clause
+    return "" unless awaiting_sessions.positive?
+
+    " (#{turns.on_a_worker} on a worker, #{awaiting_sessions} waiting for one behind the " \
+      "#{RunningTurns.worker_slots}-slot agents pool)"
   end
 
   # Why one window refused, in money when the model has money and in percentages

@@ -47,10 +47,12 @@ module Mcp
           hands a fleet with spare capacity more work. Any of `max_running_sessions`, `idle_minutes` and
           `min_fire_interval_minutes` may be given; omitted ones are left alone.
 
-          The fleet counts as idle enough while FEWER THAN `max_running_sessions` sessions are actually
-          `running` — so it does not have to empty out completely before topping up. Sessions in
-          `waiting` do not count, of any class: most of them are asleep on their own wake rather than
-          queueing for a slot. 1 means literally nothing running.
+          The fleet counts as idle enough while FEWER THAN `max_running_sessions` sessions have a
+          TURN IN FLIGHT — running on a worker, or queued behind the `agents` pool for one — so it
+          does not have to empty out completely before topping up. Sessions in `waiting` do not
+          count, of any class: most of them are asleep on their own wake rather than queueing for a
+          slot. Neither does a `running` row asleep on its own future wake, since no start path will
+          run it before that wake. 1 means literally nothing running.
           `idle_minutes` is how long it must stay under that ceiling first; `min_fire_interval_minutes`
           is the floor between two fires, and with a ceiling above 1 that floor, not the ceiling, is
           what caps how often work gets started. `get_spot_policy` reports all three plus where the

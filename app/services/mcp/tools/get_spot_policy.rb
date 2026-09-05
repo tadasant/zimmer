@@ -58,8 +58,10 @@ module Mcp
         Windows are read ON AVERAGE across every account, including ones in needs_reauth. When a window
         has no usable dollar estimate yet, the same curve is applied to percentages instead and the
         output says so — an estimate is never presented as a measurement.
-        Every running session counts toward the concurrency limit, priority included, but only spot
-        sessions are held by it — priority work is meant to crowd spot work out. The concurrency limit is
+        Every session with a turn in flight counts toward the concurrency limit, priority included —
+        including a turn merely QUEUED for a worker, which takes the next free slot in the `agents`
+        pool. A `running` row asleep on its own future wake does not count, since no start path will
+        run it before that wake. Only spot sessions are held by the limit — priority work is meant to crowd spot work out. The concurrency limit is
         skipped only for a session that is ALREADY running when the gate runs, since it is counted in the
         fleet itself; a turn already deferred once is dormant and holds no slot, so the limit applies to
         its re-check in full. A held spot session is deferred, never cancelled: it stays `waiting`, and
@@ -164,7 +166,7 @@ module Mcp
           "- **5-hour priority reserve:** #{reserve_phrase(setting.spot_reserve_five_hour_pct, decision.five_hour)}",
           "- **Weekly priority reserve:** #{reserve_phrase(setting.spot_reserve_weekly_pct, decision.weekly)}",
           "- **Max sessions at once:** #{setting.spot_max_concurrent_sessions} " \
-          "(every running session counts, priority included; only spot sessions wait for a slot)",
+          "(every session with a turn in flight counts, priority included — including one merely queued for a worker; only spot sessions wait for a slot)",
           "",
           "### Current decision",
           "",
@@ -176,7 +178,8 @@ module Mcp
           # an agent reading this tool and a human reading the page are told the
           # same thing about which ceiling is holding and what lifts it.
           *explanation.lines.map { |line| "- **#{line.label}:** #{line.sentence}" },
-          "- **Running Claude Code sessions:** #{decision.active_sessions}",
+          "- **Claude Code sessions with a turn in flight:** #{decision.active_sessions}" \
+          "#{decision.awaiting_sessions.to_i.positive? ? " (#{decision.active_sessions.to_i - decision.awaiting_sessions.to_i} on a worker, #{decision.awaiting_sessions} waiting for one)" : ""}",
           "- **Fleet burn rate:** #{rate(decision.fleet_burn_usd_per_minute)} " \
           "(every running session, priority included — they spend against the same windows)",
           "- **One more session would add:** #{rate(decision.candidate_burn_usd_per_minute)} " \
@@ -229,21 +232,41 @@ module Mcp
           "",
           "### Backlog top-up (`no_sessions_in_progress`)",
           "",
-          "- **Fires while the fleet is running fewer than:** #{status.max_sessions} " \
-          "#{"session".pluralize(status.max_sessions)} (sessions actually `running`, every runtime; " \
-          "`waiting` ones do not count, of any class; 1 would mean nothing running. A different count " \
-          "from the Claude-Code-only one the concurrency limit above uses)",
+          "- **Fires while the fleet has fewer turns in flight than:** #{status.max_sessions} " \
+          "#{"session".pluralize(status.max_sessions)} (every runtime; `waiting` ones do not count, of " \
+          "any class, and neither does a session asleep on its own future wake — but a turn QUEUED for " \
+          "a worker does, since it takes the next free slot; 1 would mean nothing running. A different " \
+          "count from the Claude-Code-only one the concurrency limit above uses)",
           "- **For at least:** #{status.threshold.inspect}",
           "- **At most once every:** #{status.min_fire_interval.inspect} " \
           "(#{status.cadence_phrase} — with a ceiling above 1 this, not the ceiling, is what caps how " \
           "often work gets started)",
-          "- **Sessions running (any runtime):** #{status.running_sessions} of #{status.max_sessions} " \
-          "(#{status.headroom} #{"place".pluralize(status.headroom)} of headroom; one fire hands out " \
-          "one session, so filling it takes that many cooldowns)",
+          "- **Turns in flight (any runtime):** #{status.running_sessions} of #{status.max_sessions} " \
+          "(#{turns_split(status)}#{status.headroom} #{"place".pluralize(status.headroom)} of headroom; " \
+          "one fire hands out one session, so filling it takes that many cooldowns)",
           "- **State:** `#{status.state}` — #{status.sentence}",
           "- **Next fire, at the earliest:** #{next_fire_phrase(status)}",
           "- **Last fired:** #{status.last_fired_at ? "#{status.last_fired_at.utc.iso8601} (#{ago(status.last_fired_at)})" : "never"}"
         ]
+      end
+
+      # The two populations `running` holds, and the worker pool that separates
+      # them — printed only when they actually differ. A reader comparing this
+      # number against live agent processes needs the queue named, or the count
+      # looks broken (tadasant/zimmer#957).
+      def turns_split(status)
+        parts = []
+        if status.awaiting_sessions.positive?
+          parts << "#{status.executing_sessions} on a worker, #{status.awaiting_sessions} waiting for one " \
+                   "behind the #{status.worker_slots}-slot agents pool"
+        end
+        if status.asleep_sessions.positive?
+          parts << "#{status.asleep_sessions} more `running` #{"row".pluralize(status.asleep_sessions)} " \
+                   "asleep on a wake and not counted"
+        end
+        return "" if parts.empty?
+
+        "#{parts.join('; ')}; "
       end
 
       def next_fire_phrase(status)

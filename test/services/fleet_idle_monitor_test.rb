@@ -553,6 +553,38 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     assert_equal 2, FleetIdleMonitor.running_sessions
   end
 
+  # tadasant/zimmer#957. `running` is stamped when a turn is HANDED to a session,
+  # so a session whose turn ended while something else was already in flight for
+  # it stays in `running` while it sleeps on its own wake. No start path will run
+  # it before that wake, so it cannot hold the fleet at its ceiling — and this is
+  # the case that pinned both throughput controls in production.
+  test "a running session asleep on its own future wake does not hold the ceiling" do
+    ceiling(2)
+    2.times { session(status: :running) }
+    asleep = session(status: :running)
+    arm_wake!(asleep, at: 20.minutes.from_now)
+
+    assert_equal 2, FleetIdleMonitor.running_sessions
+    assert_equal 1, FleetIdleMonitor.running_turns.asleep
+
+    # And the whole point: the fleet is at its ceiling of 2 on the two real
+    # sessions, not over it on three rows.
+    assert_equal 3, Session.where(status: :running).count
+    assert_not FleetIdleMonitor.running_sessions > 2
+  end
+
+  # The split the ceiling is compared against does NOT drop a turn merely waiting
+  # for a worker. It is committed demand that takes the next free slot, so
+  # topping up on top of it would only deepen the queue.
+  test "a turn waiting for a worker still counts toward the ceiling" do
+    ceiling(1)
+    session(status: :running)
+
+    assert_equal 1, FleetIdleMonitor.running_sessions
+    assert_equal 1, FleetIdleMonitor.running_turns.awaiting_a_worker
+    assert_not FleetIdleMonitor.check!, "a fleet with a turn queued is not idle"
+  end
+
   # Every runtime, not just Claude Code — the load-bearing difference between
   # this count and the spot gate's `running_claude_code_count`. A Codex session
   # occupies the deployment as much as a Claude one.

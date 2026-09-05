@@ -21,17 +21,30 @@
 # answer no:
 #
 #   1. Is the fleet RUNNING `fleet_idle_max_sessions` or more sessions already?
-#      One population and one number: sessions actually `running`. Every runtime,
-#      every scheduling class, and Zimmer's own status-summary forks all count —
-#      "is anyone doing anything" is about the deployment's capacity to take on
-#      more, and a running Codex session occupies that as much as a Claude one.
-#      `fleet_idle_max_sessions = 1` means simply "nothing running".
+#      One population and one number: sessions with a turn in flight. Every
+#      runtime, every scheduling class, and Zimmer's own status-summary forks all
+#      count — "is anyone doing anything" is about the deployment's capacity to
+#      take on more, and a running Codex session occupies that as much as a
+#      Claude one. `fleet_idle_max_sessions = 1` means simply "nothing running".
+#
+#      "A turn in flight" is deliberately WIDER than "a worker is executing it",
+#      and RunningTurns is where that is decided. `running` is stamped when a
+#      turn is handed to a session, and the `agents` queue sits between that and
+#      a worker picking it up, so on a busy deployment a real share of the number
+#      is turns waiting for a slot. They still count: a queued turn is committed
+#      demand that will take the next free worker, and topping up on top of it
+#      just deepens the queue. What does NOT count is a row asleep on its own
+#      future wake with no worker on it — Zimmer refuses to start those, so they
+#      can consume nothing. #running_turns reports the split, which is what
+#      /inference shows: "15 sessions" reading as a broken counter when 8 were
+#      executing and 7 were queued is [#957](https://github.com/tadasant/zimmer/issues/957).
 #
 #      This is a different population from the one the spot gate's concurrency
 #      limit counts, which is Claude Code sessions only and does not skip frozen
-#      categories (Session.running_claude_code_count). The two ceilings sit on
-#      the same axis and are read together on /inference, but a fleet running
-#      Codex work will not see the same number under both.
+#      categories (Session.running_claude_code_count). Both now read through
+#      RunningTurns, so they agree about what a `running` row means; they still
+#      differ on runtime and on frozen categories, so a fleet running Codex work
+#      will not see the same number under both.
 #
 #      `waiting` sessions do NOT count, of any class, and the reason is what
 #      `waiting` actually holds. It is not a queue — it is Zimmer's only resting
@@ -191,7 +204,18 @@ class FleetIdleMonitor
       # the clock below all come from the same observation of the row.
       setting = AppSetting.current
 
-      idle = fleet_idle?(setting)
+      # One reading of the fleet for the whole decision, for the same reason the
+      # settings row is read once: the ceiling test and the log line that
+      # explains it must describe the same moment.
+      turns = begin
+        running_turns
+      rescue => e
+        Rails.logger.info "[FleetIdleMonitor] Could not read the fleet: #{e.message}"
+        nil
+      end
+      return false if turns.nil?
+
+      idle = fleet_idle?(setting, turns)
       return false if idle.nil?
 
       unless idle
@@ -199,7 +223,7 @@ class FleetIdleMonitor
         # Which of the three questions answered no, since they clear three
         # different ways and "not idle" alone leaves an operator guessing.
         logger.info("The fleet is not idle enough — #{EVENT_NAME} is armed again",
-          reason: not_idle_reason(setting)) if cleared
+          reason: not_idle_reason(setting, turns)) if cleared
         return false
       end
 
@@ -283,9 +307,19 @@ class FleetIdleMonitor
     # why.
     #
     # See "What counts as idle" for why `waiting` sessions are not in this
-    # number.
+    # number, and why a turn merely QUEUED for a worker still is.
     def running_sessions
-      Session.not_in_frozen_category.where(status: :running).count
+      running_turns.total
+    end
+
+    # The same reading, split into the populations `running` actually holds:
+    # turns a worker is executing, turns waiting for one behind the `agents`
+    # pool, and sleepers that are dropped from the total. RunningTurns owns the
+    # distinction; this is where /inference and `get_spot_policy` get it.
+    #
+    # @return [RunningTurns::Reading]
+    def running_turns
+      Session.not_in_frozen_category.running_turns
     end
 
     private
@@ -297,11 +331,10 @@ class FleetIdleMonitor
     # recorded as idle, or a monitoring gap would spawn work.
     #
     # See "What counts as idle" above for why each question is scoped the way it
-    # is. Ordered cheapest-and-commonest first: on a busy deployment the running
-    # count is the only query this makes, because it is the only one the ceiling
-    # is compared against.
-    def fleet_idle?(setting)
-      return false if running_sessions >= max_sessions(setting)
+    # is. Ordered cheapest-and-commonest first: on a busy deployment the ceiling
+    # test is the only one that runs, and its reading is already taken.
+    def fleet_idle?(setting, turns)
+      return false if turns.total >= max_sessions(setting)
 
       return false if parked_work?
 
@@ -311,12 +344,15 @@ class FleetIdleMonitor
       nil
     end
 
-    # Which question `fleet_idle?` answered no to, for the log line above. Asked
-    # again rather than threaded out of the predicate: it runs only on the
-    # transition to busy, and the predicate short-circuits so it does not always
-    # know.
-    def not_idle_reason(setting)
-      return "at_work_ceiling" if running_sessions >= max_sessions(setting)
+    # Which question `fleet_idle?` answered no to, for the log line above.
+    #
+    # Takes the same reading the predicate decided on rather than re-reading the
+    # fleet: `running_turns` is three queries now, not one COUNT, and the two
+    # would otherwise disagree whenever a session started between them. The
+    # other two questions are asked again because the predicate short-circuits,
+    # so it does not always know their answers.
+    def not_idle_reason(setting, turns)
+      return "at_work_ceiling" if turns.total >= max_sessions(setting)
       return "work_parked_on_auth_outage" if parked_work?
       return "account_pool_empty" unless pool_available?(setting)
 
