@@ -135,11 +135,33 @@ class GitCloneService
     # @return [Hash] hash with :clone_path, :working_directory and :subdirectory keys
     #   (:subdirectory is the path the clone actually landed on — the fallback, when one was taken)
     def create_clone(repo_url, branch: "main", clone_path: nil, subdirectory: nil, fallback_subdirectory: nil)
+      requested_path = clone_path
       # Generate a unique clone path if not provided
       clone_path ||= generate_clone_path(repo_url, branch)
 
       # Ensure parent directory exists
       file_system.mkdir_p(File.dirname(clone_path))
+
+      # A caller-supplied destination is a *preference*, and it is claimed
+      # atomically before anything else touches it. A generated path is unique by
+      # construction; a supplied one (SessionClonePath, zimmer#576) is a path the
+      # caller found empty some moments ago, and everything after that check is
+      # time for a concurrent job on the same session to get there first. Losing
+      # that race must not be silent: `git clone` into a non-empty directory
+      # fails with an error #transient_clone_error? does not recognise, and the
+      # rollback below would then delete the tree the winner had just cloned, out
+      # from under its running agent.
+      #
+      # `mkdir` is the claim, because it is the one filesystem operation that
+      # answers "did I get here first" without a window — including against a
+      # dangling symlink or a directory an in-place delete is still walking,
+      # neither of which `File.exist?` reports the way a caller would need.
+      # Falling back to a generated path is the same answer SessionClonePath
+      # would have given had it seen the occupancy, and it keeps a lost race an
+      # ordinary clone rather than a failed session.
+      if requested_path && !claim_destination(clone_path)
+        clone_path = generate_clone_path(repo_url, branch)
+      end
 
       # Refuse to start a clone the volume cannot hold. Prunes orphaned clones
       # first, so the common "disk filled with abandoned clones" case self-heals;
@@ -272,6 +294,28 @@ class GitCloneService
     # tree here, and `git clone` into a non-empty directory fails with an error
     # #transient_clone_error? does not recognise, turning a retryable failure
     # into a permanent one. Atomic all the same (#412).
+    # Take exclusive ownership of a caller-supplied destination, atomically.
+    #
+    # `Dir.mkdir` is deliberately not routed through the file_system adapter:
+    # the adapter's `mkdir_p` succeeds on a directory that is already there,
+    # which is the one answer this needs to be able to distinguish. `git clone`
+    # accepts an existing EMPTY directory, so claiming it costs nothing.
+    #
+    # @return [Boolean] true when this call created the directory
+    def claim_destination(path)
+      Dir.mkdir(path)
+      true
+    rescue SystemCallError => e
+      # EEXIST is the race this exists to catch; anything else (a permission
+      # problem, a parent that vanished) is equally a reason not to write here.
+      logger.info(
+        "Requested clone path could not be claimed; falling back to a generated one",
+        path: path,
+        error: e.message
+      )
+      false
+    end
+
     def discard_failed_clone(path)
       return unless path && file_system.directory?(path)
 

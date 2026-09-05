@@ -257,6 +257,52 @@ hold whatever was captured; `bin/rails open_transcripts:redact_stored` rewrites 
 by default — pass `DRY_RUN=0` to apply).
 :::
 
+## A re-clone lands where the old one was
+
+Claude Code names its transcript directory after the cwd it was spawned from. That makes the
+working directory the *identity* of a conversation's transcript directory — and clone directory
+names carry a timestamp and a random suffix (`{repo}-{branch}-{timestamp}-{random}`), so a
+conversation that gets a new clone gets a new slug and the whole JSONL is written out again
+underneath it. The previous copy stays behind at full size.
+
+That is not a rare event. A clone is reaped once its session is archived or has failed — and an
+unarchive, a trigger following up, or a recovery then brings the same conversation back. Production
+held one conversation in **23 clone directories, 18 MB each**, one per day, and 286 conversations in
+more than one copy — 595 MiB of pure redundancy
+([#576](https://github.com/tadasant/zimmer/issues/576)).
+
+So a re-clone goes back to the path the session already occupied. `SessionClonePath.for_recreate`
+answers that question for both callers that rebuild a clone under an existing conversation —
+`AgentSessionJob`'s follow-up path and `UnarchiveSessionService` — and `GitCloneService` generates
+a fresh path only when it declines.
+
+It declines unless the stored `clone_path` is a direct child of `ClonesDirectory.base` **and there
+is nothing at it**. That second condition is what makes reuse safe rather than merely tidy:
+
+- `git clone` needs an absent or empty destination, and `create_clone`'s rollback deletes whatever
+  is standing at the path it was given. Only an absent path is ever handed back.
+- **There is exactly one reason a conversation gets a fresh clone mid-life: the old one is gone
+  from disk.** Nothing re-clones because a tree is dirty or a branch moved — `AgentSessionJob`
+  reuses a surviving clone exactly as it finds it, uncommitted changes and all, and
+  `UnarchiveSessionService` takes its quick path whenever the clone and working directory are both
+  still there. So there is no stale checkout to inherit at a reused path, because the reason the
+  code is there at all is that there is no checkout.
+- A session whose branch moved still clones `session.branch`; only the directory *name* spells the
+  branch it was first cut for, which is cosmetic. A session whose agent-root subdirectory moved in
+  the catalog still adopts the new subdirectory ([#921](https://github.com/tadasant/zimmer/issues/921)),
+  so its cwd — and its transcript directory — legitimately move with it.
+
+One consequence worth naming: a transcript directory can now come back to life. Before this,
+deleting the clone at a path killed the transcript directory named after it for good, which is why
+[`CloneReaper`](/operate/background-jobs/) reaps the two together. `AtomicCloneRemoval` renames the
+clone aside and then `rm -rf`s a whole working tree, and a session resumed inside that window
+re-clones at the same path. So `CloneReaper` re-asks who owns the path *after* the delete and
+before the transcript reap, and leaves the transcript alone if the answer changed.
+
+This fixes the *generation* of duplicate transcript directories, not the ones already on disk.
+Those are [#434](https://github.com/tadasant/zimmer/issues/434)'s half —
+`OrphanTranscriptDirectoryCleanupJob` — which now works through a backlog that stops growing.
+
 ## Writing a transcript back to disk
 
 The stored transcript in `sessions.transcript` is the durable record; the file on disk is what the

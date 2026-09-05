@@ -1158,4 +1158,68 @@ class GitCloneServiceTest < ActiveSupport::TestCase
     assert_equal expected_branch, current_branch,
                  "Expected branch '#{expected_branch}' but got '#{current_branch}'"
   end
+
+  # zimmer#576: SessionClonePath supplies a clone_path so a resumed session keeps
+  # one transcript directory. That path is one the caller found empty moments
+  # ago, so create_clone claims it atomically rather than trusting the check.
+  test "clones into a caller-supplied path" do
+    repo_path = create_test_git_repository("main")
+    requested = File.join(ClonesDirectory.base, "supplied-main-1780000000-abcd1234")
+
+    result = GitCloneService.create_clone(repo_path, branch: "main", clone_path: requested)
+
+    assert_equal requested, result[:clone_path]
+    assert_path_exists File.join(requested, "README.md")
+  end
+
+  test "falls back to a generated path when the supplied one is taken in the meantime" do
+    repo_path = create_test_git_repository("main")
+    requested = File.join(ClonesDirectory.base, "occupied-main-1780000000-abcd1234")
+    FileUtils.mkdir_p(File.join(requested, "someone-elses-tree"))
+
+    result = GitCloneService.create_clone(repo_path, branch: "main", clone_path: requested)
+
+    assert_not_equal requested, result[:clone_path],
+      "losing the race must be an ordinary clone elsewhere, not a failed session"
+    assert_path_exists File.join(result[:clone_path], "README.md")
+    assert_path_exists File.join(requested, "someone-elses-tree"),
+      "and the rollback must never be aimed at a tree this call did not create"
+  end
+
+  # The specific damage the claim prevents: `git clone` into a non-empty
+  # directory fails with an error transient_clone_error? does not recognise, and
+  # the rescue's discard_failed_clone deletes the path it was handed.
+  test "a supplied path that is taken is never deleted by the rollback" do
+    requested = File.join(ClonesDirectory.base, "occupied-main-1780000000-beefbeef")
+    FileUtils.mkdir_p(File.join(requested, "a-live-clone", ".git"))
+
+    assert_raises(GitCloneService::GitError) do
+      GitCloneService.create_clone("/nonexistent/repo.git", branch: "main", clone_path: requested)
+    end
+
+    assert_path_exists File.join(requested, "a-live-clone", ".git")
+  end
+
+  test "a dangling symlink at the supplied path does not wedge the clone" do
+    repo_path = create_test_git_repository("main")
+    requested = File.join(ClonesDirectory.base, "dangling-main-1780000000-abcd1234")
+    FileUtils.mkdir_p(ClonesDirectory.base)
+    File.symlink(File.join(@test_dir, "does-not-exist"), requested)
+
+    result = GitCloneService.create_clone(repo_path, branch: "main", clone_path: requested)
+
+    assert_not_equal requested, result[:clone_path]
+    assert_path_exists File.join(result[:clone_path], "README.md")
+  end
+
+  test "a rolled-back clone at a supplied path this call did create is cleaned up" do
+    requested = File.join(ClonesDirectory.base, "rolled-back-main-1780000000-abcd1234")
+
+    assert_raises(GitCloneService::GitError) do
+      GitCloneService.create_clone("/nonexistent/repo.git", branch: "main", clone_path: requested)
+    end
+
+    assert_not File.exist?(requested),
+      "a destination this call claimed and could not fill must not be left standing"
+  end
 end

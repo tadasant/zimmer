@@ -435,15 +435,24 @@ class UnarchiveSessionService
   end
 
   def create_clone
+    # Put the clone back where it was when the path is free. The runtime names
+    # its transcript directory after the cwd it is spawned from, so re-cloning to
+    # a fresh path re-writes the whole conversation under a new slug and leaves
+    # the previous copy behind at full size (#576). SessionClonePath explains why
+    # a path reached through here is safe to reuse.
+    reused_clone_path = SessionClonePath.for_recreate(session, file_system: file_system)
+
     @logger.info("Creating clone from git repository",
       git_root: session.git_root,
       branch: session.branch,
-      subdirectory: session.subdirectory
+      subdirectory: session.subdirectory,
+      reusing_previous_clone_path: reused_clone_path.present?
     )
 
     result = GitCloneService.create_clone(
       session.git_root,
       branch: session.branch || "main",
+      clone_path: reused_clone_path,
       subdirectory: session.subdirectory,
       fallback_subdirectory: session.catalog_subdirectory
     )
