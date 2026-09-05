@@ -169,16 +169,30 @@ subtree ahead of the next sibling. Reordering never changes the node set — tha
 human-message record is gathered over, so a node gained here would be a human message a session could
 read that it could not before.
 
-Each node records `render_parent_id`, the session it is drawn under. That is normally the spawn
-parent. It is an uncle only when the walk could not reach the session through a spawn edge at that
-level — the junior's own spawn parent sits deeper than the uncle does — and then `spawn_edge?` is
-false and the outline says so rather than letting indentation assert a spawn edge that does not
-exist:
+Each node records `render_parent_id`, the session it is drawn under, and every node gets one **by
+construction**: `juniors_of` is the single place the three edge representations are resolved, and it
+returns each junior together with the session that reached it. Deriving the edge a second time
+somewhere else is how the two drift, and a junior the second derivation failed to attach would be
+drawn with no parent and a broken indent rather than raising.
+
+`render_parent_id` is normally the spawn parent. Two cases where it is not, and `spawn_edge?` is
+false for both, because indentation would otherwise assert a spawn edge that does not exist:
+
+- **Reached through an uncle** — the junior's own spawn parent sits deeper than the uncle does, so
+  the walk arrives through the uncle edge first and renders it there, at its shallowest depth.
+- **Placed by the node ceiling** — the requested session is always visible, so when `MAX_NODES` cut
+  the branch it lives on it is appended anyway. Nothing put it where it is drawn.
+
+Both say so on their own line rather than staying quiet:
 
 ```
 - #101 [zimmer-router] {web_ui · priority} Senior
   - #104 [zimmer] {web_ui · priority} Junior (also senior: #101) (shown under uncle #101, not its spawn parent)
 ```
+
+The detail page carries the same fact as a **drawn under** pill beside the row, and the REST payload
+as `render_parent_session_id` plus `spawn_edge` — the three surfaces do not get to disagree about
+what an indent means.
 
 ### Depth and cycles
 

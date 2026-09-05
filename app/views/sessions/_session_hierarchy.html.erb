@@ -53,15 +53,15 @@
               expression: the breakpoint has to live in a class and the depth has to
               live in the style, so a property per width is the readable split. %>
           <%# `data-render-parent-id` is the node this row is indented under, which is
-              all indentation asserts. Machine-readable rather than drawn: the row
-              already shows the id and the uncle pill, and the ordering of
-              `hierarchy.nodes` is what puts the row in the right place. It is here so
-              the structure a reader infers from indentation can be asserted against
-              the edge that produced it (#571). %>
+              all indentation asserts, and `data-redrawn` marks a row where that is
+              NOT a spawn edge. Both are here so the structure a reader infers from
+              indentation can be asserted against the edge that produced it (#571);
+              the human-visible form of the same fact is the "drawn under" pill. %>
           <li class="pl-[var(--node-indent-phone)] sm:pl-[var(--node-indent)]"
               data-depth="<%= node.depth %>"
               data-render-parent-id="<%= node.render_parent_id %>"
-              <%= "data-via-uncle" unless node.spawn_edge? %>
+              <%= "data-redrawn" unless node.spawn_edge? %>
+              <%= "data-ceiling-placed" if node.ceiling_placed %>
               <%= "data-current" if node.current? %>
               style="--node-indent-phone: <%= node.depth * 8 %>px; --node-indent: <%= node.depth * 20 %>px">
             <%# Two classes carry this row. `max-w-full` caps the inline-flex container,
@@ -100,6 +100,24 @@
                     title="Genesis: <%= node.genesis_label %> — classified <%= node.priority_class %>">
                 <%= node.genesis %> · <%= node.priority_class %>
               </span>
+              <%# The row's own indentation is the one thing that cannot say this: it
+                  expresses "spawned" and this node was reached some other way. Without
+                  a visible marker a reader concludes the row above spawned this one —
+                  the exact false claim #571 is about, just on this surface instead of
+                  the outline. `break-keep` on the id so the pill wraps as a unit. %>
+              <% unless node.spawn_edge? %>
+                <span class="inline-flex flex-wrap items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200"
+                      title="<%= node.ceiling_placed ? "Drawn here because the tree was truncated before this session's own branch was reached — no edge puts it here." : "Zimmer reached this session through its senior, not through a spawn edge — the session above did not spawn it." %>">
+                  drawn under
+                  <%# Guarded: a ceiling-placed node lands on whatever the walk emitted
+                      last, and there is no rule that says something was emitted. %>
+                  <% if node.render_parent_id %>
+                    <%= link_to "##{node.render_parent_id}", session_path(node.render_parent_id), data: session_drawer_link_data(node.render_parent_id), class: "underline hover:text-amber-900 break-keep" %>
+                  <% else %>
+                    no parent row
+                  <% end %>
+                </span>
+              <% end %>
               <%# An uncle edge cannot be drawn by indentation — that expresses one
                   parent and this graph has more than one — so it is named instead.
                   Silently omitting it would hide the thing that widened this
@@ -125,6 +143,10 @@
       <p class="mt-3 text-xs text-gray-400">
         Indentation means <span class="font-medium">spawned</span>, not "most recently talked to" — a session is routinely
         followed up by a router other than the one that spawned it.
+        <% if hierarchy.redrawn_edges? %>
+          The exception is a row tagged <span class="font-medium">drawn under</span>: Zimmer could not draw that
+          session under its spawn parent, so its position says only where it is drawn.
+        <% end %>
       </p>
 
       <p class="mt-1 text-xs text-gray-400">

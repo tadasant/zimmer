@@ -60,18 +60,21 @@ class SessionHierarchy
   # — indentation can only express one parent, so an uncle edge is invisible in
   # the outline unless it is named.
   #
-  # `render_parent_id` is the node this one is drawn UNDER, which is the whole
-  # of what indentation asserts. It is normally the spawn parent; it is an uncle
-  # only when the walk reached this session through one and its spawn parent was
-  # not in the level above. `via_uncle` says which, so a renderer never lets
-  # indentation claim a spawn edge that does not exist.
+  # `render_parent_id` is the node this one is drawn UNDER, which is the whole of
+  # what indentation asserts. Normally that is the spawn parent. Two things else
+  # it can be, and a renderer has to be able to tell: `via_uncle`, when the walk
+  # reached this session through an uncle and its spawn parent was not in the
+  # level above; and `ceiling_placed`, for the requested session when the node
+  # ceiling cut the branch it lives on and it was appended to stay visible. In
+  # neither case did a spawn edge put the node where it is drawn.
   Node = Struct.new(:id, :title, :agent_root, :status, :depth, :parent_id, :uncle_ids, :current,
-                    :genesis, :priority_class, :render_parent_id, :via_uncle, keyword_init: true) do
+                    :genesis, :priority_class, :render_parent_id, :via_uncle, :ceiling_placed,
+                    keyword_init: true) do
     def current? = current
 
     # True when the indentation under this node's rendered parent really is a
     # spawn edge — which is what every surface documents indentation to mean.
-    def spawn_edge? = !via_uncle
+    def spawn_edge? = !via_uncle && !ceiling_placed
 
     def label = title.presence || "Session ##{id}"
 
@@ -217,33 +220,66 @@ class SessionHierarchy
   # out on its line. Without that they would be silently invisible here while
   # visibly widening which human messages the record carries.
   #
-  # A node the walk could only reach through an uncle is drawn under that uncle
-  # and says so, since indentation alone would assert a spawn edge that does not
-  # exist — the exact failure this outline was fixed for.
+  # A node whose indentation is NOT a spawn edge says so on its own line — see
+  # #drawn_under. Indentation alone would otherwise assert a spawn edge that
+  # does not exist, which is the exact failure this outline was fixed for.
   def to_outline
     nodes.map do |node|
       marker = node.current? ? " ← this session" : ""
       root = SessionHumanMessages.sanitize_for_markdown_line(node.agent_root_label)
       label = SessionHumanMessages.sanitize_for_markdown_line(node.label)
       uncles = node.uncles? ? " (#{node.uncle_summary})" : ""
-      via = node.spawn_edge? ? "" : " (shown under uncle ##{node.render_parent_id}, not its spawn parent)"
-      "#{'  ' * node.depth}- ##{node.id} [#{root}] {#{node.genesis_summary}} #{label}#{uncles}#{via}#{marker}"
+      "#{'  ' * node.depth}- ##{node.id} [#{root}] {#{node.genesis_summary}} #{label}#{uncles}#{drawn_under(node)}#{marker}"
     end.join("\n")
   end
 
+  # True when any node in the graph is drawn under something other than its
+  # spawn parent — what a renderer asks before spending prose on explaining the
+  # marker. The mirror of #uncle_edges?.
+  def redrawn_edges? = nodes.any? { |node| !node.spawn_edge? }
+
   # Juniors of a set of sessions: spawn children plus uncle-edge juniors,
-  # resolving all three representations in three queries rather than one per
-  # parent.
-  def self.children_of(parent_ids)
+  # resolving all three representations in a fixed number of queries rather than
+  # one per parent.
+  #
+  # Each junior comes back as `[record, reached_through, by_uncle]` — WHICH of
+  # the sessions above reached it, and whether that edge was an uncle edge —
+  # because the render has to hang it from that exact session rather than from
+  # whichever sibling sorted last (#571). Deriving the edge a second time in a
+  # second method is how the two silently drift, and a junior the second
+  # derivation failed to attach would be drawn with no parent and a broken
+  # indent rather than raising. So there is one derivation and it is this one.
+  #
+  # Spawn beats uncle when both reach into the same level, because indentation
+  # is documented as the spawn edge on all three surfaces.
+  def self.juniors_of(parent_ids)
     return [] if parent_ids.empty?
 
-    by_column = Session.where(parent_session_id: parent_ids)
-    by_metadata = Session.where(
-      "custom_metadata->>'router_session_id' IN (?)", parent_ids.map(&:to_s)
-    )
-    by_uncle = Session.where(id: SessionUncleLink.where(uncle_session_id: parent_ids).select(:session_id))
+    above = parent_ids.to_set
+    reached = {}
 
-    (by_column.to_a + by_metadata.to_a + by_uncle.to_a).uniq(&:id).sort_by(&:id)
+    Session.where(parent_session_id: parent_ids).each do |child|
+      reached[child.id] ||= [ child, child.parent_session_id, false ]
+    end
+
+    Session.where("custom_metadata->>'router_session_id' IN (?)", parent_ids.map(&:to_s)).each do |child|
+      via = child.lineage_parent_candidate_ids.find { |id| above.include?(id) }
+      reached[child.id] ||= [ child, via, false ] if via
+    end
+
+    # Lowest uncle id wins, so a junior with two seniors in this level hangs
+    # from a stable one rather than from whichever row came back first.
+    uncle_of = {}
+    SessionUncleLink.where(uncle_session_id: parent_ids)
+                    .order(:uncle_session_id)
+                    .pluck(:session_id, :uncle_session_id)
+                    .each { |child_id, uncle_id| uncle_of[child_id] ||= uncle_id }
+
+    Session.where(id: uncle_of.keys - reached.keys).each do |child|
+      reached[child.id] = [ child, uncle_of[child.id], true ]
+    end
+
+    reached.values.sort_by { |child, _, _| child.id }
   end
 
   # The id-only form, for callers asking a reachability question rather than
@@ -358,7 +394,8 @@ class SessionHierarchy
     # through. Without this the walk knows a level's juniors only as a flat set
     # and the render has nothing to hang them from — see #order_depth_first.
     attached_to = {}
-    @via_uncle = Set.new
+    via_uncle.clear
+    ceiling_placed.clear
     frontier = seeds
     depth = 0
 
@@ -367,7 +404,7 @@ class SessionHierarchy
       # happens to be exactly MAX_DEPTH deep is reported complete rather than
       # truncated — we only claim truncation when there is something we did not
       # show.
-      next_frontier = self.class.children_of(frontier.map(&:id)).reject { |s| seen.include?(s.id) }
+      next_frontier = self.class.juniors_of(frontier.map(&:id)).reject { |child, _, _| seen.include?(child.id) }
       break if next_frontier.empty?
 
       depth += 1
@@ -387,7 +424,7 @@ class SessionHierarchy
       # gathered over.
       admitted = []
       ceiling_hit = false
-      next_frontier.each do |child|
+      next_frontier.each do |child, reached_through, by_uncle|
         if collected.size >= MAX_NODES
           ceiling_hit = true
           @truncated = true
@@ -396,10 +433,13 @@ class SessionHierarchy
 
         seen << child.id
         collected << [ child, depth ]
+        # Recorded as the node is admitted, from the one derivation that found
+        # it, so every collected node has an attachment BY CONSTRUCTION rather
+        # than by an invariant nothing asserts.
+        attached_to[child.id] = reached_through
+        via_uncle << child.id if by_uncle
         admitted << child
       end
-
-      attached_to.merge!(attachments_for(admitted, frontier.map(&:id)))
 
       break if ceiling_hit
 
@@ -414,8 +454,14 @@ class SessionHierarchy
     unless seen.include?(session.id)
       # Rendered one level below the last node we did collect rather than at the
       # root: claiming depth 0 would draw it as a sibling of the origin, which
-      # is a worse lie than an approximate depth.
-      ordered << [ session, (ordered.last&.last || 0) + 1 ]
+      # is a worse lie than an approximate depth. It names the node it ends up
+      # under and records that the CEILING put it there — no edge did, and
+      # leaving `spawn_edge?` true would make this the one line in the outline
+      # asserting a spawn edge that does not exist.
+      anchor, anchor_depth = ordered.last
+      attached_to[session.id] = anchor&.id
+      ceiling_placed << session.id
+      ordered << [ session, (anchor_depth || 0) + 1 ]
       @truncated = true
     end
 
@@ -423,49 +469,6 @@ class SessionHierarchy
     ordered.map do |record, node_depth|
       node_for(record, depth: node_depth, uncle_ids: uncles[record.id] || [], render_parent_id: attached_to[record.id])
     end
-  end
-
-  # Which session in the level above each newly discovered session hangs from.
-  #
-  # `children_of` answers "who are the juniors of this whole level" as one flat
-  # set, which is all the WALK needs — but every surface draws this graph with
-  # indentation alone, so a level appended in id order silently reads as the
-  # children of whichever session happened to sort last. That is issue #571: the
-  # rows were right and the picture was wrong. Recording the session each junior
-  # was actually reached through is what lets the render put it under that one.
-  #
-  # Spawn beats uncle when both are in the level above, because indentation is
-  # documented as the spawn edge on all three surfaces; an uncle is only ever
-  # drawn under when there is no spawn edge into this level to draw.
-  def attachments_for(children, parent_ids)
-    return {} if children.empty?
-
-    above = parent_ids.to_set
-    attachments = {}
-    unresolved = []
-
-    children.each do |child|
-      spawn_parent = child.lineage_parent_candidate_ids.find { |id| above.include?(id) }
-      if spawn_parent
-        attachments[child.id] = spawn_parent
-      else
-        unresolved << child.id
-      end
-    end
-
-    if unresolved.any?
-      SessionUncleLink.where(session_id: unresolved, uncle_session_id: parent_ids)
-                      .order(:uncle_session_id)
-                      .pluck(:session_id, :uncle_session_id)
-                      .each do |child_id, uncle_id|
-        next if attachments.key?(child_id)
-
-        attachments[child_id] = uncle_id
-        @via_uncle << child_id
-      end
-    end
-
-    attachments
   end
 
   # The collected graph reordered so that every session immediately follows the
@@ -532,8 +535,32 @@ class SessionHierarchy
       genesis: record.genesis_key,
       priority_class: record.priority_class(genesis_overrides),
       render_parent_id: render_parent_id,
-      via_uncle: @via_uncle.include?(record.id)
+      via_uncle: via_uncle.include?(record.id),
+      ceiling_placed: ceiling_placed.include?(record.id)
     )
+  end
+
+  # The nodes drawn under something a spawn edge did not put them under. Lazily
+  # initialized rather than assigned only in #build_nodes, so #node_for is not
+  # silently coupled to having been called from there.
+  def via_uncle = @via_uncle ||= Set.new
+
+  def ceiling_placed = @ceiling_placed ||= Set.new
+
+  # What indentation is asserting on this line, when what it asserts is not a
+  # spawn edge. Silent on the ordinary case: naming the parent that every line
+  # already visibly hangs from would be noise on every row of every outline.
+  def drawn_under(node)
+    return "" if node.spawn_edge?
+
+    if node.ceiling_placed
+      anchor = node.render_parent_id ? "under ##{node.render_parent_id}" : "at the end"
+      " (shown #{anchor} because the node ceiling cut its branch — no edge put it there)"
+    elsif node.parent_id.present?
+      " (shown under uncle ##{node.render_parent_id}, not its spawn parent)"
+    else
+      " (shown under uncle ##{node.render_parent_id}; it has no spawn parent)"
+    end
   end
 
   # Read the per-genesis overrides once per hierarchy rather than once per node —
