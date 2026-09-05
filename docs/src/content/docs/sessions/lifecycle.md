@@ -979,13 +979,89 @@ with no banner reads as merely idle. So a stranded `needs_input` session gets a
 ### `fail` — `waiting | running | needs_input → failed`
 
 Cleans up the running job, fires `session_failed` triggers, enqueues a push notification
-that bypasses the per-session opt-in, and — like `pause` — enqueues a
-[Status summary](/sessions/status-summary/) refresh. The reasoning behind the unconditional push:
-by the time `fail!` fires, retries are already exhausted, so this is a final non-self-resolving
-event. A silent status flip would be worse than an unwanted push.
+that bypasses the per-session opt-in, reports the failure when a trigger created the session, and
+— like `pause` — enqueues a [Status summary](/sessions/status-summary/) refresh. The reasoning
+behind the unconditional push: by the time `fail!` fires, retries are already exhausted, so this is
+a final non-self-resolving event. A silent status flip would be worse than an unwanted push.
 
 A status-summary fork that fails is harvested (recording the failure on the source session's
 summary) instead of notifying, exactly as on `pause`.
+
+#### A trigger's session that fails takes the work item with it
+
+A trigger fire is a one-shot event, and the session it creates is the only thing carrying it. The
+fire is spent the moment that session exists — `GithubTriggerPollerJob` records the item key in
+`seen_items`, `SlackTriggerPollerJob` advances its cursor, `AoEventTriggerJob` consumes the wake —
+and each of them does that deliberately, because the alternative is dispatching the same event
+twice ([#704](https://github.com/tadasant/zimmer/issues/704)).
+
+So when that session reaches `failed`, the work item is dropped and nothing points at it any more.
+`failed` is terminal: no message is delivered to it, no wake reaches it, and the merge-gate
+contract reads it as unreachable. Nothing said so either. On 2026-08-23 the `PR ready to merge →
+merge gate` trigger fired correctly on a `ready to merge` label, its session died 86 seconds later
+at first start, and the PR sat with no gate on it for eleven hours — the trigger's history showed
+the fire, the PR showed a clean label and no comment, and no alert fired anywhere
+([#632](https://github.com/tadasant/zimmer/issues/632)).
+
+`OrphanedTriggerFire` closes that. When a failing session's `genesis` is one whose fire is genuinely
+*consumed* — `github_label`, `github_issue`, `slack` or `ao_event` — and it carries a `trigger_id`,
+`fail` enqueues `OrphanedTriggerFireJob`, which:
+
+- writes an ERROR line on the session's own timeline saying the fire is spent and its subject has
+  nobody on it, and
+- raises an `#eng-alerts` alert naming the trigger, the session, why it died, and the GitHub PR or
+  issue if one can be found in the prompt the fire carried.
+
+"Why it died" is sent in **two** places, and the split is security-relevant rather than cosmetic.
+`Session#failure_summary` — a closed `case` over enumerated `failure_reason` values that never
+interpolates runtime output — goes in `details:`, which `AlertService` passes to Slack untouched.
+The raw `exit_status` and `exception_message` go through `error:`, which `AlertService` runs through
+`AlertSnippet` for redaction, clamping, UTF-8 coercion and fencing. Both are needed: the summary
+renders `process_failed` as "Process failed", while the sentence that identifies the 7844 failure —
+"Runtime session id … is already in use" — lives only in `exit_status`. And the raw half has to be
+redacted, because `AirPrepareError` embeds `air prepare`'s full stderr and `air prepare` is the step
+that resolves `.mcp.json`'s `${VAR}` credential substitutions, so that text can plausibly carry a
+secret *value*. This is the first path by which either field leaves the box, and a secret posted to
+`#eng-alerts` cannot be un-posted. `UnclassifiedFailureReporter` makes the same call for the same
+reason.
+
+`metadata.trigger_id` alone would be too wide, because a trigger creates sessions on paths where a
+retry *is* coming or a human is already watching, and telling either of those that "no retry is
+coming" would be false. A **recurring `schedule`** re-fires on its next interval and a
+**`system_event`** is re-armed when nothing handles it; a **manual Invoke**
+(`Triggers::ManualFire`, from the web UI, REST or MCP `action_trigger`) is somebody pressing a
+button and watching the session they just made; a **burst-notice session** is not a work item at
+all. `Session#genesis` is stamped at creation and is exactly that distinction, so the population is
+keyed on it, plus the `burst_notice` marker. One gap is knowingly left — see
+[Limitations](/limitations/#a-dropped-trigger-work-item-is-surfaced-not-re-dispatched).
+
+Three things it deliberately does not do:
+
+- **It does not re-dispatch.** The population includes the merge gate — the one mechanism
+  authorized to merge without human sign-off, and the one Zimmer already has a scar from
+  double-dispatching. The only after-the-fact guard against redoing work already done is
+  "did the runtime write a conversation", which `RuntimeConversationPresence` answers off a clone
+  the reaper may already have removed and which fails *toward* "a conversation exists" — so an
+  automatic retry would decline precisely in the long-delay case that hurt. Surfacing is what was
+  missing; every recovery in that timeline was a human noticing.
+- **It does not touch an ordinary failure.** The predicate is asked inside the transition, so a
+  session with no trigger behind it — nearly all of them — costs one hash lookup and enqueues
+  nothing.
+- **It does not collapse two drops into one message.** Unlike `UnclassifiedFailureReporter`, where
+  N sessions hitting one unknown failure mode are one fact, N orphaned fires are N distinct work
+  items each needing its own re-dispatch. The dedup key is per session, and the bound on noise is
+  instead that each session reports at most once: `orphaned_trigger_fire_reported_at` is checked on
+  entry, and that key is in `Session::STALE_RETRY_METADATA_KEYS`, so a session genuinely restarted
+  and failed again reports again. The stamp goes down **after** the report rather than before —
+  stamping first would turn a Slack outage, or a deploy landing in the window, into a permanent
+  silent drop, which is this bug reintroduced inside its own fix. The cost of that order is that a
+  retried job writes a second identical timeline line; the Slack side is covered by the per-session
+  dedup key.
+
+The **start failure** itself is a separate matter and has its own owner —
+[#519](https://github.com/tadasant/zimmer/issues/519), fixed by
+`ProcessLifecycleManager#handle_session_id_conflict` minting a fresh runtime session id. This is
+about what happens to the trigger's work when a session dies for any reason at all.
 
 #### A turn that never started parks instead of failing
 
