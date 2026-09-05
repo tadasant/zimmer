@@ -297,6 +297,8 @@ class PiRuntimeAdapter
     # Export the durable per-session scratch dir (AO_SESSION_SCRATCH_DIR) so
     # agents persist cross-step state on the durable volume instead of ephemeral /tmp.
     env_vars = apply_session_scratch_dir(env_vars)
+    # Cap the parallel test workers this session forks (tadasant/zimmer#981).
+    env_vars = apply_test_parallelism(env_vars)
     # Point the ssh-* MCP servers (and the plain ssh/git CLIs) at the operator SSH key.
     env_vars = apply_operator_ssh_key(env_vars)
     # Tell MCP servers where to send approval requests (and who is asking).

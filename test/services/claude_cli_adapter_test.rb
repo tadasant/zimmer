@@ -1544,8 +1544,8 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_nil env_vars["DATABASE_URL"]
     assert_nil env_vars["RAILS_ENV"]
 
-    # Only the Claude runtime flags and the elicitation settings should be set (plus
-    # nil values for database vars). ELICITATION_SESSION_ID is absent because this
+    # Only the Claude runtime flags, the parallel-test cap and the elicitation settings
+    # should be set (plus nil values for database vars). ELICITATION_SESSION_ID is absent because this
     # adapter was built without a Zimmer session id; the rest are set regardless, so
     # an MCP server always knows where to send an approval request and that it should
     # send it there rather than to the headless agent.
@@ -1555,6 +1555,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
       "CLAUDE_CODE_DISABLE_CRON" => "1",
       "CLAUDE_CODE_DISABLE_AUTO_MEMORY" => "1",
       "CLAUDE_CODE_AUTO_COMPACT_WINDOW" => "1000000",
+      "PARALLEL_WORKERS" => CliSpawnEnv::DEFAULT_TEST_PARALLELISM.to_s,
       "ELICITATION_REQUEST_URL" => "#{AppUrl.base_url}/api/v1/elicitations",
       "ELICITATION_POLL_URL" => "#{AppUrl.base_url}/api/v1/elicitations",
       "ELICITATION_PREFER_HTTP_FALLBACK" => "true",

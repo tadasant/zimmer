@@ -22,9 +22,13 @@ class SessionMemoryCgroupTest < ActiveSupport::TestCase
     @original_root = ENV["ZIMMER_SESSION_CGROUP_ROOT"]
     @original_limit = ENV["ZIMMER_SESSION_MEMORY_MAX_MB"]
     @tmp = Dir.mktmpdir("cgroupfs")
-    @parent = File.join(@tmp, "zimmer.sessions")
+    @root = File.join(@tmp, "zimmer.sessions")
+    ENV["ZIMMER_SESSION_CGROUP_ROOT"] = @root
+    # bin/docker-entrypoint creates the pool inside the delegated root, and session
+    # cgroups live in the pool rather than in the root — the root also holds `app`, so a
+    # cap there would cover the Rails worker (tadasant/zimmer#981).
+    @parent = File.join(@root, SessionMemoryCgroup::POOL_DIRNAME)
     FileUtils.mkdir_p(@parent)
-    ENV["ZIMMER_SESSION_CGROUP_ROOT"] = @parent
   end
 
   teardown do
@@ -208,7 +212,7 @@ class SessionMemoryCgroupTest < ActiveSupport::TestCase
 
   test "the wrapper does not let a path or an argument become shell syntax" do
     ENV["ZIMMER_SESSION_CGROUP_ROOT"] = File.join(@tmp, "od d; touch #{@tmp}/pwned")
-    FileUtils.mkdir_p(ENV["ZIMMER_SESSION_CGROUP_ROOT"])
+    FileUtils.mkdir_p(SessionMemoryCgroup.parent_path)
     cgroup = SessionMemoryCgroup.for(8)
     cgroup.prepare!
 
@@ -321,19 +325,145 @@ class SessionMemoryCgroupTest < ActiveSupport::TestCase
     assert_predicate live, :exists?
   end
 
-  test "the sweep leaves the app cgroup and anything else under the parent alone" do
+  test "the sweep leaves anything it did not create alone" do
+    # `app` is the pool's SIBLING, so the sweep never looks at it at all -- but the
+    # filter is what makes that a fact about the sweep rather than about where the
+    # entrypoint currently puts things.
+    FileUtils.mkdir_p(File.join(@root, "app"))
+    File.write(File.join(@root, "app", "cgroup.procs"), "")
     FileUtils.mkdir_p(File.join(@parent, "app"))
     File.write(File.join(@parent, "app", "cgroup.procs"), "")
 
     assert_equal 0, SessionMemoryCgroup.sweep!
-    assert File.directory?(File.join(@parent, "app")),
+    assert File.directory?(File.join(@root, "app")),
       "sweeping the app cgroup would evict the Rails worker's own delegation anchor"
+    assert File.directory?(File.join(@parent, "app"))
   end
 
   test "the sweep does nothing where per-session cgroups are unavailable" do
     ENV["ZIMMER_SESSION_CGROUP_ROOT"] = File.join(@tmp, "never-delegated")
 
     assert_equal 0, SessionMemoryCgroup.sweep!
+  end
+
+  # --- the shared pool (tadasant/zimmer#981) -------------------------------
+  #
+  # Per-session bounds do not sum to anything: eight sessions each far inside a 4 GiB
+  # bound reached 8.7 GB between them, the container's own 10 GiB cap fired, and the
+  # kernel killed the biggest process in it -- the Rails worker. The pool is a second
+  # `memory.max` on a cgroup that holds every session cgroup and NOT the worker.
+
+  # The placement is the fix. A cap on the delegated root would cover `root/app`, where
+  # the entrypoint puts the Rails worker, and the kernel picks its victim by size across
+  # the whole subtree of the memcg that declared the OOM -- so the worker would be right
+  # back in the victim pool.
+  test "session cgroups live in the pool below the delegated root, not beside the app" do
+    assert_equal File.join(@root, "sessions"), SessionMemoryCgroup.parent_path
+    assert_equal @root, SessionMemoryCgroup.root_path
+    assert_equal File.join(@root, "sessions", "session-77"), SessionMemoryCgroup.for(77).path
+  end
+
+  test "the aggregate bound is read from the pool the entrypoint wrote it on" do
+    File.write(File.join(@parent, "memory.max"), "6442450944\n")
+
+    assert_equal 6_442_450_944, SessionMemoryCgroup.pool_stats.limit_bytes
+  end
+
+  # "The entrypoint could not write the cap" and "the cap is simply large" are different
+  # states, and only the reader can tell them apart -- so an uncapped pool must read as
+  # nil rather than as a number.
+  test "an uncapped or unreadable pool reports no aggregate bound" do
+    assert_nil SessionMemoryCgroup.pool_stats.limit_bytes, "no memory.max at all is not a bound"
+
+    File.write(File.join(@parent, "memory.max"), "max\n")
+
+    assert_nil SessionMemoryCgroup.pool_stats.limit_bytes
+  end
+
+  # --- which bound killed it -----------------------------------------------
+  #
+  # `oom_kill` counts processes killed in this cgroup by ANY OOM killer, including one an
+  # ancestor declared, so on its own it cannot tell "this session ran out" from "the pool
+  # did". `oom` counts the cgroup whose OWN limit was exceeded, and cgroup v2 propagates
+  # events upward only — so it is the discriminator.
+
+  test "a kill that moved this cgroup's own oom counter is the session's own bound" do
+    cgroup = SessionMemoryCgroup.for(31)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom 1\noom_kill 1\n")
+    session = sessions(:active_session)
+
+    assert_equal SessionMemoryCgroup::SESSION_SCOPE, cgroup.record_oom_kills!(session, 1)
+    assert_equal SessionMemoryCgroup::SESSION_SCOPE, cgroup.last_kill_scope(session.reload)
+  end
+
+  test "a kill that left this cgroup's own oom counter alone came from the pool" do
+    cgroup = SessionMemoryCgroup.for(32)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom 0\noom_kill 1\n")
+    session = sessions(:active_session)
+
+    assert_equal SessionMemoryCgroup::POOL_SCOPE, cgroup.record_oom_kills!(session, 1)
+    assert_equal SessionMemoryCgroup::POOL_SCOPE, cgroup.last_kill_scope(session.reload)
+  end
+
+  # The baseline moves with the report, so a session that hits its own bound twice is
+  # attributed to itself both times rather than reading the second as the pool's.
+  test "the oom baseline moves with each report" do
+    cgroup = SessionMemoryCgroup.for(33)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom 1\noom_kill 1\n")
+    session = sessions(:active_session)
+    cgroup.record_oom_kills!(session, 1)
+
+    File.write(File.join(cgroup.path, "memory.events"), "oom 1\noom_kill 2\n")
+
+    assert_equal SessionMemoryCgroup::POOL_SCOPE, cgroup.record_oom_kills!(session.reload, 2),
+      "the same oom count means this kill was not this cgroup's own limit"
+
+    File.write(File.join(cgroup.path, "memory.events"), "oom 2\noom_kill 3\n")
+
+    assert_equal SessionMemoryCgroup::SESSION_SCOPE, cgroup.record_oom_kills!(session.reload, 3)
+  end
+
+  # Same reason #accounted_oom_kills is keyed to the incarnation: a recreated cgroup's
+  # counter restarts at zero while the recorded baseline lives in Postgres and does not.
+  test "a recreated cgroup does not read its first own-bound kill as the pool's" do
+    cgroup = SessionMemoryCgroup.for(34)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom 3\noom_kill 3\n")
+    session = sessions(:active_session)
+    cgroup.record_oom_kills!(session, 3)
+
+    FileUtils.remove_entry(cgroup.path)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom 1\noom_kill 1\n")
+
+    assert_equal SessionMemoryCgroup::SESSION_SCOPE, cgroup.record_oom_kills!(session.reload, 1)
+    assert_nil cgroup.last_kill_scope(Session.new), "a foreign incarnation answers nothing"
+  end
+
+  test "a kernel that cannot answer records no scope rather than guessing one" do
+    cgroup = SessionMemoryCgroup.for(35)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom_kill 1\n")
+    session = sessions(:active_session)
+
+    assert_nil cgroup.record_oom_kills!(session, 1)
+    assert_nil cgroup.last_kill_scope(session.reload)
+  end
+
+  test "pool stats report the shared usage and the kills anywhere beneath it" do
+    File.write(File.join(@parent, "memory.current"), "6442450944\n")
+    File.write(File.join(@parent, "memory.max"), "7516192768\n")
+    File.write(File.join(@parent, "memory.events"), "low 0\nhigh 0\nmax 4353\noom 1\noom_kill 3\n")
+
+    stats = SessionMemoryCgroup.pool_stats
+
+    assert_equal 6_442_450_944, stats.current_bytes
+    assert_equal 7_516_192_768, stats.limit_bytes
+    assert_equal 3, stats.oom_kills
+    assert_predicate stats, :oom_killed?
   end
 
   private

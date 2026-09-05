@@ -144,7 +144,7 @@ Both roles mount the same durable named volumes, so state survives a deploy and 
 - `claude_local` → `~/.local` — where `bin/docker-entrypoint`'s background `claude update` writes.
 - The `worker` role additionally mounts `/var/run/docker.sock`, which `DockerCleanupJob` needs.
 
-### Two memory caps, and what each one protects
+### Three memory caps, and what each one protects
 
 The `worker` role carries a container `memory:` cap — 10g in production, 2g on staging — and it
 protects the **host**. Uncapped, an overshoot in the only role that runs arbitrary work is a
@@ -162,16 +162,29 @@ which is the break-glass; changing it is a deploy, never a shell.
 
 **Read "underneath" literally, because the natural misreading of it is that session memory has
 moved out of the container's budget.** It has not. cgroup v2 is hierarchical: the per-session
-cgroups live at `zimmer.sessions/session-<id>`, *inside* the container's cgroup, so every byte a
-session charges is charged to the container cap as well. The per-session bound catches **one
-runaway** session; it creates no headroom and cannot stop N in-budget sessions from summing over
-the cap — six sessions at 4 GiB is 24 GiB against 10g, which is why it is a runaway bound and not
-an admission-control budget. That sum is the open failure in
-[#981](https://github.com/tadasant/zimmer/issues/981), where eight in-budget sessions reached the
-container cap and the kernel OOM-killed the GoodJob worker itself. Until it lands, the width of the
-`agents` lane (`GOOD_JOB_AGENTS_THREADS`, held at 8) is what limits how often that happens.
+cgroups live at `zimmer.sessions/sessions/session-<id>`, *inside* the container's cgroup, so every
+byte a session charges is charged to the container cap as well. The per-session bound catches
+**one runaway** session; it creates no headroom and cannot stop N in-budget sessions from summing
+over the cap — six sessions at 4 GiB is 24 GiB against 10g, which is why it is a runaway bound and
+not an admission-control budget.
 
-The mechanism, the sizing argument, and what a session sees when it fires are in
+Between the two, `ZIMMER_SESSIONS_MEMORY_MAX_MB` caps **all sessions together** — 6144 in
+production, 1024 on staging — on a `zimmer.sessions/sessions` pool cgroup that holds every
+session cgroup and *not* the Rails worker. Per-session bounds do not sum to anything: eight
+sessions each far inside their 4 GiB reached 8.7 GB between them, the container cap fired, and
+the kernel killed `bundle exec good_job start` — the worker running every session on the box
+([#981](https://github.com/tadasant/zimmer/issues/981)). The pool's number is chosen so that it
+fires *before* the container cap does, leaving 4096 MB for the worker and the inner `dockerd`
+that sit outside it; a pool sized without that margin would be decorative. `0` means no
+aggregate cap, with per-session bounds left in force.
+
+**The pool bounds the blast radius; it does not reduce the demand.** A pile-up still exhausts it,
+and a session still dies — what changes is that the victim is a session process rather than the
+GoodJob worker that runs all of them. The width of the `agents` lane
+(`GOOD_JOB_AGENTS_THREADS`, held at 8) remains what limits how often that happens, and
+`config/connection_budget.rb` carries the measurements behind that number.
+
+The mechanism, the sizing arguments, and what a session sees when either fires are in
 [Each session gets its own memory bound](/sessions/spawning/#each-session-gets-its-own-memory-bound);
 the deployments that get no bound at all are in
 [Limitations](/limitations/#a-sessions-memory-bound-needs-the-nested-docker-worker).

@@ -74,19 +74,23 @@ module SessionMemoryCgroupHelpers
   # a test that wants the bound *unavailable* names that with #without_delegated_cgroup_parent
   # rather than leaving the env unset and inheriting the host's.
   #
-  # @yieldparam parent [String] the delegated parent's path
+  # The yielded path is the POOL — `<root>/sessions` — because that is where session
+  # cgroups live and what every caller asserts about. The root itself holds the pool and
+  # the `app` sibling, and the app never creates anything directly in it.
+  #
+  # @yieldparam pool [String] the path session cgroups are created in
   def with_delegated_cgroup_parent
     Dir.mktmpdir("cgroupfs") do |tmp|
-      parent = File.join(tmp, "zimmer.sessions")
-      FileUtils.mkdir_p(parent)
-      with_cgroup_env(root: parent) { yield parent }
+      root = File.join(tmp, "zimmer.sessions")
+      FileUtils.mkdir_p(File.join(root, SessionMemoryCgroup::POOL_DIRNAME))
+      with_cgroup_env(root: root) { yield SessionMemoryCgroup.parent_path }
     end
   end
 
   # The other half of the seam: point SessionMemoryCgroup at a parent that does not
   # exist, for a test of the unbounded path.
   #
-  # Leaving the env unset does NOT do this. Unset falls through to DEFAULT_PARENT,
+  # Leaving the env unset does NOT do this. Unset falls through to DEFAULT_ROOT,
   # `/sys/fs/cgroup/zimmer.sessions`, which on a sysbox worker is a real delegated
   # subtree — the box Zimmer's own agent sessions run on is exactly such a box. A test
   # that only omits the stub therefore asserts "this host has no cgroupfs" rather than
@@ -101,8 +105,10 @@ module SessionMemoryCgroupHelpers
   #   assert nothing was created there
   def without_delegated_cgroup_parent
     Dir.mktmpdir("cgroupfs") do |tmp|
-      parent = File.join(tmp, "zimmer.sessions")
-      with_cgroup_env(root: parent) do
+      root = File.join(tmp, "zimmer.sessions")
+      with_cgroup_env(root: root) do
+        parent = SessionMemoryCgroup.parent_path
+
         # The whole point of the helper, so it is checked rather than assumed: a test
         # of the unbounded path that runs with the bound available proves nothing.
         raise "the delegated parent #{parent} must be unavailable" if SessionMemoryCgroup.available?
@@ -150,13 +156,34 @@ module SessionMemoryCgroupHelpers
   # readers have to survive (an older kernel has no `memory.peak`).
   #
   # @return [String] the cgroup's path
-  def write_session_cgroup(session_id, oom_kills: nil, current: nil, peak: nil, limit: 4 * 1024 * 1024 * 1024)
+  # `oom_events` is the cgroup's own `oom` counter — the one the kernel moves only when
+  # THIS cgroup's limit was the one exceeded, and therefore what separates a kill the
+  # session's own bound caused from one the shared pool declared. It defaults to matching
+  # the kill count, which is the session's-own-bound case; pass 0 for a pool kill, or nil
+  # to leave the key out of the file entirely.
+  def write_session_cgroup(session_id, oom_kills: nil, oom_events: :match, current: nil, peak: nil,
+    limit: 4 * 1024 * 1024 * 1024)
     path = File.join(SessionMemoryCgroup.parent_path, "session-#{session_id}")
     FileUtils.mkdir_p(path)
     File.write(File.join(path, "memory.max"), limit.to_s) if limit
     File.write(File.join(path, "memory.current"), current.to_s) if current
     File.write(File.join(path, "memory.peak"), peak.to_s) if peak
-    File.write(File.join(path, "memory.events"), "oom_kill #{oom_kills}\n") if oom_kills
+    if oom_kills
+      events = oom_events == :match ? oom_kills : oom_events
+      body = events.nil? ? "" : "oom #{events}\n"
+      File.write(File.join(path, "memory.events"), "#{body}oom_kill #{oom_kills}\n")
+    end
+    path
+  end
+
+  # The pool's aggregate bound, which bin/docker-entrypoint writes as root.
+  #
+  # @return [String] the pool's path
+  def write_pool_cgroup(current: nil, limit: 6 * 1024 * 1024 * 1024)
+    path = SessionMemoryCgroup.parent_path
+    FileUtils.mkdir_p(path)
+    File.write(File.join(path, "memory.max"), limit.nil? ? "max" : limit.to_s)
+    File.write(File.join(path, "memory.current"), current.to_s) if current
     path
   end
 

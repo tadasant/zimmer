@@ -116,24 +116,26 @@ servers:
       #
       # Read the word "underneath" literally, because the obvious misreading of it has
       # already been used to argue for more concurrency. cgroup v2 is HIERARCHICAL: the
-      # per-session cgroups live at /sys/fs/cgroup/zimmer.sessions/session-<id>, which is
-      # inside this container's cgroup, so every byte a session charges is charged to this
-      # 10g as well. The per-session bound does NOT move session memory out of this budget
-      # and does NOT create headroom -- six sessions at 4 GiB is 24 GiB against 10g, which
-      # is why it is a runaway bound and not an admission-control budget.
+      # per-session cgroups live at /sys/fs/cgroup/zimmer.sessions/sessions/session-<id>,
+      # which is inside this container's cgroup, so every byte a session charges is charged
+      # to this 10g as well. The per-session bound does NOT move session memory out of this
+      # budget and does NOT create headroom -- six sessions at 4 GiB is 24 GiB against 10g,
+      # which is why it is a runaway bound and not an admission-control budget.
       #
-      # What is still wide open is N in-budget sessions summing over this cap, which is
-      # #981: on 2026-09-05 eight of them did, with no runaway and the largest process at
-      # 943 MB, and the kernel OOM-killed the GoodJob worker itself. `zimmer.sessions` has
-      # no memory.max of its own, so a pile-up walks straight to this ceiling and the
-      # worker is in the victim pool.
+      # N in-budget sessions summing over this cap is #981: on 2026-09-05 eight of them did,
+      # with no runaway and the largest process at 943 MB, and the kernel OOM-killed the
+      # GoodJob worker itself. The `sessions` pool below (ZIMMER_SESSIONS_MEMORY_MAX_MB) is
+      # the answer to WHERE that kill lands -- it holds every session cgroup and not the
+      # worker, so the OOM is now declared in a cgroup the worker is outside of. Carved out
+      # of this 10g, not added to it.
       #
-      # Which is worth stating the right way round, because this cap does not protect the
-      # worker from that -- it is where that kill LANDS, exactly as the paragraphs above
-      # describe. What this cap protects is the DROPLET. The only thing limiting how often
-      # an overcommitted `agents` lane reaches it is the lane's own width, so until #981
-      # lands, GOOD_JOB_AGENTS_THREADS is the control -- and it is held at 8 for this
-      # reason. See config/connection_budget.rb, which carries the measurements.
+      # Which is worth stating the right way round, because this cap still does not protect
+      # the worker from a pile-up -- the pool does, and only by choosing a different victim.
+      # What THIS cap protects is the DROPLET. Nothing above reduces the demand, so the only
+      # thing limiting how often the pool is exhausted is the `agents` lane's own width:
+      # GOOD_JOB_AGENTS_THREADS is the admission control, and it is held at 8 for this
+      # reason. See config/connection_budget.rb, which carries the measurements -- taken
+      # before #981's fix, so re-measure under it before moving that number.
       memory: 10g
       volume:
         - zimmer_data:/home/rails/.zimmer
@@ -174,6 +176,42 @@ env:
     # Set it here rather than on the box: 0 disables the bound entirely, which is the
     # break-glass an incident might need, and it ships as a deploy like everything else.
     ZIMMER_SESSION_MEMORY_MAX_MB: "<%= ENV.fetch("ZIMMER_SESSION_MEMORY_MAX_MB", "4096") %>"
+    # The AGGREGATE bound over every session at once, in MB, on the `zimmer.sessions/sessions`
+    # pool cgroup that bin/docker-entrypoint creates. Per-session bounds do not sum to
+    # anything, and on 2026-09-05 that was the failure: eight sessions each far inside their
+    # 4 GiB reached 8.7 GB between them, the 10g cap above fired, and the kernel picked the
+    # biggest process in the cgroup -- `bundle exec good_job start`, the Rails worker running
+    # every session on the box. It died and took every in-flight session with it
+    # (tadasant/zimmer#981).
+    #
+    # 6144 is what is left of the 10g (10240 MB) cap once the residual is big enough to
+    # hold the two things that must survive a pile-up, both of which live OUTSIDE this pool:
+    # the Rails worker in the `app` sibling (943 MB anon at the kill, ~1.6 GiB measured with
+    # three sessions) and the inner dockerd with the dev stacks it runs (dockerd starts
+    # before the delegation block, so it and its containers stay in the container cgroup;
+    # ~1.5 GiB of node and postgres in the same task dump). That is ~3.1 GiB, so the
+    # residual has to be comfortably above it -- 4096 MB, not the ~3 GiB that a 7168 pool
+    # would leave.
+    #
+    # The margin is the whole point rather than caution. A pool sized so that sessions can
+    # sit just under it while the CONTAINER cap fires anyway is decorative: the container
+    # OOM selects across the whole container and takes the worker, which is #981 recurring
+    # with the new mechanism working exactly as designed. The pool has to fire FIRST.
+    #
+    # What this does NOT claim is that sessions never want more than 6 GiB. Under the load
+    # that produced #981 they wanted ~9, so the pool would have OOM-killed a session. That is
+    # the point: a session dies with an attributable cause and a recovery prompt, instead of
+    # the worker dying and taking all of them. ZIMMER_SESSION_PARALLEL_WORKERS below is the
+    # half that reduces the demand rather than choosing the victim.
+    #
+    # 0 means no aggregate cap, with per-session bounds left in force -- the break-glass.
+    ZIMMER_SESSIONS_MEMORY_MAX_MB: "<%= ENV.fetch("ZIMMER_SESSIONS_MEMORY_MAX_MB", "6144") %>"
+    # PARALLEL_WORKERS for every agent session, capping the test workers a session's Rails
+    # suite forks. 41 `ruby` processes at 215-350 MB apiece were 8.7 of the 9.5 GB anon at
+    # #981's kill: each session sizes `parallelize(workers: :number_of_processors)` off the
+    # droplet's 8 vCPU as though it had the box to itself, and eight of them multiply. A
+    # mitigation, not a bound -- the pool above is the bound. 0 turns it off.
+    ZIMMER_SESSION_PARALLEL_WORKERS: "<%= ENV.fetch("ZIMMER_SESSION_PARALLEL_WORKERS", "2") %>"
     APP_HOST: zimmer.tadasant.com
     # Read the catalog from the mounted production catalog (delivered by
     # artifacts-sync-prod). production.rb falls back to the in-image catalog when this

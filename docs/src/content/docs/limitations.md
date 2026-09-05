@@ -1432,19 +1432,21 @@ that does it has known limits:
   `memory.max`**, and `memory.events` recorded `oom_kill`s. (`memory.current` touched the cap to
   within 94 KB and forced-reclaim events ran to 133,791, but both include reclaimable page cache —
   `file` peaked at 7.28 GB — so they corroborate rather than prove.)
-  [#981](https://github.com/tadasant/zimmer/issues/981) is the open incident: eight *in-budget*
-  sessions — no runaway, largest process 943 MB — summed over the cap and the kernel OOM-killed the
-  GoodJob worker itself, taking every in-flight `AgentSessionJob` with it. The per-session bound
-  cannot cover this and is not meant to: cgroup v2 is hierarchical, so `zimmer.sessions/session-<id>`
-  sits inside the container's cgroup and charges the same 10 GiB;
-  `ZIMMER_SESSION_MEMORY_MAX_MB` bounds one runaway, and nothing bounds the sum. So the honest shape
-  of the limit **on that deployment** is that the effective concurrency ceiling is 8 and **should not
-  be raised until #981 lands**: a bigger pool converts durable queued rows into a worker kill. A
-  self-hosted deployment with a different worker cap has a different number, arrived at the same way
-  — measure `anon` against `memory.max` under load. Raising it means #981, then a re-measurement,
-  then a matching `app_required_backends` bump. Connections are not what binds first, but they are
-  not roomy either: 15 threads derive 97 required backends, which is the *entire* capacity of a
-  `db-s-2vcpu-4gb` cluster — zero margin.
+  [#981](https://github.com/tadasant/zimmer/issues/981) is the incident: eight *in-budget* sessions
+  — no runaway, largest process 943 MB — summed over the cap and the kernel OOM-killed the GoodJob
+  worker itself, taking every in-flight `AgentSessionJob` with it. The per-session bound cannot
+  cover this and is not meant to: cgroup v2 is hierarchical, so
+  `zimmer.sessions/sessions/session-<id>` sits inside the container's cgroup and charges the same
+  10 GiB; `ZIMMER_SESSION_MEMORY_MAX_MB` bounds one runaway. `ZIMMER_SESSIONS_MEMORY_MAX_MB` now
+  bounds the sum — but only the *blast radius* of it: the pool holds every session cgroup and not
+  the Rails worker, so a pile-up kills a session instead of the worker that runs all of them. **It
+  does not reduce the demand, so it does not raise this ceiling.** The honest shape of the limit
+  **on that deployment** is still that the effective concurrency ceiling is 8, and the measurements
+  above predate the fix — so raising it means a re-measurement of `anon` under the pool and the
+  `PARALLEL_WORKERS` cap, then a matching `app_required_backends` bump. A self-hosted deployment
+  with a different worker cap has a different number, arrived at the same way. Connections are not
+  what binds first, but they are not roomy either: 15 threads derive 97 required backends, which is
+  the *entire* capacity of a `db-s-2vcpu-4gb` cluster — zero margin.
 - **A turn queued behind the worker pool still reads as a running session on the dashboard.**
   `sessions.status = running` is stamped when a turn is *handed to* a session, not when a worker
   starts it, so on a busy deployment a real share of the `running` rows are turns waiting for a slot.
@@ -4428,9 +4430,20 @@ Three further gaps in what the bound covers, all by design:
 - **It is not a sandbox.** An agent runs as the same uid that owns the delegated subtree, so
   it can move itself out of its own cgroup. This is a guardrail against a runaway command, not
   a boundary against a hostile one — Zimmer has no such boundary anywhere.
-- **Inner Docker containers escape it.** A container an agent starts through the nested
-  `dockerd` is placed in a cgroup by that daemon, which lives outside `zimmer.sessions`. Its
-  memory is charged to the worker container, not to the session that asked for it.
+- **Inner Docker containers escape it**, and they escape the shared pool too. A container an
+  agent starts through the nested `dockerd` is placed in a cgroup by that daemon, which lives
+  outside `zimmer.sessions` entirely. Its memory is charged to the worker container, not to the
+  session that asked for it and not to the pool
+  ([#981](https://github.com/tadasant/zimmer/issues/981)) — which is why the pool is sized to
+  leave the dev stacks room under the container cap rather than to account for them.
+- **The pool decides who dies, not how much is asked for.** `ZIMMER_SESSIONS_MEMORY_MAX_MB`
+  keeps a pile-up of in-budget sessions from reaching the container cap and putting the Rails
+  worker in the victim pool. It does not keep the pile-up from happening: at the load that
+  produced #981 the pool is exhausted and a session is killed. Nothing holds an
+  `AgentSessionJob` claim back on observed memory headroom — admission control was considered
+  and not built, because today's telemetry says a headroom gate would be closed for much of
+  the day at current demand. `ZIMMER_SESSION_PARALLEL_WORKERS` reduces the demand instead, and
+  it is a mitigation rather than a bound.
 - **CI cannot test the enforcement**, only the plumbing — same reason as
   [CI cannot test the nested-Docker path](/limitations/#ci-cannot-test-the-nested-docker-path-only-the-shape-of-it).
   The kernel half is verified on staging.
@@ -4447,8 +4460,12 @@ Measured on staging: two contained kills left the worker container's `memory.cur
 *hierarchical* `memory.events` counted both and the kernel emitted a line for each.
 
 The distinction is in the line itself, which is why the cgroups are named after the session:
-`oom_memcg=/zimmer.sessions/session-12398` is contained, `oom_memcg=/system.slice/docker-….scope`
-is not. The filter belongs to the alert rule, which lives in the `obs` stack rather than in this
+`oom_memcg=/zimmer.sessions/sessions/session-12398` is contained,
+`oom_memcg=/system.slice/docker-….scope` is not. `oom_memcg=/zimmer.sessions/sessions` — the
+shared pool — is a third case: contained in the sense that the Rails worker survives it, and
+worth a human's attention in the sense that the box is over-subscribed.
+
+The filter belongs to the alert rule, which lives in the `obs` stack rather than in this
 repo, so it is not fixed here — tracked in a private repo. Until it is, expect a page the first
 time a production session hits its bound.
 
