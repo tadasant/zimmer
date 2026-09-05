@@ -9,8 +9,20 @@ export default class extends Controller {
     hooks: Array, // Array of {id, name, title, description} objects
     agentRootDefaults: Object, // Mapping of agent root names to default hook arrays
     defaultHooks: Array, // Default hooks for the initially selected agent root
+    // Whether `defaultHooks` is a STORED selection (a trigger's own column)
+    // or an agent root's defaults. A stored selection may name a hook the
+    // catalog no longer carries — a rename or a removal — and that name must
+    // survive the round-trip: the form posts the whole list, so a name this
+    // control drops is a name the next save deletes from the row (zimmer#853).
+    // A root's defaults keep the old behaviour, because a root naming an unknown
+    // hook is a catalog-authoring bug, not the operator's configuration.
+    preserveUnknown: { type: Boolean, default: false },
     inputName: { type: String, default: "session[catalog_hooks][]" }
   }
+
+  // What a chip says when the catalog does not carry the selected hook at all.
+  static MISSING_TITLE = "Not in this deployment's catalog — it was renamed or removed. " +
+    "Replace it with its new name, or remove it. It is kept until you do."
 
   connect() {
     this.hooksList = this.hooksValue || []
@@ -22,7 +34,7 @@ export default class extends Controller {
     // Pre-select default hooks for the initial agent root
     const defaultHooks = this.defaultHooksValue || []
     defaultHooks.forEach(name => {
-      if (this.hooksList.some(h => h.name === name)) {
+      if (this.preserveUnknownValue || this.hooksList.some(h => h.name === name)) {
         this.selectedHooks.add(name)
       }
     })
@@ -182,14 +194,20 @@ export default class extends Controller {
     this.selectedContainerTarget.innerHTML = ""
 
     this.selectedHooks.forEach(name => {
-      const hook = this.hooksList.find(h => h.name === name)
+      // A selected name the catalog does not carry is a stored reference that
+      // has gone unresolvable. It is MARKED, not dropped — see `preserveUnknown`.
+      const hook = this.hooksList.find(h => h.name === name) ||
+        (this.preserveUnknownValue ? { name: name, title: name, missing: true } : null)
       if (hook) {
         const tag = document.createElement("span")
-        tag.className = "inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-sm font-medium bg-amber-100 text-amber-800 mr-2 mb-2"
+        const tone = hook.missing ? "bg-red-100 text-red-900" : "bg-amber-100 text-amber-800"
+        tag.className = `inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-sm font-medium ${tone} mr-2 mb-2`
+        if (hook.missing) tag.title = this.constructor.MISSING_TITLE
         tag.innerHTML = `
-          ${this.escapeHtml(hook.title)}
+          ${hook.missing ? `<svg class="h-3.5 w-3.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" /></svg>` : ''}
+          ${this.escapeHtml(hook.title)}${hook.missing ? ' (not in catalog)' : ''}
           <button type="button"
-                  class="text-amber-600 hover:text-amber-800 focus:outline-none"
+                  class="${hook.missing ? 'text-red-700 hover:text-red-900' : 'text-amber-600 hover:text-amber-800'} focus:outline-none"
                   data-action="click->hooks-select#removeHookFromTag"
                   data-name="${this.escapeHtml(name)}">
             <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">

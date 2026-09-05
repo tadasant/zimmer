@@ -131,6 +131,20 @@ module CatalogArtifactReferences
     end
   end
 
+  # Whether a fire has found that the catalog cannot resolve this name.
+  #
+  # Reads the recorded bookkeeping rather than asking the catalog, so it is free
+  # to call per name in a list view — at the cost of reporting only what fires
+  # have actually found. A row that has not fired since the rename says false.
+  #
+  # @param attribute [Symbol, String] one of the declared reference columns
+  # @param name [String]
+  def unresolved_catalog_reference?(attribute, name)
+    return false unless has_attribute?(:unresolved_catalog_references)
+
+    (unresolved_catalog_references || {}).dig(attribute.to_s, name).present?
+  end
+
   # Reconcile every declared reference against the catalog, in declaration
   # order, announcing each kind that has newly stopped resolving. Nothing on the
   # row is rewritten — see the module comment.
@@ -163,25 +177,30 @@ module CatalogArtifactReferences
     errors.add(reference.attribute, "contains invalid #{reference.noun}(s): #{invalid.join(', ')}")
   end
 
+  # The column's entries, minus the blanks. Rails params send [""] for an empty
+  # multi-select, and nothing downstream has a use for one.
+  #
+  # @return [Array<String>]
+  def catalog_reference_values(reference)
+    (public_send(reference.attribute) || []).reject(&:blank?)
+  end
+
   # The subset of a reference column the catalog resolves right now — what a
   # fire hands to the session it spawns, and never the raw column.
   #
-  # Blank entries go too: Rails params send [""] for an empty multi-select, and
-  # a session has no use for one.
-  #
   # @return [Array<String>]
   def catalog_reference_resolvable(reference)
-    value = public_send(reference.attribute)
-    return [] if value.blank?
+    values = catalog_reference_values(reference)
+    return values if values.empty?
 
     config = reference.config
     # The same load-bearing guard the heal makes, for the same reason: against a
     # catalog that failed to load every name looks unresolvable, and filtering
-    # on that reading would hand every session an empty list. Pass the column
-    # through untouched instead and let session creation fail loudly on it.
-    return value if config.all.empty?
+    # on that reading would hand every session an empty list. Pass the names
+    # through instead and let session creation fail loudly on them.
+    return values if config.all.empty?
 
-    value.reject(&:blank?).select { |entry| config.exists?(entry) }
+    values.select { |entry| config.exists?(entry) }
   end
 
   # Reconcile one reference column against the catalog: work out which names it
@@ -194,24 +213,30 @@ module CatalogArtifactReferences
   #
   # @return [Array<String>] the references that still resolve
   def heal_stale_catalog_reference!(reference)
+    values = catalog_reference_values(reference)
     config = reference.config
     # Load-bearing. A catalog that fails to load leaves the facade an empty list
     # (zimmer#112), at which point EVERY reference looks stale. Announcing on
     # that reading would page once per trigger for a fault that is nothing to do
     # with any of them, and record a deployment-wide outage as per-row state.
     # An empty catalog is never evidence that a reference is gone.
-    return public_send(reference.attribute) || [] if config.all.empty?
+    return values if config.all.empty?
 
-    non_blank = (public_send(reference.attribute) || []).reject(&:blank?)
-    unresolvable = non_blank.reject { |entry| config.exists?(entry) }
-    resolvable = non_blank - unresolvable
+    unresolvable = values.reject { |entry| config.exists?(entry) }
+    resolvable = values - unresolvable
 
-    newly_unresolvable = record_unresolved_catalog_references!(reference, unresolvable)
-    if newly_unresolvable.any?
-      announce_unresolved_catalog_reference(
-        reference, newly: newly_unresolvable, unresolvable: unresolvable, resolvable: resolvable
-      )
-    end
+    # Logged on EVERY fire that finds one, not only the fire that announces it.
+    # The alert is throttled by design and can be swallowed outright (a shut-off
+    # alerter, a dedup window, AlertService's own rescue), so the WARN — shipped
+    # to the obs stack and queryable, but not a page — is what makes a trigger
+    # running degraded visible for as long as it is running degraded.
+    log_unresolved_catalog_reference(reference, unresolvable, resolvable) if unresolvable.any?
+
+    # Called even when nothing is unresolvable: that is what clears the sidecar
+    # when a name starts resolving again, and a cleared entry is what lets the
+    # same name announce afresh if it goes away a second time.
+    newly = record_unresolved_catalog_references!(reference, unresolvable)
+    announce_unresolved_catalog_reference(reference, unresolvable: unresolvable, resolvable: resolvable) if newly.any?
 
     resolvable
   end
@@ -226,19 +251,22 @@ module CatalogArtifactReferences
   # @return [Array<String>] the names to announce — empty when there is nothing
   #   new to say
   def record_unresolved_catalog_references!(reference, unresolvable)
-    # A model that declares references but never heals (Session) carries no
-    # sidecar. Nothing calls this there; if anything ever does, announcing every
-    # time beats raising on a column that does not exist.
-    return unresolvable unless has_attribute?(:unresolved_catalog_references)
-
     # A DEGRADED resolve serves a last-known-good tree that can predate a
     # rename, so a name that is perfectly valid today can look unresolvable to
     # this fire. Filtering in memory is still right — the fire has to spawn
     # something, and a name this catalog cannot resolve would fail session
     # validation anyway — but writing that reading down, or paging a human with
     # it, is not. Same call AirPrepareService#persist_scrubbed_catalog_skills
-    # makes, and the second half of zimmer#853.
+    # makes, and the second half of zimmer#853. The WARN in the caller still
+    # fires, so the filtering is not silent.
+    #
+    # First, so that it also covers a model with no sidecar to write.
     return [] if AirCatalogService.degraded?
+
+    # A model that declares references but never heals (Session) carries no
+    # sidecar. Nothing calls this there; if anything ever does, announcing every
+    # time beats raising on a column that does not exist.
+    return unresolvable unless has_attribute?(:unresolved_catalog_references)
 
     tracked = unresolved_catalog_references || {}
     previously = tracked[reference.tracking_key] || {}
@@ -257,20 +285,28 @@ module CatalogArtifactReferences
     newly
   end
 
-  # Say — once — that this row names something the catalog cannot resolve.
-  #
-  # `newly` is what tripped the announcement; the alert reports the whole
-  # current picture, because an operator reading it is about to edit the row and
-  # wants every name on it that does not resolve, not only the latest one.
-  def announce_unresolved_catalog_reference(reference, newly:, unresolvable:, resolvable:)
+  # The durable, non-paging record: one WARN per fire that finds an unresolvable
+  # name, whether or not this fire announces it.
+  def log_unresolved_catalog_reference(reference, unresolvable, resolvable)
     label = catalog_reference_model_label
 
     Rails.logger.warn(
       "[#{self.class.name}##{reference.heal_method}] The catalog cannot resolve " \
-      "#{reference.alert_noun}(s) #{newly.inspect} named by #{label.downcase} " \
-      "'#{catalog_reference_display_name}' (ID: #{id}). They are KEPT on the #{label.downcase} and " \
-      "filtered out of the sessions it spawns. Spawning with: #{resolvable.inspect}"
+      "#{reference.alert_noun}(s) #{unresolvable.inspect} named by #{label.downcase} " \
+      "'#{catalog_reference_display_name}' (ID: #{id})#{' (catalog is DEGRADED, so this may be a stale reading)' if AirCatalogService.degraded?}. " \
+      "They are KEPT on the #{label.downcase} and filtered out of the sessions it spawns. " \
+      "Spawning with: #{resolvable.inspect}"
     )
+  end
+
+  # Say — once per set of unresolvable names — that this row names something the
+  # catalog cannot resolve.
+  #
+  # The alert reports the whole current picture rather than only the name that
+  # tripped it, because an operator reading it is about to edit the row and
+  # wants every name on it that does not resolve.
+  def announce_unresolved_catalog_reference(reference, unresolvable:, resolvable:)
+    label = catalog_reference_model_label
 
     AlertService.raise_alert(
       "#{label} degraded: #{reference.alert_noun}(s) missing from the catalog",
@@ -284,8 +320,23 @@ module CatalogArtifactReferences
                "it. Restoring the name to the catalog also fixes it, on the next fire, with no edit.\n\n" \
                "<#{AppUrl.base_url}/#{self.class.model_name.route_key}/#{id}|View #{label.downcase} in Zimmer>",
       source: catalog_heal_alert_source || "#{self.class.name}#heal_catalog_references!",
-      dedup_key: "#{label.downcase}_stale_#{reference.dedup_noun}_#{id}"
+      dedup_key: catalog_reference_dedup_key(reference, unresolvable, label)
     )
+  end
+
+  # The alert's dedup key, keyed on the row AND on which names are unresolvable.
+  #
+  # AlertService throttles a repeated key for an hour, and the bookkeeping means
+  # this row only gets one shot at announcing each name — so a key that ignored
+  # the names would silently swallow the second of two artifacts that went
+  # missing within the same hour, and nothing would ever retry it. The set is
+  # stable state rather than per-occurrence noise (that distinction is the whole
+  # of AlertService#raise_alert's comment about snippets), so putting it in the
+  # key cannot produce the flood that rule exists to prevent: a set that has not
+  # changed does not reach here twice.
+  def catalog_reference_dedup_key(reference, unresolvable, label)
+    digest = Digest::SHA256.hexdigest(unresolvable.sort.join(","))[0, 8]
+    "#{label.downcase}_stale_#{reference.dedup_noun}_#{id}_#{digest}"
   end
 
   # "Trigger", "Session" — how the model names itself in a heal alert.

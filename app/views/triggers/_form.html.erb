@@ -7,20 +7,28 @@
   mcp_server_select_agent_root_defaults_value: @agent_root_mcp_servers.to_json,
   mcp_server_select_default_servers_value: (trigger.mcp_servers || []).to_json,
   mcp_server_select_input_name_value: "trigger[mcp_servers][]",
+  # Every `default_*` value here is this trigger's OWN stored column, not an
+  # agent root's defaults, so a name the catalog no longer carries has to be
+  # shown and posted back rather than quietly dropped — dropping it is what
+  # deletes it from the row on the next save (zimmer#853).
+  mcp_server_select_preserve_unknown_value: true,
   goal_goals_value: @goals.to_json,
   goal_agent_root_defaults_value: @agent_root_goals.to_json,
   skills_select_skills_value: @catalog_skills_for_select.to_json,
   skills_select_agent_root_defaults_value: @agent_root_catalog_skills.to_json,
   skills_select_default_skills_value: (trigger.catalog_skills || []).to_json,
   skills_select_input_name_value: "trigger[catalog_skills][]",
+  skills_select_preserve_unknown_value: true,
   hooks_select_hooks_value: @catalog_hooks_for_select.to_json,
   hooks_select_agent_root_defaults_value: @agent_root_catalog_hooks.to_json,
   hooks_select_default_hooks_value: (trigger.catalog_hooks || []).to_json,
   hooks_select_input_name_value: "trigger[catalog_hooks][]",
+  hooks_select_preserve_unknown_value: true,
   plugins_select_plugins_value: @plugins_for_select.to_json,
   plugins_select_agent_root_defaults_value: @agent_root_catalog_plugins.to_json,
   plugins_select_default_plugins_value: (trigger.catalog_plugins || []).to_json,
   plugins_select_input_name_value: "trigger[catalog_plugins][]",
+  plugins_select_preserve_unknown_value: true,
   turbo_frame: "_top"
 } do |f| %>
   <% if trigger.errors.any? %>

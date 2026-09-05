@@ -1273,10 +1273,34 @@ heal still filters in memory — the fire has to spawn something — but records
 nothing, which is the same call the session-side scrub in
 `AirPrepareService#scrubbed_catalog_skills` makes before persisting a drop.
 
-One edge worth knowing: the trigger form's MCP-server control submits only names the catalog knows,
-so saving that form drops a preserved unresolvable name. That is the right outcome when the save
-*is* the repair, and a loss of the reminder when it is not — the alert and
-`unresolved_catalog_references` are where the old name is recoverable in the meantime.
+**Where an operator meets it.** Keeping the name is only worth anything if the surfaces show it, so
+each one marks an unresolvable reference rather than rendering it like a working one:
+
+- the **trigger page** renders it as a red `name (not in catalog)` chip;
+- the **edit form**'s server/skill/hook/plugin controls pre-select it, marked the same way, and post
+  it back — the form submits the whole list, so a control that dropped the name would delete it from
+  the row on the next unrelated save, which is the destruction this issue is about wearing a
+  different hat. Removing that chip is how a **deletion** is repaired; replacing it with the new
+  name is how a **rename** is. Adding a server while leaving the unresolvable chip in place is
+  refused at save with `contains invalid server(s): …`, because at that point the column *has*
+  changed and the save-time validation applies;
+- `GET /api/v1/triggers/:id` carries `unresolved_catalog_references`, and `search_triggers` marks
+  the name inline in both its list and by-id views — the view a catalog-rename audit scans.
+
+All of those read the recorded bookkeeping rather than asking the catalog per name, so they report
+what fires have found: a trigger that has not fired since the rename shows nothing yet.
+
+**The alert is announced once; the log line is not.** Every fire that finds an unresolvable
+reference writes a `WARN` naming it, whether or not that fire announces it. `AlertService` throttles
+a repeated dedup key for an hour and swallows an alert outright when alerting is off, so the alert
+alone is not a durable record — and the alert's dedup key carries a digest of *which* names are
+unresolvable, so a second artifact going missing inside that hour is a new key rather than a
+suppressed duplicate.
+
+**A trigger whose whole list stops resolving takes the agent root's defaults**, because
+`Session.create_from_agent_root!` reads an empty list as "no opinion" — the same thing that happened
+before this change, when the heal emptied the column. It is worth knowing that the trigger page can
+therefore show a server the fire is not using.
 
 The four columns are declared once each, on both `Trigger` and `Session`, by the
 `CatalogArtifactReferences` concern; the validators and the heal are generated from those
