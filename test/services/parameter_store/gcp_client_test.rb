@@ -85,16 +85,17 @@ module ParameterStore
     # --- the envelope's declared encoding --------------------------------------
     #
     # The value below is chosen so that base64 and base64url are NOT the same
-    # string for it: `?` and `>` land on `/` and `+` in the standard alphabet and
-    # on `_` and `-` in the url-safe one, and the url-safe spelling is unpadded.
-    # A value that round-tripped identically under both would prove nothing about
-    # which decoder is in use.
+    # string for it: it exercises BOTH substitutions — `/` against `_` and `+`
+    # against `-` — and the url-safe spelling is unpadded. A value that
+    # round-tripped identically under both would prove nothing about which
+    # decoder is in use, and one that differed on only one of the two characters
+    # would leave the other branch of the canonicalisation untested.
 
-    ENCODES_DIFFERENTLY = "sk-live-?~>"
+    ENCODES_DIFFERENTLY = "sk-live-??>>"
 
     test "the two alphabets really do disagree about the test value" do
-      assert_equal "c2stbGl2ZS0_fj4", Base64.urlsafe_encode64(ENCODES_DIFFERENTLY, padding: false)
-      assert_equal "c2stbGl2ZS0/fj4=", Base64.strict_encode64(ENCODES_DIFFERENTLY)
+      assert_equal "c2stbGl2ZS0_Pz4-", Base64.urlsafe_encode64(ENCODES_DIFFERENTLY, padding: false)
+      assert_equal "c2stbGl2ZS0/Pz4+", Base64.strict_encode64(ENCODES_DIFFERENTLY)
     end
 
     test "decodes a secret whose envelope declares base64url" do
@@ -118,9 +119,19 @@ module ParameterStore
       # the encoding existed, or by Zimmer's own WriteClient, is literal bytes.
       # It must not be decoded just because it happens to look decodable — and
       # this one does, being valid unpadded base64url in its own right.
-      @fake.seed_secret("LITERAL", "c2stbGl2ZS0_fj4")
+      @fake.seed_secret("LITERAL", "c2stbGl2ZS0_Pz4-")
 
-      assert_equal({ "LITERAL" => "c2stbGl2ZS0_fj4" }, @client.resolve(@namespace))
+      assert_equal({ "LITERAL" => "c2stbGl2ZS0_Pz4-" }, @client.resolve(@namespace))
+    end
+
+    # `"encoding": null` is the field spelled out as absent, which is what a
+    # writer emitting the key unconditionally produces. Treating it as an
+    # unknown encoding would refuse a perfectly ordinary literal value; treating
+    # it as absent is the same reading the writer's own type gives it.
+    test "an explicitly null encoding reads as absent" do
+      @fake.seed_secret("EXPLICIT_NULL", "sk-live-value", encoding: :null)
+
+      assert_equal({ "EXPLICIT_NULL" => "sk-live-value" }, @client.resolve(@namespace))
     end
 
     test "a non-secret parameter with no encoding field is served byte-identically" do
@@ -135,7 +146,7 @@ module ParameterStore
       resolved = @client.resolve_all([ @namespace ])
 
       assert_empty resolved.fetch(@namespace), "an unimplemented encoding must not be guessed at"
-      assert_equal [ "FUTURE" ], resolved.undecodable
+      assert_equal [ "FUTURE" ], resolved.undecodable.fetch(@namespace)
     end
 
     test "refusing an unimplemented encoding says so, naming the variable and not the value" do
@@ -153,14 +164,17 @@ module ParameterStore
       resolved = @client.resolve_all([ @namespace ])
 
       assert_empty resolved.fetch(@namespace)
-      assert_equal [ "LIAR" ], resolved.undecodable
+      assert_equal [ "LIAR" ], resolved.undecodable.fetch(@namespace)
     end
 
     test "refuses a value labelled base64url that decodes to invalid UTF-8" do
       @fake.seed_secret("BINARY", Base64.urlsafe_encode64("\xC3\x28".b, padding: false),
         encoding: GcpClient::VALUE_ENCODING)
 
-      assert_empty @client.resolve(@namespace)
+      resolved = @client.resolve_all([ @namespace ])
+
+      assert_empty resolved.fetch(@namespace)
+      assert_equal [ "BINARY" ], resolved.undecodable.fetch(@namespace)
     end
 
     test "accepts the standard alphabet and padding under a base64url label" do
@@ -179,13 +193,38 @@ module ParameterStore
       resolved = @client.resolve_all([ @namespace ])
 
       assert_equal({ "GOOD" => "sk-live-good" }, resolved.fetch(@namespace))
-      assert_equal [ "BAD" ], resolved.undecodable
+      assert_equal [ "BAD" ], resolved.undecodable.fetch(@namespace)
     end
 
     test "nothing is undecodable when every envelope is honoured" do
       @fake.seed_console_secret("GOOD", "sk-live-good")
 
-      assert_empty @client.resolve_all(Namespace.read_namespaces).undecodable
+      assert resolved = @client.resolve_all(Namespace.read_namespaces)
+      assert resolved.undecodable.values.all?(&:empty?)
+    end
+
+    # `encoded` is the other half of the snapshot's side-channel, and it exists
+    # for NamespaceMigration: Zimmer's writer stores literal bytes and declares
+    # no encoding, so a copy of a decoded value is not a copy of what the source
+    # holds.
+    test "the snapshot names, per namespace, the values whose envelope declared an encoding" do
+      @fake.seed_console_secret("FROM_THE_CONSOLE", "sk-live-value")
+      @fake.seed_secret("LITERAL", "sk-live-other")
+
+      encoded = @client.resolve_all(Namespace.read_namespaces).encoded
+
+      assert_equal [ "FROM_THE_CONSOLE" ], encoded.fetch(Namespace.static_namespace)
+      assert_empty encoded.fetch(Namespace.legacy_static_namespace)
+    end
+
+    test "a refusal is recorded against the namespace the parameter sits in" do
+      @fake.seed_secret("OLD_AND_ODD", "whatever", encoding: "rot13",
+        path: "#{Namespace.legacy_static_namespace}OLD_AND_ODD")
+
+      undecodable = @client.resolve_all(Namespace.read_namespaces).undecodable
+
+      assert_empty undecodable.fetch(Namespace.static_namespace)
+      assert_equal [ "OLD_AND_ODD" ], undecodable.fetch(Namespace.legacy_static_namespace)
     end
 
     # --- resolve_all -----------------------------------------------------------
