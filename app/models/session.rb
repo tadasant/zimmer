@@ -507,6 +507,7 @@ class Session < ApplicationRecord
     transcript_reading_started_logged
     interrupted_start_requeue_count
     recovery_continue_attempts
+    recovery_refused_superseded_by
     stranded_sleep_rescues
     stranded_sleep_abandoned
     deliberate_sleep_at
@@ -787,12 +788,19 @@ class Session < ApplicationRecord
   }
 
   # The id of the session this one was created to replace, or nil.
+  #
+  # Deliberately the SAME reading the scope above makes, rather than a more
+  # forgiving one: `Integer()` accepts `" 123 "`, and accepting it here while the
+  # SQL compares the raw text would stamp "you were replaced" on a session the
+  # guard would never refuse for. So the parsed value has to round-trip to
+  # exactly what is stored.
   def replaces_session_id
     raw = custom_metadata&.dig(REPLACES_SESSION_KEY)
-    return nil if raw.nil? || raw.to_s.strip.empty?
+    return nil if raw.nil?
 
-    value = Integer(raw.to_s.strip, exception: false)
+    value = Integer(raw.to_s, exception: false)
     return nil unless value&.positive?
+    return nil unless raw.to_s == value.to_s
     return nil if value == id
 
     value
@@ -825,8 +833,10 @@ class Session < ApplicationRecord
 
   # One clause naming the replacement that stopped an automated resume, for the
   # refusal message each recovery caller writes on the session's timeline.
-  def replacement_refusal_clause
-    replacement = replacement_carrying_work
+  #
+  # Takes the replacement when the caller already has it — the sweep path reads
+  # it to record the refusal — so a refusal costs one query rather than three.
+  def replacement_refusal_clause(replacement = replacement_carrying_work)
     return "its work was handed to a replacement session" if replacement.nil?
 
     "its work was handed to session #{replacement.id}, which replaced it and is #{replacement.status}"
@@ -846,7 +856,11 @@ class Session < ApplicationRecord
   # @param at [Time] when the handoff happened — the replacement's creation time
   # @return [Boolean] true when a notice was written, false when it was already there
   def record_replaced_by!(replacement, at: Time.current)
-    return false if (custom_metadata || {})[REPLACED_BY_SESSION_KEY] == replacement.id
+    # Compared as text: `custom_metadata` is jsonb round-tripped through JSON, and
+    # a writer that recorded the id as a string would otherwise never match, so
+    # every save of the replacement would re-stamp and re-log the same handoff.
+    stamped = (custom_metadata || {})[REPLACED_BY_SESSION_KEY]
+    return false if stamped.present? && stamped.to_s == replacement.id.to_s
 
     reason = replacement.custom_metadata&.dig(REPLACES_REASON_KEY)
     updates = {
@@ -1408,14 +1422,19 @@ class Session < ApplicationRecord
   # still reports the trash, and one somebody is driving right now still reports
   # that somebody.
   #
-  # Its blast radius is deliberately small in three ways. It fires only for a
-  # session another session explicitly names in `custom_metadata`, which is a
-  # handful of rows in the whole table; it does not count a `failed` replacement,
-  # which is the case where the original may still be the best hope; and it is
-  # confined to the AUTOMATED family — a human's follow-up, restart or queued
-  # message never reaches this method, so a human can always resume a superseded
-  # session by hand. Every caller records the refusal on the session's own
-  # timeline rather than skipping it silently.
+  # Its blast radius is deliberately small. It fires only for a session another
+  # session explicitly NAMES in `custom_metadata`, which is a handful of rows in
+  # the whole table; it does not count a `failed` replacement, which is the case
+  # where the original may still be the best hope; and every caller records the
+  # refusal on the session's own timeline rather than skipping it silently.
+  #
+  # A human's follow-up, restart and queued message all reach the session by
+  # routes that never come through here, so a superseded session can always be
+  # resumed by hand. One human-facing route DOES come through here and is worth
+  # knowing about: `HealthMonitorService#retry_failed_sessions` is what
+  # `/health`'s Retry button and `action_health` drive, so an operator retrying a
+  # superseded session by id is refused — with the reason returned in `skipped`,
+  # where that surface already reports it, rather than silently.
   #
   # EVERY refusal is decided BEFORE the block runs, and that ordering is the
   # method's contract: a refused claim writes nothing at all, so the caller has
@@ -2290,10 +2309,17 @@ class Session < ApplicationRecord
 
     replaced.record_replaced_by!(self)
   rescue => e
-    # Best-effort. The relation is derived from the replacement's own
-    # `custom_metadata`, which is already committed by the time this runs, so a
-    # failure here loses a notice — never the fact.
-    report_swallowed_side_effect(__method__, e, alert: false)
+    # Best-effort, and logged rather than reported through
+    # `report_swallowed_side_effect`: that helper re-raises when the transaction
+    # is already aborted, and an exception out of an `after_commit` propagates to
+    # whoever saved the REPLACEMENT — turning a missing notice on some other row
+    # into a failed `start_session`. The relation is derived from this session's
+    # own `custom_metadata`, which is committed by the time this runs, so a
+    # failure here loses a notice and never the fact.
+    Rails.logger.error(
+      "[Session] Could not stamp the replacement back-reference from session #{id}: " \
+      "#{e.class}: #{e.message}"
+    )
   end
 
   # Reclaim the on-disk state a destroyed session owned: its durable scratch
