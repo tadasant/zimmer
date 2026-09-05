@@ -73,6 +73,38 @@ class PendingAgentTurnsTest < ActiveSupport::TestCase
     assert_equal Set.new, PendingAgentTurns.for([ session.id ])
   end
 
+  # .split is the same population told apart by whether a worker has picked the
+  # turn up. RunningTurns needs the difference; the sweeps do not.
+  test "split tells a turn on a worker apart from one still in the queue" do
+    working = a_session
+    queued = a_session
+    queue_a_turn_for(working.id, performed_at: 1.minute.ago)
+    queue_a_turn_for(queued.id)
+
+    started, waiting = PendingAgentTurns.split([ working.id, queued.id ])
+
+    assert_equal Set[working.id], started
+    assert_equal Set[queued.id], waiting
+  end
+
+  # A re-check racing a recovery leaves a session with two unfinished jobs. It is
+  # on a worker if either of them is, and it must appear in exactly one set or a
+  # caller adding the two sizes double-counts it.
+  test "split puts a session with both a started and a queued job on a worker only" do
+    session = a_session
+    queue_a_turn_for(session.id, performed_at: 1.minute.ago)
+    queue_a_turn_for(session.id)
+
+    started, waiting = PendingAgentTurns.split([ session.id ])
+
+    assert_equal Set[session.id], started
+    assert_equal Set.new, waiting
+  end
+
+  test "split asks the database nothing for an empty id list" do
+    assert_equal [ Set.new, Set.new ], PendingAgentTurns.split([])
+  end
+
   test "the SQL form selects exactly the sessions the set form omits" do
     with_a_job = a_session
     without = a_session

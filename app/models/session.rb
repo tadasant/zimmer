@@ -5,6 +5,7 @@ class Session < ApplicationRecord
   include SessionGenesisClassification
   include SessionPrecedence
   include SessionVisibility
+  include RunningTurns
 
   has_many :logs, dependent: :destroy
   has_many :subagent_transcripts, dependent: :destroy
@@ -364,15 +365,28 @@ class Session < ApplicationRecord
   # idle at a prompt. Runtime-scoped because a Codex session spends nothing
   # against a Claude account.
   #
+  # Read through RunningTurns rather than counting the column, so a row that is
+  # asleep on its own future wake with no worker on it does not hold a slot in
+  # the fleet cap. See that concern for why the column holds more than the turns
+  # a worker is executing, and #running_claude_code_turns for the split.
+  #
   # Any database trouble reads as zero rather than raising: the spot gate calls
   # this on the path that decides whether a session may start, and a monitoring
   # gap must never fail a session. ConnectionNotEstablished descends from
   # AdapterError rather than StatementInvalid, so the rescue is deliberately the
   # whole ActiveRecordError family.
   def self.running_claude_code_count
-    where(status: :running, agent_runtime: ClaudeAuthProvider::RUNTIME).count
+    running_claude_code_turns.total
   rescue ActiveRecord::ActiveRecordError
     0
+  end
+
+  # The same reading, unrolled — executing, queued for a worker, and asleep — so
+  # the spot gate's own explanation can say which of the three a held session is
+  # waiting behind rather than printing one number and leaving an operator to
+  # guess. Raises like any query; #running_claude_code_count is the guarded form.
+  def self.running_claude_code_turns
+    where(agent_runtime: ClaudeAuthProvider::RUNTIME).running_turns
   end
 
   # The [harness, model] pair of every Claude Code session running right now, as

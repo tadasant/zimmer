@@ -1359,7 +1359,7 @@ that does it has known limits:
   `SessionStateMachine` hook closes the opposite gap — a session that starts and finishes between two
   ticks still re-arms — but nothing narrows the start. It is also why the stretch cannot be set below
   a minute.
-- **A backed-up spot queue no longer holds it off at all.** Only sessions actually `running` count
+- **A backed-up spot queue no longer holds it off at all.** Only sessions with a turn in flight count
   toward the ceiling, so the event can fire — spawning a **priority**, ungated session — while any
   number of spot sessions sit held or paused behind the gate. That is deliberate: the spawned session
   fills an idle machine rather than joining the queue, and the gate is what paces spot work against
@@ -1367,6 +1367,23 @@ that does it has known limits:
   whose backlog is mostly spot sees priority sessions started ahead of it while the gate holds. There
   is no signal on either side: the top-up trigger cannot see how deep the spot queue is, and the gate
   does not know a top-up is coming.
+- **A turn queued behind the worker pool still reads as a running session, and it should.**
+  `sessions.status = running` is stamped when a turn is *handed to* a session, not when a worker
+  starts it, and the `agents` GoodJob lane is only `GOOD_JOB_AGENTS_THREADS` (default 8) deep. So on
+  a busy deployment a real share of both ceilings' count is turns waiting for a slot. `RunningTurns`
+  reports that split and `/inference` prints it, because the total alone reads as a broken counter
+  when half as many agent processes are alive
+  ([#957](https://github.com/tadasant/zimmer/issues/957)) — but the *count* deliberately includes
+  them, since a queued turn takes the next free worker and topping up on top of it only deepens the
+  queue. The consequence to know about: setting **Max sessions at once** above
+  `GOOD_JOB_AGENTS_THREADS` does not buy concurrency, it buys queue, and nothing stops you doing it.
+- **A `running` row asleep on its own wake is dropped from both ceilings, and nothing puts it back
+  into `waiting`.** When a turn ends with something already in flight for the session — a queued
+  message the handoff path picks up, or a recovery job — the row stays `running` while the session
+  sleeps. Once nothing is left queued for it the ceilings stop counting it, which is the fix in #957,
+  but the row itself still reads `running` on the dashboard and in every status query until its wake
+  fires. The counting is right;
+  the status is still misleading, and repairing it is a lifecycle change this did not make.
 - **The cooldown is the real cap on top-up frequency, and it is a blunt one.**
   `fleet_idle_min_fire_interval_minutes` exists because the session the event spawns re-arms the latch
   by running, so without it a quiet deployment would get one spawn every stretch, forever. With a

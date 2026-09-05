@@ -191,10 +191,22 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     end
   end
 
+  # ALWAYS_ALLOWED and the `unavailable` decision both carry a nil count, and the
+  # split line has to survive one — the same guard the /inference card relies on.
+  test "get_spot_policy renders a decision that carries no session counts" do
+    SpotGateService.stub(:evaluate, SpotGateService::ALWAYS_ALLOWED) do
+      output = get_policy
+
+      # The line renders with an empty count and, crucially, no split clause —
+      # `nil - nil` would have raised.
+      assert_match(/- \*\*Claude Code sessions with a turn in flight:\*\* *\n/, output)
+    end
+  end
+
   def decision_carrying(capacity)
     SpotGateService::Decision.new(
       allowed: true, reason: "within_limits", detail: "within limits",
-      five_hour: nil, weekly: nil, active_sessions: 0, fleet_cap: 10,
+      five_hour: nil, weekly: nil, active_sessions: 0, awaiting_sessions: 0, fleet_cap: 10,
       accounts_read: 1, pool_size: 1,
       fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0,
       pool_capacity: capacity
@@ -489,7 +501,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_equal 30, setting.fleet_idle_min_fire_interval_minutes
 
     policy = get_policy
-    assert_match(/Fires while the fleet is running fewer than:\*\* 5 sessions/, policy)
+    assert_match(/Fires while the fleet has fewer turns in flight than:\*\* 5 sessions/, policy)
     assert_match(/For at least:\*\* 10 minutes/, policy)
     assert_match(/At most once every:\*\* 30 minutes \(at most 48 top-ups a day/, policy)
   end
