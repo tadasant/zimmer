@@ -97,8 +97,19 @@ class StampReplacedSessionBackReferencesTest < ActiveSupport::TestCase
 
   private
 
+  # One ledger row per call, rather than the shared `ledger_for` row.
+  #
+  # The runner claims a row, runs it, and marks it `succeeded` — which is
+  # terminal — so "run it again" is a fresh claim on a row the re-arm control put
+  # back, not a second claim on the same running one. Independent rows model that
+  # and keep each run's counters separate, which is what the idempotency
+  # assertion reads.
   def run_task
-    run = PostDeployTaskRun.ledger_for(@entry)
+    run = PostDeployTaskRun.create!(
+      version: "#{@entry.version}-#{SecureRandom.hex(4)}",
+      name: @entry.task_name,
+      status: "pending"
+    )
     assert run.claim!(owner: "test"), "the ledger row must be claimable"
     outcome = @task_class.new(run: run, logger: Rails.logger).up
     [ run.reload, outcome ]
