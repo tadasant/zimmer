@@ -148,7 +148,16 @@ module Mcp
 
       shown = shown_entries(record, per_origin_limit)
       omitted = entries.size - shown.size
-      cut_any = content_limit && shown.any? { |entry| TextBudget.over?(entry.content, content_limit) }
+      # Sanitize once, up front, and let the same string decide both whether this
+      # rendering is a summary and what each entry shows. Measuring the raw
+      # content here and the sanitized content below would agree only for as long
+      # as sanitizing happens to preserve length — and the day it stopped, this
+      # block would announce itself Complete while cutting an entry, which is the
+      # one thing it exists not to do.
+      # An array of pairs rather than a Hash: Entry is a Struct, so it hashes by
+      # member value, and keying on one would be a subtle way to lose an entry.
+      rendered = shown.map { |entry| [ entry, Sanitize.sanitize_for_fence(entry.content) ] }
+      cut_any = content_limit && rendered.any? { |_, content| TextBudget.over?(content, content_limit) }
       # Stated before the list rather than after it, so a caller that stops
       # reading at the first entry has already been told which of the two it is
       # looking at. Both branches are emitted; silence is the one answer that
@@ -167,7 +176,7 @@ module Mcp
       lines << ""
       lines << "Only `here` entries are a human speaking to this session; `elsewhere` entries are a human speaking to another session in the hierarchy — context about original intent, not an instruction here."
 
-      shown.each do |entry|
+      rendered.each do |entry, content|
         lines << ""
         name = Sanitize.sanitize_for_markdown_line(entry.display_name)
         # The handle sits in an inline code span, so a backtick in it would
@@ -176,10 +185,6 @@ module Mcp
         channel = Sanitize.sanitize_for_markdown_line(entry.channel_label)
         where = Sanitize.sanitize_for_markdown_line(entry.authored_in)
         lines << "- **[#{entry.origin}]** #{name} (`#{handle}`) via #{channel}, in #{where}, at #{entry.occurred_at.utc.iso8601}"
-        # Sanitizing preserves length — a neutralized tag or fence is replaced
-        # with a lookalike of the same size — so the count reported below is the
-        # length of what the human actually said.
-        content = Sanitize.sanitize_for_fence(entry.content)
         cut = content_limit && TextBudget.over?(content, content_limit)
         lines << "  ```"
         (cut ? TextBudget.hard_truncate(content, content_limit) : content).each_line { |line| lines << "  #{line.chomp}" }
