@@ -1761,6 +1761,11 @@ class Session < ApplicationRecord
     custom_metadata&.dig("injected_mcp_servers") || []
   end
 
+  # The one placeholder every writer of `custom_metadata["mcp_servers_status"]`
+  # uses, so "the same floor" is true by construction rather than by inspection.
+  # Frozen: entries are replaced wholesale, never edited in place.
+  MCP_STATUS_PENDING = { "status" => "pending" }.freeze
+
   # Seed the `pending` floor under `custom_metadata["mcp_servers_status"]`: one
   # entry per server this session has wired, for any that has none yet.
   #
@@ -1778,6 +1783,14 @@ class Session < ApplicationRecord
   # on every poll; this is the form used by the paths that run *before* any
   # detector has had a chance to, and by anything that has just reset the hash.
   #
+  # The whole sub-hash is rewritten, so the value it is built from has to come
+  # from the database rather than from an attribute this object may have been
+  # holding since before a clone and an `air prepare`. A stale read would put back
+  # an entry #forget_mcp_server_status! pruned in the meantime, and
+  # McpServerBackfill#detect_lost_mcp_servers would then report that deliberate
+  # removal as an unexplained loss. Callers are responsible for reloading; the
+  # guard below re-reads whatever the caller left in place.
+  #
   # @return [Boolean] true when an entry was added and persisted. False when there
   #   was nothing to add, so a no-op call issues no UPDATE and re-broadcasts no
   #   session card.
@@ -1790,7 +1803,7 @@ class Session < ApplicationRecord
     return false if missing.empty?
 
     merge_custom_metadata!(
-      "mcp_servers_status" => current.merge(missing.index_with { { "status" => "pending" } })
+      "mcp_servers_status" => current.merge(missing.index_with { MCP_STATUS_PENDING })
     )
     true
   end

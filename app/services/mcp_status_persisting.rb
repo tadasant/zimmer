@@ -60,13 +60,13 @@ module McpStatusPersisting
         # earlier one — is never overwritten by it.
         if new_status.nil?
           unless current_mcp_status.key?(server_name)
-            current_mcp_status[server_name] = { "status" => "pending" }
+            current_mcp_status[server_name] = Session::MCP_STATUS_PENDING
             status_changed = true
           end
           next
         end
 
-        current_status = current_mcp_status[server_name] || { "status" => "pending" }
+        current_status = current_mcp_status[server_name] || Session::MCP_STATUS_PENDING
 
         # Only update if status changed
         if current_status["status"] != new_status[:status]
