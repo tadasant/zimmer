@@ -52,9 +52,10 @@ module Sessions
   # 2. **The recorded agent process is not running.** A live process means something
   #    is still driving this session, and delivering a turn would spawn a second agent
   #    against one session (#400). Asked by the caller, which owns the process manager.
-  # 3. **Zimmer's stored transcript holds a conversation.** No conversation means
-  #    there is nothing to resume into — and that case already has an owner in
-  #    Sessions::RestartUnstartedTurn, which the caller tries first.
+  # 3. **A transcript store holds a conversation.** Asked of both stores. No
+  #    conversation anywhere means there is nothing to resume into — and that case
+  #    already has an owner in Sessions::RestartUnstartedTurn, which the caller tries
+  #    first and which asks the identical question, so the two are complements.
   # 4. **The budget is not spent** (RetryBudget::LOST_CLONE, 2). A clone that keeps
   #    vanishing is a broken volume, not a session to retry forever.
   class RecoverLostClone
@@ -83,18 +84,23 @@ module Sessions
 
     # @param session [Session] the session whose clone is gone
     # @param clone_path [String, nil] where the clone was, for the log line
+    # @param working_directory [String, nil] the cwd the runtime was spawned from, for
+    #   the on-disk half of the conversation question
+    # @param file_system [FileSystemAdapter, nil] adapter for that on-disk lookup
     # @param log_buffer [LogBuffer, nil] the caller's buffer, so the reasoning lands on
     #   the session's own timeline next to the validation failure that sent us here
-    def initialize(session, clone_path: nil, log_buffer: nil)
+    def initialize(session, clone_path: nil, working_directory: nil, file_system: nil, log_buffer: nil)
       @session = session
       @clone_path = clone_path
+      @working_directory = working_directory
+      @file_system = file_system
       @log_buffer = log_buffer
     end
 
     # @return [Result]
     def call
       return declined("the session has no git_root to rebuild the clone from") if session.git_root.blank?
-      return declined("Zimmer's stored transcript holds no conversation to resume into") unless conversation?
+      return declined("neither transcript store holds a conversation to resume into") unless conversation?
 
       # Reloaded before the budget is read, as Sessions::RestartUnstartedTurn does with
       # the same key: the caller has written to this row on the way here, and a stale
@@ -117,12 +123,27 @@ module Sessions
 
     attr_reader :session
 
+    # Asked of BOTH stores, which is what makes this the exact complement of
+    # Sessions::RestartUnstartedTurn's own question rather than a near-miss. Zimmer's
+    # polled copy alone would leave a hole over the case that most deserves this
+    # recovery: a lagging or wedged poller on a session whose runtime DID write a full
+    # conversation. That file lives outside the clone
+    # (`~/.claude/projects/<sanitized-cwd>/<id>.jsonl`), so it outlives the tree — and
+    # SessionClonePath#for_recreate puts the rebuilt clone back at the same path, which
+    # is exactly what keeps it findable. Errors answer "present", as they do everywhere
+    # this question is asked.
     def conversation?
-      RuntimeConversationPresence.stored_conversation?(session)
+      RuntimeConversationPresence.persisted?(
+        session: session,
+        working_directory: @working_directory,
+        file_system: @file_system
+      )
     end
 
+    # The same expression AgentSessionJob's recreate branch hands GitCloneService, so
+    # the branch this message names and the branch actually cloned cannot disagree.
     def branch
-      session.branch.presence || "main"
+      session.branch || "main"
     end
 
     def recover!(attempt)
