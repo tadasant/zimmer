@@ -142,9 +142,7 @@ module Mcp
           "- **Skip While Pending:** #{skip_if_pending_summary(trigger)}",
           "- **Max Sessions/Minute:** #{burst_limit_summary(trigger)}",
           "- **MCP Servers:** #{mcp_servers_summary(trigger)}",
-          "- **Skills:** #{catalog_list_summary(trigger.catalog_skills)}",
-          "- **Hooks:** #{catalog_list_summary(trigger.catalog_hooks)}",
-          "- **Plugins:** #{catalog_list_summary(trigger.catalog_plugins)}"
+          "- **Skills / Hooks / Plugins:** #{catalog_lists_summary(trigger)}"
         ]
         # Only meaningful on a reuse trigger — the model clears both otherwise —
         # and worth reading before changing either, because with enqueue_messages
@@ -268,12 +266,19 @@ module Mcp
       # whole fleet — which triggers reference MCP server X — and the list is the
       # only view built for scanning many triggers, so leaving this out of it made
       # the answer cost one by-id call per trigger (#858).
-      def catalog_list_summary(list)
-        list.presence&.join(", ") || "(none)"
-      end
-
       def mcp_servers_summary(trigger)
         trigger.mcp_servers.presence&.join(", ") || "(none)"
+      end
+
+      # The by-id view only: what a trigger equips the sessions it spawns with.
+      # One line rather than three, because this view is already budgeted (#858).
+      # An empty list reads as "(agent root defaults)" and not "(none)" because
+      # that is what Session.create_from_agent_root! does with it.
+      def catalog_lists_summary(trigger)
+        %i[catalog_skills catalog_hooks catalog_plugins].map do |attribute|
+          list = trigger.public_send(attribute).presence
+          "#{attribute.to_s.delete_prefix('catalog_')}: #{list ? list.join(', ') : '(agent root defaults)'}"
+        end.join(" | ")
       end
 
       # Returns [rendered_json, summaries]. A configuration inside the budget is

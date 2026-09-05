@@ -270,9 +270,10 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
 
     output = @tool.call("id" => trigger.id)
 
-    assert_includes output, "- **Skills:** open-pr"
-    assert_includes output, "- **Hooks:** git-push-ci-reminder"
-    assert_includes output, "- **Plugins:** (none)"
+    assert_includes output,
+                    "- **Skills / Hooks / Plugins:** skills: open-pr | hooks: git-push-ci-reminder | " \
+                    "plugins: (agent root defaults)",
+                    "an empty list must not read as (none) — its sessions get the root's defaults"
   end
 
   test "the by-id view reports the reuse-only flags, and says what enqueue_messages off costs" do

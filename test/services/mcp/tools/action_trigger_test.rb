@@ -1370,7 +1370,7 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     end
 
     assert_match(/Invalid hooks: not-a-hook/, error.message)
-    assert_equal [], trigger.reload.catalog_hooks || []
+    assert_equal [], trigger.reload.catalog_hooks
   end
 
   test "update rejects an unknown plugin id" do
@@ -1389,5 +1389,60 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     %i[enqueue_messages resuscitate_archived catalog_skills catalog_hooks catalog_plugins].each do |field|
       assert properties.key?(field), "action_trigger's schema must name #{field}"
     end
+  end
+
+  test "catalog_plugins is refused on a restricted connection" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    error = assert_raises(Mcp::ToolError) do
+      restricted_tool("zimmer").call("action" => "update", "id" => trigger.id, "catalog_plugins" => [ "ci-workflow" ])
+    end
+
+    assert_match(/cannot be set when this connection is restricted/, error.message)
+    assert_equal [], trigger.reload.catalog_plugins
+  end
+
+  test "catalog_skills is allowed on a restricted connection (skills carry no server expansion)" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    restricted_tool("zimmer").call("action" => "update", "id" => trigger.id, "catalog_skills" => [ "open-pr" ])
+
+    assert_equal [ "open-pr" ], trigger.reload.catalog_skills
+  end
+
+  test "a catalog list sent as something other than an array is rejected, not silently dropped" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id, "catalog_skills" => "open-pr")
+    end
+
+    assert_match(/"catalog_skills" parameter must be an array/, error.message)
+    assert_equal [], trigger.reload.catalog_skills
+  end
+
+  test "a catalog list over its bound is rejected" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id, "catalog_skills" => Array.new(101) { "open-pr" })
+    end
+
+    assert_match(/Maximum 100 skills/, error.message)
+  end
+
+  test "blank ids are dropped from a catalog list rather than reaching the catalog check" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    @tool.call("action" => "update", "id" => trigger.id, "catalog_skills" => [ "", "open-pr", "  " ])
+
+    assert_equal [ "open-pr" ], trigger.reload.catalog_skills
+  end
+
+  test "an empty catalog list is reported as the agent root defaults, not as none" do
+    output = @tool.call("action" => "update", "id" => triggers(:enabled_slack_trigger).id, "catalog_skills" => [])
+
+    assert_includes output, "skills: (agent root defaults)"
+    refute_includes output, "skills: (none)"
   end
 end

@@ -726,7 +726,7 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :unprocessable_entity
     assert_match(/invalid skill/i, response.body)
-    assert_equal [], @trigger.reload.catalog_skills || []
+    assert_equal [], @trigger.reload.catalog_skills
   end
 
   test "should reject an unknown catalog hook id" do
@@ -799,5 +799,23 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     refute JSON.parse(response.body)["trigger"]["enqueue_messages"],
            "the payload must report the stored false rather than echoing the request"
     refute @trigger.reload.enqueue_messages
+  end
+
+  test "should reject an unknown catalog skill id on create" do
+    before = Trigger.count
+
+    post api_v1_triggers_path, params: {
+      name: "Bad Skill Trigger",
+      agent_root_name: "zimmer",
+      prompt_template: "test: {{link}}",
+      catalog_skills: [ "not-a-skill" ],
+      trigger_conditions_attributes: [
+        { condition_type: "slack", configuration: { channel_id: "C501", channel_name: "bad" } }
+      ]
+    }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_match(/invalid skill/i, response.body)
+    assert_equal before, Trigger.count
   end
 end

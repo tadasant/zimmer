@@ -265,20 +265,23 @@ module Mcp
             type: "array",
             items: { type: "string" },
             description: "Catalog skill IDs for the sessions this trigger spawns. Replaces the list, never " \
-                         "merges; an omitted key leaves it alone, [] clears it. Unknown IDs are rejected — " \
-                         "call get_configs for the valid ones."
+                         "merges; an omitted key leaves it alone. Unknown IDs are rejected — call get_configs " \
+                         "for the valid ones. [] does NOT mean \"no skills\": an empty list means the trigger " \
+                         "says nothing about skills, so a spawned session takes the agent root's defaults and " \
+                         "a re-used session keeps what it has."
           },
           catalog_hooks: {
             type: "array",
             items: { type: "string" },
-            description: "Catalog hook IDs for the sessions this trigger spawns. Same replace semantics and " \
-                         "unknown-ID rejection as catalog_skills."
+            description: "Catalog hook IDs for the sessions this trigger spawns. Same replace semantics, " \
+                         "unknown-ID rejection, and empty-means-root-defaults rule as catalog_skills."
           },
           catalog_plugins: {
             type: "array",
             items: { type: "string" },
-            description: "Catalog plugin IDs for the sessions this trigger spawns. Same replace semantics and " \
-                         "unknown-ID rejection as catalog_skills."
+            description: "Catalog plugin IDs for the sessions this trigger spawns. Same replace semantics, " \
+                         "unknown-ID rejection, and empty-means-root-defaults rule as catalog_skills. Not " \
+                         "settable on a connection restricted to specific agent roots."
           },
           variables: {
             type: "object",
@@ -366,8 +369,10 @@ module Mcp
           status: args["status"].presence || "enabled",
           goal: args["goal"],
           reuse_session: reuse_session,
-          enqueue_messages: args.fetch("enqueue_messages", false),
-          resuscitate_archived: args.fetch("resuscitate_archived", false),
+          # `|| false` as well as the fetch default: an explicit JSON null would
+          # otherwise reach a NOT NULL column as nil and raise past ToolError.
+          enqueue_messages: args.fetch("enqueue_messages", false) || false,
+          resuscitate_archived: args.fetch("resuscitate_archived", false) || false,
           skip_if_pending_session: args.fetch("skip_if_pending_session", false),
           max_sessions_per_minute: max_sessions_per_minute_for(args),
           scheduling_class: args["scheduling_class"].presence,
@@ -554,16 +559,23 @@ module Mcp
       # especially: with it off, a fire that lands on a still-running session is
       # dropped (Trigger#follow_up_session! returns :dropped), which is silent —
       # the exact failure an agent is usually sent here to fix. Say no instead.
+      # Cast rather than test truthiness: "false" and 0 are truthy in Ruby and
+      # falsey to ActiveRecord, so a bare `if args[flag]` would wave through
+      # exactly the values the model then clears.
       def reject_reuse_dependent_flags!(args, reuse_session)
-        return if reuse_session
+        return if boolean(reuse_session)
 
         %w[enqueue_messages resuscitate_archived].each do |flag|
-          next unless args[flag]
+          next unless boolean(args[flag])
 
           raise ToolError, "\"#{flag}\" requires \"reuse_session\" — a trigger that spawns a new session " \
                            "each time has nothing to #{flag == 'enqueue_messages' ? 'enqueue onto' : 'resuscitate'}. " \
                            "Send reuse_session: true in the same call, or drop #{flag}."
         end
+      end
+
+      def boolean(value)
+        ActiveModel::Type::Boolean.new.cast(value)
       end
 
       # The three AIR-catalog lists, validated exactly the way action_session's
@@ -577,16 +589,42 @@ module Mcp
       def catalog_list_attributes(args)
         CATALOG_LISTS.keys.each_with_object({}) do |attribute, attrs|
           key = attribute.to_s
-          next unless args[key].is_a?(Array)
+          # Gate on "the caller named the key", not on "the value is an array" —
+          # a gate on shape would swallow `catalog_skills: "open-pr"` and answer
+          # "updated" for a list it never wrote. validated_catalog_list! rejects it.
+          next unless args.key?(key)
 
+          reject_restricted_plugin_list!(attribute)
           attrs[attribute] = validated_catalog_list!(attribute, args[key], key)
         end
       end
 
+      # Plugins can bundle MCP servers (Session#derive_mcp_servers_from_plugins),
+      # so on a restricted connection setting them is a way around the agent-root
+      # MCP lock — the same reasoning that makes action_session refuse
+      # `change_plugins` there. Skills and hooks carry no server expansion.
+      #
+      # This does not make the trigger surface airtight: `mcp_servers` on a
+      # trigger has never carried the guard that start_session's
+      # enforce_root_constraints! applies, so a restricted connection can already
+      # reach the same place more directly. That gap predates this tool's catalog
+      # lists and is not widened here — but a NEW door onto it is not one to open.
+      def reject_restricted_plugin_list!(attribute)
+        return unless attribute == :catalog_plugins && context.restricted?
+
+        raise ToolError, "\"catalog_plugins\" cannot be set when this connection is restricted to specific " \
+                         "agent roots. Plugins can add MCP servers, which are locked to the defaults " \
+                         "configured for each allowed agent root."
+      end
+
+      # An empty list is NOT "no skills" — Session.create_from_agent_root! reads it
+      # as `catalog_skills.presence || agent_root.default_skills`, and a fire onto a
+      # re-used session skips the sync entirely (Trigger#sync_session_artifact!).
+      # Rendering it as "(none)" would tell the caller the opposite of what happens.
       def catalog_lists_summary(trigger)
         CATALOG_LISTS.keys.map do |attribute|
           list = trigger.public_send(attribute).presence
-          "#{CATALOG_LISTS.fetch(attribute)[:label].downcase}: #{list ? list.join(', ') : '(none)'}"
+          "#{CATALOG_LISTS.fetch(attribute)[:label].downcase}: #{list ? list.join(', ') : '(agent root defaults)'}"
         end.join(" | ")
       end
 
