@@ -169,8 +169,9 @@ class CloneArtifactService
     # someone's unpushed work, and is not undoable.
     #
     # .warn, not .error: the outcome here is a clone preserved, which is the
-    # conservative branch working as designed. The timeout itself is still
-    # loud — create_artifacts logs .error when it gives up on the same clone.
+    # conservative branch working as designed. The timeout is still loud, one
+    # level up — DeferredCloneCleanupJob logs "Failed to preserve artifacts" at
+    # .error when the create_artifacts this leads to comes back unsuccessful.
     @logger.warn("Dirty-state check timed out; treating the clone as dirty so it is not deleted",
       clone_path: clone_path, error: e.message)
     DirtyCheckResult.new(dirty?: true, has_uncommitted?: false,
@@ -449,8 +450,8 @@ class CloneArtifactService
   # so this asks the disk rather than reading the exception.
   #
   # Errno::ENOENT is tempting as a proxy and is the wrong test. `run_git` is
-  # Open3.capture3(..., chdir: clone_path), which raises it both when the chdir
-  # target is gone — the race — and when the `git` executable is not on PATH,
+  # BoundedSubprocess.run(..., cwd: clone_path), which raises it both when the
+  # chdir target is gone — the race — and when the `git` executable is not on PATH,
   # which is a real failure on a clone that is still there. A recursive delete
   # unlinks the directory itself last, so whenever a chdir does raise for the
   # race, the path is already gone and this returns true anyway.
@@ -624,9 +625,9 @@ class CloneArtifactService
   # BoundedSubprocess rather than a bare Open3.capture3: it starts the child as
   # its own process-group leader and SIGKILLs the whole group on deadline, which
   # matters because git spawns helpers (pack-objects, index-pack) that have to
-  # die with it. It returns ASCII-8BIT stdout/stderr byte-for-byte identical to
-  # the `Open3.capture3(..., binmode: true)` it replaces, so the encoding
-  # contract below is unchanged.
+  # die with it. The deadline governs the pipe-drain loop, so the guarantee is
+  # "bounded while the child's pipes are open" rather than unconditional — git
+  # holds its descriptors until it exits, so every command here is covered.
   #
   # Git output is raw bytes: branch names, diffs, and status can contain
   # non-UTF-8 sequences (e.g. a staged binary file or a file name in a
@@ -643,6 +644,11 @@ class CloneArtifactService
     command = [ "git" ] + args.map(&:to_s)
     @logger.debug("Running git command", command: command.join(" "), cwd: cwd)
     stdout, stderr, status = BoundedSubprocess.run(command, cwd: cwd, timeout: @git_timeout)
+    # A command that came back is evidence git is not wedged here after all, so
+    # the short-circuit below must not outlive the timeout that set it. Clone
+    # paths are reused (SessionClonePath.for_recreate), which is what makes a
+    # latch keyed on one a thing that could go stale rather than merely unused.
+    @git_timed_out_on = nil if @git_timed_out_on == cwd
     if binmode
       # BoundedSubprocess accumulates into a UTF-8 buffer that Ruby promotes to
       # ASCII-8BIT only once a chunk actually carries a high byte, so the
@@ -651,8 +657,11 @@ class CloneArtifactService
       # identical either way; `.b` just states the encoding the caller is
       # promised, so a patch written to disk from this cannot depend on its own
       # contents for its tag.
-      stdout = stdout.b
-      stderr = stderr.b
+      # force_encoding, not `.b`: BoundedSubprocess hands back a fresh unshared
+      # buffer, so retagging it in place is safe and avoids copying a patch that
+      # has no useful size bound.
+      stdout = stdout.force_encoding(Encoding::BINARY)
+      stderr = stderr.force_encoding(Encoding::BINARY)
     else
       stdout = stdout.dup.force_encoding(Encoding::UTF_8).scrub
       stderr = stderr.dup.force_encoding(Encoding::UTF_8).scrub
