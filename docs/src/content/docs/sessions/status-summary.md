@@ -653,6 +653,50 @@ A fork that fails, or comes back with nothing usable, records the reason on the 
 leaves the previous blurb in place — a stale-but-real summary beats an empty panel. The fork is
 archived either way; a fork left behind holds a full copy of a repository.
 
+### A fork that never got its turn
+
+Every route to `SessionStatusSummaryHarvestJob` is keyed to a fork that **ran**: it is enqueued from
+`SessionStateMachine`'s `pause` and `fail` hooks. A fork is created directly in `needs_input` and only
+reaches `running` when the generator hands it its prompt — so a fork whose generator run died in
+between never transitions, never harvests, and is disposed of by nothing. `StatusSummaryBackstopJob`
+repairs the *source* session and scopes forks out explicitly; `CleanupOrphanedSessionsJob` takes
+`running` orphans and sessions carrying `paused_by: "recovery"`, and an undispatched fork is neither.
+Zimmer session 8582 sat in that hole for seven days holding a repository clone
+([#730](https://github.com/tadasant/zimmer/issues/730)).
+
+`AbandonedStatusSummaryForkSweepJob` runs hourly and archives it. The failure mode of getting the
+predicate wrong is silent — a session that quietly disappears — so it asks for age **and** positive
+evidence rather than either alone:
+
+- It carries the fork marker. The scope is the exact negation of the one every operator list hides
+  forks with, so the sweep selects precisely the set nobody can see. An ordinary session is never in
+  scope.
+- It is at rest in `needs_input` or `waiting`. A `running` fork is `CleanupOrphanedSessionsJob`'s, and
+  a `failed` one already harvests.
+- It is older than `ABANDONED_AFTER` (6 hours). The generator creates a fork and prompts it a few
+  statements later, so the real dispatch window is milliseconds; hours of it is not a slow dispatch.
+- Nothing is in flight for it — no `running_job_id`, no `pending_follow_up_prompt`, and no unfinished
+  `AgentSessionJob` naming it (`PendingAgentTurns`' anti-join). The first two are written by
+  `Session#deliver_follow_up!` before it returns, so either one present means the prompt *did* arrive.
+  The anti-join is the one that carries the weight: `running_job_id` is written from *inside* the job,
+  so a turn enqueued with a delay leaves it blank and reads as abandoned.
+- It is not dormant on purpose (`StalledSessionStart::DORMANT_MARKERS`, shared rather than
+  re-derived) and not asleep on an armed wake. **A spot hold is why this matters most.**
+  `SpotSessionHold#hold!` takes custody of the held turn — it *removes* `pending_follow_up_prompt`,
+  and `return_to_queue!` clears `running_job_id` — leaving a fork in `waiting`, with no transcript of
+  its own, that is legitimately waiting to run. Under sustained spot pressure that wait can outlast
+  six hours, and [#712](https://github.com/tadasant/zimmer/issues/712) is the open issue that forks
+  compete for that capacity at all. Reaping one is exactly the silent failure the predicate exists to
+  avoid.
+- Its transcript holds nothing past the fork point, which is the same comparison
+  `SessionStatusSummaryHarvestJob` makes to decide a fork wrote nothing of its own. Comparing a raw
+  line count against a parsed message index errs the safe way: blank or unparseable lines inflate the
+  left-hand side, so the test gets *harder* to satisfy, never easier.
+
+It only archives. The stranded `pending` claim on the source's summary record is already owned —
+`pending?` treats a claim past `PENDING_TIMEOUT` as debris, and the repair sweep names exactly that
+case — so the sweep writes no summary, re-forks nothing, and queues nothing onto the `inference` lane.
+
 ### A pause is not proof that the fork answered
 
 `AuthOutageParkService` parks a session that has run out of login pool by scheduling a wake and
