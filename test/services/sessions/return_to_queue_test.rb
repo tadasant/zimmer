@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # Rest-state selection for a session Zimmer gave up on before it ever ran
 # (tadasant/zimmer#602).
@@ -12,6 +13,8 @@ require "test_helper"
 # that must be returned to the queue, and the ones that must be left in front of
 # a human.
 class Sessions::ReturnToQueueTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   def unstarted_session(**attrs)
     Session.create!(
       git_root: "https://github.com/t/r.git",
@@ -124,29 +127,83 @@ class Sessions::ReturnToQueueTest < ActiveSupport::TestCase
   end
 
   # A repair that cannot run must not become the thing that breaks the give-up
-  # path it is called from.
-  test "an unexpected failure declines rather than raising into the caller" do
-    session = unstarted_session
+  # path it is called from — and must leave nothing half-done behind it. Dropping
+  # `paused_by` without the move is worse than doing nothing: neither recovery
+  # sweep selects the session (they match the marker) and no start path reads it
+  # (they match `waiting`), which is the dead end this whole service removes.
+  test "a failed transition leaves the row exactly as it found it" do
+    session = unstarted_session(metadata: { "paused_by" => "recovery" })
     Session.any_instance.stubs(:sleep!).raises(StandardError, "boom")
 
     result = Sessions::ReturnToQueue.call(session, reason: "gave up")
 
     assert result.declined?
-    assert_equal "needs_input", session.reload.status
+    session.reload
+    assert_equal "needs_input", session.status
+    assert_equal "recovery", session.metadata["paused_by"],
+      "the marker must survive a return that did not happen"
+    assert_nil session.metadata[Sessions::ReturnToQueue::COUNT_KEY],
+      "an attempt that rolled back must not spend budget"
+  end
+
+  # And the in-memory copy the caller is still holding has to agree with the row,
+  # because the callers read it (announce_abandoned_pause, the sweeps' own logging).
+  test "a failed transition leaves the caller holding a truthful session object" do
+    session = unstarted_session(metadata: { "paused_by" => "recovery" })
+    Session.any_instance.stubs(:sleep!).raises(StandardError, "boom")
+
+    Sessions::ReturnToQueue.call(session, reason: "gave up")
+
+    assert_equal "recovery", session.metadata["paused_by"],
+      "the rolled-back write must not linger on the object the caller kept"
   end
 
   # === The two owners that make `waiting` a real re-dispatch, not a shrug ===
 
   # An ordinary never-started session lands back in the population
-  # StalledSessionStart restarts.
-  test "a returned session is picked up by the stalled-start sweep" do
+  # StalledSessionStart restarts — and the sweep really does start it, which is
+  # the whole claim `waiting` rests on.
+  test "a returned session is started by the stalled-start sweep" do
     session = unstarted_session(metadata: { "paused_by" => "recovery" })
     assert Sessions::ReturnToQueue.call(session, reason: "gave up").returned?
 
     session.update_columns(created_at: 1.hour.ago, updated_at: 1.hour.ago)
+    assert_includes StalledSessionStart.stalled_sessions.to_a, session.reload
 
-    assert_includes StalledSessionStart.stalled_sessions.to_a, session.reload,
-      "a session returned to the queue must be visible to the sweep that restarts it"
+    assert_enqueued_with(job: AgentSessionJob) { StalledSessionStart.sweep! }
+
+    assert_equal 1, session.reload.metadata[StalledSessionStart::RESTART_COUNT]
+  end
+
+  # And the other branch of that sweep, which is where most of the reported
+  # backlog would land: a first turn older than MAX_STALL_AGE is failed rather
+  # than run blind. That is still the point of the move — `failed` is a visible
+  # row with a reason on it, and the `needs_input` it replaces was a slot in the
+  # action queue nothing was ever going to act on.
+  test "a returned session whose first turn is stale is failed by the sweep, not left invisible" do
+    session = unstarted_session(metadata: { "paused_by" => "recovery" })
+    assert Sessions::ReturnToQueue.call(session, reason: "gave up").returned?
+
+    session.update_columns(created_at: 3.days.ago, updated_at: 3.days.ago)
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) { StalledSessionStart.sweep! }
+
+    session.reload
+    assert_equal "failed", session.status
+    assert_includes session.metadata["failure_reason"], "Session never started"
+  end
+
+  # The disqualifier the return cannot drop, because it is not a metadata marker:
+  # a session with a pending one-time wake is partitioned out of every
+  # StalledSessionStart batch, so moving it would hide it from both owners.
+  test "a session with a wake of its own armed is left in needs_input" do
+    session = unstarted_session
+    Session.any_instance.stubs(:awaiting_scheduled_wake?).returns(true)
+
+    result = Sessions::ReturnToQueue.call(session, reason: "gave up")
+
+    assert result.declined?
+    assert_equal "needs_input", session.reload.status
   end
 
   # And a spot-gate-held one lands back in the population SpotHoldSweepJob

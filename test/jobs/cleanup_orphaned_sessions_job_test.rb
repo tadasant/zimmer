@@ -910,7 +910,7 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
       metadata: {
         "paused_by" => "recovery",
         AgentSessionJob::INTERRUPTED_START_REQUEUE_COUNT => 1,
-        "job_started_at" => 2.days.ago.utc.iso8601
+        "job_started_at" => 40.minutes.ago.utc.iso8601
       }
     )
 

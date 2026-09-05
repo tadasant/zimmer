@@ -637,6 +637,7 @@ It moves a session only when every one of these holds, and each condition is doi
 | `RuntimeConversationPresence` says no conversation | A runtime that mints its own id (Codex) can have written a whole turn while Zimmer's column is blank; re-queueing that session would run its prompt twice |
 | A prompt to run | The same carve-out `StalledSessionStart` makes — a prompt-less session is waiting on a human, and no sweep would start it |
 | Not in a frozen category | A parked bucket every bulk flow leaves alone |
+| No wake of its own armed | `StalledSessionStart` partitions a session with a pending one-time wake out of its batch, and that disqualifier is not a metadata marker, so the return could not drop it — a session moved with one armed would be read by neither owner |
 | `unstarted_requeue_count` under `MAX_RETURNS` | See the bound below |
 
 The move drops `paused_by` with it. That marker is what both recovery sweeps select on **and** one
@@ -651,6 +652,16 @@ and two owners cover every shape this moves:
 | --- | --- |
 | ordinary — no dormant marker | `StalledSessionStart` (`StalledStartSweepJob`, every 5 minutes) restarts a `waiting` session with no runtime session id, a prompt and no queued turn |
 | held by the spot gate | `SpotHoldSweepJob` (every 5 minutes) re-arms the re-check ladder. `SpotSessionHold.held?` requires `waiting`, so a held session parked in `needs_input` is invisible to it — which is exactly how the second population stopped being re-checked |
+
+**"Picked up" is not always "restarted", and the difference is deliberate.** A session older than
+`StalledSessionStart::MAX_STALL_AGE` (1 day) is **failed** by that sweep rather than started, with a
+`failure_reason` naming the wait — its first turn is stale by definition, and a day-old one is a
+gamble a human should take deliberately from a `failed` row they can see. So a returned session that
+has been sitting for days lands in `failed`, not in `running`. That is still the point of the move:
+`failed` is a visible row with a reason on it, and `needs_input` was a slot in the action queue that
+nothing was ever going to act on. The spot-held row is unaffected either way — `spot_hold_reason`
+keeps those sessions out of `StalledSessionStart`'s population entirely, and `SpotHoldSweepJob` puts
+them back on the gate's ladder rather than aging them out.
 
 **The bound.** `Sessions::ReturnToQueue::MAX_RETURNS` caps how many times one session may be sent
 back, for the same reason `MAX_INTERRUPTED_START_REQUEUES` caps the replay: a session that keeps
