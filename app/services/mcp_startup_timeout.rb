@@ -55,6 +55,7 @@ module McpStartupTimeout
   # lose precision is the one the number is written in.
   SECONDS = 180
 
-  # The same budget for Claude's `MCP_TIMEOUT`, which is milliseconds.
+  # The same budget for the two runtimes that spell it in milliseconds: Claude's
+  # `MCP_TIMEOUT` and Pi's `requestTimeoutMs`.
   MILLISECONDS = SECONDS * 1000
 end

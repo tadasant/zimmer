@@ -1592,6 +1592,20 @@ for three minutes instead of Codex's 30-second default or Pi's 60-second one, an
 raises the ceiling on every tool call, because the adapter's one `requestTimeoutMs` covers the
 whole connection rather than just its opening.
 
+**Pi's npx servers get less of that budget than the other two runtimes, and part of their cold
+start is outside Zimmer's reach entirely.** `pi-mcp-adapter` intercepts a `command` of `npx` or
+`npm` and resolves the package to a concrete bin path itself before any transport exists
+(`resolveNpxBinary`, `npx-resolver.ts`), so that phase is not an MCP request and no
+`requestTimeoutMs` applies to it. Two consequences follow. It reads the npm cache of the *Pi
+process* — `NPM_CONFIG_CACHE` on `pi` itself, falling back to `npm config get cache` — rather than
+the entry's own `env`, and `PiRuntimeAdapter` sets no such variable, so the resolver looks in the
+host-shared `~/.npm`, which is the thing the per-entry pinning exists to avoid. And on a cache miss
+it runs `npm exec` under its own hard, non-configurable 30-second cap, killing the install on
+timeout before falling back to plain `npx`. The fallback download is covered by the budget; the
+30 seconds before it are not, and a kill mid-write lands in a cache every session on the box
+shares. Giving the Pi *process* a clone-scoped `NPM_CONFIG_CACHE` would point the resolver at the
+clone and is the obvious next step; it is not done today.
+
 The download itself is still paid, and un-pinning the cache is not the fix — a host-shared cache is
 what [#595](https://github.com/tadasant/zimmer/issues/595) was. Seeding the clone from the image's
 `_cacache` is the obvious alternative and is worse than it looks: hardlinking a 173MB
