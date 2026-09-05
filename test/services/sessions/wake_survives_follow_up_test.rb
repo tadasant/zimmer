@@ -165,7 +165,7 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
       reuse_session: true,
       last_session_id: session.id,
       trigger_conditions_attributes: [
-        { condition_type: "schedule", configuration: { "cron" => "0 * * * *", "timezone" => "UTC" } }
+        { condition_type: "schedule", configuration: { "unit" => "hours", "interval" => 1, "timezone" => "UTC" } }
       ]
     )
     assert_not poller.one_time_reuse_trigger?, "this test is only meaningful for a non-wake trigger"
@@ -226,7 +226,7 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
     assert_not trigger.reload.resuscitate_archived,
       "a wake_me_up_later trigger must not opt into waking archived sessions"
 
-    trigger.send(:create_session!)
+    trigger.send(:create_session!, prompt: "Wake up")
 
     assert session.reload.archived?, "the fire must leave the archived session alone"
   end
