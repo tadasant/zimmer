@@ -289,12 +289,13 @@ module TranscriptHooks::ShellSegments
   # The index of the first line after the bodies of +delimiters+, or nil if any of
   # their terminators is missing.
   #
-  # A terminator is matched with leading and trailing whitespace allowed, for every
-  # form rather than only `<<-`. That is deliberately looser than a shell: a lax
-  # terminator can only end a body *earlier* than the real one, which leaves body
-  # lines read as shell — the harmless direction — where a strict one that walked
-  # past the real terminator would keep swallowing until it found another, taking
-  # real commands with it.
+  # A terminator is matched with surrounding whitespace allowed, for every form
+  # rather than only `<<-`, and with a carriage return counting as whitespace so a
+  # CRLF transcript still ends its bodies. That is deliberately looser than a
+  # shell: a lax terminator can only end a body *earlier* than the real one, which
+  # leaves body lines read as shell — the harmless direction — where a strict one
+  # that walked past the real terminator would keep swallowing until it found
+  # another, taking real commands with it.
   #
   # @param lines [Array<String>]
   # @param start [Integer] the first body line
@@ -304,7 +305,7 @@ module TranscriptHooks::ShellSegments
     index = start
 
     delimiters.each do |delimiter|
-      terminator = /\A[ \t]*#{Regexp.escape(delimiter)}[ \t]*\z/
+      terminator = /\A\s*#{Regexp.escape(delimiter)}\s*\z/
       found = (index...lines.length).find { |i| lines[i].match?(terminator) }
       return nil if found.nil?
 

@@ -129,8 +129,8 @@ class TranscriptHooks::ShellSegmentsTest < ActiveSupport::TestCase
 
   test "drops a heredoc body handed to another interpreter" do
     # #873's reproduction verbatim. Two things had to stack up for the literal
-    # inside to read as a command: the body is not shell, and the `\"\"\"` in front
-    # of it broke the quote pairing that would otherwise have covered it.
+    # inside to read as a command: the body is not shell, and the triple quote in
+    # front of it broke the pairing that would otherwise have covered it.
     command = <<~SH
       python3 - <<'PY'
       s = s.replace("""      command: "gh pr create --repo other/proj --head fork:b --title T --body B"
@@ -141,7 +141,7 @@ class TranscriptHooks::ShellSegmentsTest < ActiveSupport::TestCase
     assert_equal [ "python3 - <<'PY'" ], segments(command)
   end
 
-  test "reads every delimiter spelling" do
+  test "reads every heredoc delimiter spelling" do
     [ "<<EOF", "<<'EOF'", %q(<<"EOF"), "<<\\EOF", "<< EOF", "<<-EOF" ].each do |redirection|
       command = "cat #{redirection} > f\ngh pr create --repo other/proj\nEOF\ngh pr create --fill"
 
@@ -153,6 +153,16 @@ class TranscriptHooks::ShellSegmentsTest < ActiveSupport::TestCase
     command = "cat <<-EOF > f\n\tgh pr create --repo other/proj\n\tEOF\ngh pr create --fill"
 
     assert_equal [ "cat <<-EOF > f", "gh pr create --fill" ], segments(command)
+  end
+
+  test "ends a body on a terminator carrying a carriage return" do
+    # A CRLF transcript leaves `\r` on the end of every line. Counting it as
+    # whitespace ends the body where it really ends; without that the terminator
+    # goes unrecognised and the body is read as shell, which is the safe direction
+    # but the wrong answer.
+    command = "cat <<EOF > f\r\ngh pr create --repo other/proj\r\nEOF\r\ngh pr create --fill"
+
+    assert_equal [ "cat <<EOF > f", "gh pr create --fill" ], segments(command)
   end
 
   test "keeps the line the redirection is written on, which is a command of its own" do
