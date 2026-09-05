@@ -72,12 +72,17 @@ class TranscriptHooks::PiToolCallParser < TranscriptHooks::ToolCallParser
   # Hash Pi already stores.
   #
   # Pi's MCP tools do NOT appear here under their own names: the `pi-mcp-adapter`
-  # extension exposes one `mcp` proxy tool that every server is called through
-  # (see PiRuntimePromptContribution), so an MCP call is a `toolCall` named `mcp`
-  # whose arguments nest the real tool and its arguments. Unwrapping that would
-  # mean guessing at a shape nothing here has verified, so it is left alone: a
-  # hook keying on `mcp__<server>__<tool>` finds nothing on a Pi session rather
-  # than finding something wrong.
+  # extension exposes one `mcp` proxy tool that every server is called through,
+  # so an MCP call is a `toolCall` named `mcp` whose arguments nest the real tool
+  # and its arguments — `mcp({ tool: "<name>", args: { … } })`, the shape
+  # PiRuntimePromptContribution tells the agent to use.
+  #
+  # It is reported as the proxy call it is rather than unwrapped, because the one
+  # thing that unwrapping would need is the part nothing here has established:
+  # how `<name>` spells a server and a tool. The agent reads it out of the
+  # adapter's own `mcp({ search: … })` results, not out of any convention Zimmer
+  # writes, so a hook keying on `mcp__<server>__<tool>` finds nothing on a Pi
+  # session rather than finding something wrong.
   def structured_tool_calls
     @structured_tool_calls ||= begin
       calls = []

@@ -172,9 +172,9 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # codex-rs does the same through `MCP_TOOL_NAME_DELIMITER` (see
   # CodexMcpStatusDetector) — so one pattern reads both shapes.
   #
-  # The tool half is matched WHOLE, which is the same rule the REST endpoint gets
-  # (`/pulls` and nothing nested under it) for the same reason: github-mcp-server
-  # also exposes `create_pull_request_review` and
+  # The name must END on the tool `create_pull_request`, which is the same rule
+  # the REST endpoint gets (`/pulls` and nothing nested under it) for the same
+  # reason: github-mcp-server also exposes `create_pull_request_review` and
   # `create_pull_request_review_comment`, which write *about* a pull request
   # rather than opening one, and a prefix match would read both as creates.
   #
@@ -426,22 +426,41 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # hold. A server whose result carries no URL records nothing, which is the
   # right answer rather than a miss: there is no PR number to record.
   #
-  # A failed call is not evidence. The "already exists" reading that rescues a
-  # failed `gh pr create` is a match against *gh's own* failure text, and there
-  # is no equivalent text to match here. Such a PR is on this session's branch
-  # and repo, so the prose tier remains its route.
+  # **One create opens one pull request, so its result vouches for at most one
+  # URL** — the first on this repo, and no others. This is the guard the shell
+  # tiers do not need and this one does. A create result is routinely the created
+  # PR *serialized back*, `body` included, and a PR body written by the `open-pr`
+  # skill cites other pull requests as a matter of course ("follows #305",
+  # "supersedes <url>"). Without the cap, every same-repo URL the agent wrote into
+  # its own body would be recorded as a PR this session opened, which is #214
+  # with the session supplying the evidence against itself.
+  #
+  # First, because the created PR's own URL is what a result leads with: the
+  # github-mcp-server shape puts `html_url` above `body`, and prose puts the URL
+  # it is announcing before whatever it says about it. A server that prints a
+  # cited PR ahead of the one it created would record the wrong one — a narrower
+  # miss than adopting both, and the same trade the sibling comment hook makes
+  # when it caps a listing at one line per posting segment.
+  #
+  # A failed call is not evidence: there is no "already exists" reading to make
+  # here, because that one matches *gh's own* failure text and every server
+  # writes its own. Such a PR is on this session's branch and repo, so the prose
+  # tier remains its route. That rule holds only as far as the runtime reports a
+  # failure, which on Codex is not at all — an exit code comes from an
+  # `exec_command_end` line that a non-shell call never gets, so an MCP result
+  # there always reads as a success. See `docs/limitations.md`.
   def urls_from_mcp_pr_create_results
     return [] if target_owner_repo.nil?
     return [] if mcp_pr_create_repos.empty?
 
-    tool_results.flat_map do |result|
-      next [] unless mcp_pr_create_repos.key?(result[:id])
-      next [] if result[:is_error] || result[:text].blank?
+    tool_results.filter_map do |result|
+      next unless mcp_pr_create_repos.key?(result[:id])
+      next if result[:is_error] || result[:text].blank?
 
       named_repo = mcp_pr_create_repos[result[:id]]
-      next [] if named_repo && named_repo != target_owner_repo
+      next if named_repo && named_repo != target_owner_repo
 
-      pr_urls_with_context(result[:text]).filter_map { |url, _preceding| url if same_repo?(url) }
+      pr_urls_with_context(result[:text]).map(&:first).find { |url| same_repo?(url) }
     end
   end
 
