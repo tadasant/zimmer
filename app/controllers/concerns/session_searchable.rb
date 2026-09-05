@@ -29,8 +29,9 @@
 module SessionSearchable
   extend ActiveSupport::Concern
 
-  # PostgreSQL: `::text` casting for the JSON/JSONB columns, ILIKE for
-  # case-insensitivity. Bound as `:q` by every caller.
+  # PostgreSQL: the JSON/JSONB columns are matched as text, ILIKE for
+  # case-insensitivity. Both predicates take the same two binds, and
+  # `SessionSearchable.search_binds` is the only place that builds them.
   #
   # `:q` is the WHOLE query wrapped in one `%…%`, never a set of words, on both
   # predicates. So a multi-word query is a phrase: "YC interview" matches a title
@@ -45,8 +46,62 @@ module SessionSearchable
   # conversation: a phrase broken across a line break is `\n` in that text and does
   # not match, and a hit can land in a tool argument or a file path rather than in
   # anything anybody said.
-  METADATA_PREDICATE = "title ILIKE :q OR metadata::text ILIKE :q OR custom_metadata::text ILIKE :q"
+  #
+  # Both JSON columns are read through `::jsonb::text`, never `::text` directly.
+  # `metadata` is a `json` column and `custom_metadata` a `jsonb` one, and on `json`
+  # that difference decided what a query matched: `json` keeps the writer's bytes
+  # verbatim, so one row rendered two ways depending on who wrote it last. An ordinary
+  # attribute write emits `{"agent_root_key":"zimmer-router"}`; the atomic
+  # `merge_metadata!` UPDATE computes in jsonb and casts back, emitting
+  # `{"agent_root_key": "zimmer-router"}`. Both writers are on the hot path, so a query
+  # spanning a structural colon found a session or did not depending on which one had
+  # touched it most recently — the same query, seconds apart, returning different sets,
+  # with no signal that the answer was partial (#930). `::jsonb::text` renders
+  # Postgres's canonical form whatever the writer did. It is a no-op for
+  # `custom_metadata`, already jsonb, and stays one when `metadata` becomes jsonb (#847).
+  #
+  # The cast cannot fail on a row this app can write. `jsonb` is stricter than `json`
+  # in one way that matters — it rejects a `\u0000` in a string — but Postgres refuses
+  # that byte on the way in too (`PG::UntranslatableCharacter`), on the attribute write
+  # and on the atomic merge alike, so no stored `metadata` contains one. Duplicate keys,
+  # the other `json`-only shape, cast fine and collapse to the last one, which is the
+  # key Rails hands back on read anyway.
+  #
+  # `transcript` is deliberately NOT canonicalised. It has a single writer — an
+  # ordinary attribute write — so its text is already deterministic, and parsing a
+  # multi-megabyte document into jsonb per row would spend exactly the budget
+  # SessionContentSearch's bound exists to protect.
+  METADATA_PREDICATE = <<~SQL.squish
+    title ILIKE :q
+    OR metadata::jsonb::text ILIKE :q OR metadata::jsonb::text ILIKE :q_json
+    OR custom_metadata::jsonb::text ILIKE :q OR custom_metadata::jsonb::text ILIKE :q_json
+  SQL
   CONTENT_PREDICATE = "#{METADATA_PREDICATE} OR transcript::text ILIKE :q"
+
+  # `:q_json` is `:q` respelled in the spacing Postgres itself uses, so a caller who
+  # typed compact JSON finds the same rows as one who copied the pretty-printed blob
+  # out of `get_session`. Canonicalising the column decides which single text is
+  # searched; it does not make the other spelling of the query mean anything, and a
+  # `"key":"value"` that consistently returns nothing is the same silent zero #930 is
+  # about — one that `custom_metadata`, jsonb since the day it was added, has always
+  # returned.
+  #
+  # Two rewrites, both exact rather than heuristic. In JSON every structural colon
+  # closes a string key, so `":` is that colon and nothing else — `https://…` is
+  # untouched. Canonical jsonb puts one space after every `:` and every `,`.
+  #
+  # This is the SAME phrase spelled twice, not a set of per-word ORs (#405): adjacency
+  # and order still hold, and the rewritten pattern is a whole substring like the
+  # original.
+  JSON_KEY_COLON = /":(?! )/
+  JSON_COMMA = /,(?! )/
+
+  # The binds every caller of the two predicates passes. One place builds them, for
+  # the same reason one place spells the predicates.
+  def self.search_binds(query)
+    pattern = "%#{ActiveRecord::Base.sanitize_sql_like(query)}%"
+    { q: pattern, q_json: pattern.gsub(JSON_KEY_COLON, '": ').gsub(JSON_COMMA, ", ") }
+  end
 
   # Does this parameter value mean "yes, search transcript contents"?
   #
@@ -66,7 +121,7 @@ module SessionSearchable
   # @param query [String] The search query
   # @return [ActiveRecord::Relation] Filtered sessions
   def filter_sessions_by_search(sessions, query)
-    sessions.where(METADATA_PREDICATE, q: "%#{ActiveRecord::Base.sanitize_sql_like(query)}%")
+    sessions.where(METADATA_PREDICATE, SessionSearchable.search_binds(query))
   end
 
   # Filter sessions by search query, transcript contents included.
