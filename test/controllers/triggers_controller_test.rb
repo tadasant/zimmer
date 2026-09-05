@@ -1175,6 +1175,27 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_nil trigger.reload.scheduling_class, "the \"Default\" option submits blank, not a class named empty"
   end
 
+  test "changing the class on the form moves the trigger's waiting sessions and says how many" do
+    trigger = triggers(:enabled_schedule_trigger)
+    trigger.update!(scheduling_class: SessionGenesis::SPOT)
+    session = sessions(:waiting)
+    session.update!(scheduling_class: SessionGenesis::SPOT, metadata: { "trigger_id" => trigger.id })
+
+    patch trigger_path(trigger), params: { trigger: { name: trigger.name, scheduling_class: "priority" } }
+
+    assert_equal SessionGenesis::PRIORITY, session.reload.scheduling_class
+    assert_equal "Trigger updated successfully. 1 already-spawned waiting session moved to priority.",
+      flash[:notice]
+  end
+
+  test "an edit that leaves the class alone says nothing about sessions" do
+    trigger = triggers(:enabled_schedule_trigger)
+
+    patch trigger_path(trigger), params: { trigger: { name: "Renamed" } }
+
+    assert_equal "Trigger updated successfully.", flash[:notice]
+  end
+
   test "the form's precedence is permitted, and blank predefines nothing" do
     trigger = triggers(:enabled_schedule_trigger)
 

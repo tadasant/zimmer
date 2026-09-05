@@ -489,6 +489,29 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_equal "priority", JSON.parse(response.body)["trigger"]["effective_scheduling_class"]
   end
 
+  test "a class change reports how many already-spawned waiting sessions it moved" do
+    trigger = triggers(:enabled_schedule_trigger)
+    trigger.update!(scheduling_class: SessionGenesis::SPOT)
+    session = sessions(:waiting)
+    session.update!(scheduling_class: SessionGenesis::SPOT, metadata: { "trigger_id" => trigger.id })
+
+    patch api_v1_trigger_path(trigger), params: { scheduling_class: "priority" }, headers: @headers
+
+    assert_response :success
+    assert_equal SessionGenesis::PRIORITY, session.reload.scheduling_class
+    assert_equal 1, JSON.parse(response.body)["reclassified_waiting_sessions"]
+  end
+
+  test "a request that does not touch the class omits the reclassified count" do
+    trigger = triggers(:enabled_schedule_trigger)
+
+    patch api_v1_trigger_path(trigger), params: { name: "Renamed" }, headers: @headers
+
+    assert_response :success
+    refute JSON.parse(response.body).key?("reclassified_waiting_sessions"),
+      "its absence means the class was not touched, not that nothing moved"
+  end
+
   test "an unknown scheduling_class is rejected" do
     trigger = triggers(:enabled_schedule_trigger)
 

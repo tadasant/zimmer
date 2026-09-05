@@ -53,6 +53,18 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_nil trigger.reload.scheduling_class, "an explicit null returns it to derived"
   end
 
+  test "update moves the trigger's already-spawned waiting sessions and reports the count" do
+    trigger = triggers(:enabled_schedule_trigger)
+    trigger.update!(scheduling_class: SessionGenesis::SPOT)
+    session = sessions(:waiting)
+    session.update!(scheduling_class: SessionGenesis::SPOT, metadata: { "trigger_id" => trigger.id })
+
+    output = @tool.call("action" => "update", "id" => trigger.id, "scheduling_class" => "priority")
+
+    assert_equal SessionGenesis::PRIORITY, session.reload.scheduling_class
+    assert_includes output, "1 already-spawned waiting session moved to priority."
+  end
+
   test "an omitted scheduling_class leaves an existing choice alone" do
     trigger = triggers(:enabled_schedule_trigger)
     trigger.update!(scheduling_class: SessionGenesis::PRIORITY)
