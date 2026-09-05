@@ -18,6 +18,31 @@ class McpOauthPendingFlowTest < ActiveSupport::TestCase
     assert_includes flow.errors[:expires_at], "can't be blank"
   end
 
+  # The token endpoint stored on a flow is what the *initial* exchange posts to,
+  # carrying the client_secret and the authorization code — the same leak #892
+  # describes on the refresh, one step earlier — and it is copied onto the
+  # credential afterwards. Refusing it here is what keeps a discovered cleartext
+  # endpoint from reaching a credential save that would fail.
+  test "token_endpoint must be https, with the same rule the credential uses" do
+    [ "http://auth.example.com/token", "http://127.0.0.1:9000/token", "https://", "auth.example.com/token" ].each do |endpoint|
+      flow = build_flow(token_endpoint: endpoint)
+
+      assert_not flow.valid?, "#{endpoint.inspect} should have been rejected"
+      assert_equal [ HttpsTokenEndpoint::MESSAGE ], flow.errors[:token_endpoint],
+        "wrong (or missing) error for #{endpoint.inspect}"
+    end
+
+    assert build_flow(token_endpoint: "https://auth.example.com/token").valid?
+  end
+
+  # The loopback *redirect* is a different thing entirely and stays permitted:
+  # it names the user's own browser (RFC 8252), not a place Zimmer posts a secret.
+  test "an http loopback redirect_uri is still fine alongside an https token endpoint" do
+    flow = build_flow(redirect_uri: "http://127.0.0.1:3118/callback", token_endpoint: "https://auth.example.com/token")
+
+    assert flow.valid?, flow.errors.full_messages.join(", ")
+  end
+
   test "validates uniqueness of state" do
     existing = mcp_oauth_pending_flows(:pending_notion)
 
@@ -450,5 +475,22 @@ class McpOauthPendingFlowTest < ActiveSupport::TestCase
 
     assert_includes flows, flow
     assert flows.all? { |f| f.session_id == session.id }
+  end
+
+  private
+
+  def build_flow(**attrs)
+    McpOauthPendingFlow.new({
+      server_name: "srv",
+      server_url: "https://mcp.example.com",
+      state: SecureRandom.hex(8),
+      code_verifier: "verifier-12345678901234567890123456789012",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+      client_id: "cid",
+      redirect_uri: "http://localhost:3000/mcp_oauth/callback",
+      mcp_server_config: {},
+      expires_at: 1.hour.from_now
+    }.merge(attrs))
   end
 end

@@ -292,10 +292,11 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
   # client id, not the `zimmer` placeholder that Slack rejects.
   # Stubs RFC 8414 discovery so a catalog-configured server resolves its endpoints,
   # then POSTs to initiate for it.
-  def initiate_catalog_server(server, server_name: "slack-reframe", server_url: "https://mcp.slack.com/mcp")
+  def initiate_catalog_server(server, server_name: "slack-reframe", server_url: "https://mcp.slack.com/mcp",
+    token_endpoint: "https://slack.com/api/oauth.v2.access")
     auth_server_json = {
       "authorization_endpoint" => "https://slack.com/oauth/v2_user/authorize",
-      "token_endpoint" => "https://slack.com/api/oauth.v2.access"
+      "token_endpoint" => token_endpoint
     }
     discovery_http = Object.new
     discovery_http.define_singleton_method(:use_ssl=) { |_| }
@@ -316,6 +317,45 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
         }
       end
     end
+  end
+
+  # The discovery half of #892: the token endpoint comes out of the MCP server's
+  # own authorization-server metadata, so it can name a cleartext endpoint the
+  # moment that server is wrong or hostile. Refuse before the consent redirect —
+  # no authorization code is minted for an endpoint Zimmer will not talk to, and
+  # the user is told why instead of meeting a RecordInvalid from the pending flow.
+  test "initiate refuses a server whose discovery advertises a non-https token endpoint" do
+    configured_server = ServersConfig::Server.new("slack-reframe", {
+      "type" => "streamable-http",
+      "url" => "https://mcp.slack.com/mcp",
+      "oauth" => { "clientId" => "1601185624273.8899143856786", "clientSecret" => "operator-supplied-secret" }
+    })
+
+    initiate_catalog_server(configured_server, token_endpoint: "http://evil.example.com/token")
+
+    assert_redirected_to session_path(@session)
+    assert_match(/not https/i, flash[:error])
+    assert_match(%r{http://evil\.example\.com/token}, flash[:error])
+    assert_no_match(/operator-supplied-secret/, flash[:error].to_s)
+
+    assert_nil McpOauthPendingFlow.for_session(@session).find_by(server_name: "slack-reframe"),
+      "no flow may be started against an endpoint we refuse to post to"
+  end
+
+  # A loopback token endpoint gets no carve-out, for the same reason: the value is
+  # the remote server's to choose, and it has no honest reason to name this host.
+  test "initiate refuses a discovered loopback token endpoint too" do
+    configured_server = ServersConfig::Server.new("slack-reframe", {
+      "type" => "streamable-http",
+      "url" => "https://mcp.slack.com/mcp",
+      "oauth" => { "clientId" => "1601185624273.8899143856786" }
+    })
+
+    initiate_catalog_server(configured_server, token_endpoint: "http://127.0.0.1:6379/token")
+
+    assert_redirected_to session_path(@session)
+    assert_match(/not https/i, flash[:error])
+    assert_nil McpOauthPendingFlow.for_session(@session).find_by(server_name: "slack-reframe")
   end
 
   test "initiate uses the catalog-configured client id in the authorize redirect" do
