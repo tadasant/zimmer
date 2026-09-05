@@ -37,8 +37,10 @@ class ApplicationJob < ActiveJob::Base
   # AGAIN after that declaration. GoodJob::InterruptError < StandardError, and ActiveSupport
   # resolves rescue handlers last-registered-wins. A subclass `discard_on StandardError`
   # registers AFTER this inherited handler, so without re-registering it would catch the
-  # interrupt first and re-emit the ERROR line — defeating this fix. See BundleInstallJob
-  # and McpPackageReinstallJob.
+  # interrupt first and re-emit the ERROR line — defeating this fix. See
+  # McpPackageReinstallJob. (BundleInstallJob deliberately does the opposite: it registers a
+  # broad `rescue_from` that RETRIES interrupts instead, because resuming after a deploy is
+  # the whole point there. It stays off the ERROR channel by never logging above WARN.)
   def self.discard_interrupt_quietly
     rescue_from(GoodJob::InterruptError) do |error|
       Rails.logger.info("Discarded #{self.class.name} (Job ID: #{job_id}) due to #{error.class.name}: #{error.message}")
