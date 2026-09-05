@@ -242,7 +242,7 @@ class GithubCommentPromptBuilder
   TRUSTED_OWNERS = %w[tadasant].freeze
 
   # Wall-clock bound on the repo-visibility `gh` child, process group killed on
-  # deadline. This runs inside GithubCommentPollerJob's tick — a `total_limit: 1`
+  # deadline. This runs inside Github::CommentEvaluator's pass — a `total_limit: 1`
   # singleton — so an unbounded hang here wedges comment polling entirely (#458).
   #
   # `gh api repos/{owner}/{repo}` is one cheap round trip and the answer is cached

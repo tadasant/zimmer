@@ -237,11 +237,12 @@ class CronScheduleTest < ActiveSupport::TestCase
 
   # --- cron syntax ---------------------------------------------------------------
   #
-  # The seconds field is load-bearing. Three pollers are scheduled with six-field cron
-  # ("*/30 * * * * *") and their comments promise a 30-second cadence. GoodJob does not
-  # normalize that: CronEntry#next_at hands the expression straight to Fugit::Cron#next_time.
-  # If a fugit upgrade ever stopped honoring the leading seconds field, those pollers would
-  # quietly drop to some other cadence with no error anywhere. Assert it instead of trusting it.
+  # The seconds field is load-bearing. The heartbeat sweep and the GitHub PR poll pass are
+  # scheduled with six-field cron ("*/30 * * * * *") and their comments promise a 30-second
+  # cadence. GoodJob does not normalize that: CronEntry#next_at hands the expression straight
+  # to Fugit::Cron#next_time. If a fugit upgrade ever stopped honoring the leading seconds
+  # field, they would quietly drop to some other cadence with no error anywhere. Assert it
+  # instead of trusting it.
 
   def cron_expressions
     CronSchedule::ENTRIES.values.map { |entry| entry[:cron] } +
@@ -285,7 +286,7 @@ class CronScheduleTest < ActiveSupport::TestCase
              "#{expression.inspect} is six-field but fires no more than once a minute: gaps #{gaps.inspect} " \
              "(#{fire_times.map { |t| t.strftime('%H:%M:%S') }.inspect})"
 
-      # Every six-field entry in the config today is "*/30 * * * * *", and three job comments
+      # Every six-field entry in the config today is "*/30 * * * * *", and the job comments
       # plus docs/operate/background-jobs.md all state 30 seconds. Pin that exact number for
       # those, while leaving a differently-spaced six-field entry free to be added above.
       next unless expression == "*/30 * * * * *"

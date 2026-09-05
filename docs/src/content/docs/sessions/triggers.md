@@ -1062,7 +1062,7 @@ is:open is:pr (repo:tadasant/zimmer OR repo:tadasant/zimmer-catalog) (label:"rea
 
 The search API is rate-limited **separately** from the core API — 30 requests/minute authenticated,
 against core's 5,000/hour. At one tick per minute, *N* GitHub conditions cost *N* of those 30. The
-existing `GithubCommentPollerJob` spends from the core bucket, so the two never contend.
+existing `Github::CommentEvaluator` spends from the core bucket, so the two never contend.
 
 Polling every minute holds comfortably: ~10 conditions is a third of the search budget, and adding
 repos to a condition is free.
@@ -1926,9 +1926,7 @@ offer; polling needs nothing but the outbound `gh` credential that is already th
 | `SlackTriggerPollerJob` | every minute |
 | `ScheduleTriggerJob` | every minute |
 | `GithubTriggerPollerJob` | every minute |
-| `GitHubPullRequestPollerJob` | every 30 seconds |
-| `GithubCommentPollerJob` | every 30 seconds |
-| `GitHubMergeConflictPollerJob` | every 2 minutes |
+| `GithubPrPollPassJob` | every 30 seconds (the merge-conflict evaluator inside it, every 2 minutes) |
 | `SlackTriggerHealthCheckJob` | hourly at :45 |
 | `CleanupStaleTriggersJob` | hourly at :15 — reaps leftovers, parks undelivered wakes |
 | `StrandedSleepSweepJob` | every 5 minutes — resumes a session asleep on a wake that can never fire |

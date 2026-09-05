@@ -2009,7 +2009,7 @@ class SessionTest < ActiveSupport::TestCase
       original_method.call
     end
 
-    # Simulate the pattern from GithubCommentPollerJob#send_prompt_immediately:
+    # Simulate the pattern from Github::CommentEvaluator#send_prompt_immediately:
     # 1. Status changes (via resume!)
     # 2. Followed by metadata update
     # All within a transaction

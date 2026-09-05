@@ -2829,9 +2829,9 @@ error.
 merge-conflict message go through — swallows any exception raised while delivering, because one
 session that cannot take a message must not abort the poller's sweep of every other session.
 
-The state that triggered the message is written down regardless. `GitHubPullRequestPollerJob`
+The state that triggered the message is written down regardless. `Github::PrStatusEvaluator`
 records the PR as `merged`, so the `open` → `merged` transition it keys on is gone by the next poll.
-`GitHubMergeConflictPollerJob` records the conflict as confirmed, which suppresses re-notification
+`Github::MergeConflictEvaluator` records the conflict as confirmed, which suppresses re-notification
 the same way. Neither message is retried.
 
 The markers at least stay honest. The merged-PR marker is written only for PRs a message actually
@@ -2849,7 +2849,7 @@ PR now reads mergeable — see
 [Background jobs](/operate/background-jobs/#a-conflict-notice-is-re-read-when-it-comes-off-the-queue-not-when-it-was-written).
 Two edges come with that.
 
-Retiring the notice also calls `GitHubMergeConflictPollerJob.forget_conflict!`, which drops the PR
+Retiring the notice also calls `Github::MergeConflictEvaluator.forget_conflict!`, which drops the PR
 from both debounce markers so the poller re-derives its state from scratch. That is what stops a
 suppression from being permanent — but it costs a full debounce cycle. If the conflict was real and
 the `mergeable == true` that suppressed the notice was one of the stale readings the debounce exists
@@ -2882,7 +2882,7 @@ it did its work, said so, and has been sitting in `needs_input` — or asleep in
 `open-pr` skill's self-wake — ever since. Riding that curve is what left sessions
 [4419 and 4422](https://github.com/tadasant/zimmer/issues/494) unpolled through their own merges.
 
-`GitHubPullRequestPollerJob` therefore caps the interval at
+`Github::PrPollPass` therefore caps the interval at
 `AWAITING_PR_OUTCOME_MAX_POLL_INTERVAL` (30 minutes) for a session still holding a PR Zimmer has
 not seen reach a terminal state — the 8–24 hr bucket's own floor, so a waiting session holds the
 cadence it had at 23:59 of idleness rather than falling off a cliff at 24:00. A session whose every
@@ -2890,15 +2890,60 @@ tracked PR has merged or closed is waiting on nothing and keeps the full curve, 
 included; that is the case the backoff was written for, and the rate limit it protects is
 unchanged. Touching the session still resets the curve to the 30-second cadence.
 
-So the residual delay is up to 30 minutes rather than up to a day. Three caveats. Only the PR
-*status* poller is capped: `GithubCommentPollerJob` and `GitHubMergeConflictPollerJob` still ride
-the full curve, so a comment or a conflict notice on the PR of a long-idle session can still be a
-day late. The cap is not a guarantee of delivery — the cases in
+So the residual delay is up to 30 minutes rather than up to a day. Three caveats. Only the pass's
+own gate is capped: `Github::CommentEvaluator` and `Github::MergeConflictEvaluator` keep their own
+keys inside the pass and still ride the full curve, so a comment or a conflict notice on the PR of a
+long-idle session can still be a day late. The cap is not a guarantee of delivery — the cases in
 [A PR session waits for a merge message that three cases can prevent](#a-pr-session-waits-for-a-merge-message-that-three-cases-can-prevent)
 are untouched by it. And the cap itself expires after `AWAITING_PR_OUTCOME_MAX_IDLE` (7 days) of no
 user activity, because nothing removes an idle session from `Session.with_github_prs` and a deleted
 or unreadable PR never resolves — so past a week the old 24-hour delay is back, deliberately, rather
 than pinning a session at two polls an hour forever.
+
+### One hung `gh` call now stalls PR status, CI, merge conflicts and comments together
+
+PR status, comments and merge conflicts used to be three cron jobs, each a `total_limit: 1`
+singleton. One of them wedging on a half-open connection to GitHub froze that one concern and left
+the other two running. `Github::PrPollPass` fused them ([#711](https://github.com/tadasant/zimmer/issues/711)),
+so they now run in series inside a single singleton and a wedge takes all three — including the
+merged-PR message, which is the archive signal every PR-holding session in the fleet is waiting on.
+
+Three things bound it rather than fix it. Every `gh` call goes through `GithubCli` under a
+`BoundedSubprocess` deadline, so a hang is a failed call within 20–30 seconds rather than forever
+(that is [#458](https://github.com/tadasant/zimmer/issues/458), already closed). The pass runs the
+cheapest and most load-bearing evaluator first, so PR status is never queued behind a slow comment
+fetch for the *same* session. And a tick that overruns is dropped rather than queued, which is the
+behaviour each of the three jobs already had on its own.
+
+What is genuinely worse than before: a slow session delays every session after it in the sweep for
+all three concerns, not one; and `mergeable` now rides in the same `gh pr view` query as
+`state,mergedAt`, so anything that makes that one field unserviceable takes PR status down with it
+rather than only conflict detection. `mergeStateStatus` was left out of the query for exactly that
+reason — GitHub serves it only to a viewer with push access and `gh` fails the whole query when one
+requested field is refused.
+
+Unlike `GithubTriggerPollerJob`, the pass has no heartbeat and no watchdog, so a freeze is still
+detected by a human noticing that PRs stopped updating.
+
+### The merge-conflict read no longer retries inside one tick
+
+`GitHubMergeConflictPollerJob` used to ask GitHub for mergeability up to four times in a single
+tick, sleeping 5 seconds between attempts, because GitHub answers "still computing" for a while
+after a push. `Github::MergeConflictEvaluator` asks once per gated poll: an `UNKNOWN` reading is no
+reading, both debounce markers are left alone, and the next gated poll two minutes later is the
+retry.
+
+That was deliberate — three blocking sleeps inside the fused singleton would delay PR status and
+comment polling for every other session in the sweep, and the two-minute gate plus the
+two-consecutive-readings debounce already provide the retry at a longer, safer interval. The cost is
+latency in the window right after a push: where the old loop usually resolved `UNKNOWN` within one
+tick, a conflict that first appears during that window is now suspected on the *next* gated poll and
+confirmed on the one after, so first notification moves from about four minutes to about six.
+
+The pathological case is a PR being force-pushed roughly as often as the gate fires: every gated
+read can land in GitHub's recompute window, and two consecutive conflicting readings never
+accumulate, so a real conflict on a PR under continuous rebasing may not be reported until the
+pushing stops. The old retry loop narrowed that window without closing it either.
 
 ---
 
@@ -3028,7 +3073,7 @@ human comment waits up to a minute longer (on top of the 30-second poll) before 
 
 ### A failed repo visibility lookup drops the comment
 
-`GithubCommentPollerJob` only enqueues a follow-up when `GithubCommentPromptBuilder#actionable?`
+`Github::CommentEvaluator` only enqueues a follow-up when `GithubCommentPromptBuilder#actionable?`
 says the agent is allowed to act on the repo publicly, and `actionable?` fails closed: if the
 `gh api repos/OWNER/REPO` visibility call errors — rate limit, network blip, a repo that was
 renamed — the repo is assumed public and the comment is skipped, with no prompt and no 👀. The
@@ -3813,8 +3858,8 @@ Heuristics have two failure directions and neither announces itself:
   `GithubCommentAuthorshipHook` reads its own posting commands the same way since
   [#870](https://github.com/tadasant/zimmer/issues/870), and the same three spellings are its
   residual edge, on top of the `gh api` endpoint path it reads as written.
-- **Too tight** and a session's own PR is never recorded, so `GitHubPullRequestPollerJob`,
-  `GithubCommentPollerJob` and `GitHubMergeConflictPollerJob` all quietly do nothing for it. A PR
+- **Too tight** and a session's own PR is never recorded, so `Github::PrPollPass` and all three of
+  its evaluators quietly do nothing for it. A PR
   opened through a path the hook can't see — the web UI, a wrapper script, an MCP tool whose name is
   not `create_pull_request` — and never mentioned in the agent's prose lands here. The shapes are
   enumerated, so each new one costs a session before it is recognised: the REST fallback agents reach
@@ -4551,7 +4596,7 @@ The sweep collects paths with `find` and then hands them to `chown` in a second 
 ## A PR session waits for a merge message that three cases can prevent
 
 The PR goals hold a session open until its PR merges — asleep in `waiting` on the `open-pr` skill's
-bounded self-wake, then at rest in `needs_input` — and `GitHubPullRequestPollerJob` releases it by
+bounded self-wake, then at rest in `needs_input` — and `Github::PrStatusEvaluator` releases it by
 delivering `AutomatedPrompts.pr_merged_message`. That is the whole exit condition, and it has three
 ways to not fire.
 

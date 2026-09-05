@@ -45,8 +45,9 @@ class AirCatalogCacheWarmerTest < ActiveSupport::TestCase
   # sessions/_session_card.html.erb renders Session#agent_root_key ->
   # AgentRootsConfig.find_for_session -> AirCatalogService.entries_for(:roots).
   # On a cold cache that is a real `air resolve` subprocess in the middle of an
-  # unrelated test — the exact path GithubCommentPollerJobTest hit at
-  # --seed 40537 via GithubCommentPollerJob#persist_comments!.
+  # unrelated test — the exact path Github::CommentEvaluatorTest (then
+  # GithubCommentPollerJobTest) hit at --seed 40537 via
+  # Github::CommentEvaluator#persist_comments!.
   test "a session write serves the session-card broadcast from the restored cache" do
     session = sessions(:with_pr_url)
     AirCatalogService.reset!

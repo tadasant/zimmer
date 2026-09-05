@@ -47,7 +47,7 @@ only `archived` and `failed`, so the poller still sees it — with one differenc
 and picks it up at its next wake. The goal text keeps a fallback for runtimes and repos that do
 not ship the skill: come to rest in `needs_input` holding the PR.
 
-Nothing has to watch for the merge. `GitHubPullRequestPollerJob` sweeps unarchived sessions with
+Nothing has to watch for the merge. `GithubPrPollPassJob` sweeps unarchived sessions with
 recorded PR URLs, and on the open → merged transition it delivers `AutomatedPrompts.pr_merged_message`
 to the session. That message is the archive signal, and it makes the queue self-draining:
 

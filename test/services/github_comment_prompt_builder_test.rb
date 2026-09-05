@@ -641,7 +641,7 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
 
   # ---- Hung gh call (#458) ----
   #
-  # This lookup runs inside GithubCommentPollerJob's tick, a `total_limit: 1` singleton,
+  # This lookup runs inside Github::CommentEvaluator's pass, a `total_limit: 1` singleton,
   # so an unbounded hang here wedged comment polling entirely. It is also the one call
   # site whose failure branch is not free: it fails CLOSED, so a timeout has to stay a
   # DEFERRAL — the comment must remain retryable, not be dropped as "public, leave it".

@@ -59,9 +59,9 @@ Three properties worth knowing:
 in `github_pr_tracking_started_at`.
 
 That list is load-bearing, and it is provenance rather than a bookmark folder. It's what
-`GitHubPullRequestPollerJob` (CI status), `GithubCommentPollerJob` (review comments), and
-`GitHubMergeConflictPollerJob` all key off — so anything on it has GitHub activity routed back to
-this session, and anything missing from it is invisible to all three.
+`Github::PrPollPass` and its three evaluators — PR status and CI, review comments, merge conflicts —
+all key off, so anything on it has GitHub activity routed back to this session, and anything missing
+from it is invisible to all three.
 
 So the question the hook answers is not "did a PR URL appear in this transcript" but **"does this
 transcript show this session opening that PR"**. Reading about a PR is not opening one. Four kinds
@@ -224,7 +224,7 @@ mention, because the catalog's read-only goal says *"do not create files, PRs, o
 
 ### `GithubCommentAuthorshipHook`
 
-Records the GitHub comments *this session posted*, so `GithubCommentPollerJob` never hands one back
+Records the GitHub comments *this session posted*, so `Github::CommentEvaluator` never hands one back
 to an agent as if the human had written it.
 
 It exists because `gh` inside every session authenticates as the human, which makes an agent's
