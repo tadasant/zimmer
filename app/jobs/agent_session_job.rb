@@ -3969,12 +3969,13 @@ class AgentSessionJob < ApplicationJob
   # When MCP failure is detected:
   # 1. Log the failure details
   # 2. Terminate the Claude CLI process
-  # 3. For non-OAuth failures: retry with exponential backoff (up to MCP_BUDGET.max)
-  # 4. On OAuth failure: transition to failed state, so a human can authorize the
+  # 3. On OAuth failure: transition to failed state, so a human can authorize the
   #    connector at /connectors and restart
-  # 5. On any other definitive failure — retries exhausted, or a static credential
-  #    the provider rejected — leave the server out and resume the session on the
-  #    servers that did connect (#degrade_mcp_servers!)
+  # 4. Otherwise classify EACH remaining failed server on its own and act on all of
+  #    them in one pass: a static credential the provider rejected, or a server whose
+  #    retries are exhausted, is left out and the session resumes on the ones that did
+  #    connect (#degrade_mcp_servers!); everything else retries with exponential
+  #    backoff (up to MCP_BUDGET.max). One handshake can produce both at once.
   #
   # MCP connection failures are often transient — especially during deploys, where
   # the auto-recovery system restarts sessions before MCP servers have finished
@@ -4168,7 +4169,19 @@ class AgentSessionJob < ApplicationJob
           "oauth_required_servers" => oauth_required_servers
         )
       )
-    elsif static_credential_failures.any?
+    else
+      # Everything that is not "a human must click Authorize" is handled here, and it
+      # is handled PER SERVER. A handshake can fail several servers at once for several
+      # different reasons, and the verdict belongs to the server, not to the set: one
+      # server whose API token the provider rejected is definitive, while another that
+      # crashed on a corrupt npx cache in the same handshake is the ordinary transient
+      # kind that heals on the second attempt.
+      #
+      # Treating the set as one class degraded every co-failing server for the life of
+      # the session without a single retry, skipped the npx heal below, and told both
+      # the operator and the agent that a working server's credentials had been
+      # rejected (GitHub issue #689). So: degrade these, retry those, in the same pass.
+
       # Auth failure on a server whose credential is a static header/token, not OAuth.
       # Definitive and NOT retried: a rejected API token does not become valid 30 seconds
       # later, so the backoff ladder would only delay the real error by ~3.5 minutes.
@@ -4178,7 +4191,18 @@ class AgentSessionJob < ApplicationJob
       # from inside the session — so stopping the session buys nothing and costs the
       # whole transcript. The server is left out and the session runs on the ones that
       # did connect.
-      static_credential_failures.each do |server|
+      #
+      # Only the ones this session has not already given up on. A rejected server stays
+      # in the runtime config, so it re-fails its handshake on every retry spawn a
+      # co-failing server is still riding the ladder for — and the guard at the top of
+      # this method does not short-circuit then, because that co-failing server IS new.
+      # Announcing the same verdict once per pass would print the operator four copies
+      # of "credentials rejected" and four of "left out for the remainder of this
+      # session" for one server, and would keep rewriting its `degraded_at` so the
+      # field read "last re-degraded at" instead of "when we gave up".
+      newly_rejected = new_mcp_failures(session, static_credential_failures)
+
+      newly_rejected.each do |server|
         # Env vars as well as headers: a stdio server carries its credential in an env
         # var (`SLACK_BOT_TOKEN`) and configures no headers at all, so naming only the
         # headers named nothing for exactly the class of server this branch now catches.
@@ -4200,65 +4224,93 @@ class AgentSessionJob < ApplicationJob
         )
       end
 
-      log_buffer.flush
+      if newly_rejected.any?
+        log_buffer.flush
 
-      Rails.logger.warn(
-        "MCP static-credential authentication failed — server left out without retry " \
-        "| session_id=#{session.id} failed_servers=#{static_credential_failures.map { |s| s["name"] }.join(",")}"
-      )
-
-      return degrade_mcp_servers!(
-        session,
-        failed_servers,
-        log_buffer,
-        reason: "their credentials were rejected"
-      )
-    else
-      # Regular MCP connection failure (not OAuth related) — retry with backoff
-      # MCP failures are often transient (e.g., servers still starting after deploy).
-
-      # Before retrying, heal any corrupt `_npx/<hash>` cache that an
-      # `npx -y <pkg>@latest` server blamed — whether it failed at package
-      # extraction time (TAR_ENTRY_ERROR / ENOTEMPTY from concurrent installs
-      # racing the same cache dir, the signature that orphaned session 9570) or
-      # later at module-resolution time (MODULE_NOT_FOUND or an ESM
-      # directory-import/subpath-export failure such as ERR_UNSUPPORTED_DIR_IMPORT).
-      # A corrupt cache otherwise sticks (npx treats it as "installed"), so the
-      # retry would crash identically; removing the tree forces a fresh, complete
-      # install on the next attempt (GitHub issues pulsemcp/pulsemcp#3924 / pulsemcp/pulsemcp#4109).
-      heal_partial_npx_cache(session, failed_servers, log_buffer)
-
-      mcp_retry_count = MCP_BUDGET.count_for(session)
-
-      unless MCP_BUDGET.exhausted?(session)
-        return schedule_mcp_retry(session, failed_servers, mcp_retry_count, log_buffer)
+        Rails.logger.warn(
+          "MCP static-credential authentication failed — server left out without retry " \
+          "| session_id=#{session.id} failed_servers=#{newly_rejected.map { |s| s["name"] }.join(",")}"
+        )
       end
 
-      # Max retries exhausted — the failure is definitive, so stop retrying and
-      # leave the server out rather than killing the session over it.
-      log_buffer.add(
-        "MCP connection retry limit exhausted (#{MCP_BUDGET.max} attempts).",
-        level: "warning"
-      )
+      degradations = mcp_degradations(newly_rejected, "their credentials were rejected")
 
-      # .warn, not .error: the session is no longer orphaned by this, so it is not
-      # an incident and must not page on-call. It is still the loudest MCP-connect
-      # signal Zimmer emits — a capability the session was configured with is gone
-      # for the rest of its life — so it stays on Rails.logger, shipped to obs /
-      # VictoriaLogs via the OTLP exporter, where the per-server error is greppable.
-      # See GitHub issues pulsemcp/pulsemcp#3924 / pulsemcp/pulsemcp#4109.
-      Rails.logger.warn(
-        "MCP servers failed to connect after #{MCP_BUDGET.max} retries — left out, " \
-        "session continues | session_id=#{session.id} " \
-        "failed_servers=#{failed_servers.map { |s| s["name"] }.join(",")}"
-      )
+      # The exclusion is drawn from EVERY rejected server, not just the newly-recorded
+      # ones: a verdict already on the record is still a verdict, and putting that
+      # server back on the ladder is exactly what this branch exists to prevent.
+      rejected_names = static_credential_failures.filter_map { |server| server["name"] }.to_set
 
-      return degrade_mcp_servers!(
-        session,
-        failed_servers,
-        log_buffer,
-        reason: "they did not connect after #{MCP_BUDGET.max} retries"
-      )
+      # What is left is still owed the ladder: an ordinary transient failure, or an
+      # OAuth-capable server the `already_authorized` cascade above just cleared the
+      # runtime needs-auth cache for — the retry is the whole point of that clear.
+      retryable_failures = failed_servers.reject { |server| rejected_names.include?(server["name"]) }
+
+      # Heal any corrupt `_npx/<hash>` cache that an `npx -y <pkg>@latest` server
+      # blamed — whether it failed at package extraction time (TAR_ENTRY_ERROR /
+      # ENOTEMPTY from concurrent installs racing the same cache dir, the signature
+      # that orphaned session 9570) or later at module-resolution time
+      # (MODULE_NOT_FOUND or an ESM directory-import/subpath-export failure such as
+      # ERR_UNSUPPORTED_DIR_IMPORT). A corrupt cache otherwise sticks (npx treats it
+      # as "installed"), so the retry would crash identically; removing the tree
+      # forces a fresh, complete install on the next attempt (GitHub issues
+      # pulsemcp/pulsemcp#3924 / pulsemcp/pulsemcp#4109).
+      #
+      # Run over the WHOLE failed set, not just the retryable part. A degraded server
+      # stays in the runtime config precisely so it reconnects for free once whatever
+      # broke it is fixed, and a corrupt cache tree it left behind is exactly what
+      # makes the next spawn crash identically instead.
+      heal_partial_npx_cache(session, failed_servers, log_buffer)
+
+      # An empty failed-server set is not "nothing left to retry" — it is a flagged
+      # failure that named no server, and it has always ridden the ladder. Only a set
+      # whose every member reached a definitive verdict skips it.
+      nothing_left_to_retry = retryable_failures.empty? && static_credential_failures.any?
+
+      if !nothing_left_to_retry && !MCP_BUDGET.exhausted?(session)
+        # Degrade and retry in the same pass. The degraded entries ride along in
+        # schedule_mcp_retry's own UPDATE so the write-off is recorded before the
+        # session pauses — #build_degraded_mcp_block renders it into the re-sent
+        # prompt, and #new_mcp_failures reads it on the next spawn, so the rejected
+        # server cannot re-trigger another terminate-and-resume.
+        degraded_entries = degradations.any? ? merged_degraded_entries(session, degradations) : nil
+        log_mcp_degradations(degradations, log_buffer)
+
+        return schedule_mcp_retry(
+          session,
+          retryable_failures,
+          MCP_BUDGET.count_for(session),
+          log_buffer,
+          degraded_entries: degraded_entries
+        )
+      end
+
+      unless nothing_left_to_retry
+        # Max retries exhausted — the failure is definitive, so stop retrying and
+        # leave the server out rather than killing the session over it.
+        log_buffer.add(
+          "MCP connection retry limit exhausted (#{MCP_BUDGET.max} attempts).",
+          level: "warning"
+        )
+
+        # .warn, not .error: the session is no longer orphaned by this, so it is not
+        # an incident and must not page on-call. It is still the loudest MCP-connect
+        # signal Zimmer emits — a capability the session was configured with is gone
+        # for the rest of its life — so it stays on Rails.logger, shipped to obs /
+        # VictoriaLogs via the OTLP exporter, where the per-server error is greppable.
+        # See GitHub issues pulsemcp/pulsemcp#3924 / pulsemcp/pulsemcp#4109.
+        Rails.logger.warn(
+          "MCP servers failed to connect after #{MCP_BUDGET.max} retries — left out, " \
+          "session continues | session_id=#{session.id} " \
+          "failed_servers=#{retryable_failures.map { |s| s["name"] }.join(",")}"
+        )
+
+        degradations += mcp_degradations(
+          retryable_failures,
+          "they did not connect after #{MCP_BUDGET.max} retries"
+        )
+      end
+
+      return degrade_mcp_servers!(session, degradations, log_buffer)
     end
 
     session.fail! if session.may_fail?
@@ -4422,8 +4474,13 @@ class AgentSessionJob < ApplicationJob
 
   # Remove any partially-populated `_npx/<hash>` cache tree that a failed MCP
   # server blamed — for an extraction-time tar/rename error (TAR_ENTRY_ERROR /
-  # ENOTEMPTY) or a transitive MODULE_NOT_FOUND — so the next retry installs it
+  # ENOTEMPTY) or a transitive MODULE_NOT_FOUND — so the next attempt installs it
   # cleanly. No-op when the failure isn't an `_npx` cache-corruption error.
+  #
+  # "The next attempt" is a retry for a server still on the ladder, and the next
+  # SPAWN for one being left out: a degraded server stays in the runtime config so it
+  # reconnects for free once whatever broke it is fixed, and a corrupt cache tree left
+  # behind is what would make that spawn crash identically instead.
   #
   # @param session [Session] The current session
   # @param failed_servers [Array<Hash>] entries shaped { "name" =>, "error" => }
@@ -4437,7 +4494,7 @@ class AgentSessionJob < ApplicationJob
 
     if result[:healed]
       log_buffer.add(
-        "Healed corrupt _npx cache before retry — removed: " \
+        "Healed corrupt _npx cache — removed: " \
         "#{result[:removed_paths].join(', ')}",
         level: "warning"
       )
@@ -4473,8 +4530,11 @@ class AgentSessionJob < ApplicationJob
   # @param failed_servers [Array<Hash>] The servers that failed to connect
   # @param mcp_retry_count [Integer] Current retry attempt (0-based)
   # @param log_buffer [LogBuffer] Buffer for logging
+  # @param degraded_entries [Array<Hash>, nil] the session's full `mcp_degraded_servers`
+  #   record, when the same pass also wrote off a server definitively — see
+  #   #merged_degraded_entries. nil leaves the existing record untouched.
   # @return [Boolean] always true (MCP failure was handled)
-  def schedule_mcp_retry(session, failed_servers, mcp_retry_count, log_buffer)
+  def schedule_mcp_retry(session, failed_servers, mcp_retry_count, log_buffer, degraded_entries: nil)
     delay = MCP_RETRY_BASE_DELAY * (2**mcp_retry_count)
 
     log_buffer.add(
@@ -4484,14 +4544,17 @@ class AgentSessionJob < ApplicationJob
     )
     log_buffer.flush
 
+    retry_metadata = MCP_BUDGET.attempt_attributes(mcp_retry_count + 1).merge(
+      "paused_by" => "mcp_retry",
+      "mcp_failed_servers" => failed_servers
+    )
+    # Folded into the same UPDATE rather than written separately, so a server the
+    # caller wrote off in this same pass cannot be lost between two statements.
+    retry_metadata["mcp_degraded_servers"] = degraded_entries if degraded_entries
+
     session.update!(
       running_job_id: nil,
-      metadata: (session.metadata || {}).merge(
-        MCP_BUDGET.attempt_attributes(mcp_retry_count + 1).merge(
-          "paused_by" => "mcp_retry",
-          "mcp_failed_servers" => failed_servers
-        )
-      )
+      metadata: (session.metadata || {}).merge(retry_metadata)
     )
     session.pause! if session.may_pause?
 
@@ -4559,41 +4622,31 @@ class AgentSessionJob < ApplicationJob
   # gap), a sweep picks the session back up; a novel marker would strand it where
   # nothing looks.
   #
+  # The reason is carried PER SERVER rather than per call: one handshake can fail
+  # several servers for several different reasons, and #build_degraded_mcp_block
+  # renders each server's own reason into every subsequent prompt. A shared reason
+  # told the agent that a server which merely timed out had had its credentials
+  # rejected (GitHub issue #689).
+  #
   # @param session [Session]
-  # @param failed_servers [Array<Hash>] entries shaped { "name" =>, "error" => }
+  # @param degradations [Array<Hash>] entries shaped
+  #   { server: { "name" =>, "error" => }, reason: String }, as built by #mcp_degradations
   # @param log_buffer [LogBuffer]
-  # @param reason [String] short phrase completing "MCP server(s) X were left out because …"
   # @return [Boolean] always true (the MCP failure was handled)
-  def degrade_mcp_servers!(session, failed_servers, log_buffer, reason:)
+  def degrade_mcp_servers!(session, degradations, log_buffer)
     require "automated_prompts"
 
-    names = failed_servers.filter_map { |server| server["name"] }.uniq
-    degraded_at = Time.current.iso8601
-    entries = session.degraded_mcp_servers.index_by { |entry| entry["name"] }
-    failed_servers.each do |server|
-      next if server["name"].blank?
+    names = degradations.filter_map { |degradation| degradation[:server]["name"] }.uniq
+    entries = merged_degraded_entries(session, degradations)
 
-      entries[server["name"]] = {
-        "name" => server["name"],
-        "error" => server["error"],
-        "reason" => reason,
-        "degraded_at" => degraded_at
-      }.compact
-    end
-
-    log_buffer.add(
-      "MCP server(s) #{names.join(', ')} are marked failed and left out for the remainder of " \
-      "this session because #{reason}. Their tools are unavailable; the session continues on " \
-      "the servers that did connect.",
-      level: "warning"
-    )
+    log_mcp_degradations(degradations, log_buffer)
     log_buffer.flush
 
     session.update!(
       running_job_id: nil,
       metadata: (session.metadata || {}).merge(
         "paused_by" => "recovery",
-        "mcp_degraded_servers" => entries.values
+        "mcp_degraded_servers" => entries
       )
     )
     session.pause! if session.may_pause?
@@ -4613,6 +4666,65 @@ class AgentSessionJob < ApplicationJob
     )
 
     true
+  end
+
+  # Pair each failed server with the reason it is being written off.
+  #
+  # Exists so that a mixed set — some servers whose credentials the provider rejected,
+  # some that ran out of retries — can be degraded in one pass without either group
+  # being described as the other.
+  #
+  # @param failed_servers [Array<Hash>] entries shaped { "name" =>, "error" => }
+  # @param reason [String] short phrase completing "MCP server(s) X were left out because …"
+  # @return [Array<Hash>] entries shaped { server:, reason: }
+  def mcp_degradations(failed_servers, reason)
+    failed_servers.map { |server| { server: server, reason: reason } }
+  end
+
+  # Fold the degradations into the session's existing `mcp_degraded_servers` record,
+  # one entry per server, each carrying its own reason. Servers already on the record
+  # are replaced by the fresh verdict; everything else is left alone.
+  #
+  # @param session [Session]
+  # @param degradations [Array<Hash>] entries shaped { server:, reason: }
+  # @return [Array<Hash>] the whole record, ready to write to metadata
+  def merged_degraded_entries(session, degradations)
+    degraded_at = Time.current.iso8601
+    entries = session.degraded_mcp_servers.index_by { |entry| entry["name"] }
+
+    degradations.each do |degradation|
+      server = degradation[:server]
+      next if server["name"].blank?
+
+      entries[server["name"]] = {
+        "name" => server["name"],
+        "error" => server["error"],
+        "reason" => degradation[:reason],
+        "degraded_at" => degraded_at
+      }.compact
+    end
+
+    entries.values
+  end
+
+  # One session-log line per distinct reason. Grouping rather than one line per server
+  # keeps the single-reason case (still the common one) reading exactly as it always
+  # has, while a mixed set never tells the operator that a server which merely timed
+  # out had its credentials rejected.
+  #
+  # @param degradations [Array<Hash>] entries shaped { server:, reason: }
+  # @param log_buffer [LogBuffer]
+  def log_mcp_degradations(degradations, log_buffer)
+    degradations.group_by { |degradation| degradation[:reason] }.each do |reason, group|
+      names = group.filter_map { |degradation| degradation[:server]["name"] }.uniq
+
+      log_buffer.add(
+        "MCP server(s) #{names.join(', ')} are marked failed and left out for the remainder of " \
+        "this session because #{reason}. Their tools are unavailable; the session continues on " \
+        "the servers that did connect.",
+        level: "warning"
+      )
+    end
   end
 
   # Check if Claude CLI is hung after emitting "Prompt is too long" as a regular

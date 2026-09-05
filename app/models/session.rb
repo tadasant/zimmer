@@ -1480,8 +1480,10 @@ class Session < ApplicationRecord
   end
 
   # MCP servers this session has definitively given up connecting to, recorded by
-  # AgentSessionJob#degrade_mcp_servers!. Each entry is
-  # `{ "name", "error", "reason", "degraded_at" }`.
+  # AgentSessionJob#degrade_mcp_servers! — and by #schedule_mcp_retry, for the server
+  # written off in the same pass that put a co-failing one back on the retry ladder.
+  # Each entry is `{ "name", "error", "reason", "degraded_at" }`, and the reason is
+  # that server's own: one handshake can fail several servers for several reasons.
   #
   # Their tools are unavailable for the rest of the session, but the session itself
   # is alive — that is the whole point of the record. It lives in `metadata` rather
