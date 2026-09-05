@@ -48,6 +48,29 @@ class GitHubPullRequestPollerJob < ApplicationJob
   POLL_BACKOFF_KEY = "github_pr_poller".freeze
   BASE_POLL_INTERVAL_SECONDS = 30
 
+  # Ceiling on the backed-off interval for a session that still holds a PR
+  # Zimmer has not seen reach a terminal state.
+  #
+  # PollBackoff's curve measures how recently a *user* touched the session, and
+  # past 24 hours of that it drops to one poll a day. A session parked holding a
+  # PR is idle by construction — it did the work, said so, and is waiting for
+  # exactly one event — so it decays into the slowest bucket precisely when the
+  # message it is waiting for is the only thing that can release it. Sessions
+  # 4419 and 4422 were last polled at 23.7 hours of activity age, crossed into
+  # the 24-hour bucket eighteen minutes later, and so were not due again until a
+  # full day after that: their PRs merged eight hours inside that gap and neither
+  # session was ever told (#494).
+  #
+  # 30 minutes is deliberately not a new rate. It is the floor the 8–24 hr bucket
+  # already applies, so a waiting session holds the cadence it had at 23:59 of
+  # idleness instead of falling off a cliff at 24:00 — the fix removes the cliff
+  # without introducing any polling rate the rate limit does not already absorb.
+  #
+  # A session whose every tracked PR has merged or closed is not waiting on
+  # anything and keeps the full curve, 24-hour floor included. That is the case
+  # PollBackoff was written for and it is untouched.
+  AWAITING_PR_OUTCOME_MAX_POLL_INTERVAL = 30.minutes.to_i
+
   # Wall-clock bounds on the two `gh` children this job spawns, process group
   # killed on deadline. Without them a half-open connection to GitHub blocks the
   # tick forever and, because this job is a `total_limit: 1` singleton, every
@@ -80,7 +103,14 @@ class GitHubPullRequestPollerJob < ApplicationJob
 
   def perform
     Session.with_github_prs.find_each do |session|
-      unless PollBackoff.should_poll?(session, job_key: POLL_BACKOFF_KEY, base_interval: BASE_POLL_INTERVAL_SECONDS)
+      due = PollBackoff.should_poll?(
+        session,
+        job_key: POLL_BACKOFF_KEY,
+        base_interval: BASE_POLL_INTERVAL_SECONDS,
+        max_interval: max_poll_interval_for(session)
+      )
+
+      unless due
         Rails.logger.info "[GitHubPullRequestPollerJob] Skipping session #{session.id} (PollBackoff: stale user activity)"
         next
       end
@@ -93,6 +123,19 @@ class GitHubPullRequestPollerJob < ApplicationJob
   end
 
   private
+
+  # The backoff ceiling to hand PollBackoff for this session, or nil to let the
+  # curve run its full course. See AWAITING_PR_OUTCOME_MAX_POLL_INTERVAL.
+  #
+  # The predicate is deliberately the recorded status rather than the session's
+  # own state: a PR url with no status yet is unresolved too, which is what keeps
+  # a just-recorded PR from waiting up to a day to be seen as `open` — the
+  # transition the merge announcement is conditioned on.
+  def max_poll_interval_for(session)
+    return nil if session.unresolved_pr_urls.empty?
+
+    AWAITING_PR_OUTCOME_MAX_POLL_INTERVAL
+  end
 
   def poll_pr_statuses(session)
     pr_urls = session.custom_metadata&.dig("github_pull_request_urls")

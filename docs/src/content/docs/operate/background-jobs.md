@@ -697,7 +697,9 @@ branch rather than prose the commenter typed — see
 `GitHubPullRequestPollerJob` writes each tracked PR's state into
 `custom_metadata["github_pull_request_statuses"]` on every tick it is allowed to poll — every 30
 seconds for a session the user has touched recently, less often as `PollBackoff` stretches the
-interval out. When one of them goes from `open` to `merged`, the session that owns it gets
+interval out, but never less often than every 30 minutes while the session still holds a PR that
+has not merged or closed (see [How often a waiting session is
+polled](#how-often-a-waiting-session-is-polled)). When one of them goes from `open` to `merged`, the session that owns it gets
 `AutomatedPrompts::PR_MERGED_TEMPLATE` through the same delivery path the merge conflict poller
 uses (`AutomatedSessionMessage`): sent immediately if the session is parked in `needs_input`, queued
 behind the current turn if it is running or waiting.
@@ -721,6 +723,40 @@ Three rules keep it quiet:
 
 The message is delivered before the metadata marker is written, so a crash in between costs one
 duplicate on the next poll rather than a notification that silently never arrives.
+
+### How often a waiting session is polled
+
+`PollBackoff` measures **engagement** — time since a human last touched the session — and stretches
+each poller's per-session interval out along a fixed curve, ending at a floor of one poll every 24
+hours once that is more than a day old. It exists because polling every active session's PRs on
+every 30-second tick exhausts GitHub's 5000/hr authenticated limit at around 50 sessions.
+
+Engagement is the wrong question for a session that is idle *because* it is waiting. A session
+holding a PR did its work, said so, and has been parked ever since, so it decays into the slowest
+bucket exactly when the merge message is the only thing that can release it — which is how sessions
+4419 and 4422 slept through their own merges
+([#494](https://github.com/tadasant/zimmer/issues/494)). Both were last polled at 23.7 hours of
+activity age, crossed into the 24-hour bucket eighteen minutes later, and so were not due again for
+a full day; their PRs merged eight hours inside that gap.
+
+`GitHubPullRequestPollerJob` closes that by passing `PollBackoff` a `max_interval` — a ceiling on
+how far the curve may stretch this session — of `AWAITING_PR_OUTCOME_MAX_POLL_INTERVAL`, 30 minutes,
+whenever `Session#unresolved_pr_urls` is non-empty:
+
+- **Unresolved** means a tracked PR url whose last recorded status is not `merged` or `closed`. A
+  url with no recorded status counts as unresolved too, which is what stops a just-recorded PR from
+  waiting up to a day to be seen as `open` — the transition the announcement is conditioned on.
+- **30 minutes is not a new rate.** It is the floor the 8–24 hr bucket already applies, so a waiting
+  session holds the cadence it had at 23:59 of idleness instead of falling off a cliff at 24:00. The
+  worst-case volume the cap admits is one the fleet already sustains for every session in that
+  bucket.
+- **The ceiling never raises the interval**, and never polls faster than the job's own base cadence.
+  It is a cap, not a target: inside 30 minutes the session still waits.
+- **A session with nothing left to wait for keeps the full curve**, 24-hour floor included. That is
+  the case `PollBackoff` was written for and the cap does not touch it.
+
+Only the PR *status* poller is capped. `GithubCommentPollerJob` and `GitHubMergeConflictPollerJob`
+ride the full curve — see [Limitations](/limitations/#a-parked-session-can-hear-about-its-merged-pr-up-to-half-an-hour-late).
 
 ## A conflict notice is re-read when it comes off the queue, not when it was written
 
