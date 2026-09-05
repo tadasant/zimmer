@@ -468,6 +468,35 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
       "MCP config should include the session's configured MCP server"
   end
 
+  # THE DEFECT THIS PINS (#400). This ran from inside #create_forked_clone, before
+  # the fork record existed, so the only session AirPrepareService could be handed
+  # was the SOURCE — and everything it writes into the fork's clone is written for
+  # whichever session it is given. The `session_id` stamped on the injected Zimmer
+  # MCP server is the one that bites: RuntimeConfigPostProcessor#with_session_id
+  # leaves a URL that already carries one alone, so AgentSessionJob re-preparing
+  # for the fork on its first turn does not correct it. The fork then ran with a
+  # connection that identified it, to Zimmer, as the source session.
+  test "the fork's config is prepared for the fork, never for the source" do
+    prepared_for = nil
+    AirPrepareService.any_instance.stubs(:prepare!)
+    AirPrepareService.any_instance.stubs(:ensure_baseline_mcp_config!)
+    AirPrepareService.stubs(:new).with do |kwargs|
+      prepared_for = kwargs[:session]
+      true
+    end.returns(stub(prepare!: nil, ensure_baseline_mcp_config!: nil, injected_mcp_servers: []))
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs
+    )
+
+    assert result.success?
+    assert_equal result.forked_session.id, prepared_for&.id,
+      "the fork's runtime config must be prepared for the fork — preparing it for the source is what " \
+      "stamped the source's session_id onto the fork's Zimmer MCP server (#400)"
+  end
+
   test "does not fail fork when MCP config generation fails" do
     # MCP config generation should be best-effort - if it fails, the fork should
     # still succeed. Users can add MCP servers later via the UI.

@@ -110,11 +110,17 @@ The injected entry's URL also carries `session_id=<id>` — the session the conf
 Nothing in an MCP request body identifies its caller (the API key is shared by the whole fleet and
 the transport is stateless), so this is the only place that knowledge exists. The wake-up tools use
 it to default their `session_id` argument, which is the difference between a session's first wake
-call working and it failing on an argument the agent cannot see the value of. It is a **default and
-not a scope**: `tool_groups` and `allowed_agent_roots` still decide everything the connection may
-reach, and an explicit `session_id` always wins. `RuntimeConfigPostProcessor` stamps it onto every
-Zimmer entry in a session's config, including catalog-provided ones, and leaves alone any entry that
-already names a session.
+call working and it failing on an argument the agent cannot see the value of. It is not a **scope**: `tool_groups` and `allowed_agent_roots` still decide everything the connection
+may reach, it grants no tool, and an explicit `session_id` always wins.
+`RuntimeConfigPostProcessor` stamps it onto every Zimmer entry in a session's config, including
+catalog-provided ones, and leaves alone any entry that already names a session.
+
+It is not *purely* a default either, and the one exception is worth knowing when you point an entry
+by hand. It is also how Zimmer answers "is this caller the session it is acting on", which is what
+exempts a session archiving **itself** from the refusal that stops one session terminating another's
+in-flight turn (see [Archiving someone else's running turn](/sessions/lifecycle/)). A connection
+stamped with another session's id therefore inherits that session's exemption — which is why a fork's
+config is prepared for the fork rather than for the session it was forked from.
 
 ## Restricting what a connection may spawn: `allowed_agent_roots`
 
