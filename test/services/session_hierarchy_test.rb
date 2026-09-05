@@ -55,6 +55,19 @@ class SessionHierarchyTest < ActiveSupport::TestCase
     assert_equal column_parent.id, child.reload.lineage_parent_id
   end
 
+  # Both representations are kept, not just the winning one: SessionHierarchy has
+  # to know which of them REACHED a session, and the column can win the
+  # precedence contest while pointing outside the level being drawn.
+  test "both recorded spawner ids are exposed, in precedence order" do
+    column_parent = create_session
+    metadata_parent = create_session
+    child = create_session(parent: column_parent, router_metadata: metadata_parent)
+
+    assert_equal [ column_parent.id, metadata_parent.id ], child.reload.lineage_parent_candidate_ids
+    assert_equal column_parent.id, child.lineage_parent_id
+    assert_equal [], create_session.lineage_parent_candidate_ids
+  end
+
   test "a non-numeric router_session_id is ignored rather than raising" do
     session = create_session
     session.update!(custom_metadata: { "router_session_id" => "not-an-id" })
@@ -592,5 +605,70 @@ class SessionHierarchyTest < ActiveSupport::TestCase
     assert_equal spawn_parent.id, node.render_parent_id
     assert node.spawn_edge?
     assert_equal [ uncle.id ], node.uncles, "the uncle is still named, just not drawn under"
+  end
+
+  # The column wins the precedence contest but points OUTSIDE the level being
+  # drawn, while the metadata key points into it. Resolving the attachment with
+  # `lineage_parent_id` alone would leave this child unattachable — and an
+  # unattachable child is emitted after the whole tree at its old depth, which
+  # is the same wrong picture in a new shape.
+  test "a child is drawn under whichever recorded spawner actually reached it" do
+    outsider = create_session(title: "Outside this level")
+    trigger = create_session(title: "Trigger")
+    router = create_session(parent: trigger, title: "Router")
+    child = create_session(parent: outsider, router_metadata: router, title: "Child")
+
+    hierarchy = SessionHierarchy.new(router)
+    node = hierarchy.nodes.find { |n| n.id == child.id }
+
+    assert_equal router.id, outline_parents(hierarchy)[child.id]
+    assert_equal router.id, node.render_parent_id
+    assert node.spawn_edge?, "the metadata key is a spawn claim too"
+  end
+
+  # A junior with no spawn parent at all: indentation puts it under its uncle,
+  # and there is no spawn parent for the marker to call it "not".
+  test "a parentless junior drawn under an uncle is not said to have a spawn parent" do
+    senior = create_session(title: "Senior")
+    junior = create_session(title: "Started from the web UI")
+    link(junior, senior)
+    # Asked from the senior, so the junior is reached DOWNWARD through the uncle
+    # edge rather than being a root in its own right.
+    outline = SessionHierarchy.new(senior).to_outline
+
+    assert_includes outline, "it has no spawn parent"
+    refute_includes outline, "not its spawn parent"
+  end
+
+  # The one node no edge places: the requested session, appended so the reader
+  # can see it after the ceiling cut the branch it lives on. It is drawn indented
+  # under whatever came last, so it must not claim that as a spawn edge.
+  test "a session the node ceiling forced into view does not claim a spawn edge" do
+    root = create_session(title: "Prolific router")
+    children = Array.new(SessionHierarchy::MAX_NODES + 5) { create_session(parent: root) }
+    stranded = children.last
+
+    hierarchy = SessionHierarchy.new(stranded)
+    node = hierarchy.nodes.find { |n| n.id == stranded.id }
+
+    assert hierarchy.truncated?
+    assert_equal 1, hierarchy.nodes.count(&:current?)
+    assert node.ceiling_placed
+    refute node.spawn_edge?, "no edge put this node where it is drawn"
+    assert_operator node.depth, :>, 0, "never drawn as a sibling of the origin"
+    assert hierarchy.redrawn_edges?
+    assert_includes hierarchy.to_outline, "the node ceiling cut its branch"
+  end
+
+  # Even at the ceiling, the set is the set: nothing is invented to make the
+  # tree drawable, because the set is what human messages are gathered over.
+  test "the node ceiling still bounds the graph once the fallback has run" do
+    root = create_session
+    children = Array.new(SessionHierarchy::MAX_NODES + 5) { create_session(parent: root) }
+
+    hierarchy = SessionHierarchy.new(children.last)
+
+    assert_operator hierarchy.size, :<=, SessionHierarchy::MAX_NODES + 1
+    assert_equal hierarchy.session_ids.uniq, hierarchy.session_ids
   end
 end

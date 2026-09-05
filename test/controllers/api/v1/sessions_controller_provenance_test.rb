@@ -69,6 +69,31 @@ class Api::V1::SessionsControllerProvenanceTest < ActionDispatch::IntegrationTes
     assert_equal router.id, nodes.last["parent_session_id"]
     assert_equal [ router.id ], hierarchy["root_session_ids"]
     assert_equal [], nodes.last["uncle_session_ids"]
+    # The node a consumer rebuilds the tree from. `rest-api.md` tells them to use
+    # this rather than infer a parent from `depth` plus array order, which is the
+    # inference that made every child of a sibling batch read as a child of the
+    # last sibling (#571).
+    assert_nil nodes.first["render_parent_session_id"], "a root hangs from nothing"
+    assert_equal router.id, nodes.last["render_parent_session_id"]
+    assert_equal true, nodes.last["spawn_edge"]
+  end
+
+  # A batch of siblings, each with one child: the array order and every
+  # `render_parent_session_id` have to agree with who actually spawned whom.
+  test "show attributes each sibling's child to that sibling" do
+    trigger = spawn_session(title: "Trigger", agent_root: "zimmer-router")
+    routers = Array.new(4) { |i| spawn_session(parent: trigger, title: "Router #{i}", agent_root: "zimmer-router") }
+    children = routers.map { |r| spawn_session(parent: r, title: "Child of #{r.id}", agent_root: "zimmer") }
+
+    get "/api/v1/sessions/#{routers.last.id}", headers: @headers
+
+    assert_response :success
+    nodes = JSON.parse(response.body)["session_hierarchy"]["nodes"].index_by { |n| n["id"] }
+
+    routers.zip(children).each do |router, child|
+      assert_equal router.id, nodes[child.id]["render_parent_session_id"]
+      assert_equal true, nodes[child.id]["spawn_edge"]
+    end
   end
 
   test "show carries uncle edges alongside the spawn edges" do
@@ -89,6 +114,25 @@ class Api::V1::SessionsControllerProvenanceTest < ActionDispatch::IntegrationTes
     node = hierarchy["nodes"].find { |n| n["id"] == target.id }
     assert_equal [ senior.id ], node["uncle_session_ids"]
     assert_nil node["parent_session_id"]
+  end
+
+  # An uncle-drawn node: its position in `nodes[]` is not a spawn edge, and the
+  # payload says so rather than letting a consumer infer one from the ordering.
+  test "show marks a node drawn under an uncle rather than a spawn parent" do
+    origin = spawn_session(title: "Origin", agent_root: "zimmer-router")
+    spawn_parent = spawn_session(parent: origin, title: "Spawn parent", agent_root: "zimmer-router")
+    junior = spawn_session(parent: spawn_parent, title: "Junior", agent_root: "zimmer")
+    senior = spawn_session(title: "Senior", agent_root: "zimmer-router")
+    SessionUncleLink.create!(session: junior, uncle_session: senior, source: "test")
+
+    get "/api/v1/sessions/#{junior.id}", headers: @headers
+
+    assert_response :success
+    node = JSON.parse(response.body)["session_hierarchy"]["nodes"].find { |n| n["id"] == junior.id }
+
+    assert_equal senior.id, node["render_parent_session_id"]
+    assert_equal spawn_parent.id, node["parent_session_id"], "the spawn edge is still reported"
+    assert_equal false, node["spawn_edge"]
   end
 
   test "show renders a message said to this session with its full provenance" do
