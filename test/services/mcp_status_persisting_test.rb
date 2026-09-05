@@ -63,7 +63,7 @@ class McpStatusPersistingTest < ActiveSupport::TestCase
   end
 
   test "an includer that supplies only @session and @logger can persist status" do
-    assert @host.respond_to?(:with_db_retry, true),
+    assert @host.respond_to?(:with_db_retry),
       "McpStatusPersisting must supply with_db_retry to its includers rather than requiring it"
 
     assert_nothing_raised { @host.update_session_mcp_status({}) }

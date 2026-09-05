@@ -88,8 +88,11 @@ class RuntimeBundleSlotContractTest < ActiveSupport::TestCase
         session, file_system: MockFileSystemAdapter.new, min_timestamp: nil
       )
 
-      result = nil
-      assert_nothing_raised { result = detector.poll(transcript_content: nil) }
+      # No assert_nothing_raised around `poll`: a raise here fails the test on its
+      # own, and wrapping it would over-claim — CodexMcpStatusDetector#poll has a
+      # blanket rescue, so the assertion could never fail for that runtime anyway.
+      # The persist call is the one that broke, and it has no rescue of its own.
+      result = detector.poll(transcript_content: nil)
       assert_nothing_raised do
         detector.update_session_mcp_status(result[:server_statuses])
       end
@@ -100,9 +103,12 @@ class RuntimeBundleSlotContractTest < ActiveSupport::TestCase
       # exactly what a detector that raises leaves behind.
       persisted = session.reload.custom_metadata["mcp_servers_status"] || {}
       session.all_mcp_servers.each do |server_name|
-        assert persisted.key?(server_name),
-          "#{runtime}'s detector (#{detector.class}) left #{server_name.inspect} out of " \
-          "mcp_servers_status. Every trackable server must be seeded, at minimum as pending."
+        entry = persisted[server_name]
+
+        assert entry.is_a?(Hash) && entry["status"].present?,
+          "#{runtime}'s detector (#{detector.class}) left #{server_name.inspect} without a status " \
+          "in mcp_servers_status (got #{entry.inspect}). Every trackable server must be seeded, " \
+          "at minimum as pending."
       end
     end
   end

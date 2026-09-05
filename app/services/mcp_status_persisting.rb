@@ -14,19 +14,20 @@
 # - `@session`  — the Session being tracked
 # - `@logger`   — a StructuredLogger
 #
-# `with_db_retry` is NOT one of them: this module includes DatabaseRetry itself,
-# so an includer gets it whether or not it remembers to ask. It used to be a
-# documented obligation on the includer, and the third includer did not read the
-# documentation — NullMcpStatusDetector (the Pi runtime's detector) included only
-# this module, so the very first Pi session in production raised
-# `NoMethodError: undefined method 'with_db_retry'` on every transcript poll that
-# reached here. TranscriptPollerService#poll_mcp_logs rescues and logs, so the
-# poll survived; what did not survive was the placeholder seeding below, which is
-# the ONLY reason a Pi session persists MCP status at all. A dependency a module
-# can satisfy for itself should not be a comment asking callers to satisfy it.
+# `with_db_retry` is deliberately NOT a third item on that list: the module
+# includes DatabaseRetry itself, so an includer gets it whether or not it
+# remembers to ask. A dependency a module can satisfy for itself is not one to
+# ask callers for — asking cost the Pi runtime every MCP status it had, because
+# NullMcpStatusDetector included this module and not DatabaseRetry, and the call
+# below raised NoMethodError on every poll (GlitchTip issue 85).
+#
+# Plain `include`, not `extend ActiveSupport::Concern`. Concern overrides
+# `append_features` but not `extend_object`, so under it DatabaseRetry lands in
+# each includer's ancestors while staying out of this module's own — and
+# `obj.extend(McpStatusPersisting)` would reproduce exactly the NoMethodError
+# above. A plain include puts DatabaseRetry in the real ancestor chain, where
+# both `include` and `extend` reach it.
 module McpStatusPersisting
-  extend ActiveSupport::Concern
-
   include DatabaseRetry
 
   # Update session's custom_metadata with MCP server statuses

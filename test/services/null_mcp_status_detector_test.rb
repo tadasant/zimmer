@@ -44,16 +44,18 @@ class NullMcpStatusDetectorTest < ActiveSupport::TestCase
   end
 
   test "the persisting path has with_db_retry available to it" do
-    assert @detector.respond_to?(:with_db_retry, true),
+    assert @detector.respond_to?(:with_db_retry),
       "McpStatusPersisting calls with_db_retry; a detector that includes it without " \
       "DatabaseRetry raises NoMethodError on every poll (GlitchTip issue 85)"
   end
 
   test "a session with no trackable servers persists nothing rather than raising" do
-    @session.update!(mcp_servers: [])
     @session.stubs(:all_mcp_servers).returns([])
 
     assert_nothing_raised { @detector.update_session_mcp_status({}) }
+
+    assert_nil (@session.reload.custom_metadata || {})["mcp_servers_status"],
+      "with nothing to track there is nothing to seed, so the column stays untouched"
   end
 
   test "the poll-then-persist sequence TranscriptPollerService runs completes end to end" do
