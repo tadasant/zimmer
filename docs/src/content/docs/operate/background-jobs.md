@@ -407,6 +407,70 @@ Byte counts are measured against the volume, not summed per directory, and the r
 and bytes separately — per-directory size differs by more than an order of magnitude between
 deployments (staging ~5.4 MB, production ~330 KB), so count is not a proxy for reclaimable space.
 
+## No sweep may monopolise a `maintenance` thread
+
+The lane has two threads and serves two shapes of work at once: the recurring filesystem sweeps
+below, and `DeferredCloneCleanupJob` — one row per archived session, arriving at whatever rate the
+fleet archives, and the only thing that reclaims an archived session's clone inside the reversible
+window.
+
+A sweep bounded only by a batch *count* can hold one of those two threads for a very long time.
+`OrphanCloneFilesystemCleanupJob`'s scheduled path removes up to `BATCH_LIMIT` (20) directories and
+each removal tears down Docker Compose bounded at `COMPOSE_DOWN_TIMEOUT` (120s), so 40 minutes was
+inside its contract; `StaleCloneCleanupJob`'s `ORPHAN_SWEEP_LIMIT` (200 recursive deletes) had no
+time bound at all. While one runs the lane is at half capacity for everything else, and two at once
+take it to zero. On 2026-09-05 the lane paged with 124 `DeferredCloneCleanupJob` rows ready and a
+head of line two hours old and rising.
+
+Both scheduled sweeps now open a wall-clock budget (`SWEEP_BUDGET_SECONDS`, five minutes) and check
+it at the top of each unit of work, so the true bound is the budget plus one more directory. What a
+run does not reach is logged at `warn` and left for the next tick.
+
+Nothing is lost by stopping early, for the same reason
+[`SingletonSweep`](#recurring-sweeps-on-default-are-singletons-too) may drop a tick outright: these sweeps are
+level-triggered, so each run recomputes the due set and takes whatever the last one missed. A
+continuation is *not* re-enqueued — `SingletonSweep`'s `total_limit: 1` is enforced at enqueue and
+would refuse one while the cron copy is unfinished. The next scheduled tick is the continuation.
+
+The shared helper is `SweepBudget` (`app/jobs/concerns/sweep_budget.rb`). It reads a monotonic
+clock, so a clock adjustment mid-sweep cannot make a budget expire early or never.
+
+## An interrupted clone cleanup comes back
+
+`DeferredCloneCleanupJob` is the only thing that reclaims an archived session's clone inside the
+reversible window, and the pipeline is built so that nothing else can take it:
+`set_trash_expiry` stamps `trash_after` *before* enqueuing the job, `StaleCloneCleanupJob`'s archived
+scopes require `trash_after` to be nil and its `reapable_now?` re-check refuses a session that
+carries one, and `EmptyTrashJob` does not act until the deadline. That is correct — it is what keeps
+a reaper out of a session's undo window — but it means a run that ends without finishing leaks the
+whole working tree, its Docker Compose resources and its transcript directory for the full
+`TRASH_RETENTION_PERIOD`.
+
+Two things used to end a run that way, and neither was visible as a failure:
+
+- **A deploy.** `ApplicationJob.discard_interrupt_quietly` discards `GoodJob::InterruptError` with no
+  retry, on the stated grounds that deploy-orphaned work is recovered by
+  `CleanupOrphanedSessionsJob` / `DeploymentRecoveryJob`. That is true of *sessions*; neither of them
+  knows this job exists.
+- **Any other exception.** The job's bottom `rescue` re-raises "to trigger job retry", which has not
+  been true since GoodJob 4 — `GoodJob.retry_on_unhandled_error` defaults to false, so an unhandled
+  error records itself and finishes the row.
+
+The job now registers a bounded quiet retry (`MAX_ATTEMPTS` 5, `RETRY_WAIT` 30s) in the shape
+`BundleInstallJob` uses and for the same reasons: `rescue_from` + `retry_job` rather than `retry_on`,
+because `retry_on`'s `:retry_stopped` instrumentation is logged at ERROR and would page on a deploy.
+Re-running is safe — every branch re-reads the session, re-checks `archived?` and re-checks the clone
+directory, and `CloneReaper` asks who owns the path again at the instant of deletion.
+
+Intermediate attempts log at INFO/WARN so a self-resolving deploy makes no noise. Only exhaustion is
+loud: a cleanup that has failed five times is a real problem, and the clone it could not delete is
+now held until its trash deadline.
+
+The Compose teardown is part of this. The job wraps `DockerComposeCleanupService.cleanup` in its own
+rescue so a broken Docker daemon cannot stop the clone being deleted — but that rescue used to absorb
+a deploy interrupt too, and log it at ERROR, so every deploy landing mid-teardown paged for something
+routine. `GoodJob::InterruptError` is now re-raised from both the service and the job.
+
 ## Clone pruning has a second, urgent gear
 
 `OrphanCloneFilesystemCleanupJob` is on the six-hourly cleanup cron, and on that schedule it is
@@ -1430,7 +1494,7 @@ lanes that deviate from the original calibration are listed; anything absent —
 | Lane | Threads | Why it deviates | Depth | Stall age |
 | --- | --- | --- | --- | --- |
 | `inference` | 2 | `SessionTitleJob` blocks for `INFERENCE_TIMEOUT` (30s) and `SessionStatusSummaryJob` for `HEADLESS_TIMEOUT` (90s). At the 90s ceiling that is 2 × 3600/90 = **80 jobs/hour**, so a hundred-deep lane is over an hour of legitimate work | 150 | 60m |
-| `maintenance` | 2 | Filesystem scans, `bundle install`, docker prune, transcript archiving — minutes each, same shape | 100 | 60m |
+| `maintenance` | 2 | Filesystem scans, `bundle install`, docker prune, transcript archiving — minutes each, same shape. The scheduled clone sweeps are capped at `SWEEP_BUDGET_SECONDS` so none of them can hold a thread for tens of minutes ([above](#no-sweep-may-monopolise-a-maintenance-thread)) | 100 | 60m |
 | `agents` | 8 | `AgentSessionJob` holds its thread for the whole life of the session, so a ready one waiting hours is admission control working as designed | 100 | 4h |
 | `auth` | 2 | `RuntimeLoginJob` holds a thread for as long as the login CLI is open, up to `MAX_DURATION` (12 minutes) | 100 | 30m |
 

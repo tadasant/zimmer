@@ -27,6 +27,79 @@ class DeferredCloneCleanupJob < ApplicationJob
   # Delay before cleanup runs (should be longer than the undo window)
   CLEANUP_DELAY = 10.seconds
 
+  # Total executions, including the first. This job is the ONLY thing that
+  # reclaims an archived session's clone inside the reversible window, so a run
+  # that ends without finishing has to come back: `set_trash_expiry` stamps
+  # `trash_after` before enqueuing this job, StaleCloneCleanupJob's archived
+  # scopes require `trash_after` to be nil AND its `reapable_now?` re-check
+  # refuses a session that carries one, and EmptyTrashJob does not act until the
+  # deadline. A dropped run therefore leaves a whole working tree, its Docker
+  # Compose resources and its transcript directory on the durable volume for the
+  # full TRASH_RETENTION_PERIOD.
+  #
+  # Five, not BundleInstallJob's three, because the failure this exists for is a
+  # deploy interrupt and Zimmer deploys several times an hour on a busy day —
+  # three interrupted runs in a row is a shape that actually happens, and it is
+  # not evidence that the cleanup itself is impossible.
+  MAX_ATTEMPTS = 5
+
+  # Backoff between attempts. Long enough that a retry lands after the deploy
+  # that interrupted it has finished rather than into the tail of the same
+  # shutdown, matching BundleInstallJob::RETRY_WAIT.
+  RETRY_WAIT = 30.seconds
+
+  # Retry quietly instead of `retry_on`, and for the same two reasons
+  # BundleInstallJob does it this way.
+  #
+  # *Why retry at all.* `perform` has always ended in `raise` with a comment
+  # saying it re-raises "to trigger job retry", and that has not been true since
+  # GoodJob 4: `GoodJob.retry_on_unhandled_error` defaults to false, so an
+  # unhandled error records itself and finishes the row. The same applies to a
+  # deploy interrupt, which `ApplicationJob.discard_interrupt_quietly` discards
+  # on the stated grounds that "deploy-orphaned sessions/jobs are recovered
+  # separately (CleanupOrphanedSessionsJob / DeploymentRecoveryJob)" — true of
+  # sessions, not of this job, which neither of them knows about. Re-running is
+  # safe: every branch below re-reads the session, re-checks `archived?` and
+  # re-checks the clone directory, and CloneReaper asks who owns the path again
+  # at the moment of deletion.
+  #
+  # *Why not `retry_on`.* `retry_on ..., attempts: N` instruments
+  # `:retry_stopped`, which ActiveJob's LogSubscriber logs at ERROR and which
+  # trips the "any Zimmer ERROR → critical" Grafana rule on a deploy. A bare
+  # `rescue_from` + `retry_job` re-enqueues without instrumenting anything.
+  #
+  # Registered AFTER the inherited `discard_interrupt_quietly` handler and
+  # deliberately not re-registering it: `GoodJob::InterruptError < StandardError`
+  # and rescue handlers resolve last-registered-wins, so interrupts land here and
+  # are retried. An intermediate attempt logs at INFO so a self-resolving deploy
+  # makes no noise; only exhaustion is loud, because a cleanup that has failed
+  # five times is a real problem and the clone it could not delete is now held
+  # for the whole retention window. Nothing here may raise: an exception out of a
+  # `rescue_from` block is reported at ERROR, which is the one way this could
+  # still trip the alert it exists to avoid.
+  rescue_from(StandardError) do |error|
+    if executions < MAX_ATTEMPTS
+      Rails.logger.info(
+        "[DeferredCloneCleanupJob] attempt #{executions}/#{MAX_ATTEMPTS} ended with " \
+        "#{error.class.name}: #{error.message}. Retrying in #{RETRY_WAIT.to_i}s."
+      )
+      begin
+        retry_job(wait: RETRY_WAIT, error: error)
+      rescue StandardError => e
+        # `retry_job` writes to Postgres. If that write is what failed, GoodJob
+        # leaves the row unfinished and picks it up again anyway, so swallowing
+        # this costs nothing and keeps the ERROR line off the wire.
+        Rails.logger.warn("[DeferredCloneCleanupJob] could not re-enqueue: #{e.class}: #{e.message}")
+      end
+    else
+      Rails.logger.error(
+        "[DeferredCloneCleanupJob] gave up after #{executions} attempts with " \
+        "#{error.class.name}: #{error.message}. The clone is held until its trash deadline for " \
+        "EmptyTrashJob to reap."
+      )
+    end
+  end
+
   # @param session_id [Integer] the ID of the session to clean up
   # @param archived_at [String] ISO8601 timestamp of when the session was archived
   def perform(session_id, archived_at)
@@ -163,6 +236,13 @@ class DeferredCloneCleanupJob < ApplicationJob
     # This must happen first because the compose file lives inside the clone.
     docker_cleaned = begin
       DockerComposeCleanupService.cleanup(clone_path)
+    rescue GoodJob::InterruptError
+      # Not "unexpectedly", and not this rescue's business: a deploy landing here
+      # has to reach the retry handler at the top of this class, because the run
+      # it interrupted is the only thing that reclaims this clone inside the
+      # reversible window. Absorbing it would also put an ERROR line on the wire
+      # on every deploy that lands mid-teardown.
+      raise
     rescue => e
       Rails.logger.error "[DeferredCloneCleanupJob] Docker cleanup raised unexpectedly: #{e.class} - #{e.message}"
       false
@@ -194,9 +274,15 @@ class DeferredCloneCleanupJob < ApplicationJob
       )
     end
   rescue => e
-    Rails.logger.error "[DeferredCloneCleanupJob] Error cleaning up session #{session_id}: #{e.class} - #{e.message}"
-    Rails.logger.error "Backtrace: #{e.backtrace.first(5).join("\n")}" if e.backtrace
-    raise # Re-raise to trigger job retry
+    # WARN, not ERROR, and the level is load-bearing: this line is now reached on
+    # every intermediate attempt — including a deploy interrupt, which is routine
+    # — and the `rescue_from` above is what decides whether this run is the last
+    # one and logs at ERROR if it is. Logging ERROR here would page on every
+    # deploy that lands mid-cleanup, which is the trap
+    # `ApplicationJob.discard_interrupt_quietly` documents.
+    Rails.logger.warn "[DeferredCloneCleanupJob] Error cleaning up session #{session_id}: #{e.class} - #{e.message}"
+    Rails.logger.warn "Backtrace: #{e.backtrace.first(5).join("\n")}" if e.backtrace
+    raise # Re-raised for the bounded retry registered above
   end
 
   private

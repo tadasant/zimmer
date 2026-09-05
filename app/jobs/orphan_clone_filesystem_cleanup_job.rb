@@ -40,6 +40,7 @@
 class OrphanCloneFilesystemCleanupJob < ApplicationJob
   queue_as :maintenance
   include SingletonSweep
+  include SweepBudget
 
   # Only clean clones older than 48 hours to avoid racing with active sessions
   AGE_THRESHOLD = 48.hours
@@ -65,6 +66,18 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
   # prevent on this code path. The check is at the top of each iteration, so the
   # true bound is this budget plus one directory's teardown.
   RECLAIM_BUDGET_SECONDS = 60
+
+  # The same ceiling for the SCHEDULED sweep, which had none. The argument above
+  # is not specific to the pressure path: 20 orphans that each need a full
+  # compose teardown is 40 minutes either way, and on this path it is spent
+  # holding one of `maintenance`'s two scheduler threads while the per-archive
+  # DeferredCloneCleanupJob stream queues behind it. Larger than
+  # RECLAIM_BUDGET_SECONDS because nothing is waiting on this run — the pressure
+  # path runs synchronously on the session launch path and has a session wedged
+  # in `waiting` behind it, this one runs every six hours from cron — and because
+  # the work it does not reach is picked up by the next tick either way. See
+  # SweepBudget.
+  SWEEP_BUDGET_SECONDS = 5.minutes
 
   # The deployments that own the durable `zimmer_data` volume, and so are the
   # only ones allowed to reap inside it. Mirrors
@@ -98,11 +111,27 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
 
     orphans = find_orphan_directories(clones_base)
     cleaned = 0
+    deferred = 0
+
+    start_sweep_budget(SWEEP_BUDGET_SECONDS)
 
     orphans.first(BATCH_LIMIT).each do |dir_path|
+      # Top of the iteration, so the true bound is the budget plus one
+      # directory's teardown — the same shape as the pressure path's check.
+      if sweep_budget_spent?
+        deferred += 1
+        next
+      end
+
       cleaned += 1 unless cleanup_orphan(dir_path) == :refused
     rescue StandardError => e
       Rails.logger.error "[OrphanCloneFilesystemCleanupJob] Failed to clean #{File.basename(dir_path)}: #{e.class} - #{e.message}"
+    end
+
+    if deferred > 0
+      Rails.logger.warn "[OrphanCloneFilesystemCleanupJob] Sweep budget of " \
+        "#{SWEEP_BUDGET_SECONDS.to_i}s exhausted after #{cleaned} removals; #{deferred} candidate(s) from " \
+        "this batch wait for the next scheduled sweep"
     end
 
     if cleaned > 0 || orphans.size > BATCH_LIMIT
@@ -145,11 +174,11 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
       return freed
     end
 
-    deadline = monotonic_now + RECLAIM_BUDGET_SECONDS
+    start_sweep_budget(RECLAIM_BUDGET_SECONDS)
     cleaned = 0
 
     orphans.first(PRESSURE_BATCH_LIMIT).each do |dir_path|
-      if monotonic_now >= deadline
+      if sweep_budget_spent?
         Rails.logger.warn "[OrphanCloneFilesystemCleanupJob] Reclamation budget of " \
           "#{RECLAIM_BUDGET_SECONDS}s exhausted after #{cleaned} removals; the rest wait for the " \
           "scheduled sweep"
@@ -176,10 +205,6 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
   end
 
   private
-
-  def monotonic_now
-    Process.clock_gettime(Process::CLOCK_MONOTONIC)
-  end
 
   # Bytes the volume gave back since `starting_free`, measured against the volume
   # rather than summed from the deleted directories. Zero when either probe failed.

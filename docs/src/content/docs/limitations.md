@@ -2889,6 +2889,28 @@ cannot run — means archive. A session whose `gh` is unauthenticated therefore 
 archive-immediately path, which is the deliberate fail-open: an unreadable lookup must not strand a
 session that finished its work.
 
+### An archived session's clone is held for as long as the `maintenance` lane is behind
+
+`DeferredCloneCleanupJob` is the only reaper that may take an archived session's clone inside the
+reversible window — `trash_after` is stamped before the job is enqueued, and both `StaleCloneCleanupJob`
+and `EmptyTrashJob` are deliberately kept off a session that carries one
+([background jobs](/operate/background-jobs/#an-interrupted-clone-cleanup-comes-back)). So the clone
+is reclaimed at exactly the rate that lane drains, and nothing else is watching.
+
+The lane has two threads, shared with the recurring sweeps, and the job's arrival rate is one row per
+archive — bounded by nothing. Capping the sweeps at `SWEEP_BUDGET_SECONDS` and retrying interrupted
+cleanups both raise the share of that lane the reaper gets, but neither makes it elastic: while the
+fleet archives faster than two threads can reclaim, the backlog and the bytes behind it grow
+together. On 2026-09-05 that reached 124 ready rows, a head of line two hours old, and 276 clone
+directories holding 43 GB.
+
+The lever that would close the gap is `GOOD_JOB_MAINTENANCE_THREADS`, and it is not free: every
+scheduler thread is a PostgreSQL connection the deployment promises, so raising it moves
+`ConnectionBudget#required_backends` and the `app_required_backends` Terraform variable checked
+against the managed cluster's plan ([connection budget](/operate/provisioning/)). Until then the
+`starved_lane` page — `maintenance`, 100 ready, 60 minutes — is the signal that it has fallen behind,
+and it is an accurate one.
+
 ---
 
 ## Triggers
