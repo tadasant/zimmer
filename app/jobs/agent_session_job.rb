@@ -1662,6 +1662,26 @@ class AgentSessionJob < ApplicationJob
           )
           log_buffer.flush
           terminate_process(session, process_pid, clone_path, log_buffer)
+          # Final transcript poll, mirroring branches 1a/1b/1c and section 2 —
+          # and this branch is the one that needs it MOST. The ordinary way a
+          # session reaches it is the agent archiving ITSELF, so the closing
+          # message the human is waiting to read is written right here, in the
+          # same turn as the `action_session` call and in the seconds after it.
+          # Without this poll those lines never reach `session.transcript`, which
+          # is the only copy the UI renders, and an archived session is never
+          # polled again — so the Transcript panel shows the session stopping
+          # mid-thought, permanently. Session 13908 rendered two timeline items
+          # for a 58-message conversation and lost the answer a human was
+          # waiting on.
+          #
+          # AFTER the termination, not before, which is the whole point.
+          # `terminate_process` blocks until the process is confirmed gone
+          # (SIGTERM, a grace window, then SIGKILL), and the runtime keeps
+          # writing across that window: session 13918 wrote its closing message
+          # 12 seconds after its archive call. Polling first would capture the
+          # archive and still lose the answer. The process is gone by the time we
+          # read, so the file is final.
+          poll_and_broadcast_transcript(session)
           # The clone is left where it is. DeferredCloneCleanupJob owns deleting
           # an archived session's clone — see the ensure block for why.
           return

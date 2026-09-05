@@ -110,6 +110,65 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert_equal @transcript_content, @mock_fs.read(transcript_path)
   end
 
+  # ---------------------------------------------------------------------------
+  # The transcript already on disk can hold MORE than the stored copy
+  # ---------------------------------------------------------------------------
+  #
+  # The restore is normally authoritative: `session.transcript` is the durable
+  # record and the file is gone or stale. But on the quick path the clone — and
+  # so the runtime's own transcript file — survived, and there is one route that
+  # reliably leaves that file AHEAD of the stored copy. A session that archives
+  # ITSELF writes its closing turn to disk and is killed moments later, so
+  # whatever the last poll missed exists only in that file. Overwriting it here
+  # destroyed the only remaining copy of the agent's answer, and left the resumed
+  # agent with no memory of what it had just said (session 13908).
+  test "keeps the longer transcript already on disk and heals the stored copy from it" do
+    @mock_fs.mkdir_p(@clone_path)
+
+    transcript_path = File.join(
+      File.expand_path("~"), ".claude", "projects",
+      PathSanitizer.sanitize(@working_directory), "#{@session.session_id}.jsonl"
+    )
+    closing = JSON.generate(
+      "type" => "assistant",
+      "message" => { "role" => "assistant", "content" => [ { "type" => "text", "text" => "THE ANSWER, written just before the kill." } ] },
+      "timestamp" => "2024-01-01T10:00:04Z"
+    )
+    on_disk = @transcript_content + closing + "\n"
+    @mock_fs.mkdir_p(File.dirname(transcript_path))
+    @mock_fs.write(transcript_path, on_disk)
+
+    result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
+
+    assert result.success?
+    assert_equal on_disk, @mock_fs.read(transcript_path),
+      "the longer file must be left alone, not overwritten with the shorter stored copy"
+    assert_includes @session.reload.transcript, "THE ANSWER, written just before the kill.",
+      "the stored transcript must be healed from the file, so the UI can render the turn it missed"
+  end
+
+  # The inverse, and the ordinary case: a file that is short or stale (a clone
+  # recreated at a new path, a truncated write) is still replaced by the stored
+  # record. The guard only ever grows the conversation.
+  test "still overwrites a shorter transcript on disk with the stored copy" do
+    @mock_fs.mkdir_p(@clone_path)
+
+    transcript_path = File.join(
+      File.expand_path("~"), ".claude", "projects",
+      PathSanitizer.sanitize(@working_directory), "#{@session.session_id}.jsonl"
+    )
+    @mock_fs.mkdir_p(File.dirname(transcript_path))
+    @mock_fs.write(transcript_path, @transcript_lines.first.to_json + "\n")
+
+    result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
+
+    assert result.success?
+    assert_equal @transcript_content, @mock_fs.read(transcript_path),
+      "a shorter file is the ordinary stale case and must still be restored from the record"
+    assert_equal @transcript_content, @session.reload.transcript,
+      "the stored transcript must be left as it was"
+  end
+
   test "full unarchive when clone was deleted recreates clone" do
     # Clone does NOT exist (deleted during archive)
     # Mock GitCloneService to return success
