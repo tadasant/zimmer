@@ -76,7 +76,12 @@
 #
 # In both cases state advances only for items that actually produced a session, so a
 # failure to create one leaves the item to be retried on the next tick rather than
-# swallowing it.
+# swallowing it. And in both cases it advances the moment that session exists rather
+# than only in the tick's terminal write — #record_fired_key for the label seen-set,
+# #record_fired_issue for the issue cursor and its key set — so a terminal write that
+# never lands cannot hand the next tick a batch it has already spawned sessions for.
+# The terminal write remains the authority on everything the floor does not do: the
+# label path's removal grace, and the issue path's horizon-based pruning.
 class GithubTriggerPollerJob < ApplicationJob
   # The `pollers` queue, not `default` — same reasoning as every other *PollerJob: this
   # is slow, external-API-bound work that would otherwise starve the latency-sensitive
@@ -634,6 +639,13 @@ class GithubTriggerPollerJob < ApplicationJob
 
       fired_keys << item_key(item)
       newest_at = item["created_at"] if item["created_at"].to_s > newest_at.to_s
+      # Record the fire the instant its session exists, rather than only in the
+      # end-of-tick write below. Everything between here and there can fail — a later
+      # item's fire, the re-read #write_new_issue_state does, the write itself, or the
+      # worker being torn down mid-tick — and every one of those failures used to leave
+      # BOTH pieces of this condition's dedupe state untouched, handing the next tick
+      # the whole batch as un-fired. See #record_fired_issue.
+      record_fired_issue(condition, scope, item, fired_keys)
     end
 
     # Nothing fired: leave the cursor alone so the whole batch is retried next tick.
@@ -663,6 +675,69 @@ class GithubTriggerPollerJob < ApplicationJob
     )
   end
 
+  # Record what this tick has fired so far — every key in `fired_keys`, and the cursor if
+  # +item+ is the newest of them — immediately after +item+'s session was created.
+  #
+  # #record_fired_key with a second field to carry. A `github_issue` condition dedupes on
+  # a cursor AND a key set, and moving the cursor without the keys is the unsafe half: the
+  # window advances past issues nothing remembers firing, and everything sharing the
+  # cursor's second fires again. So both move in one write, and both move only past an
+  # item that demonstrably produced a session — #fire returns true only when one exists,
+  # which is what keeps this on the safe side of #647. An issue that produced nothing is
+  # never passed here and is still left un-fired for the next tick to retry.
+  #
+  # It writes the whole running set rather than the one key, and that is what makes a
+  # rescued write recoverable instead of merely survivable. A single-key write leaves this
+  # hole: #50's write is lost, #51's lands and carries the cursor to 09:00:05 — but the
+  # next query starts INDEX_LAG_GRACE *behind* that, so #50 is squarely inside the window
+  # with no key to reject it, and re-fires. Writing the union heals it, because every
+  # later fire in the tick re-states every earlier one. `fired_keys` holds only keys that
+  # produced a session, so the union is still add-only.
+  #
+  # The end-of-tick #write_new_issue_state stays the authority on horizon-based pruning:
+  # it is what drops keys the next query's window can no longer reach and what expires
+  # spent repo baselines. This only ever ADDS keys and only ever advances the cursor
+  # forward, so it can neither resurrect a key that write was about to prune nor suppress
+  # a fire. The cost of never dropping is that a condition whose floor writes land while
+  # its terminal write persistently fails accumulates keys — bounded by the issues it
+  # actually fires, and pruned by the first terminal write that does land. Pruning here
+  # instead would make this a write that can REMOVE a key, which is the one direction a
+  # durability floor may not have.
+  #
+  # The cursor is compared against the RELOADED row rather than against the loop's running
+  # maximum, so a write rescued away here does not carry a stale maximum into the next
+  # one. Items arrive in ascending `created_at` and the loop breaks on the first failure,
+  # so everything at or before the cursor this advances to has fired.
+  #
+  # Rescued rather than raised, for the same reason as the label path: a failure here
+  # costs exactly what today's code costs — the end-of-tick write is still coming, and so
+  # is the next fire's — so it must not abort a tick that is otherwise working.
+  def record_fired_issue(condition, scope, item, fired_keys)
+    condition.reload
+
+    # Same mid-poll re-scope check the writes make: a condition the user re-pointed while
+    # this tick was in flight has rebased its own cursor, and this tick's cursor is not
+    # part of that rebase. Its KEYS still are, and #write_new_issue_state below is what
+    # carries those across — it is reached whatever this does.
+    return if condition.github_watch_scope != scope
+
+    created_at = item["created_at"].to_s
+    keys = condition.github_seen_issue_keys | fired_keys.to_a
+
+    state = {}
+    state["seen_issue_keys"] = keys.sort unless keys.to_set == condition.github_seen_issue_keys.to_set
+    state["last_issue_at"] = created_at if created_at > condition.github_last_issue_at.to_s
+    return if state.empty?
+
+    # `fired: true` for the same reason #write_github_state! folds last_triggered_at into
+    # the state write: the trigger fired, and the two must not disagree.
+    condition.write_github_state!(state, fired: true)
+  rescue => e
+    Rails.logger.warn "[GithubTriggerPollerJob] Could not record fired issue #{item_key(item)} for " \
+                      "condition #{condition.id} immediately (#{e.message}); the end-of-tick write " \
+                      "is the fallback"
+  end
+
   # #write_state, plus the one thing a `github_issue` tick may not discard on a mid-poll
   # re-scope: the keys it has already fired.
   #
@@ -673,8 +748,10 @@ class GithubTriggerPollerJob < ApplicationJob
   # in. Discarding their keys with the rest of the write is therefore #759 again through a
   # seconds-wide door: the tick's own fires come back as duplicates on the next one.
   #
-  # The label path can discard wholesale because #record_fired_key has already persisted
-  # each key as it fired. This path has no such write, so this is where it is paid.
+  # #record_fired_issue has already persisted each key as it fired — but on the same scope
+  # check, so it no-ops for every item that fired AFTER the edit landed. Those keys have
+  # nowhere else to be written, which is why this branch still exists rather than
+  # deferring to the floor.
   def write_new_issue_state(condition, scope, state, fired_items:)
     condition.reload
 
@@ -777,13 +854,12 @@ class GithubTriggerPollerJob < ApplicationJob
     # left by the PREVIOUS item in this same tick, and record an item as fired that
     # has no session at all. That is #647's direction, and it is the worse one.
     #
-    # Whether the previous item's marker is still reachable depends on the caller.
-    # #process_new_issue_condition loops #fire over its batch with nothing in between,
-    # so `condition.trigger` stays the same memoized instance across items and the
-    # stale read is live. #process_label_condition happens not to be exposed today,
-    # because #record_fired_key reloads the condition after every successful fire and
-    # #reload drops the association cache — an accident of an unrelated call, not a
-    # property to rely on.
+    # Neither caller happens to expose the stale read today: both #record_fired_key and
+    # #record_fired_issue reload the condition after every successful fire, and #reload
+    # drops the association cache the marker lives on. That is an accident of an
+    # unrelated call rather than a property to rely on — the durability floors could
+    # move, and a floor whose own reload raised leaves the cache in place — so the guard
+    # here is what actually decides it.
     spawn_attempted = true
     session = trigger.create_session!(prompt: prompt)
 
