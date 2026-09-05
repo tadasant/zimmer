@@ -1419,6 +1419,21 @@ that does it has known limits:
   10 against a pool of 8, so a deployment nobody has retuned renders that note from its first boot
   and never holds spot work on `fleet_at_cap`. The top-up ceiling's default of 3 is under the pool
   and behaves normally.
+- **"Growing the pool is a deploy away" is true of the config and, on Tadasant production, false of
+  the machine.** `GOOD_JOB_AGENTS_THREADS` is bounded by the worker's **memory cgroup**, not by the
+  database — each thread runs a whole agent session — and at 8 that bound is already reached. Over
+  the 24 hours to 2026-09-05T14:16Z the worker's `memory.current` peaked at 10,737,324,032 B against
+  a 10 GiB `memory.max`, 94 KB under the hard cap, with `anon` at 9.07 GiB, 133,791 forced-reclaim
+  `memory.events` and 5 `oom_kill`s. [#981](https://github.com/tadasant/zimmer/issues/981) is the
+  open incident: eight *in-budget* sessions — no runaway, largest process 943 MB — summed over the
+  cap and the kernel OOM-killed the GoodJob worker itself, taking every in-flight `AgentSessionJob`
+  with it. The per-session bound cannot cover this and is not meant to: cgroup v2 is hierarchical, so
+  `zimmer.sessions/session-<id>` sits inside the container's cgroup and charges the same 10 GiB;
+  `ZIMMER_SESSION_MEMORY_MAX_MB` bounds one runaway, and nothing bounds the sum. So the honest shape
+  of the limit is that **the effective concurrency ceiling is 8 and cannot currently be raised**: a
+  bigger pool converts durable queued rows into a worker kill. Raising it waits on #981, then a
+  re-measurement, then a matching `app_required_backends` bump. Connections are not the binding
+  constraint — 15 threads derive 97 required backends, which a `db-s-2vcpu-4gb` cluster serves.
 - **A turn queued behind the worker pool still reads as a running session on the dashboard.**
   `sessions.status = running` is stamped when a turn is *handed to* a session, not when a worker
   starts it, so on a busy deployment a real share of the `running` rows are turns waiting for a slot.
