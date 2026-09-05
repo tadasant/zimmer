@@ -744,6 +744,83 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     end
   end
 
+  test "ignores a PR URL when the create literal is in a heredoc body" do
+    # #873, session 13059 verbatim: the session that fixed #772 fed *this file* to
+    # Python through a `<<'PY'` heredoc while editing it, and the fixture strings
+    # it was rewriting were recorded as pull requests it had opened — against
+    # `other/proj`, which does not exist. `GitHubPullRequestPollerJob` ran
+    # `gh pr view` against it on every poll from then on.
+    #
+    # Two things had to stack up. A heredoc body is data handed to Python, not
+    # commands the shell runs; and the `"""` in front of the literal broke the
+    # quote pairing that would otherwise have covered it.
+    @session.update!(git_root: "https://github.com/tadasant/zimmer.git")
+
+    command = <<~SH
+      python3 - <<'PY'
+      s = s.replace("""      command: "gh pr create --repo other/proj --head fork:b --title T --body B"
+      """, "x")
+      PY
+    SH
+
+    run_hook(
+      claude_shell_call(id: "toolu_heredoc", command: command),
+      claude_tool_result(id: "toolu_heredoc", content: "rewrote 2 fixtures: https://github.com/other/proj/pull/42\nhttps://github.com/other/proj/pull/2")
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "ignores a PR URL when the create literal is in a heredoc body, whatever the delimiter's spelling" do
+    [ "<<EOF", "<<'EOF'", %q(<<"EOF"), "<<-EOF" ].each_with_index do |redirection, index|
+      @session.update!(custom_metadata: {})
+
+      # Bare in the body, so nothing but the heredoc reading keeps it out.
+      command = "cat #{redirection} > notes.md\nrun gh pr create --repo other/proj when CI is green\nEOF"
+
+      run_hook(
+        claude_shell_call(id: "toolu_body_#{index}", command: command),
+        claude_tool_result(id: "toolu_body_#{index}", content: "https://github.com/other/proj/pull/42")
+      )
+
+      assert_nil tracked_urls, "#{redirection} opens nothing"
+    end
+  end
+
+  test "records a real create on the line after a heredoc whose body holds the literal" do
+    # The #89 direction, which is the worse of the two: a heredoc reading that
+    # walked past its terminator would swallow the create underneath it, and the
+    # session's whole GitHub integration would silently never engage.
+    command = "cat <<'EOF' > /tmp/body.md\nSee `gh pr create --repo other/proj` in the fixtures.\nEOF\ngh pr create --title T --body-file /tmp/body.md"
+
+    run_hook claude_pr_create("https://github.com/owner/repo/pull/57", id: "toolu_after_body", command: command)
+
+    assert_equal [ "https://github.com/owner/repo/pull/57" ], tracked_urls
+  end
+
+  test "records a real create after a heredoc that was never terminated" do
+    # A truncated transcript, or a terminator written in a shape the reading does
+    # not recognise, leaves the body's end invisible. The rest is then read as
+    # shell — which risks the false positive above, and is the cheaper mistake
+    # (#89 again).
+    command = "cat <<'EOF' > /tmp/body.md\nthe body, truncated mid-transcript\ngh pr create --title T --body-file /tmp/body.md"
+
+    run_hook claude_pr_create("https://github.com/owner/repo/pull/58", id: "toolu_unterminated", command: command)
+
+    assert_equal [ "https://github.com/owner/repo/pull/58" ], tracked_urls
+  end
+
+  test "ignores a PR URL when the create literal is in a triple-quoted string" do
+    # The `"""` half of #873 on its own, with no heredoc: what Python is handed is
+    # a string whatever a shell would make of the same characters.
+    run_hook(
+      claude_shell_call(id: "toolu_triple", command: %q(python3 -c """print("gh pr create --repo other/proj")""")),
+      claude_tool_result(id: "toolu_triple", content: "https://github.com/other/proj/pull/42")
+    )
+
+    assert_nil tracked_urls
+  end
+
   test "ignores same-repo PRs listed by gh pr list" do
     run_hook(
       claude_shell_call(id: "toolu_list", command: "gh pr list --json url"),
