@@ -793,6 +793,30 @@ Redaction is also irreversible and applies only from the moment it shipped. Tran
 that still hold whatever the agent printed until `bin/rails open_transcripts:redact_stored` is run
 against them.
 
+### The redaction cache buys speed with memory, and can be out of date by one poll
+
+🟡 `TranscriptRedactionCache` keeps the already-redacted prefix of each hot transcript so a poll costs
+the appended bytes rather than the whole file — 8.9 s down to 69 ms on a real 22.4 MB transcript
+([#477](https://github.com/tadasant/zimmer/issues/477)). Three edges come with it:
+
+- **It costs roughly one extra copy of every hot transcript in memory.** Bounded at 128 MB
+  process-wide, 64 entries, and 64 MB for any single transcript, with least-recently-read eviction
+  and a 15-minute idle sweep. Past those bounds a transcript goes back to costing a full re-scan
+  every poll — correct, just slow, which is exactly the old behavior.
+- **Invalidation samples rather than hashes the whole prefix.** It checks the length, that the commit
+  point still lands after a newline in the bytes being read now, and 16 KB fingerprints of the file's
+  head and of the bytes just before the commit point. A rewrite that changed only the *middle* of a
+  transcript, left its length and both fingerprints intact, and kept every line boundary would be
+  served the old prefix for that region. Nothing in Zimmer rewrites a transcript that way, and the
+  consequence is a stale transcript rather than an unredacted one — the cached prefix is redactor
+  output, so re-emitting it cannot leak. Hashing the whole prefix instead would put back the O(total
+  size) per-poll cost the cache exists to remove.
+- **A transcript carrying multi-line PEM armor stops advancing its commit point.** The armor walk is
+  the one stage that spans newlines, so the commit point never crosses a line that could open a
+  block. A transcript with one degrades toward re-scanning from that line on every poll. JSONL
+  transcripts carry the escaped-in-JSON form, which opens and closes on one line and does not stall
+  anything.
+
 ### Nothing is encrypted at rest
 
 🔴 Uniform trust means Zimmer leans on the perimeter rather than field-level encryption. No model declares
