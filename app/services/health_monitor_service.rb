@@ -331,6 +331,9 @@ class HealthMonitorService
       sigterm_retry_health: sigterm_retry_health,
       api_error_retry_health: api_error_retry_health,
       post_deploy_task_health: post_deploy,
+      # Absent from the status list below on purpose — see #log_retention_health
+      # for why a draining backlog must not turn the whole report yellow.
+      log_retention_health: log_retention_health,
       overall_status: calculate_overall_status(
         [ process, session, system, egress, auth, post_deploy ].map { |section| section[:status] }
       ),
@@ -468,6 +471,88 @@ class HealthMonitorService
       total: 0, pending: 0, running: 0, succeeded: 0, failed: 0, blocked: 0,
       awaiting_first_tick: 0, tasks: []
     }
+  end
+
+  # How big `logs` is, and whether LogRetentionJob is keeping up.
+  #
+  # This exists because the size of that table was, until now, unmeasurable
+  # without a shell on the database host — and on production there is no such
+  # shell: Postgres is DigitalOcean Managed, the SSH server is withheld from the
+  # catalog baked onto the droplet, and managed-cluster storage is not scraped
+  # into VictoriaMetrics (tadasant/zimmer#181). tadasant/zimmer#437 was filed with
+  # production's exposure unknown for exactly that reason. Carried here, it
+  # reaches /health, `GET /api/v1/health` and `get_system_health` at once.
+  #
+  # Every reading is O(1): `reltuples` and the relation sizes come from the
+  # catalog, and the oldest row is the primary key's first entry — nothing here
+  # scans the table it is reporting on.
+  #
+  # Deliberately NOT folded into `overall_status`. The first deployment to run
+  # retention really is behind for as long as its initial drain takes, and this
+  # panel says so — but `overall_status` is what SystemHealthMonitorJob and the
+  # alerting read, and turning the whole report yellow for a day while a backlog
+  # drains exactly on schedule is how people learn to ignore it.
+  def log_retention_health
+    stats = ActiveRecord::Base.connection.select_one(<<~SQL.squish) || {}
+      SELECT c.reltuples::bigint AS estimated_rows,
+             pg_total_relation_size(c.oid) AS total_bytes,
+             pg_indexes_size(c.oid) AS index_bytes
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relname = 'logs' AND n.nspname = current_schema()
+    SQL
+
+    oldest = Log.order(:id).limit(1).pick(:created_at)
+
+    {
+      # `reltuples` is -1 on a table Postgres has never analyzed (PG14+), which is
+      # not "no rows" — report it as unknown rather than as zero.
+      estimated_rows: estimated_rows(stats["estimated_rows"]),
+      total_bytes: stats["total_bytes"].to_i,
+      index_bytes: stats["index_bytes"].to_i,
+      oldest_log_at: oldest,
+      retention_days: (Log::RETENTION / 1.day).to_i,
+      verbose_retention_days: (Log::VERBOSE_RETENTION / 1.day).to_i,
+      status: log_retention_status(oldest)
+    }
+  rescue StandardError => e
+    @logger.warn("Log retention health could not be read", error: e.message)
+    {
+      estimated_rows: nil, total_bytes: 0, index_bytes: 0, oldest_log_at: nil,
+      retention_days: (Log::RETENTION / 1.day).to_i,
+      verbose_retention_days: (Log::VERBOSE_RETENTION / 1.day).to_i,
+      status: HealthStatus.new(status: :warning, message: "Log retention status could not be read: #{e.message}")
+    }
+  end
+
+  def estimated_rows(reltuples)
+    return nil if reltuples.nil?
+
+    count = reltuples.to_i
+    count.negative? ? nil : count
+  end
+
+  # A week past the window before "overdue" is claimed. Wide enough that a table
+  # whose oldest row is a few hours past the cutoff between ticks reads healthy,
+  # narrow enough that "there is more than a week of history nobody is pruning" is
+  # still said out loud — including while a deployment that has never had retention
+  # works through its first backlog, which really is behind.
+  LOG_RETENTION_OVERDUE_GRACE = 7.days
+
+  def log_retention_status(oldest)
+    return HealthStatus.new(status: :healthy, message: "No log rows") if oldest.nil?
+
+    age_days = ((Time.current - oldest) / 1.day).round
+
+    if oldest < (Log::RETENTION + LOG_RETENTION_OVERDUE_GRACE).ago
+      HealthStatus.new(
+        status: :warning,
+        message: "Oldest log row is #{age_days} days old, past the #{(Log::RETENTION / 1.day).to_i}-day " \
+                 "retention window — LogRetentionJob is behind, or still draining a pre-retention backlog"
+      )
+    else
+      HealthStatus.new(status: :healthy, message: "Oldest log row is #{age_days} days old")
+    end
   end
 
   def sigterm_retry_health
