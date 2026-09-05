@@ -14,7 +14,8 @@
 # 5. Returns structured data for broadcasting and status tracking
 #
 class McpLogPollerService
-  include DatabaseRetry
+  # McpStatusPersisting brings DatabaseRetry with it — this class needs
+  # `with_db_retry` only for the persistence the module does on its behalf.
   include McpStatusPersisting
 
   # MCP log patterns for detecting connection status
