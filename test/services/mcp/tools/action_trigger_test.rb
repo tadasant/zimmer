@@ -1383,6 +1383,36 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_match(/Invalid plugins: not-a-plugin/, error.message)
   end
 
+  test "create rejects an unknown MCP server and lists the valid ones" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call(
+        "action" => "create",
+        "name" => "Bad Server Trigger",
+        "trigger_type" => "slack",
+        "agent_root_name" => "zimmer",
+        "prompt_template" => "{{link}}",
+        "mcp_servers" => [ "slack-workspace", "not-a-server" ],
+        "configuration" => { "channel_id" => "C1016", "channel_name" => "bad" }
+      )
+    end
+
+    assert_match(/Invalid MCP server\(s\): not-a-server/, error.message)
+    assert_match(/Valid MCP servers:.*slack-workspace/, error.message)
+    assert_nil Trigger.find_by(name: "Bad Server Trigger")
+  end
+
+  test "update rejects an unknown MCP server and leaves the stored list alone" do
+    trigger = triggers(:enabled_slack_trigger)
+    before = trigger.mcp_servers
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id, "mcp_servers" => [ "not-a-server" ])
+    end
+
+    assert_match(/Invalid MCP server\(s\): not-a-server/, error.message)
+    assert_equal before, trigger.reload.mcp_servers
+  end
+
   test "the input schema names every trigger field the web form can set" do
     properties = Mcp::Tools::ActionTrigger.input_schema.to_h[:properties]
 

@@ -115,9 +115,10 @@ module CatalogArtifactReferences
     value = public_send(reference.attribute)
     return if value.nil? || !value.is_a?(Array)
 
+    config = reference.config
     # Blank entries are dropped rather than rejected: Rails params send [""] for
     # an empty multi-select.
-    invalid = value.reject(&:blank?).reject { |entry| reference.config.exists?(entry) }
+    invalid = value.reject(&:blank?).reject { |entry| config.exists?(entry) }
     return if invalid.empty?
 
     errors.add(reference.attribute, "contains invalid #{reference.noun}(s): #{invalid.join(', ')}")
@@ -130,14 +131,16 @@ module CatalogArtifactReferences
   def heal_stale_catalog_reference!(reference)
     current = public_send(reference.attribute)
     return current if current.blank?
-    # Load-bearing. A failed `air resolve` degrades every catalog facade to an
-    # empty list (zimmer#112), at which point EVERY reference looks stale and
-    # healing would strip the column on every row it touched. An empty catalog
-    # is never evidence that a reference is gone.
-    return current if reference.config.all.empty?
+
+    config = reference.config
+    # Load-bearing. A catalog that fails to load leaves the facade an empty list
+    # (zimmer#112), at which point EVERY reference looks stale and healing would
+    # strip the column on every row it touched. An empty catalog is never
+    # evidence that a reference is gone.
+    return current if config.all.empty?
 
     non_blank = current.reject(&:blank?)
-    stale = non_blank.reject { |entry| reference.config.exists?(entry) }
+    stale = non_blank.reject { |entry| config.exists?(entry) }
     return current if stale.empty?
 
     valid = non_blank - stale
