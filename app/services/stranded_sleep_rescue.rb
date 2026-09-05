@@ -41,6 +41,14 @@ require "automated_prompts"
 # walked straight past it. SessionStateMachine.one_time_wake_pending? is where
 # that question is answered, for this sweep and for every other reader.
 #
+# The converse is just as load-bearing, and it cost an alert and a clobbered turn
+# before it was written down: a wake IN FLIGHT is not a wake that was lost. A
+# one-time schedule that has come due but that ScheduleTriggerJob's next tick has
+# not reached yet, and a `session_archived` watcher on a session that archived a
+# moment ago with AoEventTriggerJob still queued behind it, are both wakes about
+# to be delivered. Both live in the same predicate, bounded by
+# SessionStateMachine::SCHEDULE_FIRE_SETTLE.
+#
 # == Failing safe
 #
 # The failure this closes is silent in both directions, so the bias is explicit:
@@ -72,13 +80,20 @@ class StrandedSleepRescue
   # How long a `waiting` session with no fireable wake is given the benefit of the
   # doubt.
   #
-  # This is not a race window — by the time a session is in this population the
-  # wake is already gone — it is a margin for the paths that legitimately hold a
-  # session in `waiting` for a few minutes with nothing armed yet: a trigger
-  # being created a moment after `sleep!`, an `AoEventTriggerJob` in flight on a
-  # congested `triggers` queue, a wake fired whose resumed turn has not yet been
-  # picked up off the `agents` queue. Fifteen minutes covers all three several
-  # times over and still bounds the stall at under half an hour.
+  # It is a margin for the paths that legitimately hold a session in `waiting`
+  # for a few minutes with nothing armed yet: a trigger being created a moment
+  # after `sleep!`, or a wake fired whose resumed turn has not yet been picked up
+  # off the `agents` queue. Fifteen minutes covers both several times over and
+  # still bounds the stall at under half an hour.
+  #
+  # It is NOT what protects a wake that is mid-flight, and reading it that way is
+  # what let this sweep barge session 13229 ten seconds before its wake landed.
+  # This grace is measured from the SESSION's `updated_at`, and a session that has
+  # been asleep for a day is past it before its wake even comes due — so it buys
+  # exactly zero margin at the only moment that matters. The window between a wake
+  # becoming due and the job that fires it running is answered where the question
+  # belongs, in Session.one_time_wake_pending?: see
+  # SessionStateMachine::SCHEDULE_FIRE_SETTLE.
   GRACE = 15.minutes
 
   # How many times one session may be rescued before Zimmer stops and leaves it
