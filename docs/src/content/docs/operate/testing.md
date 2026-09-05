@@ -468,7 +468,7 @@ and still `NoMethodError` in production. See
 :::
 
 Two more guard a different kind of contract — not between runtimes, but between a test file and the
-gems it names. Both parse every `.rb` under `test/` with Prism, and both exist because the suite
+gems it names. Both parse the `.rb` files under `test/` with Prism, and both exist because the suite
 shares one process, so the first file to require a gem silently covers every file loaded after it.
 Without them, whether a file works on its own is decided by the order the runner loads files in.
 
@@ -485,8 +485,10 @@ makes the first meaningful. `test_helper.rb` auto-requires every non-`_test.rb` 
 `test/support/**`, so a `require` written inside a support helper is not local to that helper — it is
 a **suite-wide require**, and it hides the absence of the same require everywhere else. One line in
 `test/support/x_oauth_test_helpers.rb` was loading mocha for the entire suite, which is why 21 files
-had accumulated an undeclared dependency on it and why #764 and #787 were hard to reproduce as
-reported. So no auto-required support file may require `mocha/minitest`.
+had accumulated an undeclared dependency on it and why
+[#764](https://github.com/tadasant/zimmer/issues/764) could not be reproduced as reported. So no file
+every run loads may require `mocha/minitest` — the auto-required support helpers, and `test_helper.rb`
+itself along with the two other roots every test file loads by name.
 
 A support helper that stubs is still fine — `XOauthTestHelpers` and `McpAvailabilityHelpers` both do.
 It just cannot declare the dependency on its callers' behalf; the test files that call it declare it.

@@ -22,15 +22,15 @@ require "tempfile"
 # let CI run the full suite" — so the cost lands on whoever is iterating on a
 # subset, in the form of an unrelated error they have to recognise and discount.
 #
-# zimmer#764 is one instance and zimmer#787 another. zimmer#874 is why they were
-# hard to reproduce: `test/support/x_oauth_test_helpers.rb` carried a
+# zimmer#764 is one instance of that error. zimmer#874 is why it was hard to
+# reproduce: `test/support/x_oauth_test_helpers.rb` carried a
 # `require "mocha/minitest"`, and `test_helper.rb` auto-requires every file
 # under `test/support/**`, so that one line was loading mocha for the whole
 # suite. Twenty-one files had accumulated a dependency on it without saying so.
 #
 # Hence the two tests below. The first is the same shape as the ostruct
 # contract: declare what you use. The second is what keeps the first meaningful
-# — no auto-required support file may re-open the hole by requiring mocha on
+# — no file that every run loads may re-open the hole by requiring mocha on
 # everyone's behalf.
 #
 # Source is parsed, not grepped, because the question is whether the file *calls*
@@ -59,13 +59,30 @@ class MochaRequireContractTest < ActiveSupport::TestCase
   # in them.
   CALLS = %i[stubs expects unstub any_instance stub_everything].freeze
 
-  # `Mocha::Mockery.instance.teardown` — nine files reach for it to drop
-  # expectations a background thread would otherwise trip over.
+  # Files reach for `Mocha::Mockery.instance.teardown` to drop expectations a
+  # background thread would otherwise trip over, and that names the gem too.
+  #
+  # Note that this file keeps itself off its own offender list by writing every
+  # example through `#{CONSTANT}` interpolation and string literals rather than
+  # as real code. Write `Mocha::Mockery` or `.stubs` literally below and the
+  # contract starts demanding a require of itself.
   CONSTANT = :Mocha
 
   # `require "mocha"` alone is not enough: it loads the gem without the Minitest
   # integration, so `stubs` still does not exist. Only this path counts.
   REQUIRED_FEATURE = "mocha/minitest"
+
+  # The auto-required support files are not the only ones loaded for every run.
+  # `test_helper.rb` is loaded by every test file by name, and the two other
+  # roots by every file of their kind, so a require in any of them is at least
+  # as suite-wide as the one this contract exists to keep out. Scanning only
+  # `test/support/**` would leave the hole exactly one file wide, and that file
+  # is the one that opened it.
+  SUITE_WIDE_FILES = (AUTO_REQUIRED_SUPPORT_FILES + %w[
+    test_helper.rb
+    application_system_test_case.rb
+    integration_test_helper.rb
+  ].map { |name| Rails.root.join("test", name).to_s }).freeze
 
   test "every test file that calls mocha requires mocha/minitest itself" do
     offenders = declaring_files.reject { |path| satisfied?(path) }
@@ -85,21 +102,20 @@ class MochaRequireContractTest < ActiveSupport::TestCase
       MESSAGE
   end
 
-  # The other half, and the one that made the first half unenforceable until
-  # now. `test_helper.rb` loads every one of these for every run, so a require
-  # in any of them is a suite-wide require: it would satisfy the test above for
-  # files that declare nothing, exactly as it did before #874.
+  # The other half, and the one that makes the first half enforceable. Every
+  # file below is loaded for every run, so a require in any of them is a
+  # suite-wide require, and it would satisfy the test above for files that
+  # declare nothing.
   #
   # A support helper that stubs is fine — it just cannot declare the dependency
   # on its callers' behalf. See the comment on `XOauthTestHelpers`.
-  test "no auto-required support file requires mocha on the suite's behalf" do
-    offenders = AUTO_REQUIRED_SUPPORT_FILES.select { |path| requires_feature?(path) }
+  test "no file loaded for every run requires mocha on the suite's behalf" do
+    offenders = SUITE_WIDE_FILES.select { |path| requires_feature?(path) }
 
     assert_empty offenders.map { |path| relative(path) },
       <<~MESSAGE
-        test_helper.rb auto-requires these files for every run, so a
-        `require "#{REQUIRED_FEATURE}"` in one of them is a suite-wide require and
-        masks its absence in every test file:
+        Every run loads these files, so a `require "#{REQUIRED_FEATURE}"` in one of
+        them is a suite-wide require and masks its absence in every test file:
 
         #{offenders.map { |path| "  #{relative(path)}" }.join("\n")}
 
@@ -119,15 +135,17 @@ class MochaRequireContractTest < ActiveSupport::TestCase
     # Exempt from the first rule, and the subject of the second.
     assert_not_includes scanned, "test/support/x_oauth_test_helpers.rb"
 
-    support = AUTO_REQUIRED_SUPPORT_FILES.map { |path| relative(path) }
+    suite_wide = SUITE_WIDE_FILES.map { |path| relative(path) }
 
-    assert_operator support.length, :>, 10
-    assert_includes support, "test/support/x_oauth_test_helpers.rb"
+    assert_operator suite_wide.length, :>, 10
+    assert_includes suite_wide, "test/support/x_oauth_test_helpers.rb"
+    assert_includes suite_wide, "test/test_helper.rb"
     # The loop skips `_test.rb`, so the second guard must too. That file is the
     # case it matters for: it is a support file's own test, it is not
     # auto-required, and it requires mocha — a false offender if the set drifted.
-    assert_not_includes support, "test/support/air_catalog_cache_warmer_test.rb"
-    assert_empty support.grep(/_test\.rb\z/)
+    assert_not_includes suite_wide, "test/support/air_catalog_cache_warmer_test.rb"
+    assert_empty suite_wide.grep(%r{test/support/.*_test\.rb\z})
+    assert_empty suite_wide.reject { |path| File.exist?(Rails.root.join(path)) }
   end
 
   # `satisfied?` and `requires_feature?` read from disk, which the source-level
@@ -171,6 +189,23 @@ class MochaRequireContractTest < ActiveSupport::TestCase
     RUBY
   end
 
+  # A file that defines its own stand-in is not reaching for the gem's.
+  test "defining a class or module of that name is not a call" do
+    assert_empty analyze("module #{CONSTANT}; end").compact
+    assert_empty analyze("class #{CONSTANT}; end").compact
+
+    assert_equal [ :uses ], analyze("class #{CONSTANT}::Extension; end").compact
+  end
+
+  test "defined? is not a call" do
+    assert_empty analyze("puts \"loaded\" if defined?(#{CONSTANT})").compact
+
+    # Only the operand is exempt. A guarded call still names the constant in the
+    # part that runs, and the contract does not trace which branch is live.
+    assert_equal [ :uses ],
+      analyze("#{CONSTANT}::Mockery.instance.teardown if defined?(#{CONSTANT})").compact
+  end
+
   test "a commented-out require does not satisfy a real call" do
     assert_equal [ :uses ], analyze(<<~RUBY).compact
       # require "#{REQUIRED_FEATURE}"
@@ -211,10 +246,14 @@ class MochaRequireContractTest < ActiveSupport::TestCase
     Pathname.new(path).relative_path_from(Rails.root).to_s
   end
 
+  # The Tempfile is held for the length of the test: its finalizer unlinks on
+  # GC, and a caller that keeps only the path can have the file vanish under it
+  # between writing one and reading another.
   def tempfile_containing(source)
     file = Tempfile.new([ "mocha_contract", ".rb" ])
     file.write(source)
     file.close
+    (@tempfiles ||= []) << file
     file.path
   end
 
@@ -256,15 +295,54 @@ class MochaRequireContractTest < ActiveSupport::TestCase
       super
     end
 
-    # Reached only for the `::Mocha::Mockery` form; the unqualified one arrives
-    # as a constant read on the innermost parent.
+    # Handles both `Mocha::Mockery` and `::Mocha::Mockery`. `root_of` walks to
+    # the innermost name, which for the unqualified form is a constant read the
+    # method above sees as well; setting the flag twice is harmless.
     def visit_constant_path_node(node)
       @calls_mocha = true if root_of(node) == CONSTANT
 
       super
     end
 
+    # `class Mocha` / `module Mocha` name the constant they are about to define,
+    # which is the opposite of depending on it existing. Descend into everything
+    # else — the body, the superclass, and any namespace the name is nested
+    # under, since `class Mocha::Extension` genuinely does need it. Ported from
+    # the ostruct contract, which needs the same three guards.
+    def visit_class_node(node)
+      visit_namespace(node.constant_path)
+      visit(node.superclass)
+      visit(node.body)
+    end
+
+    def visit_module_node(node)
+      visit_namespace(node.constant_path)
+      visit(node.body)
+    end
+
+    # `defined?(Mocha)` is the one place naming the constant does not require it
+    # to resolve. That exemption covers the operand only, not a guarded call
+    # beside it: this reads one node at a time and does not trace live branches.
+    def visit_defined_node(node)
+      return if names_constant?(node.value)
+
+      super
+    end
+
     private
+
+    # The name being defined is not a use; whatever it is nested under is.
+    def visit_namespace(constant_path)
+      visit(constant_path.parent) if constant_path.is_a?(Prism::ConstantPathNode)
+    end
+
+    def names_constant?(node)
+      case node
+      when Prism::ConstantReadNode then node.name == CONSTANT
+      when Prism::ConstantPathNode then root_of(node) == CONSTANT
+      else false
+      end
+    end
 
     # `Mocha::Mockery` is a path whose innermost parent names the constant.
     # `Foo::Mocha` is somebody else's and needs no require.
