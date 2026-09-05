@@ -379,8 +379,13 @@
               <dt class="text-sm font-medium text-gray-500">MCP Servers</dt>
               <dd class="mt-1 flex flex-wrap gap-1">
                 <% @trigger.mcp_servers.each do |server| %>
-                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-800">
-                    <%= server %>
+                  <%# A name the catalog can no longer resolve is kept on the trigger and
+                      filtered out of the sessions it spawns (zimmer#853), so it has to
+                      read differently from a working one here. %>
+                  <% unresolvable = @trigger.unresolved_catalog_reference?(:mcp_servers, server) %>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium <%= unresolvable ? "bg-red-100 text-red-900" : "bg-indigo-100 text-indigo-800" %>"
+                        title="<%= unresolvable ? "Not in this deployment's catalog — it was renamed or removed. It is kept on the trigger; the sessions it spawns run without it." : "" %>">
+                    <%= server %><%= " (not in catalog)" if unresolvable %>
                   </span>
                 <% end %>
               </dd>
@@ -391,8 +396,13 @@
               <dt class="text-sm font-medium text-gray-500">Skills</dt>
               <dd class="mt-1 flex flex-wrap gap-1">
                 <% @trigger.catalog_skills.each do |skill_name| %>
-                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
-                    <%= skill_name %>
+                  <%# A name the catalog can no longer resolve is kept on the trigger and
+                      filtered out of the sessions it spawns (zimmer#853), so it has to
+                      read differently from a working one here. %>
+                  <% unresolvable = @trigger.unresolved_catalog_reference?(:catalog_skills, skill_name) %>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium <%= unresolvable ? "bg-red-100 text-red-900" : "bg-green-100 text-green-800" %>"
+                        title="<%= unresolvable ? "Not in this deployment's catalog — it was renamed or removed. It is kept on the trigger; the sessions it spawns run without it." : "" %>">
+                    <%= skill_name %><%= " (not in catalog)" if unresolvable %>
                   </span>
                 <% end %>
               </dd>
@@ -403,8 +413,13 @@
               <dt class="text-sm font-medium text-gray-500">Hooks</dt>
               <dd class="mt-1 flex flex-wrap gap-1">
                 <% @trigger.catalog_hooks.each do |hook_name| %>
-                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">
-                    <%= hook_name %>
+                  <%# A name the catalog can no longer resolve is kept on the trigger and
+                      filtered out of the sessions it spawns (zimmer#853), so it has to
+                      read differently from a working one here. %>
+                  <% unresolvable = @trigger.unresolved_catalog_reference?(:catalog_hooks, hook_name) %>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium <%= unresolvable ? "bg-red-100 text-red-900" : "bg-amber-100 text-amber-800" %>"
+                        title="<%= unresolvable ? "Not in this deployment's catalog — it was renamed or removed. It is kept on the trigger; the sessions it spawns run without it." : "" %>">
+                    <%= hook_name %><%= " (not in catalog)" if unresolvable %>
                   </span>
                 <% end %>
               </dd>
@@ -415,8 +430,13 @@
               <dt class="text-sm font-medium text-gray-500">Plugins</dt>
               <dd class="mt-1 flex flex-wrap gap-1">
                 <% @trigger.catalog_plugins.each do |plugin_id| %>
-                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">
-                    <%= plugin_id %>
+                  <%# A name the catalog can no longer resolve is kept on the trigger and
+                      filtered out of the sessions it spawns (zimmer#853), so it has to
+                      read differently from a working one here. %>
+                  <% unresolvable = @trigger.unresolved_catalog_reference?(:catalog_plugins, plugin_id) %>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium <%= unresolvable ? "bg-red-100 text-red-900" : "bg-purple-100 text-purple-800" %>"
+                        title="<%= unresolvable ? "Not in this deployment's catalog — it was renamed or removed. It is kept on the trigger; the sessions it spawns run without it." : "" %>">
+                    <%= plugin_id %><%= " (not in catalog)" if unresolvable %>
                   </span>
                 <% end %>
               </dd>

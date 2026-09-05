@@ -187,7 +187,11 @@ class Trigger < ApplicationRecord
   # not exist and the operator only found out on the next fire, when the name
   # was silently rewritten. The change-scoping the concern applies is what keeps
   # that from breaking rows saved under the old rule — an edit that leaves
-  # `mcp_servers` alone still saves, and #heal_catalog_references! cleans it up.
+  # `mcp_servers` alone still saves, and #heal_catalog_references! reports it.
+  #
+  # Only Trigger heals, and the heal no longer writes to these columns: it
+  # filters at fire time and records what it could not resolve in
+  # `unresolved_catalog_references`. See CatalogArtifactReferences.
   catalog_reference :mcp_servers,     config: ServersConfig, noun: "server", alert_noun: "MCP server",     dedup_noun: "mcp"
   catalog_reference :catalog_skills,  config: SkillsConfig,  noun: "skill",  alert_noun: "catalog skill"
   catalog_reference :catalog_hooks,   config: HooksConfig,   noun: "hook",   alert_noun: "catalog hook"
@@ -558,14 +562,20 @@ class Trigger < ApplicationRecord
     @last_follow_up_status = nil
     @genesis_override = genesis
 
-    # Heal the catalog-artifact references that no longer exist before creating
-    # or reusing a session. Each kind persists its fix so subsequent fires won't
-    # encounter the same issue. The list is the four `catalog_reference`
-    # declarations at the top of this class.
+    # Reconcile the catalog-artifact references against the catalog before
+    # creating or reusing a session, and announce any that have newly stopped
+    # resolving. The list is the four `catalog_reference` declarations at the top
+    # of this class.
+    #
+    # This does NOT rewrite the trigger: a name the catalog cannot resolve is
+    # kept on the row, because a rename is indistinguishable from a deletion
+    # here and deleting it would strand the operator (zimmer#853). Everything
+    # below spawns and syncs from `resolvable_*` instead, so the session never
+    # receives a name the catalog cannot resolve.
     #
     # This runs on BOTH paths because #follow_up_session! syncs all four columns
-    # onto the reused session (see its sync_* calls), so a stale reference is
-    # load-bearing on a reuse just as much as on a spawn.
+    # onto the reused session (see its sync_* calls), so an unresolvable
+    # reference is load-bearing on a reuse just as much as on a spawn.
     heal_catalog_references!
 
     # The agent root heals here too, but it does NOT raise here — the raising
@@ -1536,29 +1546,30 @@ class Trigger < ApplicationRecord
     "/triggers/#{trigger_id}"
   end
 
-  # Update the session's MCP servers to match the trigger's current configuration.
+  # Update the session's MCP servers to match the trigger's current configuration
+  # — the part of it the catalog can resolve, never a name it cannot.
   # For running sessions, this only takes effect on the next process spawn,
   # not on the currently running process.
   def sync_mcp_servers!(session)
-    sync_session_artifact!(session, :mcp_servers, mcp_servers)
+    sync_session_artifact!(session, :mcp_servers, resolvable_mcp_servers)
   end
 
   # Update the session's catalog skills to match the trigger's current configuration.
   # For running sessions, this only takes effect on the next process spawn.
   def sync_catalog_skills!(session)
-    sync_session_artifact!(session, :catalog_skills, catalog_skills)
+    sync_session_artifact!(session, :catalog_skills, resolvable_catalog_skills)
   end
 
   # Update the session's catalog hooks to match the trigger's current configuration.
   # For running sessions, this only takes effect on the next process spawn.
   def sync_catalog_hooks!(session)
-    sync_session_artifact!(session, :catalog_hooks, catalog_hooks)
+    sync_session_artifact!(session, :catalog_hooks, resolvable_catalog_hooks)
   end
 
   # Update the session's catalog plugins to match the trigger's current configuration.
   # For running sessions, this only takes effect on the next process spawn.
   def sync_catalog_plugins!(session)
-    sync_session_artifact!(session, :catalog_plugins, catalog_plugins)
+    sync_session_artifact!(session, :catalog_plugins, resolvable_catalog_plugins)
   end
 
   # Push one artifact list from this trigger onto a session it is reusing.
@@ -1827,10 +1838,10 @@ class Trigger < ApplicationRecord
     session = Session.create_from_agent_root!(
       agent_root_name: agent_root_name,
       prompt: burst_notice_prompt(triggering_prompt: triggering_prompt),
-      mcp_servers: mcp_servers,
-      catalog_skills: catalog_skills,
-      catalog_hooks: catalog_hooks,
-      catalog_plugins: catalog_plugins,
+      mcp_servers: resolvable_mcp_servers,
+      catalog_skills: resolvable_catalog_skills,
+      catalog_hooks: resolvable_catalog_hooks,
+      catalog_plugins: resolvable_catalog_plugins,
       genesis: session_genesis,
       scheduling_class: session_scheduling_class,
       metadata: { trigger_id: id, trigger_name: name, burst_notice: true }
@@ -1894,10 +1905,10 @@ class Trigger < ApplicationRecord
     session = Session.create_from_agent_root!(
       agent_root_name: agent_root_name,
       prompt: prompt,
-      mcp_servers: mcp_servers,
-      catalog_skills: catalog_skills,
-      catalog_hooks: catalog_hooks,
-      catalog_plugins: catalog_plugins,
+      mcp_servers: resolvable_mcp_servers,
+      catalog_skills: resolvable_catalog_skills,
+      catalog_hooks: resolvable_catalog_hooks,
+      catalog_plugins: resolvable_catalog_plugins,
       goal: goal,
       genesis: session_genesis,
       scheduling_class: session_scheduling_class,

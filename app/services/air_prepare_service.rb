@@ -608,11 +608,15 @@ class AirPrepareService
   #
   # A stale id in stored config must not be able to brick startup, so we drop it
   # here — with a warning log and a self-heal alert — and prepare with the
-  # survivors. This mirrors the Trigger#heal_stale_catalog_skills! self-heal that
-  # already guards the trigger path, and gives an unknown *skill* the same
-  # non-fatal degradation an unknown *root* already gets (RootResolutionError).
+  # survivors, which gives an unknown *skill* the same non-fatal degradation an
+  # unknown *root* already gets (RootResolutionError).
   #
-  # Like the trigger heal, the cleaned list is PERSISTED (update_column, so no
+  # This is the session-side counterpart of Trigger#heal_catalog_references!,
+  # and the two differ in one deliberate place: the trigger heal KEEPS the name
+  # it cannot resolve, because a trigger is long-lived operator config and a
+  # rename has to stay remappable (zimmer#853). A session's frozen config is not
+  # that, and its stale id is what `air prepare` exits 1 on, so here the cleaned
+  # list is PERSISTED (update_column, so no
   # validation/callback runs on a config the user didn't just edit). A session
   # does not prepare once: every resume, unarchive, and mid-run clone recreation
   # re-runs `air prepare`, so an in-memory-only scrub re-discovers the same stale
@@ -632,7 +636,7 @@ class AirPrepareService
     # rescues CatalogError to []), so every id would look stale. Don't strip the
     # whole list on a transient catalog miss — let `air prepare` run with the
     # requested set and resolve the catalog itself. Mirrors the same guard in
-    # Trigger#heal_stale_catalog_skills!.
+    # CatalogArtifactReferences#heal_stale_catalog_reference!.
     return requested if SkillsConfig.all.empty?
 
     stale = requested.reject { |id| SkillsConfig.exists?(id) }
@@ -651,8 +655,8 @@ class AirPrepareService
   # Write the pruned skill list back to the session so the drop happens once
   # rather than on every prepare.
   #
-  # update_column mirrors Trigger#heal_stale_catalog_skills!: this is a repair of
-  # stored config, not a user edit, so it must not run validations (the session
+  # update_column for the same reason the trigger-side bookkeeping uses it: this
+  # is a repair of stored config, not a user edit, so it must not run validations (the session
   # may legitimately fail an unrelated validation) or touch updated_at (which
   # feeds staleness detection and the UI's "last activity" read).
   #
