@@ -25,11 +25,20 @@ module Github
       new(url: url, owner: match[1], repo: match[2], number: match[3])
     end
 
-    # Every tracked PR on a session, in the order the session recorded them.
+    # Every tracked PR on a session, once each, in the order the session recorded
+    # them.
     #
     # Sessions whose `github_pull_request_urls` is missing or not an array answer
     # with an empty list — the shape check the three pollers each made for
     # themselves.
+    #
+    # The de-duplication is new. Nothing stops the same url being recorded twice —
+    # `github_pull_request_urls` is an array a transcript hook appends to — and the
+    # three pollers each looped over it verbatim, so a duplicate meant a second `gh`
+    # call for a PR already read and, worse, a second `pr_merged_message` for one
+    # merge, because the "was it open last time" test reads the stored statuses hash
+    # rather than the one being built. One ref per PR is what the rest of the pass
+    # assumes anyway: the snapshots are keyed by url.
     #
     # @param session [Session]
     # @return [Array<PrRef>]
@@ -37,7 +46,7 @@ module Github
       urls = session.custom_metadata&.dig("github_pull_request_urls")
       return [] unless urls.is_a?(Array)
 
-      urls.filter_map { |url| parse(url) }
+      urls.filter_map { |url| parse(url) }.uniq(&:url)
     end
 
     def initialize(url:, owner:, repo:, number:)

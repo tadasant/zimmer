@@ -2900,6 +2900,51 @@ user activity, because nothing removes an idle session from `Session.with_github
 or unreadable PR never resolves — so past a week the old 24-hour delay is back, deliberately, rather
 than pinning a session at two polls an hour forever.
 
+### One hung `gh` call now stalls PR status, CI, merge conflicts and comments together
+
+PR status, comments and merge conflicts used to be three cron jobs, each a `total_limit: 1`
+singleton. One of them wedging on a half-open connection to GitHub froze that one concern and left
+the other two running. `Github::PrPollPass` fused them ([#711](https://github.com/tadasant/zimmer/issues/711)),
+so they now run in series inside a single singleton and a wedge takes all three — including the
+merged-PR message, which is the archive signal every PR-holding session in the fleet is waiting on.
+
+Three things bound it rather than fix it. Every `gh` call goes through `GithubCli` under a
+`BoundedSubprocess` deadline, so a hang is a failed call within 20–30 seconds rather than forever
+(that is [#458](https://github.com/tadasant/zimmer/issues/458), already closed). The pass runs the
+cheapest and most load-bearing evaluator first, so PR status is never queued behind a slow comment
+fetch for the *same* session. And a tick that overruns is dropped rather than queued, which is the
+behaviour each of the three jobs already had on its own.
+
+What is genuinely worse than before: a slow session delays every session after it in the sweep for
+all three concerns, not one; and `mergeable` now rides in the same `gh pr view` query as
+`state,mergedAt`, so anything that makes that one field unserviceable takes PR status down with it
+rather than only conflict detection. `mergeStateStatus` was left out of the query for exactly that
+reason — GitHub serves it only to a viewer with push access and `gh` fails the whole query when one
+requested field is refused.
+
+Unlike `GithubTriggerPollerJob`, the pass has no heartbeat and no watchdog, so a freeze is still
+detected by a human noticing that PRs stopped updating.
+
+### The merge-conflict read no longer retries inside one tick
+
+`GitHubMergeConflictPollerJob` used to ask GitHub for mergeability up to four times in a single
+tick, sleeping 5 seconds between attempts, because GitHub answers "still computing" for a while
+after a push. `Github::MergeConflictEvaluator` asks once per gated poll: an `UNKNOWN` reading is no
+reading, both debounce markers are left alone, and the next gated poll two minutes later is the
+retry.
+
+That was deliberate — three blocking sleeps inside the fused singleton would delay PR status and
+comment polling for every other session in the sweep, and the two-minute gate plus the
+two-consecutive-readings debounce already provide the retry at a longer, safer interval. The cost is
+latency in the window right after a push: where the old loop usually resolved `UNKNOWN` within one
+tick, a conflict that first appears during that window is now suspected on the *next* gated poll and
+confirmed on the one after, so first notification moves from about four minutes to about six.
+
+The pathological case is a PR being force-pushed roughly as often as the gate fires: every gated
+read can land in GitHub's recompute window, and two consecutive conflicting readings never
+accumulate, so a real conflict on a PR under continuous rebasing may not be reported until the
+pushing stops. The old retry loop narrowed that window without closing it either.
+
 ---
 
 ### The merged message reports what the merge fired, and it cannot tell a deploy from any other push job

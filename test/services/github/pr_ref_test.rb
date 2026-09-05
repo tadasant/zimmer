@@ -43,6 +43,19 @@ class Github::PrRefTest < ActiveSupport::TestCase
     assert_equal %w[2 1], refs.map(&:number)
   end
 
+  # Nothing stops the same url being recorded twice — `github_pull_request_urls` is an
+  # array a transcript hook appends to. Under the three separate pollers a duplicate
+  # cost a second `gh` call for a PR already read AND a second merged-PR message for
+  # one merge, because the "was it open last time" test reads the stored statuses hash
+  # rather than the one being built.
+  test "for_session resolves a duplicated url once" do
+    session = sessions(:with_pr_url)
+    url = "https://github.com/owner/repo/pull/1"
+    session.update!(custom_metadata: { "github_pull_request_urls" => [ url, url ] })
+
+    assert_equal [ url ], Github::PrRef.for_session(session).map(&:url)
+  end
+
   test "for_session answers empty when the session tracks nothing, or tracks a non-array" do
     session = sessions(:running)
     assert_equal [], Github::PrRef.for_session(session)

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class PollBackoffTest < ActiveSupport::TestCase
   setup do
@@ -151,6 +152,84 @@ class PollBackoffTest < ActiveSupport::TestCase
     assert PollBackoff.should_poll?(@session, job_key: @job_key, base_interval: @base_interval)
   end
 
+  # ---- min_interval ----
+  #
+  # The floor exists because the curve answers 0 for a recently-active session. That
+  # was a safe answer while every poller had its own cron entry to supply its cadence,
+  # and stopped being one when Github::PrPollPass fused three of them into a single
+  # 30-second pass. See Github::PrPollPass::MERGE_CONFLICT_INTERVAL_SECONDS.
+
+  test "min_interval floors an interval the curve would answer 0 for" do
+    stamp_user_activity!(10.minutes.ago)
+    assert_equal 0, PollBackoff.poll_interval(@session, base_interval: 120)
+    assert_equal 120, PollBackoff.poll_interval(@session, base_interval: 120, min_interval: 120)
+  end
+
+  test "min_interval never lowers an interval the curve already stretched further" do
+    stamp_user_activity!(4.hours.ago)
+    assert_equal 5.minutes.to_i, PollBackoff.poll_interval(@session, base_interval: 120, min_interval: 120)
+  end
+
+  test "min_interval is applied after max_interval, so the floor wins over the ceiling" do
+    stamp_user_activity!(2.days.ago)
+    # The cap alone would stretch this down to 60s; the floor puts it back at 120.
+    assert_equal 60, PollBackoff.poll_interval(@session, base_interval: 30, max_interval: 60)
+    assert_equal 120, PollBackoff.poll_interval(@session, base_interval: 30, max_interval: 60, min_interval: 120)
+  end
+
+  test "should_poll? holds a session back until min_interval has elapsed" do
+    stamp_user_activity!(10.minutes.ago)
+    stamp_last_polled!(@job_key, 30.seconds.ago)
+
+    assert PollBackoff.should_poll?(@session, job_key: @job_key, base_interval: 120),
+      "without a floor the curve answers 0 and polls on every tick"
+    refute PollBackoff.should_poll?(@session, job_key: @job_key, base_interval: 120, min_interval: 120)
+
+    stamp_last_polled!(@job_key, 3.minutes.ago)
+    assert PollBackoff.should_poll?(@session, job_key: @job_key, base_interval: 120, min_interval: 120)
+  end
+
+  # ---- the invariant Github::PrPollPass rests on ----
+  #
+  # The pass gates itself once, then gates two evaluators again inside that pass under
+  # their own keys. If the pass's own gate were ever LOOSER than an evaluator's, the
+  # pass would skip a session on a tick the evaluator was due for — and the evaluator
+  # would be silently starved, with nothing failing. The pass says so in a comment;
+  # this is the assertion, walked across every bucket of the curve.
+  #
+  # Two of the buckets are exact ties, so there is no headroom: raise the pass's base
+  # cadence above an evaluator's and this test is what notices.
+  test "the poll pass gate is never looser than the evaluator gates it wraps" do
+    [ 10.minutes, 45.minutes, 4.hours, 12.hours, 2.days ].each do |activity_age|
+      stamp_user_activity!(activity_age.ago)
+
+      [ nil, Github::PrPollPass::AWAITING_PR_OUTCOME_MAX_POLL_INTERVAL ].each do |cap|
+        pass = PollBackoff.poll_interval(
+          @session,
+          base_interval: Github::PrPollPass::BASE_POLL_INTERVAL_SECONDS,
+          max_interval: cap
+        )
+
+        conflicts = PollBackoff.poll_interval(
+          @session,
+          base_interval: Github::PrPollPass::MERGE_CONFLICT_INTERVAL_SECONDS,
+          min_interval: Github::PrPollPass::MERGE_CONFLICT_INTERVAL_SECONDS
+        )
+        comments = PollBackoff.poll_interval(
+          @session,
+          base_interval: Github::PrPollPass::COMMENT_INTERVAL_SECONDS
+        )
+
+        assert pass <= conflicts,
+          "at #{activity_age.inspect} idle (cap #{cap.inspect}) the pass waits #{pass}s but the " \
+          "merge conflict evaluator only waits #{conflicts}s — the pass would starve it"
+        assert pass <= comments,
+          "at #{activity_age.inspect} idle (cap #{cap.inspect}) the pass waits #{pass}s but the " \
+          "comment evaluator only waits #{comments}s — the pass would starve it"
+      end
+    end
+  end
+
   # ---- record_poll! ----
 
   test "record_poll! writes ISO8601 timestamp under poller_last_polled_at[job_key]" do
@@ -169,6 +248,33 @@ class PollBackoffTest < ActiveSupport::TestCase
     @session.reload
     assert @session.custom_metadata.dig("poller_last_polled_at", "github_comment_poller").present?
     assert @session.custom_metadata.dig("poller_last_polled_at", @job_key).present?
+  end
+
+  # One reload and one UPDATE for every key a pass ran, instead of one pair per
+  # poller per tick. That was the database half of #711.
+  test "record_poll! stamps every key it is given, with one timestamp, in one write" do
+    freeze_time do
+      @session.expects(:merge_custom_metadata!).once.with do |updates|
+        stamps = updates.fetch("poller_last_polled_at")
+        stamps.keys.sort == %w[alpha beta] && stamps.values.uniq == [ Time.current.iso8601 ]
+      end
+
+      PollBackoff.record_poll!(@session, job_key: %w[alpha beta])
+    end
+  end
+
+  test "record_poll! preserves entries for keys this pass did not run" do
+    freeze_time do
+      untouched = 5.minutes.ago.iso8601
+      stamp_last_polled!("github_comment_poller", 5.minutes.ago)
+
+      PollBackoff.record_poll!(@session, job_key: [ @job_key, "github_merge_conflict_poller" ])
+
+      @session.reload
+      stamps = @session.custom_metadata["poller_last_polled_at"]
+      assert_equal %w[github_comment_poller github_merge_conflict_poller github_pr_poller], stamps.keys.sort
+      assert_equal untouched, stamps["github_comment_poller"]
+    end
   end
 
   test "record_poll! preserves other custom_metadata fields" do
