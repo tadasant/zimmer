@@ -5647,10 +5647,25 @@ class AgentSessionJob < ApplicationJob
       "oauth_required_servers" => oauth_result[:missing_servers]
     }
 
+    # A nudge is deliberately not held. `AutomatedPrompts.nudge?` is the class of
+    # prompt that says nothing the session does not already know — "you may have
+    # been interrupted, carry on", the heartbeat beat — and HeartbeatSweepJob
+    # refuses to stamp its own beat as pending for exactly this reason: delivering
+    # a beat for a moment that has already passed, once a human authorizes hours
+    # later, is worse than not delivering it. Holding one would also make the
+    # sentence below false, since no human is waiting on it.
     held_prompt = undelivered_prompt.presence
+    held_prompt = nil if AutomatedPrompts.nudge?(held_prompt)
+
+    spent_keys = []
     if held_prompt
       blocked_metadata["pending_follow_up_prompt"] = held_prompt
       blocked_metadata["pending_follow_up_sent_at"] = Time.current.utc.iso8601
+      # `active_follow_up_prompt` means "this turn is being delivered to the
+      # runtime", which is precisely what just stopped being true. Left standing,
+      # the failed row asserts both that the turn is in flight and that it is
+      # waiting to be picked up.
+      spent_keys << "active_follow_up_prompt"
       log_buffer.add(
         "The message this turn was carrying has NOT been delivered to the agent. It is held on the " \
         "session and is what gets sent once the authorization above completes — the session does not " \
@@ -5660,7 +5675,7 @@ class AgentSessionJob < ApplicationJob
     end
 
     log_buffer.flush
-    session.merge_metadata!(blocked_metadata)
+    session.merge_metadata!(blocked_metadata, spent_keys)
     session.update!(running_job_id: nil)
     session.fail! if session.may_fail?
     true

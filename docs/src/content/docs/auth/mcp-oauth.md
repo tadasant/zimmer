@@ -131,7 +131,11 @@ A follow-up exists only as its `AgentSessionJob`'s argument. The job returns whe
 nothing re-queues it, and the resume builds a job of its own — so before failing the session the gate
 hands the prompt back as `pending_follow_up_prompt`, the marker every recovery path already reads as
 "handed to a job, not yet delivered", and says in the session's timeline that the message has **not**
-been delivered yet. `McpOauthResumeService#resume!` then asks that marker first:
+been delivered yet. A *nudge* is the exception and is deliberately dropped: `AutomatedPrompts.nudge?`
+is the class of prompt that says nothing the session does not already know — the heartbeat beat,
+*"you may have been interrupted, carry on"* — and `HeartbeatSweepJob` refuses to stamp its own beat
+for the same reason, that a beat delivered for a moment which has already passed is worse than one
+not delivered. `McpOauthResumeService#resume!` then asks that marker first:
 
 - **owed a turn** → `Session#deliver_follow_up!` — the session resumes to `running` and the job
   carries that prompt;
@@ -145,9 +149,12 @@ on a session with a clone that meant re-running work it had already done.
 
 The one case the resume cannot honour is a session with **no runtime `session_id`**: there is no
 conversation for a follow-up to continue, and `AgentSessionJob` would reclassify it as a fresh start
-and run the stored prompt anyway. It resumes the first turn, keeps the message in
-`pending_follow_up_prompt`, and writes a warning into the session's own timeline quoting the text so
-it can be re-sent. Saying so is the point — a silent substitution is the defect this closes.
+and run the stored prompt anyway. It resumes the first turn and writes a warning into the session's
+own timeline quoting the text so it can be re-sent. Saying so is the point — a silent substitution is
+the defect this closes. It also gives up custody of the marker in the same breath, moving the text to
+`oauth_undelivered_follow_up_prompt`, a key the service owns and nothing consumes: a standing
+`pending_follow_up_prompt` promises a delivery, and `CleanupOrphanedSessionsJob` reads that promise as
+a delivery in flight and stops reaping the session while it waits for one that is not coming.
 
 ## What the server advertised, recorded
 

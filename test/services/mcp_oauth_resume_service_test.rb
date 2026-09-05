@@ -218,7 +218,6 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
     assert_nil @session.metadata["oauth_required_servers"]
   end
 
-
   # --- which prompt the resume delivers (#887) -----------------------------
   #
   # `oauth_required` is not exclusively a first-turn failure, so "resume" is not
@@ -259,6 +258,8 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
     assert_equal "Now check the deploy logs", @session.metadata["pending_follow_up_prompt"],
       "the marker is re-stamped for the job that has not picked it up yet"
     assert @session.running_job_id.present?, "the delivery records the job it enqueued"
+    assert Time.parse(@session.metadata["pending_follow_up_sent_at"]) > 1.minute.ago,
+      "the sent-at marker dates the delivery, not the block PendingMessageDelivery would skip its wait for"
     assert @session.logs.any? { |log| log.content.include?("sending the message that was blocked") },
       "the session's own timeline says which prompt the resume delivered"
   end
@@ -287,8 +288,13 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
 
     @session.reload
     assert @session.waiting?
-    assert_equal "Now check the deploy logs", @session.metadata["pending_follow_up_prompt"],
+    assert_equal "Now check the deploy logs",
+      @session.metadata[McpOauthResumeService::UNDELIVERED_PROMPT_KEY],
       "the message is kept rather than destroyed"
+    assert_nil @session.metadata["pending_follow_up_prompt"],
+      "custody of the marker is given up: no job is going to deliver it, and CleanupOrphanedSessionsJob " \
+      "reads a standing marker as a delivery in flight"
+    assert_nil @session.metadata["pending_follow_up_sent_at"]
     undelivered = @session.logs.find { |log| log.content.include?("has NOT been delivered") }
     refute_nil undelivered, "a resume that cannot honour the follow-up must say so"
     assert_equal "warning", undelivered.level

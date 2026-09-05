@@ -77,6 +77,13 @@
 # transaction, so a concurrent or retried callback re-reads the post-resume
 # state, sees the session is no longer blocked, and does nothing.
 class McpOauthResumeService
+  # Where a prompt this service could not deliver is kept. Owned by this service:
+  # nothing else writes it and nothing consumes it automatically, which is the
+  # whole point — `pending_follow_up_prompt` promises a delivery, and the case
+  # this key records is the one where no delivery is coming. The same shape, and
+  # the same reasoning, as Sessions::ParkUndeliveredTurn::PROMPT_KEY.
+  UNDELIVERED_PROMPT_KEY = "oauth_undelivered_follow_up_prompt"
+
   # Cap on the undelivered prompt echoed into the session's timeline when the
   # resume cannot deliver it. Generous, because this copy is the one a human
   # reads and re-sends by hand — but bounded, because the timeline is a UI.
@@ -317,15 +324,28 @@ class McpOauthResumeService
     # another without saying so — the defect, in the other direction. Resume the
     # first turn, keep the message where it can be read and re-sent, and say
     # plainly that it was not delivered.
+    #
+    # Custody of the marker is given up in the same breath, the way the job's own
+    # reclassification branch gives it up: `pending_follow_up_prompt` means a job
+    # is going to deliver this, and no job now is. Left standing it is not merely
+    # untrue — CleanupOrphanedSessionsJob reads it as "a delivery is in flight"
+    # and stops reaping the session for good, and SigtermRetryService would hand
+    # this text to the CLI in place of its recovery prompt. The text itself is
+    # kept, under a key this service owns and nothing consumes.
     Rails.logger.warn(
       "[McpOauthResumeService] Session #{session.id} has a pending follow-up but no runtime session id; " \
       "resuming its original prompt and leaving the follow-up undelivered"
+    )
+    session.merge_metadata!(
+      { UNDELIVERED_PROMPT_KEY => prompt },
+      %w[pending_follow_up_prompt pending_follow_up_sent_at]
     )
     session.logs.create!(
       level: "warning",
       content: "OAuth authorization complete, but this session never started a conversation for a " \
         "follow-up to continue — it is resuming its original prompt instead. The message that was " \
-        "blocked has NOT been delivered; it is kept on the session and can be sent again:\n\n" \
+        "blocked has NOT been delivered; it is kept on the session as " \
+        "`#{UNDELIVERED_PROMPT_KEY}` and can be sent again:\n\n" \
         "#{prompt.to_s.truncate(UNDELIVERED_PROMPT_LOG_MAX_CHARS)}"
     )
     nil
@@ -347,7 +367,16 @@ class McpOauthResumeService
       "oauth_required_servers" => nil
     )
 
-    session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
+    # The sent-at marker is re-stamped with the delivery, not left at the moment
+    # the gate blocked: PendingMessageDelivery reads it as "how long ago was this
+    # handed over" and skips its wait entirely once the stamp is older than ten
+    # seconds, so a stale one would let a pause taken right after the resume race
+    # the message it is meant to wait for.
+    session.deliver_follow_up!(
+      prompt,
+      clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS,
+      metadata_updates: { "pending_follow_up_sent_at" => Time.current.utc.iso8601 }
+    )
 
     Rails.logger.info(
       "[McpOauthResumeService] All OAuth flows complete for session #{session.id}, " \
