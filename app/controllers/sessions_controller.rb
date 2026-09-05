@@ -3315,16 +3315,9 @@ class SessionsController < ApplicationController
     end
   end
 
-  # Find session by slug if it looks like a slug, otherwise by ID
+  # Find session by numeric id or slug.
   def find_session
-    param = params[:id]
-    # If param contains only digits, treat as ID
-    if param.match?(/\A\d+\z/)
-      Session.find(param)
-    else
-      # Otherwise, try to find by slug first, fall back to ID
-      Session.find_by(slug: param) || Session.find(param)
-    end
+    Session.locate!(params[:id])
   end
 
   # The JSON the visibility control reads back. `board_visible` is the one the

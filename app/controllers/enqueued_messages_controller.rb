@@ -392,14 +392,7 @@ class EnqueuedMessagesController < ApplicationController
   private
 
   def find_session
-    param = params[:session_id]
-    # If param contains only digits, treat as ID
-    if param.match?(/\A\d+\z/)
-      @session = Session.find(param)
-    else
-      # Otherwise, try to find by slug first, fall back to ID
-      @session = Session.find_by(slug: param) || Session.find(param)
-    end
+    @session = Session.locate!(params[:session_id])
   end
 
   def find_enqueued_message

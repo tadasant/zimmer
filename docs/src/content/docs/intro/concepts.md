@@ -38,7 +38,9 @@ whole UI is organized around. A session has a status (`waiting`, `running`, `nee
 `failed`, `archived`), a prompt, a repo, a branch, a runtime, a goal, and lists of selected
 skills / MCP servers / hooks / plugins.
 
-Sessions are addressable by a numeric id or a slug, and the API resolves slug first.
+Sessions are addressable by a numeric id or a slug, on every surface — the web UI, the
+[REST API](/extend/rest-api/) and the [MCP tools](/extend/mcp-server/). An all-digit identifier
+is an id; anything else is a slug.
 
 → [The session lifecycle](/sessions/lifecycle/)
 
