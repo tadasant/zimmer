@@ -13,12 +13,10 @@
 #   1. Points the app at the shared dev Postgres accessory (`zimmer-devdb`)
 #      instead of the deployment's real database, with a database name derived
 #      from the clone directory so parallel sessions never collide.
-#   2. Repairs the clone's bundle. BundleInstallJob installs gems into
-#      vendor/bundle in the background while the agent is already working, and
-#      `discard_on StandardError` means an interrupted install (a deploy, a
-#      SIGTERM) leaves the clone permanently half-installed with no retry and no
-#      error at the prompt -- every `bin/rails` invocation then dies with
-#      Bundler::GemNotFound. `bundle check || bundle install` heals that.
+#   2. Makes sure the clone's bundle actually satisfies this checkout.
+#      BundleInstallJob gives a clone either a share of the image's bundle or a
+#      vendor/bundle of its own, but a checkout that has since changed the
+#      Gemfile satisfies neither. `bundle check || bundle install` heals that.
 #   3. Prepares the database, builds the CSS once (no foreman, no watcher), and
 #      starts Rails on a free port.
 #
@@ -129,15 +127,22 @@ fi
 # ---------------------------------------------------------------------------
 # Bundler
 #
-# CliSpawnEnv deliberately strips BUNDLE_* from the agent's environment so the
-# session's Ruby does not resolve gems out of Zimmer's own bundle. That is
-# correct, and it means the clone must have its own vendor/bundle -- which is
-# exactly what BundleInstallJob builds, and exactly what a half-finished install
-# leaves broken.
+# CliSpawnEnv deliberately strips BUNDLE_* from the agent's environment, so where
+# the clone resolves gems is decided entirely by its own .bundle/config, which
+# BundleInstallJob writes.
+#
+# When the clone's Gemfile.lock matches the image's, that config points at the
+# image's shared /usr/local/bundle and there is nothing to install (zimmer#410).
+# That directory is root-owned, though, so the moment this checkout adds or bumps
+# a gem, `bundle check` fails and `bundle install` cannot write there -- it dies
+# with a permission error naming a path that has nothing to do with this repo.
+# Give the clone a bundle of its own before installing, which is a no-op when it
+# already had one.
 # ---------------------------------------------------------------------------
 say "Checking gems"
 if ! bundle check >/dev/null 2>&1; then
-  echo "Bundle is incomplete (an interrupted BundleInstallJob leaves it this way). Installing..."
+  echo "Bundle is incomplete for this checkout. Installing into vendor/bundle..."
+  bundle config set --local path vendor/bundle
   bundle install --jobs 4 --retry 3
 fi
 echo "Bundle OK"

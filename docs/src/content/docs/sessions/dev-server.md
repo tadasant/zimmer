@@ -44,7 +44,11 @@ bin/agent-dev --skip-server   # prepare the bundle + databases, don't boot
 
 In order:
 
-1. **Repairs the bundle.** `bundle check || bundle install`.
+1. **Repairs the bundle.** `bundle check`, and when it fails, `bundle config set --local path
+   vendor/bundle` before `bundle install`. The re-point matters: a clone whose `Gemfile.lock`
+   matches the image's shares the image's read-only `/usr/local/bundle`, so a checkout that has
+   since changed the Gemfile cannot install into it. See
+   [Giving a clone its gems](/operate/background-jobs/#giving-a-clone-its-gems).
 2. **Points at the dev Postgres** — `zimmer-devdb` by default, overridable with
    `ZIMMER_DEV_DB_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_SSLMODE`.
 3. **Derives a per-clone database name** from the clone directory and exports it as

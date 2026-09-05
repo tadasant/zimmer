@@ -157,8 +157,8 @@ class ApplicationJobTest < ActiveSupport::TestCase
   end
 
   test "discard_interrupt_quietly keeps interrupts at INFO even with a broad discard_on StandardError" do
-    # Regression guard for the real production path. BundleInstallJob / McpPackageReinstallJob
-    # declare `discard_on StandardError`. Because GoodJob::InterruptError < StandardError and
+    # Regression guard for the real production path. McpPackageReinstallJob declares
+    # `discard_on StandardError`. Because GoodJob::InterruptError < StandardError and
     # ActiveSupport resolves rescue handlers last-registered-wins, that broad discard_on would
     # shadow ApplicationJob's inherited interrupt handler and re-emit the ERROR LogSubscriber
     # line ("Discarded <Job> (Job ID: …) due to a GoodJob::InterruptError (…).") — the exact
