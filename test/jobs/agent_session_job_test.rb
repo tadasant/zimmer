@@ -6079,11 +6079,14 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # Tests for SIGTERM retry counter reset functionality (issue pulsemcp/agents#459)
-  test "every budget but the empty-turn restart shares the 60-second reset threshold" do
+  test "every budget but the two no-output ones shares the 60-second reset threshold" do
     assert_equal 60, RetryBudget::DEFAULT_RESET_AFTER
-    # Every budget but the empty-turn restart shares it. RetryBudgetTest owns the
-    # assertion about which one departs from it, and why it has to.
-    assert_equal [ 60 ], (RetryBudget.all - [ RetryBudget::EMPTY_TURN ]).map(&:reset_after).uniq
+    # Every budget but the empty-turn restart and the silent-recovery restart shares
+    # it. RetryBudgetTest owns the assertion about which ones depart from it, and why
+    # they have to: both fire only while the session is producing nothing, so "the
+    # process has been up a minute" is not evidence the incident is over.
+    off_default = RetryBudget.all - [ RetryBudget::EMPTY_TURN, RetryBudget::SILENT_RECOVERY ]
+    assert_equal [ 60 ], off_default.map(&:reset_after).uniq
   end
 
   test "reset_retry_budget for SIGTERM resets counter after threshold" do
