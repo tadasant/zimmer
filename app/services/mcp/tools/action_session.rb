@@ -91,25 +91,39 @@ module Mcp
       # Every action but the two bulk ones operates on a single session.
       SESSIONLESS_ACTIONS = %w[refresh_all bulk_archive].freeze
 
-      MAX_MCP_SERVERS = 50
-      MAX_MCP_SERVER_NAME_LENGTH = 100
       MAX_SESSION_NOTES_LENGTH = 50_000
       REFRESH_ALL_LIMIT = 50
 
-      # Which session attribute and argument name each of the three
-      # replace-semantics catalog list actions writes. The bounds and the
-      # id-validation live once, on Mcp::Tool::CATALOG_LISTS, because
-      # action_trigger writes the same three lists onto a Trigger.
+      # Which session attribute and argument name each of the four
+      # replace-semantics catalog list actions writes. The bounds, the
+      # id-validation and everything else the write entails live once, in
+      # Sessions::UpdateCatalogSelection, which the web and REST surfaces call
+      # too — so the same request means the same thing through every door.
       #
-      # Each mirrors change_mcp_servers: validate every id against its catalog,
-      # persist the whole list (replace, not merge), and log the delta. Config
-      # regeneration is deliberately deferred to the next prepare/unarchive — the
-      # same as change_mcp_servers — so an archived session picks the new set up
-      # when it is next prepared.
+      # Config regeneration is deferred to the next prepare/unarchive for all
+      # four, so an archived session picks the new set up when it is next
+      # prepared. See the service for why that is the policy everywhere.
+      # `restricted_refusal` is the guard's own text, and it lives on the table
+      # rather than in the method body on purpose: the dispatch reads this table,
+      # so a future tidy-up that routes all four actions through one `when` keeps
+      # the agent-root MCP lock instead of silently dropping it.
       CATALOG_LIST_FIELDS = {
+        "change_mcp_servers" => {
+          attribute: :mcp_servers,
+          param: "mcp_servers",
+          restricted_refusal: "MCP servers are locked to the defaults configured for each allowed agent root."
+        },
         "change_skills" => { attribute: :catalog_skills, param: "skills" },
         "change_hooks" => { attribute: :catalog_hooks, param: "hooks" },
-        "change_plugins" => { attribute: :catalog_plugins, param: "plugins" }
+        # Plugins can bundle MCP servers (see Session#derive_mcp_servers_from_plugins),
+        # so on a restricted connection they are a bypass of the same agent-root MCP
+        # lock change_mcp_servers enforces. Skills and hooks carry no such server
+        # expansion, so only plugins inherit the guard.
+        "change_plugins" => {
+          attribute: :catalog_plugins,
+          param: "plugins",
+          restricted_refusal: "Plugins can add MCP servers, which are locked to the defaults configured for each allowed agent root."
+        }
       }.freeze
 
       description <<~DESC
@@ -123,11 +137,11 @@ module Mcp
         - **start_now**: Take a waiting session's next turn now instead of when the scheduler gets round to it — the tool half of the Ranked view's ⋮ menu entry. Reach for it when one session should not wait out the gate's deferred re-check, which can sit up to an hour out. It moves WHEN the turn is asked for and not WHETHER it is allowed: a spot session stays spot, so a window still over its target holds it again — `change_scheduling_class` to "priority" is what removes the gate. A session that has never run has its first turn enqueued, with the images and files it was created with. One that has run before with nothing queued is stranded rather than queued, and is refused with the error naming "follow_up" or "restart" instead; so is one asleep on a wake-up it has not reached, because a pause outranks the queue and it wakes on its own schedule.
         - **archive**: Archive a session (marks as completed). Refused when messages are still queued for the session, since archiving discards them — the error names them, and "force" overrides it deliberately.
         - **unarchive**: Restore an archived session to idle "needs_input" status
-        - **change_mcp_servers**: Update the MCP servers for a session (requires "mcp_servers" parameter; replaces the set)
+        - **change_mcp_servers**: Update the MCP servers for a session (requires "mcp_servers" parameter; replaces the set). Takes effect the next time the session's runtime config is prepared — its next turn, a restart, or an unarchive — never on an already-running process. If a newly selected server needs authorizing, the answer names it under "Needs authorization" and the session is moved to "failed" with failure_reason "oauth_required" so its page shows the Authorize buttons; a session that is currently running is left alone instead.
         - **change_model**: Update the model for a session (requires "model" parameter, e.g., "opus", "sonnet", "fable", "gpt-5.6-sol")
-        - **change_skills**: Update the catalog skills for a session (requires "skills" parameter; replaces the set). Invalid skill IDs are rejected.
-        - **change_hooks**: Update the catalog hooks for a session (requires "hooks" parameter; replaces the set). Invalid hook IDs are rejected.
-        - **change_plugins**: Update the catalog plugins for a session (requires "plugins" parameter; replaces the set). Invalid plugin IDs are rejected.
+        - **change_skills**: Update the catalog skills for a session (requires "skills" parameter; replaces the set). Invalid skill IDs are rejected. Takes effect on the session's next prepare.
+        - **change_hooks**: Update the catalog hooks for a session (requires "hooks" parameter; replaces the set). Invalid hook IDs are rejected. Takes effect on the session's next prepare.
+        - **change_plugins**: Update the catalog plugins for a session (requires "plugins" parameter; replaces the set). Invalid plugin IDs are rejected. Plugins can bundle MCP servers, so this carries the same next-prepare timing and the same OAuth handling as change_mcp_servers.
         - **change_goal**: Update the goal for a session (requires "goal" parameter; empty string clears it)
         - **change_auto_compact_window**: Update the context (auto-compact) window in tokens (requires "auto_compact_window"; applies on the next turn/restart)
         - **change_scheduling_class**: Move this one session between "spot" and "priority" (requires "scheduling_class"; null clears it back to derived). Optionally takes "precedence" (an absolute rank) or "place" (a symbolic one, e.g. "top_of_spot") to place it in the spot queue in the same call — which is what a demotion usually wants, since a demoted session otherwise keeps whatever rank it already had. "place": "top_of_spot" is what the web UI's Demote to spot button does. It applies whichever class you are moving the session to — precedence is carried on a priority session too, and is what a later demotion lands on.
@@ -233,9 +247,8 @@ module Mcp
         when "start_now" then start_now(find_session(args["session_id"]))
         when "archive" then archive(find_session(args["session_id"]), args)
         when "unarchive" then unarchive(find_session(args["session_id"]))
-        when "change_mcp_servers" then change_mcp_servers(find_session(args["session_id"]), args)
+        when *CATALOG_LIST_FIELDS.keys then change_catalog_list(find_session(args["session_id"]), action, args)
         when "change_model" then change_model(find_session(args["session_id"]), args)
-        when "change_skills", "change_hooks", "change_plugins" then change_catalog_list(find_session(args["session_id"]), action, args)
         when "change_goal" then change_goal(find_session(args["session_id"]), args)
         when "change_auto_compact_window" then change_auto_compact_window(find_session(args["session_id"]), args)
         when "change_scheduling_class" then change_scheduling_class(find_session(args["session_id"]), args)
@@ -616,52 +629,6 @@ module Mcp
         summary("Session Unarchived", session.reload, status_label: "New Status")
       end
 
-      def change_mcp_servers(session, args)
-        if context.restricted?
-          raise ToolError, "The \"change_mcp_servers\" action is not allowed when this connection is restricted to " \
-                           "specific agent roots. MCP servers are locked to the defaults configured for each allowed agent root."
-        end
-
-        unless args["mcp_servers"].is_a?(Array)
-          raise ToolError, "The \"mcp_servers\" parameter is required for the \"change_mcp_servers\" action."
-        end
-
-        mcp_servers = args["mcp_servers"]
-        raise ToolError, "Maximum #{MAX_MCP_SERVERS} MCP servers" if mcp_servers.length > MAX_MCP_SERVERS
-
-        mcp_servers = mcp_servers.reject(&:blank?).map { |s| s.to_s.strip.first(100) }
-
-        invalid = mcp_servers.reject { |name| ServersConfig.exists?(name) }
-        raise ToolError, "Invalid MCP servers: #{invalid.join(', ')}" if invalid.any?
-
-        old_servers = session.mcp_servers || []
-        # Without this, clearing the list is undone the next time the config is
-        # regenerated: McpServerBackfill reads the empty column as an accident
-        # and restores the root's defaults. See Session#record_explicit_mcp_servers.
-        session.record_explicit_mcp_servers(mcp_servers)
-        session.update!(mcp_servers: mcp_servers)
-
-        added = mcp_servers - old_servers
-        removed = old_servers - mcp_servers
-
-        # A deliberate removal is not an unexplained loss — forget its status so
-        # later config regenerations don't report it as one.
-        session.forget_mcp_server_status!(removed)
-
-        changes = []
-        changes << "added: #{added.join(', ')}" if added.any?
-        changes << "removed: #{removed.join(', ')}" if removed.any?
-        session.logs.create!(content: "MCP servers updated via MCP (#{changes.join('; ')})", level: "info") if changes.any?
-
-        [
-          "## MCP Servers Updated",
-          "",
-          "- **Session ID:** #{session.id}",
-          "- **Title:** #{session.title}",
-          "- **MCP Servers:** #{format_list(session.mcp_servers)}"
-        ].join("\n")
-      end
-
       def change_model(session, args)
         model = args["model"]
         unless model.is_a?(String) && model.present?
@@ -688,48 +655,56 @@ module Mcp
         ].join("\n")
       end
 
-      # Shared body for change_skills / change_hooks / change_plugins. Mirrors
-      # change_mcp_servers: replace-not-merge, reject any id outside the catalog
-      # (listing valid options so a rename like `pr` → `open-pr` is easy to fix),
-      # persist, and log the delta. The unknown-id rejection is what prevents an
-      # invalid value from being persisted and bricking the session on next prepare.
+      # The MCP surface's share of the four catalog-list actions: authorize, check
+      # the argument is there, hand the write to Sessions::UpdateCatalogSelection,
+      # and render the answer. Everything between those — the cap, the
+      # truncation, the unknown-id rejection (which lists the valid options, so a
+      # rename like `pr` → `open-pr` is cheap to fix from the error alone), the
+      # write, the log row and the OAuth probe — is the service's, shared with the
+      # web and REST surfaces.
       def change_catalog_list(session, action, args)
         spec = CATALOG_LIST_FIELDS.fetch(action)
+        attribute = spec[:attribute]
         param = spec[:param]
-        label = CATALOG_LISTS.fetch(spec[:attribute])[:label]
 
-        # Plugins can bundle MCP servers (see Session#derive_mcp_servers_from_plugins),
-        # so on a restricted connection they are a bypass of the same agent-root MCP
-        # lock change_mcp_servers enforces. Skills and hooks carry no such server
-        # expansion, so only plugins inherit the guard.
-        if action == "change_plugins" && context.restricted?
-          raise ToolError, "The \"change_plugins\" action is not allowed when this connection is restricted to " \
-                           "specific agent roots. Plugins can add MCP servers, which are locked to the defaults configured for each allowed agent root."
+        if spec[:restricted_refusal] && context.restricted?
+          raise ToolError, "The \"#{action}\" action is not allowed when this connection is restricted to " \
+                           "specific agent roots. #{spec[:restricted_refusal]}"
         end
 
         unless args[param].is_a?(Array)
           raise ToolError, "The \"#{param}\" parameter is required for the \"#{action}\" action."
         end
 
-        items = validated_catalog_list!(spec[:attribute], args[param], param)
+        result = Sessions::UpdateCatalogSelection.call(
+          session: session,
+          attribute: attribute,
+          values: args[param],
+          actor: :mcp
+        )
+        raise ToolError, tool_error_message(result) unless result.ok?
 
-        old_items = session.public_send(spec[:attribute]) || []
-        session.update!(spec[:attribute] => items)
-
-        added = items - old_items
-        removed = old_items - items
-        changes = []
-        changes << "added: #{added.join(', ')}" if added.any?
-        changes << "removed: #{removed.join(', ')}" if removed.any?
-        session.logs.create!(content: "#{label} updated via MCP (#{changes.join('; ')})", level: "info") if changes.any?
-
-        [
-          "## #{label} Updated",
+        title = Session::CATALOG_SELECTIONS.fetch(attribute)[:title]
+        lines = [
+          "## #{title} Updated",
           "",
           "- **Session ID:** #{session.id}",
           "- **Title:** #{session.title}",
-          "- **#{label}:** #{format_list(session.public_send(spec[:attribute]))}"
-        ].join("\n")
+          "- **#{title}:** #{format_list(session.public_send(attribute))}"
+        ]
+        if result.oauth_required?
+          lines << "- **Needs authorization:** #{result.servers_needing_oauth.map { |s| s[:server_name] }.join(', ')}"
+        end
+        lines.join("\n")
+      end
+
+      # An unknown id is worth listing the valid ones for; a cap or a validation
+      # failure is not.
+      def tool_error_message(result)
+        return result.error unless result.error_code == :invalid_entries
+
+        label = Session::CATALOG_SELECTIONS.fetch(result.attribute)[:label]
+        "#{result.error}. Valid #{label}: #{Sessions::UpdateCatalogSelection.valid_ids(result.attribute).join(', ')}"
       end
 
       def change_goal(session, args)

@@ -2,6 +2,7 @@ require "test_helper"
 require "mocha/minitest"
 require "automated_prompts"
 require "ostruct"
+require "tmpdir"
 
 class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
   include AttachmentFixtures
@@ -465,6 +466,172 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_equal [], session.reload.mcp_servers
     assert session.mcp_servers_explicitly_empty?
+  end
+
+  # --- The four catalog endpoints, one rule ------------------------------------
+  #
+  # The REST third of the 4 x 3 matrix. All four endpoints run through
+  # Sessions::UpdateCatalogSelection, so the cap, the truncation, the unknown-id
+  # rejection, the log row and the regeneration policy are one behaviour with
+  # four names.
+  #
+  # `PATCH /mcp_servers` is the endpoint the consolidation was filed over: it
+  # wrote the column and stopped while the identical web request regenerated the
+  # clone's config. Both now defer to the next prepare, and these assert it for
+  # all four rather than for the one that drifted.
+  API_CATALOG_ENDPOINTS = [
+    { attribute: :mcp_servers, path: :mcp_servers_api_v1_session_path },
+    { attribute: :catalog_skills, path: :catalog_skills_api_v1_session_path },
+    { attribute: :catalog_hooks, path: :catalog_hooks_api_v1_session_path },
+    { attribute: :catalog_plugins, path: :catalog_plugins_api_v1_session_path }
+  ].freeze
+
+  def api_catalog_session(label)
+    Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Matrix #{label}")
+  end
+
+  def patch_api_catalog(endpoint, session, values)
+    patch send(endpoint[:path], session),
+      params: { endpoint[:attribute] => values }.to_json,
+      headers: @headers.merge("CONTENT_TYPE" => "application/json")
+  end
+
+  test "every catalog endpoint enforces its cap" do
+    API_CATALOG_ENDPOINTS.each do |endpoint|
+      spec = Session::CATALOG_SELECTIONS.fetch(endpoint[:attribute])
+      valid = Sessions::UpdateCatalogSelection.valid_ids(endpoint[:attribute]).first
+
+      patch_api_catalog(endpoint, api_catalog_session(endpoint[:attribute]), Array.new(spec[:max] + 1, valid))
+
+      assert_response :unprocessable_entity, endpoint[:attribute].to_s
+      json = JSON.parse(response.body)
+      assert_equal "Too many entries", json["error"]
+      assert_equal "Too many #{spec[:label]} (maximum #{spec[:max]})", json["message"]
+    end
+  end
+
+  test "every catalog endpoint truncates an over-long id before validating it" do
+    over_long = "z" * (Session::MAX_CATALOG_SELECTION_ID_LENGTH + 25)
+
+    API_CATALOG_ENDPOINTS.each do |endpoint|
+      patch_api_catalog(endpoint, api_catalog_session(endpoint[:attribute]), [ over_long ])
+
+      assert_response :unprocessable_entity, endpoint[:attribute].to_s
+      message = JSON.parse(response.body)["message"]
+      assert_includes message, "z" * Session::MAX_CATALOG_SELECTION_ID_LENGTH
+      assert_not_includes message, over_long, "#{endpoint[:attribute]} echoed the untruncated id"
+    end
+  end
+
+  test "every catalog endpoint rejects an id outside its catalog and leaves the list alone" do
+    API_CATALOG_ENDPOINTS.each do |endpoint|
+      spec = Session::CATALOG_SELECTIONS.fetch(endpoint[:attribute])
+      session = api_catalog_session(endpoint[:attribute])
+
+      patch_api_catalog(endpoint, session, [ "no-such-entry" ])
+
+      assert_response :unprocessable_entity, endpoint[:attribute].to_s
+      json = JSON.parse(response.body)
+      assert_equal "Invalid entries", json["error"]
+      assert_equal "Invalid #{spec[:label]}: no-such-entry", json["message"]
+      assert_equal [], session.reload.public_send(endpoint[:attribute]).to_a
+    end
+  end
+
+  test "every catalog endpoint writes one log row naming the API surface" do
+    API_CATALOG_ENDPOINTS.each do |endpoint|
+      spec = Session::CATALOG_SELECTIONS.fetch(endpoint[:attribute])
+      session = api_catalog_session(endpoint[:attribute])
+      id = Sessions::UpdateCatalogSelection.valid_ids(endpoint[:attribute]).first
+
+      assert_difference -> { session.logs.count }, 1, endpoint[:attribute].to_s do
+        patch_api_catalog(endpoint, session, [ id ])
+      end
+
+      assert_response :success
+      assert_equal "#{spec[:label].upcase_first} updated via API (added: #{id})", session.logs.last.content
+    end
+  end
+
+  test "no catalog endpoint regenerates the session's runtime config" do
+    Dir.mktmpdir do |dir|
+      AirPrepareService.any_instance.expects(:prepare!).never
+      McpOauthCredentialInjector.any_instance.stubs(:check_credentials_status).returns({})
+
+      API_CATALOG_ENDPOINTS.each do |endpoint|
+        session = Session.create!(
+          git_root: "https://github.com/test/repo.git",
+          prompt: "Matrix #{endpoint[:attribute]}",
+          metadata: { "working_directory" => dir }
+        )
+        id = Sessions::UpdateCatalogSelection.valid_ids(endpoint[:attribute]).first
+
+        patch_api_catalog(endpoint, session, [ id ])
+
+        assert_response :success, endpoint[:attribute].to_s
+        assert_equal [ id ], session.reload.public_send(endpoint[:attribute])
+      end
+    end
+  end
+
+  # The web UI renders Authorize buttons off the OAuth probe. A REST caller that
+  # changes the same two lists gets the same answer in its response, so it can
+  # say why the session's status moved rather than having to infer it.
+  test "the two server-carrying endpoints report which servers need authorizing" do
+    Dir.mktmpdir do |dir|
+      needing = [ { server_name: "linear", server_url: "https://mcp.linear.app/mcp" } ]
+      McpOauthProbe.any_instance.stubs(:servers_needing_oauth).returns(needing)
+
+      [ [ :mcp_servers, :mcp_servers_api_v1_session_path, [ "linear" ] ],
+        [ :catalog_plugins, :catalog_plugins_api_v1_session_path, [ "ci-workflow" ] ] ].each do |attribute, path, values|
+        session = Session.create!(
+          git_root: "https://github.com/test/repo.git",
+          prompt: "OAuth #{attribute}",
+          status: :needs_input,
+          metadata: { "working_directory" => dir }
+        )
+
+        patch send(path, session),
+          params: { attribute => values }.to_json,
+          headers: @headers.merge("CONTENT_TYPE" => "application/json")
+
+        assert_response :success, attribute.to_s
+        json = JSON.parse(response.body)
+        assert_equal true, json["oauth_required"], attribute.to_s
+        assert_equal [ "linear" ], json["oauth_required_servers"].map { |s| s["server_name"] }
+        assert_equal "failed", session.reload.status, "the session is parked for the human to authorize"
+      end
+    end
+  end
+
+  # The live defect the consolidation was filed over, asserted at the file rather
+  # than at the mock: PATCH /mcp_servers wrote the column and left the clone's
+  # .mcp.json listing the old servers, while the identical web request rewrote it
+  # immediately. Both now leave it for the next prepare, so the same request
+  # means the same thing through either door.
+  test "PATCH mcp_servers leaves the clone's mcp.json for the next prepare" do
+    Dir.mktmpdir do |dir|
+      mcp_path = File.join(dir, ".mcp.json")
+      original = '{"mcpServers": {"old-server": {"command": "test"}}}'
+      File.write(mcp_path, original)
+
+      session = Session.create!(
+        git_root: "https://github.com/test/repo.git",
+        prompt: "REST mcp_servers",
+        mcp_servers: [],
+        metadata: { "working_directory" => dir }
+      )
+      AirPrepareService.any_instance.expects(:prepare!).never
+      McpOauthCredentialInjector.any_instance.stubs(:check_credentials_status).returns({})
+
+      patch mcp_servers_api_v1_session_path(session),
+        params: { mcp_servers: [ "context7" ] }.to_json,
+        headers: @headers.merge("CONTENT_TYPE" => "application/json")
+
+      assert_response :success
+      assert_equal [ "context7" ], session.reload.mcp_servers
+      assert_equal original, File.read(mcp_path)
+    end
   end
 
   test "should return error for invalid agent_root" do

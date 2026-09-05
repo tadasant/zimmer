@@ -862,8 +862,8 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
       @tool.call("action" => "change_skills", "session_id" => session.id, "skills" => [ "zimmer-run-tests", "not-a-skill" ])
     end
 
-    assert_match(/Invalid skills: not-a-skill/, error.message)
-    assert_match(/Valid skills:/, error.message)
+    assert_match(/Invalid catalog skills: not-a-skill/, error.message)
+    assert_match(/Valid catalog skills:/, error.message)
     assert_match(/sync-docs/, error.message)
     # The invalid value must not have been persisted.
     assert_equal [ "sync-docs" ], session.reload.catalog_skills
@@ -887,7 +887,7 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     error = assert_raises(Mcp::ToolError) do
       @tool.call("action" => "change_hooks", "session_id" => sessions(:needs_input).id, "hooks" => [ "not-a-hook" ])
     end
-    assert_match(/Invalid hooks: not-a-hook/, error.message)
+    assert_match(/Invalid catalog hooks: not-a-hook/, error.message)
   end
 
   test "change_hooks requires the hooks parameter" do
@@ -908,7 +908,101 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     error = assert_raises(Mcp::ToolError) do
       @tool.call("action" => "change_plugins", "session_id" => sessions(:needs_input).id, "plugins" => [ "not-a-plugin" ])
     end
-    assert_match(/Invalid plugins: not-a-plugin/, error.message)
+    assert_match(/Invalid catalog plugins: not-a-plugin/, error.message)
+  end
+
+  # --- The four catalog lists, one rule ---------------------------------------
+  #
+  # change_mcp_servers / change_skills / change_hooks / change_plugins all run
+  # through Sessions::UpdateCatalogSelection, so the cap, the truncation, the
+  # unknown-id rejection, the log row and the regeneration policy are one
+  # behaviour with four names. These cover the MCP third of that 4 x 3 matrix;
+  # the controller tests cover the web and REST thirds against the same table.
+  CATALOG_ACTIONS = [
+    { action: "change_mcp_servers", param: "mcp_servers", attribute: :mcp_servers },
+    { action: "change_skills", param: "skills", attribute: :catalog_skills },
+    { action: "change_hooks", param: "hooks", attribute: :catalog_hooks },
+    { action: "change_plugins", param: "plugins", attribute: :catalog_plugins }
+  ].freeze
+
+  def valid_id_for(attribute)
+    Sessions::UpdateCatalogSelection.valid_ids(attribute).first
+  end
+
+  def spec_for(attribute)
+    Session::CATALOG_SELECTIONS.fetch(attribute)
+  end
+
+  test "every catalog action enforces its cap" do
+    CATALOG_ACTIONS.each do |c|
+      spec = spec_for(c[:attribute])
+      oversized = Array.new(spec[:max] + 1, valid_id_for(c[:attribute]))
+
+      error = assert_raises(Mcp::ToolError, c[:action]) do
+        @tool.call("action" => c[:action], "session_id" => sessions(:needs_input).id, c[:param] => oversized)
+      end
+      assert_equal "Too many #{spec[:label]} (maximum #{spec[:max]})", error.message, c[:action]
+    end
+  end
+
+  test "every catalog action truncates an over-long id before validating it" do
+    CATALOG_ACTIONS.each do |c|
+      over_long = "z" * (Session::MAX_CATALOG_SELECTION_ID_LENGTH + 25)
+
+      error = assert_raises(Mcp::ToolError, c[:action]) do
+        @tool.call("action" => c[:action], "session_id" => sessions(:needs_input).id, c[:param] => [ over_long ])
+      end
+      assert_includes error.message, "z" * Session::MAX_CATALOG_SELECTION_ID_LENGTH, c[:action]
+      assert_not_includes error.message, over_long, "#{c[:action]} echoed the untruncated id"
+    end
+  end
+
+  test "every catalog action rejects an id outside its catalog and lists the valid ones" do
+    CATALOG_ACTIONS.each do |c|
+      spec = spec_for(c[:attribute])
+
+      error = assert_raises(Mcp::ToolError, c[:action]) do
+        @tool.call("action" => c[:action], "session_id" => sessions(:needs_input).id, c[:param] => [ "no-such-entry" ])
+      end
+      assert_includes error.message, "Invalid #{spec[:label]}: no-such-entry", c[:action]
+      assert_includes error.message, "Valid #{spec[:label]}:", c[:action]
+      assert_empty sessions(:needs_input).reload.public_send(c[:attribute]).to_a & [ "no-such-entry" ]
+    end
+  end
+
+  test "every catalog action writes one log row naming the MCP surface" do
+    CATALOG_ACTIONS.each do |c|
+      session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Matrix #{c[:action]}")
+      id = valid_id_for(c[:attribute])
+
+      assert_difference -> { session.logs.count }, 1, c[:action] do
+        @tool.call("action" => c[:action], "session_id" => session.id, c[:param] => [ id ])
+      end
+
+      log = session.logs.last
+      assert_equal "info", log.level, c[:action]
+      assert_equal "#{spec_for(c[:attribute])[:label].upcase_first} updated via MCP (added: #{id})", log.content
+    end
+  end
+
+  test "no catalog action regenerates the session's runtime config" do
+    Dir.mktmpdir do |dir|
+      AirPrepareService.any_instance.expects(:prepare!).never
+      McpOauthCredentialInjector.any_instance.stubs(:check_credentials_status).returns({})
+
+      CATALOG_ACTIONS.each do |c|
+        session = Session.create!(
+          git_root: "https://github.com/test/repo.git",
+          prompt: "Matrix #{c[:action]}",
+          metadata: { "working_directory" => dir }
+        )
+        id = valid_id_for(c[:attribute])
+
+        @tool.call("action" => c[:action], "session_id" => session.id, c[:param] => [ id ])
+
+        assert_equal [ id ], session.reload.public_send(c[:attribute]), c[:action]
+      end
+    end
   end
 
   test "change_plugins is refused on a restricted connection" do

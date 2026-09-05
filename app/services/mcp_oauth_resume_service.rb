@@ -157,12 +157,13 @@ class McpOauthResumeService
   # Restart from scratch is gated on `failed_before_initial_prompt? &&
   # !setup_complete?`, so it knows nothing was ever delivered. `oauth_required`
   # being a member of PRE_PROMPT_FAILURE_REASONS does NOT buy the same knowledge
-  # here, because four routes set it on a session that has already run:
-  # SessionsController#update_mcp_servers and #update_catalog_plugins, when a
-  # human adds a server to a live session; AgentSessionJob's follow-up branch,
-  # under "Follow-up blocked: OAuth authorization required for MCP servers"; and
-  # AgentSessionJob#check_and_handle_mcp_failure, the post-spawn classifier that
-  # #authorized? below already names. Sessions::FirstTurnAttachments reads
+  # here, because three routes set it on a session that has already run:
+  # Sessions::UpdateCatalogSelection, when an `mcp_servers` or `catalog_plugins`
+  # change adds a server needing authorization to a live session — reachable from
+  # the web UI, the REST endpoints and `action_session` alike; AgentSessionJob's
+  # follow-up branch, under "Follow-up blocked: OAuth authorization required for
+  # MCP servers"; and AgentSessionJob#check_and_handle_mcp_failure, the
+  # post-spawn classifier that #authorized? below already names. Sessions::FirstTurnAttachments reads
   # everything on the volume minus what the queue owns, and on such a session
   # that set includes attachments earlier turns already consumed — re-delivering
   # them would put the first turn's screenshot on a much later one.

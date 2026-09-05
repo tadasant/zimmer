@@ -1373,8 +1373,8 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
       )
     end
 
-    assert_match(/Invalid skills: not-a-skill/, error.message)
-    assert_match(/Valid skills:/, error.message)
+    assert_match(/Invalid catalog skills: not-a-skill/, error.message)
+    assert_match(/Valid catalog skills:/, error.message)
     assert_nil Trigger.find_by(name: "Bad Skill Trigger")
   end
 
@@ -1385,7 +1385,7 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
       @tool.call("action" => "update", "id" => trigger.id, "catalog_hooks" => [ "not-a-hook" ])
     end
 
-    assert_match(/Invalid hooks: not-a-hook/, error.message)
+    assert_match(/Invalid catalog hooks: not-a-hook/, error.message)
     assert_equal [], trigger.reload.catalog_hooks
   end
 
@@ -1396,7 +1396,7 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
       @tool.call("action" => "update", "id" => trigger.id, "catalog_plugins" => [ "not-a-plugin" ])
     end
 
-    assert_match(/Invalid plugins: not-a-plugin/, error.message)
+    assert_match(/Invalid catalog plugins: not-a-plugin/, error.message)
   end
 
   test "create rejects an unknown MCP server and lists the valid ones" do
@@ -1474,7 +1474,7 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
       @tool.call("action" => "update", "id" => trigger.id, "catalog_skills" => Array.new(101) { "open-pr" })
     end
 
-    assert_match(/Maximum 100 skills/, error.message)
+    assert_match(/Too many catalog skills \(maximum 100\)/, error.message)
   end
 
   test "blank ids are dropped from a catalog list rather than reaching the catalog check" do
