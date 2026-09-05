@@ -71,7 +71,9 @@ class MetadataCallSiteAtomicityTest < ActiveSupport::TestCase
   end
 
   # The metadata-only path taken while the runtime has not created its transcript
-  # directory yet. It used to be an `update_columns` whole-column write.
+  # directory yet. `reload` stubbed for the reason the batch above gives: this
+  # write reloaded first too, so the window to place the interfering write in is
+  # the one between that read and the UPDATE.
   test "the poller's waiting-for-directory flag keeps a concurrently written key" do
     session = sessions(:running)
     session.update!(metadata: { "working_directory" => "/tmp/test-clone" })
@@ -80,11 +82,12 @@ class MetadataCallSiteAtomicityTest < ActiveSupport::TestCase
     fs.stubs(:directory?).returns(false)
 
     concurrent_write!(session)
+    session.stubs(:reload).returns(session)
 
     assert_nil TranscriptPollerService.new(session, file_system: fs).poll_and_broadcast
 
-    assert_concurrent_key_survived(session)
-    assert_equal true, session.reload.metadata["transcript_waiting_logged"]
+    assert_concurrent_key_survived(Session.find(session.id))
+    assert_equal true, Session.find(session.id).metadata["transcript_waiting_logged"]
   end
 
   # === SessionStateMachine's AASM callbacks ====================================
@@ -158,11 +161,14 @@ class MetadataCallSiteAtomicityTest < ActiveSupport::TestCase
 
     concurrent_write!(session)
     result = Sessions::UpdateCatalogSelection.call(
-      session: session, attribute: :mcp_servers, values: [], actor: :api
+      session: session, attribute: :mcp_servers, values: [ "playwright-custom" ], actor: :api
     )
     assert result.ok, result.error
 
     assert_concurrent_key_survived(session)
+    assert_nil session.reload.metadata[Session::EXPLICIT_EMPTY_MCP_SERVERS_KEY],
+      "naming a list must retire the explicit-empty marker"
+    assert_equal [ "playwright-custom" ], session.mcp_servers
   end
 
   # === Jobs ====================================================================
