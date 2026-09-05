@@ -2751,12 +2751,15 @@ tracked PR has merged or closed is waiting on nothing and keeps the full curve, 
 included; that is the case the backoff was written for, and the rate limit it protects is
 unchanged. Touching the session still resets the curve to the 30-second cadence.
 
-So the residual delay is up to 30 minutes rather than up to a day. Two caveats. Only the PR
+So the residual delay is up to 30 minutes rather than up to a day. Three caveats. Only the PR
 *status* poller is capped: `GithubCommentPollerJob` and `GitHubMergeConflictPollerJob` still ride
 the full curve, so a comment or a conflict notice on the PR of a long-idle session can still be a
-day late. And the cap is not a guarantee of delivery — the cases in
+day late. The cap is not a guarantee of delivery — the cases in
 [A PR session waits for a merge message that three cases can prevent](#a-pr-session-waits-for-a-merge-message-that-three-cases-can-prevent)
-are untouched by it.
+are untouched by it. And the cap itself expires after `AWAITING_PR_OUTCOME_MAX_IDLE` (7 days) of no
+user activity, because nothing removes an idle session from `Session.with_github_prs` and a deleted
+or unreadable PR never resolves — so past a week the old 24-hour delay is back, deliberately, rather
+than pinning a session at two polls an hour forever.
 
 ---
 

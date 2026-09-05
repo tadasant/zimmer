@@ -754,6 +754,15 @@ whenever `Session#unresolved_pr_urls` is non-empty:
   It is a cap, not a target: inside 30 minutes the session still waits.
 - **A session with nothing left to wait for keeps the full curve**, 24-hour floor included. That is
   the case `PollBackoff` was written for and the cap does not touch it.
+- **The cap expires** after `AWAITING_PR_OUTCOME_MAX_IDLE` (7 days) of no user activity, after which
+  the full curve resumes. This matters more than it looks: "unresolved" is a state a session can
+  never leave on its own. Nothing removes an idle session from `Session.with_github_prs` — archiving
+  old sessions is an operator action, not a cron job — and a PR that was deleted, or whose repo the
+  token cannot read, returns nil from `fetch_pr_status` on every tick, so no status is ever recorded
+  for it. Without an expiry both pin a session at two polls an hour for the rest of its life and the
+  capped population only ever grows, which is the one way this could re-create the pressure the
+  backoff exists to relieve. The bound keeps that population proportional to a week of fleet
+  throughput rather than to all of time.
 
 Only the PR *status* poller is capped. `GithubCommentPollerJob` and `GitHubMergeConflictPollerJob`
 ride the full curve — see [Limitations](/limitations/#a-parked-session-can-hear-about-its-merged-pr-up-to-half-an-hour-late).
