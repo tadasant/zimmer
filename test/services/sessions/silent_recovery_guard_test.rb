@@ -117,7 +117,7 @@ class Sessions::SilentRecoveryGuardTest < ActiveJob::TestCase
     assert guard.gave_up?
 
     summary = @session.reload.failure_summary
-    assert_includes summary, "#{BUDGET.max} times"
+    assert_includes summary, "The last #{BUDGET.max} recovery restarts"
     assert_includes summary, "restart it to try again"
   end
 
@@ -189,6 +189,23 @@ class Sessions::SilentRecoveryGuardTest < ActiveJob::TestCase
       "quota depletion is budget pacing, not a failure signal — it must never reach this budget"
   end
 
+  # The no-double-charge property the whole watermark design rests on.
+  # `CleanupOrphanedSessionsJob#perform` runs `recover_running_orphans` and then
+  # `continue_recovery_paused_sessions` in the SAME pass, so two chokepoints can be
+  # reached about one session between restarts. Spending advances the watermark, so
+  # the second reads the restart it has already judged as `:not_started`.
+  test "two judgements between restarts charge one attempt, not two" do
+    assert guard.proceed?
+    silent_restart!(at: "2026-09-05T11:56:47Z")
+
+    assert guard.proceed?
+    assert guard.proceed?
+    assert guard.proceed?
+
+    assert_equal 1, @session.reload.metadata[BUDGET.key],
+      "one restart is one attempt however many times it is judged"
+  end
+
   test "a restart that never started a turn is not evidence, and is not counted" do
     assert guard.proceed?
 
@@ -198,6 +215,47 @@ class Sessions::SilentRecoveryGuardTest < ActiveJob::TestCase
     assert guard.proceed?
 
     assert_nil @session.reload.metadata[BUDGET.key]
+  end
+
+  # An archived session takes no turn, so there is no restart to judge — and spending
+  # its budget would sabotage the recovery owed to it if it is ever unarchived.
+  test "an archived session is never judged and never charged" do
+    @session.merge_metadata!(
+      BUDGET.key => BUDGET.max,
+      Sessions::SilentRecoveryGuard::WATERMARK_KEY => {
+        "job_started_at" => "2026-09-05T10:00:00Z", "transcript_lines" => 0
+      }
+    )
+    silent_restart!(at: "2026-09-05T12:00:00Z")
+    @session.archive!
+
+    assert guard.proceed?
+    assert_equal "archived", @session.reload.status
+    assert_equal BUDGET.max, @session.metadata[BUDGET.key], "the budget must be left untouched"
+  end
+
+  # Both sweeps select `[needs_input, waiting]` with `paused_by = 'recovery'`, and
+  # `fail` accepts `waiting`, so the give-up has to reach a session parked there too —
+  # a recovery pause carrying `pending_sleep` lands in `waiting` rather than
+  # `needs_input`.
+  test "the give-up reaches a recovery-paused session resting in waiting" do
+    @session.merge_metadata!(
+      BUDGET.key => BUDGET.max,
+      Sessions::SilentRecoveryGuard::WATERMARK_KEY => {
+        "job_started_at" => "2026-09-05T10:00:00Z", "transcript_lines" => 0
+      },
+      "paused_by" => "recovery"
+    )
+    silent_restart!(at: "2026-09-05T12:00:00Z")
+    @session.pause!
+    @session.sleep! if @session.may_sleep?
+    assert_equal "waiting", @session.reload.status
+
+    assert guard.gave_up?
+
+    @session.reload
+    assert_equal "failed", @session.status
+    assert_nil @session.metadata["paused_by"]
   end
 
   test "a failure inside the guard leaves the recovery path exactly as it was" do

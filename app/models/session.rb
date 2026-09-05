@@ -1718,8 +1718,8 @@ class Session < ApplicationRecord
       # several times, and restarting is still the thing to do — the give-up is a
       # bound on the automatic loop, not a verdict that the session is unrecoverable.
       spent = metadata&.dig(RetryBudget::SILENT_RECOVERY.key).to_i
-      "Zimmer's recovery restarted this session #{spent} times and none of those turns produced " \
-        "a single transcript event — the agent process was never re-established. Failing it rather " \
+      "The last #{spent} recovery restarts of this session each started a turn and produced no " \
+        "transcript event at all — the agent process was never re-established. Failing it rather " \
         "than reporting `running` forever; restart it to try again"
     else
       reason.humanize
