@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Issues
-  # What is going on in GitHub across the five repos the fleet works, loaded at
+  # What is going on in GitHub across the repos the fleet works, loaded at
   # request time and held in Rails.cache for a few minutes.
   #
   # GITHUB IS THE SOURCE OF TRUTH, so there is no mirror table. The alternative —
@@ -23,15 +23,22 @@ module Issues
   # transient failures; the PR poller and the comment poller reach GitHub the same
   # way. A second credential for this page would be a second thing to rotate.
   class GithubSnapshot
-    # The five repos Tadas works. Not configurable: the Issues page is a view of a
+    # The repos Tadas works. Not configurable: the Issues page is a view of a
     # specific fleet's work, and a repo list in the database would be a setting
-    # nobody sets. A sixth repo is a one-line change here.
+    # nobody sets. Another repo really is a one-line change here — everything that
+    # counts them reads REPOS.length, and no prose downstream names the number.
+    #
+    # The owner is NOT uniform: `pulsemcp/air` is the AIR framework the whole
+    # agent-harness layer resolves its catalog through, and it is worked by the
+    # same fleet as the tadasant repos. Repo names are still unique across the
+    # set, which is what lets the page print the short name alone.
     REPOS = %w[
       tadasant/zimmer
       tadasant/strad
       tadasant/tadasant-internal
       tadasant/pi-extensions
       tadasant/motet
+      pulsemcp/air
     ].freeze
 
     # The trend windows the page offers, widest last — WINDOWS.max is what gets
@@ -48,10 +55,11 @@ module Issues
     CACHE_KEY = "issues/github_snapshot/v2"
 
     # One `gh` call can spend GithubSearchService::REQUEST_TIMEOUT (15s) and a
-    # full load is ten of them, so repos are fetched concurrently and the page
-    # waits for the slowest repo rather than the sum of all five. This is the
-    # backstop on that wait: past it the page renders what it has and says which
-    # repo did not answer.
+    # full load is two per repo, so repos are fetched concurrently and the page
+    # waits for the slowest repo rather than the sum of them all. This is the
+    # backstop on that wait: it bounds the whole load rather than any one repo, so
+    # it does not need to grow when a repo is added — past it the page renders what
+    # it has and says which repo did not answer.
     FETCH_TIMEOUT = 60
 
     # A whole load: the issues, when it was taken, and — per repo — what went
@@ -136,7 +144,7 @@ module Issues
       # Wrapped in the Rails executor because the block autoloads (GithubIssue,
       # GithubSearchService) and dev-mode autoloading from a bare thread is how
       # you get a deadlock rather than a page. Every failure is caught and named:
-      # one repo's search failing must not cost the other four, and must not 500
+      # one repo's search failing must not cost the others, and must not 500
       # the page.
       def fetch_repos_concurrently(since)
         started = REPOS.map do |repo|

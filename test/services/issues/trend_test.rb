@@ -97,6 +97,20 @@ class Issues::TrendTest < ActiveSupport::TestCase
     assert_equal %w[motet zimmer].sort, trend.series.map(&:key).sort
   end
 
+  test "every watched repo keeps its own colour under segment=repo" do
+    issues = Issues::GithubSnapshot::REPOS.each_with_index.map do |repo, i|
+      github_issue(repo: repo, number: i + 1, created_at: noon(5))
+    end
+
+    trend = build(issues, window_days: 7, segment: "repo")
+
+    assert_equal Issues::GithubSnapshot::REPOS.map { |repo| repo.split("/").last }.sort,
+                 trend.series.map(&:key).sort
+    assert_not_includes trend.series.map(&:key), Issues::Trend::OTHER,
+                        "a watched repo folded into the grey residual reads as `other`, not as itself"
+    assert_equal trend.series.map(&:color).uniq, trend.series.map(&:color)
+  end
+
   test "segmenting by label folds the long tail into one grey series rather than inventing hues" do
     issues = (1..9).map { |i| github_issue(number: i, created_at: noon(5), labels: [ "label-#{i}" ]) }
     # Make one label the most common so the ranking has something to rank by.

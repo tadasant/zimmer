@@ -28,7 +28,7 @@
     <div class="min-w-0">
       <h2 class="text-sm font-semibold text-gray-900">Open issues over time</h2>
       <p class="text-xs text-gray-500">
-        Across <%= filters.repo ? issue_repo_short(filters.repo) : "all five repos" %>, reconstructed from when each issue
+        Across <%= filters.repo ? issue_repo_short(filters.repo) : "all #{Issues::GithubSnapshot::REPOS.length} repos" %>, reconstructed from when each issue
         was opened and closed. Segment membership is the issue's classification <em>today</em>, applied to its whole history.
       </p>
     </div>

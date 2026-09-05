@@ -125,6 +125,20 @@ class IssuesControllerTest < ActionDispatch::IntegrationTest
     assert_select "a[href^=?]", "javascript:", false
   end
 
+  # The owner is not uniform across GithubSnapshot::REPOS — `pulsemcp/air` sits
+  # beside the tadasant ones — and the filter prints the short name alone, so the
+  # option's title is the only place the owner is legible without leaving the page.
+  test "every watched repo is a repo filter option carrying its full owner/repo as a title" do
+    with_github_snapshot(github_snapshot) { get issues_path }
+
+    assert_response :success
+    Issues::GithubSnapshot::REPOS.each do |repo|
+      assert_select %(select#repo option[value='#{repo}'][title='#{repo}']), 1,
+                    "#{repo} must be selectable, and must say who owns it"
+    end
+    assert_select %(select#repo option[value='pulsemcp/air']), text: "air"
+  end
+
   test "a repo GitHub could not be read is named on the page" do
     snapshot = github_snapshot(errors: { "tadasant/motet" => "gh api search/issues failed" })
 
