@@ -1122,12 +1122,17 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     # Where the stale-marker guard is load-bearing. Without it, #51 raising before it
     # reaches #create_session! would read the marker #50 left, count as fired, and drag
     # `last_issue_at` past an issue that never got a session. That is #647's direction:
-    # an event silently dropped, permanently, with nothing to say why. #record_fired_issue's
-    # reload happens to drop that marker with the association cache — but that is an
-    # accident of an unrelated call, which is why the guard is asserted rather than assumed.
+    # an event silently dropped, permanently, with nothing to say why.
+    #
+    # #record_fired_issue's reload happens to drop that marker with the association cache,
+    # which would make the guard untestable from here — so the floor is stubbed out for
+    # this tick, reproducing the case the guard still has to survive on its own: a floor
+    # whose own reload raised, leaving the cache in place. The terminal write is what
+    # persists #50 below.
     a = item(number: 50, pr: false, created_at: "2026-07-12T09:00:00Z")
     b = item(number: 51, pr: false, created_at: "2026-07-12T09:00:05Z")
 
+    GithubTriggerPollerJob.any_instance.stubs(:record_fired_issue)
     Trigger.any_instance.stubs(:interpolate_prompt)
       .returns("triage this issue").then.raises(RuntimeError, "the prompt template blew up")
 
@@ -1135,6 +1140,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
       assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
     end
     Trigger.any_instance.unstub(:interpolate_prompt)
+    GithubTriggerPollerJob.any_instance.unstub(:record_fired_issue)
 
     @issue_condition.reload
     assert_equal [ "tadasant/zimmer#50" ], @issue_condition.github_seen_issue_keys,
@@ -1212,6 +1218,40 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     end
     assert_equal [ "tadasant/zimmer#50", "tadasant/zimmer#51" ],
                  @issue_condition.reload.github_seen_issue_keys.sort
+  end
+
+  test "each floor write re-states the whole batch, so a lost one is healed by the next" do
+    # Why the floor writes the running set rather than only the key it just fired. Say
+    # #50's own write is lost and #51's lands, carrying the cursor to 09:00:05: the next
+    # query starts INDEX_LAG_GRACE *behind* that, so #50 sits squarely inside the window
+    # with nothing to reject it, and re-fires. A single-key floor leaves that hole; a
+    # union heals it, because every later fire re-states every earlier one.
+    #
+    # Asserted on the writes rather than on the row, because "raise once, then call the
+    # original" is not something Mocha can express — and calling the original is the whole
+    # point, since the property is what the SECOND write carries. The label trigger is
+    # disabled so every write here belongs to the issue condition.
+    triggers(:github_label_trigger).update!(status: "disabled")
+    a = item(number: 50, pr: false, created_at: "2026-07-12T09:00:00Z")
+    b = item(number: 51, pr: false, created_at: "2026-07-12T09:00:05Z")
+
+    writes = []
+    TriggerCondition.any_instance.stubs(:write_github_state!).with do |state, **|
+      writes << state
+      true
+    end
+    stub_search(issue: [ a, b ]) do
+      assert_difference("Session.count", 2) { GithubTriggerPollerJob.perform_now }
+    end
+    TriggerCondition.any_instance.unstub(:write_github_state!)
+
+    floor_writes = writes.first(2)
+    assert_equal [ [ "tadasant/zimmer#50" ], [ "tadasant/zimmer#50", "tadasant/zimmer#51" ] ],
+                 floor_writes.map { |state| state["seen_issue_keys"] },
+                 "#51's floor write re-states #50, so #50 survives its own write being lost"
+    assert_equal [ "2026-07-12T09:00:00Z", "2026-07-12T09:00:05Z" ],
+                 floor_writes.map { |state| state["last_issue_at"] },
+                 "and the cursor moves with them, one fire at a time"
   end
 
   test "the per-fire write leaves horizon pruning to the end-of-tick write" do

@@ -645,7 +645,7 @@ class GithubTriggerPollerJob < ApplicationJob
       # worker being torn down mid-tick — and every one of those failures used to leave
       # BOTH pieces of this condition's dedupe state untouched, handing the next tick
       # the whole batch as un-fired. See #record_fired_issue.
-      record_fired_issue(condition, scope, item)
+      record_fired_issue(condition, scope, item, fired_keys)
     end
 
     # Nothing fired: leave the cursor alone so the whole batch is retried next tick.
@@ -675,34 +675,44 @@ class GithubTriggerPollerJob < ApplicationJob
     )
   end
 
-  # Record ONE fired issue — its key, and the cursor if it is the newest fired yet — on
-  # its own, immediately after its session was created.
+  # Record what this tick has fired so far — every key in `fired_keys`, and the cursor if
+  # +item+ is the newest of them — immediately after +item+'s session was created.
   #
   # #record_fired_key with a second field to carry. A `github_issue` condition dedupes on
-  # a cursor AND a key set, and a floor that moved only one of them would be no floor at
-  # all: a key with no cursor leaves the window re-queried forever, and a cursor with no
-  # key re-fires everything sharing its second. Both move together here, and both move
-  # only past an item that demonstrably produced a session — #fire returns true only when
-  # one exists, which is what keeps this on the safe side of #647. An issue that produced
-  # nothing is never passed here and is still left un-fired for the next tick to retry.
+  # a cursor AND a key set, and moving the cursor without the keys is the unsafe half: the
+  # window advances past issues nothing remembers firing, and everything sharing the
+  # cursor's second fires again. So both move in one write, and both move only past an
+  # item that demonstrably produced a session — #fire returns true only when one exists,
+  # which is what keeps this on the safe side of #647. An issue that produced nothing is
+  # never passed here and is still left un-fired for the next tick to retry.
+  #
+  # It writes the whole running set rather than the one key, and that is what makes a
+  # rescued write recoverable instead of merely survivable. A single-key write leaves this
+  # hole: #50's write is lost, #51's lands and carries the cursor to 09:00:05 — but the
+  # next query starts INDEX_LAG_GRACE *behind* that, so #50 is squarely inside the window
+  # with no key to reject it, and re-fires. Writing the union heals it, because every
+  # later fire in the tick re-states every earlier one. `fired_keys` holds only keys that
+  # produced a session, so the union is still add-only.
   #
   # The end-of-tick #write_new_issue_state stays the authority on horizon-based pruning:
   # it is what drops keys the next query's window can no longer reach and what expires
-  # spent repo baselines. This only ever ADDS a key and only ever advances the cursor
+  # spent repo baselines. This only ever ADDS keys and only ever advances the cursor
   # forward, so it can neither resurrect a key that write was about to prune nor suppress
-  # a fire.
+  # a fire. The cost of never dropping is that a condition whose floor writes land while
+  # its terminal write persistently fails accumulates keys — bounded by the issues it
+  # actually fires, and pruned by the first terminal write that does land. Pruning here
+  # instead would make this a write that can REMOVE a key, which is the one direction a
+  # durability floor may not have.
   #
   # The cursor is compared against the RELOADED row rather than against the loop's running
   # maximum, so a write rescued away here does not carry a stale maximum into the next
   # one. Items arrive in ascending `created_at` and the loop breaks on the first failure,
-  # so everything at or before the cursor this advances to has fired. An earlier item
-  # whose own write was lost is then simply behind the window — already fired, and not
-  # coming back.
+  # so everything at or before the cursor this advances to has fired.
   #
   # Rescued rather than raised, for the same reason as the label path: a failure here
-  # costs exactly what today's code costs — the end-of-tick write is still coming — so it
-  # must not abort a tick that is otherwise working.
-  def record_fired_issue(condition, scope, item)
+  # costs exactly what today's code costs — the end-of-tick write is still coming, and so
+  # is the next fire's — so it must not abort a tick that is otherwise working.
+  def record_fired_issue(condition, scope, item, fired_keys)
     condition.reload
 
     # Same mid-poll re-scope check the writes make: a condition the user re-pointed while
@@ -711,12 +721,11 @@ class GithubTriggerPollerJob < ApplicationJob
     # carries those across — it is reached whatever this does.
     return if condition.github_watch_scope != scope
 
-    key = item_key(item)
     created_at = item["created_at"].to_s
+    keys = condition.github_seen_issue_keys | fired_keys.to_a
 
     state = {}
-    state["seen_issue_keys"] = (condition.github_seen_issue_keys + [ key ]).sort unless
-      condition.github_seen_issue_keys.include?(key)
+    state["seen_issue_keys"] = keys.sort unless keys.to_set == condition.github_seen_issue_keys.to_set
     state["last_issue_at"] = created_at if created_at > condition.github_last_issue_at.to_s
     return if state.empty?
 
