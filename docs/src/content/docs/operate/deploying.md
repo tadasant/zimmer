@@ -357,6 +357,40 @@ in exactly the same way, and the guard says nothing about them. Their phase 1 is
 down — see [zimmer#722](https://github.com/tadasant/zimmer/issues/722). Treat them with the same
 suspicion by hand.
 
+## Two migrations may not share a version
+
+Rails builds its migration list at boot, not at migrate time, and it raises rather than picking a
+winner: two files starting with the same 14 digits give `ActiveRecord::DuplicateMigrationVersionError`,
+two files declaring the same class name give `DuplicateMigrationNameError`. `maintain_test_schema!`
+walks that list on the way into every test run, so the failure is not one broken test — it is the
+whole suite dying before any test executes, and the same exception reaching production runtime.
+
+That shipped on 2026-09-05. Two PRs each hand-wrote a migration numbered `20260905180000` —
+[#1005](https://github.com/tadasant/zimmer/pull/1005) against `trigger_conditions`,
+[#1008](https://github.com/tadasant/zimmer/pull/1008) against `sessions`. Both were green in
+isolation, because the collision did not exist on either branch. It existed on `main` the moment the
+second one merged, and from then on `test-unit` and `test-system` failed identically on every commit
+until the second migration was renumbered.
+
+`MigrationVersionGuard` (`test/support/migration_version_guard.rb`) reports both collisions, naming
+the version and both files. Like the two-phase guard it reads filenames and nothing else, so `lint`
+runs it with no Postgres, no Redis and no Rails — which is the point, since what it detects is a
+Rails boot failure. `test/migrations/migration_version_test.rb` runs it again inside `bin/rails test`,
+and by hand it is:
+
+```bash
+bundle exec ruby -r./test/support/migration_version_guard -e 'puts MigrationVersionGuard.report'
+```
+
+Generating migrations with `bin/rails generate migration` rather than hand-writing the timestamp
+avoids the collision within a branch. Renumbering after the fact means re-dumping `db/schema.rb` too,
+so its `version:` still matches the newest migration on disk — `SchemaDumpTest` asserts that.
+
+**What it does not cover.** A branch-local check sees a duplicate that exists *on that branch*. Two
+independent branches each adding `…180000` each pass, which is exactly how the incident happened.
+Closing that requires branches to be up to date with `main` before merging, so the collision is on the
+branch by the time CI runs — a repository setting, not a check this repo can ship.
+
 ## One-time post-deploy tasks
 
 **If the step runs once and then never again, write a post-deploy task.** This is Zimmer's
