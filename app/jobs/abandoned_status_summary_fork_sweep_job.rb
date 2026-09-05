@@ -34,14 +34,27 @@
 #   for the reason PendingAgentTurns states: `running_job_id` is written from
 #   inside the job, so a turn that was enqueued with a DELAY has a blank one and
 #   reads as abandoned.
-# - It is not dormant on purpose. StalledSessionStart::DORMANT_MARKERS is the
-#   list, shared rather than re-derived, and a spot hold is why this matters
-#   most: SpotSessionHold#hold! takes custody of the held turn — it REMOVES
-#   `pending_follow_up_prompt` and `return_to_queue!` clears `running_job_id` —
-#   leaving a fork in `waiting`, with no own transcript, that is legitimately
-#   waiting to run. Under sustained spot pressure that can be a long wait, and
-#   #712 is the open issue that forks compete for that capacity at all. Reaping
-#   one is precisely the silent failure this predicate exists to avoid.
+# - Nothing is queued for it in `enqueued_messages` either. That is a separate
+#   carrier from the two above, and SpotSessionHold's queue-behind-a-scheduled-
+#   turn path uses it: it moves the summary prompt into the queue and clears
+#   `pending_follow_up_prompt` in the same breath, so the queue is the only
+#   remaining evidence the turn exists. Archiving over it strands a `caller`-
+#   origin message, which pages.
+# - It is quiet by `updated_at` as well as old by `created_at`, the way both
+#   sibling sweeps bound their populations. Age is a fact about when the row was
+#   born; every marker below is written and cleared by something else, so
+#   `updated_at` is what keeps a fork out of reach during the window between a
+#   marker being cleared and the next thing being written.
+# - It is not dormant on purpose. StrandedSleepRescue::DORMANT_MARKERS is the
+#   list — the longer of the two, because its fifth marker (`deliberate_sleep_at`)
+#   covers the one route into `waiting` that arms nothing and marks nothing else.
+#   A spot hold is why this clause matters most: SpotSessionHold#hold! takes
+#   custody of the held turn — it REMOVES `pending_follow_up_prompt`, and
+#   `return_to_queue!` clears `running_job_id` — leaving a fork in `waiting`,
+#   with no transcript of its own, that is legitimately waiting to run. Under
+#   sustained spot pressure that wait can outlast ABANDONED_AFTER, and #712 is
+#   the open issue that forks compete for that capacity at all. Reaping one is
+#   precisely the silent failure this predicate exists to avoid.
 # - It is not asleep on an armed wake. Belt to the markers' braces, asked per
 #   candidate because the candidate set is tiny, and fail-safe: an unreadable
 #   trigger table reads as "asleep on purpose".
@@ -76,6 +89,14 @@ class AbandonedStatusSummaryForkSweepJob < ApplicationJob
   # dispatched fork is `running` within milliseconds of being created — so this
   # only bites on a backlog, and a backlog is drained a sweep at a time rather
   # than in one long transaction.
+  #
+  # The two Ruby-side clauses are asked AFTER this page is read, so a row they
+  # discard keeps its place at the head of an oldest-first ordering — the
+  # head-of-line problem PendingAgentTurns.without_a_pending_turn's own header
+  # describes. The only population that could accumulate there is forks that DID
+  # run and were somehow never archived by harvest, which fires on both hooks; a
+  # limit this far above any plausible number of them is what keeps the scan
+  # bounded without letting them fill it.
   SCAN_LIMIT = 200
 
   def perform
@@ -100,10 +121,25 @@ class AbandonedStatusSummaryForkSweepJob < ApplicationJob
       .status_summary_forks
       .where(status: [ :needs_input, :waiting ])
       .where(created_at: ...ABANDONED_AFTER.ago)
+      # Quiet by `updated_at` too, the way both sibling sweeps bound their
+      # populations. Age alone is a fact about when the row was BORN, and every
+      # marker below is written and cleared by something else — so a fork whose
+      # markers are cleared on its way into a turn would be reapable in the
+      # window between the clear and the next write. `updated_at` closes that
+      # class of race in one clause, and costs the true target nothing: a fork
+      # that was never dispatched has not been written to since `prepare_fork`.
+      .where(updated_at: ...ABANDONED_AFTER.ago)
       .where(running_job_id: nil)
       .where("sessions.metadata->>'pending_follow_up_prompt' IS NULL")
+      # Something is already on its way to this fork. SpotSessionHold's
+      # queue-behind-a-scheduled-turn path puts the summary prompt here and
+      # clears `pending_follow_up_prompt` in the same breath, so the queue is
+      # the only remaining evidence that a turn exists — and archiving over a
+      # `caller`-origin message strands it, which pages.
+      .where("NOT EXISTS (SELECT 1 FROM enqueued_messages WHERE enqueued_messages.session_id = " \
+             "sessions.id AND enqueued_messages.status = 'pending')")
 
-    relation = StalledSessionStart::DORMANT_MARKERS.reduce(relation) do |scope, marker|
+    relation = StrandedSleepRescue::DORMANT_MARKERS.reduce(relation) do |scope, marker|
       scope.where("sessions.metadata->>? IS NULL", marker)
     end
 
@@ -126,14 +162,19 @@ class AbandonedStatusSummaryForkSweepJob < ApplicationJob
   end
 
   # True when the fork ended up archived, which is what the log line counts.
+  #
+  # The reason is written AFTER the archive, not before it. An archive that
+  # raises leaves the fork a candidate for the next sweep, and a reason line
+  # written first would then be re-written every hour — a timeline claiming an
+  # archive that never happened, once per pass, forever.
   def archive(fork)
+    fork.archive_actor = "Zimmer's status-summary fork cleanup (never dispatched)"
+    fork.archive!
     fork.logs.create!(
-      content: "Archiving a status-summary fork that was created #{((Time.current - fork.created_at) / 3600).round} " \
+      content: "Archived a status-summary fork that was created #{((Time.current - fork.created_at) / 3600).round} " \
                "hours ago and never received its summary prompt.",
       level: "warning"
     )
-    fork.archive_actor = "Zimmer's status-summary fork cleanup (never dispatched)"
-    fork.archive! if fork.may_archive?
     fork.archived?
   rescue StandardError => e
     Rails.logger.error(

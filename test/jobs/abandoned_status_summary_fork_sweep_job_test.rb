@@ -57,8 +57,26 @@ class AbandonedStatusSummaryForkSweepJobTest < ActiveSupport::TestCase
         }.merge(metadata)
       }.merge(attrs)
     )
-    session.update_column(:created_at, age.ago)
+    session.update_columns(created_at: age.ago, updated_at: age.ago)
     session.reload
+  end
+
+  # A one-time wake armed against `session`, built the way StrandedSleepRescue's
+  # own tests build one rather than by stubbing the predicate — a stub would
+  # only assert that the job calls a method it visibly calls.
+  def arm_wake!(session, at: 3.hours.from_now)
+    Trigger.new(
+      name: "Wake session ##{session.id}",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "you were waiting on something",
+      reuse_session: true,
+      last_session_id: session.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule",
+          configuration: { "scheduled_at" => at.utc.strftime("%Y-%m-%dT%H:%M:%S"), "timezone" => "UTC" } }
+      ]
+    ).save!(validate: true)
   end
 
   # --- the reap -------------------------------------------------------------
@@ -89,6 +107,34 @@ class AbandonedStatusSummaryForkSweepJobTest < ActiveSupport::TestCase
 
     assert fork.logs.any? { |log| log.content.include?("never received its summary prompt") },
            "the fork should carry a log line explaining the archive"
+  end
+
+  # The exact shape of the fork in #730: taken at message index 0, so its whole
+  # transcript is one line and the `+ 1` in the comparison is load-bearing.
+  test "reaps a fork taken at message index 0 with a one-line transcript" do
+    fork = undispatched_fork(
+      age: 7.days,
+      transcript: transcript_of("Ship the thing"),
+      metadata: { "forked_at_message_index" => 0 }
+    )
+
+    AbandonedStatusSummaryForkSweepJob.perform_now
+
+    assert fork.reload.archived?
+  end
+
+  # Archiving is not the point on its own — reclaiming the clone is. The archive
+  # hook stamps the trash expiry the clone cleanup keys on, so assert the fork
+  # actually landed on that path rather than merely changing status.
+  test "the reaped fork is put on the clone-reclaim path" do
+    fork = undispatched_fork
+
+    AbandonedStatusSummaryForkSweepJob.perform_now
+
+    fork.reload
+    assert fork.archived?
+    assert fork.archived_at.present?
+    assert fork.trash_after.present?, "the archive must set the trash expiry the clone cleanup reads"
   end
 
   test "reaps every abandoned fork in one sweep" do
@@ -222,11 +268,38 @@ class AbandonedStatusSummaryForkSweepJobTest < ActiveSupport::TestCase
 
   test "leaves a fork asleep on an armed wake alone" do
     fork = undispatched_fork(status: :waiting)
-    Session.any_instance.stubs(:awaiting_scheduled_wake?).returns(true)
+    arm_wake!(fork)
 
     AbandonedStatusSummaryForkSweepJob.perform_now
 
     refute fork.reload.archived?
+  end
+
+  test "leaves a fork with a message still queued for it alone" do
+    fork = undispatched_fork
+    EnqueuedMessage.create!(session: fork, content: "Write the Status panel", position: 1, status: "pending")
+
+    AbandonedStatusSummaryForkSweepJob.perform_now
+
+    refute fork.reload.archived?, "archiving over a queued message strands it, and a caller-origin strand pages"
+  end
+
+  test "leaves a fork alone if anything has written to it recently" do
+    fork = undispatched_fork
+    fork.update_column(:updated_at, 1.minute.ago)
+
+    AbandonedStatusSummaryForkSweepJob.perform_now
+
+    refute fork.reload.archived?,
+           "a fresh write is the window in which a dormant marker may have just been cleared"
+  end
+
+  test "leaves a fork put to sleep through the API alone" do
+    fork = undispatched_fork(status: :waiting, metadata: { "deliberate_sleep_at" => 1.day.ago.utc.iso8601 })
+
+    AbandonedStatusSummaryForkSweepJob.perform_now
+
+    refute fork.reload.archived?, "the API sleep arms nothing and marks nothing else, so its marker is the evidence"
   end
 
   # --- the reap is confined to status-summary forks -------------------------
