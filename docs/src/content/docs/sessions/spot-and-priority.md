@@ -291,13 +291,15 @@ repairs). Reading the count *with* the queue folded in is exactly how
 [#957](https://github.com/tadasant/zimmer/issues/957) was reported.
 `RunningTurns` is the one place the distinction is made; both ceilings read through it.
 
-**The consequence for tuning: the `agents` pool is now a hard bound on both ceilings.** The count is
+**The consequence for tuning: the `agents` pool is a hard bound on both ceilings.** The count is
 turns a worker is running and the pool runs `GOOD_JOB_AGENTS_THREADS` (default 8) of them, so a
 ceiling above that can never be reached — the spot gate would never report `fleet_at_cap`, and top-up
 would always see the fleet as having room, while work keeps queueing behind the same eight workers.
 Nothing clamps the setting: the number you type is yours, and growing the pool is a deploy away. Both
 `/inference` cards and `get_spot_policy` say so when your number is above the pool, and print the
-effective ceiling — `min(configured, GOOD_JOB_AGENTS_THREADS)` — beside it.
+effective ceiling — `min(configured, GOOD_JOB_AGENTS_THREADS)` — beside it. Note that the **default**
+of 10 is itself above the default pool of 8, so an un-retuned deployment sees that note from the
+start.
 
 ### Its sibling: the backlog top-up ceiling
 

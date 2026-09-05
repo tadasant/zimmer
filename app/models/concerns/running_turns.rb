@@ -26,18 +26,28 @@
 # "Holding spot sessions: 25 of 10 session slots taken (8 on a worker, 17 waiting
 # for one)" with eight agent processes alive and every spot session held.
 #
-# The queue is still real, so the split is reported rather than discarded — see
-# FleetTopUpStatus, SpotGateService#awaiting_clause and the /inference cards. It
-# is the same number that made "15 sessions running" read as a broken counter in
-# [#957](https://github.com/tadasant/zimmer/issues/957); it is now shown beside
-# the count instead of inside it.
+# The queue is still real, so it is reported beside the count rather than
+# discarded — see FleetTopUpStatus, SpotGateService#awaiting_clause and the
+# /inference cards. It is the same number that made "15 sessions running" read as
+# a broken counter in
+# [#957](https://github.com/tadasant/zimmer/issues/957).
 #
 # **This bounds every ceiling at .worker_slots**, and deliberately so: the
 # counted population is turns a worker is executing, and the pool runs
 # `ConnectionBudget.good_job_queue_threads[:agents]` of them. A ceiling
 # configured above that can never be reached — .effective_ceiling is the number
 # that is actually in force, and both /inference cards and `get_spot_policy` say
-# so when the two differ, rather than printing a limit that does nothing.
+# so when the two differ, rather than printing a limit that does nothing. The one
+# reading that escapes the bound is the fail-safe below, which reports every
+# `running` row as executing and may therefore exceed the pool.
+#
+# **A ceiling is not the only thing that reasons about this column**, and the two
+# that do not are deliberate. SpotGateService prices its projected burn off every
+# `running` row, since a session spends from the moment it is handed a turn, and
+# waives its pacing curve on that same population; SpotSessionPause's resume
+# budget counts the queue too, since a session it resumes joins the queue rather
+# than a worker. Both read the split rather than the occupancy, and say why where
+# they do it.
 #
 # == The population that is not even in flight
 #
@@ -77,12 +87,19 @@
 # == Fail safe means COUNT it
 #
 # Both probes reach outside the `sessions` table, and both are rescued toward
-# counting. An unreadable `good_jobs` reads as "every turn is on a worker", and
-# unreadable `trigger_conditions` read as "nothing is asleep": either way the
-# total is every `running` row, which is what these counts were before this
-# concern existed. A monitoring gap must never make the fleet look emptier than
-# it is — the spot gate admits sessions on this reading and FleetIdleMonitor
-# spawns them.
+# counting. An unreadable `good_jobs` reads as "every turn is on a worker", which
+# puts every `running` row into the counted population — the most this concern
+# can report, and what these counts were before it existed. Unreadable
+# `trigger_conditions` read as "nothing is asleep", which is the counting-toward
+# answer for the split: every uncounted row is reported as a turn still coming
+# rather than as one nothing will run. A monitoring gap must never make the fleet
+# look emptier than it is — the spot gate admits sessions on this reading and
+# FleetIdleMonitor spawns them.
+#
+# Only the FIRST of the two moves what a ceiling counts, since `on_a_worker` is
+# the whole of it. The second decides between two uncounted buckets, so it earns
+# its place for two other reasons: the split is a figure operators read, and an
+# exception escaping here reaches the spot gate — see just below.
 #
 # The rescues are deliberately `StandardError` rather than
 # `ActiveRecord::ActiveRecordError`, because neither probe is only a query:
@@ -107,9 +124,10 @@ module RunningTurns
   # the number they act on — see "The ceilings count worker occupancy" above. The
   # other two buckets exist to be REPORTED beside it.
   Reading = Data.define(:on_a_worker, :awaiting_a_worker, :asleep) do
-    # Every `running` row, queue and sleepers included — what the ceilings
-    # counted before, and what /inference needs in order to explain the gap
-    # between that number and the one they count now.
+    # Every `running` row, queue and sleepers included: the number a bare
+    # `COUNT(*) WHERE status = 'running'` gives, which is what the session list
+    # and every other status query show. Kept as the reference point the three
+    # buckets have to add up to.
     def rows = on_a_worker + awaiting_a_worker + asleep
   end
 

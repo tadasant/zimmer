@@ -1378,6 +1378,10 @@ that does it has known limits:
   reach and print `min(configured, GOOD_JOB_AGENTS_THREADS)` beside it. What that leaves is a
   deployment whose only real concurrency control is the size of the worker pool — the quota ceilings
   still pace spot spend, but the slot ceiling does nothing until you lower it under the pool.
+  **The shipped default is one of the unreachable ones**: `spot_max_concurrent_sessions` defaults to
+  10 against a pool of 8, so a deployment nobody has retuned renders that note from its first boot
+  and never holds spot work on `fleet_at_cap`. The top-up ceiling's default of 3 is under the pool
+  and behaves normally.
 - **A turn queued behind the worker pool still reads as a running session on the dashboard.**
   `sessions.status = running` is stamped when a turn is *handed to* a session, not when a worker
   starts it, so on a busy deployment a real share of the `running` rows are turns waiting for a slot.

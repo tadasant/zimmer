@@ -181,6 +181,25 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert decision.five_hour.pace_waived
   end
 
+  # The waiver asks whether anything is SPENDING, which is a different population
+  # from the one the cap counts. A turn queued behind the `agents` pool fills no
+  # slot, but it is already priced into the projected burn — so waiving on the
+  # cap's own count would skip the pace test against a burn rate those very
+  # sessions produced.
+  test "a fleet whose turns are all queued does not get the idle-fleet waiver" do
+    seed(current_5h: 0.40, current_7d: 0.05, reset_5h: 4.hours.from_now)
+    burn_rate(4.0)
+    3.times { |i| queued_for_a_worker!(running_session(i, on_a_worker: false)) }
+
+    decision = SpotGateService.evaluate
+
+    assert_equal 0, decision.active_sessions, "no slot is taken"
+    assert_equal 3, decision.awaiting_sessions
+    refute decision.five_hour.pace_waived, "three turns in flight are spending"
+    refute decision.allowed?, "so the pacing curve holds, as it did before the queue was dropped"
+    assert_equal SpotGateService::UTILIZATION_REASON, decision.reason
+  end
+
   # The waiver is only ever of the PACE. The reserve is absolute: an idle fleet
   # facing a spent spot budget is still held.
   test "the idle-fleet waiver never spends into the reserve" do
