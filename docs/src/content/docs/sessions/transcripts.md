@@ -13,7 +13,7 @@ browser. That's the whole loop. Each step has a wrinkle.
 ```mermaid
 flowchart LR
     CLI["Agent CLI<br/>writes JSONL to disk"] --> F["~/.claude/projects/…/*.jsonl<br/>or ~/.codex/…/*.jsonl.zst"]
-    F --> TS["TranscriptSource<br/>locate → read → redact → parse<br/>(Codex: zstd-decompress)"]
+    F --> TS["TranscriptSource<br/>locate → read → redact (cached prefix) → parse<br/>(Codex: zstd-decompress)"]
     TS --> TP["TranscriptPollerService"]
     TP --> RG{"transcript<br/>regression?"}
     RG -->|"new file is shorter"| SKIP["refuse to overwrite<br/>log once"]
@@ -203,6 +203,46 @@ If it is reached anyway, the pattern pass retries line by line and replaces the 
 finish scanning with `[REDACTED:UNSCANNABLE_LINE]`, so a pathological line costs that line rather
 than the whole update. Retrying that way finds exactly what the whole-string pass would have found,
 because no pattern can match across a newline.
+
+### Why a poll only redacts the newly appended bytes
+
+Redaction costs roughly 245 ms per megabyte, and the poller re-reads the transcript every few seconds
+for as long as the session lives. That used to mean ~7.6 s of CPU per poll on a 32 MB transcript, to
+re-derive a result byte-identical to the last poll's for everything but the few kilobytes the agent
+had appended — a cost that tracked session *length* rather than session *activity*, and the poller's
+dominant expense once several long sessions were alive at once
+([#477](https://github.com/tadasant/zimmer/issues/477)).
+
+`TranscriptRedactionCache` sits between `TranscriptSource#read` and the redactor and keeps the
+already-redacted prefix of each path, so a poll pays only for the new bytes. Measured against real
+session transcripts on this host: a 22.4 MB one went from **8.5 s to 34 ms** on a warm poll, a
+17.9 MB one from **2.8 s to 43 ms**, and in every case the incremental output's SHA-256 is identical
+to the full re-scan's.
+
+That is sound because redaction is **line-decomposable**: splitting the text at a newline and
+redacting the halves separately gives the same bytes as redacting the whole. No pattern carries `/m`
+or uses `.` at all, every value and gap class either excludes `\s` or is an explicit `[ \t]`, the
+known-value tier admits only values matching `\A\S+\z`, and a UTF-8 sequence never contains a `\n`
+byte. It is the same invariant the line-count guarantee and the line-by-line degradation above
+already rest on.
+
+The one exception is the multi-line PEM walk, which spans newlines by construction. So the commit
+point never crosses a line that could *open* a block: the committed prefix contains no opener, so no
+block can straddle the cut. A transcript that carries PEM armor simply stops advancing its commit
+point and re-scans from the opener — never worse than re-scanning everything, which is what every
+poll used to do.
+
+Invalidation is explicit, because a transcript is not always append-only — it can be truncated,
+rotated to a new Codex rollout, replaced by a new session reusing the path, or rewritten by the
+resume restore. The cache re-checks three things on every read: the file is no shorter than the
+committed prefix, the commit point still lands immediately after a newline **in the bytes being read
+now**, and 16 KB fingerprints of the file's head and of the bytes just before the commit point still
+match. Any mismatch falls back to a full re-scan.
+
+The middle check is the one that carries the safety weight. A stale prefix is not a leak — the
+cached prefix is itself redactor output, so re-emitting one produces a wrong transcript, never an
+unredacted one. The only way an incremental scan can *under*-redact is if the tail begins mid-line,
+which is exactly what re-asserting the newline rules out.
 
 :::caution[Defense in depth, not a guarantee — transcripts are still secret material]
 The redactor lowers the blast radius of a transcript that escapes. It does not make one safe to

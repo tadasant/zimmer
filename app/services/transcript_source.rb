@@ -114,10 +114,19 @@ class TranscriptSource
   # Redaction preserves line count exactly, so the poller's regression and
   # rotation arithmetic is unaffected.
   #
+  # It runs through TranscriptRedactionCache rather than calling
+  # TranscriptRedactor directly. The poller re-reads this path every few seconds
+  # for the life of the session, and redacting the whole file each time cost
+  # ~7.6 s of CPU per poll on a 32 MB transcript to re-derive last poll's answer
+  # for everything but the appended tail (#477). The cache reuses the redacted
+  # prefix and scans only the new bytes; the result is byte-identical to a full
+  # re-scan, and a file that was truncated, rotated or rewritten falls back to
+  # one.
+  #
   # @param path [String] a transcript file path
   # @return [String] the decoded, redacted file contents
   def read(path)
-    TranscriptRedactor.redact(read_raw(path))
+    TranscriptRedactionCache.redact(path, read_raw(path))
   end
 
   # Read the raw, decoded transcript bytes for a path, before redaction.

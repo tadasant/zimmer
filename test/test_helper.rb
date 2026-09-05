@@ -203,6 +203,13 @@ module ActiveSupport
     # on purpose — to run afterwards and win.
     setup(prepend: true) { AirCatalogCacheWarmer.restore! }
 
+    # TranscriptRedactionCache holds redacted transcript prefixes in a
+    # process-global table keyed by path, so a test that reads a transcript can
+    # otherwise leave an entry behind for the next test that happens to use the
+    # same path. Its fingerprints make a stale hit safe rather than wrong, but a
+    # test that measures cache behavior deserves a cold one.
+    setup(prepend: true) { TranscriptRedactionCache.reset! }
+
     # Include test support helpers
     include MockHelpers
     include ProcessStatusHelpers

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "digest"
+
 # Secret redaction for agent transcripts.
 #
 # ## Why this exists
@@ -342,16 +344,79 @@ module TranscriptRedactor
 
       MUTEX.synchronize do
         @known_secrets = built
+        @known_secrets_fingerprint = fingerprint_for(built)
         @known_secrets_loaded_at = monotonic_now
       end
 
       built
     end
 
+    # A digest of the known-credential set currently in force.
+    #
+    # The set is NOT a constant, and anything that reuses an earlier redaction
+    # has to account for that. It rebuilds on KNOWN_SECRETS_TTL, and every tier
+    # that builds it degrades to "missing" rather than raising when its source is
+    # unreachable (see .warn_degraded) — so a credential can be absent from one
+    # window and present in the next: a Parameter Store blip, an OAuth token
+    # refreshed into `.mcp.json` seconds ago, a database hiccup while the stored
+    # tokens are read.
+    #
+    # Re-scanning the whole transcript on every poll hid that: a value that
+    # entered the set late was retroactively redacted out of every earlier line
+    # the next time the poll rewrote `sessions.transcript`, which is exactly what
+    # "redaction falls back to shape patterns for this window" promises.
+    # TranscriptRedactionCache stamps its cached prefix with this and re-scans
+    # from scratch when it changes, so that self-healing survives prefix reuse.
+    #
+    # @return [String] a digest of the values and labels in force right now
+    def known_secrets_fingerprint
+      known_secrets
+      MUTEX.synchronize { @known_secrets_fingerprint }
+    end
+
+    # Where the first line that could OPEN a multi-line PEM block starts.
+    #
+    # Everything else in .redact is line-decomposable — no pattern can match
+    # across a newline — so the multi-line armor walk is the ONLY reason a
+    # transcript cannot be redacted a piece at a time. Anything that wants to
+    # split the text (TranscriptRedactionCache, which reuses an already-redacted
+    # prefix rather than re-scanning it every poll) has to know where that walk
+    # could reach across a cut, and the answer lives here rather than in the
+    # caller so it stays in step with .redact_armored_private_keys' own rule for
+    # what opens a block.
+    #
+    # The escaped-in-JSON form, which carries BEGIN and END on one line, is a
+    # PATTERNS entry rather than a block and so does not count as an opener.
+    #
+    # @param text [String] valid-encoding text; .redact scrubs before the walk
+    #   sees anything, and TranscriptRedactionCache scrubs before it asks
+    # @return [Integer, nil] byte offset of the opening line, or nil when the
+    #   text holds no line that could open a block
+    def private_key_block_start(text)
+      return nil unless text.is_a?(String)
+      # `String#match?` raises ArgumentError on a broken byte sequence. The
+      # conservative answer is "an opener at byte 0", which tells a caller that
+      # nothing may be split off — never "no opener", which would let one commit
+      # past armor it could not see.
+      return 0 unless text.valid_encoding?
+      # One literal-prefixed scan (13 ms over 32 MB) skips the walk entirely on
+      # the overwhelmingly common transcript that mentions no PEM at all.
+      return nil unless holds_private_key_marker?(text)
+
+      offset = 0
+      text.each_line do |line|
+        return offset if line.match?(PRIVATE_KEY_BEGIN) && !line.match?(PRIVATE_KEY_END)
+
+        offset += line.bytesize
+      end
+      nil
+    end
+
     # Drop the cached known-credential set. Used by tests and after a rotation.
     def reset_known_secrets!
       MUTEX.synchronize do
         @known_secrets = nil
+        @known_secrets_fingerprint = nil
         @known_secrets_loaded_at = nil
       end
     end
@@ -369,6 +434,20 @@ module TranscriptRedactor
 
     def monotonic_now
       Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    # Fed incrementally rather than through a joined string: the input is the
+    # deployment's credentials, and there is no reason to materialize one more
+    # copy of all of them at once to hash it.
+    def fingerprint_for(pairs)
+      digest = Digest::SHA256.new
+      pairs.each do |value, label|
+        digest.update(label.to_s)
+        digest.update("\0")
+        digest.update(value.to_s)
+        digest.update("\0")
+      end
+      digest.hexdigest
     end
 
     # Run every pattern over the text, and never raise while doing it.
