@@ -1008,13 +1008,12 @@ class AgentSessionJob < ApplicationJob
           # the stored record — and then verifies the write landed, which an
           # unconditional one never did.
           #
-          # The difference used to be academic, because a re-clone always landed
-          # at a path with no transcript directory behind it. Now that it lands
-          # back at the session's own path (#576), a transcript directory can
-          # survive the clone that named it — the two live on different volumes,
-          # and CloneReaper is not the only way a clone goes. An unconditional
-          # write would overwrite that survivor with `session.transcript`, and if
-          # the poller had not caught up before the clone was reaped, that means
+          # The difference matters because the re-clone lands back at the
+          # session's own path (#576), where a transcript directory can survive
+          # the clone that named it — the two live on different volumes, and
+          # CloneReaper is not the only way a clone goes. An unconditional write
+          # would overwrite that survivor with `session.transcript`, and if the
+          # poller had not caught up before the clone was reaped, that means
           # resuming a conversation shorter than the one on disk.
           log_buffer.add("Clone recreated at #{clone_path}", level: "info")
         end

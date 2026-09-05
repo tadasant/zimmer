@@ -265,10 +265,10 @@ names carry a timestamp and a random suffix (`{repo}-{branch}-{timestamp}-{rando
 conversation that gets a new clone gets a new slug and the whole JSONL is written out again
 underneath it. The previous copy stays behind at full size.
 
-That is not a rare event. A clone is reaped whenever the session sits idle long enough, and a
-trigger, an unarchive or a recovery brings the same conversation back the next day. Production
-held one conversation in **23 clone directories, 18 MB each**, and 286 conversations in more than
-one copy — 595 MiB of pure redundancy
+That is not a rare event. A clone is reaped once its session is archived or has failed — and an
+unarchive, a trigger following up, or a recovery then brings the same conversation back. Production
+held one conversation in **23 clone directories, 18 MB each**, one per day, and 286 conversations in
+more than one copy — 595 MiB of pure redundancy
 ([#576](https://github.com/tadasant/zimmer/issues/576)).
 
 So a re-clone goes back to the path the session already occupied. `SessionClonePath.for_recreate`

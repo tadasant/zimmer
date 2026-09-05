@@ -108,12 +108,10 @@ module CloneReaper
     # the one the whole module is about. AtomicCloneRemoval renames the clone
     # aside and then deletes it, and that delete is an `rm -rf` of a whole working
     # tree — seconds normally, minutes on a loaded box. A session resumed inside
-    # that window re-clones *at the same path* (SessionClonePath, zimmer#576) and
-    # starts writing its transcript into the directory this line is about to
-    # delete. Before #576 that could not happen, because a re-clone always landed
-    # somewhere new and the transcript directory named by the old path was dead
-    # for good; now the path can come back to life while the delete is still
-    # running, so the answer from before the `rm` is a claim about the past.
+    # that window re-clones *at the same path* (SessionClonePath, zimmer#576), so
+    # a transcript directory named after a deleted clone is not necessarily dead:
+    # the path can come back to life while the delete is still running, and the
+    # answer from before the `rm` is a claim about the past.
     if outcome == :removed
       current_owner = live_owner(path)
       if current_owner

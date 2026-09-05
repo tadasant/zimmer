@@ -188,6 +188,24 @@ class ResumeTranscriptDirectoryTest < ActiveJob::TestCase
     assert_path_exists File.join(first_clone, ".git")
   end
 
+  # The one shape that reaches AgentSessionJob's recreate branch with something
+  # still standing at the old path: `File.exist?` follows symlinks and answers
+  # false for a dangling one, so the job sees no clone while `git clone` would
+  # still refuse the destination.
+  test "a dangling symlink at the old clone path is stepped around, not cloned over" do
+    first_clone = start_in_a_fresh_clone
+    reap_clone!
+    File.symlink(File.join(@tmp, "nowhere"), first_clone)
+
+    resume_with_follow_up!("second turn")
+
+    @session.reload
+    assert_not_equal first_clone, @session.metadata["clone_path"],
+      "a path git clone would refuse must not wedge every future resume at the same spot"
+    assert_path_exists File.join(@session.metadata["clone_path"], "README.md")
+    assert File.symlink?(first_clone), "and the symlink standing there must survive"
+  end
+
   # A transcript directory and the clone that named it live on different volumes,
   # so the directory can outlive the clone. At a reused path the resume now meets
   # that survivor — and must not overwrite it with a stored record the poller had

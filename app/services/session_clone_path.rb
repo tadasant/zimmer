@@ -14,11 +14,11 @@
 #
 # Clone directory names carry a timestamp and a random suffix
 # (`{repo}-{branch}-{timestamp}-{random}`, GitCloneService#generate_clone_path),
-# so every re-clone used to land somewhere new — and the whole JSONL was written
-# out again under a new slug while the previous copy stayed behind at full size.
-# One production conversation was measured in 23 clone directories, 18 MB each
-# (zimmer#576). Reusing the path the session already occupied collapses that to
-# one directory for the conversation's whole life.
+# so a re-clone that takes a generated name lands somewhere new — and the whole
+# JSONL is written out again under a new slug while the previous copy stays
+# behind at full size. That is worth 23 copies of a single production
+# conversation, 18 MB each (zimmer#576). Reusing the path the session already
+# occupies holds it to one directory for the conversation's whole life.
 #
 # Why a re-clone happens at all, and why reusing the path is safe
 # ---------------------------------------------------------------
@@ -54,11 +54,13 @@ module SessionClonePath
     return nil unless previous.is_a?(String) && previous.present?
     return nil unless direct_child_of_clones_base?(previous)
 
-    # `git clone` refuses a non-empty destination, and create_clone's rollback
-    # would then delete whatever is standing there. Only ever hand back a path
+    # `git clone` refuses a non-empty destination. Only ever hand back a path
     # with nothing at it — which is also the only case a re-clone is reached
-    # through.
-    return nil if file_system.exists?(previous)
+    # through. This is a preference, not a guarantee: GitCloneService claims the
+    # destination with `mkdir` and falls back to a generated path if anything got
+    # there in between.
+    return nil if file_system.exists?(previous) || file_system.symlink?(previous)
+    return nil if in_place_delete_in_progress?(previous)
 
     # Verbatim, not expanded: the existing transcript directory was named by
     # sanitizing this exact string, so reusing it byte-for-byte is what makes the
@@ -80,4 +82,21 @@ module SessionClonePath
   rescue ArgumentError
     false
   end
+
+  # Whether AtomicCloneRemoval is stripping this path in place right now.
+  #
+  # `remove` renames the clone aside before deleting it, and against that
+  # ordinary path the absence check above is the whole answer. Its fallback —
+  # taken on EXDEV, or when the rename is refused — `rm_rf`s the live path
+  # instead, and writes a sibling `<clone>.deleting-<hex>` marker file first
+  # precisely so the state is nameable while it runs. Cloning into a tree an
+  # `rm_rf` is walking corrupts both, and a clone resurrected at that name also
+  # strands the marker forever: `AtomicCloneRemoval.reap_tombstones` spares any
+  # marker whose named clone is on disk, on the reasonable assumption that it
+  # marks a half-tree still being deleted.
+  def in_place_delete_in_progress?(path)
+    Dir.glob("#{path}#{AtomicCloneRemoval::TOMBSTONE_MARKER}*").any?
+  end
+
+  private_class_method :direct_child_of_clones_base?, :in_place_delete_in_progress?
 end
