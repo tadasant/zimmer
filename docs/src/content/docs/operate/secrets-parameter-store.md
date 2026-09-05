@@ -297,12 +297,12 @@ with `"encoding": "base64url"`. The alphabet is exactly `[A-Za-z0-9_-]`, so
 nothing in a rendered payload can have structural meaning. The writer's copy of
 that rule is `servers/secrets/shared/src/parameter-wire.ts` in `tadasant/strad`.
 
-Zimmer's resolver reads the field, and the three cases are deliberate:
+Zimmer's resolver reads the field, and each outcome is deliberate:
 
 | `encoding` | What the resolver does |
 | --- | --- |
 | absent | The literal bytes, unchanged. This is a **documented** state, not an unknown one: every value seeded before the encoding existed is this, and so is everything `ParameterStore::WriteClient` writes. |
-| `base64url` | Decoded — and only if the stored bytes really are base64url of valid UTF-8. Standard-alphabet or padded base64 decodes correctly too; a value is never refused for how it is *spelled*, only for not decoding. |
+| `base64url` | Decoded — and only if the stored bytes really are base64url of valid UTF-8. Standard-alphabet or padded base64 decodes correctly too; a value is never refused for how it is *spelled*, only for not decoding. Bytes that do **not** decode are refused exactly like the row below, and the log line says which of the two it was. |
 | anything else | **Refused.** The name is dropped from the snapshot, an error naming the variable is logged, and the Connectors banner lists it as held-but-not-served. |
 
 Refusing is the point. Passing an unrecognised encoding through is how a session
@@ -312,10 +312,19 @@ eyeball the value either. The refusal drops **one name**, not the resolve: the
 chain treats a miss as a miss and falls through to the encrypted credentials,
 rather than one bad parameter taking every other `${VAR}` in the project with it.
 
-`ParameterStore::WriteClient` does not yet write the field — it stores literal
-bytes, which the table's first row covers — so a value it writes and a value the
-console writes both resolve correctly. A value whose bytes carry JSON structure
-still cannot be written through the Pi tab; use the console for those.
+`ParameterStore::WriteClient` does not write the field — it stores literal bytes,
+which the table's first row covers — so a value it writes and a value the console
+writes both resolve correctly.
+
+Two consequences of that asymmetry, both recorded in
+[limitations](/limitations/#-the-envelope-zimmer-tells-you-to-store-breaks-on-any-secret-containing-a-quote-brace-or-newline):
+a value whose bytes carry JSON structure **must not** be written through the Pi
+tab — the write lands, the subsequent `:render` 400s, and one such parameter
+fails the resolve of the whole project — so use the console for those. And
+`parameter_store:migrate_namespace` refuses to copy a variable whose pre-rename
+envelope declares an encoding, reporting it as `unsupported_encoding`, because it
+reads decoded bytes and could only write literal ones; re-seed those at the
+canonical path through the console instead.
 
 ## Provisioning — a human must do this
 
@@ -1135,7 +1144,7 @@ The rest live in `tadasant-internal`'s `zimmer/` root and need a human:
 | Banner says "could not confirm what this credential may do" | `cloudresourcemanager.googleapis.com` is not enabled on the project. |
 | Every variable reads `Unresolved`, no error | The namespace is empty, or the parameters lack the `managed-by=zimmer` label, or their envelope `path` falls outside the namespaces the resolver reads (`/zimmer/{env}/secrets/static/`, plus `/zimmer/{env}/mcp/static/` until the migration finishes). |
 | One variable reads `Unresolved`, and the banner lists it under **Held but not served** | Its envelope declares a value `encoding` this Zimmer does not implement, so the resolver refuses to serve bytes it cannot vouch for. Upgrade Zimmer, or re-seed the value through a writer that stores `base64url`. |
-| A session authenticates with what looks like a valid credential and the upstream rejects it | On a Zimmer at or after this page's `encoding` support, this is not the envelope. Before it, a console-seeded secret resolved as its base64url text — [zimmer#999](https://github.com/tadasant/zimmer/issues/999). |
+| A session authenticates with what looks like a valid credential and the upstream rejects it | On a Zimmer that honours `encoding`, this is not the envelope. On one that does not, a console-seeded secret resolves as its base64url text and every surface still reports success — the failure [zimmer#999](https://github.com/tadasant/zimmer/issues/999) describes. |
 
 ## Testing without GCP
 

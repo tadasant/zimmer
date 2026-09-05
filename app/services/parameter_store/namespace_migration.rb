@@ -38,6 +38,14 @@ module ParameterStore
   # copying the old one over it would silently roll back whatever rotation put it
   # there. That variable is reported as a conflict and left untouched.
   #
+  # It also refuses to copy a value whose envelope DECLARES an encoding. The
+  # resolver hands back the decoded bytes, and {WriteClient} writes literal bytes
+  # with no encoding field — so copying would store a different thing than the
+  # source holds, and a value carrying JSON structure would land as a parameter
+  # whose every `:render` is rejected as an injection. One such parameter fails
+  # the resolve of the WHOLE project (see {WriteClient#upsert}), so this stops at
+  # the name and says to re-seed it at the canonical path through the console.
+  #
   # ## No value is ever printed
   #
   # The report carries names, paths, ids and verdicts. Never a value, never a
@@ -50,6 +58,9 @@ module ParameterStore
     #   :copied           — value now at the canonical path; old copy left alone.
     #   :migrated         — copied, verified, and the old pair deleted.
     #   :conflict         — both paths hold it, with different values.
+    #   :unsupported_encoding — the old path's envelope declares an encoding
+    #                       {WriteClient} cannot re-declare, so this cannot copy
+    #                       it without changing what is stored.
     #   :failed           — the store refused, or the verify did not pass.
     #   :skipped          — the run stopped before reaching it.
     #
@@ -57,7 +68,7 @@ module ParameterStore
     # when the old path still holds this variable after the run.
     Item = Struct.new(:variable, :action, :from_path, :to_path, :from_id, :to_id,
       :detail, :legacy_remaining, keyword_init: true) do
-      def failed? = %i[conflict failed skipped].include?(action)
+      def failed? = %i[conflict unsupported_encoding failed skipped].include?(action)
     end
 
     Report = Struct.new(:dry_run, :env, :project_id, :from_namespace, :to_namespace, :items,
@@ -119,12 +130,16 @@ module ParameterStore
       snapshot = @resolver.resolve_all([ to_namespace, from_namespace ])
       old = snapshot.fetch(from_namespace)
       current = snapshot.fetch(to_namespace)
+      # Names the resolver DECODED on the way out of the old path. A refused one
+      # is not here — it is not in `old` either, and it surfaces as a name still
+      # at the old path through the resolver's own readout.
+      encoded = encoded_at(snapshot, from_namespace)
 
       variables = (old.keys | current.keys).sort
       @stop = false
       items = []
       variables.each_with_index do |variable, index|
-        items << step(variable, old, current)
+        items << step(variable, old, current, encoded)
         next unless @stop
 
         # The store cannot be read at all now, so every later step would write a
@@ -140,7 +155,7 @@ module ParameterStore
 
     private
 
-    def step(variable, old, current)
+    def step(variable, old, current, encoded)
       item = new_item(variable)
       old_value = old[variable]
       new_value = current[variable]
@@ -152,6 +167,15 @@ module ParameterStore
           "both paths hold it, with different values. The canonical path wins the resolution " \
           "chain, so its value is the live one and copying the old one over it would roll that " \
           "back silently. Resolve it by hand — delete whichever copy is wrong — and re-run.")
+      end
+
+      if new_value.nil? && encoded.include?(variable)
+        return finish(item, :unsupported_encoding,
+          "the pre-rename path stores it under a declared value encoding, and Zimmer's writer " \
+          "stores literal bytes and declares none — so a copy would not hold what the source " \
+          "holds, and a value carrying JSON structure would land as a parameter whose every " \
+          ":render is rejected, failing the resolve of the whole project. Re-seed it at " \
+          "#{item.to_path} through the Secrets Console, then re-run.")
       end
 
       if new_value.nil?
@@ -167,6 +191,12 @@ module ParameterStore
       # The class and the message, never a body: on these verbs Google's error
       # body can quote the payload.
       finish(item, :failed, "#{e.class}: #{e.message}")
+    end
+
+    def encoded_at(snapshot, namespace)
+      return [] unless snapshot.is_a?(GcpClient::Snapshot)
+
+      snapshot.encoded[namespace] || []
     end
 
     def new_item(variable)

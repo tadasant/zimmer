@@ -85,26 +85,39 @@ module SecretProviders
     # readout, and it is free: the snapshot already covers both.
     #
     # @return [Array<String>] sorted; names, never values.
+    # A refused name counts as still sitting there: it is a parameter at the old
+    # path, and the question this answers is whether the pre-rename read path can
+    # be dropped. Leaving it out would let the banner say the namespace is empty
+    # while it still holds a parameter.
     def legacy_variables
       snapshot = @cache.get(@namespaces)
-      legacy_namespaces.flat_map { |ns| snapshot[ns]&.keys || [] }.uniq.sort
+      legacy_namespaces
+        .flat_map { |ns| (snapshot[ns]&.keys || []) + undecodable_in(snapshot, ns) }
+        .uniq.sort
     end
 
-    # The names the store HOLDS but this Zimmer refuses to serve, because their
-    # envelope declares a value encoding it does not implement (see
-    # {ParameterStore::GcpClient#decoded_value}).
+    # The names the store HOLDS and this Zimmer refuses to serve, because their
+    # envelope declares a value encoding it does not implement, or does not match
+    # the one it declares (see {ParameterStore::GcpClient#decoded_value}).
     #
     # These read exactly like a name that was never seeded — the chain falls
     # through to the next provider, and the row says `Unresolved` — so without
     # this list an operator has no way to tell the two apart. Free, like
     # {#legacy_variables}: the snapshot already carries it.
     #
+    # A name refused in ONE namespace but served from another is not listed: it
+    # resolves normally, and naming it would send an operator after a value that
+    # works. That is the ordinary state mid-migration, where a stale pre-rename
+    # copy sits behind a good canonical one.
+    #
     # @return [Array<String>] sorted; names, never values.
     def undecodable_variables
       snapshot = @cache.get(@namespaces)
       return [] unless snapshot.is_a?(ParameterStore::GcpClient::Snapshot)
 
-      snapshot.undecodable.sort
+      snapshot.undecodable.values.flatten.uniq
+        .reject { |variable| @namespaces.any? { |ns| snapshot[ns]&.key?(variable) } }
+        .sort
     end
 
     # The full canonical path a variable occupies (or would occupy) in the store.
@@ -137,6 +150,12 @@ module SecretProviders
     end
 
     private
+
+    def undecodable_in(snapshot, namespace)
+      return [] unless snapshot.is_a?(ParameterStore::GcpClient::Snapshot)
+
+      snapshot.undecodable[namespace] || []
+    end
 
     # @return [Array(String, String), nil] the namespace that answered and the
     #   value it held, in {#namespaces} precedence order.

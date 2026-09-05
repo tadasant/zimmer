@@ -255,13 +255,13 @@ class SecretProvidersTest < ActiveSupport::TestCase
   end
 
   # The whole chain, end to end, over a store seeded the way strad's Secrets
-  # Console seeds it — which since 2026-09 is the recommended way to put a value
-  # in this store. The credential a session would be handed is the assertion.
+  # Console seeds it — the recommended way to put a value in this store. The
+  # credential a session would be handed is the assertion.
   test "a console-seeded secret reaches the chain as the credential, not as base64url" do
-    @fake.seed_console_secret("STRAD_API_KEY", "sk-live-?~>")
+    @fake.seed_console_secret("STRAD_API_KEY", "sk-live-??>>")
     credentials("STRAD_API_KEY" => "from-the-credentials-file")
 
-    assert_equal "sk-live-?~>", chain_with_store.get("STRAD_API_KEY")
+    assert_equal "sk-live-??>>", chain_with_store.get("STRAD_API_KEY")
   end
 
   test "a name the store refuses to serve falls through rather than poisoning the chain" do
@@ -288,6 +288,26 @@ class SecretProvidersTest < ActiveSupport::TestCase
     @fake.seed_console_secret("SERVED", "sk-live-value")
 
     assert_empty @fake.provider.undecodable_variables
+  end
+
+  # The ordinary mid-migration state: a stale pre-rename copy behind a good
+  # canonical one. Naming it would send an operator after a value that works.
+  test "a name refused at one path but served from another is not reported as held back" do
+    @fake.seed_secret("BOTH", "whatever", encoding: "rot13", path: legacy_path("BOTH"))
+    @fake.seed_console_secret("BOTH", "sk-live-value")
+    provider = @fake.provider
+
+    assert_equal "sk-live-value", provider.get("BOTH")
+    assert_empty provider.undecodable_variables
+  end
+
+  # And the converse: a refused parameter is still a parameter sitting at the old
+  # path, so "nothing remains in the pre-rename namespace" must not read empty
+  # while it is there — that sentence is the precondition for dropping the read.
+  test "legacy_variables counts a name the pre-rename path holds but the resolver refuses" do
+    @fake.seed_secret("STUCK", "whatever", encoding: "rot13", path: legacy_path("STUCK"))
+
+    assert_equal [ "STUCK" ], @fake.provider.legacy_variables
   end
 
   test "an empty pre-rename namespace is what says the migration is finished" do
