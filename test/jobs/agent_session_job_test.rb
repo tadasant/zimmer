@@ -11948,4 +11948,116 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal "needs_input", @session.status
     assert_nil @session.metadata["auth_outage_reason"]
   end
+
+  # --- the spawn gate answers a pending reconnect notice (#195) --------------
+
+  # The "re-authorized — reconnects on the next turn" notice is a statement about
+  # the agent process that was running when the grant came back. Once a spawn has
+  # injected the credentials, that process is gone and the notice is stale, so the
+  # gate drops it — whichever way the gate itself goes.
+  test "the OAuth spawn gate clears a pending reconnect notice once it has injected" do
+    session = Session.create!(
+      prompt: "Work already under way",
+      agent_runtime: "claude_code",
+      status: :waiting,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      mcp_servers: [ "notion" ]
+    )
+    session.merge_metadata!(
+      "keep_me" => "yes",
+      Session::MCP_OAUTH_RECONNECT_KEY => { "servers" => [ "notion" ], "authorized_at" => Time.current.iso8601 }
+    )
+
+    job = AgentSessionJob.new
+    job.stubs(:check_and_inject_oauth_credentials).returns({ blocked: false, missing_servers: [] })
+
+    assert_not job.send(:gate_and_inject_oauth!, session, "/tmp/clone", LogBuffer.new(session),
+      blocked_message: "blocked")
+
+    session.reload
+    assert_empty session.mcp_oauth_reconnect_servers
+    assert_equal "yes", session.metadata["keep_me"], "clearing the notice must not touch other metadata"
+  end
+
+  # A session whose servers were edited down to none since the notice was recorded
+  # takes the gate's early return. Clearing before that return is what stops the
+  # banner from outliving every spawn that could answer it.
+  test "the OAuth spawn gate clears a pending reconnect notice even with no servers left to gate" do
+    session = Session.create!(
+      prompt: "Work already under way",
+      agent_runtime: "claude_code",
+      status: :waiting,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      mcp_servers: []
+    )
+    session.merge_metadata!(
+      Session::MCP_OAUTH_RECONNECT_KEY => { "servers" => [ "notion" ], "authorized_at" => Time.current.iso8601 }
+    )
+
+    job = AgentSessionJob.new
+    job.expects(:check_and_inject_oauth_credentials).never
+
+    assert_not job.send(:gate_and_inject_oauth!, session, "/tmp/clone", LogBuffer.new(session),
+      blocked_message: "blocked")
+
+    assert_empty session.reload.mcp_oauth_reconnect_servers
+  end
+
+  # The gate holds a Session loaded before the clone and the AIR prepare, so its
+  # in-memory metadata says nothing about what the row carries by the time it runs.
+  test "the OAuth spawn gate clears a notice recorded after it loaded the session" do
+    session = Session.create!(
+      prompt: "Work already under way",
+      agent_runtime: "claude_code",
+      status: :waiting,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      mcp_servers: [ "notion" ]
+    )
+
+    # The gate's copy predates the notice entirely.
+    stale = Session.find(session.id)
+    Session.find(session.id).merge_metadata!(
+      Session::MCP_OAUTH_RECONNECT_KEY => { "servers" => [ "notion" ], "authorized_at" => Time.current.iso8601 }
+    )
+    assert_nil stale.metadata[Session::MCP_OAUTH_RECONNECT_KEY]
+
+    job = AgentSessionJob.new
+    job.stubs(:check_and_inject_oauth_credentials).returns({ blocked: false, missing_servers: [] })
+
+    assert_not job.send(:gate_and_inject_oauth!, stale, "/tmp/clone", LogBuffer.new(stale),
+      blocked_message: "blocked")
+
+    assert_empty session.reload.mcp_oauth_reconnect_servers
+  end
+
+  test "the OAuth spawn gate clears a pending reconnect notice when it blocks too" do
+    session = Session.create!(
+      prompt: "Work already under way",
+      agent_runtime: "claude_code",
+      status: :waiting,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      mcp_servers: [ "notion" ]
+    )
+    session.merge_metadata!(
+      Session::MCP_OAUTH_RECONNECT_KEY => { "servers" => [ "notion" ], "authorized_at" => Time.current.iso8601 }
+    )
+
+    missing = [ { "server_name" => "notion", "server_url" => "https://mcp.notion.com/mcp" } ]
+    job = AgentSessionJob.new
+    job.stubs(:check_and_inject_oauth_credentials).returns({ blocked: true, missing_servers: missing })
+
+    assert job.send(:gate_and_inject_oauth!, session, "/tmp/clone", LogBuffer.new(session),
+      blocked_message: "blocked")
+
+    session.reload
+    assert session.failed?
+    assert_empty session.mcp_oauth_reconnect_servers
+    assert_equal [ "notion" ], session.oauth_required_server_names
+  end
 end

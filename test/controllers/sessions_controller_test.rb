@@ -4831,6 +4831,42 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "Authorize linear"
   end
 
+  # #195: a grant renewed while the session was already live cannot reach the
+  # running agent, so the page has to say so — otherwise the user sees
+  # "Successfully authorized" and a session with no tools from that server.
+  test "show page renders the MCP OAuth reconnect notice for a live session" do
+    session = sessions(:running)
+    session.merge_metadata!(
+      Session::MCP_OAUTH_RECONNECT_KEY => {
+        "servers" => [ "notion" ], "authorized_at" => Time.current.iso8601
+      }
+    )
+
+    get session_url(session)
+    assert_response :success
+
+    assert_includes response.body, "Authorization complete — reconnects on the next turn"
+    assert_includes response.body, "Queue a reconnect message"
+    # The button is an ordinary follow-up, not a bespoke resume path: on a running
+    # session follow_up queues the message rather than interrupting the turn.
+    assert_includes response.body, "action=\"#{follow_up_session_path(session)}\""
+  end
+
+  test "show page drops the reconnect notice once the session is no longer live" do
+    session = sessions(:running)
+    session.merge_metadata!(
+      Session::MCP_OAUTH_RECONNECT_KEY => {
+        "servers" => [ "notion" ], "authorized_at" => Time.current.iso8601
+      }
+    )
+    session.update_column(:status, "archived")
+
+    get session_url(session)
+    assert_response :success
+
+    assert_not_includes response.body, "Authorization complete — reconnects on the next turn"
+  end
+
   test "should reject non-array mcp_servers param" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", mcp_servers: [])
 

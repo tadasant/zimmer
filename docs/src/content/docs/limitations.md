@@ -1784,6 +1784,25 @@ An exact two-name list (`Authorization`, `X-API-Key`) is what shipped before, an
 `google-maps` entry's `X-Goog-Api-Key` rendered "Needs authorization" beside the very key that
 authenticates it.
 
+### A re-authorization cannot reach the agent process that is already running
+
+🟡 Claude Code reads its MCP servers once, at launch. When a server's OAuth grant is renewed while a
+session is `running` or `needs_input`, the live agent process has no connection to that server and
+cannot be given one: the only mechanism that would is killing the process and starting another, which
+is the double-process failure [#400](https://github.com/tadasant/zimmer/issues/400) describes. So the
+tools stay missing for the rest of the current turn no matter what Zimmer does.
+
+What Zimmer does instead ([#195](https://github.com/tadasant/zimmer/issues/195)) is inject the fresh
+credential into the runtime store immediately, record the server under
+`metadata["mcp_oauth_reconnect"]`, and say so twice — a notice on the session page with a button that
+sends (or queues) an ordinary follow-up, and a line in the session's own timeline. The reconnect is
+the next spawn's `gate_and_inject_oauth!`.
+
+Two things that leaves. The next turn is genuinely required: a session mid-turn on work that needs
+those tools finishes that turn without them. And the notice reaches only the session the OAuth flow
+was started from — a grant renewed from the Connectors page is shared by every session wiring that
+server and notifies none of them.
+
 ### The fallback `client_id` is the literal string `"zimmer"`
 
 Used only when neither a statically-configured client id nor a DCR endpoint is available.

@@ -1,0 +1,40 @@
+<%# Shown after an MCP OAuth grant is renewed for a session that was already
+    live. The credential is stored and injected, but Claude Code reads its MCP
+    servers once at launch, so the agent process now running (or the one that
+    just stopped for input) has no connection to the server and cannot be given
+    one. The next turn is what reconnects it — without this the user sees
+    "Successfully authorized", no tools, and nothing telling them why. #195 %>
+<% reconnect_servers = agent_session.mcp_oauth_reconnect_servers %>
+<% if reconnect_servers.any? && (agent_session.running? || agent_session.needs_input?) %>
+  <div class="flex flex-col gap-2 p-3 mt-2 bg-blue-50 border border-blue-200 rounded-lg">
+    <div class="flex items-center gap-2">
+      <svg class="h-5 w-5 text-blue-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.389zm.219-4.53a7 7 0 00-11.712 3.138.75.75 0 101.449.389 5.5 5.5 0 019.201-2.466l.312.311H12.35a.75.75 0 000 1.5h4.243a.75.75 0 00.75-.75V4.774a.75.75 0 00-1.5 0v2.43l-.311-.31z" clip-rule="evenodd" />
+      </svg>
+      <span class="font-medium text-blue-800">
+        Authorization complete — reconnects on the next turn
+      </span>
+    </div>
+    <p class="text-sm text-blue-700">
+      Zimmer has stored the renewed grant for <%= reconnect_servers.to_sentence %>, and the next
+      agent process this session starts will use it. This session's agent loaded its MCP servers
+      when it started and cannot pick up a new connection mid-run, so those tools stay missing
+      until it runs again.
+      <% if agent_session.running? %>
+        The agent is mid-turn, so a message sent now queues and reconnects on the turn after it.
+      <% else %>
+        Send a message to reconnect.
+      <% end %>
+    </p>
+    <div>
+      <%= form_with url: follow_up_session_path(agent_session), method: :post, data: { turbo: false }, class: "w-full sm:w-auto" do |f| %>
+        <%= f.hidden_field :follow_up_prompt,
+            value: "#{reconnect_servers.to_sentence} #{reconnect_servers.one? ? 'has' : 'have'} been re-authorized, " \
+                   "so #{reconnect_servers.one? ? 'its' : 'their'} MCP tools are available again. " \
+                   "Pick up where you left off." %>
+        <%= f.submit agent_session.running? ? "Queue a reconnect message" : "Reconnect now",
+            class: "w-full sm:w-auto inline-flex items-center justify-center px-3 py-2 border border-blue-600 text-sm font-medium rounded-md text-blue-700 bg-white hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 cursor-pointer" %>
+      <% end %>
+    </div>
+  </div>
+<% end %>

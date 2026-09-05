@@ -1,4 +1,6 @@
-# Resumes a session that was blocked waiting for MCP OAuth authorization.
+# Decides what a completed MCP OAuth authorization does to the session it was
+# started from: resume it if it was parked on that authorization, and otherwise
+# tell a live session — and its reader — that the grant is back.
 #
 # When a session needs OAuth for one or more MCP servers it cannot start: it is
 # parked in a blocked state and its required servers are recorded in
@@ -25,7 +27,29 @@
 #   - Some servers still need authorization (or a pending flow is still active)
 #       -> trim oauth_required_servers to those still outstanding so the UI
 #          reflects progress, leaving the session blocked. Returns :partial.
-#   - The session is not (or no longer) blocked -> Returns :not_blocked.
+#   - The session is not blocked but is live (running or needs_input) and uses
+#       the server that was just authorized
+#       -> re-inject the fresh credential into the runtime store, record the
+#          server under metadata["mcp_oauth_reconnect"], and say so in the
+#          session's own timeline. Returns :reconnect_pending.
+#   - The session is not (or no longer) blocked and none of the above applies
+#       -> Returns :not_blocked.
+#
+# == Why a live session gets a notice rather than a resume ==
+#
+# Claude Code reads its MCP servers once, at launch. A running agent process
+# therefore cannot be handed a connection it did not start with, and there is no
+# honest way to make a re-authorization take hold mid-turn: the only mechanism
+# that would is killing the process and starting another one, which is the
+# double-process hazard #400 documents. A needs_input session is at rest and does
+# self-heal, but only one turn later — the follow-up spawn re-runs
+# `gate_and_inject_oauth!` and injects the fresh credential.
+#
+# So neither live state gets a respawn from here. What both get is the thing that
+# was actually missing: the credential on disk immediately, and a statement that
+# the next turn is what reconnects. `enqueue_new_session` is deliberately NOT
+# reachable from this branch — it replays the session's original prompt, which is
+# the wrong thing to say in the middle of a conversation.
 #
 # Exactly-once resume is guaranteed by running the whole decision under a row
 # lock (with_lock = SELECT ... FOR UPDATE + reload). Once the first caller
@@ -34,11 +58,16 @@
 # state, sees the session is no longer blocked, and does nothing.
 class McpOauthResumeService
   # @param session [Session] the session to evaluate for resumption
-  def initialize(session)
+  # @param authorized_server [String, nil] the name of the server whose flow just
+  #   completed. Only the live-session branch needs it — a resume is decided from
+  #   the session's own `oauth_required_servers` — so it stays optional, and a
+  #   caller that omits it simply gets no reconnect notice.
+  def initialize(session, authorized_server: nil)
     @session = session
+    @authorized_server = authorized_server
   end
 
-  # @return [Symbol] :resumed, :partial, or :not_blocked
+  # @return [Symbol] :resumed, :partial, :reconnect_pending, or :not_blocked
   def call
     # Read the volume BEFORE taking the row lock, the way the restart doors read
     # before their transaction: sniffing an image's media type reads its bytes,
@@ -46,24 +75,33 @@ class McpOauthResumeService
     # re-asked under the lock, against the reloaded row.
     attachments = replayable_attachments
 
-    @session.with_lock do
-      return :not_blocked unless blocked?
+    outcome = @session.with_lock do
+      if blocked?
+        remaining = servers_still_needing_oauth
 
-      remaining = servers_still_needing_oauth
-
-      if remaining.empty? && pending_flows.none?
-        resume!(attachments)
-        :resumed
+        if remaining.empty? && pending_flows.none?
+          resume!(attachments)
+          :resumed
+        else
+          record_partial_progress(remaining)
+          :partial
+        end
       else
-        record_partial_progress(remaining)
-        :partial
+        :not_blocked
       end
     end
+
+    # Outside the lock on purpose: the live branch writes the runtime credential
+    # store, and a file write must not hold a session row open (the same reason
+    # the attachment read above happens before the lock).
+    return outcome unless outcome == :not_blocked
+
+    notify_live_session
   end
 
   private
 
-  attr_reader :session
+  attr_reader :session, :authorized_server
 
   # True when the session is parked waiting for OAuth authorization. A session
   # that has already been resumed (waiting with no oauth_required_servers) is
@@ -105,6 +143,89 @@ class McpOauthResumeService
 
   def pending_flows
     McpOauthPendingFlow.for_session(session).active
+  end
+
+  # The not-blocked branch for a session that is live and uses the server whose
+  # grant was just renewed. Puts the fresh token where the next spawn reads it,
+  # then records the server so the session page can say the grant is back and the
+  # next turn is what picks it up.
+  #
+  # @return [Symbol] :reconnect_pending when a notice was recorded, else :not_blocked
+  def notify_live_session
+    return :not_blocked if authorized_server.blank?
+    return :not_blocked unless session.running? || session.needs_input?
+    return :not_blocked unless session.user_selected_mcp_servers.include?(authorized_server)
+
+    reinject_credentials
+    record_reconnect_pending
+    :reconnect_pending
+  end
+
+  # Writes the session's OAuth credentials to the runtime store now, rather than
+  # leaving the freshly-authorized one to be discovered at the next spawn. The
+  # spawn gate injects too, so this is not what makes the next turn work — it is
+  # what lets the runtime retry the connection with a live token in the window
+  # before then, and it clears the runtime's needs-auth memo for the same reason
+  # `McpOauthCredentialInjector#inject_credentials!` does.
+  #
+  # Note what it reaches: the injector collects EVERY server the session wires,
+  # not only the one just authorized, so it may reconcile and refresh a token an
+  # in-flight turn is using. That is the same pass the spawn gate makes on every
+  # spawn, and the refreshes it performs are bounded by
+  # `McpOauthService::REQUEST_TIMEOUT`.
+  #
+  # Best-effort: a missing clone directory or an unwritable store must not turn a
+  # successful authorization into a 500 on the callback.
+  def reinject_credentials
+    McpOauthCredentialInjector.new(
+      session,
+      working_directory: session.metadata&.dig("working_directory")
+    ).inject_credentials!
+  rescue => e
+    Rails.logger.warn(
+      "[McpOauthResumeService] Could not re-inject credentials for " \
+      "#{authorized_server.inspect} on session #{session.id}: #{e.class}: #{e.message}"
+    )
+  end
+
+  # Adds the server to metadata["mcp_oauth_reconnect"]["servers"] and, the first
+  # time a given server lands there, says so in the session's timeline.
+  #
+  # `merge_metadata!` rather than `update!` because this can run against a session
+  # that is mid-turn, where a whole-column read-modify-write would erase whatever
+  # the job wrote in between. That protects the keys this caller never names; it
+  # does not serialize two writers of THIS key, and two servers authorized at
+  # once are exactly that — both would read the same list, and the later write
+  # would drop the earlier server. So the read and the write are taken under a row
+  # lock, which also makes a repeated callback idempotent: the list is a set, and
+  # both the timeline line and the app log are written only when the set grows.
+  #
+  # A different lock from the one #call takes: that one is released before the
+  # runtime store is written, and re-entering it here is a plain DB round trip.
+  def record_reconnect_pending
+    session.with_lock do
+      known = session.mcp_oauth_reconnect_servers
+      next if known.include?(authorized_server)
+
+      session.merge_metadata!(
+        Session::MCP_OAUTH_RECONNECT_KEY => {
+          "servers" => known + [ authorized_server ],
+          "authorized_at" => Time.current.iso8601
+        }
+      )
+
+      Rails.logger.info(
+        "[McpOauthResumeService] #{authorized_server} re-authorized for live session " \
+        "#{session.id} (#{session.status}); it reconnects on the next turn"
+      )
+
+      session.logs.create!(
+        level: "info",
+        content: "#{authorized_server} is authorized again. This session's agent loaded its " \
+          "MCP servers when it started and cannot pick up a new connection mid-run, so the " \
+          "next message is what reconnects it."
+      )
+    end
   end
 
   def resume!(attachments)
