@@ -75,13 +75,35 @@ class AgentSessionJobUndeliveredTurnTest < ActiveJob::TestCase
     assert_nil @session.running_job_id, "a turn that ended must leave no owner on the row"
   end
 
-  test "the undelivered prompt is kept where a continuation will re-send it" do
+  test "the undelivered prompt is kept on the session and readable on its timeline" do
     deliver_follow_up_that_dies_at_air_prepare(prompt: "Please open the PR for the auth fix")
 
-    assert_equal "Please open the PR for the auth fix",
-                 @session.reload.metadata["pending_follow_up_prompt"],
-                 "the follow-up arm consumes this marker on the way in, so a boot failure would " \
-                 "otherwise lose the user's text with the job"
+    @session.reload
+    assert_equal "Please open the PR for the auth fix", @session.undelivered_prompt,
+                 "the follow-up arm consumes the delivery marker on the way in, so a boot failure " \
+                 "would otherwise lose the user's text with the job"
+    assert @session.logs.reload.any? { |entry| entry.content.include?("Please open the PR for the auth fix") },
+           "the human recovering this reads the session page, not the metadata column"
+  end
+
+  # `pending_follow_up_prompt` is what #perform's follow-up arm prefers over its own
+  # argument, so a dead turn's prompt left there is delivered in place of the next
+  # real one. Three delivery paths do not stamp the marker, and one of them —
+  # EnqueuedMessageProcessorService — is reachable from this park's own `pause!`.
+  test "the next prompt cannot lose to the dead one" do
+    deliver_follow_up_that_dies_at_air_prepare(prompt: "The turn that died")
+
+    assert_nil @session.reload.metadata["pending_follow_up_prompt"]
+  end
+
+  test "a message queued while the turn ran is still the one delivered after the park" do
+    @session.enqueued_messages.create!(content: "The message a human sent second", position: 1, status: "pending")
+
+    deliver_follow_up_that_dies_at_air_prepare(prompt: "The turn that died")
+
+    queued = @session.enqueued_messages.reload.first
+    assert_not_nil queued, "the park must not consume somebody else's queued message"
+    assert_equal "The message a human sent second", queued.content
   end
 
   test "the session is in the homepage's action queue" do
@@ -157,6 +179,18 @@ class AgentSessionJobUndeliveredTurnTest < ActiveJob::TestCase
     assert_equal "exception", fresh.metadata["failure_reason"]
   end
 
+  # `retry_on` covers three transient classes and #perform re-raises, so a turn that
+  # dies on one of them has another attempt at this same prompt already queued. The
+  # park's own log line promises "nothing is retried", and it has to be true.
+  test "a turn whose exception is about to be retried is not parked" do
+    deliver_follow_up_that_dies_at_air_prepare(error: Timeout::Error.new("clone timed out"))
+
+    @session.reload
+    assert_equal "failed", @session.status,
+                 "an ended-turn announcement must not race a retry that is still going to run it"
+    assert_equal "exception", @session.metadata["failure_reason"]
+  end
+
   test "a status-summary fork is never parked into the action queue" do
     @session.merge_metadata!(SessionStatusSummaryGenerator::FORK_MARKER => 4242)
 
@@ -173,15 +207,17 @@ class AgentSessionJobUndeliveredTurnTest < ActiveJob::TestCase
   # The reported flow: an idle session is handed a follow-up (which resumes it and
   # stamps the prompt), the job picks it up, and `air prepare` raises on the way to
   # the spawn — before any agent process exists.
-  def deliver_follow_up_that_dies_at_air_prepare(prompt: "Please continue with the review", swallow: true)
+  def deliver_follow_up_that_dies_at_air_prepare(
+    prompt: "Please continue with the review", swallow: true, error: nil
+  )
     @session.deliver_follow_up!(prompt)
-    run_job(@session, prompt, swallow: swallow)
+    run_job(@session, prompt, swallow: swallow, error: error)
   end
 
   # `swallow` is the default because #perform re-raises on purpose (see the test
   # that pins it) and every other test here is about the state that re-raise leaves
   # behind, not about the raise itself.
-  def run_job(session, prompt, swallow: true)
+  def run_job(session, prompt, swallow: true, error: nil)
     cli = MockClaudeCliAdapter.new
     job = AgentSessionJob.new(session.id, prompt)
     job.process_manager = MockProcessManager.new
@@ -189,13 +225,14 @@ class AgentSessionJobUndeliveredTurnTest < ActiveJob::TestCase
     job.cli_adapter = cli
     job.file_system.mkdir_p(CLONE_PATH)
 
-    AirPrepareService.any_instance.stubs(:prepare!).raises(
-      AirPrepareService::AirPrepareError, "AIR prepare failed (exit status 1): #{AIR_ENOENT}"
+    raised = error || AirPrepareService::AirPrepareError.new(
+      "AIR prepare failed (exit status 1): #{AIR_ENOENT}"
     )
+    AirPrepareService.any_instance.stubs(:prepare!).raises(raised)
 
     GitCloneService.stub(:create_clone, { clone_path: CLONE_PATH, working_directory: CLONE_PATH }) do
       if swallow
-        assert_raises(AirPrepareService::AirPrepareError) { job.perform(session.id, prompt) }
+        assert_raises(raised.class) { job.perform(session.id, prompt) }
       else
         job.perform(session.id, prompt)
       end

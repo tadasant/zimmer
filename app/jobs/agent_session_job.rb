@@ -355,9 +355,16 @@ class AgentSessionJob < ApplicationJob
 
   # Only retry on specific transient errors, not all StandardErrors
   # This prevents duplicate job executions that could create multiple PRs
-  retry_on Timeout::Error, wait: :polynomially_longer, attempts: 3
-  retry_on Errno::ECONNRESET, wait: :polynomially_longer, attempts: 3
-  retry_on Errno::ETIMEDOUT, wait: :polynomially_longer, attempts: 3
+  #
+  # Named rather than written three times inline because #another_attempt_queued?
+  # has to ask the same question from the rescue: a turn dying on one of these is
+  # not over, and must not be parked as though it were (#439).
+  RETRYABLE_EXCEPTIONS = [ Timeout::Error, Errno::ECONNRESET, Errno::ETIMEDOUT ].freeze
+  RETRY_ATTEMPTS = 3
+
+  retry_on Timeout::Error, wait: :polynomially_longer, attempts: RETRY_ATTEMPTS
+  retry_on Errno::ECONNRESET, wait: :polynomially_longer, attempts: RETRY_ATTEMPTS
+  retry_on Errno::ETIMEDOUT, wait: :polynomially_longer, attempts: RETRY_ATTEMPTS
 
   # Don't retry if session is not found
   discard_on ActiveRecord::RecordNotFound
@@ -2391,11 +2398,17 @@ class AgentSessionJob < ApplicationJob
         # The failure is still stamped, still logged, and still re-raised into the
         # exception reporter — this changes where the session comes to rest, not how
         # loudly the fault is reported.
+        #
+        # `retry_pending` is answered here rather than in the service because
+        # `retry_on` is this class's declaration: a turn whose exception is about to
+        # be retried has not ended, and parking it would announce an ending in the
+        # action queue while another attempt at the same prompt was still queued.
         parked = Sessions::ParkUndeliveredTurn.call(
           session,
           error: e,
           prompt: follow_up_prompt,
-          spawned: (lifecycle_manager&.current_pid || process_pid).present?,
+          spawned: (lifecycle_manager.current_pid || process_pid).present?,
+          retry_pending: another_attempt_queued?(e),
           log_buffer: log_buffer
         )
 
@@ -3080,6 +3093,26 @@ class AgentSessionJob < ApplicationJob
       "spawning rather than refusing a turn that may be live"
     )
     false
+  end
+
+  # Whether the `raise e` at the end of #perform's catch-all is going to buy this
+  # exception another attempt.
+  #
+  # `executions` is ActiveJob's own count of attempts so far, incremented before
+  # #perform runs, so on the final permitted attempt it already equals
+  # RETRY_ATTEMPTS. ActiveJob actually counts per declared exception class, and this
+  # reads the total instead — deliberately, because the two differ only for a job
+  # that has failed on more than one of the three classes, and there the total is
+  # the LARGER number. That errs toward answering "no further attempt" late rather
+  # than early, and the cost of being late is the status quo: the session fails, as
+  # it did before #439.
+  #
+  # @param error [Exception]
+  # @return [Boolean]
+  def another_attempt_queued?(error)
+    return false unless RETRYABLE_EXCEPTIONS.any? { |klass| error.is_a?(klass) }
+
+    executions.to_i < RETRY_ATTEMPTS
   end
 
   # Whether this turn's exception is the archive landing mid-turn, recording the

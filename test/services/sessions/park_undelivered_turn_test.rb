@@ -30,8 +30,38 @@ class Sessions::ParkUndeliveredTurnTest < ActiveSupport::TestCase
     assert_equal Sessions::ParkUndeliveredTurn::FAILURE_REASON, @session.metadata["failure_reason"]
     assert_equal "AirPrepareService::AirPrepareError", @session.metadata["exception_class"]
     assert_includes @session.metadata["exception_message"], ".mcp.json"
-    assert_equal "Please continue", @session.metadata["pending_follow_up_prompt"]
+    assert_equal "Please continue", @session.metadata["undelivered_prompt"]
     assert_nil @session.running_job_id
+  end
+
+  # THE TRAP THIS AVOIDS. #perform's follow-up arm reads
+  # `pending_follow_up_prompt || follow_up_prompt`, so a value left there WINS over
+  # the next turn's real prompt — and three delivery paths (the REST follow_up
+  # endpoint, MCP action_session's direct follow-up, and EnqueuedMessageProcessor-
+  # Service) enqueue a prompt without stamping the marker, so all three would send
+  # the parked prompt in place of the one a human just wrote. The third is reachable
+  # from this park's own `pause!`, which drains the queued-message backlog.
+  test "the kept prompt does not go where the NEXT prompt would lose to it" do
+    park
+
+    assert_nil @session.reload.metadata["pending_follow_up_prompt"],
+               "the marker #perform prefers over its own argument must not carry a dead turn's prompt"
+  end
+
+  test "the session exposes the kept prompt for a human to re-send" do
+    park(prompt: "Please open the PR for the auth fix")
+    assert_equal "Please open the PR for the auth fix", @session.reload.undelivered_prompt
+  end
+
+  # `retry_on` is declared for three transient classes and #perform re-raises, so a
+  # turn dying on one of them has another attempt queued against this same prompt.
+  # Parking it would announce in the action queue that the turn had ended while a
+  # retry was still going to run it, and a human acting on that announcement would
+  # race the retry into delivering the prompt twice.
+  test "declines while another attempt at the same prompt is queued" do
+    refute park(retry_pending: true)
+    assert_equal "running", @session.reload.status
+    assert_nil @session.metadata["failure_reason"]
   end
 
   test "declines once a process existed — that turn is a runtime fault with a transcript to read" do
@@ -108,8 +138,43 @@ class Sessions::ParkUndeliveredTurnTest < ActiveSupport::TestCase
     assert @session.parked_undelivered_turn?
     assert @session.shows_failure_details?,
            "the failure block is gated on this — a park that hides its own reason is the bug again"
-    assert @session.failed_before_initial_prompt?,
-           "nothing ran, so a restart must re-send the original prompt rather than a recovery nudge"
+  end
+
+  # Every other member of PRE_PROMPT_FAILURE_REASONS can only be set on a session
+  # with no conversation. This one is the opposite: #439's archetype had already
+  # completed a turn. Claiming otherwise sends the three restart entry points down
+  # `use_initial_prompt`, which spawns fresh against a runtime session id that
+  # already names a conversation ("Session ID … is already in use").
+  test "a parked session is NOT treated as having failed before its initial prompt" do
+    park
+
+    refute @session.reload.failed_before_initial_prompt?
+  end
+
+  # The park writes into `failure_reason`, which no resume path cleared. Left
+  # behind, the next ORDINARY turn-completion pause would render "This turn stopped
+  # before the agent started" on a session that had just worked perfectly.
+  test "resuming the session clears everything the park stamped" do
+    park
+    @session.reload.resume!
+
+    @session.reload
+    assert_nil @session.metadata["failure_reason"]
+    assert_nil @session.metadata["exception_class"]
+    assert_nil @session.metadata["exception_message"]
+    assert_nil @session.metadata["undelivered_prompt"]
+
+    @session.pause!
+    refute @session.reload.parked_undelivered_turn?,
+           "an ordinary pause after a recovered park must not still render the park's failure"
+  end
+
+  test "resume leaves another failure's record alone" do
+    @session.merge_metadata!("failure_reason" => "mcp_connection_failed", "exception_class" => "Boom")
+    @session.reload.resume! if @session.may_resume?
+    @session.update!(status: :needs_input)
+
+    assert_equal "mcp_connection_failed", @session.reload.metadata["failure_reason"]
   end
 
   test "the failure summary says what happened and what to do, not just the reason's name" do
@@ -118,8 +183,19 @@ class Sessions::ParkUndeliveredTurnTest < ActiveSupport::TestCase
     summary = @session.reload.failure_summary
     assert_includes summary, "before the agent started"
     assert_includes summary, "AirPrepareService::AirPrepareError"
-    assert_includes summary, "continue the session to send it again"
+    assert_includes summary, "The prompt is kept"
     refute_equal "Undelivered turn", summary
+  end
+
+  # The push is the half of this fix that reaches a human who is NOT looking at the
+  # homepage, and `needs_input` normally routes to an LLM summary of the last
+  # assistant message — which for a parked session belongs to the previous,
+  # unrelated turn. It must say what actually happened instead.
+  test "the needs_input push describes the dead turn, not the previous one" do
+    park
+
+    body = SendPushNotificationJob.new.send(:build_body, @session.reload, "needs_input")
+    assert_includes body, "before the agent started"
   end
 
   test "an ordinary needs_input session is not mistaken for a parked one" do
@@ -130,7 +206,9 @@ class Sessions::ParkUndeliveredTurnTest < ActiveSupport::TestCase
 
   private
 
-  def park(prompt: "Please continue", spawned: false, error: @error)
-    Sessions::ParkUndeliveredTurn.call(@session, error: error, prompt: prompt, spawned: spawned)
+  def park(prompt: "Please continue", spawned: false, retry_pending: false, error: @error)
+    Sessions::ParkUndeliveredTurn.call(
+      @session, error: error, prompt: prompt, spawned: spawned, retry_pending: retry_pending
+    )
   end
 end

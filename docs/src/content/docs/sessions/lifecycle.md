@@ -791,32 +791,54 @@ that dies in setup is therefore dropped in silence: production session 3949 lost
 ([#439](https://github.com/tadasant/zimmer/issues/439)).
 
 So `Sessions::ParkUndeliveredTurn` intercepts `AgentSessionJob`'s catch-all rescue and comes to
-rest in `needs_input` instead, on four conditions:
+rest in `needs_input` instead, on five conditions:
 
 1. **No agent process was spawned by this job** — asked of `ProcessLifecycleManager#current_pid`
    and the job's own local pid. A turn that died after its process existed is a runtime fault with
    a transcript to read, and still fails.
-2. **The turn was carrying a prompt.** An undelivered prompt is what makes this a person's
+2. **No further attempt is queued.** `AgentSessionJob` declares `retry_on` for `Timeout::Error`,
+   `Errno::ECONNRESET` and `Errno::ETIMEDOUT`, and the catch-all re-raises — so a turn dying on one
+   of those is *not over*, and another attempt will run this same prompt. Parking it would announce
+   an ending in the action queue while a retry was still queued, and a human acting on that
+   announcement would race the retry into delivering the prompt twice. Those three keep the `failed`
+   path they have always had, which is a real gap and is written up in
+   [Limitations](/limitations/#a-transient-boot-failure-that-exhausts-its-retries-still-fails-invisibly).
+3. **The turn was carrying a prompt.** An undelivered prompt is what makes this a person's
    problem. A promptless turn has nothing anybody is waiting on.
-3. **The session is `running`** — `pause` transitions from `running` only, and that is exactly the
+4. **The session is `running`** — `pause` transitions from `running` only, and that is exactly the
    state a delivered follow-up is in. A session still `waiting` is having its *first* turn set up,
    in front of the person who just created it, and still fails.
-4. **Not a status-summary fork**, which must never take a slot in the action queue.
+5. **Not a status-summary fork**, which must never take a slot in the action queue.
 
-The park writes `failure_reason: "undelivered_turn"`, the exception class and message, and puts the
-prompt back in `pending_follow_up_prompt` — the follow-up arm of `#perform` consumes that marker on
-the way in, long before the setup that raised, so without this the user's raw text dies with the
-job. It deliberately writes **no** `paused_by: "recovery"` marker: that marker promises a sweep will
-continue the session, and a boot that is deterministically broken would just fail again on every one
-of those attempts and end in the same silence. Without it, `announcement_deferred_to_recovery_sweep?`
-is false and the `pause` callback makes the announcement itself — the settled `session_needs_input`
-wake fan-out and the debounced push.
+The park writes `failure_reason: "undelivered_turn"`, the exception class and message, and the
+prompt — under `undelivered_prompt`, plus a copy on the session's own timeline, which is what a
+human actually reads. Nothing re-delivers that prompt automatically, and the UI copy says so.
 
-Nothing about the fault gets quieter: the two ERROR lines still land on the session's timeline, the
-exception is still stamped on the row, and `#perform` still re-raises into Sentry and the terminal
-ActiveJob ERROR the `zimmer_backend_log_errors` rule reads. Only the resting state changed. Because
-the session rests in `needs_input` rather than `failed`, the session page's failure block is gated on
-`Session#shows_failure_details?` rather than on `failed?`.
+**It is deliberately not put back in `pending_follow_up_prompt`**, which is the obvious-looking place
+and is a trap: `#perform`'s follow-up arm reads `pending_follow_up_prompt || follow_up_prompt`, so a
+value left there *wins over the next turn's real prompt*. Three delivery paths enqueue a prompt
+without stamping the marker — the REST `follow_up` endpoint, MCP `action_session`'s direct follow-up,
+and `EnqueuedMessageProcessorService` — so all three would send the dead turn's prompt in place of
+the one a human just wrote. The third is reachable from this park's own `pause!`, which drains the
+queued-message backlog.
+
+It writes **no** `paused_by: "recovery"` marker either: that marker promises a sweep will continue
+the session, and a boot that is deterministically broken would just fail again on every one of those
+attempts and end in the same silence. Without it, `announcement_deferred_to_recovery_sweep?` is false
+and the `pause` callback makes the announcement itself — the settled `session_needs_input` wake
+fan-out and the debounced push. That push is routed through `build_failure_body` rather than the
+usual `needs_input` LLM summary, which would otherwise describe the *previous*, unrelated turn.
+
+`resume` drops everything the park stamped, scoped to a row whose `failure_reason` is the park's own.
+Without that, the marker outlives the turn that earned it and the next ordinary pause renders a
+failure on a session that has just worked.
+
+The session's ERROR lines, its stamped exception and the re-raise into Sentry and the terminal
+ActiveJob ERROR (which is what the `zimmer_backend_log_errors` rule reads) are all unchanged. What
+does change, besides the resting state: the session page's failure block is gated on
+`Session#shows_failure_details?` rather than on `failed?`, and `HealthMonitorService`'s
+`failure_reason_distribution` queries `status: :failed`, so a parked boot failure does not appear in
+it — see [Limitations](/limitations/#a-parked-boot-failure-is-invisible-to-the-health-rollups).
 
 The sibling case is `Sessions::RestartUnstartedTurn`, which parks the same way when a process is
 *gone* and wrote nothing; this one is for a process that never existed.
