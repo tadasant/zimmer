@@ -147,9 +147,28 @@ class Mcp::Tools::GetSessionProvenanceTest < ActiveSupport::TestCase
     40.times { |i| add_message(@session, content: "msg #{i}", at: i.minutes.from_now) }
 
     output = @tool.call("id" => @session.id)
+    per_origin = Mcp::ProvenanceSections::SUMMARY_ENTRIES_PER_ORIGIN
 
     assert_includes output, "msg 39"
-    assert_includes output, "_15 older entries omitted._"
+    assert_includes output, "- **Authored in this session:** 40"
+    assert_includes output, "Listed: the newest #{per_origin} of 40 authored HERE"
+    assert_includes output, "_#{40 - per_origin} older entries not shown here"
+  end
+
+  # verbose restores the pre-summary rendering: the newest 25, uncut. The record's
+  # own 25-entry cap still applies, and is still declared.
+  test "verbose lists the newest 25, uncut, and says how many are older" do
+    40.times { |i| add_message(@session, content: "msg #{i}", at: i.minutes.from_now) }
+    add_message(@session, content: "L" * 5_000, at: 41.minutes.from_now)
+
+    output = @tool.call("id" => @session.id, "verbose" => true)
+
+    assert_includes output, "msg 16"
+    assert_not_includes output, "msg 15\n"
+    assert_includes output, "L" * 5_000
+    assert_not_includes output, "Truncated:"
+    assert_includes output, "The newest 25 of 41 entries are listed; the other 16 are not."
+    assert_includes output, "_16 older entries not shown here"
   end
 
   test "a Slack message names the Slack channel" do

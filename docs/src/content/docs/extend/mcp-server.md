@@ -203,6 +203,16 @@ exactly the sessions it is looking for. And each result's prompt line is a previ
 100 characters, so an issue URL named later in a prompt is not visible in the listing; `query` does
 not read the prompt column, so search for the identifier a router put in `custom_metadata` instead.
 
+Rows are **compact by default**: they carry status, runtime, pause, board visibility, genesis and
+scheduling class, precedence and both timestamps, and omit six per-session fields — slug, category,
+repository, branch, the prompt preview and the MCP server list. That is what makes the advertised
+`per_page: 100` a page you actually get back. With the full row a hundred results came to 54,034
+characters and the runtime refused the tool result outright, so the real ceiling was 35–40 and the
+schema's `maximum: 100` was a promise the tool did not keep. The omission is never silent: every
+response that has a compact row carries a line naming all six fields and the two calls that return
+them — `verbose: true` for the full rows, `get_session` for one session in full. See
+[Payload budgets](#payload-budgets-what-a-tool-result-may-cost).
+
 `action_session`'s `set_visibility` action writes a session's
 [board visibility](/sessions/board-visibility/) — whether its card is on the human's dashboard,
 `visible` / `hidden` / `snoozed` until a time. It is a visual-organization device and nothing else:
@@ -220,8 +230,10 @@ messages Zimmer knows a named human authored anywhere in that tree, with author,
 content and the session each was said in). Neither is behind an `include_` flag, because the most
 important reading of the message record is the empty one: a caller asking "did a human authorize
 this?" must be able to tell "no human turns" from "I forgot the flag." Entries are marked `here` (a
-human spoke to this session) or `elsewhere` (a human spoke to another session in the hierarchy). See
-[Hierarchy and human messages](/sessions/hierarchy-and-human-messages/).
+human spoke to this session) or `elsewhere` (a human spoke to another session in the hierarchy). On
+this tool the message record is rendered as a **summary** — see
+[Payload budgets](#payload-budgets-what-a-tool-result-may-cost) — while `get_session_provenance`
+returns it whole. See [Hierarchy and human messages](/sessions/hierarchy-and-human-messages/).
 
 `get_session` also always includes a `### Queued Messages` section: how many messages are `pending`
 for that session, and a one-line, hard-truncated preview of the first few by position. It is there
@@ -268,11 +280,47 @@ session — those are the human's levers over what the fleet works on next and e
 controller. The one removal an agent may make is on a pull, with a reason from a fixed vocabulary of
 observed facts. `zimmer-work-backlog` (mcp.json) is the one catalog entry that names the group.
 
-`get_session_provenance` returns those same two sections on their own, for one `session_id`. Zimmer
-injects neither into a session's turns, so this is the tool a session calls to read its own
-provenance — and its description, not a block in the prompt, is where the caveats that record has to
-be read with are stated. Like `get_session` it is in `self_session` as well as `sessions`, because
+`get_session_provenance` returns those same two sections on their own, for one `session_id`, and
+returns them **uncut** — it exists to serve that record and nothing else, so it has no budget to
+spend. Zimmer injects neither into a session's turns, so this is the tool a session calls to read its
+own provenance — and its description, not a block in the prompt, is where the caveats that record has
+to be read with are stated. Like `get_session` it is in `self_session` as well as `sessions`, because
 the auto-injected self-session server is the only surface every session carries.
+
+## Payload budgets: what a tool result may cost
+
+A tool result the runtime refuses is worse than a small one. Two of these tools grew past that limit
+and were spilled to a file instead of returned ([#652](https://github.com/tadasant/zimmer/issues/652)):
+`quick_search_sessions` at its own advertised `per_page: 100`, and `get_session` on an ordinary
+session — 77,258 characters with `include_transcript: false`, of which almost none was session state.
+It was the router's brief in `Current Prompt`, that same brief again as `active_follow_up_prompt`
+inside the metadata JSON, and a hierarchy's worth of them replayed in the message record. The fleet
+skills budget forty `get_session` reads a run to tell an outage-parked session from a paused one;
+at that size a run could afford two.
+
+Both tools now render less by default and take `verbose: true` to render everything, unchanged from
+before. `get_session`'s default cuts exactly three things — nothing else in the dump moves:
+
+| Block | Default | Whole thing |
+| --- | --- | --- |
+| `Current Prompt` | first 1,000 characters | `verbose: true` |
+| Long string values in `System Metadata` / `Custom Metadata` | first 300 characters per value; keys and nesting untouched | `verbose: true` |
+| `Human Messages` | newest 5 `here` **and** newest 5 `elsewhere` entries, content cut to 300 characters | `get_session_provenance`, or `verbose: true` |
+
+The one rule that governs all of it: **a cut is only acceptable if the caller can see it happened.**
+A response that quietly drops the tail of a value reads exactly like one where the value ended there,
+and the `Human Messages` block is the fallback both agent gates use to establish that a human asked
+for something — a gate that cannot tell a shortened record from an empty one is required to hold
+rather than guess. So every cut carries its own marker with the value's real length; the block's two
+counts are always of the *whole* record, never of what was rendered; the omitted entries are counted
+out loud next to the call that returns them; and when nothing needed cutting the block says
+`**Complete:** every entry in this record is listed below, in full` rather than staying silent. The
+`here`/`elsewhere` split of the entry budget is deliberate for the same reason: `here` is the half
+that answers "did a human ask *this* session for this?", so a chatty hierarchy cannot push it off the
+list.
+
+Everything a scheduler reads is short and is never cut: status, scheduling class, precedence, the
+waiting-reason lines, and the `auth_outage_*` / `spot_hold_*` / `spot_pause_*` metadata keys.
 
 Note the corollary for
 anything calling `action_session` with `follow_up`: a follow-up issued over this API is

@@ -91,7 +91,8 @@ module Supervisor
       }
 
       assert_equal "Tadas is master", @tadas.reload.notes
-      described = SessionHumanMessages.new(session).described_authors(limit: 25)
+      record = SessionHumanMessages.new(session)
+      described = record.described_among(record.entries)
       assert_equal [ "Tadas is master" ], described.map(&:author_notes)
     end
 

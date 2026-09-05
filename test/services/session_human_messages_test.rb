@@ -140,7 +140,8 @@ class SessionHumanMessagesTest < ActiveSupport::TestCase
     session = create_session
     add_message(session, content: "ship it")
 
-    described = SessionHumanMessages.new(session).described_authors(limit: 25)
+    record = SessionHumanMessages.new(session)
+    described = record.described_among(record.entries)
 
     assert_equal [ "tadasant" ], described.map(&:author)
     assert_equal [ "Tadas is master" ], described.map(&:author_notes)
@@ -152,7 +153,8 @@ class SessionHumanMessagesTest < ActiveSupport::TestCase
     add_message(session, content: "first", at: 2.minutes.ago)
     add_message(session, content: "second", at: 1.minute.ago)
 
-    assert_equal 1, SessionHumanMessages.new(session).described_authors(limit: 25).size
+    record = SessionHumanMessages.new(session)
+    assert_equal 1, record.described_among(record.entries).size
   end
 
   test "an empty notes column describes nobody" do
@@ -160,7 +162,8 @@ class SessionHumanMessagesTest < ActiveSupport::TestCase
     session = create_session
     add_message(session, content: "the rest should all be actioned", author: "juliehazz")
 
-    assert_empty SessionHumanMessages.new(session).described_authors(limit: 25)
+    record = SessionHumanMessages.new(session)
+    assert_empty record.described_among(record.entries)
   end
 
   test "only the humans who actually spoke are described" do
@@ -169,19 +172,21 @@ class SessionHumanMessagesTest < ActiveSupport::TestCase
     session = create_session
     add_message(session, content: "ship it", author: "tadasant")
 
-    described = SessionHumanMessages.new(session).described_authors(limit: 25)
+    record = SessionHumanMessages.new(session)
+    described = record.described_among(record.entries)
 
     assert_equal [ "tadasant" ], described.map(&:author)
   end
 
-  test "described_authors respects the cap the renderer shows" do
+  test "described_among describes only the entries the renderer showed" do
     users(:tadasant).update!(notes: "Tadas is master")
     users(:juliehazz).update!(notes: "Julie is the other human")
     session = create_session
     add_message(session, content: "the old one", author: "juliehazz", at: 2.hours.ago)
     add_message(session, content: "the shown one", author: "tadasant", at: 1.hour.ago)
 
-    described = SessionHumanMessages.new(session).described_authors(limit: 1)
+    record = SessionHumanMessages.new(session)
+    described = record.described_among(record.entries.last(1))
 
     assert_equal [ "tadasant" ], described.map(&:author)
   end

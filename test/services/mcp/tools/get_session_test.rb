@@ -485,4 +485,164 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_includes output, "**Also on the record, and not why it is waiting now:** an auth-outage park " \
                             "(`quota_exhausted`)"
   end
+  # ==========================================================================
+  # Payload size: what the default cuts, and how it says so (#652)
+  # ==========================================================================
+
+  # The whole point of the default. Everything a fleet-maintenance skill reads to
+  # classify a waiting session is short, and none of it is behind `verbose`.
+  test "the scheduling fields a classifier reads are never cut" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, prompt: "p" * 40_000, metadata: {
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => "2026-08-22T16:59:15Z",
+      "active_follow_up_prompt" => "f" * 40_000
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Status:** waiting"
+    assert_includes output, "- **Scheduling class:** spot"
+    assert_includes output, "- **Precedence:** #{session.precedence}"
+    assert_includes output, "- **Parked for an auth outage (`quota_exhausted`):**"
+    assert_includes output, "- **Parked at:** 2026-08-22T16:59:15Z"
+    assert_includes output, '"auth_outage_reason": "quota_exhausted"'
+    assert output.length < 8_000, "classification read should be small, was #{output.length}"
+  end
+
+  test "a long prompt is cut to the documented budget and says how long it really is" do
+    session = sessions(:running)
+    session.update!(prompt: "p" * 40_000)
+    limit = Mcp::Tools::GetSession::MAX_PROMPT_CHARS
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "#{'p' * limit}..."
+    assert_not_includes output, "p" * (limit + 1)
+    assert_includes output, "_Truncated: 1,000 of 40,000 characters shown. Pass `verbose: true` for the whole prompt._"
+  end
+
+  test "a short prompt is rendered whole with no truncation marker" do
+    session = sessions(:running)
+    session.update!(prompt: "ship it")
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "### Current Prompt\n```\nship it\n```"
+    assert_not_includes output, "Truncated:"
+  end
+
+  test "verbose returns the prompt in full" do
+    session = sessions(:running)
+    session.update!(prompt: "p" * 40_000)
+
+    output = @tool.call("id" => session.id, "verbose" => true)
+
+    assert_includes output, "p" * 40_000
+    assert_not_includes output, "Truncated:"
+  end
+
+  # Keys and structure are what a caller greps; only the values that are whole
+  # prompts get cut, and each says so where it was cut.
+  test "long metadata values are cut in place while every key survives" do
+    session = sessions(:running)
+    session.update!(metadata: {
+      "spot_hold_reason" => "fleet_at_cap",
+      "active_follow_up_prompt" => "f" * 9_000,
+      "nested" => { "deep_prompt" => "d" * 9_000 }
+    })
+    limit = Mcp::Tools::GetSession::MAX_METADATA_VALUE_CHARS
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, '"spot_hold_reason": "fleet_at_cap"'
+    assert_includes output, '"active_follow_up_prompt"'
+    assert_includes output, '"deep_prompt"'
+    assert_includes output, "... [cut: 300 of 9,000 characters shown]"
+    assert_includes output, "2 string values longer than #{limit} characters were cut"
+    assert_not_includes output, "f" * (limit + 1)
+  end
+
+  test "verbose returns the metadata JSON as stored" do
+    session = sessions(:running)
+    session.update!(metadata: { "active_follow_up_prompt" => "f" * 9_000 })
+
+    output = @tool.call("id" => session.id, "verbose" => true)
+
+    assert_includes output, "f" * 9_000
+    assert_not_includes output, "[cut:"
+  end
+
+  # The constraint the issue gate wrote down. The record may be summarised; it
+  # may not be shortened in a way a reader cannot detect, because a gate reads it
+  # to decide whether a human asked for something and is required to hold rather
+  # than guess when it cannot tell.
+  test "the human-message summary is self-describing rather than silently cut" do
+    router = Session.create!(title: "Route it", prompt: "route", agent_runtime: "claude_code",
+                             git_root: "https://github.com/test/repo.git")
+    worker = Session.create!(title: "Do it", prompt: "do", agent_runtime: "claude_code",
+                             git_root: "https://github.com/test/repo.git", parent_session_id: router.id)
+    HumanMessage.create!(session: worker, author: "tadasant", channel: HumanMessage::WEB_UI,
+                         content: "h" * 4_000, occurred_at: 1.hour.ago)
+    12.times do |i|
+      HumanMessage.create!(session: router, author: "tadasant", channel: HumanMessage::WEB_UI,
+                           content: "elsewhere #{i}", occurred_at: (50 - i).minutes.ago)
+    end
+    limit = Mcp::ProvenanceSections::SUMMARY_CONTENT_LIMIT
+    per_origin = Mcp::ProvenanceSections::SUMMARY_ENTRIES_PER_ORIGIN
+
+    output = @tool.call("id" => worker.id)
+
+    # The counts are of the whole record, not of what was rendered.
+    assert_includes output, "- **Authored in this session:** 1"
+    assert_includes output, "- **Elsewhere in the hierarchy:** 12"
+    # It says it is a summary, what it listed, and what it left out.
+    assert_includes output, "**This is a summary of the record, not the record.**"
+    assert_includes output, "Listed: the newest 1 of 1 authored HERE, and the newest #{per_origin} of 12 " \
+                            "authored elsewhere — #{per_origin + 1} of 13 entries."
+    assert_includes output, "_#{12 - per_origin} older entries not shown here"
+    # And every cut entry carries its own real length and the call that undoes it.
+    assert_includes output, "_Truncated: #{limit} of 4,000 characters shown. Full text: " \
+                            "`get_session_provenance` on this session, or `get_session` with `verbose: true`._"
+    assert_not_includes output, "h" * (limit + 1)
+  end
+
+  # The `here` half is what answers "did a human ask THIS session for this?", so
+  # a chatty hierarchy must not push it off the list.
+  test "every here entry is listed even when the hierarchy is full of elsewhere ones" do
+    router = Session.create!(title: "Route it", prompt: "route", agent_runtime: "claude_code",
+                             git_root: "https://github.com/test/repo.git")
+    worker = Session.create!(title: "Do it", prompt: "do", agent_runtime: "claude_code",
+                             git_root: "https://github.com/test/repo.git", parent_session_id: router.id)
+    30.times do |i|
+      HumanMessage.create!(session: router, author: "tadasant", channel: HumanMessage::WEB_UI,
+                           content: "elsewhere #{i}", occurred_at: (90 - i).minutes.ago)
+    end
+    HumanMessage.create!(session: worker, author: "tadasant", channel: HumanMessage::WEB_UI,
+                         content: "the ask made here", occurred_at: 90.minutes.ago)
+
+    output = @tool.call("id" => worker.id)
+
+    assert_includes output, "the ask made here"
+    assert_includes output, "Listed: the newest 1 of 1 authored HERE"
+  end
+
+  # An empty record is a meaningful answer and must not read like a cut one.
+  test "an empty record still says it is empty and claims no summary" do
+    output = @tool.call("id" => sessions(:running).id)
+
+    assert_includes output, "_No message anywhere in this hierarchy was authored by a named human._"
+    assert_not_includes output, "summary of the record"
+  end
+
+  # And a record that fits says so, so "complete" and "cut" are never guessed at.
+  test "a record that fits the budget is declared complete" do
+    HumanMessage.create!(session: sessions(:running), author: "tadasant", channel: HumanMessage::WEB_UI,
+                         content: "ship it", occurred_at: 1.hour.ago)
+
+    output = @tool.call("id" => sessions(:running).id)
+
+    assert_includes output, "- **Complete:** every entry in this record is listed below, in full."
+    assert_not_includes output, "summary of the record"
+  end
 end
