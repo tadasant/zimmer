@@ -175,8 +175,10 @@ transition, and it does nine things beyond changing status:
    sleep was deferred to here; now it fires.
 9. `drain_enqueued_messages_after_pause` — if the session is coming to rest with a message still
    queued for it, schedule the delivery. See [below](#a-session-does-not-idle-on-its-own-queue).
-   Runs last, and after `execute_pending_sleep`, so it reads the state the sleep left behind: a
-   session that just went dormant is asleep with a wake armed, not idling.
+   Runs last, and after `execute_pending_sleep`, so it reads the state the sleep left behind. It
+   does not *stop* at a sleep: `waiting` is a resting state a queued message is owed delivery in
+   too, and which populations of `waiting` genuinely cannot take one is
+   `EnqueuedMessageDrainJob`'s call to make under its own re-read.
 
 Steps 3–7 are skipped for one kind of session: a **status-summary fork**, which is Zimmer's own
 throwaway (marked in metadata by `SessionStatusSummaryGenerator::FORK_MARKER`). Its pause means its
@@ -260,13 +262,22 @@ The make-good is `SessionContinuation`'s give-up branch, one line above the defe
 
 #### A session does not idle on its own queue
 
-`needs_input` and `archived` are the two states in which a session stops draining its queue, and
-the same invariant covers both: **a session must not come to rest with a message still queued for
-it.** What differs is what can be done about it. Archiving ends every delivery path, so the honest
-answers there are to refuse the transition and to record the discard —
-[below](#archiving-retires-the-message-queue). `needs_input` ends nothing. An idle session is
-precisely the condition a queued message is waiting for, so the answer here is to deliver it and
-keep running.
+`needs_input`, `waiting` and `archived` are the states in which a session stops draining its queue,
+and the same invariant covers all three: **a session must not come to rest with a message still
+queued for it.** What differs is what can be done about it. Archiving ends every delivery path, so
+the honest answers there are to refuse the transition and to record the discard —
+[below](#archiving-retires-the-message-queue). The two resting states end nothing. An idle session
+is precisely the condition a queued message is waiting for, so the answer there is to deliver it
+and keep running.
+
+**Both resting states count, not just `needs_input`.** That was the gap behind
+[#566](https://github.com/tadasant/zimmer/issues/566). The three create surfaces all promise the
+caller delivery *"when the session becomes idle"*, and a session resting in `waiting` — asleep on
+an `open-pr` self-wake, slept by `action_session sleep`, resting after a park — already is. Nothing
+was scheduled to come back for those rows at all: a `GitHubPullRequestPollerJob` merged-PR notice
+was queued onto session 6377 at `22:56Z`, and was still `pending` when `Sessions::ArchiveGuard`
+named it five hours and nine minutes later. `Session#idle_for_queued_delivery?` is the one predicate
+both schedulers read, and it is `needs_input? || waiting?`.
 
 Most of that already happened before this transition. `AgentSessionJob` drains the queue at each
 of its four turn-end paths and does it **before** calling `pause!`, so the session hands the turn
@@ -307,7 +318,7 @@ message back to `pending`. Concurrency is already the service's job: the claim i
 SKIP LOCKED` on the row plus a `lock!` on the session, and `AgentSessionJob`'s end-of-turn drain
 calls it bare for the same reason.
 
-The job refuses to deliver in three states, because in each the session genuinely cannot take a
+The job refuses to deliver in six states, because in each the session genuinely cannot take a
 message and delivering would make things worse:
 
 | State | Why not |
@@ -315,6 +326,19 @@ message and delivering would make things worse:
 | Blocked on an MCP elicitation | The agent process is still alive. Resuming spawns a second process against one clone and orphans the round-trip. |
 | Parked by `AuthOutageParkService` (`auth_outage_reason`) | A fresh turn hits the same quota or auth wall, burns the message, and parks again. `AgentSessionJob`'s own drain reads the same marker. |
 | `paused_by: "mcp_retry"` | A retry carrying the original prompt is already scheduled; delivering now races it into the same failing MCP server. |
+| `waiting` and never started (`never_ran?`) | A follow-up prompt into a session with no runtime session id is reclassified by `AgentSessionJob` as a **fresh start**, which runs the session's own prompt and *discards* the follow-up — so "delivering" would destroy the message. It goes out on the end-of-turn drain of the first turn instead. |
+| `waiting` and held at the spot gate (`SpotSessionHold.held?`) | `SpotSessionHold` refuses the turn at the door and re-queues it as a fresh row, so a drain would churn the message's position and origin on every pass. The gate's own re-check is already the thing that will run it. |
+| `waiting` and paused in the spot queue (`SpotSessionPause.paused?`) | Same gate, resumed by `SpotCeilingSweepJob` rather than by a re-check. |
+
+The last three are the `waiting`-only ones, and one candidate is deliberately **not** among them: a
+session dormant on its own armed wake-up (`paused_until_scheduled_time?`). That is the case the
+whole invariant is about — the `open-pr` skill has a session sleep on a bounded self-wake so it
+does not occupy the human's action queue while its PR is rated, and the merged-PR notice is *queued*
+rather than sent precisely because that session is `waiting`. The notice is what the session is
+asleep waiting for, so consuming the wake to deliver it is the point rather than a cost.
+`EnqueuedMessage#stale?` is what keeps that honest: a notice whose subject moved on while it sat in
+the queue is retired rather than delivered, so a wake is only ever spent on a message that still
+says something.
 
 **The dead-process case.** A drain does not need the old agent process — it enqueues a fresh
 `AgentSessionJob` that resumes the runtime session from `session_id` and the working directory,
@@ -336,6 +360,45 @@ One consequence worth naming: a *user-initiated* pause on a session with a queue
 within seconds. That is the invariant working as stated rather than an oversight — the queued
 message is input the user was told would be delivered, and pausing the current turn is not the
 same as withdrawing it. To stop it, delete the queued message.
+
+#### A queued message outranks an injected recovery nudge
+
+The drain triggers above cover a message that arrives while the session is at rest. The opposite
+ordering is a separate window, and it is the other half of
+[#566](https://github.com/tadasant/zimmer/issues/566): the message was *already* queued, and
+something then resumed the session with an injected `AutomatedPrompts::SYSTEM_RECOVERY` nudge.
+Neither drain trigger can fire for that — a mid-turn kill and resume never produces a transition
+*into* a resting state, and the `after_create_commit` hook ran and correctly declined hours earlier.
+
+Every automated resume in Zimmer ends the same way — `AuthOutageParkService.resume_parked!`,
+`AgentSessionJob#auto_continue_after_interrupt`, `SessionRecoveryService#auto_restart_session`,
+`HealthMonitorService#retry_failed_sessions`, `SessionContinuation`, the `restart` surfaces — all
+of them call `AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)`.
+So the decision lives at that one choke point, in `AgentSessionJob`: if the prompt this turn carries
+is a system-recovery nudge and the session has a pending message, the message takes the turn and the
+nudge is dropped.
+
+`EnqueuedMessageProcessorService` performs the handoff and does it under the locking it already
+owns — the row is claimed `FOR UPDATE SKIP LOCKED`, the session stays `running` (the pre-pause
+handoff path, so there is no `running → needs_input → running` flap), `running_job_id` is released
+and a fresh `AgentSessionJob` is enqueued carrying the message's content and attachments. The
+arriving job stands down. The per-turn markers `pending_follow_up_prompt` /
+`pending_follow_up_sent_at` are dropped **before** the handoff, because the follow-up arm reads
+`pending_follow_up_prompt || follow_up_prompt` — left standing, the job the handoff enqueues would
+find the nudge sitting there and deliver *that* in place of the message that just won the turn.
+
+Scoped to the nudge on purpose. A human follow-up, a trigger prompt, a poller message and a
+restart-with-the-initial-prompt are each somebody saying something specific and newer, and the queue
+drains behind them at the end of the turn as always. The nudge is the one prompt with nothing to add
+over the queue — *"you may have been interrupted, carry on"* — so delivering the queued message
+instead **is** carrying on, with the reason attached. `SessionContinuation` had preferred the queue
+over the nudge on the deployment-recovery path alone since before this; the choke point generalises
+that one path's decision to every path that shares its prompt.
+
+Why it mattered: session 7681 was killed and auto-continued four times in ninety minutes on
+2026-08-23, and a message queued at `13:48Z` was still `pending` at position 1 at `15:19Z`, having
+lost to the nudge on every cycle, while `broadcast_message_count` moved 136 → 284 → 533. A session
+being restarted every few minutes could never drain its queue at all.
 
 ### `resume` — `waiting | needs_input | failed → running`
 
