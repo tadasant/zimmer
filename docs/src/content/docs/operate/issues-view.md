@@ -1,6 +1,6 @@
 ---
 title: The Issues view
-description: The fleet's work backlog joined to live GitHub issue state across six repos — the queue in rank order, a promote button, and a trend chart reconstructed without a snapshot table.
+description: The fleet's work backlog joined to live GitHub issue state across six repos — the queue in rank order, the four human-only queue operations, and a trend chart reconstructed without a snapshot table.
 ---
 
 The [work backlog](/operate/work-backlog/) is what the fleet works from. GitHub is where the work
@@ -61,7 +61,13 @@ trend chart's palette has one slot per repo up to `Issues::Trend::MAX_SERIES` �
 seventh repo would fold the smallest series into the grey `other` bucket unless the palette grows
 with it. A test pins that coupling rather than leaving it to be discovered on the page.
 
-## Promote
+## The four human-only operations
+
+The [work backlog](/operate/work-backlog/#who-may-do-what) has four operations no agent may take —
+**promote**, **pin**, **unpin** and **remove** — and every queued row on this page carries all four.
+This is the form they are the form for: without it the only way to pull three of those levers is a
+`curl` against the REST API with the key the whole agent fleet shares, which puts them back on the
+surface they were deliberately kept off.
 
 **Promote** starts one queued item as a `priority` session immediately: the same
 `WorkBacklog::Start` the groomer's pull calls, at `priority` instead of `spot`, spawning a
@@ -70,19 +76,41 @@ session is created and the item marked `started` in one transaction under the ra
 click that races a pull cannot start the same item twice — the second one is told the item is no
 longer queued and nothing is spawned.
 
-The button posts to `WorkBacklogPromotionsController`, which is an `ApplicationController`
-descendant. That is the point: `Api::V1::WorkBacklogItemsController#start_now` does the same thing,
-but `Api::BaseController` authenticates an API key the whole agent fleet shares, so a form posting
-there would put the human's lever back within reach of the thing it is being kept from. Promoting,
-pinning and removing have no MCP tool for the same reason.
+**Pin** hand-places the item at a precedence you type, and **Unpin** releases it. A pinned item is
+never re-banded, renumbered or un-pinned by an agent, and it is excluded from every peer set, so one
+hand-placement cannot drag future appends down with it — it may sit anywhere, including outside the
+band its cost implies. The field is seeded with the row's current precedence, and its tooltip carries
+the [band boundaries](/operate/work-backlog/#ranking). Unpinning re-ranks the item back inside its
+band. A pinned row shows **Unpin** and no precedence field; move a pinned item by unpinning it and
+pinning it again.
+
+**Remove** takes the item off the queue with a free-text reason. This is the *discretionary* removal —
+`WorkBacklog::Pull` already removes items an agent can observe are dead, with a reason drawn from a
+fixed vocabulary, but only when the groomer reaches them, so an item near the bottom of the queue
+whose issue closed months ago can sit there indefinitely. The row is not deleted: it stays as
+history with the reason and who. Because it is the one control with no visible undo, the
+confirmation names the key it is about to remove and the flash names the key it removed — and when
+GitHub says the issue is closed, the reason field arrives pre-filled with `issue_closed`, the same
+word the pull would eventually have used.
+
+All three writes go through `WorkBacklog::Ranking`'s advisory lock and re-rank, exactly as the REST
+actions do; nothing here reimplements the ranking.
+
+The controls post to `WorkBacklogPromotionsController`, `WorkBacklogPinsController` and
+`WorkBacklogRemovalsController`, all `ApplicationController` descendants. That is the point:
+`Api::V1::WorkBacklogItemsController` does the same four things, but `Api::BaseController`
+authenticates an API key the whole agent fleet shares, so a form posting there would put the human's
+levers back within reach of the thing they are being kept from. None of the four has an MCP tool, for
+the same reason, and `mcp_controller_test` asserts that no tool on any connection appears.
 
 :::caution[This is not an authenticated human]
 Zimmer's browser surface authenticates nobody — the perimeter is the tailnet, and agent sessions run
 inside it ([#371](https://github.com/tadasant/zimmer/issues/371),
-[#220](https://github.com/tadasant/zimmer/issues/220)). This boundary rules out a promote over the
-shared API key, on the REST and MCP surfaces a session is actually offered. It does not rule out an
-agent that goes looking for the route; CSRF means it would have to fetch a token off a Zimmer page
-first, which is a speed bump, not a boundary. The page says so where the button is.
+[#220](https://github.com/tadasant/zimmer/issues/220)). This boundary rules out a promote, pin, unpin
+or remove over the shared API key, on the REST and MCP surfaces a session is actually offered. It
+does not rule out an agent that goes looking for the route; CSRF means it would have to fetch a token
+off a Zimmer page first, which is a speed bump, not a boundary. The page says so where the controls
+are.
 :::
 
 ## Where "convergent" and "divergent" come from
@@ -160,8 +188,8 @@ never look like.
 
 ## What has no MCP counterpart, and why
 
-`get_work_backlog` already answers the queue half of this page, and the human-only operations
-(`start_now`, `pin`, `unpin`, `remove`) are REST-and-browser only
+`get_work_backlog` already answers the queue half of this page, and the four human-only operations
+(`start_now`/promote, `pin`, `unpin`, `remove`) are REST-and-browser only
 [on purpose](/operate/work-backlog/#who-may-do-what). The GitHub-joined view — the trend series, the
 direction chain, the loose-issue list — has **no MCP tool and is not getting one**: an agent that
 wants GitHub issue state has `gh` and the GitHub MCP servers already, and a Zimmer tool that

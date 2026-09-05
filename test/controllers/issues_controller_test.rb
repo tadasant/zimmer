@@ -38,6 +38,80 @@ class IssuesControllerTest < ActionDispatch::IntegrationTest
     assert_select "form[action=?]", promote_work_backlog_item_path(WorkBacklogItem.find_by(key: "zimmer#1"), kind: "bug", window: 90, segment: "repo")
   end
 
+  test "every queued row carries all four human-only operations, each wired to its own row" do
+    first = backlog_item(key: "zimmer#498", title: "First", precedence: 6000)
+    second = backlog_item(key: "zimmer#499", title: "Second", precedence: 5990)
+
+    with_github_snapshot(github_snapshot) { get issues_path }
+
+    assert_response :success
+    [ first, second ].each do |item|
+      assert_select "form[action=?][method=post]", promote_work_backlog_item_path(item)
+      assert_select "form[action=?][method=post]", pin_work_backlog_item_path(item)
+      assert_select "form[action=?][method=post]", remove_work_backlog_item_path(item)
+    end
+
+    # THE WRONG-ROW ASSERTION, on the page rather than in the controller: each
+    # row's remove form posts to that row's id and its confirmation names that
+    # row's key, so a partial rendered with the wrong `row` is caught here.
+    assert_select "form[action=?]", remove_work_backlog_item_path(second) do
+      assert_select "[data-turbo-confirm*=?]", "zimmer#499"
+      assert_select "input[name=reason]"
+    end
+    assert_select "form[action=?]", remove_work_backlog_item_path(first) do
+      assert_select "[data-turbo-confirm*=?]", "zimmer#498"
+    end
+
+    # The pin field is seeded with the row's own current precedence.
+    assert_select "form[action=?]", pin_work_backlog_item_path(first) do
+      assert_select "input[name=precedence][value=?]", "6000"
+    end
+    assert_select "form[action=?]", pin_work_backlog_item_path(second) do
+      assert_select "input[name=precedence][value=?]", "5990"
+    end
+  end
+
+  test "a pinned row offers unpin instead of a precedence field" do
+    pinned = backlog_item(key: "zimmer#498", pinned: true, precedence: 9000)
+
+    with_github_snapshot(github_snapshot) { get issues_path }
+
+    # Pin and unpin share a path and differ by verb, so the assertion that a
+    # pinned row offers only the release is about the method and the field, not
+    # the action.
+    assert_select "form[action=?]", unpin_work_backlog_item_path(pinned) do
+      assert_select "input[name=_method][value=delete]"
+      assert_select "button", text: "Unpin"
+    end
+    assert_select "input[name=precedence]", count: 0,
+                  message: "a pinned row does not also offer a precedence field"
+  end
+
+  test "a queued item whose issue GitHub says is closed pre-fills the removal reason" do
+    open_item = backlog_item(key: "zimmer#498", issue_url: url(498))
+    closed_item = backlog_item(key: "zimmer#499", issue_url: url(499))
+
+    snapshot = github_snapshot(issues: [ github_issue(number: 498), github_issue(number: 499, state: "closed") ])
+    with_github_snapshot(snapshot) { get issues_path }
+
+    assert_select "form[action=?]", remove_work_backlog_item_path(closed_item) do
+      assert_select "input[name=reason][value=?]", WorkBacklogItem::ISSUE_CLOSED_REASON
+    end
+    assert_select "form[action=?]", remove_work_backlog_item_path(open_item) do
+      assert_select "input[name=reason][value]", count: 0, message: "an open issue's reason field starts blank"
+    end
+  end
+
+  test "the filters are round-tripped into the pin and remove controls too" do
+    item = backlog_item(key: "zimmer#1", title: "A bug", kind: "bug")
+    view = { kind: "bug", window: 90, segment: "repo" }
+
+    with_github_snapshot(github_snapshot) { get issues_path(**view) }
+
+    assert_select "form[action=?]", pin_work_backlog_item_path(item, **view)
+    assert_select "form[action=?]", remove_work_backlog_item_path(item, **view)
+  end
+
   test "a filter the queue cannot honour is said out loud rather than silently widened" do
     backlog_item(key: "zimmer#1", title: "Still here")
 
