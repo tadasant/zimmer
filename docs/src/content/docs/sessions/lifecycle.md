@@ -843,8 +843,9 @@ at first start, and the PR sat with no gate on it for eleven hours — the trigg
 the fire, the PR showed a clean label and no comment, and no alert fired anywhere
 ([#632](https://github.com/tadasant/zimmer/issues/632)).
 
-`OrphanedTriggerFire` closes that. When a failing session carries `metadata.trigger_id`, `fail`
-enqueues `OrphanedTriggerFireJob`, which:
+`OrphanedTriggerFire` closes that. When a failing session's `genesis` is one whose fire is genuinely
+*consumed* — `github_label`, `github_issue`, `slack` or `ao_event` — and it carries a `trigger_id`,
+`fail` enqueues `OrphanedTriggerFireJob`, which:
 
 - writes an ERROR line on the session's own timeline saying the fire is spent and its subject has
   nobody on it, and
@@ -852,6 +853,16 @@ enqueues `OrphanedTriggerFireJob`, which:
   summary *and* the raw `exit_status`, because for this failure only the latter says "Runtime
   session id … is already in use"), and the GitHub PR or issue if one can be found in the prompt
   the fire carried.
+
+`metadata.trigger_id` alone would be too wide, because a trigger creates sessions on paths where a
+retry *is* coming or a human is already watching, and telling either of those that "no retry is
+coming" would be false. A **recurring `schedule`** re-fires on its next interval and a
+**`system_event`** is re-armed when nothing handles it; a **manual Invoke**
+(`Triggers::ManualFire`, from the web UI, REST or MCP `action_trigger`) is somebody pressing a
+button and watching the session they just made; a **burst-notice session** is not a work item at
+all. `Session#genesis` is stamped at creation and is exactly that distinction, so the population is
+keyed on it, plus the `burst_notice` marker. One gap is knowingly left — see
+[Limitations](/limitations/#a-dropped-trigger-work-item-is-surfaced-not-re-dispatched).
 
 Three things it deliberately does not do:
 
@@ -868,10 +879,13 @@ Three things it deliberately does not do:
 - **It does not collapse two drops into one message.** Unlike `UnclassifiedFailureReporter`, where
   N sessions hitting one unknown failure mode are one fact, N orphaned fires are N distinct work
   items each needing its own re-dispatch. The dedup key is per session, and the bound on noise is
-  instead that each session reports at most once: `orphaned_trigger_fire_reported_at` is stamped
-  *before* the Slack round trip, so a retried job cannot double-page. That key is in
-  `Session::STALE_RETRY_METADATA_KEYS`, so a session genuinely restarted and failed again reports
-  again.
+  instead that each session reports at most once: `orphaned_trigger_fire_reported_at` is checked on
+  entry, and that key is in `Session::STALE_RETRY_METADATA_KEYS`, so a session genuinely restarted
+  and failed again reports again. The stamp goes down **after** the report rather than before —
+  stamping first would turn a Slack outage, or a deploy landing in the window, into a permanent
+  silent drop, which is this bug reintroduced inside its own fix. The cost of that order is that a
+  retried job writes a second identical timeline line; the Slack side is covered by the per-session
+  dedup key.
 
 The **start failure** itself is a separate matter and has its own owner —
 [#519](https://github.com/tadasant/zimmer/issues/519), fixed by

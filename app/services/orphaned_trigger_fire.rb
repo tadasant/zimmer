@@ -42,6 +42,29 @@
 # find one in the prompt the fire carried — the GitHub subject, so the next actor
 # re-dispatches deliberately, in minutes rather than in hours.
 #
+# == Which failures this is about
+#
+# Only the fires that are genuinely *consumed*. `metadata.trigger_id` alone is
+# too wide, because a trigger creates sessions on paths where a retry IS coming
+# or a human is already watching, and telling either of those that "no retry is
+# coming" would be false:
+#
+#   - A **recurring `schedule`** re-fires on its next interval, and a
+#     **`system_event`** is re-armed when nothing handles it. Both heal
+#     themselves.
+#   - A **manual Invoke** (`Triggers::ManualFire`, from the web UI, the REST API
+#     or MCP `action_trigger`) is somebody pressing a button and watching the
+#     session they just made.
+#   - A **burst-notice session** is not a work item at all — it exists to say
+#     the trigger is bursting.
+#
+# So the population is keyed on `Session#genesis`, which is stamped at creation
+# and is exactly this distinction, plus the `burst_notice` marker. One gap is
+# knowingly left: a **one-time** `schedule` whose fire succeeded and whose
+# session then died is a real orphan that this does not report, because telling
+# it apart from a recurring one costs a condition lookup inside a state
+# transition. See docs/limitations.md.
+#
 # == Noise budget
 #
 # One alert per orphaned session, and deliberately not the choice
@@ -52,21 +75,52 @@
 # exists to remove.
 #
 # The bound is that each session reports at most once — {REPORTED_AT_KEY} is
-# written before the alert and checked before the work — so a wave costs one
-# message per dropped item once, not one per item per hour forever. The key is in
-# `Session::STALE_RETRY_METADATA_KEYS`, so a session that is genuinely restarted
-# and fails again reports again.
+# checked on entry — so a wave costs one message per dropped item once, not one
+# per item per hour forever. The key is in `Session::STALE_RETRY_METADATA_KEYS`,
+# so a session that is genuinely restarted and fails again reports again.
+#
+# The stamp goes down **after** the report, not before. Stamping first would make
+# a Slack outage, or a deploy landing in the window, a permanent silent drop —
+# which is the exact bug this service exists to remove, reintroduced inside the
+# fix. The cost of the other order is that a job retried over a half-finished
+# report writes a second identical timeline line; the Slack side is covered by
+# the per-session `dedup_key` inside `AlertService::DEDUP_WINDOW`.
 class OrphanedTriggerFire
   # Written on the session when its orphaned fire has been reported. Doubles as
   # the in-app record: the row itself says the drop was announced, so the fact
   # does not live only in a Slack channel.
   REPORTED_AT_KEY = "orphaned_trigger_fire_reported_at"
 
-  # The GitHub item a fire was about, as it appears in the prompt the poller
-  # built (`context_block`) or in a template that interpolated it. Best-effort
-  # and never load-bearing: a fire with no GitHub subject — a schedule, a Slack
-  # message, an `ao_event` — simply reports without one.
+  # The genesis kinds whose fire is CONSUMED by the session carrying it, so a
+  # failure really does drop the work item. See "Which failures this is about"
+  # above for what each exclusion is protecting, and why the discriminator is
+  # `genesis` rather than the presence of `trigger_id`.
+  CONSUMED_EVENT_GENESES = [
+    SessionGenesis::GITHUB_LABEL,
+    SessionGenesis::GITHUB_ISSUE,
+    SessionGenesis::SLACK,
+    SessionGenesis::AO_EVENT
+  ].freeze
+
+  # The GitHub item a fire was about. Best-effort and never load-bearing: a fire
+  # with no GitHub subject — a Slack message, an `ao_event` — simply reports
+  # without one.
   SUBJECT_URL_PATTERN = %r{https://github\.com/[\w.-]+/[\w.-]+/(?:pull|issues)/\d+}
+
+  # The same URL, but in the line `GithubTriggerPollerJob#context_block` writes.
+  # Preferred over a bare scan of the prompt because the poller appends that
+  # block AFTER the operator's interpolated template, and the template can carry
+  # `{{text}}` — the issue or PR body, which anyone who can file an issue writes.
+  # A bare first match would let them name a repository of their choosing as the
+  # dropped subject.
+  CONTEXT_BLOCK_URL_PATTERN = /^- \*\*URL:\*\*\s*(#{SUBJECT_URL_PATTERN})/
+
+  # Upper bound on the rendered failure reason. `exit_status` is built from an
+  # arbitrary-length runtime error string (`AgentSessionJob` caps it at 20_000
+  # chars), and `AlertService` clamps the whole details block at 2_800 — so an
+  # unbounded reason would push the "View session" and "View trigger" links off
+  # the end of the very message whose job is to get somebody to them.
+  FAILURE_PHRASE_MAX_CHARS = 500
 
   class << self
     # Whether this session's failure leaves a trigger's work item dropped.
@@ -85,6 +139,8 @@ class OrphanedTriggerFire
     def candidate?(session)
       return false if session.nil?
       return false unless session.failed?
+      return false unless CONSUMED_EVENT_GENESES.include?(session.genesis)
+      return false if session.metadata&.dig("burst_notice").present?
 
       session.metadata&.dig("trigger_id").present?
     end
@@ -95,24 +151,28 @@ class OrphanedTriggerFire
     # for the failure to blow up — the same self-guard `UnclassifiedFailureReporter`
     # and `SessionStateMachine#report_swallowed_side_effect` carry.
     #
+    # Re-reads the row before deciding, so a recovery between the enqueue and the
+    # run is seen. That discards unsaved in-memory changes on the object passed
+    # in, which is why the only caller hands it a freshly loaded one.
+    #
     # @param session [Session, nil] the failed trigger-originated session
     # @return [Boolean] whether an alert was raised
     def report!(session)
-      return false unless candidate?(session)
+      return false if session.nil?
 
       session.reload
       return false unless candidate?(session)
       return false if session.metadata&.dig(REPORTED_AT_KEY).present?
 
-      # Stamped BEFORE the alert. The alert is a network round trip that can hang
-      # or fail, and a job retried over a half-finished report must not send the
-      # same drop twice — an unreported drop is recovered by the next genuine
-      # failure, a doubled one costs a human the trust in the channel.
-      session.merge_metadata!(REPORTED_AT_KEY => Time.current.utc.iso8601)
-
       trigger = Trigger.find_by(id: session.metadata["trigger_id"])
       record_on_session(session, trigger)
-      raise_alert(session, trigger)
+      alerted = raise_alert(session, trigger)
+
+      # Stamped AFTER the report, so a failure on the way here leaves the session
+      # eligible rather than marked-as-reported over a message nobody got. See
+      # "Noise budget" above for the trade this makes with a retried job.
+      session.merge_metadata!(REPORTED_AT_KEY => Time.current.utc.iso8601)
+      alerted
     rescue => e
       Rails.logger.error(
         "[OrphanedTriggerFire] Could not report the orphaned fire on session #{session&.id}: " \
@@ -129,11 +189,11 @@ class OrphanedTriggerFire
     def record_on_session(session, trigger)
       session.logs.create!(
         level: "error",
-        content: "This session was created by #{trigger_label(session, trigger)} and failed before " \
-                 "handing its work back. The fire that created it is spent — a label is seen, a " \
-                 "cursor has moved, a wake is consumed — so nothing will create a replacement, and " \
-                 "#{subject_phrase(session)} now has nobody on it. Zimmer raised an alert; " \
-                 "re-dispatch it deliberately if it is still wanted."
+        content: "This session was created by #{trigger_label(session, trigger)}, and it has failed. " \
+                 "The fire that created it is spent — a label is seen, a cursor has moved, a wake is " \
+                 "consumed — so nothing will create a replacement, and #{subject_phrase(session)} now " \
+                 "has nobody on it. Zimmer raised an alert; re-dispatch it deliberately if it is " \
+                 "still wanted."
       )
     rescue => e
       # The alert is the point; a timeline write that fails must not take it down.
@@ -153,8 +213,8 @@ class OrphanedTriggerFire
 
     def alert_details(session, trigger)
       lines = []
-      lines << "The fire from #{trigger_label(session, trigger)} is spent, and the session it " \
-               "created failed without doing the work."
+      lines << "The fire from #{trigger_label(session, trigger)} is spent, and the session carrying " \
+               "it has failed."
       lines << ""
       lines << "*Subject:* #{subject_phrase(session)}"
       lines << "*Why it failed:* #{failure_phrase(session)}"
@@ -184,21 +244,26 @@ class OrphanedTriggerFire
     end
 
     def subject_url(session)
-      session.prompt.to_s[SUBJECT_URL_PATTERN]
+      text = session.prompt.to_s
+      text[CONTEXT_BLOCK_URL_PATTERN, 1] || text[SUBJECT_URL_PATTERN]
     end
 
-    # The classified summary AND the raw exit status, because for the failure
-    # this exists for they say different things: `failure_summary` renders
-    # `process_failed` as "Process failed", while the sentence a reader needs —
-    # "Runtime session id … is already in use" — is only in `exit_status`.
+    # The classified summary AND the raw runtime text, because they say different
+    # things: `failure_summary` renders `process_failed` as "Process failed",
+    # while the sentence a reader needs — "Runtime session id … is already in
+    # use" — is only in `exit_status`. `exception_message` is the third because a
+    # session that died on an exception records no `exit_status` at all, and the
+    # summary alone renders as the useless bare word "Exception"
+    # (SessionStatusSummaryHarvestJob#failure_reason reads the same three).
     def failure_phrase(session)
       parts = [
         session.failure_summary.presence || session.metadata&.dig("failure_reason").presence,
-        session.metadata&.dig("exit_status").presence
+        session.metadata&.dig("exit_status").presence,
+        session.metadata&.dig("exception_message").presence
       ].compact.uniq
       return "no failure reason was recorded" if parts.empty?
 
-      parts.join(" — ")
+      parts.join(" — ").truncate(FAILURE_PHRASE_MAX_CHARS)
     end
   end
 end

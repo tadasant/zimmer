@@ -2950,6 +2950,16 @@ exempt from `CleanupStaleTriggersJob` and from sibling-wake cleanup, because del
 the bug. One systemic fault — a catalog rename that strands every trigger's agent root — therefore
 parks every pending wake at once and leaves you a list to clear by hand.
 
+### A dropped trigger work item is surfaced, not re-dispatched
+
+A trigger fire is a one-shot event, and the session it creates is the only thing carrying it — the fire is spent the moment that session exists, deliberately, because the alternative is dispatching one event twice. So when that session reaches terminal `failed`, the work item is dropped and nothing will pick it up. Zimmer now says so: `OrphanedTriggerFire` writes an ERROR line on the session's timeline and raises an `#eng-alerts` alert naming the trigger, the session and the GitHub subject ([#632](https://github.com/tadasant/zimmer/issues/632)). It does **not** re-dispatch. The population includes the merge gate — the one mechanism authorized to merge without human sign-off — and the only after-the-fact guard against redoing work already done reads a clone the reaper may already have removed. So the recovery is still a human's or an agent's deliberate re-dispatch; what changed is that it now happens in minutes instead of after eleven hours.
+
+Three shapes of the same drop are not surfaced at all, each for a stated reason:
+
+- A **one-time `schedule`** whose fire succeeded and whose session then died is a real orphan, but the population is keyed on `Session#genesis` so that the predicate costs no query inside the `fail` transition — and a one-time schedule is indistinguishable from a recurring one without loading the trigger's conditions. A recurring schedule is excluded on purpose: its next tick *is* the retry.
+- A trigger's session that is **archived** rather than failed — force-archived by a human, or reaped — loses its work item identically and reports nothing. `archive` is a deliberate act far more often than `fail` is, so reporting on it would page for every tidy-up.
+- A failure that happens while the **alert channel itself** is down is logged by `AlertService` and otherwise lost. The stamp that marks a session as reported is written *after* the post rather than before, so the session stays eligible — but nothing re-runs the job, so in practice the only recovery is the session's timeline entry, which is written first.
+
 ### A stranded sleeper is rescued within ~20 minutes, not immediately
 
 `waiting` is one word for two states: a session resting on a wake it will get, and a session resting
