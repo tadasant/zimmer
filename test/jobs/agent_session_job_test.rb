@@ -1005,7 +1005,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "the session's timeline must say the message was not delivered"
 
     # The human authorizes, and the resume delivers the follow-up — not "Investigate the bug".
-    dead_grant.update!(refresh_token: nil, expires_at: 1.hour.from_now, access_token: "fresh-token")
+    dead_grant.update!(access_token: "fresh-token", expires_at: 1.hour.from_now)
 
     assert_equal :resumed, McpOauthResumeService.new(@session.reload).call
 
@@ -1015,6 +1015,65 @@ class AgentSessionJobTest < ActiveJob::TestCase
       ActiveJob::Arguments.deserialize(enqueued.first["arguments"]),
       "the resume delivers the follow-up, not the session's original prompt"
     assert @session.reload.running?
+  end
+
+  # The other half of #887: a nudge is not a message anybody is waiting on.
+  # HeartbeatSweepJob refuses to stamp its own beat as `pending_follow_up_prompt`
+  # ("a beat for a moment that has already passed"), so the gate must not stamp it
+  # either — a beat resurrected hours later, when a human finally authorizes, is
+  # worse than one not delivered.
+  test "a heartbeat turn blocked on OAuth is not held for the resume to deliver" do
+    server_name = "figma"
+    server_url = "https://mcp.figma.com/mcp"
+    credential_key = McpOauthCredential.compute_credential_key(
+      server_name, { type: "streamable-http", url: server_url }
+    )
+    McpOauthCredential.create!(
+      server_name: server_name,
+      server_url: server_url,
+      credential_key: credential_key,
+      client_id: "test-client",
+      access_token: "stale-access-token",
+      refresh_token: nil,
+      token_endpoint: "https://www.figma.com/api/oauth/token",
+      expires_at: 1.hour.ago
+    )
+
+    clone_path = File.join(@test_tmpdir, "clone-heartbeat-oauth")
+    @session.update!(
+      prompt: "Investigate the bug",
+      session_id: SecureRandom.uuid,
+      status: :running,
+      mcp_servers: [ server_name ],
+      metadata: {
+        "clone_path" => clone_path,
+        "working_directory" => clone_path,
+        "runtime_started" => true
+      }
+    )
+
+    AirPrepareService.any_instance.stubs(:prepare!)
+    AirPrepareService.any_instance.stubs(:injected_mcp_servers).returns([ server_name ])
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.file_system = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+    job.cli_adapter = mock_cli_adapter
+
+    job.file_system.mkdir_p(clone_path)
+    job.file_system.write("#{clone_path}/claude_stderr.log", "")
+
+    job.perform(@session.id, AutomatedPrompts::HEARTBEAT)
+
+    @session.reload
+    assert_equal "failed", @session.status
+    assert_equal "oauth_required", @session.metadata["failure_reason"]
+    assert_nil @session.metadata["pending_follow_up_prompt"],
+      "a heartbeat beat must not be held for later delivery"
+    refute @session.logs.any? { |log| log.content.include?("has NOT been delivered") },
+      "nothing a human is waiting on was dropped, so the session must not say one was"
+    assert_empty mock_cli_adapter.executed_commands
   end
 
   # Regression test for the spawn guard: a non-resume (initial) spawn with a blank
