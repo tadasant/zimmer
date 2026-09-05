@@ -468,6 +468,102 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
     end
   end
 
+  # --- the shared sessions pool (tadasant/zimmer#981) ------------------------
+  #
+  # A per-session bound sums to nothing. Eight sessions each far inside their 4 GiB
+  # reached 8.7 GB between them on 2026-09-05, the container's own 10 GiB cap fired, and
+  # the kernel killed the biggest process in that cgroup -- `bundle exec good_job start`,
+  # the Rails worker running every session on the box.
+
+  # The placement is the fix, and it is what these assertions are really about. A
+  # memory.max on `zimmer.sessions` would cover `zimmer.sessions/app` too, and the kernel
+  # picks its OOM victim by size across the whole subtree of the memcg that declared the
+  # OOM -- so the worker would be back in the victim pool. It has to be one level down.
+  test "the entrypoint caps all sessions together, in a cgroup the app is not inside" do
+    Dir.mktmpdir do |app_home|
+      Dir.mktmpdir do |cgroupfs|
+        fake_cgroupfs(cgroupfs)
+        output, status, stub_log = run_entrypoint(
+          app_home: app_home,
+          env: { "HOME" => "/root", "ZIMMER_SESSIONS_MEMORY_MAX_MB" => "7168" },
+          cgroup_fs_root: cgroupfs
+        )
+        pool = File.join(cgroupfs, "zimmer.sessions", "sessions")
+
+        assert_equal 0, status, output
+        assert File.directory?(pool), "the sessions pool was not created: #{output}"
+        assert_equal (7168 * 1024 * 1024).to_s, File.read(File.join(pool, "memory.max")).strip
+        assert_equal "+memory\n", File.read(File.join(pool, "cgroup.subtree_control")),
+          "without +memory on the pool, a session cgroup inside it has no memory.max to set"
+        refute File.exist?(File.join(cgroupfs, "zimmer.sessions", "memory.max")),
+          "a cap on the delegated parent would cover zimmer.sessions/app, which is the " \
+          "Rails worker -- exactly the placement #981 is about"
+        assert_match(/CHOWN-ARGV .*#{Regexp.escape(pool)}\b/, stub_log,
+          "uid 1000 has to be able to create session cgroups inside the pool")
+      end
+    end
+  end
+
+  # The app needs to create and remove session cgroups in the pool; it does not need to
+  # move the aggregate cap. Leaving memory.max root-owned means the bound cannot be
+  # widened from inside the container -- by the app, or by an agent, which runs as the
+  # same uid -- without a deploy.
+  test "the pool's own memory.max is not handed to uid 1000" do
+    Dir.mktmpdir do |app_home|
+      Dir.mktmpdir do |cgroupfs|
+        fake_cgroupfs(cgroupfs)
+        _output, _status, stub_log = run_entrypoint(
+          app_home: app_home, env: { "HOME" => "/root" }, cgroup_fs_root: cgroupfs
+        )
+
+        refute_match(/CHOWN-ARGV .*memory\.max/, stub_log)
+      end
+    end
+  end
+
+  # The break-glass. Unlike ZIMMER_SESSION_MEMORY_MAX_MB=0, which takes the whole
+  # mechanism out of the spawn path, this leaves the pool in place so per-session bounds
+  # keep working -- there is no `sh` wrapper here for an operator to need rid of.
+  test "zero means no aggregate cap, with per-session bounds left in force" do
+    Dir.mktmpdir do |app_home|
+      Dir.mktmpdir do |cgroupfs|
+        fake_cgroupfs(cgroupfs)
+        output, status = run_entrypoint(
+          app_home: app_home,
+          env: { "HOME" => "/root", "ZIMMER_SESSIONS_MEMORY_MAX_MB" => "0" },
+          cgroup_fs_root: cgroupfs
+        )
+        pool = File.join(cgroupfs, "zimmer.sessions", "sessions")
+
+        assert_equal 0, status, output
+        assert File.directory?(pool), "the pool still has to exist, or no session gets a bound"
+        refute File.exist?(File.join(pool, "memory.max"))
+        assert_match(/no aggregate memory cap/, output)
+      end
+    end
+  end
+
+  # Bash evaluates a non-numeric arithmetic operand as a variable name, which is 0. An
+  # unvalidated value would therefore write `memory.max = 0`: a pool that OOM-kills every
+  # session the instant it allocates, which is far worse than no cap at all.
+  test "an unparseable aggregate cap writes no cap rather than a cap of zero" do
+    Dir.mktmpdir do |app_home|
+      Dir.mktmpdir do |cgroupfs|
+        fake_cgroupfs(cgroupfs)
+        output, status = run_entrypoint(
+          app_home: app_home,
+          env: { "HOME" => "/root", "ZIMMER_SESSIONS_MEMORY_MAX_MB" => "7168MB" },
+          cgroup_fs_root: cgroupfs
+        )
+        max = File.join(cgroupfs, "zimmer.sessions", "sessions", "memory.max")
+
+        assert_equal 0, status, output
+        refute File.exist?(max), "wrote #{File.read(max) if File.exist?(max)} into memory.max"
+        assert_match(/is not a non-negative/, output)
+      end
+    end
+  end
+
   # Every deployment that is not the sysbox worker: read-only cgroupfs under plain runc, no
   # cgroup v2 at all on a dev Mac. The bound is a guardrail, and a guardrail that refuses to
   # boot the container is a worse outage than the one it prevents.

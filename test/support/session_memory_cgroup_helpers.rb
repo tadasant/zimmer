@@ -74,19 +74,23 @@ module SessionMemoryCgroupHelpers
   # a test that wants the bound *unavailable* names that with #without_delegated_cgroup_parent
   # rather than leaving the env unset and inheriting the host's.
   #
-  # @yieldparam parent [String] the delegated parent's path
+  # The yielded path is the POOL — `<root>/sessions` — because that is where session
+  # cgroups live and what every caller asserts about. The root itself holds the pool and
+  # the `app` sibling, and the app never creates anything directly in it.
+  #
+  # @yieldparam pool [String] the path session cgroups are created in
   def with_delegated_cgroup_parent
     Dir.mktmpdir("cgroupfs") do |tmp|
-      parent = File.join(tmp, "zimmer.sessions")
-      FileUtils.mkdir_p(parent)
-      with_cgroup_env(root: parent) { yield parent }
+      root = File.join(tmp, "zimmer.sessions")
+      FileUtils.mkdir_p(File.join(root, SessionMemoryCgroup::POOL_DIRNAME))
+      with_cgroup_env(root: root) { yield SessionMemoryCgroup.parent_path }
     end
   end
 
   # The other half of the seam: point SessionMemoryCgroup at a parent that does not
   # exist, for a test of the unbounded path.
   #
-  # Leaving the env unset does NOT do this. Unset falls through to DEFAULT_PARENT,
+  # Leaving the env unset does NOT do this. Unset falls through to DEFAULT_ROOT,
   # `/sys/fs/cgroup/zimmer.sessions`, which on a sysbox worker is a real delegated
   # subtree — the box Zimmer's own agent sessions run on is exactly such a box. A test
   # that only omits the stub therefore asserts "this host has no cgroupfs" rather than
@@ -101,8 +105,10 @@ module SessionMemoryCgroupHelpers
   #   assert nothing was created there
   def without_delegated_cgroup_parent
     Dir.mktmpdir("cgroupfs") do |tmp|
-      parent = File.join(tmp, "zimmer.sessions")
-      with_cgroup_env(root: parent) do
+      root = File.join(tmp, "zimmer.sessions")
+      with_cgroup_env(root: root) do
+        parent = SessionMemoryCgroup.parent_path
+
         # The whole point of the helper, so it is checked rather than assumed: a test
         # of the unbounded path that runs with the bound available proves nothing.
         raise "the delegated parent #{parent} must be unavailable" if SessionMemoryCgroup.available?
