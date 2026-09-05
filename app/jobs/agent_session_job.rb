@@ -1429,6 +1429,13 @@ class AgentSessionJob < ApplicationJob
           # abandoned stub for the whole turn and report an empty transcript over work
           # that really happened. ProcessLifecycleManager#fresh_start! releases the id
           # for exactly this reason; this is the same release, one step earlier.
+          #
+          # It inherits fresh_start!'s exposure with it: until transcript polling reads
+          # the new rollout's id back, a session with no `session_id` reclassifies a
+          # follow-up as a fresh start (see the branch this method opens with), so a
+          # message arriving in that window runs `session.prompt` instead. The window is
+          # seconds and the alternative — a poller pinned to a file the runtime has
+          # abandoned — lasts the whole turn.
           if TranscriptRuntime.normalizer_for(session).mints_own_session_id? && session.session_id.present?
             log_buffer.add(
               "Releasing stale runtime session id #{session.session_id} so transcript polling " \
@@ -1468,6 +1475,18 @@ class AgentSessionJob < ApplicationJob
             with_db_retry do
               session.merge_metadata!("active_follow_up_prompt" => spawn_prompt_with_goal)
             end
+          elsif follow_up_prompt.present?
+            # Said plainly on the session's own timeline, because the agent about to
+            # read this turn cannot say it: the message is being delivered into a
+            # conversation with no history behind it, so anything the session appears
+            # to have done before is not in its context. Nothing is rewritten — a
+            # human's words are delivered as they were written — but a reader looking
+            # at an answer that ignores the past deserves to find out why here.
+            log_buffer.add(
+              "This turn is being delivered into a fresh conversation: nothing that came before it " \
+              "is in the agent's context, because nothing was ever written",
+              level: "warning"
+            )
           end
         end
 
@@ -4505,10 +4524,14 @@ class AgentSessionJob < ApplicationJob
   #
   # @return [String, nil]
   def replayable_prompt(session)
-    candidate = session.metadata&.dig("sent_message").presence || session.prompt.presence
-    return nil if candidate.nil? || AutomatedPrompts.nudge?(candidate)
-
-    candidate
+    [
+      session.metadata&.dig("sent_message"),
+      session.prompt,
+      # Last, and only reachable when `prompt` is itself a nudge: HeartbeatSweepJob
+      # overwrites the column with its beat and leaves this key alone, so for a
+      # session created from the chat bubble it still holds the human's own words.
+      session.metadata&.dig("original_prompt")
+    ].filter_map(&:presence).find { |candidate| !AutomatedPrompts.nudge?(candidate) }
   end
 
   # A process Zimmer killed before the runtime wrote anything leaves no

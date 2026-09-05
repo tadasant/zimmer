@@ -122,7 +122,12 @@ class AgentSessionJobPoisonedResumeTest < ActiveJob::TestCase
     cli = perform_turn("What did you find?") { |fs| stub_transcript_only(fs) }
 
     assert_empty cli.resumed_sessions
-    assert_includes cli.executed_commands.first[:prompt].to_s, "What did you find?"
+    spawned = cli.executed_commands.first[:prompt].to_s
+    assert_includes spawned, "What did you find?"
+    assert_not_includes spawned, "Post the alert triage summary",
+      "the session's prompt is not appended either — a human's turn is delivered as written"
+    assert @session.logs.any? { |l| l.content.include?("delivered into a fresh conversation") },
+      "the agent cannot say that its context is empty, so the timeline has to"
   end
 
   # A resume can also be reached with no follow-up at all, by reusing the clone. The
@@ -162,6 +167,18 @@ class AgentSessionJobPoisonedResumeTest < ActiveJob::TestCase
     assert_includes spawned, "actually, check the staging config first",
       "replaying the original prompt over an undelivered message drops what the human asked for"
     assert_not_includes spawned, "Post the alert triage summary"
+    assert_includes @session.metadata["sent_message"].to_s, "check the staging config",
+      "the message stays pending until transcript polling sees it land"
+  end
+
+  # Nearly every real sender calls `system_recovery(reason:)` rather than the bare
+  # constant, so the reasoned variant is the one that has to be recognised.
+  test "a reasoned recovery nudge is substituted just like the bare one" do
+    cli = perform_turn(AutomatedPrompts.system_recovery(reason: "the deploy sweep")) do |fs|
+      stub_transcript_only(fs)
+    end
+
+    assert_includes cli.executed_commands.first[:prompt].to_s, "Post the alert triage summary"
   end
 
   # HeartbeatSweepJob overwrites `session.prompt` with its own beat, so the prompt
@@ -174,6 +191,30 @@ class AgentSessionJobPoisonedResumeTest < ActiveJob::TestCase
     assert_empty cli.resumed_sessions, "the fresh-start half of the fix still applies"
     assert_not @session.logs.any? { |l| l.content.include?("replays the work that never happened") },
       "there is no work to replay, and claiming otherwise in the log is worse than saying nothing"
+  end
+
+  # The beat overwrites the prompt column but leaves the chat bubble's copy of the
+  # human's own words alone, so that copy is the last candidate in the chain.
+  test "a beaten session created from the chat bubble is replayed from the human's own words" do
+    @session.update!(prompt: AutomatedPrompts::HEARTBEAT)
+    @session.merge_metadata!("original_prompt" => "Draft the incident review for INC-42")
+
+    cli = perform_turn(AutomatedPrompts::HEARTBEAT) { |fs| stub_transcript_only(fs) }
+
+    assert_includes cli.executed_commands.first[:prompt].to_s, "Draft the incident review for INC-42"
+  end
+
+  # The guard costs a transcript read, so it is skipped when there would be nothing to
+  # spawn with anyway: a fresh conversation with nothing to say is worse than a resume
+  # that might work.
+  test "a session with no prompt to carry is left on the resume path" do
+    @session.update_column(:prompt, "")
+
+    cli = perform_turn(nil) { |fs| stub_transcript_only(fs) }
+
+    assert_equal 1, cli.resumed_sessions.size,
+      "with no prompt anywhere, the resume is the only move left"
+    assert_empty cli.executed_commands
   end
 
   # ---------------------------------------------------------------------------
