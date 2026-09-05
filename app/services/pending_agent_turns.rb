@@ -25,14 +25,36 @@ module PendingAgentTurns
   # @param ids [Array<Integer>] session ids to ask about
   # @return [Set<Integer>] the subset that has an unfinished AgentSessionJob
   def for(ids)
-    return Set.new if ids.empty?
+    started, queued = split(ids)
+    started | queued
+  end
 
-    GoodJob::Job
+  # The same population, told apart by whether a worker has actually PICKED THE
+  # TURN UP — `performed_at` — or the job is still sitting in the `agents` queue
+  # waiting for a free thread.
+  #
+  # The sweeps do not care about that difference: a turn is coming either way,
+  # and enqueuing a second one is the mistake. RunningTurns does, because it is
+  # measuring how much of the fleet's capacity is in use, and the `agents` lane
+  # is only ConnectionBudget.good_job_queue_threads[:agents] deep — so on a busy
+  # deployment a real share of `sessions.status = running` is turns that no
+  # worker has started. See tadasant/zimmer#957.
+  #
+  # @param ids [Array<Integer>] session ids to ask about
+  # @return [Array(Set<Integer>, Set<Integer>)] [on a worker, queued for one]
+  def split(ids)
+    return [ Set.new, Set.new ] if ids.empty?
+
+    rows = GoodJob::Job
       .where(job_class: AgentSessionJob.name, finished_at: nil)
       .where("serialized_params -> 'arguments' ->> 0 IN (?)", ids.map(&:to_s))
-      .pluck(Arel.sql("serialized_params -> 'arguments' ->> 0"))
-      .map(&:to_i)
-      .to_set
+      .pluck(Arel.sql("serialized_params -> 'arguments' ->> 0"), :performed_at)
+
+    started, queued = rows.partition { |_session_id, performed_at| performed_at.present? }
+    # A session with two unfinished jobs — a re-check racing a recovery — is on a
+    # worker if either of them is, so the started set wins the overlap.
+    started_ids = started.map { |session_id, _| session_id.to_i }.to_set
+    [ started_ids, queued.map { |session_id, _| session_id.to_i }.to_set - started_ids ]
   end
 
   # The same question as an anti-join, for a caller that wants the sessions with

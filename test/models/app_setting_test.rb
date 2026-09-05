@@ -321,7 +321,7 @@ class AppSettingTest < ActiveSupport::TestCase
   # The whole point of the readers above: constructing the status object off the
   # NULL row must not raise.
   test "FleetTopUpStatus can be built from the NULL object" do
-    status = FleetTopUpStatus.new(setting: AppSetting::NULL, running_sessions: 0)
+    status = FleetTopUpStatus.new(setting: AppSetting::NULL, turns: RunningTurns::EMPTY)
 
     assert_equal :clock_not_started, status.state
     assert status.sentence.present?

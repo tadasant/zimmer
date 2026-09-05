@@ -16,18 +16,18 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
                      fleet_idle_min_fire_interval_minutes: 60)
   end
 
+  # Most cases only care about the state arithmetic, so they name one number and
+  # it reads as wholly executing.
   def status(running:, now: Time.current)
-    FleetTopUpStatus.new(setting: @setting, running_sessions: running, now: now)
+    split_status(on_a_worker: running, now: now)
   end
 
-  # The split reading, which is what /inference renders. A bare count still
-  # works — AppSetting's own ceiling validation passes one — and reports itself
-  # as wholly executing, since a caller with one number has no split to offer.
-  def split_status(on_a_worker:, queued: 0, asleep: 0, now: Time.current)
+  # The split reading, which is what /inference renders.
+  def split_status(on_a_worker:, awaiting: 0, asleep: 0, now: Time.current)
     FleetTopUpStatus.new(
       setting: @setting, now: now,
       turns: RunningTurns::Reading.new(
-        on_a_worker: on_a_worker, queued_for_a_worker: queued, asleep: asleep
+        on_a_worker: on_a_worker, awaiting_a_worker: awaiting, asleep: asleep
       )
     )
   end
@@ -37,24 +37,24 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
   # column and wrong about the word — the rest were turns queued behind the
   # `agents` worker pool — so the sentence has to name the queue.
   test "the sentence names the queue when turns are waiting for a worker" do
-    s = split_status(on_a_worker: 2, queued: 5)
+    s = split_status(on_a_worker: 2, awaiting: 5)
 
     assert_equal 7, s.running_sessions
     assert_equal 2, s.executing_sessions
-    assert_equal 5, s.queued_sessions
+    assert_equal 5, s.awaiting_sessions
     assert_equal :at_ceiling, s.state
     assert_match(/7 sessions in flight/, s.sentence)
-    assert_match(/2 on a worker, 5 queued for one/, s.sentence)
+    assert_match(/2 on a worker, 5 waiting for one/, s.sentence)
     assert_match(/#{s.worker_slots}-slot agents pool/, s.sentence)
   end
 
   # When every turn has a worker the split is the same number twice, and saying
   # so twice is noise.
-  test "the sentence stays plain when nothing is queued" do
+  test "the sentence stays plain when every turn has a worker and nobody is asleep" do
     s = split_status(on_a_worker: 3)
 
     assert_equal 3, s.running_sessions
-    assert_equal 0, s.queued_sessions
+    assert_equal 0, s.awaiting_sessions
     assert_match(/3 sessions in flight/, s.sentence)
     assert_no_match(/on a worker/, s.sentence)
   end
@@ -62,23 +62,35 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
   # Sleepers are reported but not counted: the ceiling comparison is made
   # against the turns the fleet can actually be working on.
   test "sessions asleep on a wake are reported beside the total, not inside it" do
-    s = split_status(on_a_worker: 1, queued: 1, asleep: 4)
+    s = split_status(on_a_worker: 1, awaiting: 1, asleep: 4)
 
     assert_equal 2, s.running_sessions
     assert_equal 4, s.asleep_sessions
     assert s.under_ceiling?, "four sleepers must not push a fleet of two to its ceiling of three"
+    assert_match(/4 more asleep on a wake and not counted/, s.sentence)
+  end
+
+  # The sleepers are worth saying even on a fleet whose every turn has a worker:
+  # they are the difference between the number here and the row count an
+  # operator sees on the dashboard.
+  test "the sentence names sleepers even when nothing is waiting for a worker" do
+    s = split_status(on_a_worker: 2, asleep: 3)
+
+    assert_equal 2, s.running_sessions
+    assert_match(/3 more asleep on a wake and not counted/, s.sentence)
+    assert_no_match(/on a worker,/, s.sentence)
   end
 
   test "the worker pool ceiling is the agents lane's own thread count" do
     assert_equal ConnectionBudget.good_job_queue_threads[:agents], split_status(on_a_worker: 0).worker_slots
   end
 
-  test "a bare count still builds a status, and reads as wholly executing" do
+  test "a reading with everything on a worker reports no split" do
     s = status(running: 2)
 
     assert_equal 2, s.running_sessions
     assert_equal 2, s.executing_sessions
-    assert_equal 0, s.queued_sessions
+    assert_equal 0, s.awaiting_sessions
     assert_equal 0, s.asleep_sessions
   end
 

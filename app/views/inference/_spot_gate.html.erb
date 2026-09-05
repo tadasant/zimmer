@@ -183,10 +183,10 @@
             <% if @spot_decision.fleet_cap %>
               <span class="text-gray-400 font-normal">of <%= @spot_decision.fleet_cap %></span>
             <% end %>
-            <% if @spot_decision.queued_sessions.to_i.positive? %>
+            <% if @spot_decision.awaiting_sessions.to_i.positive? %>
               <div class="text-xs text-gray-500 font-normal mt-0.5" id="spot-active-sessions-split">
-                <%= @spot_decision.active_sessions.to_i - @spot_decision.queued_sessions.to_i %> on a worker ·
-                <%= @spot_decision.queued_sessions %> queued
+                <%= @spot_decision.active_sessions.to_i - @spot_decision.awaiting_sessions.to_i %> on a worker ·
+                <%= @spot_decision.awaiting_sessions %> waiting for one
                 (the pool runs <%= RunningTurns.worker_slots %> at once)
               </div>
             <% end %>

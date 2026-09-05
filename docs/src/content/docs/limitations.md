@@ -1380,8 +1380,9 @@ that does it has known limits:
 - **A `running` row asleep on its own wake is dropped from both ceilings, and nothing puts it back
   into `waiting`.** When a turn ends with something already in flight for the session — a queued
   message the handoff path picks up, or a recovery job — the row stays `running` while the session
-  sleeps. The ceilings stop counting it, which is the fix in #957, but the row itself still reads
-  `running` on the dashboard and in every status query until its wake fires. The counting is right;
+  sleeps. Once nothing is left queued for it the ceilings stop counting it, which is the fix in #957,
+  but the row itself still reads `running` on the dashboard and in every status query until its wake
+  fires. The counting is right;
   the status is still misleading, and repairing it is a lifecycle change this did not make.
 - **The cooldown is the real cap on top-up frequency, and it is a blunt one.**
   `fleet_idle_min_fire_interval_minutes` exists because the session the event spawns re-arms the latch

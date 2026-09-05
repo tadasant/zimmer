@@ -166,7 +166,7 @@ module Mcp
           "- **5-hour priority reserve:** #{reserve_phrase(setting.spot_reserve_five_hour_pct, decision.five_hour)}",
           "- **Weekly priority reserve:** #{reserve_phrase(setting.spot_reserve_weekly_pct, decision.weekly)}",
           "- **Max sessions at once:** #{setting.spot_max_concurrent_sessions} " \
-          "(every running session counts, priority included; only spot sessions wait for a slot)",
+          "(every session with a turn in flight counts, priority included — including one merely queued for a worker; only spot sessions wait for a slot)",
           "",
           "### Current decision",
           "",
@@ -179,7 +179,7 @@ module Mcp
           # same thing about which ceiling is holding and what lifts it.
           *explanation.lines.map { |line| "- **#{line.label}:** #{line.sentence}" },
           "- **Claude Code sessions with a turn in flight:** #{decision.active_sessions}" \
-          "#{decision.queued_sessions.to_i.positive? ? " (#{decision.active_sessions.to_i - decision.queued_sessions.to_i} on a worker, #{decision.queued_sessions} queued for one)" : ""}",
+          "#{decision.awaiting_sessions.to_i.positive? ? " (#{decision.active_sessions.to_i - decision.awaiting_sessions.to_i} on a worker, #{decision.awaiting_sessions} waiting for one)" : ""}",
           "- **Fleet burn rate:** #{rate(decision.fleet_burn_usd_per_minute)} " \
           "(every running session, priority included — they spend against the same windows)",
           "- **One more session would add:** #{rate(decision.candidate_burn_usd_per_minute)} " \
@@ -256,8 +256,8 @@ module Mcp
       # looks broken (tadasant/zimmer#957).
       def turns_split(status)
         parts = []
-        if status.queued_sessions.positive?
-          parts << "#{status.executing_sessions} on a worker, #{status.queued_sessions} queued for one " \
+        if status.awaiting_sessions.positive?
+          parts << "#{status.executing_sessions} on a worker, #{status.awaiting_sessions} waiting for one " \
                    "behind the #{status.worker_slots}-slot agents pool"
         end
         if status.asleep_sessions.positive?

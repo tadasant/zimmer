@@ -204,7 +204,18 @@ class FleetIdleMonitor
       # the clock below all come from the same observation of the row.
       setting = AppSetting.current
 
-      idle = fleet_idle?(setting)
+      # One reading of the fleet for the whole decision, for the same reason the
+      # settings row is read once: the ceiling test and the log line that
+      # explains it must describe the same moment.
+      turns = begin
+        running_turns
+      rescue => e
+        Rails.logger.info "[FleetIdleMonitor] Could not read the fleet: #{e.message}"
+        nil
+      end
+      return false if turns.nil?
+
+      idle = fleet_idle?(setting, turns)
       return false if idle.nil?
 
       unless idle
@@ -212,7 +223,7 @@ class FleetIdleMonitor
         # Which of the three questions answered no, since they clear three
         # different ways and "not idle" alone leaves an operator guessing.
         logger.info("The fleet is not idle enough — #{EVENT_NAME} is armed again",
-          reason: not_idle_reason(setting)) if cleared
+          reason: not_idle_reason(setting, turns)) if cleared
         return false
       end
 
@@ -302,9 +313,9 @@ class FleetIdleMonitor
     end
 
     # The same reading, split into the populations `running` actually holds:
-    # turns a worker is executing, turns queued behind the `agents` pool waiting
-    # for one, and sleepers that are dropped from the total. RunningTurns owns
-    # the distinction; this is where /inference and `get_spot_policy` get it.
+    # turns a worker is executing, turns waiting for one behind the `agents`
+    # pool, and sleepers that are dropped from the total. RunningTurns owns the
+    # distinction; this is where /inference and `get_spot_policy` get it.
     #
     # @return [RunningTurns::Reading]
     def running_turns
@@ -320,11 +331,10 @@ class FleetIdleMonitor
     # recorded as idle, or a monitoring gap would spawn work.
     #
     # See "What counts as idle" above for why each question is scoped the way it
-    # is. Ordered cheapest-and-commonest first: on a busy deployment the running
-    # count is the only query this makes, because it is the only one the ceiling
-    # is compared against.
-    def fleet_idle?(setting)
-      return false if running_sessions >= max_sessions(setting)
+    # is. Ordered cheapest-and-commonest first: on a busy deployment the ceiling
+    # test is the only one that runs, and its reading is already taken.
+    def fleet_idle?(setting, turns)
+      return false if turns.total >= max_sessions(setting)
 
       return false if parked_work?
 
@@ -334,12 +344,15 @@ class FleetIdleMonitor
       nil
     end
 
-    # Which question `fleet_idle?` answered no to, for the log line above. Asked
-    # again rather than threaded out of the predicate: it runs only on the
-    # transition to busy, and the predicate short-circuits so it does not always
-    # know.
-    def not_idle_reason(setting)
-      return "at_work_ceiling" if running_sessions >= max_sessions(setting)
+    # Which question `fleet_idle?` answered no to, for the log line above.
+    #
+    # Takes the same reading the predicate decided on rather than re-reading the
+    # fleet: `running_turns` is three queries now, not one COUNT, and the two
+    # would otherwise disagree whenever a session started between them. The
+    # other two questions are asked again because the predicate short-circuits,
+    # so it does not always know their answers.
+    def not_idle_reason(setting, turns)
+      return "at_work_ceiling" if turns.total >= max_sessions(setting)
       return "work_parked_on_auth_outage" if parked_work?
       return "account_pool_empty" unless pool_available?(setting)
 

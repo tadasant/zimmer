@@ -237,18 +237,29 @@ starts executing it. Between the two sits the `agents` GoodJob queue, which is o
 | Population | Counts? | Why |
 | --- | --- | --- |
 | A turn a worker is executing | Yes | It is the fleet doing work. |
-| A turn queued for a worker | Yes | Committed demand: it takes the next free slot, so admitting more on top of it only deepens the queue. |
-| A `running` row asleep on its own **future wake**, with no worker on it | **No** | Every start path refuses to start it before that wake (`AgentSessionJob#paused_until_scheduled_time?` stands down and does not re-enqueue), so the fleet cannot spend a worker on it. |
+| A turn queued for a worker, or a row between jobs | Yes | Committed demand: it takes the next free slot, so admitting more on top of it only deepens the queue. |
+| A `running` row asleep on its own **future wake** with **no AgentSessionJob at all** — none running, none queued | **No** | Nothing will happen to that session until its wake fires, so it can consume no capacity in the meantime. |
 
-Both halves of that last rule are load-bearing. Arming a wake mid-turn is the ordinary orchestrator
-pattern — a router calls `wake_me_up_later` and then keeps working — so "has a wake armed" *alone*
-would stop counting a session at the moment it is busiest. A row reaches `running`-while-asleep when
-its turn ends with something else already in flight for it: a queued message the handoff path picks
-up, or a recovery job `CleanupOrphanedSessionsJob` enqueued.
+Both halves of that last rule are load-bearing, and the second is the one that is easy to get wrong.
+"Asleep" alone is not enough, and neither is "a start path would refuse it": `AgentSessionJob`'s
+pause guard is conjoined with `session.waiting?`, so it does **not** fire for a `running` row — a
+queued job would run the session and take a worker while the ceiling had stopped counting it. So the
+test is that no `AgentSessionJob` exists for the session at all, asked through `PendingAgentTurns`,
+which reads the job rows rather than `sessions.running_job_id` (that column is written from inside
+`perform`, so a session whose job is still queued has a blank one). "And no worker is on it" falls
+out of that, and it is what keeps a busy session counted: arming a wake mid-turn is the ordinary
+orchestrator pattern — a router calls `wake_me_up_later` and then keeps working — so "has a wake
+armed" *alone* would stop counting a session at the moment it is busiest.
 
-Both `/inference` cards print the split — "8 on a worker, 7 queued for one behind the 8-slot agents
+A row reaches `running`-while-asleep when its turn ends with something else already in flight for it
+— a queued message the handoff path picks up, or a recovery job `CleanupOrphanedSessionsJob`
+enqueued — and that something then finishes without pausing it.
+
+Both `/inference` cards print the split — "8 on a worker, 7 waiting for one behind the 8-slot agents
 pool" — because the total on its own reads as a broken counter when half that many agent processes
-are alive. That is exactly how [#957](https://github.com/tadasant/zimmer/issues/957) was reported.
+are alive. *Waiting for one* rather than *queued*, deliberately: the second bucket is every counted
+row no worker has started, which is turns in the `agents` lane plus rows between jobs (the handoff
+window, a first spawn not yet enqueued, and the orphans `CleanupOrphanedSessionsJob` repairs). That is exactly how [#957](https://github.com/tadasant/zimmer/issues/957) was reported.
 `RunningTurns` is the one place the distinction is made; both ceilings read through it.
 
 Note the consequence for tuning: **Max sessions at once** above `GOOD_JOB_AGENTS_THREADS` does not buy
