@@ -55,20 +55,11 @@ class TriggerCondition < ApplicationRecord
   SCHEDULE_UNITS = %w[minutes hours days weeks].freeze
   DAYS_OF_WEEK = %w[monday tuesday wednesday thursday friday saturday sunday].freeze
 
-  # What a `days`/`weeks` schedule's arming watches: the keys that decide WHICH
-  # wall-clock instant the next slot is. Change any of them and the slot moves,
-  # so the condition has to be re-armed against the new one — the same reasoning
-  # #github_watch_scope applies to a GitHub condition's seen-set.
-  #
-  # `interval` is deliberately absent. It has no meaning before the first fire —
-  # there is no previous run to count from, so #schedule_due? never consults it
-  # on the `last_triggered_at.nil?` path — and re-arming on an interval edit
-  # would push a pending first fire out for nothing.
-  #
-  # `scheduled_at` is absent for the same kind of reason: a one-time schedule
-  # never reaches #armed_before? at all (it is governed by `last.present?` and
-  # its own parsed instant), so arming has nothing to say about it.
-  SCHEDULE_ARMING_KEYS = %w[unit time day_of_week timezone].freeze
+  # The timezone a schedule is read in when its `configuration` names none. It is a
+  # real default rather than a validation requirement, so an equal number of live
+  # conditions carry the key and omit it — which is why #schedule_slot has to apply
+  # it before comparing two configurations.
+  DEFAULT_SCHEDULE_TIMEZONE = "UTC"
 
   # Zimmer's internal event vocabulary, split by what the event is ABOUT.
   #
@@ -371,7 +362,7 @@ class TriggerCondition < ApplicationRecord
   end
 
   def schedule_timezone
-    configuration["timezone"] || "UTC"
+    configuration["timezone"] || DEFAULT_SCHEDULE_TIMEZONE
   end
 
   # Zimmer event configuration accessors
@@ -986,7 +977,7 @@ class TriggerCondition < ApplicationRecord
   # `armed_at` is the middle term: it moves when, and only when, the condition
   # starts counting towards a slot afresh — on create, when the trigger is enabled
   # (Trigger#rearm_schedule_conditions_on_enable), and when the slot itself moves
-  # (#stamp_armed_at). See SCHEDULE_ARMING_KEYS for what "the slot moves" means.
+  # (#stamp_armed_at). See #schedule_slot for what "the slot moves" means.
   #
   # `created_at` is the fallback, for a row written before the column existed and
   # somehow missed by the backfill: it is exactly what this read before `armed_at`,
@@ -1006,11 +997,13 @@ class TriggerCondition < ApplicationRecord
   # callback that overwrote them would be describing the save rather than the
   # arming.
   #
-  # The no-op re-save is the case this exists to NOT catch. Saving the trigger
-  # form again with nothing changed leaves `configuration` undirtied, so
-  # #schedule_arming_scope_changed? is false and the pending first fire keeps its
-  # anchor. That is the whole reason this is keyed on a scope diff rather than on
-  # "the record was saved".
+  # The no-op re-save is the case this exists to NOT catch — and catching it takes
+  # more than a dirty check, because the trigger form rebuilds the whole
+  # `configuration` hash, so `will_save_change_to_configuration?` is routinely true
+  # on a save that changed nothing a user can see. What decides it is
+  # #schedule_arming_scope_changed?, which compares the SLOT the configuration names
+  # rather than the hash it is written in. That is the whole reason this is keyed on
+  # a slot diff rather than on "the record was saved".
   def stamp_armed_at
     return if will_save_change_to_armed_at?
     return unless new_record? || schedule_arming_scope_changed?
@@ -1019,27 +1012,66 @@ class TriggerCondition < ApplicationRecord
   end
 
   # Whether this write moves the wall-clock slot a `days`/`weeks` schedule is
-  # counting towards. Compared key by key against `configuration_was` — the value
-  # the condition genuinely watched before this save — so a write that reshuffles
-  # or re-submits the hash without changing any of them is not a re-arm.
+  # counting towards. The slot this save produces is compared against the slot
+  # `configuration_was` named — the one the condition genuinely watched before this
+  # save — so only a real move re-arms.
   #
   # Only `schedule` conditions have a slot, so no other type ever re-arms after
-  # creation.
+  # creation. A `configuration` that is somehow not a Hash reads as an empty slot on
+  # whichever side it appears, which differs from any real one and therefore re-arms:
+  # of the two ways to be wrong here, an unnecessary re-arm is the recoverable one.
   def schedule_arming_scope_changed?
     return false unless condition_type == "schedule"
     return false unless will_save_change_to_configuration?
 
-    before = configuration_was
-    return false unless before.is_a?(Hash) && configuration.is_a?(Hash)
+    schedule_slot(configuration_was) != schedule_slot(configuration)
+  end
 
-    SCHEDULE_ARMING_KEYS.any? { |key| before[key].to_s != configuration[key].to_s }
+  # The wall-clock slot a configuration names, as a comparable tuple: unit, the time
+  # reduced to [hour, minute], the day, and the timezone with its default applied.
+  # It is #github_watch_scope's counterpart for a schedule — what the condition
+  # watches, rather than what its hash happens to contain.
+  #
+  # EFFECTIVE values, not raw ones, and that distinction is the whole point. The
+  # trigger form rebuilds the entire `configuration` hash on every save, so a save
+  # that changes nothing still writes keys the stored hash never had: a condition
+  # created through `action_trigger` as {"unit" => "days", "time" => "03:00"} comes
+  # back from the form carrying "timezone" => "UTC", because the select renders
+  # #schedule_timezone's default and submits it. Comparing raw values would read that
+  # as a moved slot, re-arm, and defer the pending run by a day — the #447 slot-skip
+  # this whole mechanism exists to prevent, reintroduced by the mechanism.
+  #
+  # `interval` is deliberately not part of it. It has no meaning before the first
+  # fire — there is no previous run to count from, so #schedule_due? never consults
+  # it on the `last_triggered_at.nil?` path — and re-arming on an interval edit would
+  # push a pending first fire out for nothing. `scheduled_at` is out for a related
+  # reason: a one-time schedule never reaches #armed_before? at all.
+  def schedule_slot(config)
+    config = {} unless config.is_a?(Hash)
+
+    [
+      config["unit"].to_s,
+      schedule_time_of_day(config["time"]),
+      config["day_of_week"].to_s,
+      config["timezone"].presence || DEFAULT_SCHEDULE_TIMEZONE
+    ]
+  end
+
+  # A configured `time` as [hour, minute]. `validate_recurring_schedule_configuration`
+  # pins the stored format to a strict HH:MM, so the only variation this actually
+  # absorbs is a blank time, which #parse_schedule_time reads as midnight. It is
+  # shared with that method deliberately all the same: two times that compare equal
+  # here MUST parse to the same instant, or a re-arm would be skipped for an edit
+  # that really did move the slot.
+  def schedule_time_of_day(value)
+    parts = value.to_s.split(":")
+
+    [ (parts[0] || "0").to_i, (parts[1] || "0").to_i ]
   end
 
   def parse_schedule_time(reference_time)
-    return reference_time.beginning_of_day unless schedule_time.present?
-    parts = schedule_time.to_s.split(":")
-    hour = (parts[0] || "0").to_i
-    minute = (parts[1] || "0").to_i
+    hour, minute = schedule_time_of_day(schedule_time)
+
     reference_time.change(hour: hour, min: minute, sec: 0)
   end
 

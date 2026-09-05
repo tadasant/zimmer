@@ -872,6 +872,34 @@ class TriggerConditionTest < ActiveSupport::TestCase
     end
   end
 
+  # The form rebuilds the whole `configuration` hash, so "nothing changed" at the UI
+  # is routinely a dirty `configuration` at the model — and a condition created
+  # through `action_trigger` without a `timezone` comes back from the form carrying
+  # "UTC", because the select renders #schedule_timezone's default and submits it.
+  # Comparing raw keys would read that as a moved slot and defer the pending run by a
+  # day, which is the #447 slot-skip this whole mechanism exists to prevent.
+  test "a save that only materialises the default timezone does not re-arm" do
+    @schedule_condition.update!(
+      configuration: { "unit" => "days", "interval" => 1, "time" => "03:00" }, # no timezone
+      last_triggered_at: nil,
+      created_at: Time.utc(2026, 5, 12, 1, 0),
+      armed_at: Time.utc(2026, 5, 12, 1, 0)
+    )
+
+    travel_to Time.utc(2026, 5, 12, 2, 0) do # an hour before the 03:00 UTC slot
+      @schedule_condition.update!(
+        configuration: @schedule_condition.configuration.merge("timezone" => "UTC")
+      )
+    end
+
+    assert_equal Time.utc(2026, 5, 12, 1, 0), @schedule_condition.reload.armed_at,
+      "writing the timezone the condition was already read in is not a moved slot"
+
+    travel_to Time.utc(2026, 5, 12, 3, 0) do # 03:00 UTC — the run it was armed for
+      assert @schedule_condition.schedule_due?
+    end
+  end
+
   # An edit that leaves the slot where it is is a no-op as far as arming goes, even
   # though the configuration changed. `interval` is the case that matters: it has no
   # meaning before a first fire, so re-arming on it would defer a pending run for a
