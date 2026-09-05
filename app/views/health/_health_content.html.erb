@@ -10,7 +10,11 @@
       </div>
     </div>
     <div class="px-4 py-5 sm:p-6">
-      <dl class="grid grid-cols-3 gap-4 mb-6">
+      <dl class="grid grid-cols-2 gap-4 mb-6 sm:grid-cols-4">
+        <div class="text-center">
+          <dt class="text-sm font-medium text-gray-500">Recorded</dt>
+          <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= health_report[:process_health][:recorded_count] %></dd>
+        </div>
         <div class="text-center">
           <dt class="text-sm font-medium text-gray-500">Active</dt>
           <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= health_report[:process_health][:active_count] %></dd>
@@ -26,6 +30,23 @@
           </dd>
         </div>
       </dl>
+
+      <%# The zeros above are counted in THIS container, and agent processes belong
+          to the one that spawned them. Saying so beside them is the difference
+          between "there are none" and "none are visible from here" — the /health
+          page made the first claim for ten hours in August 2026 while five sessions
+          ran (zimmer#428). %>
+      <% unless health_report[:process_health][:observable] %>
+        <div class="mb-4 rounded-md bg-gray-50 p-3 text-sm text-gray-700">
+          <p class="font-medium text-gray-900">Not visible from here</p>
+          <p class="mt-1">
+            <%= pluralize(health_report[:process_health][:recorded_count], "session") %>
+            recorded an agent process, and none is visible from the process serving this page.
+            Agent processes are spawned by the worker container, so Active, Tracked and Orphaned
+            all read zero — that is <em>not knowable from here</em>, not <em>none exist</em>.
+          </p>
+        </div>
+      <% end %>
 
       <% if health_report[:process_health][:orphaned_processes].any? %>
         <div class="mb-4">
@@ -130,7 +151,18 @@
       </div>
     </div>
     <div class="px-4 py-5 sm:p-6">
-      <dl class="grid grid-cols-2 gap-4 mb-6">
+      <%# The gate's own sentence, which names WHICH shape fired — a wedged lane, a
+          starved lane, a worker-wide stall, or nothing executing at all. The panel
+          used to show the badge alone, so the diagnosis a responder opens this page
+          for was legible only in the JSON. %>
+      <% system_status = health_report[:system_health][:status] %>
+      <% unless system_status.healthy? %>
+        <p class="mb-4 text-sm <%= system_status.critical? ? 'text-red-600' : 'text-yellow-700' %>">
+          <%= system_status.message %>
+        </p>
+      <% end %>
+
+      <dl class="grid grid-cols-2 gap-4 mb-6 sm:grid-cols-3">
         <div class="text-center">
           <dt class="text-sm font-medium text-gray-500">Queue Depth</dt>
           <dd class="mt-1 text-2xl font-semibold <%= health_report[:system_health][:queue_depth] > 50 ? 'text-yellow-600' : 'text-gray-900' %>">
@@ -140,6 +172,20 @@
         <div class="text-center">
           <dt class="text-sm font-medium text-gray-500">Jobs/Hour</dt>
           <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= health_report[:system_health][:queue_stats][:processing_rate_per_hour] %></dd>
+        </div>
+        <%# An hourly rate is an average and cannot say WHEN inside the hour: six
+            jobs an hour reads the same whether they were spread evenly or all six
+            landed in the first minute and nothing has run since. This is the
+            instant, and it is what the "nothing is executing" gate reads. %>
+        <div class="text-center">
+          <dt class="text-sm font-medium text-gray-500">Last Finished</dt>
+          <% since = health_report[:system_health][:queue_stats][:seconds_since_last_finished] %>
+          <%# One size down from its neighbours: this tile holds a duration rather
+              than an integer, and "10h 7m ago" wraps to two lines at text-2xl in a
+              two-column grid on a 375px phone. %>
+          <dd class="mt-1 text-xl font-semibold sm:text-2xl <%= since && since >= HealthMonitorService::EXECUTION_STALL_CRITICAL_AGE ? 'text-red-600' : 'text-gray-900' %>">
+            <%= since ? "#{HealthMonitorService.format_wait(since)} ago" : "never" %>
+          </dd>
         </div>
       </dl>
 
@@ -600,13 +646,19 @@
 <% if health_report[:system_health][:recent_errors].any? %>
   <div class="mt-6 bg-white rounded-lg shadow">
     <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
-      <h3 class="text-lg font-medium text-gray-900">Recent Error Logs (1h)</h3>
+      <h3 class="text-lg font-medium text-gray-900">Recent Errors (1h)</h3>
+      <p class="mt-1 text-sm text-gray-500">
+        Session logs and background job failures. Errors that only reach stdout are not
+        recorded anywhere Zimmer can query — an empty list means none were recorded, not
+        that nothing is wrong.
+      </p>
     </div>
     <div class="overflow-x-auto">
       <table class="min-w-full divide-y divide-gray-200">
         <thead class="bg-gray-50">
           <tr>
             <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
             <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Session</th>
             <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Error</th>
           </tr>
@@ -616,6 +668,9 @@
             <tr>
               <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                 <%= error_log[:created_at].strftime("%H:%M:%S") %>
+              </td>
+              <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                <%= error_log[:source] == "job" ? "Job" : "Session log" %>
               </td>
               <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                 <% if error_log[:session_id] %>
