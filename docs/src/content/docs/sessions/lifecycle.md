@@ -341,7 +341,7 @@ asleep waiting for, so delivering it early is the point rather than a cost.
 the queue is retired rather than delivered, so a session is only ever woken early for a message that
 still says something.
 
-**Delivering early no longer spends the wake.** The drain resumes the session through
+**Delivering early does not spend the wake.** The drain resumes the session through
 `Session#resume_for_follow_up!`, which takes the preserving branch of
 `cancel_pending_one_time_wake_triggers`: the message is delivered, the session takes its turn, and
 its own wake-ups — the schedule and any session-scoped `ao_event` watcher — are still armed when
@@ -445,17 +445,20 @@ transient flags, never persisted, each set by the caller that knows the answer.
 | A **wake fire** — the session's own `wake_me_up_later` or state-change watcher firing | `Trigger#follow_up_session!` | **Held** across the woken turn and retired when that turn comes to rest. Consuming them at fire time, before the woken turn has re-armed anything, is the no-trigger window of [#569](https://github.com/tadasant/zimmer/issues/569). |
 | A **follow-up** — a router's `follow_up`, a human's message, a queued message draining, a Slack or GitHub trigger | `Session#resume_for_follow_up!` | **Preserved**, with nothing marked and nothing re-slept. The session takes the turn it was handed and its own wake fires afterwards, from `needs_input`, exactly as it intended. |
 
-The last row is [#898](https://github.com/tadasant/zimmer/issues/898), and it used to be the first
-row. A follow-up sent to a sleeping session consumed the wake that session was counting on, silently
-in both directions: the sender was never told it had just become the only thing that could wake the
+The last row is [#898](https://github.com/tadasant/zimmer/issues/898). Consuming there was silent in
+both directions: the sender was never told it had just become the only thing that could wake the
 session, and the session — which had usually already written *"my self-wake fires at 08:06"* into
 its own transcript — answered, came to rest in `needs_input`, and sat there indefinitely. Session
 13403 spent the morning of 2026-09-04 like that, holding a nearly-finished PR, until an unrelated
 third session happened to nudge it.
 
-Preserving is deliberately the eager side of that trade. A wake preserved over a follow-up the
-session had already dealt with costs one extra turn, which is visible in the transcript and cheap; a
-wake consumed costs an indefinite strand nobody can see.
+Preserving is deliberately the eager side of that trade, and the cost is worth stating honestly. The
+wake carries the prompt the session wrote for itself, so a follow-up that *redirected* the session
+is followed by a wake pointing back at the abandoned work — and a session running `open-pr` or
+`wait-for-ci` re-arms its own wake when it wakes, so this can be several turns rather than one. All
+of it is in the transcript, all of it is the session deciding with full context, and all of it is
+bounded by the same self-wake budget the skill already keeps. A consumed wake costs an indefinite
+strand nobody can see at all.
 
 Two things keep it honest:
 
@@ -464,9 +467,12 @@ Two things keep it honest:
   armed wake on `/triggers` and is collected by nothing. A one-time schedule is always preserved,
   including one already overdue, because an overdue schedule is a wake the scheduler has not reached
   yet rather than a wake that is lost.
-- `archive` retires whatever is left, via `retire_pending_one_time_wakes`. A session with no turns
-  left has no wait left, and a preserved wake that outlived its session would fire into an archived
-  row — which `Trigger#follow_up_session!` answers by *resuscitating* it.
+- A wake that outlives its session is already somebody's job. `CleanupStaleTriggersJob`
+  destroys one-time reuse triggers whose target session is archived, and it excludes
+  `resuscitate_archived` triggers because those are an explicit opt-in to waking an archived
+  session. Nothing in the preserve branch second-guesses that: a `wake_me_up_later` wake never
+  sets `resuscitate_archived`, so firing at an archived target skips silently and the sweep
+  collects the row.
 
 The sender is told, too. `action_session follow_up` adds an **Its own wake-up** line to its result,
 and `POST /api/v1/sessions/:id/follow_up` returns a `pending_wake` object, so a router redirecting a
@@ -817,8 +823,10 @@ week, fewer than a third of these nudges were within ten minutes of a deploy.
 `AutomatedPrompts.system_recovery(reason:)` appends one line naming the path, after the standing
 instructions, so the prompt's meaning is unchanged for an agent that ignores it.
 `AutomatedPrompts.system_recovery?` is the matching predicate — compare with it rather than `==`
-against the constant, or a reasoned nudge will be mistaken for an ordinary follow-up and consume
-the wake-ups the next section exists to preserve.
+against the constant. Both branches of `AgentSessionJob#resume_for_recovery_prompt` preserve the
+session's wake-ups, so a misread no longer loses them; what it loses is the conditional re-sleep,
+which only the recovery branch performs. A recovered session that should have gone back to sleep
+comes to rest in `needs_input` instead.
 
 **Three producers name themselves today**, and between them they account for the large majority
 of nudges by volume: the `InterruptError` auto-continue, `SessionContinuation` (which covers both
@@ -831,7 +839,7 @@ gap is unfinished work, not a designed-in default.
 
 #### A system-recovery resume keeps the wake-ups
 
-That cancellation is right for a *deliberate* resume and wrong for a recovery one. When Zimmer
+That cancellation is right for a *takeover* and wrong for a recovery. When Zimmer
 restarts a session's process after an interruption — a deployment restart, an orphaned process, a
 hung process reaped, a health-monitor retry — the session did not choose to wake, so the wake-ups
 it was sleeping on are still exactly what it is waiting for. Consuming them there is how an

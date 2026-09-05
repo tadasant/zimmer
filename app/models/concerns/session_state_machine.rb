@@ -76,10 +76,15 @@ module SessionStateMachine
   # with a self-wake due at 08:06, a router followed up at 08:06, and the session
   # sat idle with a nearly-finished PR until an unrelated third session nudged it.
   #
-  # Preserving is deliberately the eager side of that trade. A wake preserved
-  # over a follow-up the session had already handled costs one extra turn, which
-  # is visible in the transcript and cheap; a wake consumed costs an indefinite
-  # strand nobody can see. Loud beats quiet.
+  # Preserving is deliberately the eager side of that trade, and the cost is
+  # worth naming rather than minimising. The wake carries the prompt the session
+  # wrote for ITSELF, so a follow-up that redirected the session is followed by a
+  # wake pointing back at the abandoned work — and a session running `open-pr` or
+  # `wait-for-ci` re-arms its own wake when it wakes, so this can be several turns
+  # rather than one. Every one of them is in the transcript, is the session
+  # deciding with the follow-up in front of it, and is bounded by the self-wake
+  # budget the skill already keeps. A consumed wake costs an indefinite strand
+  # nobody can see at all. Loud beats quiet.
   #
   # Transient, never persisted, cleared in an `ensure` by Session#resume_for_follow_up!.
   attr_accessor :follow_up_resume
@@ -392,13 +397,6 @@ module SessionStateMachine
           # held across a turn is retired here rather than lingering as enabled
           # rows against a session nobody will follow up into.
           retire_held_wake_triggers
-          # And the wakes nothing held: a session with no turns left has no wait
-          # left either. Without this a wake preserved across a follow-up
-          # (#preserve_pending_wakes_across_follow_up) outlives the session that
-          # armed it and fires into an archived row, where Trigger#follow_up_session!
-          # cannot reuse it and resuscitates it instead — an archived session back
-          # from the dead on a wait it already finished.
-          retire_pending_one_time_wakes
           set_trash_expiry
           # Same reasoning as on `fail`: a session trashed straight from
           # `needs_input` is one nobody comes back to, and the trash bookkeeping
@@ -840,6 +838,45 @@ module SessionStateMachine
   def pending_wake_phrase
     at = pending_wake_at
     at ? "it is paused until #{at.utc.iso8601}" : "it is asleep on a pending wake-up"
+  end
+
+  # Whether any one-time wake-up is still armed against this session — asked with
+  # the same "can it fire" reading as #awaiting_scheduled_wake?, not the looser
+  # "is there an unfired row".
+  #
+  # #execute_pending_sleep gates a preserved sleep intent on this, and the two
+  # readings differ exactly where it matters: a session stranded on a wake that
+  # has lapsed, or that watches a session which will never transition again, would
+  # answer true to the looser one, re-sleep on the strength of it, and be stranded
+  # again by the very resume sent to rescue it. That is the loop StrandedSleepRescue
+  # would otherwise spend its whole budget on.
+  #
+  # Rescued to FALSE, which is the opposite direction from #awaiting_scheduled_wake?
+  # and deliberately so. That one is asked about a session already at rest, where
+  # "asleep on purpose" is the answer that leaves it alone; this one gates a
+  # re-sleep, where the safe answer is to not go back to sleep. A session that
+  # comes to rest in `needs_input` because the trigger table was briefly
+  # unreadable is visible on the homepage; one that sleeps on a wake nobody could
+  # confirm is not.
+  #
+  # That direction is also what makes this — and NOT #awaiting_scheduled_wake? —
+  # the predicate for the two surfaces that REPORT a preserved wake to a
+  # follow-up's sender. Telling a router "this session wakes itself" on the
+  # strength of a trigger table nobody could read is how the router declines to
+  # schedule a wake of its own and the session strands anyway. Saying nothing is
+  # the answer that costs at most a duplicate wake.
+  def armed_one_time_wake?
+    conditions = pending_one_time_wake_conditions.to_a
+    watched = self.class.watched_session_states(conditions)
+    conditions.any? do |condition|
+      (condition.one_time_schedule? || condition.session_scoped_ao_event?) &&
+        self.class.one_time_wake_pending?(condition, watched_states: watched)
+    end
+  rescue ActiveRecord::ActiveRecordError => e
+    Rails.logger.error(
+      "[SessionStateMachine] Failed to check armed wake-ups for session #{id}: #{e.message}"
+    )
+    false
   end
 
   # Whether a manual refresh of this session should send the automated continue
@@ -2109,71 +2146,6 @@ module SessionStateMachine
     # and one of its members fires into whatever the session is doing next — the
     # stale-wake regression that holding exists to avoid.
     report_swallowed_side_effect(__method__, e, alert: true)
-  end
-
-  # Consume every one-time wake-up still aimed at this session, because the
-  # session is over.
-  #
-  # The counterpart to #retire_held_wake_triggers on the `archive` path, for the
-  # wakes that were never held: the ones a session armed for itself and the ones
-  # #preserve_pending_wakes_across_follow_up left standing. Both are waits, and an
-  # archived session is not waiting for anything.
-  #
-  # Consumed rather than destroyed, and that is the same choice
-  # #cancel_pending_one_time_wake_triggers makes: the trigger row may carry other
-  # conditions that still do real work, so stamping the condition closes the wake
-  # without deleting anything. A row left with nothing but spent one-shots becomes
-  # a Trigger#dead_one_time_wake? and CleanupStaleTriggersJob collects it.
-  #
-  # Deliberately NOT called from `fail`, for the reason #retire_held_wake_triggers
-  # gives: a `failed` session is not reliably a finished one.
-  def retire_pending_one_time_wakes
-    conditions = pending_one_time_wake_conditions.select do |condition|
-      condition.one_time_schedule? || condition.session_scoped_ao_event?
-    end
-    return if conditions.empty?
-
-    conditions.each { |condition| condition.update!(last_triggered_at: Time.current) }
-    Rails.logger.info(
-      "[SessionStateMachine] Retired #{conditions.size} pending one-time wake-up(s) " \
-      "(trigger_conditions #{conditions.map(&:id).join(', ')}) on archive of session #{id}"
-    )
-  rescue => e
-    # Alert: swallowed, a wake survives the session it belonged to and fires into
-    # an archived row, which Trigger#follow_up_session! answers by resuscitating it.
-    report_swallowed_side_effect(__method__, e, alert: true)
-  end
-
-  # Whether any one-time wake-up is still armed against this session — asked with
-  # the same "can it fire" reading as #awaiting_scheduled_wake?, not the looser
-  # "is there an unfired row".
-  #
-  # #execute_pending_sleep gates a preserved sleep intent on this, and the two
-  # readings differ exactly where it matters: a session stranded on a wake that
-  # has lapsed, or that watches a session which will never transition again, would
-  # answer true to the looser one, re-sleep on the strength of it, and be stranded
-  # again by the very resume sent to rescue it. That is the loop StrandedSleepRescue
-  # would otherwise spend its whole budget on.
-  #
-  # Rescued to FALSE, which is the opposite direction from #awaiting_scheduled_wake?
-  # and deliberately so. That one is asked about a session already at rest, where
-  # "asleep on purpose" is the answer that leaves it alone; this one gates a
-  # re-sleep, where the safe answer is to not go back to sleep. A session that
-  # comes to rest in `needs_input` because the trigger table was briefly
-  # unreadable is visible on the homepage; one that sleeps on a wake nobody could
-  # confirm is not.
-  def armed_one_time_wake?
-    conditions = pending_one_time_wake_conditions.to_a
-    watched = self.class.watched_session_states(conditions)
-    conditions.any? do |condition|
-      (condition.one_time_schedule? || condition.session_scoped_ao_event?) &&
-        self.class.one_time_wake_pending?(condition, watched_states: watched)
-    end
-  rescue ActiveRecord::ActiveRecordError => e
-    Rails.logger.error(
-      "[SessionStateMachine] Failed to check armed wake-ups for session #{id}: #{e.message}"
-    )
-    false
   end
 
   # Unfired trigger conditions that could still wake this session: conditions on

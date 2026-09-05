@@ -305,11 +305,13 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
     assert session.reload.running?, "an unpaused parked session must still be startable"
   end
 
-  # The deliberate exception: a caller addressing this session directly is taking it
-  # over, not working a queue. `follow_up` is that caller, and consuming the now-moot
-  # wake is the documented behaviour of `resume` — pinned so the guards above cannot
-  # be widened into it by accident.
-  test "a follow_up addressed at a paused session still takes it over" do
+  # The deliberate exception: the guards above refuse a caller working a QUEUE, and
+  # `follow_up` is a caller addressing this session directly, so it is not refused.
+  # What it does not do is end the session's wait. A message sent to a sleeper adds
+  # a turn to that wait; the wake it was asleep on is still armed afterwards and
+  # still fires on its own schedule (#898). Pinned from both sides so neither the
+  # refusal nor the preservation can be widened into the other by accident.
+  test "a follow_up addressed at a paused session is delivered without ending its wait" do
     session = dormant_session(genesis: SessionGenesis::GITHUB_ISSUE, precedence: 100_000)
     trigger = schedule_wake!(session)
 
@@ -318,9 +320,10 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
     )
 
     assert session.reload.running?, "a direct follow-up must not be refused, got #{session.status}"
-    assert trigger.reload.trigger_conditions.sole.last_triggered_at.present?,
-      "taking the session over consumes its pending wake, so it cannot fire into live work"
-    refute session.paused_until_scheduled_time?
+    assert_nil trigger.reload.trigger_conditions.sole.last_triggered_at,
+      "the follow-up added a turn to the session's wait; it must not consume the wake"
+    assert session.paused_until_scheduled_time?,
+      "and the pause is still what the session comes back to rest on"
   end
 
   # The selector is partly an AGENT reading the ranked queue through this tool. The

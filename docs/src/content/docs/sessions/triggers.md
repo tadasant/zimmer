@@ -1839,9 +1839,10 @@ nearly-finished PR ([#898](https://github.com/tadasant/zimmer/issues/898)). The 
 consumes what is in [A follow-up does not cancel a
 wake](/sessions/lifecycle/#a-follow-up-does-not-cancel-a-wake).
 
-`archive` is where a wake nothing else spent finally goes — `retire_pending_one_time_wakes` stamps
-whatever is still pending, because a session with no turns left has no wait left either, and a
-preserved wake that outlived its session would fire into an archived row and resuscitate it.
+A wake that outlives its session is collected rather than fired: `CleanupStaleTriggersJob` destroys
+one-time reuse triggers whose target is archived, excluding the `resuscitate_archived` ones that
+asked for exactly that. A `wake_me_up_later` wake never sets `resuscitate_archived`, so firing at an
+archived target skips silently in the meantime.
 
 What is left is a row that can never fire again, sitting in `/triggers` and in `search_triggers` as
 `enabled` with 0 sessions — indistinguishable from an armed wake. `Trigger#dead_one_time_wake?` is
@@ -1854,7 +1855,7 @@ would sit there for another thirteen hours.
 
 **The sweep asks this of every one-time wake, not only of those carrying a schedule.** A wake built
 purely from session-scoped `ao_event` conditions — what `wake_me_up_when_session_changes_state`
-creates — is consumed by the same resume and satisfies `dead_one_time_wake?` just as squarely. It has
+creates — is consumed by the same takeover and satisfies `dead_one_time_wake?` just as squarely. It has
 no `scheduled_at` to lapse, so for a long time nothing reached it and it survived as `enabled` with 0
 sessions until its target session was archived; in the recommended two-row pattern below, that meant
 the deadline backstop cleared within the hour and the watcher beside it did not
@@ -1873,9 +1874,10 @@ touched, however far out its `scheduled_at` is; nor is one whose trigger also ca
 condition (a recurring schedule, a Slack feed, an `ao_event` watcher that has not fired); nor is a
 `failed` trigger, which is a tombstone you clear.
 
-A **system-recovery** resume is the exception to all of it. It takes the preserve branch instead:
-the session did not choose to wake, so its wakes stay armed and unconsumed, and nothing collects
-them.
+Three resumes are the exception to all of it, because none of them consumes anything for the sweep
+to find. A **system-recovery** resume and a **follow-up** both take a preserve branch — the session
+did not choose to wake in the first case, and nobody ended its wait in the second — and a **wake
+fire** takes the hold branch. Their wakes stay armed and unconsumed, and nothing collects them.
 
 **One trigger, several events.** A Trigger ORs its conditions, so
 `wake_me_up_when_session_changes_state` takes `event_names` (an array) and builds **one** trigger
@@ -1954,7 +1956,7 @@ arms nothing itself — a leftover wake would pull the session straight back out
 There is **no human-facing control that sleeps a session until a chosen time**. Scheduling a wake is
 an MCP capability.
 
-A human's levers on a sleeping session are narrower than they look, and worth stating exactly. **Start now** (the Ranked view's ⋮) resumes a session parked in the **spot queue**, which arms nothing — but it *refuses* one asleep on a wall-clock wake, because `Sessions::StartNow` treats an armed wake as outranking the queue. For that session a human has two routes, both of which consume the pause because both mean *I am taking this session over*: send it a **follow-up** from its session page, or cancel the wake at **/triggers**, where it is listed as `Wake session #<id> at <time>`. The **Restart** button is not one of them — it refuses anything that is not `failed`.
+A human's levers on a sleeping session are narrower than they look, and worth stating exactly. **Start now** (the Ranked view's ⋮) resumes a session parked in the **spot queue**, which arms nothing — but it *refuses* one asleep on a wall-clock wake, because `Sessions::StartNow` treats an armed wake as outranking the queue. For that session a human has two routes and they do different things. A **follow-up** from its session page is delivered and the session takes a turn, but it leaves the wake armed — the message adds to the wait rather than ending it, so the session sleeps again on its own schedule afterwards. Genuinely taking the session over means cancelling the wake at **/triggers**, where it is listed as `Wake session #<id> at <time>`. The **Restart** button is neither — it refuses anything that is not `failed`.
 
 ## Everything is polled
 
