@@ -3030,9 +3030,11 @@ permanent and fleet-wide: `AgentPostedGithubComment` rows are global, so a human
 recorded once is never delivered to any session again, and nothing logs it. The endpoint path of a
 `gh api` write is the one part still read as written, since quoting it is ordinary and a quoted path
 must not hide a real post. What stays unrecognized is the same short list `GithubPrUrlHook` has — an
-**unquoted** mention (`echo gh pr comment`), a `\"`-escaped one, and a line of a **heredoc body**
-— plus a post handed to a wrapper that is not a shell (`ssh box "gh pr comment ..."`), which the
-splitter does not unwrap and which nothing in a session does today.
+**unquoted** mention (`echo gh pr comment`), a `\"`-escaped one, and a line of a heredoc body whose
+terminator the splitter could not find — plus a post handed to a wrapper that is not a shell
+(`ssh box "gh pr comment ..."`), which the splitter does not unwrap and which nothing in a session
+does today. A *terminated* heredoc's body is out of the reading since
+[#873](https://github.com/tadasant/zimmer/issues/873).
 
 Classification is per command segment; the *output* is not split that way, because a tool result
 arrives as one blob for the whole call. What a post's result vouches for is scoped instead
@@ -3849,14 +3851,17 @@ Heuristics have two failure directions and neither announces itself:
   indistinguishable from a true one. The shell path has the same shape of edge, narrower since
   [#772](https://github.com/tadasant/zimmer/issues/772): a create is read out of what a command runs
   rather than what it quotes, so `gh pr create` inside a `grep` pattern, an `rg` argument or an
-  `echo` is data. Three spellings still read as an invocation: an **unquoted** mention (`echo gh pr
-  create`, or a `#` comment saying it), a `\"`-escaped one, and a line of a **heredoc body**, since a
-  heredoc quotes its body by a mechanism the splitter does not model — that last one is live and has
-  bitten the session that wrote this fix, [#873](https://github.com/tadasant/zimmer/issues/873). All are rarer than the quoted
-  form that #772 was, and erring this way is deliberate: the same reading is what keeps a real create
-  behind `timeout`, `until`, `sudo` or `xargs` from being missed, which is the failure below.
+  `echo` is data — and narrower again since
+  [#873](https://github.com/tadasant/zimmer/issues/873), which took the lines of a **heredoc body**
+  out of the reading and stopped a run of three or more quotes (Python's `"""`) from breaking the
+  pairing around them. Two spellings still read as an invocation: an **unquoted** mention (`echo gh
+  pr create`, or a `#` comment saying it) and a `\"`-escaped one. A heredoc whose terminator the
+  splitter cannot find is read as shell rather than swallowed, so an unterminated or truncated one
+  is a third — deliberately, because the alternative loses real creates, which is the failure below.
+  All are rarer than the quoted form that #772 was, and erring this way is the same choice that
+  keeps a real create behind `timeout`, `until`, `sudo` or `xargs` from being missed.
   `GithubCommentAuthorshipHook` reads its own posting commands the same way since
-  [#870](https://github.com/tadasant/zimmer/issues/870), and the same three spellings are its
+  [#870](https://github.com/tadasant/zimmer/issues/870), and the same spellings are its
   residual edge, on top of the `gh api` endpoint path it reads as written.
 - **Too tight** and a session's own PR is never recorded, so `Github::PrPollPass` and all three of
   its evaluators quietly do nothing for it. A PR
