@@ -1022,6 +1022,28 @@ shared is the one that produced the observed defect: "does a session exist for t
 the same `#fire` for both, so a raise after the row was committed consumes the event on either path.
 Tracked in [#748](https://github.com/tadasant/zimmer/issues/748).
 
+#### A session that dies holding the fire
+
+The flip side of consuming the event once a session exists: from that moment the session **is** the
+work item, and there is exactly one of it. If it then reaches terminal `failed` — at first start, or
+at any later point — the fire is spent, no retry is coming, and nothing points at the subject any
+more. A `failed` session cannot be messaged or woken, and the merge-gate contract reads it as
+unreachable.
+
+That used to happen in complete silence. On 2026-08-23 the `PR ready to merge → merge gate` trigger
+fired correctly on a `ready to merge` label; 86 seconds later its session died at first start, and
+the PR sat with no gate on it for eleven hours. Every surface reported health: the trigger's own
+history showed the fire, the PR showed a clean label and no comment, and no alert fired
+([#632](https://github.com/tadasant/zimmer/issues/632)).
+
+The `fail` transition now reports it. Any session carrying `metadata.trigger_id` that fails gets an
+ERROR line on its own timeline and an `#eng-alerts` alert naming the trigger, the session, the
+reason it died and the GitHub subject it was fired for — so the drop is re-dispatched deliberately,
+in minutes rather than in hours. It is *surfaced rather than retried*, on purpose: re-dispatching
+automatically would put a second session on an event the fleet has already spent, on the same
+population that produced the double-merge race above. See
+[Lifecycle](/sessions/lifecycle/#a-triggers-session-that-fails-takes-the-work-item-with-it).
+
 ### Rate-limit budget
 
 Every condition costs **one** search request per tick, whatever its repo count: GitHub's search API
