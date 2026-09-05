@@ -64,7 +64,14 @@ module JsonbDualWrite
   # check keeps a deploy that runs this code before the migration — or a model
   # that never got the columns — from generating SQL naming a column that is not
   # there.
+  #
+  # The `model < JsonbDualWrite` check matters because `COLUMNS` holds generic
+  # names. `AtomicJsonMetadata` is a standalone concern with nothing tying it to
+  # `Session`, so a future model that included it and happened to have both
+  # `metadata` and `metadata_jsonb` would otherwise get shadow SQL it never asked
+  # for.
   def self.twin_for(model, name)
+    return nil unless model < JsonbDualWrite
     return nil unless COLUMNS.include?(name.to_s)
 
     twin = "#{name}_jsonb"
@@ -87,7 +94,12 @@ module JsonbDualWrite
   def update_columns(attributes)
     expanded = attributes.each_with_object({}) do |(name, value), out|
       out[name] = value
-      twin = JsonbDualWrite.twin_for(self.class, name)
+      # Resolved through `attribute_aliases` because Rails resolves them AFTER
+      # this point, in its own `update_columns`. Session declares no alias today;
+      # the premise of the override is that a call site added tomorrow is covered
+      # without knowing this file exists, and an alias added tomorrow would
+      # otherwise defeat it silently.
+      twin = JsonbDualWrite.twin_for(self.class, self.class.attribute_aliases[name.to_s] || name)
       out[twin] = value if twin
     end
 
@@ -102,6 +114,12 @@ module JsonbDualWrite
   # `new_record?` short-circuits the dirty check on create: an INSERT writes every
   # column whether or not the caller assigned it, and a column filled from its
   # schema default is exactly the case a dirty check is least reliable about.
+  #
+  # Unguarded by `has_attribute?` on purpose. A partially-selected record —
+  # `Session.select(:id, :metadata)` — carries no shadow attribute, and
+  # `write_attribute` DEFINES one rather than raising, so the shadow travels with
+  # the save instead of being left behind. Verified against this Rails version
+  # rather than assumed; a guard here would only skip a write that works.
   def mirror_json_columns_to_jsonb
     JsonbDualWrite::COLUMNS.each do |name|
       twin = JsonbDualWrite.twin_for(self.class, name)

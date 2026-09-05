@@ -168,6 +168,60 @@ class JsonbDualWriteTest < ActiveSupport::TestCase
     assert_equal "/clones/def", Session.find(session.id).metadata_jsonb["clone_path"]
   end
 
+  # The sharpest edge in the SQL change: the merge expression is interpolated
+  # twice and its binds are supplied twice, so a placeholder and a bind that fell
+  # out of step would put the removals of one assignment against the updates of
+  # the other. Only a merge that BOTH removes and adds can catch that.
+  test "a merge that removes and adds in one statement binds both assignments in step" do
+    session = sessions(:running)
+    session.update!(metadata: { "process_pid" => 111, "sigterm_retry_count" => 2 })
+
+    session.merge_metadata!({ "clone_path" => "/clones/ghi" }, [ "sigterm_retry_count" ])
+
+    assert_columns_agree(session, :metadata, context: "after a combined merge and remove")
+    assert_equal({ "process_pid" => 111, "clone_path" => "/clones/ghi" },
+      Session.find(session.id).metadata_jsonb)
+  end
+
+  # The twin assignment reads the SOURCE column, not the shadow, so a shadow that
+  # is wrong rather than merely absent is corrected by the next merge. That
+  # self-healing is what limits the blast radius of the rolling-deploy window the
+  # backfill's predicate is written for.
+  test "a merge repairs a shadow that is stale rather than NULL" do
+    session = sessions(:running)
+    session.update!(metadata: { "process_pid" => 111 })
+    Session.where(id: session.id).update_all("metadata_jsonb = '{\"stale\": true}'::jsonb")
+
+    session.merge_metadata!("clone_path" => "/clones/jkl")
+
+    assert_columns_agree(session, :metadata, context: "merging onto a stale shadow")
+    assert_equal({ "process_pid" => 111, "clone_path" => "/clones/jkl" },
+      Session.find(session.id).metadata_jsonb)
+  end
+
+  # A partially-selected record carries no shadow attribute. Merging on one does
+  # raise — on `status`, from `broadcast_update_to_sessions_index`, which is
+  # pre-existing code this change does not touch — and the point of asserting on
+  # the attribute NAME is that the failure is not, and must never become, one the
+  # dual-write introduced on the app's hottest write path. The row gets both
+  # columns regardless, because the UPDATE names them whatever this object holds.
+  test "the dual-write adds no failure mode to a partially selected record" do
+    session = sessions(:running)
+    session.update!(metadata: { "process_pid" => 111 })
+
+    partial = Session.select(:id, :metadata).find(session.id)
+    assert_not partial.has_attribute?("metadata_jsonb")
+
+    error = assert_raises(ActiveModel::MissingAttributeError) do
+      partial.merge_metadata!("interrupt_terminate_pid" => 4242)
+    end
+    assert_match(/status/, error.message)
+    assert_no_match(/metadata_jsonb/, error.message)
+
+    assert_columns_agree(session, :metadata, context: "after merging a partial select")
+    assert_equal 4242, Session.find(session.id).metadata_jsonb["interrupt_terminate_pid"]
+  end
+
   test "a merge on a stale object does not resurrect the shadow it was loaded with" do
     session = sessions(:running)
     session.update!(metadata: { "process_pid" => 111 })
