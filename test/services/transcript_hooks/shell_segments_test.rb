@@ -207,6 +207,37 @@ class TranscriptHooks::ShellSegmentsTest < ActiveSupport::TestCase
     assert_equal [ "cat <<A <<B > f", "body a", "A", "body b", "gh pr create --fill" ], segments(command)
   end
 
+  test "does not let a backslash ending a body line swallow the terminator" do
+    # A `<<'EOF'` body is literal, so a trailing backslash is part of the text
+    # rather than a continuation. Folding continuations before reading heredocs
+    # glued `EOF` onto the line above it, the body ran on to the *next* `EOF` in
+    # the script, and the real create between them was dropped — #89 out of the fix
+    # for #873.
+    command = "cat <<'EOF' > a\nSummary line\\\nEOF\ngh pr create --title T --body-file a\ncat <<'EOF' > b\nmore\nEOF"
+
+    assert_equal [ "cat <<'EOF' > a", "gh pr create --title T --body-file a", "cat <<'EOF' > b" ],
+                 segments(command)
+  end
+
+  test "still folds a continuation on the line a heredoc is opened from" do
+    # The other half of that ordering: a continuation *does* apply to the command
+    # line, so what it carries is a command and the body starts under the whole of
+    # it.
+    command = "cat <<EOF > f \\\n  && gh pr create --fill\nthe body\nEOF"
+
+    assert_equal [ "cat <<EOF > f", "gh pr create --fill" ], segments(command)
+  end
+
+  test "does not open a heredoc from a line whose quoting never resolves" do
+    # `git commit -m "…"` with the message running past the end of the line: the
+    # `<<` is inside an argument, not a redirection. Reading it as one and then
+    # finding a later line that happens to be the bare delimiter drops every
+    # command in between (#89).
+    command = %(git commit -m "handles a << EOF\n"\ngh pr create --fill\nEOF)
+
+    assert_equal [ %(git commit -m "handles a << EOF), %("), "gh pr create --fill", "EOF" ], segments(command)
+  end
+
   test "does not read a here-string as a heredoc" do
     # `<<<` takes a word, not a body, so nothing after it is data.
     assert_equal [ "grep x <<<'y'", "gh pr create --fill" ], segments("grep x <<<'y'\ngh pr create --fill")
