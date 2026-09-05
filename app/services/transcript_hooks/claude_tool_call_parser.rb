@@ -15,6 +15,19 @@ class TranscriptHooks::ClaudeToolCallParser < TranscriptHooks::ToolCallParser
     end
   end
 
+  # Every tool_use block, shell and non-shell alike. An MCP tool call has exactly
+  # the shape a Bash one does — a `tool_use` block with an `id` and an `input`
+  # object — and differs only in its name, `mcp__<server>__<tool>`.
+  def structured_tool_calls
+    @structured_tool_calls ||= content_blocks.filter_map do |block|
+      next unless block["type"] == "tool_use"
+      next unless block["id"].is_a?(String) && block["name"].is_a?(String)
+
+      input = block["input"]
+      { id: block["id"], name: block["name"], input: input.is_a?(Hash) ? input : {} }
+    end
+  end
+
   def tool_results
     @tool_results ||= content_blocks.filter_map do |block|
       next unless block["type"] == "tool_result"

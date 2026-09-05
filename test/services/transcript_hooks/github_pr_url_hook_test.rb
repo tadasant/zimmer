@@ -8,6 +8,9 @@ require "test_helper"
 #   -------------------------------------------|------------------------|---------
 #   successful `gh pr create` result           | yes                    | yes
 #   `gh api .../pulls -X POST` result          | yes                    | yes
+#   MCP `create_pull_request` result           | yes (same repo)        | yes
+#   MCP `create_pull_request` on another repo  | not this session's     | no
+#   any other MCP tool's result                | no                     | no
 #   failed `gh pr create`, "already exists"    | yes (same repo)        | yes
 #   failed `gh pr create`, other failure       | unknown                | no
 #   `gh api .../pulls` with no POST (a list)   | no                     | no
@@ -478,6 +481,204 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     )
 
     assert_equal [ "https://github.com/owner/repo/pull/1", "https://github.com/other/proj/pull/2" ], tracked_urls
+  end
+
+  # --- MCP `create_pull_request` creates ---------------------------------------
+  #
+  # A session holding a GitHub MCP server opens a PR through a structured tool
+  # call, not a shell command, so no command parsing can reach it (#559). Both
+  # runtimes name an MCP tool `mcp__<server>__<tool>`; the input names the repo,
+  # and the result is scanned for a URL exactly as a shell create's output is.
+  #
+  # The block shape is the one Claude Code writes verbatim: a `tool_use` with an
+  # `id`, an `mcp__`-prefixed `name` and an `input` object, answered by a
+  # `tool_result` whose content is an array of text blocks. What no server's
+  # result *body* is assumed to look like is its structure — only that a PR URL
+  # may appear somewhere in it.
+
+  def claude_mcp_call(id:, name: "mcp__github__create_pull_request", input: { owner: "owner", repo: "repo", title: "T", head: "feat", base: "main" })
+    {
+      type: "assistant",
+      message: { role: "assistant", content: [ { type: "tool_use", id: id, name: name, input: input } ] }
+    }.to_json
+  end
+
+  def claude_mcp_result(id:, text:, is_error: false)
+    {
+      type: "user",
+      message: { content: [ { tool_use_id: id, type: "tool_result", content: [ { type: "text", text: text } ], is_error: is_error } ] }
+    }.to_json
+  end
+
+  test "records a PR opened by an MCP create_pull_request call" do
+    run_hook(
+      claude_mcp_call(id: "toolu_mcp"),
+      claude_mcp_result(id: "toolu_mcp", text: %({"number":123,"html_url":"https://github.com/owner/repo/pull/123"}))
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/123" ], tracked_urls
+  end
+
+  test "records a PR opened by an MCP create_pull_request whose input names one owner/repo slug" do
+    # github-mcp-server takes `owner` and `repo` separately; a server that takes
+    # one slug spells it `repo` or `repository`.
+    run_hook(
+      claude_mcp_call(id: "toolu_mcp", input: { repository: "owner/repo", title: "T" }),
+      claude_mcp_result(id: "toolu_mcp", text: "Created pull request https://github.com/owner/repo/pull/124")
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/124" ], tracked_urls
+  end
+
+  test "records a PR opened by an MCP create_pull_request whose input names no repo" do
+    # A server that infers the repo from its own configuration names none in the
+    # input, which leaves the same-repo guard on the URL as the only bound.
+    run_hook(
+      claude_mcp_call(id: "toolu_mcp", input: { title: "T", head: "feat", base: "main" }),
+      claude_mcp_result(id: "toolu_mcp", text: "https://github.com/owner/repo/pull/125")
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/125" ], tracked_urls
+  end
+
+  test "ignores an MCP create_pull_request against a different repository" do
+    # #214, the direction this tier must not open: a create on someone else's
+    # repo is not this session's PR to be notified about. Unlike a shell create,
+    # which vouches for any repo it names, an MCP tool name is a convention
+    # matched across servers whose semantics Zimmer has not verified, so the tier
+    # is held to the session's own repo on both ends.
+    run_hook(
+      claude_mcp_call(id: "toolu_mcp", input: { owner: "other", repo: "proj", title: "T" }),
+      claude_mcp_result(id: "toolu_mcp", text: %({"html_url":"https://github.com/other/proj/pull/42"}))
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "ignores a same-repo PR the create's own body cites" do
+    # A create result is routinely the created PR serialized back, `body` and
+    # all — and a body written by the `open-pr` skill cites other pull requests
+    # as a matter of course. One create opens one PR, so the result vouches for
+    # the first URL on this repo and no others; without that cap the session
+    # would be handed every PR it linked to (#214).
+    run_hook(
+      claude_mcp_call(id: "toolu_mcp"),
+      claude_mcp_result(
+        id: "toolu_mcp",
+        text: %({"html_url":"https://github.com/owner/repo/pull/140",) +
+              %("body":"Supersedes https://github.com/owner/repo/pull/12 and follows https://github.com/owner/repo/pull/13"})
+      )
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/140" ], tracked_urls
+  end
+
+  test "ignores a same-repo PR quoted by an MCP create against a different repository" do
+    # The half of the guard the URL's own repo cannot decide: the create opened
+    # someone else's PR, and its result echoes a URL on *this* repo. The repo the
+    # input names is what rejects it.
+    run_hook(
+      claude_mcp_call(id: "toolu_mcp", input: { owner: "other", repo: "proj", title: "T", body: "ports https://github.com/owner/repo/pull/141" }),
+      claude_mcp_result(
+        id: "toolu_mcp",
+        text: %({"html_url":"https://github.com/other/proj/pull/9","body":"ports https://github.com/owner/repo/pull/141"})
+      )
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "ignores a foreign PR quoted in the result of an MCP create on this repo" do
+    # The repo the input names bounds what its result may vouch for, the same way
+    # a create command's `--repo` does: a body that echoes back a related PR must
+    # not be adopted alongside the one that was opened.
+    run_hook(
+      claude_mcp_call(id: "toolu_mcp"),
+      claude_mcp_result(
+        id: "toolu_mcp",
+        text: %({"html_url":"https://github.com/owner/repo/pull/126","body":"follows https://github.com/other/proj/pull/7"})
+      )
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/126" ], tracked_urls
+  end
+
+  test "ignores a failed MCP create_pull_request" do
+    # There is no "already exists" reading here: that one matches gh's own
+    # failure text, and every MCP server writes its own. A PR the call failed to
+    # open is not evidence it opened one.
+    run_hook(
+      claude_mcp_call(id: "toolu_mcp"),
+      claude_mcp_result(
+        id: "toolu_mcp",
+        text: "failed to create pull request: a pull request already exists for owner:feat " \
+              "(https://github.com/owner/repo/pull/127)",
+        is_error: true
+      )
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "ignores an MCP tool that writes about a pull request rather than opening one" do
+    # `create_pull_request_review` and `create_pull_request_review_comment` sit
+    # next to `create_pull_request` in github-mcp-server's tool list. The tool
+    # half of the name is matched whole, so neither reads as a create.
+    [ "mcp__github__create_pull_request_review", "mcp__github__create_pull_request_review_comment" ].each do |tool|
+      @session.update!(custom_metadata: {})
+
+      run_hook(
+        claude_mcp_call(id: "toolu_mcp", name: tool, input: { owner: "owner", repo: "repo", pullNumber: 128 }),
+        claude_mcp_result(id: "toolu_mcp", text: %({"html_url":"https://github.com/owner/repo/pull/128#discussion_r1"}))
+      )
+
+      assert_nil tracked_urls, tool
+    end
+  end
+
+  test "ignores a PR the session only read through an MCP tool" do
+    # The #214 shape through the MCP door: reading a repo's PRs is not opening
+    # one, however structured the call that read them.
+    run_hook(
+      claude_mcp_call(id: "toolu_mcp", name: "mcp__github__list_pull_requests", input: { owner: "owner", repo: "repo" }),
+      claude_mcp_result(id: "toolu_mcp", text: %([{"html_url":"https://github.com/owner/repo/pull/1"}]))
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "ignores a create_pull_request tool that is not namespaced to an MCP server" do
+    # `mcp__<server>__` is the namespace Zimmer configured the server into. A bare
+    # tool name belongs to whatever a runtime, a plugin or a subagent exposes,
+    # which is not a namespace this can reason about.
+    run_hook(
+      claude_mcp_call(id: "toolu_mcp", name: "create_pull_request"),
+      claude_mcp_result(id: "toolu_mcp", text: "https://github.com/owner/repo/pull/129")
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "records a PR opened by an MCP create_pull_request on a server whose name carries a hyphen" do
+    # Claude Code keeps a server name verbatim in the tool name, and Zimmer's own
+    # server keys are hyphenated (`remote-fs-screenshots`, `zimmer-self-session`).
+    run_hook(
+      claude_mcp_call(id: "toolu_mcp", name: "mcp__github-mcp-server__create_pull_request"),
+      claude_mcp_result(id: "toolu_mcp", text: "https://github.com/owner/repo/pull/130")
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/130" ], tracked_urls
+  end
+
+  test "records a PR opened by an MCP create_pull_request when git_root is an SSH URL" do
+    @session.update!(git_root: "git@github.com:owner/repo.git")
+
+    run_hook(
+      claude_mcp_call(id: "toolu_mcp"),
+      claude_mcp_result(id: "toolu_mcp", text: "https://github.com/owner/repo/pull/131")
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/131" ], tracked_urls
   end
 
   # === Column: the session did NOT open the PR (ignored) =======================
@@ -1150,6 +1351,72 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     )
 
     assert_equal [ "https://github.com/owner/repo/pull/88" ], tracked_urls
+  end
+
+  # Codex routes an MCP tool through the same `function_call` payload as its
+  # built-in `shell`, naming it `mcp__<server>__<tool>` and JSON-encoding the
+  # arguments — the shape CodexMcpStatusDetector reads a server's connection out
+  # of. There is no `exec_command_end` for a tool that is not a shell, so nothing
+  # correlates an exit code to it.
+
+  def codex_mcp_call(call_id:, name: "mcp__github__create_pull_request", arguments: { owner: "owner", repo: "repo", title: "T", head: "feat", base: "main" })
+    {
+      timestamp: TS,
+      type: "response_item",
+      payload: { type: "function_call", name: name, arguments: arguments.to_json, call_id: call_id }
+    }.to_json
+  end
+
+  test "codex: records a PR opened by an MCP create_pull_request call" do
+    @session.update!(agent_runtime: "codex")
+
+    run_hook(
+      codex_mcp_call(call_id: "call_mcp"),
+      codex_output(call_id: "call_mcp", output: %({"html_url":"https://github.com/owner/repo/pull/4060"}))
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/4060" ], tracked_urls
+  end
+
+  test "codex: ignores an MCP create_pull_request against a different repository" do
+    # #214 in the Codex shape: the arguments are a JSON string rather than an
+    # object, and the repo they name is still what bounds the call.
+    @session.update!(agent_runtime: "codex")
+
+    run_hook(
+      codex_mcp_call(call_id: "call_mcp", arguments: { owner: "other", repo: "proj", title: "T" }),
+      codex_output(call_id: "call_mcp", output: %({"html_url":"https://github.com/other/proj/pull/4061"}))
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "codex: ignores an MCP tool that writes about a pull request rather than opening one" do
+    @session.update!(agent_runtime: "codex")
+
+    run_hook(
+      codex_mcp_call(call_id: "call_mcp", name: "mcp__github__create_pull_request_review",
+        arguments: { owner: "owner", repo: "repo", pullNumber: 4062 }),
+      codex_output(call_id: "call_mcp", output: %({"html_url":"https://github.com/owner/repo/pull/4062#pullrequestreview-1"}))
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "codex: tolerates an MCP call whose arguments are not valid JSON" do
+    @session.update!(agent_runtime: "codex")
+
+    call = {
+      timestamp: TS,
+      type: "response_item",
+      payload: { type: "function_call", name: "mcp__github__create_pull_request", arguments: "{not json", call_id: "call_mcp" }
+    }.to_json
+
+    # No readable input names a repo, so the same-repo guard on the URL is the
+    # only bound left — and it holds.
+    run_hook(call, codex_output(call_id: "call_mcp", output: "https://github.com/owner/repo/pull/4063"))
+
+    assert_equal [ "https://github.com/owner/repo/pull/4063" ], tracked_urls
   end
 
   # === Status-summary forks (never recorded) ==================================

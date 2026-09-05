@@ -8,7 +8,7 @@
 # transcript show this session opening that PR"**. Reading about a PR is not
 # opening one.
 #
-# Three kinds of evidence count, and nothing else does:
+# Four kinds of evidence count, and nothing else does:
 #
 #   1. CREATED — the URL appears in the output of a *successful* create: either
 #      `gh pr create`, or a POST to a repo's REST `/pulls` collection
@@ -18,13 +18,20 @@
 #      `owner/repo` that opens a PR against `other-org/other-repo` is tracked,
 #      bounded only by the repo the command itself names — which a REST create
 #      always does, in the endpoint path.
-#   2. RE-CREATED — the URL appears in a *failed* create next to an "already
+#   2. MCP-CREATED — the URL appears in the result of a successful
+#      `mcp__<server>__create_pull_request` tool call, which is how a session
+#      holding a GitHub MCP server opens a PR: a structured tool call, not a
+#      shell command, so no amount of command parsing can see it. Held to the
+#      same-repo guard on both ends — the repo the call's own input names and the
+#      repo the URL belongs to — for the reason under #create_repo_from_mcp_input.
+#   3. RE-CREATED — the URL appears in a *failed* create next to an "already
 #      exists" message, i.e. the PR for the branch we just tried to push.
 #      Weaker (the failure text is not ours), so it is held to the same-repo guard.
-#   3. CLAIMED — the agent's own prose says it opened the PR ("Opened PR: <url>").
-#      This is what catches creation paths that are not `gh pr create` — a wrapper
-#      script, an MCP tool, the web UI. Weakest of the three, so it too is held to
-#      the same-repo guard and to a creation phrase adjacent to the URL.
+#   4. CLAIMED — the agent's own prose says it opened the PR ("Opened PR: <url>").
+#      This is what catches creation paths none of the above see — a wrapper
+#      script, an MCP tool whose name is not the one above, the web UI. Weakest of
+#      the four, so it too is held to the same-repo guard and to a creation phrase
+#      adjacent to the URL.
 #
 # What is deliberately NOT evidence:
 #
@@ -38,6 +45,12 @@
 #     the repo's open PRs, which is the #214 shape again. Nor does a POST
 #     somewhere else on the line make one: creates are read per command segment,
 #     never across the whole script.
+#   - The result of an MCP tool that writes *about* a pull request rather than
+#     opening one. `create_pull_request_review` and
+#     `create_pull_request_review_comment` sit next to `create_pull_request` in
+#     github-mcp-server's tool list, so the tool half of the name is matched
+#     whole — the same rule the REST endpoint's `/pulls` gets, for the same
+#     reason.
 #   - The output of a command that merely *mentions* a create. `gh pr create`
 #     inside a quoted argument to `grep`, `rg`, `sed` or `echo` is data, not an
 #     invocation, and a command that searches this very file for the literal has
@@ -67,7 +80,10 @@
 # invocations, their results, whether a result failed, and the agent's own prose is
 # dispatched on the session's agent_runtime. That shape handling lives in
 # TranscriptHooks::ToolCallParser, which this hook shares with
-# GithubCommentAuthorshipHook.
+# GithubCommentAuthorshipHook. The MCP-CREATED tier reaches those two runtimes
+# only: Pi calls every MCP server through one proxy tool rather than by name, so
+# there is no `mcp__<server>__create_pull_request` in a Pi transcript to key on
+# (see TranscriptHooks::PiToolCallParser#structured_tool_calls).
 #
 # This hook is registered by default via the transcript hooks initializer.
 #
@@ -151,6 +167,30 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # The `--repo owner/name` (or `-R owner/name`) a `gh` command targets.
   REPO_FLAG_PATTERN = /(?:--repo|-R)[=\s]+["']?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/
 
+  # An MCP tool that opens a pull request. Both runtimes name an MCP tool
+  # `mcp__<server>__<tool>` — Claude Code joins the two halves with `__`, and
+  # codex-rs does the same through `MCP_TOOL_NAME_DELIMITER` (see
+  # CodexMcpStatusDetector) — so one pattern reads both shapes.
+  #
+  # The name must END on the tool `create_pull_request`, which is the same rule
+  # the REST endpoint gets (`/pulls` and nothing nested under it) for the same
+  # reason: github-mcp-server also exposes `create_pull_request_review` and
+  # `create_pull_request_review_comment`, which write *about* a pull request
+  # rather than opening one, and a prefix match would read both as creates.
+  #
+  # The `mcp__` prefix is required rather than matching a bare
+  # `create_pull_request`. An MCP tool name is namespaced by a server Zimmer
+  # configured for the session; an unprefixed tool name belongs to whatever a
+  # runtime, a plugin or a subagent happens to expose, which is not a namespace
+  # this can reason about.
+  MCP_PR_CREATE_TOOL_PATTERN = /\Amcp__.+__create_pull_request\z/
+
+  # The `owner/repo` an MCP create names in its own input. github-mcp-server takes
+  # the two halves as separate fields; a server that takes one slug spells it
+  # `repo` or `repository`. Anything else names no repo that can be read.
+  MCP_INPUT_OWNER_KEY = "owner"
+  MCP_INPUT_REPO_KEYS = %w[repo repository].freeze
+
   # `gh pr create` exits non-zero when the branch already has a PR, printing
   # "a pull request for branch \"x\" into branch \"main\" already exists: <url>".
   # That URL is the PR for the branch this session just pushed, so it is ours —
@@ -214,8 +254,8 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # concurrent writes to that column.
   MISSING_PR_URL_WARNING = "[GitHub] This session's goal asks for a pull request, and no PR URL has been captured " \
                            "for it yet. Zimmer records only a PR it can see the session open (the result of a " \
-                           "`gh pr create` or a REST create, or the agent saying it opened one), so GitHub " \
-                           "comment and merge-conflict notifications are not running here."
+                           "`gh pr create`, a REST create or an MCP `create_pull_request`, or the agent saying " \
+                           "it opened one), so GitHub comment and merge-conflict notifications are not running here."
   MISSING_PR_URL_WARNING_MARKER = "[GitHub] This session's goal asks for a pull request"
 
   # Warn — once, in the session's own timeline — when a session whose goal is
@@ -335,10 +375,10 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # The PR URLs this transcript shows this session opening.
   # @return [Array<String>]
   def extract_pr_urls
-    (urls_from_pr_create_results + urls_claimed_by_agent).uniq
+    (urls_from_pr_create_results + urls_from_mcp_pr_create_results + urls_claimed_by_agent).uniq
   end
 
-  # Evidence 1 and 2: the results of this session's own PR-creating calls —
+  # Evidence 1 and 3: the results of this session's own PR-creating commands —
   # `gh pr create`, and REST creates POSTing to a repo's `/pulls` collection.
   # A successful create vouches for any repo; a failed one vouches only for an
   # "already exists" URL on the session's own repo.
@@ -371,7 +411,60 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
     end
   end
 
-  # Evidence 3: the agent's own prose claiming it opened a PR on this repo.
+  # Evidence 2: the results of this session's own MCP `create_pull_request`
+  # calls. A GitHub MCP server opens a pull request through a structured tool
+  # call, which reaches none of the command parsing above — the parsers' shell
+  # views are shell-only by design — so before this tier such a PR could only
+  # ever be recorded off the agent's prose, the weakest tier there is (#559).
+  #
+  # The tool call is the strong half of this evidence: its name says a pull
+  # request was opened and its input names the repo, with no command line to
+  # heuristic over. What the *result* looks like is the unverified half — every
+  # server writes its own body — so nothing is assumed about it beyond the
+  # envelope both runtimes wrap it in: the result is scanned for PR URLs exactly
+  # as a shell create's output is, and one is recorded only if the guards below
+  # hold. A server whose result carries no URL records nothing, which is the
+  # right answer rather than a miss: there is no PR number to record.
+  #
+  # **One create opens one pull request, so its result vouches for at most one
+  # URL** — the first on this repo, and no others. This is the guard the shell
+  # tiers do not need and this one does. A create result is routinely the created
+  # PR *serialized back*, `body` included, and a PR body written by the `open-pr`
+  # skill cites other pull requests as a matter of course ("follows #305",
+  # "supersedes <url>"). Without the cap, every same-repo URL the agent wrote into
+  # its own body would be recorded as a PR this session opened, which is #214
+  # with the session supplying the evidence against itself.
+  #
+  # First, because the created PR's own URL is what a result leads with: the
+  # github-mcp-server shape puts `html_url` above `body`, and prose puts the URL
+  # it is announcing before whatever it says about it. A server that prints a
+  # cited PR ahead of the one it created would record the wrong one — a narrower
+  # miss than adopting both, and the same trade the sibling comment hook makes
+  # when it caps a listing at one line per posting segment.
+  #
+  # A failed call is not evidence: there is no "already exists" reading to make
+  # here, because that one matches *gh's own* failure text and every server
+  # writes its own. Such a PR is on this session's branch and repo, so the prose
+  # tier remains its route. That rule holds only as far as the runtime reports a
+  # failure, which on Codex is not at all — an exit code comes from an
+  # `exec_command_end` line that a non-shell call never gets, so an MCP result
+  # there always reads as a success. See `docs/limitations.md`.
+  def urls_from_mcp_pr_create_results
+    return [] if target_owner_repo.nil?
+    return [] if mcp_pr_create_repos.empty?
+
+    tool_results.filter_map do |result|
+      next unless mcp_pr_create_repos.key?(result[:id])
+      next if result[:is_error] || result[:text].blank?
+
+      named_repo = mcp_pr_create_repos[result[:id]]
+      next if named_repo && named_repo != target_owner_repo
+
+      pr_urls_with_context(result[:text]).map(&:first).find { |url| same_repo?(url) }
+    end
+  end
+
+  # Evidence 4: the agent's own prose claiming it opened a PR on this repo.
   # Deliberately limited to assistant messages — tool results are the world
   # talking (a `gh pr view` dump can quote anyone's "created PR <url>"), and user
   # messages include Zimmer's own PR notifications.
@@ -470,6 +563,52 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
 
       commands[call[:id]] = call[:command]
     end
+  end
+
+  # The MCP `create_pull_request` calls in this transcript, keyed by tool-call id,
+  # each mapped to the `owner/repo` its input names — or to nil when the input
+  # names none this can read. The value bounds what that call's result may vouch
+  # for, the way a create command's `--repo` or REST endpoint does; the key is
+  # what pairs the call with its result.
+  #
+  # @return [Hash{String => String, nil}] tool-call id => downcased `owner/repo`, or nil
+  def mcp_pr_create_repos
+    @mcp_pr_create_repos ||= parser.structured_tool_calls.each_with_object({}) do |call, repos|
+      next unless call[:name].match?(MCP_PR_CREATE_TOOL_PATTERN)
+
+      repos[call[:id]] = create_repo_from_mcp_input(call[:input])
+    end
+  end
+
+  # The `owner/repo` an MCP create names in its own input: `{owner: "o", repo: "r"}`,
+  # which is github-mcp-server's shape, or a single `owner/name` slug under `repo`
+  # or `repository`. Anything else — a placeholder, a name the input splits some
+  # other way — reads as nil, which leaves the call bounded by the session's own
+  # repo alone rather than by nothing.
+  #
+  # Both this bound and the same-repo guard on the URL apply, and each catches
+  # something the other does not. Without the repo bound, a call opening a PR on
+  # `other/proj` whose result happens to quote a `owner/repo` URL — a related PR
+  # in the body it echoes back — would have that URL recorded as one this session
+  # opened, which is #214 exactly. Without the URL guard, a result listing PRs
+  # beside the one it created would hand over all of them.
+  #
+  # That makes this tier narrower than a shell create, which vouches for any repo
+  # it names, and the asymmetry is deliberate. `gh pr create` is one known
+  # program; `mcp__<server>__create_pull_request` is a *convention* matched across
+  # servers Zimmer has not seen, whose input and output semantics are unverified.
+  # Holding it to the session's own repo bounds what a server that does not mean
+  # what this reads can cost, while still being far stronger evidence than the
+  # prose it replaces.
+  def create_repo_from_mcp_input(input)
+    repo = MCP_INPUT_REPO_KEYS.filter_map { |key| input[key] if input[key].is_a?(String) }.first
+    return nil if repo.blank?
+
+    owner = input[MCP_INPUT_OWNER_KEY]
+    slug = repo.include?("/") ? repo : (owner.is_a?(String) && owner.present? ? "#{owner}/#{repo}" : nil)
+    return nil unless slug&.match?(STATIC_OWNER_REPO_PATTERN)
+
+    normalize_repo(slug)
   end
 
   # Whether +command+ opens a pull request at all, by either route.

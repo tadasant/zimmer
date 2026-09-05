@@ -12,6 +12,23 @@ class TranscriptHooks::CodexToolCallParser < TranscriptHooks::ToolCallParser
     end
   end
 
+  # Every `function_call` payload, shell and non-shell alike. Codex routes an MCP
+  # tool through the same payload type as its built-in `shell`, naming it
+  # `mcp__<server>__<tool>` (codex-rs `MCP_TOOL_NAME_DELIMITER`) and JSON-encoding
+  # its arguments — which is what CodexMcpStatusDetector reads a server's
+  # connection out of.
+  #
+  # `local_shell_call` is not included: it is Codex's own shell payload, it
+  # carries an argv rather than named arguments, and it is never an MCP tool.
+  def structured_tool_calls
+    @structured_tool_calls ||= response_items.filter_map do |payload|
+      next unless payload["type"] == "function_call"
+      next unless payload["call_id"].is_a?(String) && payload["name"].is_a?(String)
+
+      { id: payload["call_id"], name: payload["name"], input: parse_arguments(payload["arguments"]) }
+    end
+  end
+
   def tool_results
     @tool_results ||= begin
       codes = exit_codes_by_call_id
