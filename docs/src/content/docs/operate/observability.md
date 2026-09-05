@@ -409,12 +409,12 @@ many **came to rest with the budget fully spent**, and how many attempts happene
 last 24 hours.
 
 "Came to rest" rather than "failed", because running out is not the same ending for every
-loop: six of them fail the session, and the empty-turn restart parks it in `needs_input`
+loop: all but one fail the session, and the empty-turn restart parks it in `needs_input`
 with an empty transcript instead. Each budget declares its own `terminal_status`, so the
 exhausted count means the same thing on every row.
 
 That count is the one to reach for when the question is "why did this session stop": it is
-answerable for all seven loops. It was answerable for two of them until #527 — the section
+answerable for every declared loop. It was answerable for two of them until #527 — the section
 was built by naming metadata keys in SQL, and only SIGTERM and API-error had ever been
 wired, so a session that burned through its MCP-connection or compact budget was invisible
 to every health surface while the dashboard read as complete. The section is now built by

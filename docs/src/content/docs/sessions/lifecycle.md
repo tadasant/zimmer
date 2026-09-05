@@ -621,10 +621,16 @@ merely lagging poller can never be enough to conclude that nothing was written.
 | nothing | `Sessions::RestartUnstartedTurn` replays the session's own prompt into a fresh spawn. Nothing was consumed and no partial work exists, so the stored prompt is exactly what should run. |
 | nothing, `RetryBudget::EMPTY_TURN.max` times | Come to rest in `needs_input` with `failure_reason: "unstarted_turn_not_recoverable"`, `metadata["unstarted_turn_restart_abandoned"]` naming the reason, and **no** recovery marker — no sweep can do anything a third restart would not. The pause announces itself. |
 
+A **third** vantage point reaches the same two rows: a resume whose clone has gone missing from disk,
+which asks the identical question and hands the no-conversation answer to the same service. See
+[a clone that vanished is rebuilt, not fatal](/sessions/spawning/#a-clone-that-vanished-is-rebuilt-not-fatal).
+Its give-up is the row above, unchanged — `needs_input`, not `failed`, which is also the only one of
+the two states that accepts the follow-up that would rebuild the clone.
+
 This is the same judgement [`ProcessLifecycleManager#handle_empty_turn`](/sessions/spawning/) makes
 when a process exits under a live monitor, arriving from the other direction: there the turn ended in
 front of us, here it ended while nobody was watching. They share both the budget and the
-`empty_turn_recovery_count` key deliberately — it is one event seen from two vantage points, and a
+`empty_turn_recovery_count` key deliberately — it is one event seen from several vantage points, and a
 session that has already burned its restarts in-process does not get a second allowance because the
 next failure happened to be a worker interruption. It is one `RetryBudget` object
 (`RetryBudget::EMPTY_TURN`), so it is also one reset: a stable stretch hands the restarts back to

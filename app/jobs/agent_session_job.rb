@@ -813,7 +813,7 @@ class AgentSessionJob < ApplicationJob
           # still holds everything the tree was built from. Rebuild it and resume rather
           # than failing the session terminally (#817).
           if validation_result[:lost_clone] &&
-             recovered_from_lost_clone?(session, clone_path, working_directory, process_pid, log_buffer)
+             handled_lost_clone?(session, clone_path, working_directory, log_buffer)
             log_buffer.flush
             @broadcast_service.session_status(session.reload)
             return
@@ -3524,33 +3524,62 @@ class AgentSessionJob < ApplicationJob
   # and both rebuild the tree the same way — by delivering a follow-up turn, which
   # routes into the follow-up path's existing recreate branch. Neither re-clones here.
   #
-  #   * Nothing was ever written: this is the unstarted-turn shape arriving through a
-  #     lost clone rather than a dead pid, and Sessions::RestartUnstartedTurn already
-  #     owns it — replaying the session's own prompt is the whole recovery, because
-  #     nothing was consumed and no partial work exists. It declines when a
-  #     conversation exists, which is what makes the two calls complementary rather
-  #     than a race for the same session.
-  #   * There is a conversation: Sessions::RecoverLostClone resumes it, telling the
-  #     agent that the tree it is about to look at was rebuilt from git and that its
-  #     uncommitted work is gone.
+  #   * Nothing was ever written anywhere: this is the unstarted-turn shape arriving
+  #     through a lost clone rather than a dead pid, and Sessions::RestartUnstartedTurn
+  #     already owns it — replaying the session's own prompt is the whole recovery,
+  #     because nothing was consumed and no partial work exists.
+  #   * Either store holds a conversation: Sessions::RecoverLostClone resumes it,
+  #     telling the agent that the tree it is about to look at was rebuilt from git and
+  #     that its uncommitted work is gone.
   #
-  # The live-process check is this method's own, and it gates both. A process still
-  # running at the recorded pid means something is driving this session right now, and
-  # delivering a turn would put a second agent on it (#400) — so leave it to the
-  # existing failure path, whose teardown terminates that process. It is also the
-  # honest reading of the situation: this recovery is for a session whose tree went
-  # out from under a runtime that is no longer there.
+  # The two are exact complements, not a race: RestartUnstartedTurn declines whenever
+  # `RuntimeConversationPresence.persisted?` is true and RecoverLostClone requires it,
+  # and both ask it of BOTH stores. Asking only Zimmer's copy in the second would leave
+  # a hole for the case that most deserves the recovery — a lagging poller over a
+  # runtime transcript that lives outside the clone and therefore outlived it.
   #
-  # @return [Boolean] true when a turn is queued and this job must stand down
-  def recovered_from_lost_clone?(session, clone_path, working_directory, process_pid, log_buffer)
-    if process_running?(process_pid)
+  # Three checks are this method's own, and they gate both services.
+  #
+  # A **terminal or dormant status**: `refuse_archived_session` is skipped for
+  # `resume_monitoring` jobs, and `resume` transitions out of `failed` — so without
+  # this an archived session would be left holding a stamped follow-up prompt for a
+  # job that will refuse it, and a session that reached `failed` between this job's
+  # enqueue and its execution would be silently resurrected into a real agent turn.
+  #
+  # A **live process** at the recorded pid means something is driving this session
+  # right now, and delivering a turn would put a second agent on it (#400) — so leave
+  # it to the existing failure path, whose teardown terminates that process. The pid is
+  # re-read from the row rather than taken from the caller's copy, for the reason
+  # #monitoring_job_stands_down? re-asks its own question after the claim (#489): a
+  # spawn landing since then would have overwritten the slot.
+  #
+  # @return [Boolean] true when this job has handled the missing clone and must stand
+  #   down — a turn is queued, or the session has been brought to rest saying why not
+  def handled_lost_clone?(session, clone_path, working_directory, log_buffer)
+    unless session.running? || session.needs_input? || session.waiting?
       log_buffer.add(
-        "Not rebuilding the missing clone: process #{process_pid} is still running, so something is " \
+        "Not rebuilding the missing clone: the session is #{session.status}, which is not a state a " \
+        "rebuilt clone can be resumed into.",
+        level: "warning"
+      )
+      return false
+    end
+
+    live_pid = session.reload.metadata&.dig("process_pid")
+    if process_running?(live_pid)
+      log_buffer.add(
+        "Not rebuilding the missing clone: process #{live_pid} is still running, so something is " \
         "still driving this session and a second agent must not be started against it.",
         level: "warning"
       )
       return false
     end
+
+    log_buffer.add(
+      "The clone at #{clone_path} is not on disk, so there is nothing to resume into. " \
+      "Checking whether it can be rebuilt from the session record before failing.",
+      level: "warning"
+    )
 
     restart = Sessions::RestartUnstartedTurn.call(
       session,
@@ -3559,11 +3588,37 @@ class AgentSessionJob < ApplicationJob
       log_buffer: log_buffer
     )
     return true if restart.restarted?
-    return false if restart.abandoned?
+    return park_abandoned_unstarted_turn(session, log_buffer) if restart.abandoned?
 
     Sessions::RecoverLostClone.call(
-      session, clone_path: clone_path, log_buffer: log_buffer
+      session,
+      clone_path: clone_path,
+      working_directory: working_directory,
+      file_system: @file_system,
+      log_buffer: log_buffer
     ).recovered?
+  end
+
+  # An unstarted turn whose restarts are spent comes to rest in `needs_input`, not in
+  # `failed` — the same ending the dead-pid branch above gives it, and the one
+  # RetryBudget::EMPTY_TURN declares as its `terminal_status`. Failing here instead
+  # would report a give-up as a recovery on the health surface, tell the session's own
+  # row two different stories about why it stopped, and — worst of the three — put it
+  # in the one state that rejects the follow-up that would rebuild the clone.
+  #
+  # No recovery marker, for the reason the dead-pid branch spells out: the sweeps can
+  # do nothing a third restart would not, and `announcement_deferred_to_recovery_sweep?`
+  # reads `paused_by`, so leaving it off is what lets the `pause` callback make the
+  # announcement itself.
+  #
+  # @return [Boolean] always true — the session is at rest and this job must stand down
+  def park_abandoned_unstarted_turn(session, log_buffer)
+    session.merge_metadata!("failure_reason" => "unstarted_turn_not_recoverable")
+    session.update_columns(running_job_id: nil)
+    session.reload
+    session.pause! if session.may_pause?
+    @broadcast_service.session_status(session)
+    true
   end
 
   # Validate session state before attempting to resume Claude CLI session

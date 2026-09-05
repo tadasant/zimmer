@@ -928,12 +928,24 @@ re-clones anything itself: both **deliver a follow-up turn**, and the follow-up 
 the rebuilding, which is how the fix ends up with one implementation of it rather than a
 second.
 
-Which service takes it depends on whether there is a conversation to come back to:
+Which service takes it depends on whether there is a conversation to come back to. Both ask
+`RuntimeConversationPresence.persisted?`, of *both* stores — Zimmer's polled
+`session.transcript` and the runtime's own file — so the two are exact complements rather
+than a near-miss with a hole between them. Asking only Zimmer's copy would strand the case
+that most deserves the recovery: a lagging poller over a runtime transcript that lives
+outside the clone (`~/.claude/projects/<sanitized-cwd>/<id>.jsonl`) and therefore outlived
+it.
 
-| Zimmer's stored transcript | Service | The turn it delivers |
+| Either transcript store | Service | The turn it delivers |
 | --- | --- | --- |
 | holds a conversation | `Sessions::RecoverLostClone` | `AutomatedPrompts.lost_clone_recovery` — resume the conversation, having been told the tree was rebuilt |
-| holds none | `Sessions::RestartUnstartedTurn` | the session's own prompt — nothing was consumed, so replaying it re-does nothing |
+| holds none | `Sessions::RestartUnstartedTurn` | the most durable in-flight prompt (`sent_message`, then `pending_follow_up_prompt`, then `session.prompt`) — nothing was consumed, so replaying it re-does nothing |
+
+`RestartUnstartedTurn` running out of restarts brings the session to rest in `needs_input`
+with `failure_reason: "unstarted_turn_not_recoverable"`, exactly as it does on the dead-pid
+branch — `RetryBudget::EMPTY_TURN` declares `needs_input` as its terminal status, and
+`needs_input` is also the only one of the two that accepts the follow-up that would rebuild
+the clone.
 
 **The prompt is not a `SYSTEM_RECOVERY` nudge, and that is the point.** "Continue where
 you left off" would invite the agent to carry on against a transcript in which it has
@@ -944,16 +956,24 @@ the broken code is not there. So the message says what was lost, and asks for `g
 status` and a re-read before anything else. The uncommitted work itself is gone either
 way; that part is genuinely terminal.
 
-Four things have to hold, and any one of them missing leaves the pre-existing terminal
+Five things have to hold, and any one of them missing leaves the pre-existing terminal
 failure exactly as it was:
 
-1. **`git_root` is present** — there is nothing to rebuild from otherwise.
-2. **No process is running at the recorded pid.** A live process means something is
+1. **The session is `running`, `needs_input` or `waiting`.** `refuse_archived_session` is
+   deliberately skipped for `resume_monitoring` jobs and `resume` transitions out of
+   `failed`, so without this an archived session would be left holding a stamped
+   follow-up prompt for a job that will refuse it, and a session that reached `failed`
+   between this job's enqueue and its execution would be resurrected into a real turn.
+2. **`git_root` is present** — there is nothing to rebuild from otherwise.
+3. **No process is running at the recorded pid.** A live process means something is
    still driving the session, and delivering a turn would put a second agent on it. The
-   existing failure path terminates that process; this recovery declines to race it.
-3. **The fault is the missing directory itself.** A missing `session_id`, a malformed
+   existing failure path terminates that process; this recovery declines to race it. The
+   pid is re-read from the row rather than reused from before the job claimed
+   `running_job_id`, for the same reason `#monitoring_job_stands_down?` re-asks its own
+   question after the claim ([#489](https://github.com/tadasant/zimmer/issues/489)).
+4. **The fault is the missing directory itself.** A missing `session_id`, a malformed
    one, or a clone that is present but unreadable are facts a rebuild would not change.
-4. **`RetryBudget::LOST_CLONE` (2) is not spent.** A tree that will not stay on disk is
+5. **`RetryBudget::LOST_CLONE` (2) is not spent.** A tree that will not stay on disk is
    an infrastructure problem, and the session fails so that somebody looks at the
    volume. The budget resets after the house 60 seconds of stability, so two losses an
    hour apart are two incidents rather than one strike away from terminal.
