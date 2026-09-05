@@ -387,8 +387,32 @@ most important reading of the message record is the empty one. A caller must be 
 human turns" from "I forgot to pass the flag". `get_session` is in both the `sessions` and
 `self_session` tool groups, so a session can ask this about itself with the tools it already has.
 
+On `get_session` the record is a **summary** of itself: the newest five `here` entries and the newest
+five `elsewhere` ones, with each entry's content cut to 300 characters. That dump had grown past what
+a runtime will return, and the record was the largest block in it
+([#652](https://github.com/tadasant/zimmer/issues/652)). Summarised, not shortened — and the
+difference is the whole design. Both counts stay counts of the *whole* record. Every cut entry says,
+under its own text, how long it really is. The entries left out are counted next to the call that
+returns them. When nothing needed cutting the block says so outright rather than staying silent. And
+the budget is split by origin rather than taken off the top, because `here` is the half that answers
+"did a human ask *this* session for this?" and a chatty hierarchy must not push it off the list. The
+reason none of that can be relaxed into a plain truncation: this block is the fallback both agent
+gates use to establish that a human asked for something, and a record silently shortened reads
+exactly like a record with nothing in it — so a gate reading one would have to hold rather than
+guess. `verbose: true` returns the pre-summary rendering, the newest 25 in full.
+
+A pointer that cannot deliver would be the same failure from the other side, so the block works out
+what the call it names would actually return. `get_session_provenance` lists the newest 25 entries —
+a cap the record has always had — and the summary's selection is a subset of that rendering's by
+construction, so every entry the summary shows is one it shows too. When the record runs longer than
+25, the block says how many entries fall outside that window and are returned by no MCP call at all,
+rather than implying a fetch that would come back short. And the `**Complete:**` line is qualified
+when the hierarchy walk was truncated: it then claims only that every entry the walk *reached* is
+listed, and points at the truncation note above it.
+
 `get_session_provenance` returns those same two sections on their own, rendered by the same code
-(`Mcp::ProvenanceSections`) so the two cannot drift. It takes one argument, `session_id`. It is in
+(`Mcp::ProvenanceSections`) so the two cannot drift, with every entry it lists rendered in full — it
+is the call the summary's markers point at. It takes one argument, `session_id`. It is in
 `self_session` as well as `sessions` **deliberately**: the filtered self-session server is the only
 Zimmer surface every session is guaranteed to carry, so a tool reachable only from the full `zimmer`
 server would leave most sessions with no route to their own provenance at all.
