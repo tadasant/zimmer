@@ -1108,12 +1108,23 @@ class SlackTriggerPollerJob < ApplicationJob
 
   # Partition messages into groups that each count as ONE event.
   #
+  # Two messages are the same event when they share a conversation (the caller's
+  # doing), an AUTHOR, and a window. All three narrow the key deliberately, since
+  # the failure that does not announce itself is a genuinely distinct alert
+  # swallowed by a group.
+  #
+  # Author, because a burst is one producer repeating itself. Seven alerts from
+  # one app are one event; two people @mentioning Zimmer twenty seconds apart are
+  # two requests, and folding the second into the first would render the prompt
+  # from the first person's words and leave the second as a quoted excerpt in a
+  # note their trigger's template never anticipated.
+  #
   # A group is anchored on its first message and spans at most the window: each
-  # message joins the open group when it landed within `window` seconds of the
-  # message that OPENED it, and opens a new group otherwise. Anchoring rather
-  # than chaining off the previous message is what bounds a group — a channel
-  # posting steadily just inside the window would otherwise chain into one
-  # unbounded group that swallows an hour of unrelated alerts.
+  # message joins its author's open group when it landed within `window` seconds
+  # of the message that OPENED that group, and opens a new one otherwise.
+  # Anchoring rather than chaining off the previous message is what bounds a
+  # group — a channel posting steadily just inside the window would otherwise
+  # chain into one unbounded group that swallows an hour of unrelated alerts.
   #
   # With a window of 0 (Trigger#coalesce_window_seconds set to 0) every message
   # is its own group, which is the behaviour before coalescing existed.
@@ -1126,15 +1137,36 @@ class SlackTriggerPollerJob < ApplicationJob
     window = trigger.effective_coalesce_window_seconds
     return ordered.map { |message| [ message ] } unless window.positive?
 
+    open_groups = {}
+
     ordered.each_with_object([]) do |message, groups|
-      open_group = groups.last
+      author = coalescing_author_key(message)
+      open_group = open_groups[author] if author.present?
 
       if open_group && (message.ts.to_s.to_f - open_group.first.ts.to_s.to_f) <= window
         open_group << message
       else
-        groups << [ message ]
+        group = [ message ]
+        open_groups[author] = group if author.present?
+        groups << group
       end
     end
+  end
+
+  # Who Slack says posted a message, for the purpose of deciding whether two
+  # messages are the same producer repeating itself.
+  #
+  # `user` for a human and for an app posting with a bot token; `bot_id` for an
+  # app that posts without one (a webhook integration), which is what makes an
+  # alerting app's own burst coalesce; `username` last, for a message carrying
+  # nothing else.
+  #
+  # A message with none of the three is never coalesced — it opens a group and
+  # nothing joins it. No identity is no evidence that two messages share a
+  # producer, and the safe direction is a session too many rather than an alert
+  # nothing answers.
+  def coalescing_author_key(message)
+    message.user.presence || message.bot_id.presence || message.username.presence
   end
 
   # The block appended to a coalesced session's prompt, naming the messages that
@@ -1306,8 +1338,9 @@ class SlackTriggerPollerJob < ApplicationJob
   # transient Slack failure, because unlike the fetch-side rescues it is past the
   # point of no return. Every caller advances its cursor to the newest message it
   # fetched whether or not a session came out of each one, so a failure here loses
-  # THIS message — the deferral re-polls from a cursor already sitting past it. A
-  # dropped human message is exactly what the pager is for.
+  # THIS message — and, on a coalesced fire, every message folded into it, since
+  # the group is one call. The deferral re-polls from a cursor already sitting
+  # past them. A dropped human message is exactly what the pager is for.
   rescue => e
     note_transient(e)
     Rails.logger.error "[SlackTriggerPollerJob] Failed to create session for message #{message.ts}: #{e.message}"

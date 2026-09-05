@@ -1548,9 +1548,15 @@ Three properties are worth stating explicitly, because the failure mode of getti
 - **A group is anchored on its first message, not chained off the previous one.** A group therefore
   spans at most the window. Chaining would let a channel posting steadily just inside the window
   merge an hour of unrelated alerts into one session.
-- **Only messages in the same conversation are grouped.** The poller hands one channel's, thread's or
-  DM's new messages to the grouper at a time, so two alerts landing in the same second in two
-  different channels are never each other's duplicates.
+- **Only messages in the same conversation, from the same author, are grouped.** The poller hands one
+  channel's, thread's or DM's new messages to the grouper at a time, so two alerts landing in the same
+  second in two different channels are never each other's duplicates — and inside one channel the
+  author has to match too, because a burst is one producer repeating itself. Two people @mentioning
+  Zimmer twenty seconds apart are two requests; two apps alerting at once are two incidents. The key
+  is Slack's `user`, falling back to `bot_id` and then `username` so an app posting through a webhook
+  still coalesces its own burst. A message Slack attributes to nobody at all is never folded into
+  another one: no identity is no evidence of a shared producer, and the safe direction is a session
+  too many.
 
 The window is **on by default at 60 seconds** (`Trigger::DEFAULT_COALESCE_WINDOW_SECONDS`), which is
 where it differs from its two neighbours. Both of those can stop a trigger spawning anything, so both
@@ -1586,6 +1592,13 @@ It exists because nothing bounded a trigger before. A burst of messages in a wat
 spawned one session per message — 50 of them, trashed by hand — and a sustained outage generating
 alerts could have spawned sessions until the fleet was overwhelmed. A single Slack poll tick can
 carry many messages, so the cap has to bound spawns *within* a tick, not just across ticks.
+
+The two controls sit **in series, coalescing first**: on a Slack trigger the cap counts the events
+that survive [coalescing](#coalescing-a-burst-of-slack-messages), not the raw messages. Twenty alerts
+from one app inside the window are one event, so a cap of three is never approached and no burst
+notice is sent — which is the outcome you want, since the cap would have reached it by *dropping*
+seventeen messages. What still reaches the cap is a tick carrying many *distinct* events: several
+producers, or messages spread wider than the window.
 
 The cap is enforced at `Trigger#create_session!` — the one chokepoint every condition type funnels
 through — so it covers `slack`, `schedule`, and `ao_event` triggers at once.

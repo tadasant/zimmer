@@ -15,13 +15,7 @@
 # 0 turns it off explicitly: every message spawns its own session, which is the
 # behaviour before this column existed.
 class AddCoalesceWindowSecondsToTriggers < ActiveRecord::Migration[8.0]
-  def up
-    return if column_exists?(:triggers, :coalesce_window_seconds)
-
+  def change
     add_column :triggers, :coalesce_window_seconds, :integer, null: true
-  end
-
-  def down
-    remove_column :triggers, :coalesce_window_seconds, if_exists: true
   end
 end

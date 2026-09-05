@@ -358,6 +358,7 @@
       <% end %>
       <%= f.number_field :coalesce_window_seconds,
           min: 0,
+          max: 1.hour.to_i,
           step: 1,
           placeholder: Trigger::DEFAULT_COALESCE_WINDOW_SECONDS.to_s,
           class: "mt-1 shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-32 sm:text-sm border-gray-300 rounded-md" %>
