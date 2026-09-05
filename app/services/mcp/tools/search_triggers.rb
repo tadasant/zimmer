@@ -141,8 +141,18 @@ module Mcp
           "- **Reuse Session:** #{trigger.reuse_session ? 'Yes' : 'No'}",
           "- **Skip While Pending:** #{skip_if_pending_summary(trigger)}",
           "- **Max Sessions/Minute:** #{burst_limit_summary(trigger)}",
-          "- **MCP Servers:** #{mcp_servers_summary(trigger)}"
+          "- **MCP Servers:** #{mcp_servers_summary(trigger)}",
+          "- **Skills:** #{catalog_list_summary(trigger.catalog_skills)}",
+          "- **Hooks:** #{catalog_list_summary(trigger.catalog_hooks)}",
+          "- **Plugins:** #{catalog_list_summary(trigger.catalog_plugins)}"
         ]
+        # Only meaningful on a reuse trigger — the model clears both otherwise —
+        # and worth reading before changing either, because with enqueue_messages
+        # off a fire onto a busy session is dropped without a trace.
+        if trigger.reuse_session
+          lines << "- **Enqueue Messages:** #{trigger.enqueue_messages ? 'Yes' : 'No — a fire onto a busy session is dropped'}"
+          lines << "- **Resuscitate Archived:** #{trigger.resuscitate_archived ? 'Yes' : 'No'}"
+        end
         lines << "- **Goal:** #{trigger.goal}" if trigger.goal.present?
         if trigger.failed?
           lines << "- **Failed At:** #{trigger.failed_at&.iso8601 || 'unknown'}"
@@ -258,6 +268,10 @@ module Mcp
       # whole fleet — which triggers reference MCP server X — and the list is the
       # only view built for scanning many triggers, so leaving this out of it made
       # the answer cost one by-id call per trigger (#858).
+      def catalog_list_summary(list)
+        list.presence&.join(", ") || "(none)"
+      end
+
       def mcp_servers_summary(trigger)
         trigger.mcp_servers.presence&.join(", ") || "(none)"
       end

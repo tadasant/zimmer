@@ -84,6 +84,54 @@ module Mcp
       value
     end
 
+    # --- Catalog artifact lists -----------------------------------------------
+
+    # The three AIR-catalog lists a record can carry — a Session directly, a
+    # Trigger for the sessions it spawns — with the bound each is checked
+    # against. Keyed by the model attribute, because every tool that writes one
+    # of these writes it under that name; `action_session`'s change_skills /
+    # change_hooks / change_plugins and `action_trigger`'s create / update both
+    # validate through this one table so a caller gets the same answer either
+    # way.
+    CATALOG_LISTS = {
+      catalog_skills: { label: "Skills", max: 100, config: "SkillsConfig" },
+      catalog_hooks: { label: "Hooks", max: 100, config: "HooksConfig" },
+      catalog_plugins: { label: "Plugins", max: 50, config: "PluginsConfig" }
+    }.freeze
+
+    MAX_CATALOG_ITEM_ID_LENGTH = 100
+
+    # Normalize and validate one catalog list: drop blanks, trim each id, and
+    # reject any the catalog does not know — listing the valid options, so a
+    # rename like `pr` → `open-pr` is cheap to fix from the error alone.
+    #
+    # The unknown-id rejection is the point. The models validate these lists too,
+    # but a bare `RecordInvalid` names the bad id without naming the alternatives,
+    # and an id that slips through bricks every session the record configures.
+    #
+    # @param attribute [Symbol] one of CATALOG_LISTS' keys
+    # @param items [Object] the raw argument value
+    # @param param_name [String] the argument name to quote in an error message
+    # @return [Array<String>] the normalized list, safe to persist
+    def validated_catalog_list!(attribute, items, param_name = attribute.to_s)
+      spec = CATALOG_LISTS.fetch(attribute)
+
+      raise ToolError, "The \"#{param_name}\" parameter must be an array." unless items.is_a?(Array)
+      raise ToolError, "Maximum #{spec[:max]} #{spec[:label].downcase}" if items.length > spec[:max]
+
+      items = items.reject(&:blank?).map { |item| item.to_s.strip.first(MAX_CATALOG_ITEM_ID_LENGTH) }
+
+      config = spec[:config].constantize
+      invalid = items.reject { |id| config.exists?(id) }
+      if invalid.any?
+        valid = config.all.map(&:id).sort
+        raise ToolError, "Invalid #{spec[:label].downcase}: #{invalid.join(', ')}. " \
+                         "Valid #{spec[:label].downcase}: #{valid.join(', ')}"
+      end
+
+      items
+    end
+
     # Sessions are addressable by numeric id or slug, matching the REST API's
     # find_session behavior.
     def find_session(identifier)

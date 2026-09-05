@@ -1173,4 +1173,221 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_match(/not permitted/, error.message)
     assert_equal before_sessions, Session.count, "a restricted connection must not fire another root's trigger"
   end
+
+  # --- enqueue_messages / resuscitate_archived --------------------------------
+
+  test "create stores enqueue_messages and resuscitate_archived alongside reuse_session" do
+    output = @tool.call(
+      "action" => "create",
+      "name" => "Queueing Reuse Trigger",
+      "trigger_type" => "slack",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "{{link}}",
+      "reuse_session" => true,
+      "enqueue_messages" => true,
+      "resuscitate_archived" => true,
+      "configuration" => { "channel_id" => "C1010", "channel_name" => "queueing" }
+    )
+
+    trigger = Trigger.find_by!(name: "Queueing Reuse Trigger")
+    assert trigger.enqueue_messages, "enqueue_messages must land on the record"
+    assert trigger.resuscitate_archived, "resuscitate_archived must land on the record"
+    assert_includes output, "- **Reuse Session:** yes (enqueue messages: yes, resuscitate archived: yes)"
+  end
+
+  test "update sets enqueue_messages and resuscitate_archived on an existing reuse trigger" do
+    trigger = triggers(:weekly_schedule_trigger)
+    refute trigger.enqueue_messages
+
+    output = @tool.call(
+      "action" => "update",
+      "id" => trigger.id,
+      "enqueue_messages" => true,
+      "resuscitate_archived" => true
+    )
+
+    trigger.reload
+    assert trigger.enqueue_messages
+    assert trigger.resuscitate_archived
+    assert_includes output, "- **Reuse Session:** yes (enqueue messages: yes, resuscitate archived: yes)"
+  end
+
+  test "update can turn enqueue_messages back off" do
+    trigger = triggers(:weekly_schedule_trigger)
+    trigger.update!(enqueue_messages: true)
+
+    @tool.call("action" => "update", "id" => trigger.id, "enqueue_messages" => false)
+
+    refute trigger.reload.enqueue_messages
+  end
+
+  test "update leaves enqueue_messages alone when the key is omitted" do
+    trigger = triggers(:weekly_schedule_trigger)
+    trigger.update!(enqueue_messages: true, resuscitate_archived: true)
+
+    @tool.call("action" => "update", "id" => trigger.id, "name" => "Weekly Report Renamed")
+
+    trigger.reload
+    assert trigger.enqueue_messages
+    assert trigger.resuscitate_archived
+  end
+
+  test "create rejects enqueue_messages without reuse_session rather than silently clearing it" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call(
+        "action" => "create",
+        "name" => "Dropped Wake Trigger",
+        "trigger_type" => "slack",
+        "agent_root_name" => "zimmer",
+        "prompt_template" => "{{link}}",
+        "enqueue_messages" => true,
+        "configuration" => { "channel_id" => "C1011", "channel_name" => "dropped" }
+      )
+    end
+
+    assert_match(/"enqueue_messages" requires "reuse_session"/, error.message)
+    assert_nil Trigger.find_by(name: "Dropped Wake Trigger"), "nothing may be created when the flag is refused"
+  end
+
+  test "update rejects enqueue_messages on a trigger that does not reuse its session" do
+    trigger = triggers(:enabled_slack_trigger)
+    refute trigger.reuse_session
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id, "enqueue_messages" => true)
+    end
+
+    assert_match(/"enqueue_messages" requires "reuse_session"/, error.message)
+    refute trigger.reload.enqueue_messages
+  end
+
+  test "update accepts enqueue_messages when the same call turns reuse_session on" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    @tool.call("action" => "update", "id" => trigger.id, "reuse_session" => true, "enqueue_messages" => true)
+
+    trigger.reload
+    assert trigger.reuse_session
+    assert trigger.enqueue_messages
+  end
+
+  test "update rejects enqueue_messages when the same call turns reuse_session off" do
+    trigger = triggers(:weekly_schedule_trigger)
+    trigger.update!(enqueue_messages: true)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id, "reuse_session" => false, "enqueue_messages" => true)
+    end
+
+    assert_match(/"enqueue_messages" requires "reuse_session"/, error.message)
+    assert trigger.reload.reuse_session, "the refused call must not have changed anything"
+  end
+
+  test "update rejects resuscitate_archived without reuse_session" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id, "resuscitate_archived" => true)
+    end
+
+    assert_match(/"resuscitate_archived" requires "reuse_session"/, error.message)
+    refute trigger.reload.resuscitate_archived
+  end
+
+  test "enqueue_messages: false without reuse_session is not an error" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    @tool.call("action" => "update", "id" => trigger.id, "enqueue_messages" => false)
+
+    refute trigger.reload.enqueue_messages
+  end
+
+  # --- catalog_skills / catalog_hooks / catalog_plugins -----------------------
+
+  test "create stores the three catalog lists for the sessions the trigger spawns" do
+    output = @tool.call(
+      "action" => "create",
+      "name" => "Equipped Trigger",
+      "trigger_type" => "slack",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "{{link}}",
+      "catalog_skills" => [ "zimmer-run-tests" ],
+      "catalog_hooks" => [ "git-push-ci-reminder" ],
+      "catalog_plugins" => [ "ci-workflow" ],
+      "configuration" => { "channel_id" => "C1012", "channel_name" => "equipped" }
+    )
+
+    trigger = Trigger.find_by!(name: "Equipped Trigger")
+    assert_equal [ "zimmer-run-tests" ], trigger.catalog_skills
+    assert_equal [ "git-push-ci-reminder" ], trigger.catalog_hooks
+    assert_equal [ "ci-workflow" ], trigger.catalog_plugins
+    assert_includes output, "skills: zimmer-run-tests | hooks: git-push-ci-reminder | plugins: ci-workflow"
+  end
+
+  test "update replaces a trigger's catalog skills" do
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.update!(catalog_skills: [ "zimmer-run-tests" ])
+
+    @tool.call("action" => "update", "id" => trigger.id, "catalog_skills" => [ "open-pr" ])
+
+    assert_equal [ "open-pr" ], trigger.reload.catalog_skills
+  end
+
+  test "update clears a catalog list on an explicit empty array and leaves it alone on an omitted key" do
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.update!(catalog_skills: [ "zimmer-run-tests" ], catalog_hooks: [ "git-push-ci-reminder" ])
+
+    @tool.call("action" => "update", "id" => trigger.id, "catalog_skills" => [])
+
+    trigger.reload
+    assert_equal [], trigger.catalog_skills
+    assert_equal [ "git-push-ci-reminder" ], trigger.catalog_hooks, "an omitted list means no opinion, not clear"
+  end
+
+  test "create rejects an unknown skill id and lists the valid ones" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call(
+        "action" => "create",
+        "name" => "Bad Skill Trigger",
+        "trigger_type" => "slack",
+        "agent_root_name" => "zimmer",
+        "prompt_template" => "{{link}}",
+        "catalog_skills" => [ "zimmer-run-tests", "not-a-skill" ],
+        "configuration" => { "channel_id" => "C1013", "channel_name" => "bad" }
+      )
+    end
+
+    assert_match(/Invalid skills: not-a-skill/, error.message)
+    assert_match(/Valid skills:/, error.message)
+    assert_nil Trigger.find_by(name: "Bad Skill Trigger")
+  end
+
+  test "update rejects an unknown hook id" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id, "catalog_hooks" => [ "not-a-hook" ])
+    end
+
+    assert_match(/Invalid hooks: not-a-hook/, error.message)
+    assert_equal [], trigger.reload.catalog_hooks || []
+  end
+
+  test "update rejects an unknown plugin id" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "update", "id" => trigger.id, "catalog_plugins" => [ "not-a-plugin" ])
+    end
+
+    assert_match(/Invalid plugins: not-a-plugin/, error.message)
+  end
+
+  test "the input schema names every trigger field the web form can set" do
+    properties = Mcp::Tools::ActionTrigger.input_schema.to_h[:properties]
+
+    %i[enqueue_messages resuscitate_archived catalog_skills catalog_hooks catalog_plugins].each do |field|
+      assert properties.key?(field), "action_trigger's schema must name #{field}"
+    end
+  end
 end

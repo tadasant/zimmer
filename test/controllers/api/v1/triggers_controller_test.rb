@@ -674,4 +674,130 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     assert_equal "Invalid agent_root", JSON.parse(response.body)["error"]
   end
+
+  # --- Catalog artifact lists -------------------------------------------------
+
+  test "should create trigger with catalog skills, hooks and plugins" do
+    post api_v1_triggers_path, params: {
+      name: "Equipped Trigger",
+      agent_root_name: "zimmer",
+      prompt_template: "test: {{link}}",
+      catalog_skills: [ "zimmer-run-tests" ],
+      catalog_hooks: [ "git-push-ci-reminder" ],
+      catalog_plugins: [ "ci-workflow" ],
+      trigger_conditions_attributes: [
+        { condition_type: "slack", configuration: { channel_id: "C500", channel_name: "equipped" } }
+      ]
+    }, headers: @headers
+
+    assert_response :created
+    json = JSON.parse(response.body)["trigger"]
+    assert_equal [ "zimmer-run-tests" ], json["catalog_skills"]
+    assert_equal [ "git-push-ci-reminder" ], json["catalog_hooks"]
+    assert_equal [ "ci-workflow" ], json["catalog_plugins"]
+
+    trigger = Trigger.find(json["id"])
+    assert_equal [ "zimmer-run-tests" ], trigger.catalog_skills, "the skill must be persisted, not only echoed"
+    assert_equal [ "git-push-ci-reminder" ], trigger.catalog_hooks
+    assert_equal [ "ci-workflow" ], trigger.catalog_plugins
+  end
+
+  test "should update a trigger's catalog skills" do
+    patch api_v1_trigger_path(@trigger), params: { catalog_skills: [ "open-pr" ] }, headers: @headers
+
+    assert_response :success
+    assert_equal [ "open-pr" ], JSON.parse(response.body)["trigger"]["catalog_skills"]
+    assert_equal [ "open-pr" ], @trigger.reload.catalog_skills
+  end
+
+  test "an omitted catalog list is left alone, an explicit empty one clears it" do
+    @trigger.update!(catalog_skills: [ "open-pr" ], catalog_hooks: [ "git-push-ci-reminder" ])
+
+    patch api_v1_trigger_path(@trigger), params: { catalog_skills: [] }, headers: @headers
+
+    assert_response :success
+    @trigger.reload
+    assert_equal [], @trigger.catalog_skills
+    assert_equal [ "git-push-ci-reminder" ], @trigger.catalog_hooks
+  end
+
+  test "should reject an unknown catalog skill id" do
+    patch api_v1_trigger_path(@trigger), params: { catalog_skills: [ "not-a-skill" ] }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_match(/invalid skill/i, response.body)
+    assert_equal [], @trigger.reload.catalog_skills || []
+  end
+
+  test "should reject an unknown catalog hook id" do
+    patch api_v1_trigger_path(@trigger), params: { catalog_hooks: [ "not-a-hook" ] }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_match(/invalid hook/i, response.body)
+  end
+
+  test "should reject an unknown catalog plugin id" do
+    patch api_v1_trigger_path(@trigger), params: { catalog_plugins: [ "not-a-plugin" ] }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_match(/invalid plugin/i, response.body)
+  end
+
+  test "the trigger payload reports the three catalog lists" do
+    @trigger.update!(catalog_skills: [ "open-pr" ], catalog_hooks: [ "git-push-ci-reminder" ], catalog_plugins: [ "ci-workflow" ])
+
+    get api_v1_trigger_path(@trigger), headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)["trigger"]
+    assert_equal [ "open-pr" ], json["catalog_skills"]
+    assert_equal [ "git-push-ci-reminder" ], json["catalog_hooks"]
+    assert_equal [ "ci-workflow" ], json["catalog_plugins"]
+  end
+
+  test "the index payload reports the catalog lists too" do
+    @trigger.update!(catalog_skills: [ "open-pr" ])
+
+    get api_v1_triggers_path, headers: @headers
+
+    assert_response :success
+    listed = JSON.parse(response.body)["triggers"].find { |t| t["id"] == @trigger.id }
+    assert_equal [ "open-pr" ], listed["catalog_skills"]
+    assert_equal [], listed["catalog_plugins"]
+  end
+
+  test "blank ids are dropped from a catalog list rather than persisted" do
+    patch api_v1_trigger_path(@trigger), params: { catalog_skills: [ "", "open-pr" ] }, headers: @headers
+
+    assert_response :success
+    assert_equal [ "open-pr" ], @trigger.reload.catalog_skills
+  end
+
+  # --- enqueue_messages / resuscitate_archived --------------------------------
+
+  test "enqueue_messages and resuscitate_archived land on a reuse trigger" do
+    trigger = triggers(:weekly_schedule_trigger)
+
+    patch api_v1_trigger_path(trigger),
+          params: { enqueue_messages: true, resuscitate_archived: true }, headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)["trigger"]
+    assert json["enqueue_messages"]
+    assert json["resuscitate_archived"]
+    trigger.reload
+    assert trigger.enqueue_messages
+    assert trigger.resuscitate_archived
+  end
+
+  test "enqueue_messages without reuse_session is cleared, and the payload reports the false that was stored" do
+    refute @trigger.reuse_session
+
+    patch api_v1_trigger_path(@trigger), params: { enqueue_messages: true }, headers: @headers
+
+    assert_response :success
+    refute JSON.parse(response.body)["trigger"]["enqueue_messages"],
+           "the payload must report the stored false rather than echoing the request"
+    refute @trigger.reload.enqueue_messages
+  end
 end

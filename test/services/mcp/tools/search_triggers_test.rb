@@ -263,4 +263,30 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
     error = assert_raises(Mcp::ToolError) { restricted.call("id" => triggers(:enabled_slack_trigger).id) }
     assert_match(/not found/i, error.message)
   end
+
+  test "the by-id view reports the catalog lists a trigger stamps onto its sessions" do
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.update!(catalog_skills: [ "open-pr" ], catalog_hooks: [ "git-push-ci-reminder" ])
+
+    output = @tool.call("id" => trigger.id)
+
+    assert_includes output, "- **Skills:** open-pr"
+    assert_includes output, "- **Hooks:** git-push-ci-reminder"
+    assert_includes output, "- **Plugins:** (none)"
+  end
+
+  test "the by-id view reports the reuse-only flags, and says what enqueue_messages off costs" do
+    trigger = triggers(:weekly_schedule_trigger)
+
+    output = @tool.call("id" => trigger.id)
+
+    assert_includes output, "- **Enqueue Messages:** No — a fire onto a busy session is dropped"
+    assert_includes output, "- **Resuscitate Archived:** No"
+  end
+
+  test "the reuse-only flags are omitted for a trigger that does not reuse its session" do
+    output = @tool.call("id" => triggers(:enabled_slack_trigger).id)
+
+    refute_includes output, "Enqueue Messages"
+  end
 end

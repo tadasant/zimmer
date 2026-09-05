@@ -391,6 +391,21 @@ two constants is ever summarised (`repos`, `labels`, `exclude_labels` and `allow
 included), and a large configuration with no high-cardinality poller state is still printed in full.
 `GET /api/v1/triggers/:id` serves every cursor exactly for a caller that needs the values.
 
+`action_trigger` also sets what a trigger's *sessions* get, not only when it fires:
+`catalog_skills`, `catalog_hooks` and `catalog_plugins` are the AIR-catalog lists stamped onto every
+session it spawns, and each id is validated against the catalog exactly as `action_session`'s
+`change_skills` / `change_hooks` / `change_plugins` validate theirs — an unknown id is rejected with
+the valid ones listed, rather than persisted and left to break the next spawn. They follow
+`mcp_servers`' rule for omission: a key you do not send is left alone, and `[]` clears the list.
+
+`enqueue_messages` and `resuscitate_archived` both require `reuse_session`, and the tool **rejects**
+them without it rather than accepting a value the model then clears
+(`clear_enqueue_messages_without_reuse_session` runs before the paired validation, so a `save` with
+either one set and reuse off succeeds silently). That silence is what the rejection is for: with
+`enqueue_messages` off, a fire that lands on a still-running session is
+[dropped](/sessions/triggers/#coalescing-a-repeated-fire), which is exactly the failure a session is
+usually sent to `action_trigger` to fix. Send `reuse_session: true` in the same call, or drop the flag.
+
 `action_trigger`'s `invoke` fires a trigger now, without waiting for a condition to match — the MCP
 half of `POST /api/v1/triggers/:id/invoke`, and the same fire the **Run Now** button on the trigger
 page performs. Pass `variables` to fill in the template's placeholders. The session is linked to the
