@@ -158,8 +158,20 @@ own `memory.max` — 4096 in production, 1024 on staging. That one protects the 
 from a single session inside it, which the container cap cannot: one runaway command used to be
 able to spend the whole budget and let the kernel pick a victim by size rather than by blame
 ([#815](https://github.com/tadasant/zimmer/issues/815)). Setting it to `0` disables the bound,
-which is the break-glass; changing it is a deploy, never a shell. The mechanism, the sizing
-argument, and what a session sees when it fires are in
+which is the break-glass; changing it is a deploy, never a shell.
+
+**Read "underneath" literally, because the natural misreading of it is that session memory has
+moved out of the container's budget.** It has not. cgroup v2 is hierarchical: the per-session
+cgroups live at `zimmer.sessions/session-<id>`, *inside* the container's cgroup, so every byte a
+session charges is charged to the container cap as well. The per-session bound catches **one
+runaway** session; it creates no headroom and cannot stop N in-budget sessions from summing over
+the cap — six sessions at 4 GiB is 24 GiB against 10g, which is why it is a runaway bound and not
+an admission-control budget. That sum is the open failure in
+[#981](https://github.com/tadasant/zimmer/issues/981), where eight in-budget sessions reached the
+container cap and the kernel OOM-killed the GoodJob worker itself. Until it lands, the width of the
+`agents` lane (`GOOD_JOB_AGENTS_THREADS`, held at 8) is what limits how often that happens.
+
+The mechanism, the sizing argument, and what a session sees when it fires are in
 [Each session gets its own memory bound](/sessions/spawning/#each-session-gets-its-own-memory-bound);
 the deployments that get no bound at all are in
 [Limitations](/limitations/#a-sessions-memory-bound-needs-the-nested-docker-worker).

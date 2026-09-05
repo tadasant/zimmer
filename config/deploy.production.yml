@@ -108,7 +108,7 @@ servers:
       # understood, sustained heavy load still ends in a worker restart that interrupts the
       # sessions on it. What changes is that the rest of the droplet stays up.
       #
-      # One NARROW thing above is now solved rather than accepted. #815 caught a session's
+      # One NARROW thing above is solved rather than accepted. #815 caught a session's
       # own `bash` at 6.5 GiB of anonymous RSS against this cap, so
       # ZIMMER_SESSION_MEMORY_MAX_MB (below) gives each session its own cgroup and its own
       # bound underneath this one. That stops ONE RUNAWAY session from being the reason
@@ -126,9 +126,14 @@ servers:
       # #981: on 2026-09-05 eight of them did, with no runaway and the largest process at
       # 943 MB, and the kernel OOM-killed the GoodJob worker itself. `zimmer.sessions` has
       # no memory.max of its own, so a pile-up walks straight to this ceiling and the
-      # worker is in the victim pool. Until #981 lands, this cap is the only thing between
-      # a busy `agents` lane and a dead worker -- see config/connection_budget.rb, where
-      # GOOD_JOB_AGENTS_THREADS is held at 8 for exactly this reason.
+      # worker is in the victim pool.
+      #
+      # Which is worth stating the right way round, because this cap does not protect the
+      # worker from that -- it is where that kill LANDS, exactly as the paragraphs above
+      # describe. What this cap protects is the DROPLET. The only thing limiting how often
+      # an overcommitted `agents` lane reaches it is the lane's own width, so until #981
+      # lands, GOOD_JOB_AGENTS_THREADS is the control -- and it is held at 8 for this
+      # reason. See config/connection_budget.rb, which carries the measurements.
       memory: 10g
       volume:
         - zimmer_data:/home/rails/.zimmer

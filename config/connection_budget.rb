@@ -152,13 +152,22 @@ module ConnectionBudget
       # sessions from summing over the container cap. Do not read it as headroom.
       #
       # Measured on production over the 24h to 2026-09-05T14:16Z, at this value
-      # of 8 (VictoriaMetrics, `role="worker"`):
+      # of 8 (VictoriaMetrics, `role="worker"`), strongest evidence first:
       #
+      #   memory.stat     anon peak 9.07 GiB against a 10 GiB memory.max;
+      #                   p95 5.68 GiB. Anonymous memory is unreclaimable, so
+      #                   this is the number that decides whether N fits.
+      #   memory.events   `oom_kill` 5. Per-container maxima -- the counter
+      #                   resets when a deploy recreates the container, and the
+      #                   window spans ~23 of them, so the true total is higher.
       #   memory.current  peak 10,737,324,032 B against a memory.max of
-      #                   10,737,418,240 B -- 94 KB short of the hard cap
-      #   memory.stat     anon peak 9.07 GiB; p95 5.68 GiB
-      #   memory.events   `max` (allocation stalled, forced reclaim) 133,791
-      #   memory.events   `oom_kill` 5
+      #                   10,737,418,240 B, 94 KB short. Weaker than it looks:
+      #                   memory.current includes reclaimable page cache (`file`
+      #                   peaked at 7.28 GB), and a cgroup doing heavy file I/O
+      #                   fills toward its limit with cache as a matter of
+      #                   course. Corroboration, not proof.
+      #   memory.events   `max` (allocation stalled into reclaim) 133,791. Same
+      #                   caveat: cache-driven reclaim fires this too.
       #
       # So EIGHT already reaches the ceiling. tadasant/zimmer#981 is the open
       # incident for it: on 2026-09-05T09:20:24Z eight in-budget sessions -- no
@@ -168,14 +177,19 @@ module ConnectionBudget
       # `zimmer.sessions` has no memory.max of its own, so a pile-up walks
       # straight to the container ceiling.
       #
-      # RAISING THIS IS THEREFORE BLOCKED ON #981, not on the connection budget.
-      # The database side is comfortable: 15 derives 97 required_backends, which
-      # a db-s-2vcpu-4gb cluster serves exactly. The memory side is not, and a
-      # higher number here buys no throughput -- it converts queued rows, which
-      # are durable and resume, into a worker kill, which is not and does not.
-      # Eight keeps the admission decision in the scheduler: excess sessions
-      # remain durable queued rows instead of pushing the whole worker into
-      # memory reclaim and stopping every lane.
+      # RAISING THIS IS THEREFORE BLOCKED ON #981, not on the connection budget
+      # -- though the connection budget is not roomy either: 15 derives 97
+      # required_backends, which is the ENTIRE capacity of a db-s-2vcpu-4gb
+      # cluster (97), so that side has zero margin and the production cluster's
+      # plan slug has not been confirmed. Check `terraform output
+      # managed_db_usable_backends` before relying on it.
+      #
+      # Eight is not a number that has been shown to fit. It is the number that
+      # has been measured, and the measurement says it is at the edge: excess
+      # sessions stay durable queued rows, which resume, rather than becoming a
+      # worker kill, which does not. A higher number here buys no throughput,
+      # because it trades queued rows for the loss of the sessions already
+      # running.
       #
       # To go above 8, #981 has to land first -- a memory.max on the
       # `zimmer.sessions` parent, admission control against observed headroom, or
@@ -256,7 +270,7 @@ module ConnectionBudget
   # autotrim, a SKIP-LOCKED delete of at most 100 rows in a transaction
   # (SolidCable::TrimJob, trim_chance / trim_batch_size). Call it a couple of
   # milliseconds. For a 3-wide pool to hit ActiveRecord's 5s checkout timeout, the worker
-  # would have to sustain thousands of broadcasts a second; sixteen agent sessions
+  # would have to sustain thousands of broadcasts a second; eight agent sessions
   # streaming transcript updates produce single or double digits.
   #
   # Worth knowing if that estimate is ever wrong: BroadcastService rescues and does not

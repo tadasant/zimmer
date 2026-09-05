@@ -327,9 +327,15 @@ What production still needs:
    because the droplet is not being resized. Measured on staging: one `.agent-containers`
    stack sits around 700 MB anon and fits; a *second* concurrent stack produced a cgroup
    OOM kill at `anon-rss:1244540kB`. Production therefore runs eight `agents` scheduler
-   threads (`GOOD_JOB_AGENTS_THREADS`), rather than admitting sixteen stacks that cannot
-   fit inside `10g` alongside the worker's own residency. More sessions remain durable
-   queued jobs and start as one of those eight slots becomes free.
+   threads (`GOOD_JOB_AGENTS_THREADS`), rather than the sixteen it once admitted. More
+   sessions remain durable queued jobs and start as one of those eight slots becomes free.
+
+   Read eight as *the number that has been measured*, not as a number shown to fit. On
+   production at eight, the worker cgroup's unreclaimable `anon` peaks at 9.07 GiB against
+   its 10 GiB `memory.max`, and eight in-budget sessions have already summed over the cap
+   and had the kernel OOM-kill the GoodJob worker
+   ([#981](https://github.com/tadasant/zimmer/issues/981)). Per-session cgroups do not
+   change that arithmetic — cgroup v2 is hierarchical, so they charge the same 10 GiB.
 
 Do it as its own change, after staging has run on it. The blast radius is not comparable:
 production is where agent sessions actually execute, and the failure mode of arming the
