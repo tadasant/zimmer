@@ -849,10 +849,21 @@ the fire, the PR showed a clean label and no comment, and no alert fired anywher
 
 - writes an ERROR line on the session's own timeline saying the fire is spent and its subject has
   nobody on it, and
-- raises an `#eng-alerts` alert naming the trigger, the session, why it died (the classified
-  summary *and* the raw `exit_status`, because for this failure only the latter says "Runtime
-  session id … is already in use"), and the GitHub PR or issue if one can be found in the prompt
-  the fire carried.
+- raises an `#eng-alerts` alert naming the trigger, the session, why it died, and the GitHub PR or
+  issue if one can be found in the prompt the fire carried.
+
+"Why it died" is sent in **two** places, and the split is security-relevant rather than cosmetic.
+`Session#failure_summary` — a closed `case` over enumerated `failure_reason` values that never
+interpolates runtime output — goes in `details:`, which `AlertService` passes to Slack untouched.
+The raw `exit_status` and `exception_message` go through `error:`, which `AlertService` runs through
+`AlertSnippet` for redaction, clamping, UTF-8 coercion and fencing. Both are needed: the summary
+renders `process_failed` as "Process failed", while the sentence that identifies the 7844 failure —
+"Runtime session id … is already in use" — lives only in `exit_status`. And the raw half has to be
+redacted, because `AirPrepareError` embeds `air prepare`'s full stderr and `air prepare` is the step
+that resolves `.mcp.json`'s `${VAR}` credential substitutions, so that text can plausibly carry a
+secret *value*. This is the first path by which either field leaves the box, and a secret posted to
+`#eng-alerts` cannot be un-posted. `UnclassifiedFailureReporter` makes the same call for the same
+reason.
 
 `metadata.trigger_id` alone would be too wide, because a trigger creates sessions on paths where a
 retry *is* coming or a human is already watching, and telling either of those that "no retry is

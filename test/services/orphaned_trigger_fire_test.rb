@@ -69,11 +69,45 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
     session = orphaned_session
 
     AlertService.expects(:raise_alert).with do |_title, opts|
-      assert_match(/already in use/, opts[:details])
+      # The classified half is prose a human reads at a glance...
+      assert_match(/Process failed/, opts[:details])
+      # ...and the runtime's own words are the sentence that identifies THIS
+      # failure. They ride on `error:` — see the redaction test below.
+      assert_match(/already in use/, opts[:error])
       true
     end.returns(true)
 
     OrphanedTriggerFire.report!(session)
+  end
+
+  # The security seam the merge gate held this PR on. `AlertService` runs
+  # `error:` through `AlertSnippet` — 14 redaction rules, clamping, UTF-8
+  # coercion, fencing — and passes `details:` to Slack untouched. `exit_status`
+  # and `exception_message` are arbitrary runtime output: `AirPrepareError`
+  # embeds `air prepare`'s full stderr, and `air prepare` is what resolves
+  # `.mcp.json`'s `${VAR}` credential substitutions. A secret posted to
+  # `#eng-alerts` cannot be un-posted.
+  test "raw runtime text travels as error:, never in the unredacted details" do
+    session = orphaned_session(metadata: {
+      "exit_status" => "boom: Authorization: Bearer sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA",
+      "exception_message" => "air prepare failed: token=hunter2supersecret"
+    })
+
+    AlertService.expects(:raise_alert).with do |_title, opts|
+      refute_match(/sk-ant-api03/, opts[:details])
+      refute_match(/hunter2supersecret/, opts[:details])
+      refute_match(/boom:/, opts[:details])
+
+      # Present in the snippet argument, and redacted by AlertSnippet on the way
+      # to Slack — asserted through AlertSnippet rather than assumed.
+      assert_match(/air prepare failed/, opts[:error])
+      snippet = AlertSnippet.build(opts[:error])
+      refute_match(/sk-ant-api03/, snippet)
+      refute_match(/hunter2supersecret/, snippet)
+      true
+    end.returns(true)
+
+    assert OrphanedTriggerFire.report!(session)
   end
 
   test "records the drop on the session's own timeline, not only in Slack" do
@@ -260,16 +294,19 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
 
   # ── Rendering the failure ─────────────────────────────────────────────────
 
-  # AlertService clamps the details block, and the links are rendered last, so an
-  # unbounded exit_status would push the reader's way back to the session off the
-  # end of the message whose only job is to get them there.
-  test "a huge exit_status is bounded so the links survive" do
+  # AlertService clamps the details block and the links are rendered last, so an
+  # unbounded exit_status in `details:` would push the reader's way back to the
+  # session off the end of the message whose only job is to get them there.
+  # Keeping the raw text on `error:` is what makes that impossible: AlertSnippet
+  # holds its own budget.
+  test "a huge exit_status cannot crowd the links out of the details" do
     session = orphaned_session(metadata: { "exit_status" => "boom " * 5_000 })
 
     AlertService.expects(:raise_alert).with do |_title, opts|
       assert_operator opts[:details].length, :<, AlertService::DETAILS_SECTION_MAX_CHARS
       assert_match(%r{/sessions/#{session.id}}, opts[:details])
       assert_match(%r{/triggers/#{@trigger.id}}, opts[:details])
+      assert_operator AlertSnippet.build(opts[:error]).length, :<=, AlertSnippet::MAX_CHARS
       true
     end.returns(true)
 
@@ -286,7 +323,7 @@ class OrphanedTriggerFireTest < ActiveSupport::TestCase
     })
 
     AlertService.expects(:raise_alert).with do |_title, opts|
-      assert_match(/could not connect to server/, opts[:details])
+      assert_match(/could not connect to server/, opts[:error])
       true
     end.returns(true)
 
