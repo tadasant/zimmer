@@ -1200,10 +1200,13 @@ module SessionStateMachine
   # session — a second AASM event on this object, nested inside the first, plus
   # an AgentSessionJob enqueue — from whatever thread happened to call `pause!`,
   # including a web request. EnqueuedMessageDrainJob does it once the transition
-  # is committed and visible, under the same per-session advisory lock
-  # Sessions::InterruptService takes, and carries the bounded-retry and
-  # give-up-loudly logic that keeps a session which cannot take its message from
-  # bouncing between states forever.
+  # is committed and visible, re-reading the session for itself, and carries the
+  # bounded-retry and give-up-loudly logic that keeps a session which cannot take
+  # its message from bouncing between states forever. (It takes no advisory lock,
+  # deliberately — see that job's own header for why wrapping the processor call
+  # would break the processor's rescue. Concurrency is the processor's `FOR UPDATE
+  # SKIP LOCKED` claim, and the job's DELAY is what keeps it out of
+  # Sessions::InterruptService's way.)
   def drain_enqueued_messages_after_pause
     return unless idle_for_queued_delivery?
     return unless enqueued_messages.pending.exists?

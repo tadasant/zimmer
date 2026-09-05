@@ -145,12 +145,63 @@ class EnqueuedMessageDrainJobTest < ActiveJob::TestCase
       "an armed self-wake is not a reason to leave the message it was waiting for undelivered"
   end
 
+  # `waiting` is not only a resting state — it is also where a session sits for
+  # the whole of its FIRST START, from the moment AgentSessionJob claims
+  # `running_job_id` through the clone and the spawn until the transition to
+  # `running`. Delivering into that window LOSES the message: the processor takes
+  # its resume! branch (which does not clear `running_job_id`), destroys the row,
+  # and the fresh AgentSessionJob it enqueues is refused as a duplicate of the
+  # live first-start job.
+  test "leaves a session a job is already driving alone" do
+    session, message = sleeping_session_with_queued_message
+    session.update!(running_job_id: SecureRandom.uuid)
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      EnqueuedMessageDrainJob.perform_now(session.id)
+    end
+
+    assert_equal "pending", message.reload.status
+    assert session.reload.waiting?, "a session mid-first-start is not idling on its queue"
+  end
+
+  # The refusal above is scoped to `waiting` deliberately. A `needs_input` session
+  # carrying a stale job id is exactly what this job's bounded retry and alert
+  # exist to report, so it must still be attempted rather than skipped silently.
+  test "a stale job id does not stop a drain for a session in needs_input" do
+    session, message = idle_session_with_queued_message
+    session.update!(running_job_id: SecureRandom.uuid)
+
+    EnqueuedMessageDrainJob.perform_now(session.id)
+
+    assert_not EnqueuedMessage.exists?(message.id), "the needs_input drain is unchanged"
+  end
+
   # A follow-up prompt into a session with no runtime session id is reclassified
   # by AgentSessionJob as a FRESH START, which runs the session's own prompt and
   # DISCARDS the follow-up. "Delivering" here would destroy the message.
   test "leaves a session that has never started alone" do
     session, message = sleeping_session_with_queued_message
     session.update!(session_id: nil, transcript: nil)
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      EnqueuedMessageDrainJob.perform_now(session.id)
+    end
+
+    assert_equal "pending", message.reload.status
+    assert session.reload.waiting?
+  end
+
+  # The population `never_ran?` would have missed, and the one that matters most.
+  # A session that HAS run has a transcript, so `never_ran?` is false — but the
+  # reclassification this refusal guards against keys on the session id alone,
+  # and a session whose stale runtime id was released (failed-resume recovery,
+  # ProcessLifecycleManager#release_stale_runtime_session_id!) has a full
+  # transcript and no id. Draining into one spends the message on a turn that
+  # runs `session.prompt` instead and throws the message away.
+  test "leaves a session whose runtime session id was released alone, transcript or no transcript" do
+    session, message = sleeping_session_with_queued_message
+    session.update!(session_id: nil)
+    assert_not session.never_ran?, "this session has run — the narrower guard would not have caught it"
 
     assert_no_enqueued_jobs(only: AgentSessionJob) do
       EnqueuedMessageDrainJob.perform_now(session.id)

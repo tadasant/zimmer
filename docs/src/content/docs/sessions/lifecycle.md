@@ -318,7 +318,7 @@ message back to `pending`. Concurrency is already the service's job: the claim i
 SKIP LOCKED` on the row plus a `lock!` on the session, and `AgentSessionJob`'s end-of-turn drain
 calls it bare for the same reason.
 
-The job refuses to deliver in six states, because in each the session genuinely cannot take a
+The job refuses to deliver in seven states, because in each the session genuinely cannot take a
 message and delivering would make things worse:
 
 | State | Why not |
@@ -326,11 +326,12 @@ message and delivering would make things worse:
 | Blocked on an MCP elicitation | The agent process is still alive. Resuming spawns a second process against one clone and orphans the round-trip. |
 | Parked by `AuthOutageParkService` (`auth_outage_reason`) | A fresh turn hits the same quota or auth wall, burns the message, and parks again. `AgentSessionJob`'s own drain reads the same marker. |
 | `paused_by: "mcp_retry"` | A retry carrying the original prompt is already scheduled; delivering now races it into the same failing MCP server. |
-| `waiting` and never started (`never_ran?`) | A follow-up prompt into a session with no runtime session id is reclassified by `AgentSessionJob` as a **fresh start**, which runs the session's own prompt and *discards* the follow-up — so "delivering" would destroy the message. It goes out on the end-of-turn drain of the first turn instead. |
+| `waiting` with a `running_job_id` | `waiting` is not only a resting state — it is also where a session sits for the whole of its **first start**, from the moment `AgentSessionJob` claims `running_job_id` through the clone, the session-id write and the spawn. Delivering there loses the message outright: the processor takes its `resume!` branch, destroys the row, and the replacement job is refused by the concurrency guard as a duplicate of the live first-start job. A session genuinely at rest carries no job id — `pause` clears it, and so do `SpotSessionHold#return_to_queue!` and `AuthOutageParkService.resume_parked!`. |
+| `waiting` with no runtime session id (`session_id.blank?`) | A follow-up prompt into a session with none is reclassified by `AgentSessionJob` as a **fresh start**, which runs the session's own prompt and *discards* the follow-up — so "delivering" would destroy the message. It goes out on that first turn's end-of-turn drain instead. This asks about the session id **alone**, not `never_ran?`: the two differ by `transcript.blank?`, and the population that matters most is a session that *has* run and whose stale runtime id was later released. |
 | `waiting` and held at the spot gate (`SpotSessionHold.held?`) | `SpotSessionHold` refuses the turn at the door and re-queues it as a fresh row, so a drain would churn the message's position and origin on every pass. The gate's own re-check is already the thing that will run it. |
 | `waiting` and paused in the spot queue (`SpotSessionPause.paused?`) | Same gate, resumed by `SpotCeilingSweepJob` rather than by a re-check. |
 
-The last three are the `waiting`-only ones, and one candidate is deliberately **not** among them: a
+The last four are the `waiting`-only ones, and one candidate is deliberately **not** among them: a
 session dormant on its own armed wake-up (`paused_until_scheduled_time?`). That is the case the
 whole invariant is about — the `open-pr` skill has a session sleep on a bounded self-wake so it
 does not occupy the human's action queue while its PR is rated, and the merged-PR notice is *queued*
@@ -339,6 +340,13 @@ asleep waiting for, so consuming the wake to deliver it is the point rather than
 `EnqueuedMessage#stale?` is what keeps that honest: a notice whose subject moved on while it sat in
 the queue is retired rather than delivered, so a wake is only ever spent on a message that still
 says something.
+
+One consequence of that is worth stating plainly, because it is wider than the argument for it.
+`resume` cancels **every** unfired one-time wake, not only the schedule wake being argued about
+here — a session-scoped `ao_event` watcher goes with it. That is the same cost any delivery to an
+idle session has always had, and it is [#569](https://github.com/tadasant/zimmer/issues/569)'s
+subject rather than this one's, so nothing here changes it. What is new is that an *automated* drain
+can now spend those wakes on a `waiting` session where previously only a deliberate resume did.
 
 **The dead-process case.** A drain does not need the old agent process — it enqueues a fresh
 `AgentSessionJob` that resumes the runtime session from `session_id` and the working directory,
@@ -382,7 +390,18 @@ nudge is dropped.
 owns — the row is claimed `FOR UPDATE SKIP LOCKED`, the session stays `running` (the pre-pause
 handoff path, so there is no `running → needs_input → running` flap), `running_job_id` is released
 and a fresh `AgentSessionJob` is enqueued carrying the message's content and attachments. The
-arriving job stands down. The per-turn markers `pending_follow_up_prompt` /
+arriving job stands down.
+
+**The session has to be `running` for that to hold, and the check requires it.** Releasing
+`running_job_id` is something only the handoff branch does, and that branch is selected by the
+session already being `running`. From `needs_input` or `waiting` the processor takes its `resume!`
+branch instead, which leaves `running_job_id` pointing at the job that is standing down — so the
+fresh `AgentSessionJob` would be refused by `#perform`'s concurrency guard as a duplicate, and the
+message it carried would be gone from the queue with no turn behind it. Every caller that injects a
+nudge resumes the session before enqueueing the job, so the guard costs nothing on the paths it is
+for. It also settles the session's armed one-time wakes: a `running` session's `may_resume?` is
+false, so no resume runs and `cancel_pending_one_time_wake_triggers` never fires — the wakes a
+system-recovery resume deliberately preserves survive the handoff exactly as they survive the nudge. The per-turn markers `pending_follow_up_prompt` /
 `pending_follow_up_sent_at` are dropped **before** the handoff, because the follow-up arm reads
 `pending_follow_up_prompt || follow_up_prompt` — left standing, the job the handoff enqueues would
 find the nudge sitting there and deliver *that* in place of the message that just won the turn.
