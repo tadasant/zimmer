@@ -2,10 +2,10 @@
 
 # One auto-recovery retry budget, declared once and read everywhere.
 #
-# Zimmer bounds seven distinct auto-recovery loops — SIGTERM retry, API-error retry,
+# Zimmer bounds eight distinct auto-recovery loops — SIGTERM retry, API-error retry,
 # signal-death resume, MCP connection retry, context-length compact, session-id
-# conflict recovery, empty-turn restart. Each one counts its attempts in a
-# `session.metadata` key, stamps when it last fired, has a maximum, and clears a set of
+# conflict recovery, empty-turn restart, lost-clone recovery. Each one counts its
+# attempts in a `session.metadata` key, stamps when it last fired, has a maximum, and clears a set of
 # keys once the process has been stable again for a while. Those four facts used to
 # live in five different classes, in three naming conventions, with the reset logic
 # written out three times and the metadata keys re-typed a fourth time as SQL inside
@@ -13,7 +13,7 @@
 #
 # A budget is a declaration, not state: the state is the session's metadata, and every
 # method here takes the session it is reading or writing. `RetryBudget.all` is the list
-# the monitoring loop resets and the health surface enumerates, so an eighth failure
+# the monitoring loop resets and the health surface enumerates, so a ninth failure
 # class is one declaration rather than twenty copied lines plus two forgotten surfaces.
 #
 # It lives here rather than under `app/models/` because it is a value object over another
@@ -222,7 +222,7 @@ class RetryBudget
     sessions.where.not(status: terminal_status)
   end
 
-  # --- The seven budgets ------------------------------------------------------------
+  # --- The eight budgets ------------------------------------------------------------
   #
   # Key strings and maxima are exactly what each loop used before this object existed.
 
@@ -288,10 +288,10 @@ class RetryBudget
     counter_label: "Context-length compact counter"
   )
 
-  # --- The two recovery budgets (#727) -----------------------------------------------
+  # --- The recovery budgets (#727, #817) ---------------------------------------------
   #
-  # Both bound a recovery that can recur across a session's whole life, so both need a
-  # per-incident reset for the same reason the five above it do. Without one they are
+  # Each bounds a recovery that can recur across a session's whole life, so each needs a
+  # per-incident reset for the same reason the five above them do. Without one they are
   # lifetime caps: a session that survives two held-id conflicts in its first minute,
   # recovers and then works for a week fails permanently on the next unrelated conflict,
   # dropping the request it carries — `failed` rejects `follow_up`, so it cannot even be
@@ -327,5 +327,24 @@ class RetryBudget
     # The one budget whose exhaustion is a park, not a failure: both vantage points come
     # to rest in `needs_input` with the transcript empty rather than failing the session.
     terminal_status: :needs_input
+  )
+
+  # `lost_clone_recovery_abandoned` is deliberately NOT cleared, for the same reason
+  # `unstarted_turn_restart_abandoned` is not: it records a failure Zimmer already
+  # explained on the session's timeline, which is diagnosis rather than budget.
+  #
+  # On DEFAULT_RESET_AFTER, and unlike EMPTY_TURN a minute really is evidence here. The
+  # recovery re-clones the working tree and resumes into it, so a process still up 60
+  # seconds later is a process running inside a clone that exists — which is precisely
+  # the condition whose absence spends this budget. Two clone losses an hour apart are
+  # two incidents; two inside one minute are a loop, and the loop is what max bounds.
+  LOST_CLONE = define(
+    name: :lost_clone,
+    key: "lost_clone_recovery_count",
+    max: 2,
+    stamp: "last_lost_clone_recovery_at",
+    clears: %w[lost_clone_recovery_count last_lost_clone_recovery_at],
+    label: "Lost-clone recovery",
+    counter_label: "Lost-clone recovery counter"
   )
 end

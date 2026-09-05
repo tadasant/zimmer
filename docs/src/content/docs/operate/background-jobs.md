@@ -648,8 +648,14 @@ A clone root that is **gone entirely** is deliberately not reported, for any sta
 legitimately sits on a deleted clone between an archive and the resume that re-clones it, and
 `Session#deliver_follow_up!` flips a session to `running` *before* it enqueues the job whose recreate
 path rebuilds the clone — so on exactly the congested afternoon this job exists for, `running` with
-no clone root is a normal state that lasts minutes. It is not silent either way: that session fails
-with "clone directory not found", which is already an error somebody sees.
+no clone root is a normal state that lasts minutes. It is not silent either way: the follow-up path
+rebuilds the root from the session row as a matter of course, the resume path does too where it safely
+can ([a clone that vanished is rebuilt, not fatal](/sessions/spawning/#a-clone-that-vanished-is-rebuilt-not-fatal)),
+both say so on the session's own timeline, and a resume whose rebuild is refused still fails with
+"clone directory not found". Worth knowing what that costs in signal: a live clone root going missing
+stays deliberately unreported by this job, and on the resume path it is now a session-log line and a
+`lost_clone` row on the retry-budget health section rather than a failed session, until the budget runs
+out.
 
 A fork whose clone was scaffolded empty on purpose (`clone_scaffolded`) is exempt from the git-tree
 check, but not from the subdirectory check — `ForkSessionService` creates that directory explicitly.

@@ -93,6 +93,48 @@ module AutomatedPrompts
     format(MEMORY_LIMIT_RECOVERY_TEMPLATE, limit: limit, peak: peak)
   end
 
+  # Prompt sent when Zimmer rebuilds a session's working tree because the clone it
+  # was running in went missing (zimmer#817).
+  #
+  # SYSTEM_RECOVERY would be actively misleading here. "Continue where you left off"
+  # invites the agent to carry on against a transcript in which it has already
+  # created files, applied edits and staged changes — none of which exist any more,
+  # because the tree under them was rebuilt from `git clone`. The failure that
+  # produces is silent and expensive: an edit whose "existing" content is the
+  # committed version, a `git commit` that captures half the work, a test run that
+  # passes because the broken code is not there. So this says exactly what was lost
+  # and asks for a re-read before anything else, in the same spirit as
+  # MEMORY_LIMIT_RECOVERY_TEMPLATE.
+  #
+  # It carries its own instruction, so it is NOT a nudge (see .nudge?): delivering it
+  # into an empty conversation would still be wrong, but for a different reason, and
+  # the caller — Sessions::RecoverLostClone — only sends it when a conversation exists.
+  LOST_CLONE_RECOVERY_TEMPLATE = <<~PROMPT.strip
+    [AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]
+
+    The working directory this session was running in disappeared from disk, and Zimmer has rebuilt it by re-cloning %{git_root} (branch: %{branch}). You are running in the rebuilt tree now. Your conversation is intact; the files are not.
+
+    Any uncommitted work in the old tree is gone — every file you created, every edit you had not committed, and anything you had staged. Whatever you had already pushed to the remote is safe.
+
+    Do not trust what this conversation says about the state of the tree. Before you do anything else, look at what is actually there: check `git status` and `git log`, and re-read the files you were working on. Then redo the part of your work that was lost and carry on.
+
+    If you cannot tell what was lost, say so rather than committing a partial change.
+  PROMPT
+
+  # Build the lost-clone recovery message.
+  #
+  # The rebuilt tree's path is deliberately not named: this message is composed
+  # before the re-clone runs, and where it lands is SessionClonePath's answer, not
+  # this caller's. Naming a path that turned out to be a different one is worse than
+  # naming none, and the agent is already standing in it.
+  #
+  # @param git_root [String] the repository the tree was rebuilt from
+  # @param branch [String] the branch it was rebuilt at
+  # @return [String]
+  def self.lost_clone_recovery(git_root:, branch:)
+    format(LOST_CLONE_RECOVERY_TEMPLATE, git_root: git_root, branch: branch)
+  end
+
   # Prompt sent when the merge conflict poller detects that a session's PR
   # has merge conflicts with the base branch.
   #
