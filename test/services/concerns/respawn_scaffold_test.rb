@@ -103,6 +103,56 @@ class RespawnScaffoldTest < ActiveSupport::TestCase
     assert_empty logged
   end
 
+  # THE SECOND DOOR (#724). All four services that mix this in respawn the runtime
+  # with `AutomatedPrompts::SYSTEM_RECOVERY` from INSIDE a turn that is already
+  # running, so `AgentSessionJob#refuse_non_summary_fork_turn` never sees them. A
+  # status-summary fork holds a copy of its source's conversation, so that prompt
+  # tells it to continue the source's task — which is how router 4388's single
+  # `start_session` call became sessions 11386 and 11391.
+  test "check_session_status refuses to resume a status-summary fork" do
+    source = Session.create!(
+      prompt: "Route user requests to agent sessions",
+      agent_runtime: "claude_code",
+      status: :running,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      session_id: SecureRandom.uuid
+    )
+    @session.update!(
+      metadata: (@session.metadata || {}).merge(SessionStatusSummaryGenerator::FORK_MARKER => source.id)
+    )
+
+    assert_equal :aborted, @host.status_check,
+                 "resuming here replays the source's task and re-issues its side effects"
+
+    level, content = logged.find { |(_, text)| text.include?("status-summary fork") }
+    assert_not_nil content, "refused is not the same as silent"
+    assert_equal "warning", level
+    assert_includes content, "session #{source.id}",
+                    "the timeline should name whose work the resume would have continued"
+
+    # THE HALF THAT IS EASY TO GET WRONG. `:aborted` means "somebody else owns this
+    # exit", and every host maps it to an ExitDecision the job logs and walks away
+    # from without transitioning anything. Returning it while leaving the fork
+    # `running` would leave a fork with a dead process for the orphan sweep to find
+    # and nudge — the exact state the guard exists to prevent, reached the long way
+    # round. Pausing is what makes the `:aborted` claim true, and is what fires the
+    # harvest.
+    refute @session.reload.running?,
+           "a fork left `running` with a dead process is found and nudged by the next sweep"
+    assert @session.needs_input?, "pause is the fork's own completion transition"
+  end
+
+  # The other direction: the guard reads a marker only SessionStatusSummaryGenerator
+  # writes, so an ordinary session's recovery is completely untouched. Recovery is
+  # also what rescues genuinely stranded sessions, and nothing surfaces a resume
+  # that silently stopped happening.
+  test "check_session_status resumes an ordinary running session exactly as before" do
+    assert_nil @host.status_check
+    assert_empty logged
+  end
+
   test "wait_with_status_checks does nothing at all for a zero delay" do
     # This is the case ContextLengthRetryService is in: no delay schedule, so no
     # wait and no status check here — it checks directly before spawning instead.

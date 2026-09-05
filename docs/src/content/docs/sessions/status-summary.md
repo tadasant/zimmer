@@ -148,6 +148,35 @@ The rule is expressed as "the prompt is the summary request" rather than "the fo
 a turn", because a turn that was *never spent* — a SIGTERM retry, a spot hold, an undelivered-turn
 re-delivery — arrives carrying that same prompt and must still be allowed to run.
 
+#### The turn can also be continued from inside, and that door is separate
+
+The job's refusal decides whether a fork is handed a **new** turn. It never sees a respawn that
+happens *inside* a turn it already admitted, and there are two families of those. `RespawnScaffold`
+is mixed into the four services that kill and re-spawn the runtime mid-turn — `SigtermRetryService`,
+`ApiErrorRetryService`, `ContextLengthRetryService` and `AuthRecoveryService`.
+`ProcessLifecycleManager#spawn_continuation` is the other: a compaction continuation, a signal-death
+or OOM resume, an account rotation after a quota exit. Every prompt either family carries is a
+continuation instruction — *"continue where you left off"*, *"Continue with the previous task"* — so
+for a fork every one of them means "resume your source's task", exactly as the nudge did.
+
+Both refuse a summary fork, and both **bring it to rest** rather than walking away from it. That
+part is load-bearing: these paths signal an abandoned exit with `:aborted`, which means *somebody
+else owns this*, and the job that receives it transitions nothing. Returning that while leaving the
+fork `running` with a dead process would hand it straight back to the orphan sweep and its nudge —
+the thing being prevented, reached the long way round. Pausing is what makes the claim true, and is
+the same disposal the job-entry refusal uses, so a summary fork that stops has one ending wherever
+it was stopped from.
+
+A quota exit is asked about one step earlier still, before `rotate_for_quota!` rather than after it.
+Both of that path's exits reach `spawn_continuation` and would be refused there — but by then the
+rotation has moved the whole runtime onto a fresh account, which is a fleet-wide, once-per-account
+move spent on a session that is about to stop, on the one resource the fleet is actually short of.
+
+This is [#724](https://github.com/tadasant/zimmer/issues/724): a router made **one** `start_session`
+call, carrying an `idempotency_key`, and two sessions came into existence doing the work. The second
+create came from the router's summary fork, and carried no `idempotency_key` at all — which is why
+no key design could have deduped it.
+
 **The fork is never credited with the source's pull requests.** `GithubPrUrlHook` decides which PRs a
 session opened by reading its transcript, and a summary fork's transcript is a copy of the source's —
 so the source's own `gh pr create` output sits in it as the strongest evidence the hook recognises.
