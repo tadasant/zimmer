@@ -327,7 +327,11 @@ module Mcp
           else
             session.update!(prompt: prompt)
           end
-          session.resume! if session.may_resume?
+          # Not `resume!`: a follow-up adds to whatever this session was waiting
+          # on, so its own pending wake-ups survive it (#898). This is the path
+          # the filed strand came down — a router redirecting a session that was
+          # asleep on its own `wake_me_up_later`.
+          session.resume_for_follow_up!
           # Before the enqueue, and in the same transaction: the job this line
           # creates builds the next prompt, and it must see the edge. Rolling
           # back takes the edge with it, so a failed send still records nothing.
@@ -543,10 +547,14 @@ module Mcp
       # The error names the next move, because the caller is an agent working a
       # queue and "skip it and take the next one" is exactly what it should do.
       #
-      # Deliberately not applied to the web UI's Restart button or to `follow_up`:
-      # a person driving one session, or an agent addressing one directly, is
-      # taking it over, and consuming the now-moot wake is the documented
-      # behaviour. This is about a selector working a list.
+      # Deliberately not applied to the web UI's Restart button: a person driving
+      # one session is taking it over, and consuming the now-moot wake is the
+      # documented behaviour. This is about a selector working a list.
+      #
+      # Nor to `follow_up`, but for the opposite reason since #898: a follow-up
+      # no longer consumes the pause at all, so there is nothing there to refuse.
+      # It adds a turn to the session's wait and the wake fires afterwards. See
+      # SessionStateMachine#preserve_pending_wakes_across_follow_up.
       # "Start it now": take a waiting session's next turn immediately instead of
       # when the scheduler gets round to it — the tool half of the Ranked view's
       # ⋮ menu entry. This is what a fleet-maintenance agent working the queue
@@ -1367,7 +1375,30 @@ module Mcp
         # `get_session` grew a queued-messages section (#698): an unread queue is
         # how four sessions each restate the message above it.
         lines.concat(EnqueuedMessageSections.queue_depth_lines(session, queued_message: queued_message))
+        lines.concat(pending_wake_lines(session))
         lines.join("\n")
+      end
+
+      # Say so when the session you just followed up was waiting on a wake-up of
+      # its own.
+      #
+      # The caller is the other half of #898. A router redirecting a sleeping
+      # session used to consume that session's wake without either side finding
+      # out — the session because the resumed turn looks like any other, the
+      # router because nothing said it had just become the only thing that could
+      # wake it. The wake now survives the follow-up; this line is what makes that
+      # legible to the sender, so a router does not go on to schedule a duplicate
+      # wake of its own.
+      def pending_wake_lines(session)
+        return [] unless session.awaiting_scheduled_wake?
+
+        at = session.pending_wake_at
+        when_phrase = at ? "for #{at.utc.iso8601}" : "for whenever the session it is watching transitions"
+        [ "- **Its own wake-up:** still armed #{when_phrase}. This follow-up did not cancel it, " \
+          "so the session resumes again then on its own." ]
+      rescue ActiveRecord::ActiveRecordError
+        # A line about a wake is not worth failing a delivered follow-up over.
+        []
       end
 
       def summary(heading, session, status_label: "Status", message: nil)

@@ -382,7 +382,10 @@ class Api::V1::SessionsController < Api::BaseController
 
       if result.success?
         record_uncle_edge(@session, "api_v1:sessions.follow_up")
-        render json: { session: session_json(@session.reload), message: "Follow-up prompt sent immediately" }
+        render json: {
+          session: session_json(@session.reload),
+          message: "Follow-up prompt sent immediately"
+        }.merge(preserved_wake_json(@session))
       else
         # force_immediate is all-or-nothing: if the interrupt could not be
         # dispatched, remove the message we staged so it is not silently delivered
@@ -423,7 +426,7 @@ class Api::V1::SessionsController < Api::BaseController
           status: enqueued_message.status
         },
         message: "Message queued (session is running). It will be sent when the agent completes its current task."
-      }, status: :accepted
+      }.merge(preserved_wake_json(@session)), status: :accepted
       return
     end
 
@@ -445,7 +448,9 @@ class Api::V1::SessionsController < Api::BaseController
       else
         @session.update!(prompt: prompt)
       end
-      @session.resume! if @session.may_resume?
+      # Not `resume!`: a follow-up adds to whatever this session was waiting on,
+      # so its own pending wake-ups survive it (#898).
+      @session.resume_for_follow_up!
       # Before the enqueue, and in the same transaction: the job this line
       # creates builds the next prompt for the session, and it must see the edge
       # — a job that starts first renders a hierarchy missing exactly the human
@@ -456,7 +461,10 @@ class Api::V1::SessionsController < Api::BaseController
       @session.update!(running_job_id: job.job_id)
     end
 
-    render json: { session: session_json(@session.reload), message: "Follow-up prompt sent" }
+    render json: {
+      session: session_json(@session.reload),
+      message: "Follow-up prompt sent"
+    }.merge(preserved_wake_json(@session))
   rescue ActiveRecord::RecordInvalid => e
     render_api_error("Validation failed", e.message, status: :unprocessable_entity)
   rescue ActiveRecord::RecordNotUnique
@@ -1202,6 +1210,27 @@ class Api::V1::SessionsController < Api::BaseController
                        "on session #{session.id}: #{e.message}")
   end
 
+  # Tell a follow-up's sender that the session it just reached was waiting on a
+  # wake-up of its own, and still is.
+  #
+  # The caller-facing half of #898, and the twin of
+  # Mcp::Tools::ActionSession#pending_wake_lines. A follow-up no longer consumes
+  # the target's pending wake; saying so here is what stops the sender from
+  # assuming it has taken on responsibility for waking a session that will wake
+  # itself.
+  #
+  # Absent rather than null when there is no wake, so a client can test for the
+  # key.
+  #
+  # @return [Hash] `{}` or `{ pending_wake: { at:, preserved: true } }`
+  def preserved_wake_json(session)
+    return {} unless session.awaiting_scheduled_wake?
+
+    { pending_wake: { at: session.pending_wake_at&.utc&.iso8601, preserved: true } }
+  rescue ActiveRecord::ActiveRecordError
+    {}
+  end
+
   # Refuse a restart while the session is paused until a time it has not reached.
   #
   # The twin of Mcp::Tools::ActionSession#refuse_if_paused!, and it has to exist
@@ -1211,9 +1240,11 @@ class Api::V1::SessionsController < Api::BaseController
   # taking one session over. The web UI's Restart button is the interactive door
   # and deliberately still consumes the pause.
   #
-  # It sits ahead of `resume!`, which is the only place it can: `resume`'s
-  # cancel_pending_one_time_wake_triggers callback consumes the pause, so anything
-  # further down would arrive after it was gone.
+  # It sits ahead of `resume!`, which is the only place it can: on the takeover
+  # branch `resume`'s cancel_pending_one_time_wake_triggers callback consumes the
+  # pause, so anything further down would arrive after it was gone. `follow_up`
+  # needs no such guard — since #898 it takes the preserving branch and the pause
+  # survives the turn it delivers.
   #
   # @return [Boolean] true when a response has been rendered and the caller must stop
   def refuse_restart_of_paused_session

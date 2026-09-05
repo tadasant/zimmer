@@ -2144,6 +2144,95 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_not_nil condition.last_triggered_at, "One-time schedule condition should be marked fired after resume"
   end
 
+  # === follow-up resume preserves pending wake-ups (#898) ===
+
+  test "a follow-up resume leaves pending one-time wake-ups armed" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    child = sessions(:running)
+    conditions = wake_set_for(session, watched: [ child ])
+
+    session.reload.resume_for_follow_up!
+
+    conditions.each do |condition|
+      assert_nil condition.reload.last_triggered_at,
+        "a follow-up adds to the session's wait; it must not consume wake condition #{condition.id}"
+    end
+  end
+
+  # The difference from the system-recovery branch, and it is the whole reason
+  # they are separate branches. A recovered session is put back to sleep; a
+  # followed-up one answers and rests, because somebody asked it a question.
+  test "a follow-up resume does not put the session back to sleep afterwards" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    child = sessions(:running)
+    conditions = wake_set_for(session, watched: [ child ])
+
+    session.reload.resume_for_follow_up!
+    assert_not session.reload.metadata["pending_sleep"],
+      "a follow-up wants an answer, so the turn must not be re-slept out from under it"
+
+    session.pause!
+
+    assert session.reload.needs_input?
+    conditions.each { |condition| assert_nil condition.reload.last_triggered_at }
+    assert session.reload.awaiting_scheduled_wake?,
+      "and the wake it kept is what collects it from needs_input"
+  end
+
+  # Preserving is for wakes that can still fire. One that cannot would otherwise
+  # survive as an `enabled`, unfired row that reads as armed on /triggers and is
+  # collected by nothing.
+  test "a follow-up resume consumes a watcher whose watched session can never transition again" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    child = sessions(:running)
+    child.update!(status: :archived, archived_at: 1.hour.ago)
+    conditions = wake_set_for(session, watched: [ child ], scheduled_at: nil)
+
+    session.reload.resume_for_follow_up!
+
+    conditions.each do |condition|
+      assert_not_nil condition.reload.last_triggered_at,
+        "a watcher that can no longer fire is a dead row, not a preserved wake"
+    end
+  end
+
+  test "the follow-up resume flag does not leak into a later deliberate resume" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    child = sessions(:running)
+    conditions = wake_set_for(session, watched: [ child ])
+
+    session.reload.resume_for_follow_up!
+    assert_not session.follow_up_resume, "the flag is cleared in an ensure"
+
+    session.pause!
+    session.reload.resume!
+
+    conditions.each do |condition|
+      assert_not_nil condition.reload.last_triggered_at,
+        "the next resume is an ordinary takeover and must consume as before"
+    end
+  end
+
+  # === archive retires whatever wake is left ===
+
+  test "archive consumes a pending one-time wake nothing else spent" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    child = sessions(:running)
+    conditions = wake_set_for(session, watched: [ child ])
+
+    session.reload.archive!
+
+    conditions.each do |condition|
+      assert_not_nil condition.reload.last_triggered_at,
+        "an archived session is not waiting for anything, so wake condition #{condition.id} must not survive it"
+    end
+  end
+
   # === system-recovery resume preserves pending wake-ups ===
   #
   # An interruption nudge is Zimmer restarting the session's own process, not
