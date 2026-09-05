@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfToken } from "lib/csrf"
 
 // Controller for handling general file attachments on session prompts.
 // Sibling to image_attachment_controller — supports drag-and-drop and the
@@ -207,7 +208,7 @@ export default class extends Controller {
     const response = await fetch(this.uploadUrlValue, {
       method: "POST",
       headers: {
-        "X-CSRF-Token": this.getCSRFToken()
+        "X-CSRF-Token": csrfToken()
       },
       body: formData
     })
@@ -347,10 +348,6 @@ export default class extends Controller {
       target.classList.toggle("opacity-50", disabled)
       target.classList.toggle("cursor-not-allowed", disabled)
     }
-  }
-
-  getCSRFToken() {
-    return document.querySelector('meta[name="csrf-token"]')?.content || ""
   }
 
   clearFiles() {

@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 
 // Connects to data-controller="heartbeat"
 //
@@ -126,14 +127,9 @@ export default class extends Controller {
 
   async _patch(url, body) {
     try {
-      const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content
       const response = await fetch(url, {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken,
-          "Accept": "application/json"
-        },
+        headers: csrfHeaders({ "Accept": "application/json" }),
         body: JSON.stringify(body)
       })
       const data = await response.json()

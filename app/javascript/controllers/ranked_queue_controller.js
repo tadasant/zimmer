@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 import Sortable from "sortablejs"
 
 // The Ranked view: managing the spot queue in place.
@@ -486,11 +487,7 @@ export default class extends Controller {
   patch(url, body) {
     return fetch(url, {
       method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "X-CSRF-Token": this.csrfToken
-      },
+      headers: csrfHeaders({ Accept: "application/json" }),
       body: JSON.stringify(body)
     }).then(async (response) => {
       const payload = await response.json().catch(() => null)
@@ -518,10 +515,5 @@ export default class extends Controller {
     if (!this.hasErrorTarget) return
     this.errorTarget.textContent = ""
     this.errorTarget.classList.add("hidden")
-  }
-
-  get csrfToken() {
-    const meta = document.querySelector('meta[name="csrf-token"]')
-    return meta ? meta.content : ""
   }
 }

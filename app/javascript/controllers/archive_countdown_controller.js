@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfToken } from "lib/csrf"
 
 // Connects to data-controller="archive-countdown"
 export default class extends Controller {
@@ -27,15 +28,14 @@ export default class extends Controller {
     // A submission vehicle, not UI, for the beat it spends in the document.
     form.hidden = true
 
-    // Add CSRF token
-    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content
-    if (csrfToken) {
-      const csrfInput = document.createElement("input")
-      csrfInput.type = "hidden"
-      csrfInput.name = "authenticity_token"
-      csrfInput.value = csrfToken
-      form.appendChild(csrfInput)
-    }
+    // Add CSRF token. Appended unconditionally: an empty `authenticity_token`
+    // and an absent one are the same rejection to Rails, so there is nothing to
+    // gain from a second code path for the empty case.
+    const csrfInput = document.createElement("input")
+    csrfInput.type = "hidden"
+    csrfInput.name = "authenticity_token"
+    csrfInput.value = csrfToken()
+    form.appendChild(csrfInput)
 
     document.body.appendChild(form)
     // Turbo listens for the `submit` event, and a native form.submit() fires

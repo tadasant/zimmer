@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfToken } from "lib/csrf"
 
 // Handles elicitation form interactions (Accept/Decline/Dismiss with dynamic form fields).
 //
@@ -57,8 +58,6 @@ export default class extends Controller {
     // Disable buttons to prevent double-submit
     this.disableButtons()
 
-    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content
-
     const body = new FormData()
     body.append("action_type", actionType)
     if (content) {
@@ -70,7 +69,7 @@ export default class extends Controller {
         method: "PATCH",
         headers: {
           "Accept": "text/vnd.turbo-stream.html",
-          "X-CSRF-Token": csrfToken
+          "X-CSRF-Token": csrfToken()
         },
         body: body
       })
