@@ -88,20 +88,36 @@ class TranscriptDirectoryClassifier
     :unknown
   end
 
-  # Every derived name a working directory at or beneath `clone_path` could have
-  # produced, expressed as a predicate — the clone's own name and anything
-  # extending it by `-<subdirectory>`. Used by TranscriptDirectoryReaper on the
-  # clone-deletion path, where the same prefix rule that spares a live
-  # subdirectory cwd here has to *catch* it there.
+  # The transcript directory NAME a working directory produces, through the
+  # runtime's own derivation. nil when the source declines to derive one.
+  #
+  # @param working_directory [String] a cwd
+  # @return [String, nil]
+  def self.derived_name(transcript_source:, working_directory:)
+    path = transcript_source.transcript_directory(working_directory: working_directory)
+    return nil if path.blank?
+
+    File.basename(path)
+  end
+
+  # Whether `entry` is a directory `clone_path` could have produced — the clone's
+  # own name, or one extending it by `-<subdirectory>`. Used by
+  # TranscriptDirectoryReaper on the clone-deletion path, where the same prefix
+  # rule that spares a live subdirectory cwd here has to *catch* it there.
+  #
+  # Derives the name on every call, so a caller scanning a whole transcript root
+  # against one clone should hoist `derived_name` out of its loop and call
+  # `covers?` directly — that root holds thousands of entries.
   #
   # @param clone_path [String] a clone directory
   # @param entry [String] a directory name under the transcript root
   # @return [Boolean]
   def self.derived_from?(transcript_source:, clone_path:, entry:)
-    name = transcript_source.transcript_directory(working_directory: File.expand_path(clone_path.to_s))
-    return false if name.blank?
-
-    covers?(File.basename(name), entry)
+    covers?(
+      derived_name(transcript_source: transcript_source,
+                   working_directory: File.expand_path(clone_path.to_s)),
+      entry
+    )
   end
 
   # Whether `name` — a directory name derived from some working directory —
@@ -128,12 +144,7 @@ class TranscriptDirectoryClassifier
     entry.start_with?("#{@clones_base_name}-")
   end
 
-  # The transcript directory NAME for a working directory, through the runtime's
-  # own derivation. nil when the source declines to derive one.
   def derive(working_directory)
-    path = @source.transcript_directory(working_directory: working_directory)
-    return nil if path.blank?
-
-    File.basename(path)
+    self.class.derived_name(transcript_source: @source, working_directory: working_directory)
   end
 end
