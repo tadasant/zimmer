@@ -311,7 +311,9 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
   `CodexConfigTomlPostProcessor` writes `startup_timeout_sec = 180` onto every **stdio** entry.
   Pi has no such variable either, and no MCP of its own — its client is the `pi-mcp-adapter`
   extension, whose knob is per-entry `requestTimeoutMs`, so `PiMcpConfigPostProcessor` writes
-  `"requestTimeoutMs": 180000` onto every **stdio** entry of the `.mcp.json` it seeds.
+  `"requestTimeoutMs": 180000` onto every **stdio** entry of the `.mcp.json` it seeds. The adapter
+  also has a global `settings.requestTimeoutMs`, which Zimmer does not use: it would widen HTTP
+  entries too, and those are exactly the ones left out.
   On both of those two, HTTP entries get none — they reach a server that is already running, and a
   longer budget there would only delay reporting a URL that is simply unreachable.
 - Codex's own default is 30 seconds, measured against the pinned `@openai/codex@0.146.0` binary:
@@ -326,11 +328,19 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
   respawns stdio servers per run. A slow start is recoverable and a dropped server is not, so
   that is the trade taken deliberately.
 - Pi's own default is the MCP SDK's 60 seconds, measured against the pinned
-  `pi-mcp-adapter@2.32.1` the same way: an `eager` stdio server pointed at a process that accepts
-  the connection and never answers `initialize` is given up on at 63.4s with nothing set, at 33.6s
-  with `requestTimeoutMs: 30000`, at 93.6s with `90000`, and at 183.2s with the `180000` Zimmer
-  now writes — a flat ~3.4s of adapter startup on top of an exactly honored budget
+  `pi-mcp-adapter@2.32.1` the same way: an `eager` stdio server pointed at a `node` process that
+  accepts the connection and never answers `initialize` is given up on at 63.4s with nothing set,
+  at 33.6s with `requestTimeoutMs: 30000`, at 93.6s with `90000`, and at 183.2s with the `180000`
+  Zimmer writes — a flat ~3.4s of adapter startup on top of an exactly honored budget
   ([#844](https://github.com/tadasant/zimmer/issues/844)).
+- **On an `npx` entry, Pi's budget does not cover the whole cold start.** The adapter intercepts a
+  `command` of `npx` or `npm` and resolves the package to a concrete bin path itself, before any
+  transport exists (`resolveNpxBinary` in its `npx-resolver.ts`) — and it reads the npm cache of
+  the *Pi process*, not the entry's own `env`, so the clone pinning below does not reach that
+  lookup. A miss there runs `npm exec` under the adapter's own hard, non-configurable 30-second
+  cap, and on timeout it kills the install and falls back to plain `npx`. What Zimmer's budget
+  covers is that fallback — plus every non-npx stdio server. See the cold-clone section of
+  [Limitations](/limitations/#a-cold-clone-pays-the-npm-download-for-every-npx-mcp-server).
 - **Pi's spelling covers more than a startup**, and that is deliberate rather than incidental.
   `requestTimeoutMs` is the budget for *every* request on the connection, so a tool call on a Pi
   MCP server gets three minutes rather than the SDK's sixty seconds too. The adapter has no
