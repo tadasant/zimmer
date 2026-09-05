@@ -10,6 +10,7 @@ class MoveBlockingMaintenanceJobsToLane < PostDeployTask
     DeploymentRecoveryJob
     DockerCleanupJob
     EmptyTrashJob
+    LogRetentionJob
     McpPackageReinstallJob
     OrphanCloneFilesystemCleanupJob
     OrphanTranscriptDirectoryCleanupJob
