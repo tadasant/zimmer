@@ -116,24 +116,26 @@ servers:
       #
       # Read the word "underneath" literally, because the obvious misreading of it has
       # already been used to argue for more concurrency. cgroup v2 is HIERARCHICAL: the
-      # per-session cgroups live at /sys/fs/cgroup/zimmer.sessions/session-<id>, which is
-      # inside this container's cgroup, so every byte a session charges is charged to this
-      # 10g as well. The per-session bound does NOT move session memory out of this budget
-      # and does NOT create headroom -- six sessions at 4 GiB is 24 GiB against 10g, which
-      # is why it is a runaway bound and not an admission-control budget.
+      # per-session cgroups live at /sys/fs/cgroup/zimmer.sessions/sessions/session-<id>,
+      # which is inside this container's cgroup, so every byte a session charges is charged
+      # to this 10g as well. The per-session bound does NOT move session memory out of this
+      # budget and does NOT create headroom -- six sessions at 4 GiB is 24 GiB against 10g,
+      # which is why it is a runaway bound and not an admission-control budget.
       #
-      # What is still wide open is N in-budget sessions summing over this cap, which is
-      # #981: on 2026-09-05 eight of them did, with no runaway and the largest process at
-      # 943 MB, and the kernel OOM-killed the GoodJob worker itself. `zimmer.sessions` has
-      # no memory.max of its own, so a pile-up walks straight to this ceiling and the
-      # worker is in the victim pool.
+      # N in-budget sessions summing over this cap is #981: on 2026-09-05 eight of them did,
+      # with no runaway and the largest process at 943 MB, and the kernel OOM-killed the
+      # GoodJob worker itself. The `sessions` pool below (ZIMMER_SESSIONS_MEMORY_MAX_MB) is
+      # the answer to WHERE that kill lands -- it holds every session cgroup and not the
+      # worker, so the OOM is now declared in a cgroup the worker is outside of. Carved out
+      # of this 10g, not added to it.
       #
-      # Which is worth stating the right way round, because this cap does not protect the
-      # worker from that -- it is where that kill LANDS, exactly as the paragraphs above
-      # describe. What this cap protects is the DROPLET. The only thing limiting how often
-      # an overcommitted `agents` lane reaches it is the lane's own width, so until #981
-      # lands, GOOD_JOB_AGENTS_THREADS is the control -- and it is held at 8 for this
-      # reason. See config/connection_budget.rb, which carries the measurements.
+      # Which is worth stating the right way round, because this cap still does not protect
+      # the worker from a pile-up -- the pool does, and only by choosing a different victim.
+      # What THIS cap protects is the DROPLET. Nothing above reduces the demand, so the only
+      # thing limiting how often the pool is exhausted is the `agents` lane's own width:
+      # GOOD_JOB_AGENTS_THREADS is the admission control, and it is held at 8 for this
+      # reason. See config/connection_budget.rb, which carries the measurements -- taken
+      # before #981's fix, so re-measure under it before moving that number.
       memory: 10g
       volume:
         - zimmer_data:/home/rails/.zimmer

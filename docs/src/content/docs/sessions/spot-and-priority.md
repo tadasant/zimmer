@@ -322,15 +322,19 @@ The failure that produces is [#981](https://github.com/tadasant/zimmer/issues/98
 sessions — no runaway, largest process 943 MB — summed over the container cap and the kernel
 OOM-killed the GoodJob worker itself, taking every in-flight `AgentSessionJob` with it. Per-session
 cgroups do not help here and are not meant to: cgroup v2 is hierarchical, so
-`zimmer.sessions/session-<id>` sits *inside* the container's cgroup and charges the same 10 GiB.
-`ZIMMER_SESSION_MEMORY_MAX_MB` bounds one runaway; nothing bounds the sum.
+`zimmer.sessions/sessions/session-<id>` sits *inside* the container's cgroup and charges the same
+10 GiB. `ZIMMER_SESSION_MEMORY_MAX_MB` bounds one runaway;
+[`ZIMMER_SESSIONS_MEMORY_MAX_MB`](/sessions/spawning/#all-sessions-together-get-a-second-bound)
+bounds the sum, on a pool the Rails worker is not inside — so the pile-up now kills a session rather
+than the worker that runs all of them.
 
-So on this deployment a larger pool buys no throughput. It converts queued rows — which are durable
-and resume — into a worker kill, which is neither. Raising it waits on #981 (a `memory.max` on the
-`zimmer.sessions` parent, admission control against observed headroom, or a cut to the per-session
-multiplier), then a re-measurement, then a matching bump to `app_required_backends`. The connection
-budget is not what holds it first, and is not roomy either: 15 threads derive 97 required backends,
-which is the *entire* capacity of a `db-s-2vcpu-4gb` cluster — zero margin.
+**That is a blast-radius bound, not a demand reduction, so it does not raise this ceiling.** A larger
+pool still buys no throughput on this deployment: it converts queued rows — which are durable and
+resume — into killed sessions. The measurements above were taken before the fix, so raising the
+number means re-measuring `anon` under the pool and the per-session `PARALLEL_WORKERS` cap, then a
+matching bump to `app_required_backends`. The connection budget is not what holds it first, and is
+not roomy either: 15 threads derive 97 required backends, which is the *entire* capacity of a
+`db-s-2vcpu-4gb` cluster — zero margin.
 
 ### Its sibling: the backlog top-up ceiling
 
