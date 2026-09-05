@@ -39,13 +39,12 @@ module GithubCli
   # ways a call can fail to produce a trustworthy answer — non-zero exit, lost exit
   # code, timeout — all reach the same branch.
   class Result
-    attr_reader :stdout, :stderr, :status, :timeout_seconds, :timeout_message
+    attr_reader :stdout, :stderr, :status, :timeout_message
 
-    def initialize(stdout:, stderr:, status:, timeout_seconds:, timeout_message: nil)
+    def initialize(stdout:, stderr:, status:, timeout_message: nil)
       @stdout = stdout
       @stderr = stderr
       @status = status
-      @timeout_seconds = timeout_seconds
       @timeout_message = timeout_message
     end
 
@@ -69,13 +68,6 @@ module GithubCli
       SubprocessStatus.exit_code(status)
     end
 
-    # We never learned how the command ended — it timed out, or the child was
-    # reaped before its waiter. Callers that retry use this to classify the
-    # attempt as transient.
-    def unknown?
-      timed_out? || SubprocessStatus.unknown?(status)
-    end
-
     # One line explaining why this call is being treated as failed, for a log line
     # or an exception message.
     #
@@ -97,8 +89,8 @@ module GithubCli
   # @return [Result] never raises TimeoutError; a hang comes back as a failed Result
   def run(command, timeout:)
     stdout, stderr, status = BoundedSubprocess.run(command, timeout: timeout)
-    Result.new(stdout: stdout, stderr: stderr, status: status, timeout_seconds: timeout)
+    Result.new(stdout: stdout, stderr: stderr, status: status)
   rescue BoundedSubprocess::TimeoutError => e
-    Result.new(stdout: "", stderr: "", status: nil, timeout_seconds: timeout, timeout_message: e.message)
+    Result.new(stdout: "", stderr: "", status: nil, timeout_message: e.message)
   end
 end
