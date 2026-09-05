@@ -19,6 +19,24 @@ module Mcp
       MAX_PROMPT_DISPLAY_LENGTH = 100
       MAX_QUERY_LENGTH = 1000
 
+      # The per-row fields that come off unless the caller passes `verbose: true`,
+      # in the order they are rendered.
+      #
+      # The schema advertises `per_page` up to 100 and the full row made that a
+      # lie: 100 results came back as 54,034 characters, which the runtime refused
+      # outright, so the real ceiling was 35-40 (#652). These six are the ones a
+      # listing does not need — a prompt preview that `query` does not even search,
+      # the server list, and four fields that belong to one session rather than to
+      # the shape of the page. Dropping them roughly halves a row and puts the
+      # advertised page size back within reach.
+      #
+      # Nothing is hidden by dropping them: the header names every one of them —
+      # spelled as the row labels a caller greps for, not as attribute names —
+      # and names the two calls that return them. The scheduling fields — status,
+      # paused, visibility, genesis, class, precedence, timestamps — are always
+      # rendered, because they are what this listing is read for.
+      COMPACT_OMITTED_FIELDS = [ "Slug", "Category", "Repository", "Branch", "Prompt", "MCP Servers" ].freeze
+
       tool_name "quick_search_sessions"
 
       description <<~DESC
@@ -45,7 +63,9 @@ module Mcp
         still listed, and still holds its precedence, but Zimmer refuses to start it before its wake fires —
         a pause outranks precedence and scheduling class. Skip it and take the next candidate.
 
-        **Returns:** A list of matching sessions with their status, configuration, and metadata. Each result's **Prompt** line is a preview: the first #{MAX_PROMPT_DISPLAY_LENGTH} characters of the prompt, then `...`. get_session has the full text.
+        **Returns:** A list of matching sessions with their status, configuration, and metadata.
+
+        **Rows are compact by default.** Each result carries what a listing is read for — status, runtime, pause, board visibility, genesis and scheduling class, precedence, and both timestamps — and omits six per-session fields: slug, category, repository, branch, the prompt preview and the MCP server list. That is what makes the advertised `per_page: 100` actually return: the full row is roughly twice the size, and a full page of them exceeds the tool-result limit. The omission is stated in every response, never silent. Pass `verbose: true` for the full rows, or `get_session` for one session in full — where the **Prompt** line is a preview of the first #{MAX_PROMPT_DISPLAY_LENGTH} characters.
 
         **Session statuses:**
         - waiting: Session created, waiting to start
@@ -120,15 +140,24 @@ module Mcp
             minimum: 1,
             maximum: 100,
             description: "Number of results per page (1-100). Default: 25"
+          },
+          verbose: {
+            type: "boolean",
+            description: "Render the full row for each result — adds slug, category, repository, branch, the prompt preview and the MCP server list. Default: false. A full page of verbose rows can exceed the tool-result size limit, so raise per_page and verbose together with care; the compact row carries every scheduling field either way."
           }
         },
         required: []
       })
 
       def call(args)
+        verbose = truthy?(args["verbose"])
+
         unless args["id"].nil?
           session = find_session(args["id"])
-          return "## Session Found\n\n#{format_session(session, paused: session.paused_until_scheduled_time?)}"
+          lines = [ "## Session Found", "" ]
+          lines.concat(compact_notice(verbose))
+          lines << format_session(session, paused: session.paused_until_scheduled_time?, verbose: verbose)
+          return lines.join("\n")
         end
 
         scope = filtered_scope(args)
@@ -136,7 +165,7 @@ module Mcp
         query = validated_query(args)
 
         if query.present? && SessionSearchable.search_contents?(args["search_contents"])
-          return content_search(scope, query, per_page, args["scan_cursor"])
+          return content_search(scope, query, per_page, args["scan_cursor"], verbose)
         end
 
         scope = filter_sessions_by_search(scope, query) if query.present?
@@ -153,6 +182,7 @@ module Mcp
           "Found #{total_count} session(s) (page #{page} of #{total_pages}):",
           ""
         ]
+        lines.concat(compact_notice(verbose))
 
         # One batched read for the page rather than one query per row: a paused
         # session must be visibly paused in the queue listing, and the ranked
@@ -160,7 +190,7 @@ module Mcp
         sleeping = Session.ids_paused_until_scheduled_time(sessions.map(&:id))
 
         sessions.each do |session|
-          lines << format_session(session, paused: sleeping.include?(session.id))
+          lines << format_session(session, paused: sleeping.include?(session.id), verbose: verbose)
           lines << ""
         end
 
@@ -177,7 +207,7 @@ module Mcp
       # The transcript-searching half. Ordered newest-first and reported with its own
       # scan footer rather than a page count, because a bounded scan cannot honestly
       # produce either a total or a stable page number — see SessionContentSearch.
-      def content_search(scope, query, per_page, cursor)
+      def content_search(scope, query, per_page, cursor, verbose)
         matches, scan = search_sessions_by_content(scope, query, limit: per_page, cursor: cursor)
         sessions = matches.reorder(created_at: :desc, id: :desc).to_a
 
@@ -194,10 +224,11 @@ module Mcp
 
         header << "Found #{sessions.size} match(es), newest first:"
         header << ""
+        header.concat(compact_notice(verbose))
 
         sleeping = Session.ids_paused_until_scheduled_time(sessions.map(&:id))
         sessions.each do |session|
-          header << format_session(session, paused: sleeping.include?(session.id))
+          header << format_session(session, paused: sleeping.include?(session.id), verbose: verbose)
           header << ""
         end
 
@@ -313,12 +344,29 @@ module Mcp
         @genesis_class_overrides ||= AppSetting.current.genesis_class_overrides || {}
       end
 
+      # Says what a compact row left out, in every response that has one. A row
+      # that quietly dropped six fields would be indistinguishable from a session
+      # that has none of them set — a repo-less session and a session whose repo
+      # was not rendered would read the same — so the omission is named, with the
+      # two calls that undo it.
+      def compact_notice(verbose)
+        return [] if verbose
+
+        [
+          "*Compact rows: the #{COMPACT_OMITTED_FIELDS.map { |field| "**#{field}:**" }.join(', ')} lines are " \
+          "omitted so a full page fits in one " \
+          "tool result. Every scheduling field is here. Pass `verbose: true` for the full rows, or " \
+          "`get_session` for one session in full.*",
+          ""
+        ]
+      end
+
       # `paused` is passed in rather than derived here so the list path can answer
       # it for a whole page in one query. It is the one fact about a `waiting`
       # session that the columns cannot carry: a session somebody paused until a
       # chosen time and a session merely queued behind the quota gate are the same
       # row, and only the armed wake tells them apart.
-      def format_session(session, paused: false)
+      def format_session(session, paused: false, verbose: false)
         lines = [
           "### #{session.title} (ID: #{session.id})",
           "",
@@ -341,14 +389,16 @@ module Mcp
                    "this session runs exactly as it would if it were on the board."
         end
 
-        lines << "- **Slug:** #{session.slug}" if session.slug.present?
+        lines << "- **Slug:** #{session.slug}" if verbose && session.slug.present?
         lines << "- **Genesis:** #{session.genesis_key} (#{session.priority_class(genesis_class_overrides)})"
         lines << "- **Precedence:** #{session.precedence}"
-        lines << "- **Category:** #{session.category.name}" if session.category
-        lines << "- **Repository:** #{session.git_root}" if session.git_root.present?
-        lines << "- **Branch:** #{session.branch}" if session.branch.present?
-        lines << "- **Prompt:** #{truncate_prompt(session.prompt)}" if session.prompt.present?
-        lines << "- **MCP Servers:** #{session.mcp_servers.join(', ')}" if session.mcp_servers.present?
+        if verbose
+          lines << "- **Category:** #{session.category.name}" if session.category
+          lines << "- **Repository:** #{session.git_root}" if session.git_root.present?
+          lines << "- **Branch:** #{session.branch}" if session.branch.present?
+          lines << "- **Prompt:** #{truncate_prompt(session.prompt)}" if session.prompt.present?
+          lines << "- **MCP Servers:** #{session.mcp_servers.join(', ')}" if session.mcp_servers.present?
+        end
         lines << "- **Created:** #{session.created_at.iso8601}"
         lines << "- **Updated:** #{session.updated_at.iso8601}"
 

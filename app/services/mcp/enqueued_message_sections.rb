@@ -127,7 +127,7 @@ module Mcp
     # written — `manage_enqueued_messages` renders one message per bullet block,
     # where a newline in the content costs nothing.
     def preview(content)
-      hard_truncate(content.to_s, CONTENT_PREVIEW_LIMIT)
+      TextBudget.hard_truncate(content, CONTENT_PREVIEW_LIMIT)
     end
 
     # The one-line preview. Message content is written by whoever queued the
@@ -140,7 +140,7 @@ module Mcp
       # squish first: it turns a newline into a space, where
       # sanitize_for_markdown_line would delete it and silently weld two words
       # together. Both run — squish flattens, the sanitizer neutralizes.
-      hard_truncate(SessionHumanMessages.sanitize_for_markdown_line(content.to_s.squish), SUMMARY_PREVIEW_LIMIT)
+      TextBudget.hard_truncate(SessionHumanMessages.sanitize_for_markdown_line(content.to_s.squish), SUMMARY_PREVIEW_LIMIT)
     end
 
     # The depth reported to a caller whose own message was delivered rather than
@@ -155,13 +155,5 @@ module Mcp
       ]
     end
     private_class_method :delivered_ahead_lines
-
-    # Deliberately NOT String#truncate: `limit` here is how much of the text
-    # survives, and the ellipsis is added on top rather than counted against it,
-    # so a limit of 120 always yields 120 characters of content.
-    def hard_truncate(text, limit)
-      text.length > limit ? "#{text[0, limit]}..." : text
-    end
-    private_class_method :hard_truncate
   end
 end

@@ -97,14 +97,18 @@ class SessionHumanMessages
   # authorization to act here.
   def human_message_here? = here_entries.any?
 
-  # One entry per human who both speaks in the newest `limit` entries and has a
-  # roster note — the `notes` column an operator writes at /supervisor/users.
-  # Public because every surface that renders the record has to be able to
-  # render the notes with it: a session weighing "may I do this?" needs to know
-  # whose word is final, and a record served without that is missing the part
-  # that answers the question.
-  def described_authors(limit:)
-    entries.last(limit).select { |entry| entry.author_notes.present? }.uniq(&:author)
+  # One entry per human who both speaks in `among` and has a roster note — the
+  # `notes` column an operator writes at /supervisor/users. Public because every
+  # surface that renders the record has to be able to render the notes with it:
+  # a session weighing "may I do this?" needs to know whose word is final, and a
+  # record served without that is missing the part that answers the question.
+  #
+  # Takes the entries the caller actually rendered rather than a count, because
+  # the renderings show different slices — `get_session` summarises the record
+  # per origin — and a roster note for somebody whose message is not on screen
+  # describes nobody.
+  def described_among(among)
+    among.select { |entry| entry.author_notes.present? }.uniq(&:author)
   end
 
   # A human's own words are untrusted text going into output an agent reads

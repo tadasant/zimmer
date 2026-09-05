@@ -204,7 +204,9 @@ class Mcp::Tools::GetSessionProvenanceToolTest < ActiveSupport::TestCase
   end
 
   # The renderer is shared with get_session so the two cannot drift; assert that
-  # rather than trusting it.
+  # rather than trusting it. get_session summarises the record by default, so the
+  # rendering that has to match verbatim is its verbose one — the summary is
+  # checked separately, in get_session's own test, for saying what it left out.
   test "it renders the same sections get_session embeds" do
     router = create_session(title: "Route it", agent_root: "zimmer-router")
     worker = create_session(parent: router, title: "Do it", agent_root: "zimmer")
@@ -215,6 +217,23 @@ class Mcp::Tools::GetSessionProvenanceToolTest < ActiveSupport::TestCase
                 Mcp::ProvenanceSections.human_message_lines(record)).join("\n")
 
     assert_includes @tool.call("session_id" => worker.id), sections
-    assert_includes Mcp::Tools::GetSession.new(context: Mcp::Context.new(tool_groups: "sessions")).call("id" => worker.id), sections
+    get_session = Mcp::Tools::GetSession.new(context: Mcp::Context.new(tool_groups: "sessions"))
+    assert_includes get_session.call("id" => worker.id, "verbose" => true), sections
+  end
+
+  # The record this tool serves is never abbreviated. get_session's default is a
+  # summary of it, and the whole point of that being safe is that this call is
+  # the one the summary points at — so it must stay uncut however long the
+  # entries are.
+  test "it returns entries in full however long they are" do
+    session = create_session(title: "Do it", agent_root: "zimmer")
+    long = "z" * (Mcp::ProvenanceSections::SUMMARY_CONTENT_LIMIT * 4)
+    add_message(session, content: long, at: Time.utc(2026, 8, 2, 4, 5, 6))
+
+    output = @tool.call("session_id" => session.id)
+
+    assert_includes output, long
+    assert_not_includes output, "Truncated:"
+    assert_not_includes output, "summary of the record"
   end
 end
