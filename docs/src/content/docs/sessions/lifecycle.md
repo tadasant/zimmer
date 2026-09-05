@@ -1146,6 +1146,54 @@ It also runs `warn_if_pr_goal_captured_no_url`, last in the callback so nothing 
 skipped. A session that dies mid-turn never reaches `pause`, so a PR it opened and never named
 would be recorded nowhere at all ([#313](https://github.com/tadasant/zimmer/issues/313)).
 
+#### When recovery restarts a session into silence
+
+Zimmer's own recovery is a loop, and until
+[#988](https://github.com/tadasant/zimmer/issues/988) it had no exit. `CleanupOrphanedSessionsJob`
+calls a `running` session hung once its `last_timeline_entry_at` is older than
+`CleanupOrphanedSessionsJob::INACTIVITY_THRESHOLD` (15 minutes); `SessionRecoveryService`
+terminates the recorded pid and restarts the session; and the restart's own `resume` calls
+`reset_elapsed_time_counter`, which sets `last_timeline_entry_at` to *now*. Fifteen minutes later
+the sweep reaches an identical verdict about an identical session.
+
+That is correct while the restarts work. What nothing bounded was the case where they do not work
+at all. Four production sessions wedged this way on 2026-09-05 — 14313 (92 minutes), 14474 (36),
+14391 (3h10m) and 14501 (2h45m) — across two agent roots and two clones. In each one the recorded
+`process_pid` named no process, the transcript file was frozen, `needs_input_count` climbed as
+recovery re-queued job after job, and `process_identity` was **byte-identical across every
+relaunch**, which is proof no restart ever reached a spawn: a new process on the same host cannot
+reproduce an old one's `started_at_ticks`. The status read `running` the whole time, so no
+`session_failed` fired, no push went out, no parent's wake trigger tripped, and the sessions held
+slots indefinitely. The person whose queued work never landed was the one who eventually noticed.
+
+`Sessions::SilentRecoveryGuard` is the exit. It runs at the two places recovery gives a session
+another turn — `SessionRecoveryService#auto_restart_session` and
+`SessionContinuation#continue_recovered_session`, the latter shared by all three sweeps — and it
+spends one `RetryBudget::SILENT_RECOVERY` attempt per restart that **started a turn and wrote
+nothing**. At the maximum it fails the session with
+`failure_reason: "recovery_produced_no_output"` and drops `paused_by`, which is what stops both
+sweeps selecting it.
+
+**The verdict takes two facts, and needing both is what keeps live sessions safe:**
+
+| Fact | Read from | Why not one without the other |
+| --- | --- | --- |
+| the turn actually started | `metadata["job_started_at"]` advanced | `AgentSessionJob` stamps it only after every stand-down guard has passed, so a spot hold, a quota hold and a superseded turn all leave it unchanged — and are therefore invisible to this budget by construction. [Quota depletion is budget pacing](/sessions/spot-and-priority/), never a failure signal. |
+| the turn wrote nothing | `Session#transcript_line_count` unchanged | Written by `TranscriptPollerService` alone, so unlike `last_timeline_entry_at` no state transition can move it. One tool call, one assistant message, and the whole budget is handed back. |
+
+An auth-outage park is checked explicitly on top of those, because the job that parks has already
+stamped `job_started_at`.
+
+**A spent counter never fails a session on its own.** Reaching the maximum is not the terminal
+condition; a *fresh* silent restart while the maximum is already spent is. A session that starts
+producing output again — because a human restarted it, because a later sweep worked, for any
+reason — is read as recovered on the next pass and starts from zero.
+
+What it deliberately does not bound: a restart that *does* spawn a process which then produces
+nothing is the empty turn, and `RetryBudget::EMPTY_TURN` has bounded that from both vantage points
+since [#727](https://github.com/tadasant/zimmer/issues/727). The two are different failures with
+different evidence, so they do not share a counter.
+
 ### `archive` — any state → `archived`
 
 Sets `archived_at`, retires any messages still queued for the session, dismisses notifications,
@@ -1779,7 +1827,9 @@ The state machine is not the only actor:
   by injecting a heartbeat prompt and resuming them. It skips sessions blocked on an
   elicitation or with pending enqueued messages — resuming those would spawn a second process.
 - **`CleanupOrphanedSessionsJob`** (every 5 min) catches sessions marked `running` whose process
-  is gone.
+  is gone — and, since [#988](https://github.com/tadasant/zimmer/issues/988), stops catching the
+  same one forever. See
+  [When recovery restarts a session into silence](#when-recovery-restarts-a-session-into-silence).
 - **`StalledStartSweepJob`** (every 5 min) catches the opposite end: a session that never
   started. A first turn rides on exactly one `AgentSessionJob`, and — unlike a spot hold, a
   ceiling pause, an auth park or a recovery pause — a session that has never run carries no

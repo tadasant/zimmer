@@ -77,6 +77,18 @@ module SessionContinuation
       return abandon_or_retry_continue(session, errors.join(", "))
     end
 
+    # Has recovery been restarting this session into silence? MAX_CONTINUE_ATTEMPTS
+    # above bounds continues that never START — the validation refuses them and the
+    # counter survives, because nothing clears it. It cannot bound the case #988
+    # reports, where every continue succeeds: the restart clears
+    # STALE_RETRY_METADATA_KEYS (this counter with it), the session flips to
+    # `running`, and 15 minutes later the sweep reaches the same verdict, forever,
+    # with no transcript line written in between. Sessions::SilentRecoveryGuard is
+    # the bound for that, and it fails the session rather than parking it: a session
+    # nothing can restart is not `running`, and reporting it as `running` is what
+    # made four production stalls invisible for 92 minutes to three hours.
+    return false if Sessions::SilentRecoveryGuard.call(session, source: continuation_source).gave_up?
+
     # Prefer delivering a queued user message over the automated recovery
     # prompt. On success we're done; if delivery fails (e.g. a race, or the
     # session is in a state the processor won't resume), fall through to the

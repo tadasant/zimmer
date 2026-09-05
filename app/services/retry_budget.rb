@@ -2,18 +2,18 @@
 
 # One auto-recovery retry budget, declared once and read everywhere.
 #
-# Zimmer bounds seven distinct auto-recovery loops — SIGTERM retry, API-error retry,
+# Zimmer bounds eight distinct auto-recovery loops — SIGTERM retry, API-error retry,
 # signal-death resume, MCP connection retry, context-length compact, session-id
-# conflict recovery, empty-turn restart. Each one counts its attempts in a
-# `session.metadata` key, stamps when it last fired, has a maximum, and clears a set of
-# keys once the process has been stable again for a while. Those four facts used to
-# live in five different classes, in three naming conventions, with the reset logic
-# written out three times and the metadata keys re-typed a fourth time as SQL inside
-# HealthMonitorService.
+# conflict recovery, empty-turn restart, silent recovery restart. Each one counts its
+# attempts in a `session.metadata` key, stamps when it last fired, has a maximum, and
+# clears a set of keys once the process has been stable again for a while. Those four
+# facts used to live in five different classes, in three naming conventions, with the
+# reset logic written out three times and the metadata keys re-typed a fourth time as
+# SQL inside HealthMonitorService.
 #
 # A budget is a declaration, not state: the state is the session's metadata, and every
 # method here takes the session it is reading or writing. `RetryBudget.all` is the list
-# the monitoring loop resets and the health surface enumerates, so an eighth failure
+# the monitoring loop resets and the health surface enumerates, so a ninth failure
 # class is one declaration rather than twenty copied lines plus two forgotten surfaces.
 #
 # It lives here rather than under `app/models/` because it is a value object over another
@@ -222,7 +222,7 @@ class RetryBudget
     sessions.where.not(status: terminal_status)
   end
 
-  # --- The seven budgets ------------------------------------------------------------
+  # --- The eight budgets ------------------------------------------------------------
   #
   # Key strings and maxima are exactly what each loop used before this object existed.
 
@@ -327,5 +327,41 @@ class RetryBudget
     # The one budget whose exhaustion is a park, not a failure: both vantage points come
     # to rest in `needs_input` with the transcript empty rather than failing the session.
     terminal_status: :needs_input
+  )
+
+  # --- The recovery-restart budget (#988) --------------------------------------------
+
+  # `silent_recovery_watermark` is deliberately NOT cleared by a stable stretch alone.
+  # It is the fingerprint the NEXT judgement compares against — drop it and the guard
+  # reads the following restart as its first, which is the same as not having judged.
+  # Handing the budget back is what a stable stretch earns; forgetting what the session
+  # had produced is not.
+  SILENT_RECOVERY_CLEARS = %w[silent_recovery_count last_silent_recovery_at].freeze
+
+  # Bounds the recovery loop that restarts a session which answers with nothing at all —
+  # no spawn, no transcript line, `process_identity` byte-identical across every relaunch
+  # (#988). See Sessions::SilentRecoveryGuard for the evidence it reads and why it takes
+  # two facts rather than one.
+  #
+  # The window is EMPTY_TURN's rather than the house 60 seconds, for EMPTY_TURN's reason
+  # sharpened: this budget fires only while the session is producing nothing, so "a
+  # process has been up for a minute" is not evidence the incident is over — and in the
+  # failure it bounds there is no process at all, so the in-process reset would be
+  # decided by whichever unrelated turn ran next. The reset that matters here is the
+  # explicit one: transcript output since the last restart hands the whole budget back.
+  #
+  # `max: 3` against a 15-minute hung-session verdict means a genuinely wedged session
+  # surfaces within roughly an hour, against the 92-minute, 3-hour and 2h45m stalls in
+  # #988 — and a healthy session has to start three turns and write literally nothing in
+  # all three to reach it.
+  SILENT_RECOVERY = define(
+    name: :silent_recovery,
+    key: "silent_recovery_count",
+    max: 3,
+    stamp: "last_silent_recovery_at",
+    clears: SILENT_RECOVERY_CLEARS,
+    label: "Silent recovery restart",
+    counter_label: "Silent recovery restart counter",
+    reset_after: EMPTY_TURN_RESET_AFTER
   )
 end

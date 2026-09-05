@@ -5108,6 +5108,37 @@ branch whose whole predicate is that neither store holds one — and let the win
 house 60 seconds. That needs a reset that can ask a question about the filesystem, which
 `RetryBudget` deliberately cannot; it is a value object over `session.metadata`.
 
+## The silent-recovery bound infers a wedge from behaviour; it does not diagnose one
+
+`Sessions::SilentRecoveryGuard` fails a session after `RetryBudget::SILENT_RECOVERY.max` (3)
+recovery restarts that started a turn and produced no transcript event
+([#988](https://github.com/tadasant/zimmer/issues/988)). That closes the consequence — a session
+whose restarts do nothing stops reporting `running` forever — and deliberately does **not** close
+the cause. Nobody has established *why* those re-queued jobs wedge between `job_started_at` being
+stamped and the runtime writing its first line. The four production sessions all showed every MCP
+server stuck at `pending` and a byte-identical `process_identity` across relaunches, which is
+suggestive and is not a diagnosis. When the cause is found and fixed, this bound should become
+unreachable rather than removed.
+
+Two residuals follow from inferring rather than diagnosing.
+
+**A run of turns interrupted before they write anything is indistinguishable from a wedge.** The
+two facts the guard requires — the turn started, and it wrote nothing — are both true of a session
+a deploy kills between its spawn and its first transcript line. Four such interruptions in a row,
+with no output and no 30-minute stable stretch between them to hand the budget back, fail the
+session. That is a deploy storm rather than a wedge, and the session is restartable with its
+context intact, but the `failed` status is a misattribution. Sizing the budget at 3 is what keeps
+this remote: a session has to be caught in that window four consecutive times.
+
+**The bound is not the same as reconciling the status.** A wedged session still reports `running`
+for the roughly 45–90 minutes it takes the 15-minute hung verdict to fire three times, because
+nothing asks whether the recorded process exists at the moment the status is read.
+`AgentProcessLiveness` could answer that — it is consulted for the session log line now — but
+acting on it at the status boundary is a much larger change: the reading is `:unknown` wherever
+`/proc` is unavailable or the pid was recorded in another container, and a session mid-way through
+its own exit handling is legitimately `running` with a dead pid for a moment. See
+[When recovery restarts a session into silence](/sessions/lifecycle/#when-recovery-restarts-a-session-into-silence).
+
 ## A heartbeat-beaten session cannot have its task replayed, because the beat overwrote it
 
 When a turn is about to be delivered into a conversation that does not exist, `AgentSessionJob`
