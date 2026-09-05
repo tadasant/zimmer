@@ -350,7 +350,8 @@ disk hit 0 bytes free, which is what put Postgres into a crash-recovery loop.
 Two mechanisms, and they do different halves of the job:
 
 - **`CloneReaper` takes the transcript with the clone**, via `TranscriptDirectoryReaper`, on every
-  successful reap. That stops the pile growing.
+  successful reap where nobody has taken the path back in the meantime (see
+  [the guard](#the-guard)). That stops the pile growing.
 - **`OrphanTranscriptDirectoryCleanupJob`** works off the backlog that already exists, six-hourly, at
   `BATCH_LIMIT` (1,000) directories per run. It is not scheduled in development, and refuses to run
   there even by hand: outside a deployment `~/.claude/projects` is a person's own Claude Code
@@ -519,9 +520,18 @@ deletion** and refuses if a session that is live — or being unarchived — sti
   clone costs disk the next sweep reclaims; deleting a live one costs work that exists nowhere else.
 - A refusal logs at `.error` and writes a durable warning to the session. A refusal is never routine
   — it means a reaper's snapshot went stale and this guard caught it — so it is worth a page.
+- It asks **twice**. The second question is asked after the clone is gone and before
+  `TranscriptDirectoryReaper` runs, and the gap it closes is much wider than the first one's: the
+  delete in between is an `rm -rf` of a whole working tree. A session resumed inside that window
+  re-clones at the same path ([a re-clone lands where the old one was](/sessions/transcripts/#a-re-clone-lands-where-the-old-one-was)),
+  so a transcript directory named after a deleted clone is not necessarily dead — the path can come
+  back to life while the delete is still running. If the answer changed, the clone is gone but the
+  transcript stays, and `OrphanTranscriptDirectoryCleanupJob` picks it up later if it turns out
+  nobody wanted it after all.
 
-The gap after it is the microseconds between the `SELECT` and the `rename(2)`, rather than the
-minutes a sweep leaves. That is the honest claim: it is the smallest gap available, not none.
+The gap after the first question is the microseconds between the `SELECT` and the `rename(2)`, rather
+than the minutes a sweep leaves. That is the honest claim: it is the smallest gap available, not
+none.
 
 `GitCloneService.cleanup_clone` routes through it, which covers `DeferredCloneCleanupJob`,
 `EmptyTrashJob` and both of `StaleCloneCleanupJob`'s sweeps at once;

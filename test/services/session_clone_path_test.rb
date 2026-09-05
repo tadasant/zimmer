@@ -7,6 +7,7 @@ require_relative "../support/mock_file_system_adapter"
 class SessionClonePathTest < ActiveSupport::TestCase
   setup do
     @clones_base = Dir.mktmpdir("session_clone_path_test")
+    @original_clones_dir = ENV["AGENT_CLONES_DIR"]
     ENV["AGENT_CLONES_DIR"] = @clones_base
 
     @session = Session.create!(
@@ -23,7 +24,7 @@ class SessionClonePathTest < ActiveSupport::TestCase
   end
 
   teardown do
-    ENV.delete("AGENT_CLONES_DIR")
+    ENV["AGENT_CLONES_DIR"] = @original_clones_dir
     FileUtils.rm_rf(@clones_base)
   end
 
@@ -113,6 +114,39 @@ class SessionClonePathTest < ActiveSupport::TestCase
     end.new
 
     assert_nil SessionClonePath.for_recreate(@session, file_system: exploding)
+  end
+
+  test "declines a dangling symlink standing at the path" do
+    @session.update!(metadata: { "clone_path" => @previous_clone })
+    dangling = MockFileSystemAdapter.new
+    dangling.define_singleton_method(:symlink?) { |_path| true }
+
+    assert_nil SessionClonePath.for_recreate(@session, file_system: dangling),
+      "File.exist? answers false for a dangling symlink, but git clone still refuses the path"
+  end
+
+  # AtomicCloneRemoval's in-place fallback rm_rf's the live path and writes a
+  # sibling marker first, precisely so this state is nameable while it runs.
+  test "declines a path an in-place delete is still walking" do
+    @session.update!(metadata: { "clone_path" => @previous_clone })
+    File.write("#{@previous_clone}#{AtomicCloneRemoval::TOMBSTONE_MARKER}deadbeef", "")
+
+    assert_nil SessionClonePath.for_recreate(@session, file_system: @file_system)
+  end
+
+  test "reuses the path once the in-place delete marker is gone" do
+    @session.update!(metadata: { "clone_path" => @previous_clone })
+    marker = "#{@previous_clone}#{AtomicCloneRemoval::TOMBSTONE_MARKER}deadbeef"
+    File.write(marker, "")
+    File.delete(marker)
+
+    assert_equal @previous_clone, SessionClonePath.for_recreate(@session, file_system: @file_system)
+  end
+
+  test "only for_recreate is a door" do
+    assert_not SessionClonePath.respond_to?(:direct_child_of_clones_base?),
+      "the fence is an implementation detail of the decision, not a second entry point"
+    assert_not SessionClonePath.respond_to?(:in_place_delete_in_progress?)
   end
 
   test "follows AGENT_CLONES_DIR rather than a memoized base" do
