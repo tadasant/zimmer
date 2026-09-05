@@ -590,6 +590,27 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_equal [ false, true ], asked
   end
 
+  # Pinned at the same boundary, and for the same reason: the copy is invisible
+  # from every other assertion here, because a fork that copies and a fork that
+  # does not produce the identical summary. What it is not invisible from is the
+  # two-thread `inference` lane this job runs on, where two copies of a live
+  # working tree held every thread for half an hour with 48 jobs queued behind
+  # them (#771). Neither path may ask for one.
+  test "no generation asks the fork service to copy the source tree" do
+    asked = []
+    recorder = Class.new do
+      define_singleton_method(:call) do |**args|
+        asked << args[:copy_source_tree]
+        ForkSessionService::Result.new(success?: false, error: "stop here")
+      end
+    end
+
+    SessionStatusSummaryGenerator.call(session: @session, fork_service: recorder, file_system: @fs)
+    SessionStatusSummaryGenerator.call(session: @session, force: true, fork_service: recorder, file_system: @fs)
+
+    assert_equal [ false, false ], asked
+  end
+
   # The other half of the bargain: nothing is stood up for a session nobody is
   # looking at. An automatic generation still wants a real clone.
   test "an automatic generation on a session whose clone is gone is unavailable" do
