@@ -313,6 +313,25 @@ class TriggerCondition < ApplicationRecord
     condition_type == "schedule" && scheduled_at.present?
   end
 
+  # The wall-clock instant a one-time schedule is set for, or nil when this is not
+  # a one-time schedule or its stored value cannot be read.
+  #
+  # #schedule_due? answers "is it time yet", which is all the firing path needs.
+  # A reader that has to tell a wake still in flight from a wake that was lost
+  # needs the instant itself — see SessionStateMachine::SCHEDULE_FIRE_SETTLE — and
+  # parsing it a second time at each call site is how the two readings drift
+  # apart. Same timezone and same parser as #schedule_due?, so they cannot
+  # disagree about when the moment was.
+  #
+  # @return [ActiveSupport::TimeWithZone, nil]
+  def scheduled_at_time
+    return nil unless one_time_schedule?
+
+    ActiveSupport::TimeZone[schedule_timezone]&.parse(scheduled_at.to_s)
+  rescue ArgumentError, TypeError
+    nil
+  end
+
   def schedule_interval
     (configuration["interval"] || 1).to_i
   end
