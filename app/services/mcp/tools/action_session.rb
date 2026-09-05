@@ -93,23 +93,23 @@ module Mcp
 
       MAX_MCP_SERVERS = 50
       MAX_MCP_SERVER_NAME_LENGTH = 100
-      MAX_CATALOG_SKILLS = 100
-      MAX_CATALOG_HOOKS = 100
-      MAX_CATALOG_PLUGINS = 50
-      MAX_CATALOG_ITEM_ID_LENGTH = 100
       MAX_SESSION_NOTES_LENGTH = 50_000
       REFRESH_ALL_LIMIT = 50
 
-      # Shared spec for the three replace-semantics catalog list fields
-      # (skills/hooks/plugins). Each mirrors change_mcp_servers: validate every id
-      # against its catalog, persist the whole list (replace, not merge), and log
-      # the delta. Config regeneration is deliberately deferred to the next
-      # prepare/unarchive — the same as change_mcp_servers — so an archived session
-      # picks the new set up when it is next prepared.
+      # Which session attribute and argument name each of the three
+      # replace-semantics catalog list actions writes. The bounds and the
+      # id-validation live once, on Mcp::Tool::CATALOG_LISTS, because
+      # action_trigger writes the same three lists onto a Trigger.
+      #
+      # Each mirrors change_mcp_servers: validate every id against its catalog,
+      # persist the whole list (replace, not merge), and log the delta. Config
+      # regeneration is deliberately deferred to the next prepare/unarchive — the
+      # same as change_mcp_servers — so an archived session picks the new set up
+      # when it is next prepared.
       CATALOG_LIST_FIELDS = {
-        "change_skills" => { attribute: :catalog_skills, param: "skills", label: "Skills", max: MAX_CATALOG_SKILLS, config: "SkillsConfig" },
-        "change_hooks" => { attribute: :catalog_hooks, param: "hooks", label: "Hooks", max: MAX_CATALOG_HOOKS, config: "HooksConfig" },
-        "change_plugins" => { attribute: :catalog_plugins, param: "plugins", label: "Plugins", max: MAX_CATALOG_PLUGINS, config: "PluginsConfig" }
+        "change_skills" => { attribute: :catalog_skills, param: "skills" },
+        "change_hooks" => { attribute: :catalog_hooks, param: "hooks" },
+        "change_plugins" => { attribute: :catalog_plugins, param: "plugins" }
       }.freeze
 
       description <<~DESC
@@ -696,6 +696,7 @@ module Mcp
       def change_catalog_list(session, action, args)
         spec = CATALOG_LIST_FIELDS.fetch(action)
         param = spec[:param]
+        label = CATALOG_LISTS.fetch(spec[:attribute])[:label]
 
         # Plugins can bundle MCP servers (see Session#derive_mcp_servers_from_plugins),
         # so on a restricted connection they are a bypass of the same agent-root MCP
@@ -710,17 +711,7 @@ module Mcp
           raise ToolError, "The \"#{param}\" parameter is required for the \"#{action}\" action."
         end
 
-        items = args[param]
-        raise ToolError, "Maximum #{spec[:max]} #{spec[:label].downcase}" if items.length > spec[:max]
-
-        items = items.reject(&:blank?).map { |s| s.to_s.strip.first(MAX_CATALOG_ITEM_ID_LENGTH) }
-
-        config = spec[:config].constantize
-        invalid = items.reject { |id| config.exists?(id) }
-        if invalid.any?
-          valid = config.all.map(&:id).sort
-          raise ToolError, "Invalid #{spec[:label].downcase}: #{invalid.join(', ')}. Valid #{spec[:label].downcase}: #{valid.join(', ')}"
-        end
+        items = validated_catalog_list!(spec[:attribute], args[param], param)
 
         old_items = session.public_send(spec[:attribute]) || []
         session.update!(spec[:attribute] => items)
@@ -730,14 +721,14 @@ module Mcp
         changes = []
         changes << "added: #{added.join(', ')}" if added.any?
         changes << "removed: #{removed.join(', ')}" if removed.any?
-        session.logs.create!(content: "#{spec[:label]} updated via MCP (#{changes.join('; ')})", level: "info") if changes.any?
+        session.logs.create!(content: "#{label} updated via MCP (#{changes.join('; ')})", level: "info") if changes.any?
 
         [
-          "## #{spec[:label]} Updated",
+          "## #{label} Updated",
           "",
           "- **Session ID:** #{session.id}",
           "- **Title:** #{session.title}",
-          "- **#{spec[:label]}:** #{format_list(session.public_send(spec[:attribute]))}"
+          "- **#{label}:** #{format_list(session.public_send(spec[:attribute]))}"
         ].join("\n")
       end
 

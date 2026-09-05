@@ -650,6 +650,21 @@ Changing it applies to sessions the trigger spawns from then on.
 `precedence` (an integer, or `null`) predefines the rank the trigger's sessions land on in the spot
 queue. Same absolute scale, same "applies to sessions spawned from now on" rule as the class.
 
+`catalog_skills`, `catalog_hooks` and `catalog_plugins` (arrays of AIR catalog ids) are the skills,
+hooks and plugins stamped onto every session this trigger spawns, and the payload reports all three
+so a caller can read a trigger's configuration and not only overwrite it. Every id is validated
+against the catalog: an unknown one fails the write with 422 rather than being persisted and
+breaking the next spawn. Unlike `mcp_servers`, an omitted key means "leave the list alone" — send
+`[]` to clear one.
+
+`enqueue_messages` and `resuscitate_archived` (booleans, both default `false`) only apply to a
+trigger with `reuse_session` on: the first queues a fire's prompt for a target session that is still
+running instead of [dropping it](/sessions/triggers/#coalescing-a-repeated-fire), the second
+unarchives a target session that has been trashed. Sent without `reuse_session` they are **cleared**
+by the model rather than rejected, and the response payload reports the `false` that was stored — so
+read it back rather than assuming the request took. The MCP equivalent, `action_trigger`, refuses
+that combination outright.
+
 `status` is one of `enabled`, `disabled`, or `failed`, and all three work as `?status=` filters.
 `failed` is Zimmer's to set: a one-shot fire raised and the trigger was
 [parked rather than destroyed](/sessions/triggers/#when-a-one-time-fire-fails) — either a one-time
