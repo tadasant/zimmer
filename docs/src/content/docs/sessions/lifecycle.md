@@ -1372,7 +1372,9 @@ Archiving is what takes a session out of `GitHubPullRequestPollerJob`'s scope �
 excludes archived sessions — so it also ends any chance of the merge message the PR goals in
 `config/goals.json` promise the session: *"the pull-request poller sends this session a message
 when the PR merges, and THAT MESSAGE IS YOUR SIGNAL TO ARCHIVE"*. A session archived before the
-poller's next pass never receives it.
+poller's next pass never receives it — including the reading that message carries of [what the merge
+fired](/operate/background-jobs/#and-what-the-merge-fired), which for a PR whose merge deploys is the
+half of the work that happens after the merge.
 
 When the session still has tracked PRs that Zimmer never saw reach a terminal state (`merged` or
 `closed`), the archive line says so and names them:

@@ -31,6 +31,16 @@
 # first poll never did the work in question, and waking it would be noise.
 # github_pull_request_merged_notified records which PRs have been announced.
 #
+# That message also carries WHAT THE MERGE FIRED — the workflow runs GitHub
+# created on the merge commit, read here at announcement time. For a PR whose
+# merge triggers a deploy, merged is roughly the halfway point: the deploy takes
+# minutes and can fail on a path the PR's own CI never exercised, and the session
+# reading this message is the one holding the context to diagnose that
+# (tadasant/tadasant-internal#1969). A session cannot see its repository's
+# workflow triggers from the inside, so the poller answers the question for it
+# rather than asking it to guess — and answers "nothing fired" the vast majority
+# of the time, which leaves the ordinary archive-on-merge path exactly as it was.
+#
 class GitHubPullRequestPollerJob < ApplicationJob
   include DatabaseRetry
   include AutomatedSessionMessage
@@ -111,6 +121,21 @@ class GitHubPullRequestPollerJob < ApplicationJob
   # aggregates every check run and status on it, so it does more work server-side
   # and returns more rows on a PR with a large matrix.
   CI_STATUS_TIMEOUT = 30
+
+  # `gh pr view` again for the merge commit, and one `gh api` page of the workflow
+  # runs on it. Both run only on the open → merged transition — once per PR, ever —
+  # so they add nothing to the steady-state poll cost or to the rate limit.
+  MERGE_COMMIT_TIMEOUT = 20
+  POST_MERGE_RUNS_TIMEOUT = 30
+
+  # How many runs on the merge commit to ask GitHub for, in the one page this asks
+  # for. A merge fires a handful of workflows directly — but `workflow_run`
+  # listeners fire on each of those completing and carry the same head SHA, and
+  # the API returns newest first, so a page small enough to be "generous" for the
+  # direct runs can push them off the end on a merge this job sees late. One full
+  # page costs the same round trip; the message only ever names the runs that are
+  # unfinished or red, so a long tail of completed listeners adds no noise to it.
+  POST_MERGE_RUNS_PAGE_SIZE = 100
 
   # What `fetch_ci_status` returns when the call did not complete, as distinct from
   # the nil it returns when GitHub answered and the PR simply has no checks.
@@ -273,13 +298,89 @@ class GitHubPullRequestPollerJob < ApplicationJob
     end
 
     pr_urls.select do |pr_url|
+      automation = post_merge_automation(pr_url)
+
       deliver_automated_message(
         session,
-        AutomatedPrompts.pr_merged_message(pr_url),
+        AutomatedPrompts.pr_merged_message(
+          pr_url,
+          post_merge_runs: automation[:runs],
+          merge_commit_sha: automation[:merge_commit_sha]
+        ),
         event_description: "PR merged: #{pr_url}",
         origin: "automated_pr_merged"
       )
     end
+  end
+
+  # What this merge set in motion on GitHub, for the message to report.
+  #
+  # `{ merge_commit_sha:, runs: }`, and a nil sha is the "we could not tell"
+  # answer — AutomatedPrompts drops the whole paragraph on it and the message
+  # reads exactly as it did before this existed. Failing open is the deliberate
+  # choice: a lookup that GitHub would not answer must not leave a session that
+  # finished its work sitting there waiting for a deploy nobody can name.
+  #
+  # An empty `runs` with a sha present is a different answer and a useful one —
+  # "nothing fired that GitHub will admit to yet" — because the poller can see a
+  # merge within a second of it happening, before the runs it fired exist. The
+  # message turns that into one `gh run list` for the session to run, which is
+  # authoritative where this reading was early.
+  def post_merge_automation(pr_url)
+    match = pr_url.match(%r{github\.com/([^/]+)/([^/]+)/pull/(\d+)})
+    return { merge_commit_sha: nil, runs: [] } unless match
+
+    owner, repo, pr_number = match.captures
+
+    sha = fetch_merge_commit_sha(owner, repo, pr_number)
+    return { merge_commit_sha: nil, runs: [] } if sha.blank?
+
+    { merge_commit_sha: sha, runs: fetch_post_merge_runs(owner, repo, sha) || [] }
+  end
+
+  # The SHA the merge landed as, or nil if GitHub would not say.
+  def fetch_merge_commit_sha(owner, repo, pr_number)
+    command = [ "gh", "pr", "view", pr_number.to_s, "--repo", "#{owner}/#{repo}", "--json", "mergeCommit" ]
+
+    result = GithubCli.run(command, timeout: MERGE_COMMIT_TIMEOUT)
+
+    unless result.success?
+      Rails.logger.warn "[GitHubPullRequestPollerJob] gh pr view (mergeCommit) failed: #{result.failure_description}"
+      return nil
+    end
+
+    JSON.parse(result.stdout).dig("mergeCommit", "oid").presence
+  rescue JSON::ParserError => e
+    Rails.logger.error "[GitHubPullRequestPollerJob] Failed to parse merge commit: #{e.message}"
+    nil
+  end
+
+  # The workflow runs GitHub has created on `sha`, or nil when the call did not
+  # complete — which the caller treats as an empty list rather than as a claim.
+  #
+  # Queried by head SHA rather than by branch or by workflow name, deliberately.
+  # It is the only question with one right answer: "which runs exist because THIS
+  # merge landed". A name filter would have to guess which workflows deploy, and
+  # the deploy that failed three times on 2026-08-30 was not called "deploy".
+  def fetch_post_merge_runs(owner, repo, sha)
+    command = [
+      "gh", "api",
+      "repos/#{owner}/#{repo}/actions/runs?head_sha=#{sha}&per_page=#{POST_MERGE_RUNS_PAGE_SIZE}",
+      "--jq", "[.workflow_runs[] | {name: .name, status: .status, conclusion: .conclusion, url: .html_url}]"
+    ]
+
+    result = GithubCli.run(command, timeout: POST_MERGE_RUNS_TIMEOUT)
+
+    unless result.success?
+      Rails.logger.warn "[GitHubPullRequestPollerJob] gh api (post-merge runs) failed: #{result.failure_description}"
+      return nil
+    end
+
+    runs = JSON.parse(result.stdout.presence || "[]")
+    runs.is_a?(Array) ? runs : nil
+  rescue JSON::ParserError => e
+    Rails.logger.error "[GitHubPullRequestPollerJob] Failed to parse post-merge runs: #{e.message}"
+    nil
   end
 
   def fetch_pr_status(owner, repo, pr_number)
