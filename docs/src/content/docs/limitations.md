@@ -3019,6 +3019,32 @@ Three bounds worth knowing:
   passive condition meeting a busy old thread for the first time can spawn several sessions at once,
   bounded only by the trigger's `max_sessions_per_minute` burst cap (above which the rest are
   *dropped*).
+- **A quiet tracked thread can wait several polls to be noticed.** A thread whose parent has scrolled
+  out of the last 50 top-level messages costs a `conversations.replies` call to re-check, so the
+  poller spends a fixed budget of `MAX_TRACKED_THREAD_RECHECKS` (20) of them per channel per poll:
+  10 on the most-recently-active threads and 10 rotating through the rest. Everything inside
+  `RECHECK_HORIZON` is visited — that is the fix for
+  [#518](https://github.com/tadasant/zimmer/issues/518) — but the *first* reply in a thread that had
+  gone quiet can sit for up to `ceil((n - 10) / 10)` polls before Zimmer sees it, which is about 17
+  minutes on a channel tracking 172 threads. Once it is seen the thread joins the always-checked
+  band, so the rest of the conversation answers at the ordinary one-minute cadence. Migrating Slack
+  ingestion to Events API webhooks ([#141](https://github.com/tadasant/zimmer/issues/141),
+  [#217](https://github.com/tadasant/zimmer/issues/217)) would remove the wait entirely.
+- **The budget bounds threads per poll, not Slack calls.** `SlackService.get_thread_replies`
+  paginates at 100 until the thread is drained, so a thread carrying more than a page of unfetched
+  replies costs more than one call. At the ordinary cadence a thread accrues far under a page between
+  visits and the two numbers are the same, but a thread first re-checked across a long gap — a
+  deploy, an outage — can cost several. That is the same rate-limit surface
+  [#509](https://github.com/tadasant/zimmer/issues/509) and
+  [#522](https://github.com/tadasant/zimmer/issues/522) are about, bounded only by how many threads
+  are behind at once.
+- **Catch-up on a thread met from a stale cursor is dropped, not deferred.** Passive listening clamps
+  the oldest reply it will fire on to `THREAD_BACKFILL_HORIZON` (24 hours) — for a thread it has
+  never seen *and* for one whose own cursor fell behind across a gap. Without that clamp the first
+  re-check of a starved thread replays its whole backlog as a session apiece; with it, replies older
+  than a day are passed over silently and the cursor advances past them anyway, so they are gone
+  rather than queued. The trade is deliberate: a day-old Slack reply is one nobody is still waiting
+  on an answer to, and a burst of sessions answering weeks-old messages is worse than silence.
 - **`participating_threads` and `bot_activity_timestamps` grow monotonically** inside the
   condition's `configuration` JSONB, exactly like the `channel_timestamps` and `thread_timestamps`
   hashes they sit beside. Nothing prunes any of the four — and because all four live on the

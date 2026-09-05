@@ -116,6 +116,7 @@ class TriggerCondition < ApplicationRecord
   SLACK_POLL_STATE_KEYS = %w[
     channel_timestamps thread_timestamps bot_activity_timestamps
     participating_threads dm_timestamps allowed_user_ids
+    thread_recheck_cursors
   ].freeze
 
   belongs_to :trigger
@@ -265,6 +266,17 @@ class TriggerCondition < ApplicationRecord
   # Returns a hash of "channel_id:thread_ts" => last_reply_ts
   def thread_timestamps
     configuration["thread_timestamps"] || {}
+  end
+
+  # Where the tracked-thread re-check rotation stopped last poll, per channel.
+  # Returns a hash of channel_id => the "channel_id:thread_ts" key of the last
+  # thread re-checked in that channel's rotation band.
+  #
+  # One entry per channel, not per thread: this is a position in an ordering, not
+  # a cursor over messages, and losing it costs at most one extra pass round the
+  # ring. See SlackTriggerPollerJob#rotating_recheck_slice.
+  def thread_recheck_cursors
+    configuration["thread_recheck_cursors"] || {}
   end
 
   # Get per-channel "when did Zimmer last speak here" timestamps for passive_listen
