@@ -722,7 +722,137 @@ class McpOauthServiceTest < ActiveSupport::TestCase
     assert_not @service.manual_completion_required?("")
   end
 
+  # --- how we know, not just what we answered ---------------------------------
+  #
+  # `required` is what callers act on; `determination` is what gets recorded, and
+  # it has to keep "the server said no" apart from "we could not tell". Both
+  # leave `required` false, and only one of them is an answer.
+
+  test "check_oauth_requirement reports an advertised requirement when the server challenges with Bearer" do
+    mock_http = routed_mock_http do |path|
+      if path.include?("/.well-known/")
+        http_response(Net::HTTPNotFound, "404", "{}")
+      else
+        unauthorized_response('Bearer realm="mcp"')
+      end
+    end
+
+    requirement = stub_net_http(mock_http) { @service.check_oauth_requirement("https://api.example.com/mcp") }
+
+    assert requirement.required
+    assert_equal McpServerOauthRequirement::ADVERTISED_REQUIRED, requirement.determination
+  end
+
+  test "check_oauth_requirement reports an advertised absence when an unauthenticated request succeeds" do
+    %w[application/json text/event-stream].each do |content_type|
+      mock_http = routed_mock_http do |path|
+        if path.include?("/.well-known/")
+          http_response(Net::HTTPNotFound, "404", "{}")
+        else
+          http_response(Net::HTTPSuccess, "200", "{}", headers: { "Content-Type" => content_type })
+        end
+      end
+
+      requirement = stub_net_http(mock_http) { @service.check_oauth_requirement("https://api.example.com/mcp") }
+
+      assert_not requirement.required
+      assert_equal McpServerOauthRequirement::ADVERTISED_NOT_REQUIRED, requirement.determination,
+        "a 2xx in #{content_type} is the MCP endpoint answering"
+    end
+  end
+
+  # The probe sends a bare GET that is not a well-formed MCP request, so a 200 is
+  # at least as likely to be a CDN interstitial or a landing page sharing the
+  # origin as it is to be the MCP server. Filing one of those as "needs no token"
+  # is the silent failure this whole change exists to avoid.
+  test "check_oauth_requirement leaves a 2xx that is not an MCP response undetermined" do
+    [ "text/html", "text/plain", nil ].each do |content_type|
+      mock_http = routed_mock_http do |path|
+        if path.include?("/.well-known/")
+          http_response(Net::HTTPNotFound, "404", "{}")
+        else
+          headers = content_type ? { "Content-Type" => content_type } : {}
+          http_response(Net::HTTPSuccess, "200", "<html></html>", headers: headers)
+        end
+      end
+
+      requirement = stub_net_http(mock_http) { @service.check_oauth_requirement("https://api.example.com/mcp") }
+
+      assert_not requirement.required
+      assert_equal McpServerOauthRequirement::UNDETERMINED, requirement.determination,
+        "a 200 in #{content_type.inspect} says nothing about authorization"
+    end
+  end
+
+  # A streamable-HTTP server that wants a session id before it looks at auth
+  # answers a bare GET with 400. That is not the server saying it needs no
+  # token, and recording it as one is the mistake that fails silently.
+  test "check_oauth_requirement leaves a non-2xx, non-Bearer answer undetermined" do
+    mock_http = routed_mock_http do |path|
+      if path.include?("/.well-known/")
+        http_response(Net::HTTPNotFound, "404", "{}")
+      else
+        http_response(Net::HTTPBadRequest, "400", "Missing session id")
+      end
+    end
+
+    requirement = stub_net_http(mock_http) { @service.check_oauth_requirement("https://api.example.com/mcp") }
+
+    assert_not requirement.required
+    assert_equal McpServerOauthRequirement::UNDETERMINED, requirement.determination
+  end
+
+  test "check_oauth_requirement leaves a 401 with a non-Bearer challenge undetermined" do
+    mock_http = routed_mock_http do |path|
+      if path.include?("/.well-known/")
+        http_response(Net::HTTPNotFound, "404", "{}")
+      else
+        unauthorized_response('Basic realm="mcp"')
+      end
+    end
+
+    requirement = stub_net_http(mock_http) { @service.check_oauth_requirement("https://api.example.com/mcp") }
+
+    assert_not requirement.required
+    assert_equal McpServerOauthRequirement::UNDETERMINED, requirement.determination
+  end
+
+  test "check_oauth_requirement leaves an unreachable server undetermined" do
+    mock_http = routed_mock_http { |_path| raise Errno::ECONNREFUSED, "connection refused" }
+
+    requirement = stub_net_http(mock_http) { @service.check_oauth_requirement("https://api.example.com/mcp") }
+
+    assert_not requirement.required
+    assert_equal McpServerOauthRequirement::UNDETERMINED, requirement.determination
+    assert_not_nil requirement.error
+  end
+
   private
+
+  # An HTTP double that answers each GET according to its path, so one stub can
+  # serve both halves of check_oauth_requirement: the well-known discovery
+  # fetches and the unauthenticated probe of the server URL itself.
+  def routed_mock_http(&route)
+    mock_http = Object.new
+    mock_http.define_singleton_method(:use_ssl=) { |_| }
+    mock_http.define_singleton_method(:open_timeout=) { |_| }
+    mock_http.define_singleton_method(:read_timeout=) { |_| }
+    mock_http.define_singleton_method(:request) { |req| route.call(req.path) }
+    mock_http
+  end
+
+  def http_response(klass, code, body, headers: {})
+    response = klass.new("1.1", code, "")
+    response.stubs(:code).returns(code)
+    response.stubs(:body).returns(body)
+    response.stubs(:[]).returns(nil)
+    headers.each { |name, value| response.stubs(:[]).with(name).returns(value) }
+    response
+  end
+
+  def unauthorized_response(www_authenticate)
+    http_response(Net::HTTPUnauthorized, "401", "", headers: { "WWW-Authenticate" => www_authenticate })
+  end
 
   def with_app_host(value)
     original = ENV["APP_HOST"]

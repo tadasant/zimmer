@@ -1736,12 +1736,27 @@ token on first consent and omits it when re-authorizing a live grant stays renew
 
 Tracked in [#64](https://github.com/tadasant/zimmer/issues/64).
 
-### "Assume OAuth might be required"
+### "Assume OAuth might be required" — now only when nobody could tell
 
-`mcp_oauth_credential_injector.rb:137` — *"If we don't know if OAuth is required, assume it might be"* for
-remote servers.
+Zimmer records what a remote server actually advertised about OAuth
+(`McpServerOauthRequirement`, one row per server config) from the two paths that already ask it:
+the spawn gate and `McpOauthProbe`. The surfaces that cannot make a network call read that record
+rather than assuming. See
+[What the server advertised, recorded](/auth/mcp-oauth/#what-the-server-advertised-recorded).
 
-Tracked in [#103](https://github.com/tadasant/zimmer/issues/103).
+What remains is the third branch, and it is deliberate. A server that has never been probed, that
+could not be reached, or that answered the unauthenticated `GET` with anything other than a
+`Bearer` challenge or an MCP-shaped `2xx` is `undetermined`, and undetermined still means *assume
+OAuth might be required*. Erring the other way is the worse failure: a server wrongly decided not to need OAuth
+never gets credentials and fails at the point of use, silently, where the over-eager assumption
+merely offers an Authorize button nobody needed. `advertised_not_required` also expires after seven
+days, so a server that starts requiring OAuth falls back to the assumption rather than being
+believed indefinitely.
+
+So the guess is still there for servers nobody has been able to classify — it is just no longer
+indistinguishable from a fact, on the Connectors row or in the spawn log.
+
+Originally [#103](https://github.com/tadasant/zimmer/issues/103).
 
 ### "Is this a credential header?" is a word list
 
