@@ -1355,6 +1355,136 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "instead of collapsing to the self-session baseline"
   end
 
+  # zimmer#465: mcp_servers_status was written from exactly one place — the
+  # transcript poll loop, once it got as far as McpStatusPersisting. A turn that
+  # never got there (a process that died before its transcript appeared, or simply
+  # a session looked at while it was still cloning and preparing) left the key
+  # absent, and absent is indistinguishable from "this session has no MCP servers"
+  # to the REST API and the get_session MCP tool, which hand custom_metadata back
+  # verbatim. The spawn seeds the floor instead, so the key is present and honest
+  # from the moment the runtime is handed its config.
+  #
+  # The poller here is a no-op, exactly as it is for a turn that never reaches it,
+  # and the session is already `running` so no resume fires: the entries below can
+  # only have come from the spawn path. The auto-injected server proves the seed
+  # happens AFTER `air prepare`, which is the only point the effective set is known.
+  test "spawning seeds a pending entry for every configured and injected MCP server" do
+    ServersConfig.stubs(:exists?).returns(true)
+    session_id = SecureRandom.uuid
+    @session.update!(
+      session_id: session_id,
+      status: :running,
+      mcp_servers: [ "context7" ],
+      metadata: {
+        "clone_path" => "/tmp/test-clone",
+        "working_directory" => "/tmp/test-clone",
+        "runtime_started" => true
+      }
+    )
+
+    AirPrepareService.any_instance.stubs(:prepare!)
+    AirPrepareService.any_instance.stubs(:injected_mcp_servers)
+      .returns([ "agent-orchestrator-prod-self-session" ])
+
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.mkdir_p("/tmp/test-clone")
+    mock_fs.write("/tmp/test-clone/claude_stderr.log", "")
+    mock_process_manager.wait_hook = ->(pid, flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
+
+    # The turn never reaches McpStatusPersisting — the whole point of the test.
+    TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+      mock_poller = Object.new
+      def mock_poller.poll_and_broadcast; end
+      mock_poller
+    }) do
+      Thread.stub(:new, ->(&block) {
+        mock_thread = Object.new
+        def mock_thread.alive?; false; end
+        def mock_thread.kill; end
+        def mock_thread.join(*); end
+        mock_thread
+      }) do
+        job.perform(@session.id, "Follow up")
+      end
+    end
+
+    statuses = @session.reload.custom_metadata["mcp_servers_status"]
+    assert_not_nil statuses,
+      "a spawned session with MCP servers must carry mcp_servers_status even when " \
+      "no detector ever produced a status"
+    assert_equal "pending", statuses.dig("context7", "status")
+    assert_equal "pending", statuses.dig("agent-orchestrator-prod-self-session", "status"),
+      "the auto-injected server is seeded too, so the floor is applied after air prepare"
+  end
+
+  # The spawn-time seed is a FLOOR, not a reset: a status carried into this turn
+  # (by an earlier poll, or by the resume that started it) must survive it. Only
+  # `clear_stale_mcp_failure_metadata` is allowed to overwrite a real status, and
+  # this session is already running so it never fires.
+  test "spawning does not overwrite an MCP status the session already carries" do
+    ServersConfig.stubs(:exists?).returns(true)
+    @session.update!(
+      session_id: SecureRandom.uuid,
+      status: :running,
+      mcp_servers: [ "context7", "playwright-custom" ],
+      custom_metadata: {
+        "mcp_servers_status" => {
+          "context7" => { "status" => "connected", "connected_at" => "2026-09-04T10:00:00Z" }
+        }
+      },
+      metadata: {
+        "clone_path" => "/tmp/test-clone",
+        "working_directory" => "/tmp/test-clone",
+        "runtime_started" => true
+      }
+    )
+
+    AirPrepareService.any_instance.stubs(:prepare!)
+    AirPrepareService.any_instance.stubs(:injected_mcp_servers).returns([])
+
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.mkdir_p("/tmp/test-clone")
+    mock_fs.write("/tmp/test-clone/claude_stderr.log", "")
+    mock_process_manager.wait_hook = ->(pid, flags) { [ pid, MockProcessManager::MockStatus.new(0) ] }
+
+    TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
+      mock_poller = Object.new
+      def mock_poller.poll_and_broadcast; end
+      mock_poller
+    }) do
+      Thread.stub(:new, ->(&block) {
+        mock_thread = Object.new
+        def mock_thread.alive?; false; end
+        def mock_thread.kill; end
+        def mock_thread.join(*); end
+        mock_thread
+      }) do
+        job.perform(@session.id, "Follow up")
+      end
+    end
+
+    statuses = @session.reload.custom_metadata["mcp_servers_status"]
+    assert_equal "connected", statuses.dig("context7", "status"),
+      "the spawn-time floor must not clobber a status already recorded"
+    assert_equal "2026-09-04T10:00:00Z", statuses.dig("context7", "connected_at")
+    assert_equal "pending", statuses.dig("playwright-custom", "status"),
+      "the server that had no entry still gets one"
+  end
+
   # Characterization guard (this behavior already holds; the test pins it down).
   # A mid-run clone recreation whose `air prepare` fails must NOT fall through to
   # the baseline config, which would strip every user-provisioned MCP server and

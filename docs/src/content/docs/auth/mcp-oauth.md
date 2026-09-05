@@ -643,6 +643,26 @@ vanishes ([#196](https://github.com/tadasant/zimmer/issues/196)).
 One consumer treats it specially: `McpServerBackfill#detect_lost_mcp_servers` skips `pending` entries
 when it looks for servers a regenerated config dropped, since a placeholder is the absence of evidence
 rather than a server the session ever connected to.
+
+**The detector is not the only thing that applies that floor.** Seeding it per poll leaves the key
+absent for as long as no poll has reached `McpStatusPersisting` — the whole clone-and-prepare phase of
+every turn, and *forever* on a turn whose process died before it wrote a transcript, since
+`TranscriptPollerService` returns early when there is no transcript file to read. Worse, `resume` used
+to delete the key outright, so a session that had been reporting `connected` for days went back to
+having no key at all on its next turn ([#465](https://github.com/tadasant/zimmer/issues/465)).
+Two paths that run before any detector can therefore write the key themselves, and they are not the
+same operation:
+
+| Where | What it does |
+| --- | --- |
+| `AgentSessionJob`, immediately before the spawn | Calls `Session#seed_mcp_servers_status_floor!` — literally the floor above, `pending` **only where no entry exists**, so a status carried over from an earlier turn survives. It runs once `air prepare` has, so auto-injected servers are in `all_mcp_servers` and get an entry too. |
+| `SessionStateMachine#clear_stale_mcp_failure_metadata` | **Resets** every entry to `pending` on each `resume`. This one deliberately overwrites a real status: a `connected` belongs to the process that just exited, not to the one about to start. |
+
+Both skip the write when what is stored already equals what they would write — the job's floor when
+every server has an entry, the resume when every entry is already `pending` — so neither adds an
+`UPDATE` or a session-card broadcast to a steady-state turn. The resume spans the union of
+`all_mcp_servers` and the names already in the hash, so a soft-failing catalog read (which makes
+`plugin_mcp_servers` return `[]`) cannot empty the reset and delete the key.
 :::
 
 :::note[The runtime credential stores are host-global and shared across sessions]
