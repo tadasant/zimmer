@@ -95,6 +95,143 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_equal :healthy, health[:status].status
   end
 
+  # === Process tracking that cannot see the processes it counts ===
+  #
+  # On 2026-08-13 this section reported `active_count: 0, tracked_count: 0,
+  # orphaned_count: 0` and "No orphaned processes" in the same payload that said
+  # five sessions were running, with those sessions demonstrably alive (zimmer#428).
+  # Both zeros are structural: the tracker is an in-memory registry belonging to a
+  # SystemProcessManager this report just built, and the `pgrep` scan sees only the
+  # current container while agent CLIs are spawned by the worker. A counter that
+  # cannot observe what it counts can never report an orphan, so "none orphaned"
+  # was true of an empty set and said nothing about the system.
+
+  test "process_health is unknown, not healthy, when no recorded agent process is visible from here" do
+    session_with_agent_process(pid: 4242)
+
+    health = with_no_local_claude_processes { @service.process_health }
+
+    assert_equal 1, health[:recorded_count]
+    assert_equal 0, health[:tracked_count]
+    refute health[:observable]
+    refute health[:status].healthy?, "'No orphaned processes' is a claim, and nothing here looked"
+    assert health[:status].unknown?
+    assert_includes health[:status].message, "1 session(s) have a recorded agent process"
+  end
+
+  test "process_health is healthy when there is genuinely nothing to observe" do
+    health = @service.process_health
+
+    assert_equal 0, health[:recorded_count]
+    assert health[:observable], "no session claims an agent process, so 'none orphaned' is a true statement"
+    assert health[:status].healthy?
+  end
+
+  test "process_health is observable again once a spawn is tracked in this process" do
+    session_with_agent_process(pid: 4242)
+    @mock_process_manager.spawn_with_tracking([ "claude", "--test" ], correlation_id: "test-123")
+
+    health = with_no_local_claude_processes { @service.process_health }
+
+    assert health[:observable], "a tracked spawn is evidence this process can see agent processes"
+    assert health[:status].healthy?
+  end
+
+  test "process_health still reports orphans ahead of unobservability" do
+    session_with_agent_process(pid: 4242)
+    @service.stub(:find_active_claude_processes, [ { pid: 999, command: "claude", running: true } ]) do
+      health = @service.process_health
+
+      assert_equal 1, health[:orphaned_count]
+      assert health[:status].warning?
+    end
+  end
+
+  test "a session with no recorded agent process does not make the report unobservable" do
+    Session.create!(prompt: "Test", agent_runtime: "claude_code", status: :running,
+                    git_root: "https://github.com/test/repo.git", branch: "main",
+                    execution_provider: "local_filesystem")
+
+    health = with_no_local_claude_processes { @service.process_health }
+
+    assert_equal 0, health[:recorded_count]
+    assert health[:status].healthy?
+  end
+
+  # `process_pid` is a single metadata slot that is never cleared at turn end, so
+  # every parked session still names a process that exited hours ago. Counting those
+  # would hold the report at `unknown` for ever on an instance with no agent process
+  # on it — a permanent caveat reads as noise and gets ignored exactly like the false
+  # `healthy` it replaced.
+  test "a parked session's stale pid is not counted as a recorded agent process" do
+    session_with_agent_process(pid: 4242).update!(status: :waiting)
+
+    health = with_no_local_claude_processes { @service.process_health }
+
+    assert_equal 0, health[:recorded_count]
+    assert health[:status].healthy?
+  end
+
+  # `AgentProcessLiveness.classify` answers `:none` when no identity was recorded at
+  # all, which is as unobservable as `:unknown` — reading it as evidence that this
+  # process looked and found nothing restores the false green.
+  test "a recorded pid with no identity is not evidence that anything was observed" do
+    session = Session.create!(prompt: "Test", agent_runtime: "claude_code", status: :running,
+                              git_root: "https://github.com/test/repo.git", branch: "main",
+                              execution_provider: "local_filesystem")
+    session.update!(metadata: session.metadata.merge("process_pid" => 4242))
+
+    health = with_no_local_claude_processes { @service.process_health }
+
+    assert_equal 1, health[:recorded_count]
+    refute health[:observable], "an unrecorded identity is 'cannot tell', not an answer"
+    assert health[:status].unknown?
+  end
+
+  test "overall_status names an unevaluated check instead of claiming all systems operational" do
+    session_with_agent_process(pid: 4242)
+
+    report = with_no_local_claude_processes { @service.full_health_report }
+
+    assert report[:overall_status].healthy?, "'cannot tell' is not a fault and must not page anyone"
+    refute_equal "All systems operational", report[:overall_status].message
+    assert_includes report[:overall_status].message, "1 could not be evaluated"
+  end
+
+  # The container these tests run in has live `claude` processes of its own, which
+  # the `pgrep` scan finds — and finding one IS evidence that this process can see
+  # agent processes, so it flips `observable` true and hides the production shape.
+  # Pinning the scan to empty is what makes these cases about the recorded side.
+  def with_no_local_claude_processes(&block)
+    @service.stub(:find_active_claude_processes, [], &block)
+  end
+
+  # A session that has recorded an agent process, in the shape
+  # `Session#record_agent_process!` writes: a pid plus the identity that makes the
+  # pid meaningful somewhere. The identity here names another boot, so
+  # AgentProcessLiveness classifies it `:unknown` — which is exactly what a pid
+  # spawned in the worker container looks like from web.
+  def session_with_agent_process(pid:, boot_id: SecureRandom.uuid)
+    session = Session.create!(
+      prompt: "Agent session",
+      agent_runtime: "claude_code",
+      status: :running,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem"
+    )
+    session.update!(metadata: session.metadata.merge(
+      "process_pid" => pid,
+      AgentProcessLiveness::IDENTITY_KEY => {
+        "pid" => pid,
+        "boot_id" => boot_id,
+        "pid_namespace" => "pid:[4026531999]",
+        "started_at_ticks" => "12345"
+      }
+    ))
+    session
+  end
+
   # === Session Health Tests ===
 
   test "session_health returns correct structure" do
@@ -563,6 +700,213 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert status.critical?
     assert_includes status.message, "200 jobs ready"
     assert_includes status.message, "30m"
+  end
+
+  # === Nothing is executing ===
+  #
+  # The branch that does not read a backlog. On 2026-08-13 the Tadasant production
+  # deployment executed nothing for ten hours — zero triggers fired, zero polls ran,
+  # zero sessions started — and this report said `healthy`, then eventually
+  # `warning: queue backlog elevated`, because every gate it had was sized against a
+  # pile that takes hours to grow (zimmer#428). "Nothing has finished anywhere" was
+  # true from the first minutes.
+  #
+  # Every case here is written against the SAME shape the outage had, so the
+  # conjuncts that keep this from firing on a healthy instance are each pinned by a
+  # case that differs in exactly one of them.
+
+  # A job that ran and finished `ago` ago. `finished_at` takes the row out of every
+  # pending population, so this is evidence of throughput and nothing else.
+  def complete_good_jobs(count, ago:, queue: "default")
+    finished = ago.ago
+    insert_good_jobs(count) do
+      { queue_name: queue, created_at: finished - 1.second, updated_at: finished,
+        scheduled_at: finished - 1.second, performed_at: finished - 1.second, finished_at: finished }
+    end
+  end
+
+  test "a fast lane that has picked nothing up, with nothing finishing anywhere, is critical" do
+    register_workers(1)
+    complete_good_jobs(500, ago: 3.hours)
+    enqueue_ready_jobs(4, waiting_for: 20.minutes, queue: "pollers")
+
+    status = @service.system_health[:status]
+
+    assert status.critical?, "no job has finished in three hours while a millisecond lane sat for twenty minutes"
+    assert_equal HealthMonitorService::EXECUTION_STALL_CODE, status.code
+    assert_includes status.message, "Nothing is executing"
+    assert_includes status.message, "pollers"
+    assert_includes status.message, "3h"
+  end
+
+  test "the outage is critical far below any backlog threshold" do
+    register_workers(1)
+    complete_good_jobs(500, ago: 45.minutes)
+    enqueue_ready_jobs(3, waiting_for: 11.minutes, queue: "default")
+
+    stats = @service.system_health[:queue_stats]
+    status = @service.system_health[:status]
+
+    assert_operator stats[:ready_count], :<, HealthMonitorService::QUEUE_DEPTH_WARNING_THRESHOLD,
+      "three ready jobs is not even a warning-level backlog"
+    assert status.critical?, "the signal is the silence, not the depth"
+  end
+
+  # GoodJob runs cron IN the worker, so a worker container that dies stops enqueuing
+  # too. A healthy instance clears its queue in milliseconds, so `ready_count` at the
+  # moment of death is routinely zero and then stays zero for ever — and a gate that
+  # waits for a backlog waits for one that will never arrive.
+  test "a dead worker fleet is critical even with an empty queue" do
+    complete_good_jobs(500, ago: 3.hours)
+
+    status = @service.system_health[:status]
+
+    assert status.critical?, "no heartbeat and nothing finished for three hours is an outage, backlog or not"
+    assert_equal HealthMonitorService::EXECUTION_STALL_CODE, status.code
+    assert_includes status.message, "no worker is reporting a heartbeat"
+  end
+
+  test "a worker that is still finishing work is not stalled, however old a lane's head is" do
+    register_workers(1)
+    complete_good_jobs(5, ago: 30.seconds)
+    enqueue_ready_jobs(3, waiting_for: 90.minutes, queue: "default")
+
+    status = @service.system_health[:status]
+
+    refute status.critical?
+    refute_equal HealthMonitorService::EXECUTION_STALL_CODE, status.code
+  end
+
+  test "ready work that has only just arrived is not a stall" do
+    register_workers(1)
+    complete_good_jobs(5, ago: 40.minutes)
+    enqueue_ready_jobs(3, waiting_for: 20.seconds, queue: "default")
+
+    status = @service.system_health[:status]
+
+    refute status.critical?,
+      "a worker mid-restart has ready work and no completions for a moment; that is a deploy, not an outage"
+  end
+
+  # QUEUE_LANE_CRITICAL_THRESHOLDS records that a ready AgentSessionJob waiting hours
+  # is admission control working as designed. `oldest_ready_age_seconds` is the
+  # maximum across every lane, so reading the age off it would make this conjunct
+  # permanently true on any instance with a standing `agents` queue — and the gate
+  # would collapse to "nothing finished in ten minutes", which an eleven-minute
+  # migration satisfies with nothing wrong.
+  test "a standing agents queue does not make an eleven-minute deploy read as an outage" do
+    register_workers(1)
+    complete_good_jobs(500, ago: 11.minutes)
+    enqueue_lane("agents", 4, head_waiting_for: 3.hours)
+
+    stats = @service.system_health[:queue_stats]
+    status = @service.system_health[:status]
+
+    assert_operator stats[:oldest_ready_age_seconds], :>, HealthMonitorService::EXECUTION_STALL_CRITICAL_AGE,
+      "the global head age is over the window, which is exactly the trap"
+    refute status.critical?, "an agents lane waiting hours is admission control, not a lane that stopped"
+  end
+
+  test "an idle instance with a live worker and nothing waiting is healthy" do
+    register_workers(1)
+    complete_good_jobs(5, ago: 6.hours)
+
+    status = @service.system_health[:status]
+
+    assert status.healthy?, "silence with an empty queue and a live worker is an idle instance"
+  end
+
+  test "a deployment that has never finished a job has no baseline to have stopped from" do
+    enqueue_ready_jobs(3, waiting_for: 45.minutes, queue: "default")
+
+    status = @service.system_health[:status]
+
+    refute status.critical?,
+      "'has never processed anything' is a fresh database, not a worker that stopped"
+    assert_nil @service.system_health[:queue_stats][:seconds_since_last_finished]
+  end
+
+  test "a stall confined to deliberately paused lanes is a warning, naming them" do
+    register_workers(1)
+    complete_good_jobs(5, ago: 40.minutes)
+    enqueue_ready_jobs(3, waiting_for: 20.minutes, queue: "pollers")
+
+    QueueRecoveryMode.stubs(:paused_queues).returns([ "pollers", "triggers" ])
+    status = @service.system_health[:status]
+
+    refute status.critical?, "an operator who halted the queues must not be paged for the silence they asked for"
+    assert status.warning?
+    assert_includes status.message, "Nothing is executing"
+    assert_includes status.message, "pollers, triggers"
+  end
+
+  # `paused_queues` reads GoodJob's own pause rows, which include a lane an operator
+  # paused by hand and forgot, or one `exit!` failed to lift. Treating "anything is
+  # paused" as an explanation lets one stray row disarm the page for an outage on a
+  # lane nobody paused — permanently, since SystemHealthMonitorJob deletes its streak
+  # key on every non-critical tick.
+  test "a stray paused lane does not explain a stall somewhere else" do
+    register_workers(1)
+    complete_good_jobs(5, ago: 40.minutes)
+    enqueue_ready_jobs(3, waiting_for: 20.minutes, queue: "default")
+
+    QueueRecoveryMode.stubs(:paused_queues).returns([ "inference" ])
+    status = @service.system_health[:status]
+
+    assert status.critical?, "the `default` lane is stalled and nobody paused it"
+    assert_equal HealthMonitorService::EXECUTION_STALL_CODE, status.code
+  end
+
+  test "the stall is reported ahead of a backlog deep enough to be critical on its own" do
+    register_workers(1)
+    complete_good_jobs(500, ago: 2.hours)
+    enqueue_ready_jobs(200, waiting_for: 30.minutes, queue: "default")
+
+    status = @service.system_health[:status]
+
+    assert status.critical?
+    assert_equal HealthMonitorService::EXECUTION_STALL_CODE, status.code,
+      "'nothing is executing' is a stronger and more actionable statement than 'the queue is deep'"
+  end
+
+  # `wedged_lane` says a lane's pool is held by work that is not returning. That is a
+  # statement about one lane; "nothing has finished anywhere" is a statement about the
+  # whole worker, and it is the one a responder needs first.
+  test "the stall is reported ahead of a wedged lane" do
+    complete_good_jobs(500, ago: 2.hours)
+    wedge_inference_lane
+    # A fast lane sitting still too: the wedge is on `inference`, and what makes this
+    # the whole worker rather than that one lane is `default` picking nothing up
+    # either.
+    enqueue_ready_jobs(2, waiting_for: 20.minutes, queue: "default")
+
+    status = @service.system_health[:status]
+
+    assert status.critical?
+    assert_equal HealthMonitorService::EXECUTION_STALL_CODE, status.code
+  end
+
+  # And the mirror: a wedged lane on a worker that is otherwise turning work over is
+  # still reported as a wedge, not swallowed by the broader branch.
+  test "a wedged lane on a working fleet is still reported as a wedge" do
+    complete_good_jobs(5, ago: 30.seconds)
+    wedge_inference_lane
+
+    status = @service.system_health[:status]
+
+    assert status.critical?
+    assert status.code.to_s.start_with?(HealthMonitorService::WEDGED_LANE_CODE_PREFIX)
+  end
+
+  test "queue_statistics reports when anything last finished, not just an hourly rate" do
+    complete_good_jobs(1, ago: 90.minutes)
+    complete_good_jobs(1, ago: 25.minutes)
+
+    stats = @service.system_health[:queue_stats]
+
+    assert_in_delta 25.minutes.to_i, stats[:seconds_since_last_finished], 5
+    assert_equal 1, stats[:processing_rate_per_hour],
+      "an hourly rate cannot say WHEN inside the hour, which is why the instant is reported too"
   end
 
   # === Lane-aware critical gate ===
@@ -1308,6 +1652,49 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
 
     assert_equal 1, health[:recent_errors].size
     assert_includes health[:recent_errors].first[:content], "Test error message"
+    assert_equal "session_log", health[:recent_errors].first[:source]
+  end
+
+  # `Log belongs_to :session`, so the `logs` table can only hold errors that
+  # happened inside an agent session. That is why `recent_errors` stayed `[]`
+  # through the ten hours of 2026-08-13 while the application log emitted a
+  # database-connection error about 36 times a minute (zimmer#428) — an empty array
+  # reads as "no errors", and it was reporting the coverage of one table.
+
+  test "recent_errors includes background job failures, which no session log can hold" do
+    insert_good_jobs(1) do
+      { job_class: "AgentSessionJob", queue_name: "agents", updated_at: 2.minutes.ago,
+        error: "ActiveRecord::ConnectionNotEstablished: could not connect to server" }
+    end
+
+    errors = @service.system_health[:recent_errors]
+
+    assert_equal 1, errors.size
+    assert_equal "job", errors.first[:source]
+    assert_includes errors.first[:content], "ActiveRecord::ConnectionNotEstablished"
+    assert_includes errors.first[:content], "AgentSessionJob"
+  end
+
+  test "recent_errors merges both streams newest first" do
+    session = Session.create!(prompt: "Test", agent_runtime: "claude_code", status: :running,
+                              git_root: "https://github.com/test/repo.git", branch: "main",
+                              execution_provider: "local_filesystem")
+    session.logs.create!(content: "session error", level: "error")
+    insert_good_jobs(1) do
+      { job_class: "SessionTitleJob", queue_name: "inference", updated_at: 30.minutes.ago, error: "boom" }
+    end
+
+    errors = @service.system_health[:recent_errors]
+
+    assert_equal %w[session_log job], errors.map { |e| e[:source] }
+  end
+
+  test "recent_errors ignores job failures older than the window" do
+    insert_good_jobs(1) do
+      { job_class: "SessionTitleJob", updated_at: 3.hours.ago, error: "ancient" }
+    end
+
+    assert_empty @service.system_health[:recent_errors]
   end
 
   # === Cleanup Operations Tests ===
@@ -1512,6 +1899,15 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_not healthy.critical?
     assert_not warning.critical?
     assert critical.critical?
+  end
+
+  test "HealthStatus unknown? is none of the other three" do
+    unknown = HealthMonitorService::HealthStatus.new(status: :unknown, message: "Could not evaluate")
+
+    assert unknown.unknown?
+    assert_not unknown.healthy?, "an unevaluated check must not colour the report green"
+    assert_not unknown.warning?
+    assert_not unknown.critical?, "nor may it page anyone"
   end
 
   # === Error Categorization Tests ===

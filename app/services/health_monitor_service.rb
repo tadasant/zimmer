@@ -46,6 +46,33 @@ class HealthMonitorService
   # noise this threshold exists to remove. Depth is what makes a stall an incident.
   QUEUE_STALL_CRITICAL_AGE = 10.minutes
 
+  # How long the WHOLE worker fleet may finish nothing at all, with work sitting
+  # ready, before that is an incident rather than a quiet patch.
+  #
+  # Every branch below this one reads a backlog, and a backlog is a lagging
+  # indicator of a worker that has stopped: it has to grow past a depth sized in
+  # the hundreds before any of them fires. On 2026-08-13 the Tadasant production
+  # deployment executed nothing for ten hours — zero triggers, zero polls, zero
+  # sessions — and this report said `healthy` for most of that window, escalating
+  # only to `warning` ("queue backlog elevated") once the pile got big enough to
+  # notice. The condition that was true from minute one is the one measured here:
+  # nothing has FINISHED, anywhere, while work was waiting to be picked up.
+  #
+  # Ten minutes, for the same reason QUEUE_STALL_CRITICAL_AGE is ten minutes: it
+  # is the point at which "not moving" stops being a plausible description of a
+  # healthy instance. Zimmer's own cron schedule enqueues into the fast lanes
+  # every 30 seconds and every minute, so a live worker finishes something several
+  # times a minute; ten minutes is more than an order of magnitude of headroom
+  # over that, and comfortably longer than a Kamal deploy's worker cutover. It is
+  # deliberately not one or two minutes: this is a `critical`, and a signal people
+  # are meant to trust cannot fire on a slow deploy.
+  EXECUTION_STALL_CRITICAL_AGE = 10.minutes
+
+  # `HealthStatus#code` for the branch above, so SystemHealthMonitorJob can title
+  # and throttle it apart from the backlog shapes — it is a different incident with
+  # a different response.
+  EXECUTION_STALL_CODE = "execution_stalled"
+
   # Per-lane overrides for the `critical` gate, for the lanes whose designed
   # head-of-line residency is nothing like `default`'s.
   #
@@ -157,6 +184,14 @@ class HealthMonitorService
 
   # What a row with no `job_class` (or no `queue_name`) is called in a breakdown.
   UNKNOWN_LABEL = "(unknown)"
+
+  # How many recent errors `recent_error_logs` returns, across all of its sources.
+  RECENT_ERROR_LIMIT = 20
+
+  # The AgentProcessLiveness classifications that mean "this process was able to ask
+  # about that pid" — same kernel, same PID namespace, identity resolved. The two it
+  # omits, `:unknown` and `:none`, are both "cannot tell" rather than an answer.
+  PROBEABLE_LIVENESS = %i[alive dead recycled].freeze
   FAILURE_RATE_WARNING_THRESHOLD = 0.1
   FAILURE_RATE_CRITICAL_THRESHOLD = 0.25
 
@@ -251,6 +286,14 @@ class HealthMonitorService
     def critical?
       status == :critical
     end
+
+    # A check that could not be evaluated from here — not a claim that the thing
+    # it watches is fine. It is deliberately none of the three above: an
+    # unevaluated check must not colour the overall status green, and it must not
+    # page anyone either. `calculate_overall_status` names it instead.
+    def unknown?
+      status == :unknown
+    end
   end
 
   def initialize(process_manager: nil)
@@ -259,29 +302,74 @@ class HealthMonitorService
   end
 
   # Generate a complete health report
+  #
+  # The six sections `overall_status` summarizes are computed ONCE and handed to it,
+  # rather than recomputed inside it. Two reasons, and the second is the one that
+  # matters. Cost: each is several queries against `sessions` and `good_jobs`, and
+  # /health auto-refreshes every thirty seconds. Consistency: recomputing means the
+  # summary is taken over a second, later reading of a moving system, so a report
+  # could carry a `critical` section under an `All systems operational` headline —
+  # a health surface disagreeing with itself is the class of defect this whole file
+  # is being corrected for.
+  #
   # @return [Hash] Full health report with all sections
   def full_health_report
+    process = process_health
+    session = session_health
+    system = system_health
+    egress = egress_health
+    auth = auth_health
+    post_deploy = post_deploy_task_health
+
     {
-      process_health: process_health,
-      session_health: session_health,
-      system_health: system_health,
-      egress_health: egress_health,
-      auth_health: auth_health,
+      process_health: process,
+      session_health: session,
+      system_health: system,
+      egress_health: egress,
+      auth_health: auth,
       retry_budget_health: retry_budget_health,
       sigterm_retry_health: sigterm_retry_health,
       api_error_retry_health: api_error_retry_health,
-      post_deploy_task_health: post_deploy_task_health,
-      overall_status: calculate_overall_status,
+      post_deploy_task_health: post_deploy,
+      overall_status: calculate_overall_status(
+        [ process, session, system, egress, auth, post_deploy ].map { |section| section[:status] }
+      ),
       generated_at: Time.current
     }
   end
 
   # Get process health information
+  #
+  # Every count here is taken from THIS operating-system process, and two of them
+  # structurally cannot see an agent process in production:
+  #
+  #   `tracked_count` reads `@process_manager.tracked_processes`, and a
+  #   SystemProcessManager's ProcessRegistry is a plain in-memory Hash owned by the
+  #   manager instance. `#initialize` builds a fresh one for every health report, so
+  #   it holds the processes THIS report spawned — which is none, always.
+  #
+  #   `active_count` is a `pgrep` of the current user's processes, which sees only
+  #   the current container. ConnectionBudget puts GoodJob in `:external` mode in
+  #   production, so agent CLIs are children of the *worker* container while this
+  #   report is served from *web*.
+  #
+  # `orphaned_count` is derived from `active_count`, so it inherits both. That is
+  # how this section reported `0/0/0` and "No orphaned processes" beside five live
+  # sessions on 2026-08-13 (zimmer#428): a counter that cannot observe the
+  # processes it counts can never report one, and its zero is "not knowable from
+  # here", not "none exist". Only the second of those justifies `healthy`.
+  #
+  # `recorded_count` is the fact that IS durable and cross-container — sessions
+  # carrying an agent process in their metadata, written by whoever spawned it —
+  # and it is what tells the two zeros apart.
+  #
   # @return [Hash] Process health data
   def process_health
     active_processes = find_active_claude_processes
     orphaned_processes = find_orphaned_processes(active_processes)
     tracked_processes = @process_manager.tracked_processes
+    recorded_processes = recorded_agent_processes
+    observable = orphan_detection_observable?(active_processes, tracked_processes, recorded_processes)
 
     {
       active_count: active_processes.size,
@@ -290,7 +378,16 @@ class HealthMonitorService
       orphaned_processes: orphaned_processes,
       tracked_count: tracked_processes.size,
       tracked_processes: tracked_processes.values,
-      status: process_health_status(orphaned_processes.size)
+      # Sessions the database says have a live agent process, whoever spawned it.
+      recorded_count: recorded_processes.size,
+      recorded_processes: recorded_processes,
+      # Whether the three counts above are evidence about anything.
+      observable: observable,
+      status: process_health_status(
+        orphaned_processes.size,
+        observable: observable,
+        recorded_count: recorded_processes.size
+      )
     }
   end
 
@@ -801,6 +898,71 @@ class HealthMonitorService
     end
   end
 
+  # The agent processes the DATABASE knows about — the one record of them that
+  # outlives the container that spawned them, and the only one a report served from
+  # `web` can read at all.
+  #
+  # `Session#record_agent_process!` writes `process_pid` and `process_identity` in
+  # one statement, so a session with a pid always carries the boot id, PID namespace
+  # and start time that make that pid meaningful somewhere. AgentProcessLiveness
+  # classifies it: `:alive` / `:dead` / `:recycled` mean this process is in the same
+  # kernel and namespace and can therefore answer, `:unknown` means it is not and
+  # cannot.
+  #
+  # Scoped to `running` alone, and that is narrower than it looks. `process_pid` is
+  # a single metadata slot that is not cleared when a turn ends, so every parked
+  # `waiting` session still names the pid of a process that exited hours ago.
+  # Counting those would hold this report at `unknown` for ever on an instance with
+  # no agent process anywhere on it — a permanent caveat, which reads as noise and
+  # gets ignored exactly like the false `healthy` it replaced. A session in
+  # `running` is mid-turn by definition, so its recorded pid should name something
+  # alive.
+  #
+  # Classified from the metadata already loaded rather than through
+  # `AgentProcessLiveness.status`, which re-reads each session's metadata to see a
+  # write made by another process. That freshness matters on the spawn path it was
+  # written for; here it would be one extra SELECT per running session on every
+  # /health render, to sharpen a number nobody acts on.
+  def recorded_agent_processes
+    Session.where(status: :running)
+           .where("metadata->>'process_pid' IS NOT NULL")
+           .pluck(:id, :metadata)
+           .filter_map do |id, metadata|
+      pid = metadata&.dig("process_pid")
+      next if pid.blank?
+
+      {
+        session_id: id,
+        pid: pid.to_i,
+        liveness: AgentProcessLiveness.classify(metadata[AgentProcessLiveness::IDENTITY_KEY])
+      }
+    end
+  rescue StandardError => e
+    @logger.error("Failed to read recorded agent processes", error: e.message)
+    []
+  end
+
+  # Whether the orphan counts above are evidence about anything.
+  #
+  # True when there is nothing to see (no session claims an agent process, so "none
+  # orphaned" is a true statement about an empty world), or when something WAS seen
+  # — a live claude process in this container, a tracked spawn, or a recorded
+  # process whose identity resolves in this kernel and namespace and can therefore
+  # be probed. False is the production case this exists to name: sessions hold
+  # recorded processes, and every one of them was spawned somewhere this report
+  # cannot look.
+  #
+  # PROBEABLE_LIVENESS is a whitelist rather than "anything but `:unknown`", because
+  # `AgentProcessLiveness.classify` also answers `:none` — no identity was recorded
+  # at all — which is exactly as unobservable as `:unknown` and must not be read as
+  # evidence that this process looked and found nothing.
+  def orphan_detection_observable?(active_processes, tracked_processes, recorded_processes)
+    return true if recorded_processes.empty?
+    return true if active_processes.any? || tracked_processes.any?
+
+    recorded_processes.any? { |process| PROBEABLE_LIVENESS.include?(process[:liveness]) }
+  end
+
   # Calculate queue statistics using GoodJob
   #
   # `pending_count` is every unfinished row and is reported for continuity, but it is
@@ -820,6 +982,19 @@ class HealthMonitorService
 
     # Calculate processing rate (jobs completed in last hour)
     completed_last_hour = GoodJob::Job.where("finished_at > ?", 1.hour.ago).count
+
+    # When anything last finished, anywhere. A rate is an average over a window and
+    # says nothing about *when* inside it: six jobs an hour reads the same whether
+    # they were spread evenly or all six landed in the first minute and nothing has
+    # run since. This is the instant, and it is what `execution_stall` reads.
+    #
+    # Both conditions of the partial index `index_good_jobs_jobs_on_finished_at`
+    # are spelled out so Postgres can serve this from a backward index scan rather
+    # than aggregating the whole retained history on every /health render.
+    # Excluding superseded retry rows can only move the answer backwards in time by
+    # the rare case where the newest finish was one of them, which is the direction
+    # that reports a stall we are not in rather than hiding one we are.
+    last_finished_at = GoodJob::Job.finished.where(retried_good_job_id: nil).maximum(:finished_at)
 
     # One read, two answers. `system_health_status` needs each lane's depth AND each
     # lane's head-of-line age to evaluate its conjunction within a lane, and taking
@@ -899,7 +1074,13 @@ class HealthMonitorService
       # the same reason the ready-side global is: one read, so the two can never
       # disagree about a job that finished between them.
       oldest_claimed_age_seconds: in_flight.first&.fetch(:age_seconds),
-      processing_rate_per_hour: completed_last_hour
+      processing_rate_per_hour: completed_last_hour,
+      # `nil` means no job has EVER finished on this deployment — a fresh database,
+      # not a stalled one. `execution_stall` reads it as "no baseline" and stands
+      # down, because "has never processed anything" and "has stopped processing"
+      # are different facts and only the second one is an incident.
+      last_finished_at: last_finished_at,
+      seconds_since_last_finished: last_finished_at ? [ (Time.current - last_finished_at).round, 0 ].max : nil
     }
   end
 
@@ -1085,20 +1266,75 @@ class HealthMonitorService
     }
   end
 
-  # Get recent error logs
+  # Recent errors from every error stream Zimmer durably records, newest first.
+  #
+  # `Log belongs_to :session`, so the `logs` table can only ever hold errors that
+  # happened INSIDE an agent session. Reading it alone is why this field stayed `[]`
+  # through the ten hours of 2026-08-13 while the application log emitted a
+  # database-connection error about 36 times a minute (zimmer#428): an empty array
+  # reads as "no errors", and it was reporting the coverage of one table.
+  #
+  # The other stream Zimmer keeps is the job layer: `good_jobs` carries the error
+  # of every job that raised, retried or was discarded, and a fault in a background
+  # job is an application fault whether or not a session was attached to it. Both
+  # are folded together here, each entry naming its `source`.
+  #
+  # KNOWN BLIND SPOT, and it is why no health STATUS is derived from this field: an
+  # error that only ever reaches stdout — a connection failure inside GoodJob's own
+  # poller, anything raised before a job row could be written — is recorded by
+  # neither table. Zimmer has no queryable store of the Rails log; that is what the
+  # observability stack is for. So `[]` here means "no error was RECORDED", never
+  # "nothing is wrong", and `execution_stall` is the signal that catches the outage
+  # this field cannot see.
   def recent_error_logs
+    since = 1.hour.ago
+
+    (session_error_logs(since) + job_error_records(since))
+      .sort_by { |entry| entry[:created_at] }
+      .reverse
+      .first(RECENT_ERROR_LIMIT)
+  end
+
+  # Errors logged inside an agent session.
+  def session_error_logs(since)
     Log.where(level: "error")
-       .where("created_at > ?", 1.hour.ago)
+       .where("created_at > ?", since)
        .order(created_at: :desc)
-       .limit(20)
+       .limit(RECENT_ERROR_LIMIT)
        .map do |log|
       {
         id: log.id,
+        source: "session_log",
         session_id: log.session_id,
         content: log.content.truncate(200),
         created_at: log.created_at
       }
     end
+  end
+
+  # Errors raised by background jobs, whether the job then retried or was discarded.
+  #
+  # Dated by `updated_at` rather than `created_at`: a job that sat in the queue for
+  # an hour and failed a second ago is a fresh error, and `created_at` would file it
+  # under when it was enqueued — or out of the window entirely.
+  def job_error_records(since)
+    GoodJob::Job.where.not(error: nil)
+                .where("updated_at > ?", since)
+                .order(updated_at: :desc)
+                .limit(RECENT_ERROR_LIMIT)
+                .map do |job|
+      {
+        id: job.id,
+        source: "job",
+        session_id: nil,
+        content: "#{job.job_class.presence || UNKNOWN_LABEL} (#{job.queue_name.presence || UNKNOWN_LABEL}): " \
+                 "#{job.error}".truncate(200),
+        created_at: job.updated_at
+      }
+    end
+  rescue StandardError => e
+    @logger.error("Failed to read recent job errors", error: e.message)
+    []
   end
 
   # Check database health
@@ -1333,11 +1569,26 @@ class HealthMonitorService
   end
 
   # Determine process health status based on orphaned count
-  def process_health_status(orphaned_count)
+  #
+  # "No orphaned processes" is a positive claim, and it is only true when something
+  # was actually looked at. When nothing here can see the agent processes the
+  # database says exist, the answer is `:unknown` — a status that is neither
+  # healthy nor a page, because "I cannot tell" is not evidence of a fault and must
+  # not be reported as the absence of one either.
+  def process_health_status(orphaned_count, observable:, recorded_count:)
     if orphaned_count >= ORPHANED_PROCESS_CRITICAL_THRESHOLD
       HealthStatus.new(status: :critical, message: "#{orphaned_count} orphaned processes detected")
     elsif orphaned_count >= ORPHANED_PROCESS_WARNING_THRESHOLD
       HealthStatus.new(status: :warning, message: "#{orphaned_count} orphaned processes detected")
+    elsif !observable
+      HealthStatus.new(
+        status: :unknown,
+        code: "process_tracking_unobservable",
+        message: "Orphan detection unavailable: #{recorded_count} session(s) have a recorded agent " \
+                 "process and none of them is visible from this process. Agent processes belong to " \
+                 "the container that spawned them, so a report served from another one counts zero " \
+                 "of them — that is not the same as there being none."
+      )
     else
       HealthStatus.new(status: :healthy, message: "No orphaned processes")
     end
@@ -1381,18 +1632,28 @@ class HealthMonitorService
   #               bar. That is the SlackTriggerPollerJob thread-starvation shape: work
   #               piling up across lanes rather than in one.
   #
-  # Ahead of both sits a third branch that reads the CLAIMED side instead, and
-  # answers the question the ready side is structurally unable to: `wedged_lane`,
+  # Ahead of all of them sits `execution_stall`, which reads neither side of the
+  # queue but the clock on the last COMPLETION. Every branch below it needs a
+  # backlog to have grown before it can speak, and a worker that has simply
+  # stopped takes hours to grow one — which is how a ten-hour total outage was
+  # reported as `healthy`, and then as "queue backlog elevated". "Nothing has
+  # finished anywhere, and work has been waiting" is true from the first minutes
+  # and is not a statement about depth at all. See its own comment.
+  #
+  # Ahead of the two backlog branches sits a third that reads the CLAIMED side
+  # instead, and answers the question the ready side is structurally unable to: `wedged_lane`,
   # a lane whose whole thread pool is held by executions past what its own jobs can
   # explain. Both branches above can only observe that ready work is not moving;
   # this one names why, and does it before the ready side has piled up enough depth
   # to trip either threshold. See its own comment for the four conjuncts.
   #
-  # Both branches are strict narrowings of the queue-blind rule — every per-lane depth
-  # threshold is at least QUEUE_DEPTH_CRITICAL_THRESHOLD and every per-lane stall age
-  # at least QUEUE_STALL_CRITICAL_AGE, and the cross-lane branch sums a SUBSET of the
-  # ready count — so nothing pages that did not page before. This only removes
-  # firings, which is the whole point; it cannot add one.
+  # Both BACKLOG branches are strict narrowings of the queue-blind rule — every
+  # per-lane depth threshold is at least QUEUE_DEPTH_CRITICAL_THRESHOLD and every
+  # per-lane stall age at least QUEUE_STALL_CRITICAL_AGE, and the cross-lane branch
+  # sums a SUBSET of the ready count — so between them nothing pages that did not
+  # page before. (`wedged_lane` and `execution_stall` are each deliberately not
+  # narrowings: they exist to fire on shapes the depth thresholds call healthy.
+  # Their own comments carry the conjuncts that keep that from being noise.)
   #
   # `oldest_ready_age_seconds_by_queue` holds each lane's OLDEST ready row, and a
   # head only advances when a worker takes the job — so a lane whose head is older
@@ -1414,6 +1675,11 @@ class HealthMonitorService
   #   against, and the wrong answer would look like a working one.
   def system_health_status(queue_stats, active_workers:)
     depth = queue_stats[:ready_count].to_i
+
+    stall = execution_stall(queue_stats, active_workers: active_workers)
+    if stall
+      return execution_stall_status(stall, depth: depth, active_workers: active_workers)
+    end
 
     wedged = wedged_lane(queue_stats, active_workers)
     if wedged
@@ -1457,6 +1723,136 @@ class HealthMonitorService
     else
       HealthStatus.new(status: :healthy, message: "Queue processing normally")
     end
+  end
+
+  # Nothing at all is executing: no job has finished anywhere in
+  # EXECUTION_STALL_CRITICAL_AGE, and something that should have moved has not.
+  #
+  # This is the one branch here that does not read a backlog. Every other one asks
+  # how much work has piled up and how old the pile is, which is a lagging view of
+  # a worker that has stopped — a total outage has to run for hours before any
+  # per-lane depth threshold, sized in the hundreds, is crossed. That is exactly
+  # what happened on 2026-08-13 (zimmer#428): ten hours with zero jobs executed,
+  # and this report saying `healthy` for most of it and `warning — queue backlog
+  # elevated` for the rest.
+  #
+  # Two conjuncts, and the second is a disjunction because a stopped worker has two
+  # shapes that no single queue reading covers:
+  #
+  #   Nothing finished       Global, not per lane, and the first thing checked. A
+  #                          lane whose pool is full of long work legitimately
+  #                          finishes nothing for a while, and `wedged_lane` judges
+  #                          that; the claim here is far stronger — every lane,
+  #                          including the ones that turn jobs over in
+  #                          milliseconds, has completed nothing.
+  #   ...and either a fast   `stalled_fast_lanes` is the ordinary shape: work a
+  #   lane has picked        worker should have taken in milliseconds has sat for
+  #   nothing up             ten minutes. The age requirement is what keeps a
+  #                          worker mid-restart during a deploy, or an instance
+  #                          handed its first job of the hour, from reading as an
+  #                          outage.
+  #   ...or no worker is     The shape the queue cannot express. GoodJob runs cron
+  #   alive at all           IN the worker, so when the worker container dies
+  #                          nothing enqueues either: a healthy instance clears its
+  #                          queue in milliseconds, so `ready_count` at the moment
+  #                          of death is routinely zero and then stays zero for
+  #                          ever. Waiting for a backlog that will never arrive is
+  #                          how a dead fleet reads as "Queue processing normally".
+  #                          Paired with "nothing finished", a zero heartbeat count
+  #                          cannot be a deploy cutover — that does not stop
+  #                          completions for ten minutes.
+  #
+  # `last_finished_at` being nil is "no job has ever finished here", which is a
+  # fresh database rather than a dead worker, and is not this condition. It is also
+  # what keeps a development or test instance, which registers no worker at all,
+  # out of the heartbeat branch.
+  #
+  # @return [Hash, nil] :since_seconds, :stalled_lanes, :fleet_dark, :paused_queues
+  def execution_stall(queue_stats, active_workers:)
+    since = queue_stats[:seconds_since_last_finished]
+    return nil if since.nil? || since < EXECUTION_STALL_CRITICAL_AGE
+
+    stalled = stalled_fast_lanes(queue_stats)
+    fleet_dark = active_workers.to_i.zero?
+    return nil if stalled.empty? && !fleet_dark
+
+    {
+      since_seconds: since,
+      stalled_lanes: stalled,
+      fleet_dark: fleet_dark,
+      paused_queues: paused_queues
+    }
+  end
+
+  # The FAST lanes whose head of line has waited past the window — the ones the
+  # ten-minute number was calibrated for.
+  #
+  # Deliberately not `oldest_ready_age_seconds`, which is the maximum across every
+  # lane. QUEUE_LANE_CRITICAL_THRESHOLDS exists because Zimmer's lanes are sized
+  # apart on purpose, and it records that a ready `AgentSessionJob` waiting HOURS is
+  # admission control working as designed. So on any instance with a standing
+  # `agents` queue the global maximum is over ten minutes continuously, the age
+  # conjunct is satisfied all the time, and this gate collapses to the single
+  # predicate "nothing finished in ten minutes" — which an eleven-minute migration
+  # or a short database failover satisfies with nothing wrong.
+  #
+  # The lanes ABSENT from that table — `default`, `pollers`, `triggers`, and any new
+  # queue nobody has sized — are the ones that turn jobs over in milliseconds, so a
+  # ten-minute-old head on one of them is unambiguous. They are also the lanes
+  # Zimmer's own cron feeds every thirty seconds.
+  #
+  # @return [Hash<String, Integer>] lane => head-of-line age, oldest first
+  def stalled_fast_lanes(queue_stats)
+    ages = queue_stats[:oldest_ready_age_seconds_by_queue] || {}
+
+    ages.reject { |queue, _age| QUEUE_LANE_CRITICAL_THRESHOLDS.key?(queue) }
+        .select { |_queue, age| age.to_i >= EXECUTION_STALL_CRITICAL_AGE }
+        .sort_by { |_queue, age| -age.to_i }
+        .to_h
+  end
+
+  # A stall with a queue deliberately paused underneath it is a `warning`, not a
+  # page: an operator in queue recovery mode has already halted five of the seven
+  # lanes on purpose, and paging them for the silence they just asked for would put
+  # a lock on the escape hatch — the same reasoning that keeps recovery mode out
+  # from behind HealthActionCooldown. The condition is still reported, in the same
+  # words, because "nothing is executing and here is why" is what the operator
+  # opening /health during a recovery actually needs to read.
+  def execution_stall_status(stall, depth:, active_workers:)
+    stalled = stall[:stalled_lanes]
+    waiting = if stalled.any?
+      "#{depth} job(s) are ready and #{stalled.keys.join(", ")} " \
+      "#{stalled.one? ? "has" : "have"} picked nothing up in #{format_wait(stalled.values.first)}"
+    else
+      "no worker is reporting a heartbeat"
+    end
+
+    observation = "Nothing is executing: no job has finished anywhere in " \
+                  "#{format_wait(stall[:since_seconds])}, and #{waiting} " \
+                  "(#{active_workers} worker(s) reporting a heartbeat)"
+
+    unexplained = stalled.keys - stall[:paused_queues]
+    if stalled.any? && unexplained.empty?
+      paused = stall[:paused_queues]
+      HealthStatus.new(
+        status: :warning,
+        code: "#{EXECUTION_STALL_CODE}:paused",
+        message: "#{observation}. Halted on purpose: #{paused.join(", ")} #{paused.one? ? "is" : "are"} paused."
+      )
+    else
+      HealthStatus.new(status: :critical, code: EXECUTION_STALL_CODE, message: "#{observation}.")
+    end
+  end
+
+  # What GoodJob actually has paused, including a lane an operator paused by hand.
+  # Never raises: this is read on the path that reports an outage, and a health
+  # surface that dies because it could not read a settings row is the failure mode
+  # the whole issue is about.
+  def paused_queues
+    QueueRecoveryMode.paused_queues
+  rescue StandardError => e
+    @logger.error("Failed to read paused queues", error: e.message)
+    []
   end
 
   # The lane whose entire thread pool is held by executions that have outlived what
@@ -1656,22 +2052,25 @@ class HealthMonitorService
     self.class.format_wait_range(from_seconds, to_seconds)
   end
 
-  # Calculate overall system status
-  def calculate_overall_status
-    process_status = process_health[:status]
-    session_status = session_health[:status]
-    system_status = system_health[:status]
-    egress_status = egress_health[:status]
-    auth_status = auth_health[:status]
-
-    post_deploy_status = post_deploy_task_health[:status]
-
-    statuses = [ process_status, session_status, system_status, egress_status, auth_status, post_deploy_status ]
-
+  # Calculate overall system status from the section statuses `full_health_report`
+  # already computed.
+  #
+  # @param statuses [Array<HealthStatus>] one per summarized section
+  def calculate_overall_status(statuses)
     if statuses.any?(&:critical?)
       HealthStatus.new(status: :critical, message: "One or more critical issues detected")
     elsif statuses.any?(&:warning?)
       HealthStatus.new(status: :warning, message: "One or more warnings detected")
+    elsif (unevaluated = statuses.count(&:unknown?)).positive?
+      # Still `:healthy` — an unevaluated check is not a fault, and escalating on it
+      # would page for a condition that is permanent by design. But not "all systems
+      # operational" either: that sentence claims a check was made. Naming the count
+      # is the difference between a report that is quiet and one that lies.
+      HealthStatus.new(
+        status: :healthy,
+        message: "No issues detected in #{statuses.size - unevaluated} of #{statuses.size} checks; " \
+                 "#{unevaluated} could not be evaluated"
+      )
     else
       HealthStatus.new(status: :healthy, message: "All systems operational")
     end
