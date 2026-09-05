@@ -11250,6 +11250,14 @@ class AgentSessionJobTest < ActiveJob::TestCase
   # refresh token the provider has revoked — the exact shape of GitHub issue #222.
   def create_dead_refresh_token_credential(expect_runtime_delete: false)
     config = { type: "http", url: "https://mcp.notion.com/mcp" }
+    # `oauth_capable_server?` is asked about the WHOLE catalog, not just this
+    # server: parking the session writes `failure_reason`, which is a
+    # METADATA_DISPLAY_FIELD, so `broadcast_metadata_change` rebuilds the metadata
+    # partial's locals — and those now carry each server's availability
+    # (McpServerOptions). A bare `.with("notion-t3s-marketing")` stub makes every
+    # other catalog server an unexpected invocation, so state the default first
+    # and let the specific expectation below win for the one server under test.
+    McpOauthCredentialInjector.stubs(:oauth_capable_server?).returns(false)
     ServersConfig.stubs(:credential_config).with("notion-t3s-marketing").returns(config)
     ServersConfig.stubs(:find).with("notion-t3s-marketing").returns(Struct.new(:url).new(config[:url]))
     McpOauthCredentialInjector.stubs(:oauth_capable_server?).with("notion-t3s-marketing").returns(true)
