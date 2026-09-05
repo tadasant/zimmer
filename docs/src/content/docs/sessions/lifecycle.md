@@ -671,15 +671,27 @@ and `cancel_pending_one_time_wake_triggers` takes a **hold** branch: the conditi
 and the trigger rows are stamped `wake_held_at`. A held wake is still `enabled` and can still fire.
 What the stamp records is that this turn owes it a retirement.
 
+Only a trigger that is *nothing but* one-shot wakes is held, because holding hands the whole row to
+the retirement. A trigger mixing an unfired one-shot with a recurring schedule or a Slack condition
+does other work, so its one-shot is consumed the old way and the row is left alone.
+
 `retire_held_wake_triggers` pays that debt, from the `pause` and `archive` callbacks. Two details
 carry the whole design:
 
-- It runs on `pause` **unless the pause is a recovery pause**. A recovery pause is Zimmer admitting
-  it interrupted a turn, which is precisely the case #569 is about — retiring there would re-open
-  the window at the one moment it has to stay shut.
+- It runs on `pause` **unless the pause is one Zimmer entered on the turn's behalf** —
+  `Session#turn_stood_down_before_it_ran?`. Three markers answer it, and all three mean the prompt
+  was never delivered: `paused_by = "recovery"` (a process Zimmer restarted under a live turn),
+  `failure_reason = "undelivered_turn"` (a turn that raised during setup — `ParkUndeliveredTurn`
+  states explicitly that it writes no `paused_by`), and `auth_outage_reason` (a turn stood down
+  because the account pool was empty). A woken turn that never ran has not had its chance to
+  re-arm, so retiring there would re-open the window at the one moment it has to stay shut.
 - It only takes rows carrying `wake_held_at`. Wakes the woken turn armed *for itself* carry no mark,
   so the pause that retires the old group leaves the new one alone. `failed` triggers are exempt as
-  everywhere else — they are the record of a wake that tried and could not, and the user's to clear.
+  everywhere else — they are the record of a wake that tried and could not, and the user's to clear;
+  re-arming one clears its hold mark, so the re-arm is not destroyed by the next pause.
+- It is deliberately **not** called from `fail`. A `failed` session is not reliably a finished one —
+  `CleanupOrphanedSessionsJob` recovers `failed` sessions carrying `GoodJob::InterruptError` or the
+  recovery marker, which is an interrupted turn wearing a different status.
 
 Retiring is as load-bearing as holding, and both halves are tested. A wake that outlives its wait
 and fires into a later, unrelated one fails silently in exactly the same way the bug does.
