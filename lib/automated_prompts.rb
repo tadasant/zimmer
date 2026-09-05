@@ -93,6 +93,34 @@ module AutomatedPrompts
     format(MEMORY_LIMIT_RECOVERY_TEMPLATE, limit: limit, peak: peak)
   end
 
+  # Prompt sent when the kernel killed the agent process because the memory ALL sessions
+  # on the worker share ran out, while this session was inside its own bound
+  # (tadasant/zimmer#981).
+  #
+  # Deliberately the opposite advice to MEMORY_LIMIT_RECOVERY_TEMPLATE. That one tells the
+  # agent not to re-run the command, because re-running it will hit the same limit again.
+  # Here the limit was not the session's, nothing it did was wrong, and re-running is
+  # exactly the right move — telling it to stream its output instead would send it looking
+  # for a bug that is not there. The one thing worth changing is the parallelism, because
+  # that is the multiplier that fills the pool.
+  SHARED_MEMORY_LIMIT_RECOVERY_TEMPLATE = <<~PROMPT.strip
+    [AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]
+
+    This session was killed by the kernel, but not for anything it did on its own: every agent session on this worker shares %{limit} of memory, that shared budget ran out, and the kernel picked a process in this session. Your session stayed inside its own memory limit throughout.
+
+    Zimmer has resumed you. Pick up where you left off — re-running whatever was in flight is reasonable, because the command was not the problem and the box may well be quieter now.
+
+    One thing does make it less likely to happen again: if you were running something that fans out into many processes at once — a parallel test suite, a multi-job build, several containers — narrow it. Zimmer already caps parallel Rails test workers per session, but anything else you start in parallel is yours to bound.
+  PROMPT
+
+  # Build the shared-memory recovery nudge.
+  #
+  # @param limit [String] human-readable aggregate bound, e.g. "6 GB"
+  # @return [String]
+  def self.shared_memory_limit_recovery(limit:)
+    format(SHARED_MEMORY_LIMIT_RECOVERY_TEMPLATE, limit: limit)
+  end
+
   # Prompt sent when the merge conflict poller detects that a session's PR
   # has merge conflicts with the base branch.
   #

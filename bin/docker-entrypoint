@@ -111,27 +111,43 @@ if [ "$(id -u)" = "0" ]; then
 
   # ---------------------------------------------------------------------------
   # Delegate a cgroup subtree to uid 1000, so each agent session can be given its
-  # own memory.max.
+  # own memory.max -- and so all of them together can be given one.
   #
   # The problem this solves is in app/services/session_memory_cgroup.rb: every
   # session on the box shares this container's single 10 GiB cap with the Rails
   # worker and the inner dockerd, so one session's runaway command can spend the
   # whole budget and the kernel then picks a victim by oom_score rather than by
-  # blame (tadasant/zimmer#815).
+  # blame (tadasant/zimmer#815) -- and so can eight sessions that are each well
+  # inside their own bound (tadasant/zimmer#981).
   #
   # Only root can create a cgroup and enable a controller on it, and only this
   # script is root here -- which is why the setup lives in the entrypoint and the
   # per-session part lives in the app.
   #
-  # The shape is cgroup v2's documented delegation model, and the `app` child is
-  # load-bearing rather than tidiness. Migrating a process needs write access to
-  # the cgroup.procs of the COMMON ANCESTOR of source and destination. With the
-  # app left where it starts, that ancestor is the container's cgroup root, which
-  # is root-owned -- so uid 1000 could create session cgroups and then not move
-  # anything into them. Putting the app in a sibling under the delegated parent
-  # makes the common ancestor the delegated parent itself, which uid 1000 owns.
-  # The alternative was chowning the container's root cgroup.procs, which widens
-  # uid 1000's reach over every cgroup in the container to buy the same thing.
+  # The shape:
+  #
+  #   <container cgroup>                    memory.max 10g (Kamal, protects the host)
+  #   `-- zimmer.sessions                   the delegated parent, uid 1000
+  #       |-- app                           this process, and everything it execs
+  #       `-- sessions                      memory.max 7g, the aggregate bound
+  #           |-- session-12398             memory.max 4g
+  #           `-- session-12401             memory.max 4g
+  #
+  # Both children are load-bearing rather than tidiness.
+  #
+  # `app` exists because migrating a process needs write access to the cgroup.procs
+  # of the COMMON ANCESTOR of source and destination. With the app left where it
+  # starts, that ancestor is the container's cgroup root, which is root-owned -- so
+  # uid 1000 could create session cgroups and then not move anything into them.
+  # Putting the app in a sibling under the delegated parent makes the common
+  # ancestor the delegated parent itself, which uid 1000 owns. The alternative was
+  # chowning the container's root cgroup.procs, which widens uid 1000's reach over
+  # every cgroup in the container to buy the same thing.
+  #
+  # `sessions` exists because the aggregate cap must be declared in a memcg the
+  # Rails worker is NOT inside. A memory.max on zimmer.sessions itself would cover
+  # `app` too, and the kernel picks its OOM victim by size across the whole
+  # subtree -- so the worker would still be in the victim pool, which is #981.
   #
   # Every step tolerates failure. This needs a writable cgroup2 filesystem, which
   # the worker has only because sysbox gives it its own cgroup namespace; under
@@ -146,8 +162,51 @@ if [ "$(id -u)" = "0" ]; then
   # One variable, read here and by SessionMemoryCgroup, so the entrypoint cannot delegate
   # a directory the app then does not look in. The cgroup filesystem root is its parent by
   # construction -- that is the cgroup whose subtree_control has to offer the memory
-  # controller for a child to be able to carry a memory.max.
+  # controller for a child to be able to carry a memory.max -- and the `sessions` pool the
+  # app actually creates session cgroups in is its child, by the same construction
+  # (SessionMemoryCgroup::POOL_DIRNAME).
   zimmer_cgroup_root="${ZIMMER_SESSION_CGROUP_ROOT:-/sys/fs/cgroup/zimmer.sessions}"
+  # The AGGREGATE bound, in MB, for every session together -- written on the `sessions`
+  # pool created below, and the whole of tadasant/zimmer#981. Per-session bounds do not
+  # sum to anything: eight sessions each comfortably inside a 4 GiB bound reached 8.7 GB
+  # of anonymous memory between them on 2026-09-05, the container's own 10 GiB cap fired,
+  # and the kernel picked the biggest process in it -- which was `bundle exec good_job
+  # start`, the Rails worker that runs every session on the box.
+  #
+  # 6144 MB is derived from THIS container's 10 GiB cap, and the arithmetic has to leave a
+  # real margin or the pool is decorative: 10240 - 6144 = 4096 MB for everything outside
+  # the pool, against ~1.6 GiB measured for the Rails worker in the `app` sibling and
+  # ~1.5 GiB for the inner dockerd and the dev stacks it runs (also outside the pool). A
+  # residual too tight to hold those is a pool that never fires while the CONTAINER cap
+  # does -- which selects across the whole container and takes the worker, the exact
+  # failure this exists to stop. Override at deploy time.
+  #
+  # `0` means no aggregate cap. The pool is still created, so per-session bounds keep
+  # working -- unlike ZIMMER_SESSION_MEMORY_MAX_MB=0, which takes the whole mechanism out
+  # of the spawn path, because the break-glass there has to be able to remove the `sh`
+  # wrapper and there is no wrapper to remove here.
+  zimmer_sessions_max_mb="${ZIMMER_SESSIONS_MEMORY_MAX_MB:-6144}"
+  # Converted to bytes ONCE, here, and everything downstream gates on the number rather
+  # than on the string. Three bash arithmetic traps meet in this one expression and each
+  # of them writes a plausible-looking `memory.max` that is catastrophically wrong:
+  #
+  #   "7168MB"  a non-numeric operand is read as a VARIABLE NAME, which is empty, which is 0
+  #   "00"      all digits, not string-equal to "0", and arithmetically 0
+  #   "010"     a leading zero is octal, so this is 8 MiB rather than 10
+  #
+  # A pool at `memory.max = 0` OOM-kills every session the instant it allocates, which is
+  # far worse than no cap at all. `10#` forces base 10; the `case` rejects anything that is
+  # not a run of digits before `10#` can complain about it; and the `-le 0` test below is
+  # what catches "00" without special-casing it.
+  case "$zimmer_sessions_max_mb" in
+    "" | *[!0-9]*)
+      echo "ZIMMER_SESSIONS_MEMORY_MAX_MB='$zimmer_sessions_max_mb' is not a non-negative" >&2
+      echo "integer; the sessions pool will carry no aggregate cap. Per-session bounds are" >&2
+      echo "unaffected. Use 0 to mean this deliberately." >&2
+      zimmer_sessions_max_mb=0
+      ;;
+  esac
+  zimmer_sessions_max_bytes=$(( 10#$zimmer_sessions_max_mb * 1024 * 1024 ))
   # Says which step gave up, and gives up. Silence here would be the worst of the
   # options: the app would run every session unbounded -- the exact state #815 is
   # about -- with nothing in the boot log to say why.
@@ -178,6 +237,36 @@ if [ "$(id -u)" = "0" ]; then
     echo "+memory" > "$zimmer_cgroup_root/cgroup.subtree_control" 2>/dev/null ||
       { zimmer_cgroup_skip "could not enable the memory controller on $zimmer_cgroup_root"; return; }
 
+    # The sessions pool: one more level between the delegated parent and the per-session
+    # cgroups, and the thing that carries the aggregate cap.
+    #
+    # It is a separate level rather than a memory.max on $zimmer_cgroup_root itself, and
+    # that distinction is the entire fix for tadasant/zimmer#981. The app lives in
+    # $zimmer_cgroup_root/app, so a cap on $zimmer_cgroup_root would declare an OOM in a
+    # memcg the Rails worker is inside -- and the kernel picks its victim by size across
+    # the whole subtree, so the worker would be back in the victim pool, which is exactly
+    # the failure. With the cap one level down, the OOM is declared in a memcg that holds
+    # only session processes: a session dies, and the worker and every other role on the
+    # box keep running.
+    mkdir -p "$zimmer_cgroup_root/sessions" 2>/dev/null ||
+      { zimmer_cgroup_skip "could not create $zimmer_cgroup_root/sessions"; return; }
+    echo "+memory" > "$zimmer_cgroup_root/sessions/cgroup.subtree_control" 2>/dev/null ||
+      { zimmer_cgroup_skip "could not enable the memory controller on $zimmer_cgroup_root/sessions"; return; }
+
+    # Best-effort, and deliberately NOT a zimmer_cgroup_skip. A pool without its aggregate
+    # cap is today's behaviour -- per-session bounds in force, the pile-up unbounded --
+    # and that is worth strictly more than turning the whole mechanism off.
+    if [ "$zimmer_sessions_max_bytes" -le 0 ]; then
+      echo "The sessions pool carries no aggregate memory cap (ZIMMER_SESSIONS_MEMORY_MAX_MB=0)." >&2
+    elif echo "$zimmer_sessions_max_bytes" > "$zimmer_cgroup_root/sessions/memory.max" 2>/dev/null; then
+      echo "Sessions share an aggregate memory cap of $zimmer_sessions_max_bytes bytes ($zimmer_cgroup_root/sessions)." >&2
+    else
+      echo "Warning: could not write the aggregate memory cap on $zimmer_cgroup_root/sessions." >&2
+      echo "Per-session bounds still apply, but a pile-up of in-budget sessions can again" >&2
+      echo "reach the container cap and put the Rails worker in the OOM victim pool" >&2
+      echo "(tadasant/zimmer#981)." >&2
+    fi
+
     # Move this shell in BEFORE handing the parent over, because the chown is what
     # SessionMemoryCgroup.available? reads. Chowning first and failing here would
     # leave uid 1000 able to CREATE session cgroups but unable to move anything into
@@ -194,10 +283,20 @@ if [ "$(id -u)" = "0" ]; then
     # Only now the three files cgroup v2 says to hand over with the directory.
     # Ownership of the directory is what permits mkdir; ownership of cgroup.procs is
     # what permits the migration.
+    # Two files on the pool are deliberately NOT in this list: `memory.max`, and
+    # `cgroup.subtree_control`. The app creates and removes session cgroups inside the pool
+    # and migrates processes into them; it never writes either of those, and root has
+    # already written both. Withholding them is hygiene, not a boundary -- uid 1000 still
+    # owns $zimmer_cgroup_root itself, so a process determined to escape the pool can, and
+    # NOTHING here is a sandbox (see app/services/session_memory_cgroup.rb). It just means
+    # a bug in the app cannot widen or disable the aggregate bound by accident.
     chown 1000 "$zimmer_cgroup_root" \
                 "$zimmer_cgroup_root/cgroup.procs" \
                 "$zimmer_cgroup_root/cgroup.subtree_control" \
-                "$zimmer_cgroup_root/cgroup.threads" 2>/dev/null ||
+                "$zimmer_cgroup_root/cgroup.threads" \
+                "$zimmer_cgroup_root/sessions" \
+                "$zimmer_cgroup_root/sessions/cgroup.procs" \
+                "$zimmer_cgroup_root/sessions/cgroup.threads" 2>/dev/null ||
       { zimmer_cgroup_skip "could not delegate $zimmer_cgroup_root to uid 1000"; return; }
 
     echo "Per-session memory bounds are available (delegated $zimmer_cgroup_root to uid 1000)." >&2

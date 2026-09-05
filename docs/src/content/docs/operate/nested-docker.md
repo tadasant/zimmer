@@ -116,10 +116,14 @@ A second thing rides on the container having its own cgroup namespace: `/sys/fs/
 a cgroup at all.
 
 The entrypoint uses that window, while it is still root, to delegate a subtree to uid 1000 —
-`/sys/fs/cgroup/zimmer.sessions`, with the memory controller enabled and the app moved into a
-`zimmer.sessions/app` sibling. The app then gives each agent session its own cgroup and its own
-`memory.max`, so a runaway command exhausts its own budget instead of the worker container's
-([#815](https://github.com/tadasant/zimmer/issues/815)). It is the same nesting bargain as
+`/sys/fs/cgroup/zimmer.sessions`, with the memory controller enabled, the app moved into a
+`zimmer.sessions/app` sibling, and a `zimmer.sessions/sessions` pool carrying an aggregate
+`memory.max` over every session at once. The app then gives each agent session its own cgroup
+inside that pool and its own `memory.max`, so a runaway command exhausts its own budget instead
+of the worker container's ([#815](https://github.com/tadasant/zimmer/issues/815)) and a pile-up
+of in-budget sessions exhausts the pool rather than the container — which is what put the Rails
+worker in the OOM victim pool on 2026-09-05
+([#981](https://github.com/tadasant/zimmer/issues/981)). It is the same nesting bargain as
 `dockerd`: possible only because the container's root is not the host's.
 
 Like the dockerd block, it is contained in the `id -u = 0` branch, so `web` never runs it — and
@@ -334,8 +338,10 @@ What production still needs:
    production at eight, the worker cgroup's unreclaimable `anon` peaks at 9.07 GiB against
    its 10 GiB `memory.max`, and eight in-budget sessions have already summed over the cap
    and had the kernel OOM-kill the GoodJob worker
-   ([#981](https://github.com/tadasant/zimmer/issues/981)). Per-session cgroups do not
-   change that arithmetic — cgroup v2 is hierarchical, so they charge the same 10 GiB.
+   ([#981](https://github.com/tadasant/zimmer/issues/981)). Neither cgroup bound changes
+   that arithmetic — cgroup v2 is hierarchical, so both the per-session cgroups and the
+   `sessions` pool above them charge the same 10 GiB. The pool decides *who* the kernel
+   kills when the sum is reached, not whether it is reached.
 
 Do it as its own change, after staging has run on it. The blast radius is not comparable:
 production is where agent sessions actually execute, and the failure mode of arming the

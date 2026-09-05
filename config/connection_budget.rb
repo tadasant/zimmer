@@ -145,11 +145,12 @@ module ConnectionBudget
       # The 10 GiB `memory.max` on the worker role (config/deploy.production.yml)
       # is the ceiling, and the sessions run UNDERNEATH it: cgroup v2 is
       # hierarchical, so the per-session cgroups SessionMemoryCgroup creates at
-      # /sys/fs/cgroup/zimmer.sessions/session-<id> are DESCENDANTS of the
-      # container's cgroup and every byte they charge is charged to the 10 GiB
-      # too. ZIMMER_SESSION_MEMORY_MAX_MB bounds ONE runaway session; it does not
-      # give the sessions a separate budget, and it cannot stop N in-budget
-      # sessions from summing over the container cap. Do not read it as headroom.
+      # /sys/fs/cgroup/zimmer.sessions/sessions/session-<id> are DESCENDANTS of
+      # the container's cgroup and every byte they charge is charged to the
+      # 10 GiB too. ZIMMER_SESSION_MEMORY_MAX_MB bounds ONE runaway session, and
+      # ZIMMER_SESSIONS_MEMORY_MAX_MB bounds the pool they all sit in -- but
+      # NEITHER gives the sessions a separate budget. Do not read either as
+      # headroom: the pool's cap is carved OUT of the 10 GiB, not added to it.
       #
       # Measured on production over the 24h to 2026-09-05T14:16Z, at this value
       # of 8 (VictoriaMetrics, `role="worker"`), strongest evidence first:
@@ -169,16 +170,27 @@ module ConnectionBudget
       #   memory.events   `max` (allocation stalled into reclaim) 133,791. Same
       #                   caveat: cache-driven reclaim fires this too.
       #
-      # So EIGHT already reaches the ceiling. tadasant/zimmer#981 is the open
-      # incident for it: on 2026-09-05T09:20:24Z eight in-budget sessions -- no
-      # runaway, largest process 943 MB -- summed to 8.7 GB of anon and the
-      # kernel OOM-killed the GoodJob worker itself, taking every in-flight
-      # AgentSessionJob with it. The victim pool includes the worker because
-      # `zimmer.sessions` has no memory.max of its own, so a pile-up walks
-      # straight to the container ceiling.
+      # So EIGHT already reaches the ceiling. tadasant/zimmer#981 is the incident
+      # for it: on 2026-09-05T09:20:24Z eight in-budget sessions -- no runaway,
+      # largest process 943 MB -- summed to 8.7 GB of anon and the kernel
+      # OOM-killed the GoodJob worker itself, taking every in-flight
+      # AgentSessionJob with it.
       #
-      # RAISING THIS IS THEREFORE BLOCKED ON #981, not on the connection budget
-      # -- though the connection budget is not roomy either: 15 derives 97
+      # WHAT #981 CHANGED, AND WHAT IT DID NOT. Session cgroups now live in a
+      # `sessions` POOL carrying its own memory.max (ZIMMER_SESSIONS_MEMORY_MAX_MB,
+      # 6144), and the pool does NOT contain the Rails worker -- so a pile-up now
+      # declares its OOM in a cgroup the worker is outside of, and the victim is a
+      # session process rather than the worker that runs all of them. That is a
+      # blast-radius bound, not a demand reduction: the pile-up still happens and a
+      # session still dies. The per-session PARALLEL_WORKERS cap (2) cuts the
+      # dominant term, but it is a mitigation and not a bound either.
+      #
+      # So THIS number is still the admission control, and the measurements above
+      # are still the reason it is 8. They also predate the fix, which is the next
+      # thing to do rather than a reason to move the number now: re-measure `anon`
+      # under the pool and the parallelism cap before raising this.
+      #
+      # And the connection budget is not roomy either: 15 derives 97
       # required_backends, which is the ENTIRE capacity of a db-s-2vcpu-4gb
       # cluster (97), so that side has zero margin and the production cluster's
       # plan slug has not been confirmed. Check `terraform output
@@ -191,11 +203,9 @@ module ConnectionBudget
       # because it trades queued rows for the loss of the sessions already
       # running.
       #
-      # To go above 8, #981 has to land first -- a memory.max on the
-      # `zimmer.sessions` parent, admission control against observed headroom, or
-      # a cut to the per-session multiplier. Then re-measure the peak above,
-      # raise this, and move infra/terraform/main.tf's app_required_backends with
-      # it (test/config/connection_budget_test.rb fails the build otherwise).
+      # To go above 8: re-measure the peak above under #981's fix, raise this, and
+      # move infra/terraform/main.tf's app_required_backends with it
+      # (test/config/connection_budget_test.rb fails the build otherwise).
       agents: int_env("GOOD_JOB_AGENTS_THREADS", 8),
       pollers: int_env("GOOD_JOB_POLLERS_THREADS", 3),
       triggers: int_env("GOOD_JOB_TRIGGERS_THREADS", 2),
