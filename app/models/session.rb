@@ -1337,11 +1337,18 @@ class Session < ApplicationRecord
   # to session #728 — a stranger — with no error. `Integer()` is no better: it
   # accepts Ruby literal forms, so "0x10" resolves to #16.
   #
+  # `find` is the same hazard wearing a different type, and the reason a miss
+  # here has to be a miss. `ActiveModel::Type::Integer` casts by `to_i`, so
+  # `Session.find("728-fix-the-poller-20260830-1102")` returns #728 too —
+  # meaning a slug lookup that falls back to `find` answers a MISS on a
+  # digit-leading slug with a stranger rather than with nothing.
+  #
   # A numeric identifier is never retried as a slug. The only slug that retry
   # could find is an all-digit one, which shadows another session's id on every
   # surface, including the URLs `to_param` builds — `slug_is_not_purely_numeric`
-  # refuses to write one. For any row predating that validation, the id wins
-  # here, deliberately and on every surface at once.
+  # refuses to write one, and `RepairPurelyNumericSessionSlugs` renames any that
+  # predate it. Should one survive both, the id wins here, on every surface at
+  # once, rather than one surface disagreeing with the rest.
   #
   # @param identifier [String, Integer, nil] a session id or slug
   # @return [Session, nil] nil for blank input or a miss
