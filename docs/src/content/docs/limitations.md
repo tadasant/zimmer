@@ -4889,7 +4889,6 @@ re-raise into Sentry and the terminal ActiveJob ERROR are all unaffected. It is 
 failure-reason histogram that has the blind spot, and widening its query to include parked sessions
 is the fix.
 
-
 ---
 
 ## Log retention frees space in Postgres, but not on the disk
