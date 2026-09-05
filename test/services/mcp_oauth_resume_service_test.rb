@@ -483,6 +483,25 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
     assert_equal [ "notion", "linear" ], session.reload.mcp_oauth_reconnect_servers
   end
 
+  # The list is read and written as one value, so two servers authorized at once
+  # would race: without the row lock the later write drops the earlier server, and
+  # the credential it names is never mentioned to the user. The concurrent write is
+  # simulated by advancing the row behind the service's own copy of it.
+  test "a server recorded by a concurrent callback survives the next one" do
+    session = live_session(status: :needs_input, mcp_servers: [ "notion", "linear" ])
+    McpOauthCredentialInjector.any_instance.stubs(:inject_credentials!)
+
+    Session.find(session.id).merge_metadata!(
+      Session::MCP_OAUTH_RECONNECT_KEY => { "servers" => [ "linear" ], "authorized_at" => Time.current.iso8601 }
+    )
+    assert_empty session.mcp_oauth_reconnect_servers, "the service's copy predates the other callback"
+
+    assert_equal :reconnect_pending,
+      McpOauthResumeService.new(session, authorized_server: "notion").call
+
+    assert_equal [ "linear", "notion" ], session.reload.mcp_oauth_reconnect_servers
+  end
+
   test "a live session that does not use the authorized server gets no notice" do
     session = live_session(status: :running, mcp_servers: [ "linear" ])
     McpOauthCredentialInjector.any_instance.expects(:inject_credentials!).never

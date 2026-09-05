@@ -1776,11 +1776,12 @@ What Zimmer does instead ([#195](https://github.com/tadasant/zimmer/issues/195))
 credential into the runtime store immediately, record the server under
 `metadata["mcp_oauth_reconnect"]`, and say so twice — a notice on the session page with a button that
 sends (or queues) an ordinary follow-up, and a line in the session's own timeline. The reconnect is
-still the next spawn's `gate_and_inject_oauth!`. Before that, the credential was written to the DB and
-nothing at all reached the session: "Successfully authorized", no tools, no explanation.
+the next spawn's `gate_and_inject_oauth!`.
 
-The residue is that the next turn is genuinely required. A session mid-turn on work that needs those
-tools will finish that turn without them.
+Two things that leaves. The next turn is genuinely required: a session mid-turn on work that needs
+those tools finishes that turn without them. And the notice reaches only the session the OAuth flow
+was started from — a grant renewed from the Connectors page is shared by every session wiring that
+server and notifies none of them.
 
 ### The fallback `client_id` is the literal string `"zimmer"`
 

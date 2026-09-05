@@ -615,13 +615,17 @@ So `McpOauthResumeService` re-spawns only a session that was *blocked* on OAuth 
 - **writes a line into the session's own timeline** saying the grant is back and that the next message
   is what reconnects it.
 
-The notice is what the fix is: before it, the credential was written to the DB and *nothing at all*
-reached the session, so the user saw "Successfully authorized", no Notion tools, and no explanation.
-The reconnect itself is still the next turn's `gate_and_inject_oauth!`, which is also where the notice
-is cleared — that spawn has injected the credentials, so the statement about the previous process is
+The reconnect itself is the next turn's `gate_and_inject_oauth!`, which is also where the notice is
+cleared — that spawn has injected the credentials, so the statement about the previous process is
 spent. The button is deliberately a follow-up on the ordinary path rather than a new resume path:
 `enqueue_new_session` replays the session's original prompt, which is the wrong thing to say in the
 middle of a conversation.
+
+**The notice reaches the session the flow was started from, and only that one.** A grant is keyed by
+credential key, not by session, so re-authorizing from the Connectors page renews it for every session
+that wires the server — and notifies none of them, because a session-less flow has no session to run
+the service against (see the Connectors caution below, which says the same thing about a *parked*
+session).
 :::
 
 :::note[The replayed turn carries its attachments — when there is still a first turn to replay]

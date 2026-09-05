@@ -16,10 +16,10 @@
       </span>
     </div>
     <p class="text-sm text-blue-700">
-      Zimmer has stored the renewed grant for <%= reconnect_servers.to_sentence %> and put the
-      credentials where the next agent process reads them. This session's agent loaded its MCP
-      servers when it started and cannot pick up a new connection mid-run, so those tools stay
-      missing until it runs again.
+      Zimmer has stored the renewed grant for <%= reconnect_servers.to_sentence %>, and the next
+      agent process this session starts will use it. This session's agent loaded its MCP servers
+      when it started and cannot pick up a new connection mid-run, so those tools stay missing
+      until it runs again.
       <% if agent_session.running? %>
         The agent is mid-turn, so a message sent now queues and reconnects on the turn after it.
       <% else %>

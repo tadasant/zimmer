@@ -168,6 +168,12 @@ class McpOauthResumeService
   # before then, and it clears the runtime's needs-auth memo for the same reason
   # `McpOauthCredentialInjector#inject_credentials!` does.
   #
+  # Note what it reaches: the injector collects EVERY server the session wires,
+  # not only the one just authorized, so it may reconcile and refresh a token an
+  # in-flight turn is using. That is the same pass the spawn gate makes on every
+  # spawn, and the refreshes it performs are bounded by
+  # `McpOauthService::REQUEST_TIMEOUT`.
+  #
   # Best-effort: a missing clone directory or an unwritable store must not turn a
   # successful authorization into a 500 on the callback.
   def reinject_credentials
@@ -185,34 +191,41 @@ class McpOauthResumeService
   # Adds the server to metadata["mcp_oauth_reconnect"]["servers"] and, the first
   # time a given server lands there, says so in the session's timeline.
   #
-  # `merge_metadata!` rather than `update!`: this can run against a session that
-  # is mid-turn, where a whole-column read-modify-write would erase whatever the
-  # job wrote in between. Re-authorizing the same server twice is idempotent —
-  # the list is a set, and the log line is written only when the set grows.
+  # `merge_metadata!` rather than `update!` because this can run against a session
+  # that is mid-turn, where a whole-column read-modify-write would erase whatever
+  # the job wrote in between. That protects the keys this caller never names; it
+  # does not serialize two writers of THIS key, and two servers authorized at
+  # once are exactly that — both would read the same list, and the later write
+  # would drop the earlier server. So the read and the write are taken under a row
+  # lock, which also makes a repeated callback idempotent: the list is a set, and
+  # both the timeline line and the app log are written only when the set grows.
+  #
+  # A different lock from the one #call takes: that one is released before the
+  # runtime store is written, and re-entering it here is a plain DB round trip.
   def record_reconnect_pending
-    known = session.mcp_oauth_reconnect_servers
-    return if known.include?(authorized_server)
+    session.with_lock do
+      known = session.mcp_oauth_reconnect_servers
+      next if known.include?(authorized_server)
 
-    servers = known + [ authorized_server ]
+      session.merge_metadata!(
+        Session::MCP_OAUTH_RECONNECT_KEY => {
+          "servers" => known + [ authorized_server ],
+          "authorized_at" => Time.current.iso8601
+        }
+      )
 
-    session.merge_metadata!(
-      Session::MCP_OAUTH_RECONNECT_KEY => {
-        "servers" => servers,
-        "authorized_at" => Time.current.iso8601
-      }
-    )
+      Rails.logger.info(
+        "[McpOauthResumeService] #{authorized_server} re-authorized for live session " \
+        "#{session.id} (#{session.status}); it reconnects on the next turn"
+      )
 
-    Rails.logger.info(
-      "[McpOauthResumeService] #{authorized_server} re-authorized for live session " \
-      "#{session.id} (#{session.status}); it reconnects on the next turn"
-    )
-
-    session.logs.create!(
-      level: "info",
-      content: "#{authorized_server} is authorized again. This session's agent loaded its " \
-        "MCP servers when it started and cannot pick up a new connection mid-run, so the " \
-        "next message is what reconnects it."
-    )
+      session.logs.create!(
+        level: "info",
+        content: "#{authorized_server} is authorized again. This session's agent loaded its " \
+          "MCP servers when it started and cannot pick up a new connection mid-run, so the " \
+          "next message is what reconnects it."
+      )
+    end
   end
 
   def resume!(attachments)
