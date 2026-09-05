@@ -301,6 +301,37 @@ effective ceiling — `min(configured, GOOD_JOB_AGENTS_THREADS)` — beside it. 
 of 10 is itself above the default pool of 8, so an un-retuned deployment sees that note from the
 start.
 
+#### Growing the pool is a deploy away, and on Tadasant production it is currently blocked
+
+"Growing the pool is a deploy away" is true of the *config*, and it is the sentence to be careful
+with. `GOOD_JOB_AGENTS_THREADS` is bounded by the worker's **memory cgroup**, not by the database,
+because each of its threads runs a whole agent session — and on the Tadasant production deployment
+that bound is already reached at 8.
+
+Measured over the 24 hours to 2026-09-05T14:16Z, at 8, against the worker's 10 GiB `memory.max`,
+strongest evidence first:
+
+| Metric | Value | Weight |
+| --- | --- | --- |
+| `memory.stat` `anon` peak | **9.07 GiB** of 10 GiB | Decisive — anonymous memory is unreclaimable, so this is what decides whether N sessions fit |
+| `memory.events` `oom_kill` | ≥ 5 | Decisive — real kills. Per-container maxima, and the counter resets when a deploy recreates the container, so the true total is higher |
+| `memory.current` peak | 10,737,324,032 B — 94 KB under the cap | Corroborating — includes reclaimable page cache (`file` peaked at 7.28 GB), and a cgroup doing heavy file I/O fills toward its limit with cache as a matter of course |
+| `memory.events` `max` (forced reclaim) | 133,791 | Corroborating — cache-driven reclaim fires this too |
+
+The failure that produces is [#981](https://github.com/tadasant/zimmer/issues/981): eight *in-budget*
+sessions — no runaway, largest process 943 MB — summed over the container cap and the kernel
+OOM-killed the GoodJob worker itself, taking every in-flight `AgentSessionJob` with it. Per-session
+cgroups do not help here and are not meant to: cgroup v2 is hierarchical, so
+`zimmer.sessions/session-<id>` sits *inside* the container's cgroup and charges the same 10 GiB.
+`ZIMMER_SESSION_MEMORY_MAX_MB` bounds one runaway; nothing bounds the sum.
+
+So on this deployment a larger pool buys no throughput. It converts queued rows — which are durable
+and resume — into a worker kill, which is neither. Raising it waits on #981 (a `memory.max` on the
+`zimmer.sessions` parent, admission control against observed headroom, or a cut to the per-session
+multiplier), then a re-measurement, then a matching bump to `app_required_backends`. The connection
+budget is not what holds it first, and is not roomy either: 15 threads derive 97 required backends,
+which is the *entire* capacity of a `db-s-2vcpu-4gb` cluster — zero margin.
+
 ### Its sibling: the backlog top-up ceiling
 
 **Max sessions at once** says how much work may run. The **Backlog top-up** card directly below it on
