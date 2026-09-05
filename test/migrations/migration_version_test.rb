@@ -29,9 +29,9 @@ class MigrationVersionTest < ActiveSupport::TestCase
     collision = collisions.sole
 
     assert_equal :version, collision.kind
-    assert_equal "20260905180000", collision.value
+    assert_equal 20260905180000, collision.value
     assert_equal [ "20260905180000_add_armed_at_to_trigger_conditions.rb",
-      "20260905180000_add_replaces_session_index_to_sessions.rb" ], collision.basenames
+      "20260905180000_add_replaces_session_index_to_sessions.rb" ], collision.paths
 
     report = MigrationVersionGuard.report(collisions)
     assert_includes report, "20260905180000"
@@ -74,7 +74,48 @@ class MigrationVersionTest < ActiveSupport::TestCase
       "20260101000000_add_widget_to_sessions.rb.bak"
     ) { |dir| MigrationVersionGuard.migrations(dir) }
 
-    assert_equal [ "20260101000000_add_widget_to_sessions.rb" ], migrations.map(&:basename)
+    assert_equal [ "20260101000000_add_widget_to_sessions.rb" ], migrations.map(&:relative_path)
+  end
+
+  # The guard cannot ask Active Record what a migration filename looks like —
+  # it has to run when Rails does not boot — so it carries a copy of the
+  # regexp. A copy that drifts is a guard that skips the file Rails trips on.
+  test "the copied filename regexp is still Active Record's" do
+    assert_equal ActiveRecord::Migration::MigrationFilenameRegexp.source,
+      MigrationVersionGuard::FILENAME.source,
+      "Active Record changed MigrationFilenameRegexp — update the copy in " \
+      "test/support/migration_version_guard.rb to match."
+  end
+
+  # Rails globs `**/[0-9]*_*.rb` and compares versions as Integers, and it
+  # takes the adapter scope off before comparing names. Each of those is a way
+  # a real collision hides from a guard that only reads 14 digits off the front
+  # of a flat directory listing.
+  test "collisions are found in the same shapes Rails finds them" do
+    hidden = in_migration_dir(
+      # A 13-digit version. Rails' regexp is [0-9]+, not \d{14}.
+      "2026090518000_add_widget_to_sessions.rb",
+      "2026090518000_add_gadget_to_sessions.rb",
+      # Leading zeros. Rails compares version.to_i, so these are one version.
+      "020260101000000_add_doodad_to_sessions.rb",
+      "20260101000000_add_thingummy_to_sessions.rb"
+    ) { |dir| MigrationVersionGuard.collisions(dir) }
+
+    assert_equal [ 2026090518000, 20260101000000 ], hidden.map(&:value).sort
+    assert_equal [ :version, :version ], hidden.map(&:kind)
+
+    nested = in_migration_dir("post_deploy/20260101000000_add_widget_to_sessions.rb",
+      "20260101000000_add_gadget_to_sessions.rb") { |dir| MigrationVersionGuard.collisions(dir) }
+
+    assert_equal [ 20260101000000 ], nested.map(&:value)
+    assert_includes MigrationVersionGuard.report(nested),
+      "db/migrate/post_deploy/20260101000000_add_widget_to_sessions.rb"
+
+    scoped = in_migration_dir("20260101000000_add_widget_to_sessions.postgresql.rb",
+      "20260202000000_add_widget_to_sessions.rb") { |dir| MigrationVersionGuard.collisions(dir) }
+
+    assert_equal [ :name ], scoped.map(&:kind),
+      "the adapter scope is not part of the name Rails groups on"
   end
 
   test "the guard runs without Rails" do
@@ -102,11 +143,16 @@ class MigrationVersionTest < ActiveSupport::TestCase
 
   private
 
-  # The guard reads a directory, so a fixture is a directory of empty files —
-  # nothing parses the bodies.
-  def in_migration_dir(*basenames)
+  # The guard reads filenames, so a fixture is a directory of empty files —
+  # nothing parses the bodies. Paths may name a subdirectory, because Rails
+  # descends into them.
+  def in_migration_dir(*relative_paths)
     Dir.mktmpdir do |dir|
-      basenames.each { |basename| FileUtils.touch(File.join(dir, basename)) }
+      relative_paths.each do |relative_path|
+        path = File.join(dir, relative_path)
+        FileUtils.mkdir_p(File.dirname(path))
+        FileUtils.touch(path)
+      end
 
       yield dir
     end
