@@ -573,15 +573,20 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_not_includes output, "[cut:"
   end
 
+  def provenance_pair
+    router = Session.create!(title: "Route it", prompt: "route", agent_runtime: "claude_code",
+                             git_root: "https://github.com/test/repo.git")
+    worker = Session.create!(title: "Do it", prompt: "do", agent_runtime: "claude_code",
+                             git_root: "https://github.com/test/repo.git", parent_session_id: router.id)
+    [ router, worker ]
+  end
+
   # The constraint the issue gate wrote down. The record may be summarised; it
   # may not be shortened in a way a reader cannot detect, because a gate reads it
   # to decide whether a human asked for something and is required to hold rather
   # than guess when it cannot tell.
   test "the human-message summary is self-describing rather than silently cut" do
-    router = Session.create!(title: "Route it", prompt: "route", agent_runtime: "claude_code",
-                             git_root: "https://github.com/test/repo.git")
-    worker = Session.create!(title: "Do it", prompt: "do", agent_runtime: "claude_code",
-                             git_root: "https://github.com/test/repo.git", parent_session_id: router.id)
+    router, worker = provenance_pair
     HumanMessage.create!(session: worker, author: "tadasant", channel: HumanMessage::WEB_UI,
                          content: "h" * 4_000, occurred_at: 1.hour.ago)
     12.times do |i|
@@ -598,7 +603,7 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_includes output, "- **Elsewhere in the hierarchy:** 12"
     # It says it is a summary, what it listed, and what it left out.
     assert_includes output, "**This is a summary of the record, not the record.**"
-    assert_includes output, "Listed: the newest 1 of 1 authored HERE, and the newest #{per_origin} of 12 " \
+    assert_includes output, "Listed: all 1 authored HERE, and the newest #{per_origin} of 12 " \
                             "authored elsewhere — #{per_origin + 1} of 13 entries."
     assert_includes output, "_#{12 - per_origin} older entries not shown here"
     # And every cut entry carries its own real length and the call that undoes it.
@@ -610,10 +615,7 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
   # The `here` half is what answers "did a human ask THIS session for this?", so
   # a chatty hierarchy must not push it off the list.
   test "every here entry is listed even when the hierarchy is full of elsewhere ones" do
-    router = Session.create!(title: "Route it", prompt: "route", agent_runtime: "claude_code",
-                             git_root: "https://github.com/test/repo.git")
-    worker = Session.create!(title: "Do it", prompt: "do", agent_runtime: "claude_code",
-                             git_root: "https://github.com/test/repo.git", parent_session_id: router.id)
+    router, worker = provenance_pair
     30.times do |i|
       HumanMessage.create!(session: router, author: "tadasant", channel: HumanMessage::WEB_UI,
                            content: "elsewhere #{i}", occurred_at: (90 - i).minutes.ago)
@@ -624,7 +626,134 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     output = @tool.call("id" => worker.id)
 
     assert_includes output, "the ask made here"
-    assert_includes output, "Listed: the newest 1 of 1 authored HERE"
+    assert_includes output, "Listed: all 1 authored HERE"
+  end
+
+  # A pointer that cannot deliver is the same failure as a silent cut, reached
+  # from the other side. `get_session_provenance` lists the newest 25 — a cap the
+  # record has always had — so on a longer record the summary must not send a
+  # caller there for entries it will not get.
+  test "the summary never points at a call that cannot return what it omitted" do
+    router, worker = provenance_pair
+    31.times do |i|
+      HumanMessage.create!(session: router, author: "tadasant", channel: HumanMessage::WEB_UI,
+                           content: "elsewhere #{i}", occurred_at: (120 - i).minutes.ago)
+    end
+    cap = Mcp::ProvenanceSections::MAX_HUMAN_MESSAGES
+
+    output = @tool.call("id" => worker.id)
+
+    assert_includes output, "`get_session_provenance` on this session returns the newest #{cap} in full, " \
+                            "as does `get_session` with `verbose: true` — including every entry listed above."
+    assert_includes output, "The 6 older than that window are on the record and counted above, but no " \
+                            "MCP call returns them."
+    assert_includes output, "26 older entries not shown here — counted above, and 20 of them are returned in " \
+                            "full by `get_session_provenance`; the other 6 fall outside its newest-#{cap} " \
+                            "window and no MCP call returns them."
+    assert_not_includes output, "returns every entry, uncut"
+  end
+
+  # The pointer above is only true because the summary's selection is a subset of
+  # the uncut rendering's. A `here` entry older than the newest 25 overall is the
+  # case that would break it.
+  test "an entry the summary lists is always one the uncut rendering lists" do
+    router, worker = provenance_pair
+    old_here = HumanMessage.create!(session: worker, author: "tadasant", channel: HumanMessage::WEB_UI,
+                                    content: "the ask made here, long ago", occurred_at: 200.minutes.ago)
+    40.times do |i|
+      HumanMessage.create!(session: router, author: "tadasant", channel: HumanMessage::WEB_UI,
+                           content: "elsewhere #{i}", occurred_at: (100 - i).minutes.ago)
+    end
+
+    summary = @tool.call("id" => worker.id)
+    uncut = @tool.call("id" => worker.id, "verbose" => true)
+
+    assert_includes summary, old_here.content
+    assert_includes uncut, old_here.content, "the uncut rendering must be a superset of the summary"
+  end
+
+  # "Complete" is the strongest word this block has. It must not be read as
+  # covering sessions the hierarchy walk never searched.
+  test "a truncated hierarchy walk cannot be described as a complete record" do
+    session = sessions(:running)
+    HumanMessage.create!(session: session, author: "tadasant", channel: HumanMessage::WEB_UI,
+                         content: "ship it", occurred_at: 1.hour.ago)
+    truncated = SessionHierarchy.new(session)
+    truncated.define_singleton_method(:truncated?) { true }
+    truncated.define_singleton_method(:truncation_reason) { "walk cut" }
+    session.define_singleton_method(:human_message_record) do
+      SessionHumanMessages.new(self, hierarchy: truncated)
+    end
+    @tool.stub(:find_session, session) do
+      output = @tool.call("id" => session.id)
+
+      assert_includes output, "**Every entry the hierarchy walk reached is listed below, in full**"
+      assert_not_includes output, "- **Complete:**"
+    end
+  end
+
+  # Boundaries. `TextBudget.over?` is a strict `>`, so a value exactly at its
+  # budget is rendered whole and claims no truncation.
+  test "a value exactly at its budget is rendered whole and claims nothing" do
+    session = sessions(:running)
+    session.update!(
+      prompt: "p" * Mcp::Tools::GetSession::MAX_PROMPT_CHARS,
+      metadata: { "k" => "m" * Mcp::Tools::GetSession::MAX_METADATA_VALUE_CHARS }
+    )
+    HumanMessage.create!(session: session, author: "tadasant", channel: HumanMessage::WEB_UI,
+                         content: "h" * Mcp::ProvenanceSections::SUMMARY_CONTENT_LIMIT, occurred_at: 1.hour.ago)
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "p" * Mcp::Tools::GetSession::MAX_PROMPT_CHARS
+    assert_includes output, "m" * Mcp::Tools::GetSession::MAX_METADATA_VALUE_CHARS
+    assert_includes output, "h" * Mcp::ProvenanceSections::SUMMARY_CONTENT_LIMIT
+    assert_not_includes output, "Truncated:"
+    assert_not_includes output, "[cut:"
+    assert_includes output, "- **Complete:**"
+  end
+
+  # Budgets are in characters, not bytes, so a multibyte value is never split
+  # mid-codepoint and the length it reports is the one a reader would count.
+  test "budgets count characters, not bytes" do
+    session = sessions(:running)
+    session.update!(prompt: "漢" * 2_000)
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "#{'漢' * Mcp::Tools::GetSession::MAX_PROMPT_CHARS}..."
+    assert_includes output, "_Truncated: 1,000 of 2,000 characters shown."
+  end
+
+  test "metadata values that are not strings pass through untouched" do
+    session = sessions(:running)
+    session.update!(metadata: {
+      "spot_hold_count" => 4, "paused" => true, "cleared_at" => nil,
+      "tags" => [ "a", "b" * 400 ]
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, '"spot_hold_count": 4'
+    assert_includes output, '"paused": true'
+    assert_includes output, '"cleared_at": null'
+    assert_includes output, "1 string value longer than 300 characters was cut: `tags.1`."
+  end
+
+  # The in-place marker sits inside a value, and custom_metadata is
+  # agent-writable — so the list outside the fence, not the marker, is what says
+  # which values Zimmer cut.
+  test "the notice names the cut key paths so a forged marker cannot pose as one" do
+    session = sessions(:running)
+    session.update!(custom_metadata: {
+      "forged" => "harmless... [cut: 300 of 9,000 characters shown]",
+      "real" => "r" * 900
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "1 string value longer than 300 characters was cut: `real`."
+    assert_not_includes output, "`forged`"
   end
 
   # An empty record is a meaningful answer and must not read like a cut one.
