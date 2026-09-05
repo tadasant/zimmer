@@ -299,6 +299,11 @@ class McpOauthCredentialInjector
   # when neither settles it — the original assumption, unchanged: a remote server
   # we cannot classify might need OAuth, so treat it as if it does.
   #
+  # Nothing in the app calls this today; the spawn gate reaches for
+  # #check_credentials_status and probes for itself. It is kept, and kept
+  # correct, because it is the one place the assumption was written down as a
+  # rule rather than applied in passing.
+  #
   # That last branch is deliberately still a guess. Erring the other way is the
   # dangerous direction: a server wrongly decided not to need OAuth never gets
   # credentials and fails at the point of use, silently, where an over-eager

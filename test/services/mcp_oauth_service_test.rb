@@ -744,18 +744,44 @@ class McpOauthServiceTest < ActiveSupport::TestCase
   end
 
   test "check_oauth_requirement reports an advertised absence when an unauthenticated request succeeds" do
-    mock_http = routed_mock_http do |path|
-      if path.include?("/.well-known/")
-        http_response(Net::HTTPNotFound, "404", "{}")
-      else
-        http_response(Net::HTTPSuccess, "200", "{}")
+    %w[application/json text/event-stream].each do |content_type|
+      mock_http = routed_mock_http do |path|
+        if path.include?("/.well-known/")
+          http_response(Net::HTTPNotFound, "404", "{}")
+        else
+          http_response(Net::HTTPSuccess, "200", "{}", headers: { "Content-Type" => content_type })
+        end
       end
+
+      requirement = stub_net_http(mock_http) { @service.check_oauth_requirement("https://api.example.com/mcp") }
+
+      assert_not requirement.required
+      assert_equal McpServerOauthRequirement::ADVERTISED_NOT_REQUIRED, requirement.determination,
+        "a 2xx in #{content_type} is the MCP endpoint answering"
     end
+  end
 
-    requirement = stub_net_http(mock_http) { @service.check_oauth_requirement("https://api.example.com/mcp") }
+  # The probe sends a bare GET that is not a well-formed MCP request, so a 200 is
+  # at least as likely to be a CDN interstitial or a landing page sharing the
+  # origin as it is to be the MCP server. Filing one of those as "needs no token"
+  # is the silent failure this whole change exists to avoid.
+  test "check_oauth_requirement leaves a 2xx that is not an MCP response undetermined" do
+    [ "text/html", "text/plain", nil ].each do |content_type|
+      mock_http = routed_mock_http do |path|
+        if path.include?("/.well-known/")
+          http_response(Net::HTTPNotFound, "404", "{}")
+        else
+          headers = content_type ? { "Content-Type" => content_type } : {}
+          http_response(Net::HTTPSuccess, "200", "<html></html>", headers: headers)
+        end
+      end
 
-    assert_not requirement.required
-    assert_equal McpServerOauthRequirement::ADVERTISED_NOT_REQUIRED, requirement.determination
+      requirement = stub_net_http(mock_http) { @service.check_oauth_requirement("https://api.example.com/mcp") }
+
+      assert_not requirement.required
+      assert_equal McpServerOauthRequirement::UNDETERMINED, requirement.determination,
+        "a 200 in #{content_type.inspect} says nothing about authorization"
+    end
   end
 
   # A streamable-HTTP server that wants a session id before it looks at auth

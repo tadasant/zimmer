@@ -1745,9 +1745,9 @@ rather than assuming. See
 [What the server advertised, recorded](/auth/mcp-oauth/#what-the-server-advertised-recorded).
 
 What remains is the third branch, and it is deliberate. A server that has never been probed, that
-could not be reached, or that answered the unauthenticated `GET` with anything other than `2xx` or
-a `Bearer` challenge is `undetermined`, and undetermined still means *assume OAuth might be
-required*. Erring the other way is the worse failure: a server wrongly decided not to need OAuth
+could not be reached, or that answered the unauthenticated `GET` with anything other than a
+`Bearer` challenge or an MCP-shaped `2xx` is `undetermined`, and undetermined still means *assume
+OAuth might be required*. Erring the other way is the worse failure: a server wrongly decided not to need OAuth
 never gets credentials and fails at the point of use, silently, where the over-eager assumption
 merely offers an Authorize button nobody needed. `advertised_not_required` also expires after seven
 days, so a server that starts requiring OAuth falls back to the assumption rather than being

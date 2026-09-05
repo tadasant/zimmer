@@ -81,18 +81,33 @@ class ConnectorStatusProbe
   class Status
     include ActionView::Helpers::DateHelper
 
-    attr_reader :server, :state, :missing_variables, :credential, :error_message, :variable_sources,
-      :oauth_determination
+    attr_reader :server, :state, :missing_variables, :credential, :error_message, :variable_sources
 
     def initialize(server:, state:, missing_variables: [], credential: nil, error_message: nil,
-      variable_sources: [], oauth_determination: nil)
+      variable_sources: [], credential_key: nil)
       @server = server
       @state = state
       @missing_variables = missing_variables
       @credential = credential
       @error_message = error_message
       @variable_sources = variable_sources
-      @oauth_determination = oauth_determination
+      @credential_key = credential_key
+    end
+
+    # What the server last advertised about needing OAuth, read lazily.
+    #
+    # Lazy on purpose: `#summary` is the only caller, and the two hottest readers
+    # of this class — `get_configs` and `McpServerOptions` — render
+    # `#unavailable_reason` instead and never ask. Resolving it eagerly in
+    # `.all` would put one query per credential-less server, up to the size of
+    # the catalog, on a routing session's critical path to produce a string
+    # nobody reads. Memoized through `defined?` so a repeat ask is free.
+    #
+    # @return [String] one of McpServerOauthRequirement::DETERMINATIONS
+    def oauth_determination
+      return @oauth_determination if defined?(@oauth_determination)
+
+      @oauth_determination = McpServerOauthRequirement.determination_for(@credential_key)
     end
 
     def server_name = server.name
@@ -281,9 +296,11 @@ class ConnectorStatusProbe
   # surfaces cannot drift.
   #
   # What this costs, stated honestly, because a routing session calls it on its
-  # critical path: one indexed credential lookup per OAuth-capable server (plus a
-  # second indexed lookup, for the recorded OAuth determination, on the ones with
-  # no credential), and secret resolution through SecretProviders' chain. When the Parameter Store
+  # critical path: one indexed credential lookup per OAuth-capable server, and
+  # secret resolution through SecretProviders' chain. (The recorded OAuth
+  # determination is a second indexed lookup, but `Status#oauth_determination`
+  # defers it until something asks for the row's prose, and `get_configs` never
+  # does.) When the Parameter Store
   # link is configured that chain CAN go to Google — it holds a 60-second
   # namespace snapshot, and a variable missing from the snapshot forces one
   # re-read (rate-limited to once per 10s across the process). That is the same
@@ -372,10 +389,12 @@ class ConnectorStatusProbe
 
     # No credential at all. This is the row where the difference between a server
     # that advertises OAuth and one nobody could classify is worth saying out
-    # loud, so it carries the recorded determination. Still a local read —
-    # McpServerOauthRequirement holds what an earlier probe already learned, and
-    # this class does not contact MCP servers.
-    status(:needs_authorization, oauth_determination: McpServerOauthRequirement.determination_for(credential_key))
+    # loud, so it carries the key to read the recorded determination under —
+    # the key, not the determination, so the lookup happens only if someone asks
+    # for the sentence. Still a local read either way: McpServerOauthRequirement
+    # holds what an earlier probe already learned, and this class does not
+    # contact MCP servers.
+    status(:needs_authorization, credential_key: credential_key)
   end
 
   # The credential the injector would find for this server — keyed on the same

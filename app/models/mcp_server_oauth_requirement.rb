@@ -95,16 +95,26 @@ class McpServerOauthRequirement < ApplicationRecord
     return nil if server_name.blank? || credential_key.blank?
     return nil unless DETERMINATIONS.include?(determination)
 
-    record = find_or_initialize_by(credential_key: credential_key)
-    record.assign_attributes(
-      server_name: server_name,
-      server_url: server_url,
-      determination: determination,
-      detail: detail.to_s.presence&.truncate(255),
-      determined_at: Time.current
+    # One statement, so two sessions probing the same server config at the same
+    # moment cannot race: a read-then-write would have both miss the row, both
+    # insert, and one lose the unique index. They are writing the same kind of
+    # fact about the same server, so last write wins is the intended outcome and
+    # the conflict is not worth surfacing. The manual guards above stand in for
+    # the validations `upsert` skips; the NOT NULLs are on the columns.
+    upsert(
+      {
+        credential_key: credential_key,
+        server_name: server_name,
+        server_url: server_url,
+        determination: determination,
+        detail: detail.to_s.presence&.truncate(255),
+        determined_at: Time.current
+      },
+      unique_by: :credential_key,
+      record_timestamps: true
     )
-    record.save!
-    record
+
+    for_credential_key(credential_key).first
   rescue StandardError => e
     Rails.logger.warn "[McpServerOauthRequirement] Failed to record #{determination} for #{server_name}: #{e.message}"
     nil
