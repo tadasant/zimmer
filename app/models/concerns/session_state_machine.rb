@@ -192,9 +192,13 @@ module SessionStateMachine
           # shut. See #turn_stood_down_before_it_ran?.
           retire_held_wake_triggers unless turn_stood_down_before_it_ran?
           execute_pending_sleep
-          # Last, and after execute_pending_sleep: a session that just went
-          # dormant is not idling on its queue, it is asleep, and the check
-          # below reads the state the sleep left behind.
+          # Last, and after execute_pending_sleep, so the check below reads the
+          # state the sleep left behind rather than the one it replaced. It no
+          # longer STOPS at a sleep: `waiting` is a resting state a queued
+          # message is owed delivery in too, and which populations of it are
+          # asleep on purpose is EnqueuedMessageDrainJob#skip_reason's call to
+          # make under its own re-read — not something to guess at from inside a
+          # transition callback (#566).
           drain_enqueued_messages_after_pause
         end
       end
@@ -879,6 +883,27 @@ module SessionStateMachine
     needs_input?
   end
 
+  # Whether this session is resting somewhere a queued message could be handed to
+  # it, rather than mid-turn or gone.
+  #
+  # BOTH resting states answer true, and that is the whole point. Zimmer's queue
+  # surfaces — the web form, `POST /api/v1/sessions/:id/enqueued_messages`, MCP
+  # `manage_enqueued_messages` — all promise the caller the message goes out
+  # "when the session becomes idle", and for most of this system's history only
+  # `needs_input` counted. A session resting in `waiting` is idle by every
+  # meaning the promise has, and the rows queued onto one had nothing at all
+  # scheduled to come back for them (#566, #690).
+  #
+  # Deliberately cheap and deliberately coarse: it is a state read and nothing
+  # else. Whether a PARTICULAR `waiting` session should be handed a message right
+  # now — asleep at the spot gate, parked on an auth outage, never started — is
+  # EnqueuedMessageDrainJob#skip_reason's question, asked once, under the job's
+  # own re-read. Two callers ask this one (the after-create hook and the pause
+  # callback) and both of them only decide whether to SCHEDULE that job.
+  def idle_for_queued_delivery?
+    needs_input? || waiting?
+  end
+
   # The current value of the counter #bump_needs_input_transition_counter writes.
   def needs_input_transition_count
     custom_metadata&.dig("needs_input_count").to_i
@@ -1222,12 +1247,15 @@ module SessionStateMachine
   # session — a second AASM event on this object, nested inside the first, plus
   # an AgentSessionJob enqueue — from whatever thread happened to call `pause!`,
   # including a web request. EnqueuedMessageDrainJob does it once the transition
-  # is committed and visible, under the same per-session advisory lock
-  # Sessions::InterruptService takes, and carries the bounded-retry and
-  # give-up-loudly logic that keeps a session which cannot take its message from
-  # bouncing between states forever.
+  # is committed and visible, re-reading the session for itself, and carries the
+  # bounded-retry and give-up-loudly logic that keeps a session which cannot take
+  # its message from bouncing between states forever. (It takes no advisory lock,
+  # deliberately — see that job's own header for why wrapping the processor call
+  # would break the processor's rescue. Concurrency is the processor's `FOR UPDATE
+  # SKIP LOCKED` claim, and the job's DELAY is what keeps it out of
+  # Sessions::InterruptService's way.)
   def drain_enqueued_messages_after_pause
-    return unless needs_input?
+    return unless idle_for_queued_delivery?
     return unless enqueued_messages.pending.exists?
 
     # Enqueued after commit, not inline. The job re-reads the session, so it

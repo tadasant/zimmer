@@ -645,6 +645,36 @@ class AgentSessionJob < ApplicationJob
         return
       end
 
+      # A queued message outranks a recovery nudge this job is carrying.
+      #
+      # THE OTHER HALF OF #566. The drain triggers above cover a message that
+      # arrives while the session is at rest. This covers the opposite ordering:
+      # the message was already queued, and something then resumed the session
+      # with an injected `SYSTEM_RECOVERY` nudge — an auth-outage un-park, a
+      # hung-process auto-restart, a job killed mid-turn and auto-continued, a
+      # deploy sweep, an operator restart. Every one of those ends in
+      # `enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)` and
+      # arrives HERE, which is why the check is here rather than repeated at each
+      # of them. Session 7681 was killed and resumed four times in ninety minutes
+      # and re-preempted its own queue on every cycle; session 6377's PR-merged
+      # notice lost to a nudge after waiting five hours.
+      #
+      # Scoped to the nudge on purpose. A human follow-up, a trigger prompt, a
+      # poller message and a restart-with-the-initial-prompt are all somebody
+      # saying something specific, and the queue drains behind them at the end of
+      # the turn. The nudge is the one prompt that says nothing the queue does not
+      # already say better: "you may have been interrupted, carry on". Delivering
+      # the queued message instead IS carrying on, with the reason attached.
+      # SessionContinuation has preferred the queue over the nudge on the
+      # deployment-recovery path since before this; this generalises that one
+      # path's decision to every path that shares its prompt.
+      if !resume_monitoring && !clone_only && session.session_id.present? &&
+         AutomatedPrompts.system_recovery?(follow_up_prompt) &&
+         queued_message_took_over?(session, log_buffer)
+        log_buffer.flush
+        return
+      end
+
       # Reclassify a follow-up/recovery prompt for a session that never
       # established a Claude session_id as a FRESH START.
       #
@@ -3258,6 +3288,104 @@ class AgentSessionJob < ApplicationJob
     )
     AgentSessionJob.enqueue_new_session(session.id, delay: PAUSE_CHECK_RETRY_DELAY)
     true
+  end
+
+  # Hand this turn to the session's oldest queued message instead of the recovery
+  # nudge this job was enqueued with.
+  #
+  # EnqueuedMessageProcessorService does the whole handoff and does it under the
+  # locking it already owns: it claims the row `FOR UPDATE SKIP LOCKED`, keeps the
+  # session `running` (the pre-pause handoff path, so there is no running →
+  # needs_input → running flap for watchers to trip over), releases
+  # `running_job_id` and enqueues a fresh AgentSessionJob carrying the message's
+  # content and attachments. This job then stands down; the message's job is the
+  # one that spawns.
+  #
+  # THE SESSION HAS TO BE `running`, and that guard is load-bearing rather than
+  # defensive. It is what selects the processor's handoff branch — the only branch
+  # that clears `running_job_id`. From `needs_input` or `waiting` the processor
+  # takes the `resume!` branch instead, which leaves `running_job_id` pointing at
+  # THIS job; the fresh AgentSessionJob would then be refused by the concurrency
+  # guard at the top of #perform as a duplicate, and the message it was carrying
+  # would be gone from the queue with no turn behind it. That is the silent loss
+  # this whole change exists to close, arriving from a new direction.
+  #
+  # It costs nothing on the paths this is for: every caller that injects a nudge
+  # resumes the session before enqueueing the job (`deliver_follow_up!`,
+  # `claim_system_recovery_turn!`, `AuthOutageParkService.resume_parked!`), so a
+  # session that is NOT `running` here is one that reverted underneath its own
+  # turn — and the follow-up arm below re-resumes it properly. The queue drains at
+  # the end of that turn as it always did.
+  #
+  # It also settles what happens to the session's armed one-time wakes. A
+  # SYSTEM_RECOVERY resume preserves them deliberately (see
+  # #resume_for_recovery_prompt), and a takeover must not quietly undo that: a
+  # `running` session's `may_resume?` is false, so the processor performs no
+  # resume at all and `cancel_pending_one_time_wake_triggers` never runs. The
+  # wakes survive the handoff exactly as they survive the nudge.
+  #
+  # The per-turn delivery markers are dropped BEFORE the handoff, not after, and
+  # the ordering is load-bearing. `pending_follow_up_prompt` means "a prompt was
+  # stamped for a job that has not picked it up yet", and the follow-up arm reads
+  # `pending_follow_up_prompt || follow_up_prompt`. Left standing, the job the
+  # handoff enqueues would find the nudge sitting there and deliver THAT in place
+  # of the message we just claimed — the same swallowing the never-started
+  # reclassification below has to guard against. Dropping it early costs nothing
+  # if the handoff then fails: the marker is only ever dropped once it has been
+  # established to be a nudge, so what is lost is a sentence recovery regenerates
+  # verbatim, and this job carries on and delivers it from its own argument.
+  #
+  # @return [Boolean] true when the message took the turn and this job should stop
+  def queued_message_took_over?(session, log_buffer)
+    return false unless session.running?
+    return false unless session.enqueued_messages.pending.exists?
+
+    # The gate above reads this job's ARGUMENT, but the follow-up arm resolves the
+    # prompt as `pending_follow_up_prompt || follow_up_prompt` — so a marker
+    # stamped by a `deliver_follow_up!` that landed after this job was enqueued is
+    # the prompt that would actually be delivered. Preempting it would take the
+    # turn from something nobody has established is a nudge, which is exactly what
+    # "scoped to the nudge on purpose" says this does not do.
+    pending_prompt = session.metadata&.dig("pending_follow_up_prompt").presence
+    return false if pending_prompt.present? && !AutomatedPrompts.system_recovery?(pending_prompt)
+
+    # The same refusal EnqueuedMessageDrainJob and both end-of-turn handoff sites
+    # make, stated here rather than inherited: a session parked on a quota or auth
+    # wall would spend the message on a turn that hits the same wall and parks
+    # again. Most nudge senders clear STALE_RETRY_METADATA_KEYS (which happens to
+    # include this marker) before enqueueing, but `action_session refresh_all`
+    # enqueues the nudge with no metadata cleanup at all, so relying on that
+    # coupling would be relying on an accident.
+    return false if session.metadata&.dig("auth_outage_reason").present?
+
+    session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
+
+    processor = EnqueuedMessageProcessorService.new(
+      session, log_buffer: log_buffer, broadcast_service: broadcast_service || BroadcastService.new
+    )
+    unless processor.process_next_message
+      log_buffer.add(
+        "A queued message was waiting, but the turn could not be handed to it — continuing with the " \
+        "recovery nudge instead. Anything still queued goes out at the end of this turn.",
+        level: "warning"
+      )
+      return false
+    end
+
+    log_buffer.add(
+      "Delivered a queued message instead of the automated recovery nudge — the message was already " \
+      "waiting for this session, and the nudge had nothing to add to it",
+      level: "info"
+    )
+    true
+  rescue => e
+    # Never fatal to the turn. The nudge is a perfectly good fallback and the
+    # message stays queued for the ordinary end-of-turn drain.
+    Rails.logger.error(
+      "[AgentSessionJob] Could not hand session #{session.id}'s recovery turn to its queued message: " \
+      "#{e.class}: #{e.message}"
+    )
+    false
   end
 
   # Re-transition a session to running for a prompt this job is already carrying.

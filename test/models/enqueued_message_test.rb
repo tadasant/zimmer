@@ -419,6 +419,18 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
     end
   end
 
+  # The other resting state, and the one that had no drain trigger at all (#566).
+  # A session asleep on an `open-pr` self-wake sits in `waiting`, so a PR-merged
+  # notice queued onto it took this branch — and nothing was scheduled to come
+  # back for it. Session 6377's notice was still `pending` five hours later.
+  test "queueing onto a session resting in waiting schedules its delivery too" do
+    session = sessions(:waiting)
+
+    assert_enqueued_with(job: EnqueuedMessageDrainJob, args: [ session.id ]) do
+      session.enqueued_messages.create!(content: "your PR merged", position: 1)
+    end
+  end
+
   test "queueing onto a running session schedules nothing" do
     session = sessions(:running)
 

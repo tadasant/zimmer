@@ -85,10 +85,17 @@ class EnqueuedMessage < ApplicationRecord
   # the three `create` surfaces — the web queue form, `POST
   # /api/v1/sessions/:id/enqueued_messages`, MCP `manage_enqueued_messages` —
   # checks the session's state, and all three tell the caller the message will
-  # be delivered "when the session becomes idle". A session in `needs_input`
-  # already is, and nothing was going to come back for the row: the only sweep
-  # that wakes an idle session, HeartbeatSweepJob, skips one that has a pending
-  # message.
+  # be delivered "when the session becomes idle". A session at rest already is,
+  # and nothing was going to come back for the row: the only sweep that wakes an
+  # idle session, HeartbeatSweepJob, skips one that has a pending message.
+  #
+  # "At rest" is Session#idle_for_queued_delivery?, which is BOTH resting states.
+  # It used to be `needs_input?` alone, and `waiting` — the state an `open-pr`
+  # self-wake, an `action_session sleep` and every park leave behind — had no
+  # drain trigger whatsoever. That is the gap in #566: a PR-merged notice was
+  # queued onto a session resting in `waiting`, nothing was scheduled to deliver
+  # it, and it was still `pending` when the archive guard named it five hours
+  # later.
   #
   # after_create_commit, not after_create: the job must not run against a row
   # its own transaction has not committed yet.
@@ -285,12 +292,15 @@ class EnqueuedMessage < ApplicationRecord
   end
 
   # See the callback declaration for why this exists. The job re-reads
-  # everything under the per-session advisory lock, so this only has to be
-  # cheap and roughly right — and it deliberately does not fire for a session in
-  # any other state, where the ordinary end-of-turn drain is already the answer.
+  # everything itself, so this only has to be cheap and roughly right — and it
+  # deliberately does not fire for a `running` session, where the ordinary
+  # end-of-turn drain is already the answer. A `waiting` session the job then
+  # declines (spot-held, auth-parked, never started) costs one delayed job that
+  # logs why and returns; that is the right side to be wrong on, because the
+  # other side is a message nobody ever comes back for.
   def deliver_if_session_already_idle
     return unless status == "pending"
-    return unless session&.needs_input?
+    return unless session&.idle_for_queued_delivery?
 
     EnqueuedMessageDrainJob.set(wait: EnqueuedMessageDrainJob::DELAY).perform_later(session_id)
   rescue => e

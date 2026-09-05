@@ -100,6 +100,157 @@ class EnqueuedMessageDrainJobTest < ActiveJob::TestCase
     assert_equal "pending", message.reload.status
   end
 
+  # ---------------------------------------------------------------------------
+  # `waiting` — the other resting state (#566, #690)
+  #
+  # The three create surfaces all promise the caller delivery "when the session
+  # becomes idle", and a session resting in `waiting` already is: asleep on an
+  # `open-pr` self-wake, slept by `action_session sleep`, resting after a park.
+  # This job used to refuse every one of them, and nothing else was coming.
+  # ---------------------------------------------------------------------------
+
+  def sleeping_session_with_queued_message(content: "Your PR merged. That is your signal to archive.")
+    session = sessions(:waiting)
+    session.update!(
+      status: :waiting,
+      session_id: SecureRandom.uuid,
+      transcript: { "type" => "user", "message" => { "content" => "go" } }.to_json,
+      metadata: { "working_directory" => "/tmp/drain-waiting-clone" }
+    )
+    message = session.enqueued_messages.create!(content: content, position: 1, status: "pending")
+    [ session, message ]
+  end
+
+  test "delivers to a session resting in waiting, not just one in needs_input" do
+    session, message = sleeping_session_with_queued_message
+
+    assert_enqueued_with(job: AgentSessionJob) do
+      EnqueuedMessageDrainJob.perform_now(session.id)
+    end
+
+    assert session.reload.running?, "a sleeping session takes the message it was owed"
+    assert_not EnqueuedMessage.exists?(message.id)
+  end
+
+  # The wake this consumes is the one the session armed to sleep on the very
+  # thing that just arrived. Spending it to deliver the notice is the point.
+  test "delivering to a sleeping session is worth the wake it consumes" do
+    session, = sleeping_session_with_queued_message
+    session.stubs(:paused_until_scheduled_time?).returns(true)
+    Session.stubs(:find_by).with(id: session.id).returns(session)
+
+    EnqueuedMessageDrainJob.perform_now(session.id)
+
+    assert session.reload.running?,
+      "an armed self-wake is not a reason to leave the message it was waiting for undelivered"
+  end
+
+  # `waiting` is not only a resting state — it is also where a session sits for
+  # the whole of its FIRST START, from the moment AgentSessionJob claims
+  # `running_job_id` through the clone and the spawn until the transition to
+  # `running`. Delivering into that window LOSES the message: the processor takes
+  # its resume! branch (which does not clear `running_job_id`), destroys the row,
+  # and the fresh AgentSessionJob it enqueues is refused as a duplicate of the
+  # live first-start job.
+  test "leaves a session a job is already driving alone" do
+    session, message = sleeping_session_with_queued_message
+    session.update!(running_job_id: SecureRandom.uuid)
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      EnqueuedMessageDrainJob.perform_now(session.id)
+    end
+
+    assert_equal "pending", message.reload.status
+    assert session.reload.waiting?, "a session mid-first-start is not idling on its queue"
+  end
+
+  # The refusal above is scoped to `waiting` deliberately. A `needs_input` session
+  # carrying a stale job id is exactly what this job's bounded retry and alert
+  # exist to report, so it must still be attempted rather than skipped silently.
+  test "a stale job id does not stop a drain for a session in needs_input" do
+    session, message = idle_session_with_queued_message
+    session.update!(running_job_id: SecureRandom.uuid)
+
+    EnqueuedMessageDrainJob.perform_now(session.id)
+
+    assert_not EnqueuedMessage.exists?(message.id), "the needs_input drain is unchanged"
+  end
+
+  # A follow-up prompt into a session with no runtime session id is reclassified
+  # by AgentSessionJob as a FRESH START, which runs the session's own prompt and
+  # DISCARDS the follow-up. "Delivering" here would destroy the message.
+  test "leaves a session that has never started alone" do
+    session, message = sleeping_session_with_queued_message
+    session.update!(session_id: nil, transcript: nil)
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      EnqueuedMessageDrainJob.perform_now(session.id)
+    end
+
+    assert_equal "pending", message.reload.status
+    assert session.reload.waiting?
+  end
+
+  # The population `never_ran?` would have missed, and the one that matters most.
+  # A session that HAS run has a transcript, so `never_ran?` is false — but the
+  # reclassification this refusal guards against keys on the session id alone,
+  # and a session whose stale runtime id was released (failed-resume recovery,
+  # ProcessLifecycleManager#release_stale_runtime_session_id!) has a full
+  # transcript and no id. Draining into one spends the message on a turn that
+  # runs `session.prompt` instead and throws the message away.
+  test "leaves a session whose runtime session id was released alone, transcript or no transcript" do
+    session, message = sleeping_session_with_queued_message
+    session.update!(session_id: nil)
+    assert_not session.never_ran?, "this session has run — the narrower guard would not have caught it"
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      EnqueuedMessageDrainJob.perform_now(session.id)
+    end
+
+    assert_equal "pending", message.reload.status
+    assert session.reload.waiting?
+  end
+
+  # SpotSessionHold refuses the turn at the door and re-queues it as a fresh row.
+  # Draining into one would churn the message's position and origin on every
+  # pass while the gate's own re-check is already the thing that will run it.
+  test "leaves a session held at the spot quota gate alone" do
+    session, message = sleeping_session_with_queued_message
+    session.merge_metadata!(SpotSessionHold::HELD_REASON => "at_utilization_limit")
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      EnqueuedMessageDrainJob.perform_now(session.id)
+    end
+
+    assert_equal "pending", message.reload.status
+  end
+
+  test "leaves a session paused in the spot queue alone" do
+    session, message = sleeping_session_with_queued_message
+    session.merge_metadata!(SpotSessionPause::PAUSED_REASON => "at_utilization_limit")
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      EnqueuedMessageDrainJob.perform_now(session.id)
+    end
+
+    assert_equal "pending", message.reload.status
+  end
+
+  # The park's own marker already covers both resting states, and it has to: a
+  # fresh turn would hit the same wall, burn the message and park again. The
+  # queued notice is delivered by the un-park instead, which resumes with a
+  # recovery nudge that AgentSessionJob hands to the queue.
+  test "leaves a session parked on an auth outage in waiting alone" do
+    session, message = sleeping_session_with_queued_message
+    session.merge_metadata!("auth_outage_reason" => "quota_exhausted")
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      EnqueuedMessageDrainJob.perform_now(session.id)
+    end
+
+    assert_equal "pending", message.reload.status
+  end
+
   test "leaves a session waiting on a scheduled MCP retry alone" do
     session, message = idle_session_with_queued_message
     session.update!(metadata: (session.metadata || {}).merge("paused_by" => "mcp_retry"))
