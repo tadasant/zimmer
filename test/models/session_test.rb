@@ -789,51 +789,33 @@ class SessionTest < ActiveSupport::TestCase
   test "broadcast_update broadcasts to the individual channel" do
     session = sessions(:running)
 
-    individual_replaced = false
+    captured = capture_turbo_broadcasts { session.send(:broadcast_update_to_sessions_index) }
 
-    original_broadcast_replace_to = session.method(:broadcast_replace_to)
-    session.define_singleton_method(:broadcast_replace_to) do |channel, **opts|
-      individual_replaced = true if channel == "sessions_index_individual"
-      original_broadcast_replace_to.call(channel, **opts)
-    end
-
-    session.send(:broadcast_update_to_sessions_index)
-
-    assert individual_replaced, "Expected broadcast to sessions_index_individual channel"
+    assert_equal [ [ :replace, "sessions_index_individual", ActionView::RecordIdentifier.dom_id(session) ] ],
+                 captured.map { |b| [ b.action, b.stream, b.target ] },
+                 "Expected a replace of this session's card on the sessions_index_individual channel"
   end
 
   test "broadcast_create broadcasts to the individual channel" do
     session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Individual channel create test", title: "Individual channel", status: :waiting)
     session.save!
 
-    individual_prepended = false
+    captured = capture_turbo_broadcasts { session.send(:broadcast_create_to_sessions_index) }
 
-    original_broadcast_prepend_to = session.method(:broadcast_prepend_to)
-    session.define_singleton_method(:broadcast_prepend_to) do |channel, **opts|
-      individual_prepended = true if channel == "sessions_index_individual"
-      original_broadcast_prepend_to.call(channel, **opts)
-    end
-
-    session.send(:broadcast_create_to_sessions_index)
-
-    assert individual_prepended, "Expected broadcast to sessions_index_individual channel on create"
+    assert_equal [ [ :prepend, "sessions_index_individual", "sessions_grid" ] ],
+                 captured.map { |b| [ b.action, b.stream, b.target ] },
+                 "Expected a prepend into the uncategorized grid on the sessions_index_individual channel"
   end
 
   test "child session update broadcasts individual card to sessions_index_individual" do
     parent = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Parent", status: :running)
     child = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Child", parent_session_id: parent.id, status: :running)
 
-    individual_replaced = false
+    captured = capture_turbo_broadcasts { child.send(:broadcast_update_to_sessions_index) }
 
-    original_broadcast_replace_to = child.method(:broadcast_replace_to)
-    child.define_singleton_method(:broadcast_replace_to) do |channel, **opts|
-      individual_replaced = true if channel == "sessions_index_individual"
-      original_broadcast_replace_to.call(channel, **opts)
-    end
-
-    child.send(:broadcast_update_to_sessions_index)
-
-    assert individual_replaced, "Expected child session to broadcast its own card to sessions_index_individual"
+    assert_equal [ [ :replace, "sessions_index_individual", ActionView::RecordIdentifier.dom_id(child) ] ],
+                 captured.map { |b| [ b.action, b.stream, b.target ] },
+                 "Expected child session to broadcast its own card to sessions_index_individual"
   end
 
   test "creating a spawned child broadcasts a refreshed provenance panel to the parent detail page" do
@@ -1022,63 +1004,27 @@ class SessionTest < ActiveSupport::TestCase
     session = sessions(:running)
 
     # Track which broadcast method was called for the sessions_index channel
-    remove_called = false
-    sessions_index_replace_called = false
-
-    session.define_singleton_method(:broadcast_remove_from_sessions_index) do
-      remove_called = true
-    end
-
-    # Track the original method to call later
-    original_broadcast_replace_to = session.method(:broadcast_replace_to)
-
-    # Override broadcast_replace_to to detect if REPLACE was called for sessions_index channels
-    session.define_singleton_method(:broadcast_replace_to) do |channel, **opts|
-      if channel.start_with?("sessions_index_")
-        sessions_index_replace_called = true
-      end
-      # Call original for other channels (e.g., session detail page broadcasts)
-      original_broadcast_replace_to.call(channel, **opts)
-    end
-
     # Archive the session - this should trigger broadcast_update_to_sessions_index
-    # which should call broadcast_remove_from_sessions_index instead of broadcast_replace_to
-    session.update!(status: :archived)
+    # which should call broadcast_remove_from_sessions_index instead of a replace
+    captured = capture_turbo_broadcasts { session.update!(status: :archived) }
+    index_broadcasts = captured.select { |b| b.stream.to_s.start_with?("sessions_index_") }
 
-    # Verify remove was called, not replace for sessions_index
-    assert remove_called, "Expected broadcast_remove_from_sessions_index to be called when session is archived"
-    assert_not sessions_index_replace_called, "Expected broadcast_replace_to NOT to be called for sessions_index when session is archived"
+    assert_equal [ [ :remove, "sessions_index_individual", ActionView::RecordIdentifier.dom_id(session) ] ],
+                 index_broadcasts.map { |b| [ b.action, b.stream, b.target ] },
+                 "Expected the archived session's card to be REMOVED from the index, not replaced on it"
   end
 
   test "should broadcast replace when session status changes to non-archived status" do
     session = sessions(:needs_input)
 
     # Track which broadcast method was called for the sessions_index channel
-    remove_called = false
-    sessions_index_replace_called = false
+    # Change to running status - should trigger a replace, not a remove
+    captured = capture_turbo_broadcasts { session.update!(status: :running) }
+    index_broadcasts = captured.select { |b| b.stream.to_s.start_with?("sessions_index_") }
 
-    session.define_singleton_method(:broadcast_remove_from_sessions_index) do
-      remove_called = true
-    end
-
-    # Track the original method to call later
-    original_broadcast_replace_to = session.method(:broadcast_replace_to)
-
-    # Override broadcast_replace_to to detect if REPLACE was called for sessions_index channels
-    session.define_singleton_method(:broadcast_replace_to) do |channel, **opts|
-      if channel.start_with?("sessions_index_")
-        sessions_index_replace_called = true
-      end
-      # Call original for other channels
-      original_broadcast_replace_to.call(channel, **opts)
-    end
-
-    # Change to running status - should trigger broadcast_replace_to, not remove
-    session.update!(status: :running)
-
-    # Verify replace was called for sessions_index, not remove
-    assert sessions_index_replace_called, "Expected broadcast_replace_to to be called for sessions_index channels when session status changes to non-archived"
-    assert_not remove_called, "Expected broadcast_remove_from_sessions_index NOT to be called for non-archived status"
+    assert_equal [ [ :replace, "sessions_index_individual", ActionView::RecordIdentifier.dom_id(session) ] ],
+                 index_broadcasts.map { |b| [ b.action, b.stream, b.target ] },
+                 "Expected the card to be REPLACED on the index when the status changes to a non-archived one"
   end
 
   # Test git_root validations
@@ -1991,31 +1937,29 @@ class SessionTest < ActiveSupport::TestCase
   # Issue pulsemcp/agents#321: Ensure broadcast failures don't prevent session updates
   # from background jobs
 
-  test "broadcast_status_change has error handling that logs and does not raise" do
+  # Failure isolation lives in BroadcastService now (#524), so a dead cable is
+  # swallowed there and logged at WARN rather than ERROR — an ERROR line is a page
+  # on this deployment, and a dropped cable write is the transient the circuit
+  # breaker exists to absorb quietly. test/models/broadcast_delegation_test.rb
+  # covers the breaker and the ErrorReporter side; this keeps the original claim
+  # that the caller does not see the failure.
+  test "broadcast_status_change has error handling that does not raise" do
     session = sessions(:running)
-
-    # Capture log output
-    log_output = StringIO.new
-    original_logger = Rails.logger
-    Rails.logger = Logger.new(log_output)
+    BroadcastService.any_instance.stubs(:sleep)
 
     begin
-      # Directly test the broadcast_status_change method by mocking broadcast_replace_to to raise
-      # This simulates the case where rendering fails
-      session.stubs(:broadcast_replace_to).raises(StandardError, "Test broadcast failure")
-
-      # Manually call the method (since we can't easily trigger it through update with stubbed broadcast_replace_to)
-      # Should not raise - error should be caught and logged
-      assert_nothing_raised do
-        session.send(:broadcast_status_change)
+      entries = capture_log_entries do
+        capture_turbo_broadcasts(raises: StandardError.new("Test broadcast failure")) do
+          assert_nothing_raised { session.send(:broadcast_status_change) }
+        end
       end
 
-      # Check that error was logged (now logged per-component)
-      log_content = log_output.string
-      assert_match(/Broadcast status badge failed/, log_content)
-      assert_match(/Test broadcast failure/, log_content)
+      assert entries.any? { |severity, message| severity == "WARN" && message.include?("Broadcast failed after retries") },
+             "Expected the dropped broadcast to be logged at WARN"
+      assert_empty entries.select { |severity, message| severity == "ERROR" && message.include?("Broadcast failed") },
+                   "A dropped broadcast must not log at ERROR — that is a page"
     ensure
-      Rails.logger = original_logger
+      BroadcastService.new.reset_circuit_breaker
     end
   end
 
@@ -2220,29 +2164,21 @@ class SessionTest < ActiveSupport::TestCase
     assert_not paths.include?(nil)
   end
 
-  test "broadcast_metadata_change has error handling that logs and does not raise" do
+  test "broadcast_metadata_change has error handling that does not raise" do
     session = sessions(:running)
-
-    # Capture log output
-    log_output = StringIO.new
-    original_logger = Rails.logger
-    Rails.logger = Logger.new(log_output)
+    BroadcastService.any_instance.stubs(:sleep)
 
     begin
-      # Mock broadcast_replace_to to raise an error
-      session.stubs(:broadcast_replace_to).raises(StandardError, "Test metadata broadcast failure")
-
-      # Should not raise - error should be caught and logged
-      assert_nothing_raised do
-        session.send(:broadcast_metadata_change)
+      entries = capture_log_entries do
+        capture_turbo_broadcasts(raises: StandardError.new("Test metadata broadcast failure")) do
+          assert_nothing_raised { session.send(:broadcast_metadata_change) }
+        end
       end
 
-      # Check that error was logged
-      log_content = log_output.string
-      assert_match(/Broadcast metadata change failed/, log_content)
-      assert_match(/Test metadata broadcast failure/, log_content)
+      assert entries.any? { |severity, message| severity == "WARN" && message.include?("Broadcast failed after retries") },
+             "Expected the dropped broadcast to be logged at WARN"
     ensure
-      Rails.logger = original_logger
+      BroadcastService.new.reset_circuit_breaker
     end
   end
 

@@ -470,8 +470,11 @@ actual server, and exits non-zero when they don't fit. Run it in the container, 
 ### A saturated `cable` pool would degrade silently
 
 `BroadcastService` rescues every broadcast failure and deliberately does not re-raise — a failed Turbo
-Stream must not kill the agent job that emitted it (`app/services/broadcast_service.rb:265`), and a
-circuit breaker opens after five failures. That is the right call for the job, but it means the
+Stream must not kill the agent job that emitted it (`BroadcastService#broadcast_with_retry`), and a
+circuit breaker opens after five failures. Since
+[#524](https://github.com/tadasant/zimmer/issues/524) that covers *every* broadcast in the app,
+model-side callbacks included, so there is nowhere left that a dropped cable write surfaces as an
+exception. That is the right call for the job, but it means the
 `cable` pool is the one pool whose exhaustion produces no error: the symptom is UI updates that stop
 arriving while the session itself runs fine. The UI at least admits it now — an open breaker lights
 the "Live updates paused" banner (see

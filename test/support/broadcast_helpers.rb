@@ -70,6 +70,67 @@ module BroadcastHelpers
     assert actual_count > 0, "Expected at least one broadcast, but none were sent"
   end
 
+  # === Argument-level broadcast capture ===
+  #
+  # `assert_broadcasts` above counts. This captures, and the difference is the
+  # point: a broadcast sent to the wrong stream or the wrong target still counts
+  # as one broadcast, and the only symptom is a card in the live UI that quietly
+  # stops updating. Tests that pin a call site's stream/target/partial want this.
+  #
+  # It swaps the four Turbo::StreamsChannel class methods for recorders, so it
+  # sees every broadcast in the process — including the ones BroadcastService
+  # makes on a model's behalf — and nothing reaches ActionCable.
+  #
+  # @param raises [Exception, nil] when given, every captured broadcast raises it
+  #   afterwards, which is how the failure-isolation tests simulate a dead cable.
+  # @yield [Array<CapturedBroadcast>] the (growing) list, also returned
+  CapturedBroadcast = Struct.new(:action, :stream, :target, :partial, :locals, :html) do
+    def to_h_for_diff
+      { action: action, stream: stream, target: target, partial: partial, locals: locals }.compact
+    end
+  end
+
+  TURBO_BROADCAST_ACTIONS = %i[replace append prepend remove].freeze
+
+  def capture_turbo_broadcasts(raises: nil)
+    captured = []
+
+    TURBO_BROADCAST_ACTIONS.each do |action|
+      name = :"broadcast_#{action}_to"
+      Turbo::StreamsChannel.define_singleton_method(name) do |*streamables, **options|
+        captured << CapturedBroadcast.new(
+          action,
+          streamables.first,
+          options[:target],
+          options[:partial],
+          options[:locals],
+          options[:html]
+        )
+        raise raises if raises
+
+        nil
+      end
+    end
+
+    yield captured
+    captured
+  ensure
+    # The real implementations arrive through `extend Turbo::Streams::Broadcasts`,
+    # so they are NOT singleton methods of the class — removing the definitions
+    # made above uncovers them again. Re-defining them would leave a permanent
+    # shadow in every later test in this worker.
+    TURBO_BROADCAST_ACTIONS.each do |action|
+      name = :"broadcast_#{action}_to"
+      Turbo::StreamsChannel.singleton_class.send(:remove_method, name) if
+        Turbo::StreamsChannel.singleton_class.instance_methods(false).include?(name)
+    end
+  end
+
+  # The subset of captures on a given stream, in order.
+  def broadcasts_on(captured, stream)
+    captured.select { |b| b.stream == stream }
+  end
+
   private
 
   # Count broadcast jobs for a given streamable

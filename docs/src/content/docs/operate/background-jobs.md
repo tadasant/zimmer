@@ -1718,6 +1718,26 @@ cache in production — but nothing enforces that, and in development it silentl
 
 When it trips, live UI updates stop for 60 seconds. The session keeps running; you can't see it.
 
+**Every broadcast goes through it.** That was not always true. The session-card updates on the index,
+the timeline appends from `Log`, the status badge / follow-up form / header actions / metadata panels
+on the detail page and the Ranked view's rows used to call Turbo's model helpers directly, which meant
+the breaker covered roughly a third of the app's broadcasts and the banner below claimed a pause it
+could not deliver. `BroadcastsThroughService` (`app/models/concerns/broadcasts_through_service.rb`)
+routes those callbacks through `BroadcastService#broadcast_partial` / `#broadcast_html` /
+`#broadcast_removal` instead, so all of them get the retry, the breaker and the swallow
+([#524](https://github.com/tadasant/zimmer/issues/524)).
+
+Two consequences worth knowing:
+
+- **A broadcast can no longer fail its caller.** Six of those methods sit on `after_*_commit` and had
+  no `rescue` at all, so a render or cable failure propagated into whatever had just saved the row —
+  a poller, a state-machine transition, the agent job.
+- **A dropped broadcast is a `WARN`, not a page.** After `MAX_RETRIES` the service logs at WARN and
+  reports the exception to `ErrorReporter`. That is deliberate: this deployment pages on *any* Zimmer
+  `ERROR` line (see `ApplicationJob`), and a transient cable failure is precisely what the breaker
+  exists to absorb quietly. `ErrorReporter` is not level-based and does not page, so the failure is
+  still visible in GlitchTip with its backtrace.
+
 The UI says so while that lasts: a "Live updates paused" banner sits under the network-egress banner
 in the layout, on every page. It reports that broadcasts are failing, that your sessions are still
 running, and roughly when updates resume.
