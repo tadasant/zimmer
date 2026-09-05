@@ -501,9 +501,10 @@ class UnarchiveSessionService
   # writing nothing — so :skipped is a normal outcome, NOT a failure. An
   # unarchive of a Codex session must succeed.
   #
-  # @return [Symbol] :written when the transcript landed on disk, :skipped when
-  #   the runtime has no single-file resume path, :failed when the write was
-  #   attempted and raised
+  # @return [Symbol] :written when the transcript landed on disk, :adopted when
+  #   the file already on disk was longer and was kept (and copied into
+  #   session.transcript), :skipped when the runtime has no single-file resume
+  #   path, :failed when the write was attempted and raised
   def write_transcript_file(working_directory:, transcript:)
     transcript_file = TranscriptRuntime.source_for(session, file_system: file_system)
       .resume_transcript_path(session: session, working_directory: working_directory)
@@ -514,6 +515,8 @@ class UnarchiveSessionService
       )
       return :skipped
     end
+
+    return :adopted if adopt_longer_on_disk_transcript(transcript_file, transcript)
 
     file_system.mkdir_p(File.dirname(transcript_file))
 
@@ -528,6 +531,50 @@ class UnarchiveSessionService
   rescue => e
     @logger.error("Failed to write transcript file", error: e.message)
     :failed
+  end
+
+  # Keep the transcript already on disk when it holds MORE of the conversation
+  # than the stored copy, and heal `session.transcript` from it.
+  #
+  # The restore is normally the authoritative direction — `session.transcript` is
+  # the durable record and the file is gone or stale. But the quick path runs
+  # against a clone that survived, so the file can be the runtime's own, still
+  # holding turns the stored copy never caught. That happens on exactly one
+  # route, and it is not rare: a session that archives ITSELF writes its closing
+  # turn to disk and is killed moments later, so whatever the last poll missed
+  # lives only in this file (session 13908). Overwriting it here would destroy the only
+  # remaining copy — and cost the resumed agent its own last turn, so it wakes
+  # with no memory of the answer it just gave.
+  #
+  # Only ever grows the record. A shorter or equal file is the ordinary case and
+  # takes the normal write below, so a genuinely stale file is still replaced.
+  #
+  # @return [Boolean] true when the on-disk file was kept as-is
+  def adopt_longer_on_disk_transcript(transcript_file, transcript)
+    return false unless file_system.exists?(transcript_file)
+
+    on_disk = file_system.read(transcript_file)
+    return false if on_disk.blank?
+    return false unless Session.transcript_regression?(on_disk, transcript)
+
+    stored_lines = Session.transcript_line_count(transcript)
+    disk_lines = Session.transcript_line_count(on_disk)
+
+    @logger.info("Keeping the longer transcript already on disk and healing the stored copy from it",
+      path: transcript_file,
+      stored_lines: stored_lines,
+      on_disk_lines: disk_lines
+    )
+
+    with_db_retry { session.update!(transcript: on_disk) }
+    true
+  rescue => e
+    # Never fail an unarchive over this: the stored copy is intact either way, so
+    # fall back to writing it.
+    @logger.warn("Could not adopt the on-disk transcript; falling back to the stored copy",
+      error: e.message
+    )
+    false
   end
 
   def regenerate_mcp_config(working_directory)
