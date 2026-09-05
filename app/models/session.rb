@@ -507,6 +507,7 @@ class Session < ApplicationRecord
     transcript_reading_started_logged
     interrupted_start_requeue_count
     recovery_continue_attempts
+    recovery_refused_superseded_by
     stranded_sleep_rescues
     stranded_sleep_abandoned
     deliberate_sleep_at
@@ -713,6 +714,12 @@ class Session < ApplicationRecord
 
   after_create :set_default_title
   after_create_commit :enqueue_session_inference
+  # Stamp the replaced session with a back-reference the moment a replacement
+  # declares itself. `after_save_commit`, not `after_create_commit`: the
+  # convention is settable after creation too (`PATCH /api/v1/sessions/:id`
+  # permits `custom_metadata`), and the guard on the column change makes it a
+  # no-op for every save that does not touch it.
+  after_save_commit :stamp_replaced_session_back_reference, if: :saved_change_to_custom_metadata?
 
   # The session that SPAWNED this one, as an id.
   #
@@ -732,6 +739,153 @@ class Session < ApplicationRecord
     return nil if derived.blank?
 
     Integer(derived, exception: false)
+  end
+
+  # == The replacement relation
+  #
+  # A session that could not do its work is sometimes REPLACED: whoever
+  # dispatched it spawns a second session with the same task, and records the
+  # handoff on the REPLACEMENT, in its own
+  # `custom_metadata["replaces_session"]` (with a free-text `replaces_reason`
+  # beside it). Nothing in Zimmer ever wrote those keys — they are a convention
+  # the fleet's routers already follow, on every surface that can set
+  # `custom_metadata` (MCP `start_session`, `POST /api/v1/sessions`, a later
+  # `PATCH`). This is where Zimmer starts reading them.
+  #
+  # DERIVED, NOT COPIED INTO A COLUMN. The same choice `lineage_parent_id`
+  # makes for the pre-`parent_session_id` spawn edge, for the same reason: the
+  # replacement is the row that records the fact about itself, so a derived
+  # reading cannot drift from what it recorded. A column would need a
+  # normalizer on every write surface — including `merge_custom_metadata!`,
+  # which is a raw UPDATE and runs no callbacks — plus a backfill, and every
+  # gap in that dual-write is a session the guard below silently fails to see.
+  # The reading is indexed (`index_sessions_on_replaces_session`), so it costs
+  # one indexed lookup rather than a scan.
+  #
+  # Strict on purpose, in both directions: the query matches the id exactly, and
+  # `replaces_session_id` accepts only a value that parses as a positive integer
+  # naming some OTHER session. The failure mode of matching loosely is refusing
+  # to resume a session that nobody replaced, which is the silent one.
+  REPLACES_SESSION_KEY = "replaces_session"
+  REPLACES_REASON_KEY = "replaces_reason"
+
+  # The other direction, and the half Zimmer writes: the notice stamped on the
+  # REPLACED session when its replacement is created, so the handoff is readable
+  # from the session that was replaced and not only from the one that replaced
+  # it (#801). It is a notice for whoever reads the session — a human on its
+  # page, an agent through `get_session`, which hands `custom_metadata` back
+  # verbatim — and NOT the fact the guard decides on. `replacement_sessions` is
+  # the truth; a missing stamp cannot cost a refusal, and a stale one cannot
+  # cause one.
+  REPLACED_BY_SESSION_KEY = "replaced_by_session"
+  REPLACED_BY_REASON_KEY = "replaced_by_reason"
+  REPLACED_AT_KEY = "replaced_at"
+
+  # Sessions recording that they replace session `session_id`. The literal key is
+  # inlined rather than bound so the expression matches the index built on it.
+  scope :replacing_session, ->(session_id) {
+    where("sessions.custom_metadata->>'replaces_session' = ?", session_id.to_s)
+  }
+
+  # The id of the session this one was created to replace, or nil.
+  #
+  # Deliberately the SAME reading the scope above makes, rather than a more
+  # forgiving one: `Integer()` accepts `" 123 "`, and accepting it here while the
+  # SQL compares the raw text would stamp "you were replaced" on a session the
+  # guard would never refuse for. So the parsed value has to round-trip to
+  # exactly what is stored.
+  def replaces_session_id
+    raw = custom_metadata&.dig(REPLACES_SESSION_KEY)
+    return nil if raw.nil?
+
+    value = Integer(raw.to_s, exception: false)
+    return nil unless value&.positive?
+    return nil unless raw.to_s == value.to_s
+    return nil if value == id
+
+    value
+  end
+
+  # Every session that records having replaced this one. Empty for the vast
+  # majority of sessions, which is the population the guard below must not touch.
+  def replacement_sessions
+    return Session.none if id.blank?
+
+    Session.replacing_session(id).where.not(id: id)
+  end
+
+  # The replacement that is carrying this session's work, or nil.
+  #
+  # A `failed` replacement is not carrying anything — it is the case where the
+  # original may still be the best hope — so it does not count. Every other
+  # status does: `archived` is the #801 shape (the replacement finished, merged
+  # its PR and archived eleven hours before the sweep resumed the session it
+  # replaced), and a replacement still running or resting is the same duplication
+  # arriving earlier.
+  #
+  # Deliberately NOT transitive. If the only replacement failed and was itself
+  # replaced, this answers nil and the original is resumable — one hop is what
+  # the convention records, and guessing further is how a narrow refusal becomes
+  # a broad one.
+  def replacement_carrying_work
+    replacement_sessions.where.not(status: :failed).order(id: :desc).first
+  end
+
+  # One clause naming the replacement that stopped an automated resume, for the
+  # refusal message each recovery caller writes on the session's timeline.
+  #
+  # Takes the replacement when the caller already has it — the sweep path reads
+  # it to record the refusal — so a refusal costs one query rather than three.
+  def replacement_refusal_clause(replacement = replacement_carrying_work)
+    return "its work was handed to a replacement session" if replacement.nil?
+
+    "its work was handed to session #{replacement.id}, which replaced it and is #{replacement.status}"
+  end
+
+  # Record on THIS (the replaced) session that `replacement` took its work over.
+  #
+  # Two surfaces, because two readers ask: the keys in `custom_metadata`, which
+  # `get_session` and the REST API hand back verbatim to an agent, and one line
+  # on the timeline, which is where a human on the session page asks "what
+  # happened to this?".
+  #
+  # Idempotent on `replaced_by_session`, so the live callback and the historical
+  # backfill can both call it and neither re-logs a handoff already recorded.
+  #
+  # @param replacement [Session] the session that replaced this one
+  # @param at [Time] when the handoff happened — the replacement's creation time
+  # @return [Boolean] true when a notice was written, false when it was already there
+  def record_replaced_by!(replacement, at: Time.current)
+    # Compared as text: `custom_metadata` is jsonb round-tripped through JSON, and
+    # a writer that recorded the id as a string would otherwise never match, so
+    # every save of the replacement would re-stamp and re-log the same handoff.
+    stamped = (custom_metadata || {})[REPLACED_BY_SESSION_KEY]
+    return false if stamped.present? && stamped.to_s == replacement.id.to_s
+
+    reason = replacement.custom_metadata&.dig(REPLACES_REASON_KEY)
+    updates = {
+      REPLACED_BY_SESSION_KEY => replacement.id,
+      REPLACED_AT_KEY => at.iso8601
+    }
+    updates[REPLACED_BY_REASON_KEY] = reason.to_s.truncate(1000) if reason.present?
+    # merge_custom_metadata!, not update!: a raw UPDATE that runs no save
+    # callbacks, so stamping cannot recurse through the callback that calls this,
+    # and no validation of the replaced session (the agent-root/catalog check in
+    # particular) can turn a notice into a raised exception on the replacement's
+    # own save.
+    merge_custom_metadata!(updates)
+
+    note = "Session #{replacement.id} was created to replace this one, and carries its work."
+    note += " Reason given: #{reason.to_s.truncate(500)}" if reason.present?
+    begin
+      logs.create!(content: note, level: "info")
+    rescue => e
+      # The `custom_metadata` notice is the durable half and is already written.
+      # A timeline line that will not save must not undo it or fail the caller.
+      Rails.logger.warn("[Session] Could not log the replacement notice on session #{id}: #{e.message}")
+    end
+
+    true
   end
 
   # The whole family of sessions this one belongs to — origin at the root, every
@@ -1257,7 +1411,32 @@ class Session < ApplicationRecord
   # `archived` before anything is enqueued, so by the time a sweep or a follow-up
   # reaches this the row reads `needs_input` or `waiting`, exactly as it should.
   #
-  # BOTH refusals are decided BEFORE the block runs, and that ordering is the
+  # THE THIRD REFUSAL (#801). A session whose work was handed to a replacement is
+  # resumable by every check above — not archived, not stale, not running — and
+  # the missing fact is that the work moved. Session 11924 failed before its first
+  # turn, 11931 was created to replace it and merged the PR at 03:58, and at 15:02
+  # the orphan sweep resumed 11924, which re-implemented the same seven files and
+  # opened a duplicate PR. `:superseded` is that gap closed, and it is decided
+  # LAST on purpose: `archived` and `not_resumable` are the more specific answers
+  # about the same row, so a superseded session that a human has already trashed
+  # still reports the trash, and one somebody is driving right now still reports
+  # that somebody.
+  #
+  # Its blast radius is deliberately small. It fires only for a session another
+  # session explicitly NAMES in `custom_metadata`, which is a handful of rows in
+  # the whole table; it does not count a `failed` replacement, which is the case
+  # where the original may still be the best hope; and every caller records the
+  # refusal on the session's own timeline rather than skipping it silently.
+  #
+  # A human's follow-up, restart and queued message all reach the session by
+  # routes that never come through here, so a superseded session can always be
+  # resumed by hand. One human-facing route DOES come through here and is worth
+  # knowing about: `HealthMonitorService#retry_failed_sessions` is what
+  # `/health`'s Retry button and `action_health` drive, so an operator retrying a
+  # superseded session by id is refused — with the reason returned in `skipped`,
+  # where that surface already reports it, rather than silently.
+  #
+  # EVERY refusal is decided BEFORE the block runs, and that ordering is the
   # method's contract: a refused claim writes nothing at all, so the caller has
   # nothing to undo and needs no rollback to be correct. Deciding after the block
   # would leave the caller's stale-metadata clear — `running_job_id: nil` and a
@@ -1270,7 +1449,8 @@ class Session < ApplicationRecord
   #   happen before `resume!`'s callbacks write metadata of their own
   # @return [Symbol] :claimed when the session was resumed and the caller may
   #   enqueue a turn, :archived when the row is in the trash, :not_resumable when
-  #   something else is already driving the session
+  #   something else is already driving the session, :superseded when another
+  #   session has taken this session's work over
   def claim_system_recovery_turn!
     transaction do
       # `reload` before `lock!`, not `with_lock` alone. AASM persists its
@@ -1285,6 +1465,7 @@ class Session < ApplicationRecord
 
       next :archived if archived?
       next :not_resumable unless may_resume?
+      next :superseded if replacement_carrying_work.present?
 
       yield if block_given?
 
@@ -2103,6 +2284,43 @@ class Session < ApplicationRecord
   end
 
   private
+
+  # Write the back-reference the replaced session was missing (#801).
+  #
+  # Before this, `replaces_session` existed only on the replacement. So session
+  # 11924 — whose task had moved to 11931, which merged its PR and archived —
+  # carried nothing pointing at 11931: not for the sweep that resumed it eleven
+  # hours later, not for the human reading its page, not for the agent resumed
+  # inside it, which re-implemented the whole task and opened a duplicate PR.
+  #
+  # This is the readable half of the fix and not the deciding half. The refusal
+  # in `claim_system_recovery_turn!` queries the replacement side directly, so a
+  # stamp that never landed (a raw `merge_custom_metadata!`, a row older than
+  # this code, the rescue below firing) costs visibility and nothing else.
+  #
+  # Idempotent: re-stamping the same replacement is skipped, so an ordinary
+  # `PATCH` that rewrites `custom_metadata` does not re-log the handoff.
+  def stamp_replaced_session_back_reference
+    replaced_id = replaces_session_id
+    return if replaced_id.nil?
+
+    replaced = Session.find_by(id: replaced_id)
+    return if replaced.nil?
+
+    replaced.record_replaced_by!(self)
+  rescue => e
+    # Best-effort, and logged rather than reported through
+    # `report_swallowed_side_effect`: that helper re-raises when the transaction
+    # is already aborted, and an exception out of an `after_commit` propagates to
+    # whoever saved the REPLACEMENT — turning a missing notice on some other row
+    # into a failed `start_session`. The relation is derived from this session's
+    # own `custom_metadata`, which is committed by the time this runs, so a
+    # failure here loses a notice and never the fact.
+    Rails.logger.error(
+      "[Session] Could not stamp the replacement back-reference from session #{id}: " \
+      "#{e.class}: #{e.message}"
+    )
+  end
 
   # Reclaim the on-disk state a destroyed session owned: its durable scratch
   # directory and its two prompt-attachment directories. See the callback

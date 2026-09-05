@@ -72,7 +72,11 @@ On a connection restricted to specific agent roots you cannot narrow at all: pas
         Additional configuration as a JSON object. Use `config.model` to choose the agent model for this session (e.g. {"model": "gpt-5.6-terra"} for a codex runtime, {"model": "fable"} for claude_code, or {"model": "openrouter/anthropic/claude-opus-4.6"} for pi). The model must be valid for the resolved agent_runtime; call get_configs to see each agent root's default_model. When omitted, the session uses the agent root's default_model, then the global session default configured on the Settings page, then the runtime's catalog default; a model that is not valid for the resolved runtime is replaced by that fallback. An explicit config.model always takes precedence.
       TEXT
 
-      CUSTOM_METADATA_DESC = "User-defined metadata as a JSON object. Useful for tracking tickets, projects, etc."
+      CUSTOM_METADATA_DESC = <<~TEXT.strip
+        User-defined metadata as a JSON object. Useful for tracking tickets, projects, etc.
+
+        One key Zimmer itself reads: **`replaces_session`** — the id of a session this one is being created to REPLACE, with a free-text `replaces_reason` beside it. Set both whenever you spawn a session to redo work another session could not do (it failed before its first turn, its clone was broken, it was mis-scoped). Zimmer stamps the replaced session with a back-reference so a human reading it can see where the work went, and its automated recovery sweeps then decline to resume that session — without which the sweep resumes it hours later and it re-does the work you handed over (zimmer#801). It has no effect on any session a human resumes by hand.
+      TEXT
 
       PARENT_SESSION_ID_DESC = <<~TEXT.strip
         ID of the session spawning this one. Records the spawn edge that the dependency graph uses and that the session hierarchy is built from: the new session sees the human messages recorded anywhere in its hierarchy, each marked with the session it was authored in, so a human's original intent reaches the session doing the work. Set this whenever you start a session on behalf of work you were asked to do — a router composing a spawn prompt is a machine author, so without the edge the new session has no record of the human who set the work in motion.
