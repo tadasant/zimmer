@@ -35,6 +35,42 @@ class SessionPrecedenceTest < ActiveSupport::TestCase
     assert_equal 61, fork.precedence
   end
 
+  # #712: a summary fork is Zimmer writing a blurb ABOUT the source, not work
+  # continuing from it. Inheriting the bump put the bookkeeping one rank above
+  # the very session it was summarizing, at the head of the queue an operator
+  # arranged.
+  test "a status summary fork does not outrank the session it summarizes" do
+    origin = build_session(precedence: 60)
+    fork = build_session(metadata: {
+      "forked_from_session_id" => origin.id,
+      SessionStatusSummaryGenerator::FORK_MARKER => origin.id
+    })
+
+    assert_equal SessionPrecedence::DEFAULT, fork.precedence
+    assert fork.precedence < origin.precedence,
+      "the fork must never sit above the session it is summarizing"
+  end
+
+  # The exclusion is for the SUMMARY fork alone. A fork an operator made by hand
+  # is a working session continuing the source's line of work.
+  test "a status summary fork's exclusion does not reach an ordinary fork" do
+    origin = build_session(precedence: 60)
+    fork = build_session(metadata: { "forked_from_session_id" => origin.id })
+
+    assert_equal 61, fork.precedence
+  end
+
+  # An explicit value still wins, the same way it does for every other spawn.
+  test "an explicit rank beats the status summary fork exclusion" do
+    origin = build_session(precedence: 60)
+    fork = build_session(precedence: 7, metadata: {
+      "forked_from_session_id" => origin.id,
+      SessionStatusSummaryGenerator::FORK_MARKER => origin.id
+    })
+
+    assert_equal 7, fork.precedence
+  end
+
   test "an explicit rank beats inheritance" do
     parent = build_session(precedence: 900)
     child = build_session(parent_session_id: parent.id, precedence: 5)
