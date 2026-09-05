@@ -797,32 +797,6 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
       "expected artifacts under the sandboxed HOME #{@home_dir}, got #{result.artifacts_path}"
   end
 
-  private
-
-  # Delete tracked files the way an interrupted `rm -rf` does: straight off the
-  # filesystem, leaving git to notice them missing.
-  def delete_tracked_files(repo_path, count)
-    Dir.chdir(repo_path) do
-      count.times { |i| FileUtils.rm_f(format("tracked_%02d.rb", i)) }
-    end
-  end
-
-  # Write the artifacts a pre-guard archive would have left on disk: a patch
-  # that is nothing but deletions of tracked files, plus the metadata that makes
-  # apply_artifacts pick it up.
-  def write_legacy_mass_deletion_artifacts(deleted_count:)
-    delete_tracked_files(@repo_path, deleted_count)
-    run_cmd("git", "-C", @repo_path, "add", "-A")
-    patch, _ = Open3.capture2("git", "diff", "--binary", "--cached", "HEAD", chdir: @repo_path)
-
-    artifacts_dir = @service.artifacts_path_for(@session_id)
-    FileUtils.mkdir_p(artifacts_dir)
-    File.binwrite(File.join(artifacts_dir, "working_tree.patch"), patch)
-    File.write(File.join(artifacts_dir, "metadata.json"),
-      JSON.generate("has_bundle" => false, "has_working_tree_patch" => true))
-    artifacts_dir
-  end
-
   # --- Bounded git subprocesses -------------------------------------------
   #
   # DeferredCloneCleanupJob runs this service on `maintenance`, a two-thread
@@ -845,7 +819,11 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     SH
     FileUtils.chmod(0o755, File.join(fake_bin, "git"))
 
-    service = CloneArtifactService.new(git_timeout: 0.5)
+    # 2s, not a few hundred ms: the bound has to outlast process spawn plus the
+    # fake's `echo` on a loaded CI runner, or the kill lands before the marker is
+    # written and the test fails for a reason that is not the code. Still three
+    # orders of magnitude below the fake's 300s sleep, so it proves the same thing.
+    service = CloneArtifactService.new(git_timeout: 2)
     original_path = ENV["PATH"]
     began = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     begin
@@ -866,7 +844,9 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     # the whole process group, which is what actually frees the worker.
     sleep 0.2
     child_pid = Integer(File.read(marker).strip)
-    assert_raises(Errno::ESRCH, "the timed-out git must be killed, not orphaned") do
+    # EPERM as well as ESRCH: if that pid has been reused by another user's
+    # process, "not ours to signal" is still evidence our child is gone.
+    assert_raises(Errno::ESRCH, Errno::EPERM) do
       Process.kill(0, child_pid)
     end
   ensure
@@ -877,7 +857,9 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
   # delete the clone, so a timeout must never be reported as clean: that would
   # turn a hung git into the permanent loss of someone's unpushed work.
   test "check_dirty_state reports a timed-out clone as dirty rather than clean" do
-    create_test_repo(dirty: true)
+    # A *clean* repo deliberately: on a dirty one `dirty?` would be true anyway
+    # and the headline assertion would pass without the fix.
+    create_test_repo
     logger = RecordingLogger.new
     service = CloneArtifactService.new(logger: logger)
 
@@ -927,6 +909,10 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
       service.check_dirty_state(timed_out_path)
     end
 
+    # Teardown only reaps the final @repo_path/@bare_path, so retire the first
+    # pair by hand rather than leaking two /tmp directories per run.
+    FileUtils.rm_rf([ timed_out_path, @bare_path ])
+
     create_test_repo(dirty: true, unpushed_commits: true)
     assert_not_equal timed_out_path, @repo_path
 
@@ -940,15 +926,50 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
   test "run_git still returns binary git output byte-for-byte after the swap" do
     create_test_repo
     File.binwrite(File.join(@repo_path, "blob.bin"), (0..255).to_a.pack("C*"))
+    # A filename that is not valid UTF-8, with core.quotepath off so git emits the
+    # bytes raw instead of C-escaping them back into ASCII. Unlike the base85 blob
+    # body, that puts genuinely non-UTF-8 bytes in the diff -- which is the case
+    # the encoding normalization actually has to survive.
+    File.binwrite(File.join(@repo_path, "caf\xE9.txt").b, "latin1 name\n")
+    run_cmd_in_repo("git", "config", "core.quotepath", "false")
     run_cmd_in_repo("git", "add", "-A")
 
     service = CloneArtifactService.new
     diff, _stderr, status = service.send(:run_git, "diff", "--binary", "--cached", "HEAD", cwd: @repo_path, binmode: true)
-    expected, _, _ = Open3.capture3("git", "diff", "--binary", "--cached", "HEAD", chdir: @repo_path, binmode: true)
+    expected, _, _ = Open3.capture3("git", "-c", "core.quotepath=false", "diff", "--binary", "--cached", "HEAD",
+      chdir: @repo_path, binmode: true)
 
     assert SubprocessStatus.success?(status)
     assert_equal Encoding::ASCII_8BIT, diff.encoding
+    assert_not diff.dup.force_encoding(Encoding::UTF_8).valid_encoding?,
+      "the fixture must actually contain non-UTF-8 bytes, or this proves nothing"
     assert_equal expected, diff, "the binary patch must round-trip byte-for-byte"
+  end
+
+  private
+
+  # Delete tracked files the way an interrupted `rm -rf` does: straight off the
+  # filesystem, leaving git to notice them missing.
+  def delete_tracked_files(repo_path, count)
+    Dir.chdir(repo_path) do
+      count.times { |i| FileUtils.rm_f(format("tracked_%02d.rb", i)) }
+    end
+  end
+
+  # Write the artifacts a pre-guard archive would have left on disk: a patch
+  # that is nothing but deletions of tracked files, plus the metadata that makes
+  # apply_artifacts pick it up.
+  def write_legacy_mass_deletion_artifacts(deleted_count:)
+    delete_tracked_files(@repo_path, deleted_count)
+    run_cmd("git", "-C", @repo_path, "add", "-A")
+    patch, _ = Open3.capture2("git", "diff", "--binary", "--cached", "HEAD", chdir: @repo_path)
+
+    artifacts_dir = @service.artifacts_path_for(@session_id)
+    FileUtils.mkdir_p(artifacts_dir)
+    File.binwrite(File.join(artifacts_dir, "working_tree.patch"), patch)
+    File.write(File.join(artifacts_dir, "metadata.json"),
+      JSON.generate("has_bundle" => false, "has_working_tree_patch" => true))
+    artifacts_dir
   end
 
   def create_test_repo(dirty: false, unpushed_commits: false, tracked_files: 0)
