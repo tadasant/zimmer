@@ -221,8 +221,18 @@ class SendPushNotificationJob < ApplicationJob
     when "session_complete"
       "#{session_name} has finished"
     when "needs_input"
-      # Generate AI summary of what the agent is waiting for
-      generate_input_summary(session) || "Needs your input"
+      # A session parked by Sessions::ParkUndeliveredTurn is in `needs_input`
+      # because its turn DIED, not because an agent asked a question — and
+      # generate_input_summary would summarise the last assistant message, which
+      # belongs to the previous, unrelated turn. That push is worse than none: it
+      # is the only thing that reaches a human who is not looking at the homepage,
+      # and it would reach them describing something that did not happen (#439).
+      if session.parked_undelivered_turn?
+        build_failure_body(session, session_name)
+      else
+        # Generate AI summary of what the agent is waiting for
+        generate_input_summary(session) || "Needs your input"
+      end
     when "session_failed"
       build_failure_body(session, session_name)
     when "elicitation_pending"

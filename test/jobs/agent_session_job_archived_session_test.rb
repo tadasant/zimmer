@@ -422,9 +422,16 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
 
   # THE NEGATIVE, and the reason the guard re-reads the row rather than trusting
   # the session object #perform has been carrying since before the clone: a live
-  # session raising the very same exception must be completely unaffected. A lost
-  # clone on a session that SHOULD run is #817's case — re-clone and retry — and
-  # the quiet path must never reach it.
+  # session raising the very same exception must be completely unaffected by the
+  # quiet path. A lost clone on a session that SHOULD run is #817's case —
+  # re-clone and retry — and the quiet path must never reach it.
+  #
+  # Where such a session comes to REST changed with #439: this staging dies before
+  # the spawn, carrying a prompt nobody has seen, so it now parks in `needs_input`
+  # rather than in `failed`. Everything the "loud path" actually means — the two
+  # ERROR lines, the stamped exception, the re-raise into the exception reporter —
+  # is unchanged, and asserted here. `failed` is still the outcome once a process
+  # existed; the test below this one holds that half.
   test "a live session raising the same exception keeps the whole loud path" do
     live = live_recovery_session
 
@@ -433,11 +440,8 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
     end
 
     live.reload
-    assert_equal "exception", live.metadata["failure_reason"],
-                 "a genuine fault must still be recorded as one"
     assert_equal "Errno::ENOENT", live.metadata["exception_class"]
     assert_includes live.metadata["exception_message"], "claude_stderr.log"
-    assert_equal "failed", live.status, "a live session that raised is failed, not left running"
     assert_nil live.running_job_id
 
     errors = live.logs.reload.select { |entry| entry.level == "error" }
@@ -446,6 +450,22 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
     assert errors.any? { |entry| entry.content.include?("Backtrace:") }
     refute live.logs.any? { |entry| entry.content.include?("after the session was archived") },
            "nothing about the quiet path may touch a session that is not archived"
+  end
+
+  # The half of the loud path #439 did NOT move: once a process existed, the turn
+  # is a runtime fault with a transcript to read, and `failed` is still where it
+  # comes to rest.
+  test "a live session that had already spawned still fails" do
+    live = live_recovery_session
+
+    assert_raises(Errno::ENOENT) do
+      run_job_dying_after_spawn(live, archive: false)
+    end
+
+    live.reload
+    assert_equal "exception", live.metadata["failure_reason"],
+                 "a fault after the agent existed is still recorded as one"
+    assert_equal "failed", live.status
   end
 
   # The guard fails LOUD. A row it cannot read is the one case where both mistakes
@@ -546,12 +566,14 @@ class AgentSessionJobArchivedSessionTest < ActiveJob::TestCase
   # The same race, staged one step later: after the spawn, so the job is holding a
   # live pid when the exception fires. Returns the job as well as the CLI, because
   # what this proves is about the job's process manager rather than the runtime.
-  def run_job_dying_after_spawn(session)
+  def run_job_dying_after_spawn(session, archive: true)
     cli = run_job(session, AutomatedPrompts.system_recovery(reason: "the job monitoring this session was interrupted"),
                   decision: allowed_decision, at: :after_spawn) do |job|
-      Session.where(id: session.id).update_all(
-        status: Session.statuses[:archived], archived_at: Time.current
-      )
+      if archive
+        Session.where(id: session.id).update_all(
+          status: Session.statuses[:archived], archived_at: Time.current
+        )
+      end
       job.file_system.rm_rf(CLONE_PATH)
       # The spawned pid is the CLI mock's, so the process manager has never heard of
       # it and would report it already dead. Make it answer the way a live agent

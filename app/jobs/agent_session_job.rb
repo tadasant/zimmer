@@ -355,9 +355,16 @@ class AgentSessionJob < ApplicationJob
 
   # Only retry on specific transient errors, not all StandardErrors
   # This prevents duplicate job executions that could create multiple PRs
-  retry_on Timeout::Error, wait: :polynomially_longer, attempts: 3
-  retry_on Errno::ECONNRESET, wait: :polynomially_longer, attempts: 3
-  retry_on Errno::ETIMEDOUT, wait: :polynomially_longer, attempts: 3
+  #
+  # Named rather than written three times inline because #another_attempt_queued?
+  # has to ask the same question from the rescue: a turn dying on one of these is
+  # not over, and must not be parked as though it were (#439).
+  RETRYABLE_EXCEPTIONS = [ Timeout::Error, Errno::ECONNRESET, Errno::ETIMEDOUT ].freeze
+  RETRY_ATTEMPTS = 3
+
+  retry_on Timeout::Error, wait: :polynomially_longer, attempts: RETRY_ATTEMPTS
+  retry_on Errno::ECONNRESET, wait: :polynomially_longer, attempts: RETRY_ATTEMPTS
+  retry_on Errno::ETIMEDOUT, wait: :polynomially_longer, attempts: RETRY_ATTEMPTS
 
   # Don't retry if session is not found
   discard_on ActiveRecord::RecordNotFound
@@ -2378,19 +2385,52 @@ class AgentSessionJob < ApplicationJob
           level: "error"
         )
         log_buffer.flush
-        # Bypass validations — if the original error was a validation failure
-        # (e.g. stale MCP server catalog), update! would re-trigger the same
-        # validation and prevent the session from reaching a terminal state.
-        session.update_columns(
-          running_job_id: nil,
-          metadata: (session.metadata || {}).merge(
-            "failure_reason" => "exception",
-            "exception_class" => e.class.name,
-            "exception_message" => e.message.to_s.truncate(EXCEPTION_MESSAGE_MAX_CHARS)
-          )
+
+        # A turn that raised before an agent process ever existed, carrying a prompt
+        # nobody has seen, comes to rest in the action queue instead of in `failed`
+        # (#439). `failed` is not in the homepage's `needs_input` queue and nothing
+        # sweeps it, so a follow-up that dies in setup is dropped in silence — which
+        # is what happened to a live user request for two days. The pid is asked of
+        # the lifecycle manager first, exactly as the `ensure` below does: it is set
+        # by whichever code spawned last, while the local copy can lag a recovery
+        # spawn.
+        #
+        # The failure is still stamped, still logged, and still re-raised into the
+        # exception reporter — this changes where the session comes to rest, not how
+        # loudly the fault is reported.
+        #
+        # `retry_pending` is answered here rather than in the service because
+        # `retry_on` is this class's declaration: a turn whose exception is about to
+        # be retried has not ended, and parking it would announce an ending in the
+        # action queue while another attempt at the same prompt was still queued.
+        parked = Sessions::ParkUndeliveredTurn.call(
+          session,
+          error: e,
+          prompt: follow_up_prompt,
+          spawned: (lifecycle_manager.current_pid || process_pid).present?,
+          retry_pending: another_attempt_queued?(e),
+          log_buffer: log_buffer
         )
-        session.reload
-        session.fail! if session.may_fail?
+
+        if parked
+          # Broadcast status immediately for snappy UI updates, as the other park
+          # paths do, rather than waiting for the transition's commit callback.
+          @broadcast_service.session_status(session)
+        else
+          # Bypass validations — if the original error was a validation failure
+          # (e.g. stale MCP server catalog), update! would re-trigger the same
+          # validation and prevent the session from reaching a terminal state.
+          session.update_columns(
+            running_job_id: nil,
+            metadata: (session.metadata || {}).merge(
+              "failure_reason" => "exception",
+              "exception_class" => e.class.name,
+              "exception_message" => e.message.to_s.truncate(EXCEPTION_MESSAGE_MAX_CHARS)
+            )
+          )
+          session.reload
+          session.fail! if session.may_fail?
+        end
       end
       raise e
     ensure
@@ -3053,6 +3093,26 @@ class AgentSessionJob < ApplicationJob
       "spawning rather than refusing a turn that may be live"
     )
     false
+  end
+
+  # Whether the `raise e` at the end of #perform's catch-all is going to buy this
+  # exception another attempt.
+  #
+  # `executions` is ActiveJob's own count of attempts so far, incremented before
+  # #perform runs, so on the final permitted attempt it already equals
+  # RETRY_ATTEMPTS. ActiveJob actually counts per declared exception class, and this
+  # reads the total instead — deliberately, because the two differ only for a job
+  # that has failed on more than one of the three classes, and there the total is
+  # the LARGER number. That errs toward answering "no further attempt" late rather
+  # than early, and the cost of being late is the status quo: the session fails, as
+  # it did before #439.
+  #
+  # @param error [Exception]
+  # @return [Boolean]
+  def another_attempt_queued?(error)
+    return false unless RETRYABLE_EXCEPTIONS.any? { |klass| error.is_a?(klass) }
+
+    executions.to_i < RETRY_ATTEMPTS
   end
 
   # Whether this turn's exception is the archive landing mid-turn, recording the
