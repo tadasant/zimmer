@@ -59,7 +59,7 @@ writes systemd units. `bash -n` proves those parse and nothing more.
 **The floor is `--severity=info`, and that is the load-bearing part.** SC2086 — an unquoted
 expansion, so `rm -rf $dir/foo` becomes `rm -rf /foo` when `$dir` is empty — is an *info*-level
 check, not a warning. A script whose whole body is `d=$1; rm -rf $d/foo` draws zero findings at
-`--severity=warning` and two at `--severity=info`. A `warning` floor would have been a green job
+`--severity=warning` and one at `--severity=info`. A `warning` floor would have been a green job
 that ignored the defect class it was added for. The tree is clean at `--severity=style` too, so
 tightening further is a one-word change.
 
@@ -67,9 +67,12 @@ The job downloads a pinned, checksummed shellcheck release into `$RUNNER_TEMP`. 
 self-hosted runner has no shellcheck on it and CI jobs there do not run as root, so `apt-get
 install` is not an option; putting it in the runner image would mean a different repository.
 
-Two guards keep the job from passing while checking nothing. It fails on an empty file list, and
-it fails if any of the four root-privileged scripts above has dropped out of the set — a rename
-that quietly moved one out of coverage is the failure mode a glob invites.
+Three guards keep the job from passing while checking nothing. It fails on an empty file list; it
+fails if any of the four root-privileged scripts above has dropped out of the set, which is the
+failure mode a glob invites; and it fails on a repo-root `.shellcheckrc` or a file-level `#
+shellcheck disable=` above a script's first command, either of which switches checks off wholesale
+while the job stays green. Per-site directives are fine and are what the scripts use — they sit
+against one statement and carry their reason.
 
 The extensionless bash under `bin/` (`bin/dev`, `bin/docker-entrypoint`, `bin/agent-dev`,
 `bin/ensure-playwright-browsers`, `bin/preinstall-mcp-packages`) is **not** covered. Those draw 12
