@@ -101,8 +101,9 @@ headless inference call (the substrate `SessionTitleJob` uses for titles and cat
 sees a truncated, flattened rendering of the transcript, which is exactly where those specifics get
 lost. The fork gets the real conversation at the real point it stopped.
 
-That trade only holds while a fork can actually run. When it cannot, the one-shot completion is not a
-worse summary than the fork's — it is a summary against no summary at all, which is why it exists as
+That trade only holds while a fork can actually run. When it cannot — the login pool is empty, or the
+spot gate is refusing — the one-shot completion is not a worse summary than the fork's; it is a
+summary against no summary at all, which is why it exists as
 [the pool-independent path](#the-pool-independent-path) below.
 
 **The inherited goal is stripped, and that is not optional.** A fork inherits the source's goal, and
@@ -311,7 +312,7 @@ What that mode does not need is the point of it:
 | Cost | an agent turn | one small-model completion |
 | Reach | the real conversation, its tools, its clone | the rendered transcript tail only |
 
-It is reached from the three places a fork is known not to be able to deliver:
+It is reached from the four places a fork is known not to be able to deliver:
 
 - **The repair sweep during an auth outage.** A runtime with no available account switches to this
   path rather than standing down, admitted by the
@@ -321,15 +322,24 @@ It is reached from the three places a fork is known not to be able to deliver:
   leaving it to a sweep that would re-fork into the same empty pool. A fork that died of something
   else while the pool was healthy is deliberately *not* downgraded — re-forking is the right repair
   there, and stamping a terser blurb as current would stop the sweep ever trying again.
-- **A forced Regenerate while the pool is empty.** The three surfaces that offer it are all forced
-  and none of them consults the pool, so the generator re-checks it rather than trusting the caller.
-  It fails *open*: a pool it cannot read is not evidence of an outage.
-
 - **Any generation at all, forced included, when the pool has nothing to fork on.** The generator
   re-checks the pool itself rather than trusting the caller, because the three forced surfaces — the
   panel's **Regenerate** button, `POST /api/v1/sessions/:id/regenerate_status_summary`, and the MCP
   `action_session` regenerate action — do not consult it. Without that check, pressing Regenerate
-  during an outage paid for a clone copy, watched the fork park, and reported a failure.
+  during an outage paid for a clone copy, watched the fork park, and reported a failure. It fails
+  *open*: a pool it cannot read is not evidence of an outage.
+
+- **Any generation for a spot session while the [spot gate](/sessions/spot-and-priority/#a-status-summary-fork-is-refused-never-queued)
+  is refusing.** A fork inherits the source's scheduling class, so a fork of a spot session answers
+  to the gate — and standing one up while the gate says no produced a session that ran no turn and
+  sat in the queue instead. "The fleet is full" and "the pool is empty" are the same fact from the
+  summarizer's point of view, so they get the same answer. This read fails open too.
+
+  It is worth naming the one thing this trades. When the refusal is
+  `at_utilization_limit`, the deferral it replaces spent *nothing*, and this path spends a small
+  Haiku completion against the very window the gate is pacing. That is deliberate and it is the
+  cheaper direction over the whole episode: the fork being deferred was going to spend a full agent
+  turn eventually, and until it did, its source session sat on the homepage with no blurb.
 
 Concurrency is bounded by the two-thread `inference` queue this job shares with `SessionTitleJob` and
 needs-input notification blurbs — see [Blocking inference waits in a lane](/operate/background-jobs/#blocking-inference-waits-in-a-lane-it-does-not-retry-for-admission).
@@ -337,8 +347,9 @@ A headless run blocks a worker thread on a subprocess for up to `HEADLESS_TIMEOU
 remain queued once until a lane worker is free, while maintenance on `default` keeps moving.
 
 The queue placement is unconditional. The caller does not decide whether a generation blocks — the
-generator does, on `headless || pool_exhausted?` — so a generation enqueued as a fork by a `pause`
-transition can become a blocking subprocess the moment the pool runs dry.
+generator does, on `headless || pool_exhausted? || fork_would_be_refused?` — so a generation enqueued
+as a fork by a `pause` transition can become a blocking subprocess the moment the pool runs dry or
+the fleet fills.
 Two properties keep it honest:
 
 - **A refusal never becomes a blurb**, and the guard has two halves because the wording half is not
@@ -692,10 +703,12 @@ evidence rather than either alone:
   matters most.**
   `SpotSessionHold#hold!` takes custody of the held turn — it *removes* `pending_follow_up_prompt`,
   and `return_to_queue!` clears `running_job_id` — leaving a fork in `waiting`, with no transcript of
-  its own, that is legitimately waiting to run. Under sustained spot pressure that wait can outlast
-  six hours, and [#712](https://github.com/tadasant/zimmer/issues/712) is the open issue that forks
-  compete for that capacity at all. Reaping one is exactly the silent failure the predicate exists to
-  avoid.
+  its own, that is legitimately waiting to run. Reaping one is exactly the silent failure the
+  predicate exists to avoid. The population this protects is now a small one:
+  [#712](https://github.com/tadasant/zimmer/issues/712) stopped a summary fork being held at all, so
+  the only route left into a spot hold is the fallback taken when the discard itself fails (see
+  [A status-summary fork is refused, never queued](/sessions/spot-and-priority/#a-status-summary-fork-is-refused-never-queued)).
+  The clause stays because the state is still reachable, and reaping it would still be silent.
 - Its transcript holds nothing past the fork point, which is the same comparison
   `SessionStatusSummaryHarvestJob` makes to decide a fork wrote nothing of its own. Comparing a raw
   line count against a parsed message index errs the safe way: blank or unparseable lines inflate the

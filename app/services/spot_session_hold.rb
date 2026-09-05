@@ -343,7 +343,30 @@ class SpotSessionHold
       # The one seam. SpotGateService.allow_start? reads the same method, so the
       # readable predicate and the production path cannot drift apart.
       decision = SpotGateService.start_decision(session)
-      if decision.allowed? || !applies_to?(decision, session)
+      if decision.allowed?
+        clear(session)
+        return false
+      end
+
+      # A status-summary fork's turn is refused like any other — and then thrown
+      # away rather than parked. See #discard_status_summary_fork.
+      #
+      # AHEAD of #applies_to?, deliberately. That exemption spares an
+      # already-`running` session the FLEET CAP because refusing it would refuse
+      # it on the strength of its own slot — and, crucially, because the refusal
+      # would STRAND it. Neither half carries here: a fork is `running` only as
+      # bookkeeping (its deliverer flipped it; no process has been spawned), and
+      # the refusal is a disposal rather than a deferral, so there is nothing to
+      # strand. Below the exemption, a fork refused for `fleet_at_cap` — the
+      # commonest refusal there is — would have been let through to run as one
+      # more process on top of a full fleet, which is the escape this change
+      # exists to close.
+      if session.status_summary_fork?
+        return discard_status_summary_fork(session, decision, follow_up_prompt: follow_up_prompt,
+                                           log_buffer: log_buffer, images: images, files: files)
+      end
+
+      unless applies_to?(decision, session)
         clear(session)
         return false
       end
@@ -736,6 +759,75 @@ class SpotSessionHold
       return true unless session.running?
 
       RUNNING_HOLD_REASONS.include?(decision.reason)
+    end
+
+    # What happens to a refused turn that belongs to a STATUS-SUMMARY FORK: it is
+    # disposed of, and the blurb is written by the path that needs no turn at all.
+    #
+    # A hold is a deferral, and a deferral is the right answer for the operator's
+    # work — the session is wanted, so it waits and runs later. It is the wrong
+    # answer for Zimmer's own bookkeeping. A summary fork exists to run ONE turn
+    # of a few seconds and be harvested; deferring that by ten minutes, then
+    # twenty, then an hour parks a session row and its scaffolded working
+    # directory for longer than the thing it was summarizing is likely to sit
+    # still, and hides it while it does so — `excluding_status_summary_forks`
+    # keeps it out of every list an operator reads, so nobody sees the queue it
+    # is sitting in. Worse, its claim on the summary record ages out after
+    # SessionStatusSummary::PENDING_TIMEOUT, at which point the next generation
+    # forks AGAIN for the same source while this one stays queued. Nothing
+    # abandons a fork that was dispatched and never ran, so the pile-up has no
+    # bound on it (#712).
+    #
+    # THIS IS NOT AN EXEMPTION FROM THE GATE. The gate's answer is still "no" and
+    # the fork still does not run: it is archived, its claim is released, and a
+    # pool-independent one-shot completion is enqueued to write the blurb
+    # instead. No summary fork runs outside the fleet cap or outside burn pacing
+    # as a result of this branch — the population that would have queued becomes
+    # a population that is disposed of, which is the direction that cannot
+    # overrun a cap.
+    #
+    # `return_to_queue!` first, for the same reason `hold!` calls it: the fork
+    # was flipped to `running` by whoever delivered its turn, and archiving
+    # straight from there would leave the fleet reading a slot that never ran.
+    #
+    # Returns true — the turn is refused, so AgentSessionJob stands down.
+    def discard_status_summary_fork(session, decision, follow_up_prompt:, log_buffer:, images:, files:)
+      return_to_queue!(session)
+      SessionStatusSummaryGenerator.discard_refused_fork(session, detail: decision.detail)
+      note_discard(session, decision, log_buffer)
+      true
+    rescue StandardError => e
+      # A disposal that fails must not leave the fork running, and must not lose
+      # its turn either. Only `return_to_queue!` can reach here — the disposal and
+      # the log line both swallow their own — so falling back to an ordinary hold,
+      # carrying the same turn, leaves the fork exactly where this branch found
+      # it. The worst case is the behavior this branch replaced, not a fork that
+      # slips past the gate.
+      #
+      # The order matters for the same reason: the discard is not announced until
+      # it has happened, so a fallback hold never lands under a line claiming the
+      # fork was thrown away.
+      Rails.logger.error(
+        "[SpotSessionHold] Could not discard status-summary fork #{session.id}: #{e.class}: #{e.message}"
+      )
+      hold!(session, decision, follow_up_prompt: follow_up_prompt,
+            log_buffer: log_buffer, images: images, files: files)
+      true
+    end
+
+    # The discard, said out loud on the fork's own timeline. Swallows its own
+    # failures: the fork is already disposed of by the time this runs, and a log
+    # line is not worth undoing that for.
+    def note_discard(session, decision, log_buffer)
+      message = "Status-summary fork discarded rather than held: #{decision.detail} " \
+                "The blurb is being written without a fork instead."
+      log_buffer&.add(message, level: "warning")
+      session.logs.create!(level: "warning", content: message) if log_buffer.nil?
+      Rails.logger.info("[SpotSessionHold] Status-summary fork #{session.id} discarded: #{decision.reason}")
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[SpotSessionHold] Could not record the discard of fork #{session.id}: #{e.class}: #{e.message}"
+      )
     end
 
     def hold!(session, decision, follow_up_prompt:, log_buffer:, images:, files:)

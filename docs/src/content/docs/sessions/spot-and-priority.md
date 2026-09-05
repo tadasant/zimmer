@@ -713,6 +713,47 @@ headroom** when it was a resume — naming the reason, the next check time, and 
 `get_session` reports the same through `spot_hold_reason` / `spot_hold_retry_at` /
 `spot_hold_count`, and says explicitly that the queued prompt is still coming.
 
+### A status-summary fork is refused, never queued
+
+A [status-summary fork](/sessions/status-summary/) is Zimmer's own seconds-long bookkeeping: it
+exists to run one turn, write a blurb about another session, and be harvested. It is not the
+operator's work, and every list an operator reads already drops it. The scheduler treats it the same
+way, in two places.
+
+**The gate is asked before the fork is made.** `SessionStatusSummaryGenerator` already checks the
+login pool before forking — if there is no account to run a fork on, it writes the blurb with one
+pool-independent `claude -p` completion instead. It asks the spot gate the same question, for the
+same reason: "the fleet is full" and "the pool is empty" both mean the fork cannot deliver, and
+neither is a reason to stand a session up. So while the gate is refusing, no summary fork is
+created at all — the blurb still arrives, from the path that spends no slot.
+
+That check is deliberately *stricter* than the hold's own reading. A dispatched fork is `running` by
+the time it reaches the gate, so the `fleet_at_cap` exemption above applied to it and the
+concurrency limit never did: every summary fork started as one more Claude Code process on top of a
+fleet already at its cap. Asking before the fork exists is what puts it back under the cap.
+
+**A fork that reaches the gate anyway is thrown away, not held.** The two checks race — the fleet can
+fill between them — so `SpotSessionHold` refuses a summary fork's turn like any other and then
+*disposes* of it: the fork is archived, its claim on the summary record is released with the gate's
+own sentence, and a headless retry is enqueued. It is not an exemption. The fork does not run, so
+nothing here lets a session past the fleet cap or past burn pacing; what changes is that a refused
+fork ends instead of joining the queue.
+
+That branch sits **above** the `fleet_at_cap` exemption described earlier, and deliberately. The
+exemption spares an already-`running` session the concurrency limit because refusing it would refuse
+it on the strength of its own slot — and because the refusal would strand it. Neither half holds for
+a summary fork: it is `running` only as bookkeeping, since its deliverer flipped it and no process
+has been spawned, and its refusal is a disposal rather than a deferral, so there is nothing to
+strand. Below the exemption, a fork refused for a full fleet would have been waved through to run as
+one more process on top of it — which is the escape the check before the fork exists is closing.
+
+Holding one was the wrong disposal. A ten-minute deferral, then twenty, then an hour, parks a hidden
+session row and its working directory for far longer than the turn it was deferring would have
+taken — and its claim on the summary record ages out after `PENDING_TIMEOUT`, at which point the
+next generation forks *again* for the same source while the first is still queued. Nothing abandoned
+a fork that was dispatched and never ran, so that pile-up had no bound on it
+([#712](https://github.com/tadasant/zimmer/issues/712)).
+
 ## The budget is a ceiling
 
 Admission alone made the budget a **floor under when new spot work stops**, not a ceiling on what
@@ -830,7 +871,11 @@ actually decides what gets done.
 - **A spawn lands just above its parent.** `start_session` with no `precedence` puts the new session
   one point above the session named in `parent_session_id`, so the child that finishes its parent's
   job runs before unrelated work queued beneath it and a tree of work stays contiguous. Name a value
-  only when you mean to move the work relative to everything else in the queue.
+  only when you mean to move the work relative to everything else in the queue. A fork inherits the
+  same way, through `forked_from_session_id` — with one exception: a **status-summary fork** takes
+  the default 0 rather than the bump. It is not continuing the source's work, it is writing a blurb
+  about it, and inheriting the bump ranked Zimmer's own bookkeeping one place above the very session
+  it was summarizing.
 - **A trigger can predefine one**, alongside the class it already carries, so a feed is ranked once
   rather than one spawned session at a time. A trigger takes an absolute number only — the value is
   stamped on every session it ever spawns, and a standing instruction to jump the whole queue is not
