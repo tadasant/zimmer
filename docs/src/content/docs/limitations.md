@@ -4021,7 +4021,7 @@ is an operator running `kamal accessory reboot devdb -d <dest>`.
 
 ## A clone sharing the image's bundle cannot install a gem into it
 
-This is the residue of a larger limitation that is gone. `BundleInstallJob` used to write
+This is the residue of [#410](https://github.com/tadasant/zimmer/issues/410), a larger limitation that is gone. `BundleInstallJob` used to write
 `.bundle/config` before the gems it named existed, so an install interrupted partway (a deploy, a
 SIGTERM) left the clone pinned to a half-populated `vendor/bundle` — and every Ruby command in it
 died with `Bundler::GemNotFound`, listing gems that are plainly installed in the image. The job now
@@ -4037,11 +4037,15 @@ But `/usr/local/bundle/ruby/<version>/gems` is root-owned, and a session runs as
 moment a checkout *changes* the Gemfile, `bundle install` fails with a permission error naming a
 path that has nothing to do with the repository.
 
-The recovery is one command, and `bin/agent-dev` runs it for you:
+The recovery is to give the clone a bundle of its own, and `bin/agent-dev` does it for you.
+The order matters, because a `BUNDLE_PATH` in `.bundle/config` outranks the environment:
+unpin, install, then pin. Pinning first and failing the install second leaves the clone on an
+empty `vendor/bundle` — the wedge above, rebuilt by hand.
 
 ```bash
+bundle config unset --local path
+BUNDLE_PATH=vendor/bundle bundle install
 bundle config set --local path vendor/bundle
-bundle install
 ```
 
 An agent that adds a gem and runs a bare `bundle install` sees the permission error first. It is a

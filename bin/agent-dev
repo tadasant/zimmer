@@ -136,14 +136,23 @@ fi
 # That directory is root-owned, though, so the moment this checkout adds or bumps
 # a gem, `bundle check` fails and `bundle install` cannot write there -- it dies
 # with a permission error naming a path that has nothing to do with this repo.
-# Give the clone a bundle of its own before installing, which is a no-op when it
-# already had one.
+# Give the clone a bundle of its own instead.
+#
+# Three steps, in this order, for the same reason BundleInstallJob uses it:
+#
+#   unset  -- a BUNDLE_PATH in .bundle/config OUTRANKS the environment, so the pin
+#             has to go before the install rather than merely be overridden;
+#   install -- driven by BUNDLE_PATH in the environment, which persists nothing;
+#   set    -- the pin, written only once the install has actually succeeded. Under
+#             `set -e` a failed install aborts before this line, which is the point:
+#             pinning first and failing second is zimmer#410's wedge, rebuilt by hand.
 # ---------------------------------------------------------------------------
 say "Checking gems"
 if ! bundle check >/dev/null 2>&1; then
   echo "Bundle is incomplete for this checkout. Installing into vendor/bundle..."
+  bundle config unset --local path >/dev/null 2>&1 || true
+  BUNDLE_PATH=vendor/bundle bundle install --jobs 4 --retry 3
   bundle config set --local path vendor/bundle
-  bundle install --jobs 4 --retry 3
 fi
 echo "Bundle OK"
 
