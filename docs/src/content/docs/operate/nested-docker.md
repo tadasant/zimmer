@@ -338,8 +338,10 @@ What production still needs:
    production at eight, the worker cgroup's unreclaimable `anon` peaks at 9.07 GiB against
    its 10 GiB `memory.max`, and eight in-budget sessions have already summed over the cap
    and had the kernel OOM-kill the GoodJob worker
-   ([#981](https://github.com/tadasant/zimmer/issues/981)). Per-session cgroups do not
-   change that arithmetic — cgroup v2 is hierarchical, so they charge the same 10 GiB.
+   ([#981](https://github.com/tadasant/zimmer/issues/981)). Neither cgroup bound changes
+   that arithmetic — cgroup v2 is hierarchical, so both the per-session cgroups and the
+   `sessions` pool above them charge the same 10 GiB. The pool decides *who* the kernel
+   kills when the sum is reached, not whether it is reached.
 
 Do it as its own change, after staging has run on it. The blast radius is not comparable:
 production is where agent sessions actually execute, and the failure mode of arming the

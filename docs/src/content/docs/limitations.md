@@ -1432,19 +1432,21 @@ that does it has known limits:
   `memory.max`**, and `memory.events` recorded `oom_kill`s. (`memory.current` touched the cap to
   within 94 KB and forced-reclaim events ran to 133,791, but both include reclaimable page cache —
   `file` peaked at 7.28 GB — so they corroborate rather than prove.)
-  [#981](https://github.com/tadasant/zimmer/issues/981) is the open incident: eight *in-budget*
-  sessions — no runaway, largest process 943 MB — summed over the cap and the kernel OOM-killed the
-  GoodJob worker itself, taking every in-flight `AgentSessionJob` with it. The per-session bound
-  cannot cover this and is not meant to: cgroup v2 is hierarchical, so `zimmer.sessions/session-<id>`
-  sits inside the container's cgroup and charges the same 10 GiB;
-  `ZIMMER_SESSION_MEMORY_MAX_MB` bounds one runaway, and nothing bounds the sum. So the honest shape
-  of the limit **on that deployment** is that the effective concurrency ceiling is 8 and **should not
-  be raised until #981 lands**: a bigger pool converts durable queued rows into a worker kill. A
-  self-hosted deployment with a different worker cap has a different number, arrived at the same way
-  — measure `anon` against `memory.max` under load. Raising it means #981, then a re-measurement,
-  then a matching `app_required_backends` bump. Connections are not what binds first, but they are
-  not roomy either: 15 threads derive 97 required backends, which is the *entire* capacity of a
-  `db-s-2vcpu-4gb` cluster — zero margin.
+  [#981](https://github.com/tadasant/zimmer/issues/981) is the incident: eight *in-budget* sessions
+  — no runaway, largest process 943 MB — summed over the cap and the kernel OOM-killed the GoodJob
+  worker itself, taking every in-flight `AgentSessionJob` with it. The per-session bound cannot
+  cover this and is not meant to: cgroup v2 is hierarchical, so
+  `zimmer.sessions/sessions/session-<id>` sits inside the container's cgroup and charges the same
+  10 GiB; `ZIMMER_SESSION_MEMORY_MAX_MB` bounds one runaway. `ZIMMER_SESSIONS_MEMORY_MAX_MB` now
+  bounds the sum — but only the *blast radius* of it: the pool holds every session cgroup and not
+  the Rails worker, so a pile-up kills a session instead of the worker that runs all of them. **It
+  does not reduce the demand, so it does not raise this ceiling.** The honest shape of the limit
+  **on that deployment** is still that the effective concurrency ceiling is 8, and the measurements
+  above predate the fix — so raising it means a re-measurement of `anon` under the pool and the
+  `PARALLEL_WORKERS` cap, then a matching `app_required_backends` bump. A self-hosted deployment
+  with a different worker cap has a different number, arrived at the same way. Connections are not
+  what binds first, but they are not roomy either: 15 threads derive 97 required backends, which is
+  the *entire* capacity of a `db-s-2vcpu-4gb` cluster — zero margin.
 - **A turn queued behind the worker pool still reads as a running session on the dashboard.**
   `sessions.status = running` is stamped when a turn is *handed to* a session, not when a worker
   starts it, so on a busy deployment a real share of the `running` rows are turns waiting for a slot.
