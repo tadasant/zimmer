@@ -104,10 +104,20 @@ module Sessions
     # for a prompt already handed to a job. A conversation with either is one
     # whose next turn is already decided.
     #
+    # Only where that next turn can actually happen, which is what the status
+    # check is for. Neither marker is cleaned up on the way into a terminal
+    # state: ArchiveGuard's own comment records that nothing drains the queue of
+    # a session that will not run again, and AuthOutageParkService leaves
+    # `pending_follow_up_prompt` standing. Without the guard a `failed` session
+    # holding a stranded message would read as live forever and never be given a
+    # fork again — a permanent downgrade, out of a signal that is supposed to be
+    # about a conversation in motion.
+    #
     # @param session [Session]
     # @return [Boolean]
     def undelivered_prompt?(session)
       return false if session.nil?
+      return false if session.archived? || session.failed?
 
       session.enqueued_messages.pending.exists? ||
         session.metadata&.dig("pending_follow_up_prompt").present?
@@ -146,15 +156,32 @@ module Sessions
     # @param session [Session]
     # @return [String, nil]
     def describe(session)
-      reasons = []
-      if in_flight?(session)
-        reasons << "a turn is in flight on it"
-      elsif coming?(session)
-        reasons << "a turn is queued for it"
-      end
+      reasons = [ turn_phrase(session) ]
       reasons << "a prompt has been accepted for it and not yet delivered" if undelivered_prompt?(session)
 
-      reasons.presence&.join(", and ")
+      reasons.compact.presence&.join(", and ")
+    end
+
+    # How this session's turn counts as live, or nil if none does.
+    #
+    # One read of the job rows, classified twice, rather than asking #in_flight?
+    # and then #coming? — which are the same query issued back to back. Fails
+    # closed on the narrower phrase, for the reason #in_flight? does.
+    #
+    # @param session [Session]
+    # @return [String, nil]
+    def turn_phrase(session)
+      return nil unless session&.running?
+
+      turns = unfinished_turns(session)
+      return "a turn is in flight on it" if turns.any? { |job| JobLiveness.status(job) == :running }
+      return "a turn is queued for it" if turns.any? { |job| JobLiveness.alive?(job) }
+
+      nil
+    rescue StandardError => e
+      Rails.logger.warn("[Sessions::LiveTurn] Could not read the agents queue for session #{session&.id} " \
+                        "(#{e.class}: #{e.message}) — treating the turn as in flight")
+      "a turn is in flight on it"
     end
 
     # The refusal an agent reads when it tries to archive somebody else's

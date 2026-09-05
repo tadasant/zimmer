@@ -584,11 +584,13 @@ module Mcp
         destroyed_turn = refuse_archive_over_live_turn(session, args)
 
         actor = archive_actor_phrase(args)
-        note_archive_over_live_turn(session, actor) if destroyed_turn
-
         session.archive_actor = actor
         session.archive_forced = boolean(args["force"])
         session.archive!
+        # After the transition, not before: a line claiming a turn was destroyed
+        # must not outlive an archive that then raised and left the session
+        # running.
+        note_archive_over_live_turn(session, actor) if destroyed_turn
         session.reload
 
         lines = [
@@ -1290,12 +1292,14 @@ module Mcp
               end
 
               actor = "#{archive_actor_phrase(args)} (bulk)"
-              note_archive_over_live_turn(session, actor) if destroyed_turn
-              destroyed_turns << session.id if destroyed_turn
-
               session.archive_actor = actor
               session.archive_forced = boolean(args["force"])
               session.archive!
+              # After the transition, for the same reason as the single-session action.
+              if destroyed_turn
+                note_archive_over_live_turn(session, actor)
+                destroyed_turns << session.id
+              end
               archived_count += 1
             else
               errors << { id: session.id, error: "Cannot archive from status: #{session.status}" }

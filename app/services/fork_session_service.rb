@@ -172,6 +172,34 @@ class ForkSessionService
       return failure("Failed to create forked session record")
     end
 
+    # Generate the fork's MCP configuration — AFTER the fork record exists, because
+    # it has to be generated FOR the fork.
+    #
+    # It is needed at all because the source clone's `.mcp.json` may reference old
+    # paths, a resumed fork does not regenerate its own config, and without it the
+    # fork has no MCP servers.
+    #
+    # It has to name the FORK, and until #400 it named the source. This ran from
+    # inside #create_forked_clone, before the fork record existed, so the only
+    # session it could be handed was the source — and everything AIR writes into
+    # the fork's clone is written for whichever session it is given: the
+    # `session_id` stamped onto the injected Zimmer MCP server's URL, the runtime
+    # system-prompt file, and AirPrepareService's stale-skill scrub, which
+    # `update_column`s `catalog_skills` on the session it was passed.
+    #
+    # The stamp is the one that bites. `RuntimeConfigPostProcessor#with_session_id`
+    # returns the URL unchanged when a `session_id` is already on it — deliberately,
+    # so a hand-pointed entry keeps pointing where it was aimed — so AgentSessionJob
+    # re-running `air prepare` for the fork on its first turn does NOT correct it.
+    # The fork therefore ran with a connection that identified it, to Zimmer, as the
+    # source session: `Mcp::Context#self_session_id` was the source's id, so every
+    # self-management tool it called defaulted to the source, and the archive guard
+    # that refuses one session archiving another's live turn read it as the source
+    # archiving itself and stood down. That is the connection behind the #400
+    # incident, and it is closed here rather than at the stamp, which is right to
+    # leave a deliberately aimed entry alone.
+    generate_mcp_config(forked_session, new_working_directory)
+
     # Write truncated transcript to the new location. :skipped (a runtime with no
     # single-file resume path, or a transcript with no conversation to resume
     # into) is not a failure — only :failed is.
@@ -268,13 +296,6 @@ class ForkSessionService
 
     file_system.mkdir_p(File.dirname(new_clone_path))
     materialize_fork_clone(new_clone_path)
-
-    # Generate MCP configuration for the forked session
-    # This is critical because:
-    # 1. The source clone's .mcp.json may reference old paths
-    # 2. The forked session will use --resume mode which doesn't regenerate MCP config
-    # 3. Without this, MCP servers won't be available in the forked session
-    generate_mcp_config(new_clone_path)
 
     new_clone_path
   rescue => e
@@ -577,30 +598,38 @@ class ForkSessionService
     end
   end
 
-  # Generate MCP configuration and inject skills for the forked session using AIR CLI
-  def generate_mcp_config(new_clone_path)
-    working_directory = calculate_working_directory(new_clone_path)
-
+  # Generate MCP configuration and inject skills for the forked session using AIR CLI.
+  #
+  # `forked_session`, never `source_session` — see the call site for what naming the
+  # source cost (#400). The artifact lists are the fork's own copies of the source's,
+  # so which one is read makes no difference to WHAT is prepared; it decides who the
+  # prepared config says the session is.
+  #
+  # @param forked_session [Session] the fork this config belongs to
+  # @param working_directory [String] the fork's working directory
+  def generate_mcp_config(forked_session, working_directory)
     air_service = AirPrepareService.new(
-      session: source_session,
+      session: forked_session,
       working_directory: working_directory,
       file_system: file_system
     )
-    if source_session.mcp_servers.present? || source_session.catalog_skills.present? || source_session.catalog_hooks.present? || source_session.catalog_plugins.present?
+    if forked_session.mcp_servers.present? || forked_session.catalog_skills.present? || forked_session.catalog_hooks.present? || forked_session.catalog_plugins.present?
       air_service.prepare!
     else
       air_service.ensure_baseline_mcp_config!
     end
 
     @logger.info("AIR prepare completed for forked session",
+      forked_session_id: forked_session.id,
       working_directory: working_directory,
-      mcp_servers: source_session.mcp_servers
+      mcp_servers: forked_session.mcp_servers
     )
   rescue => e
     # Log the error but don't fail the fork - config can be regenerated later
     @logger.warn("Failed to run AIR prepare for forked session",
+      forked_session_id: forked_session.id,
       error: e.message,
-      mcp_servers: source_session.mcp_servers
+      mcp_servers: forked_session.mcp_servers
     )
   end
 

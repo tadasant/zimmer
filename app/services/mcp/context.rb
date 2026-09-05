@@ -42,9 +42,15 @@ module Mcp
     #   RuntimeConfigPostProcessor stamps it onto the URL of the Zimmer server it injects into a
     #   session's own runtime config, which is the only place the caller's identity is knowable —
     #   the API key is shared by the whole fleet and the endpoint is stateless, so a request
-    #   otherwise says nothing about who is making it. It is a DEFAULT for the "which session is
-    #   asking" argument on the self-management tools, and nothing more: it widens no scope, and
-    #   an explicit session_id argument still wins.
+    #   otherwise says nothing about who is making it. It is mostly a DEFAULT for the "which session
+    #   is asking" argument on the self-management tools: it widens no scope, grants no tool, and an
+    #   explicit session_id argument still wins.
+    #
+    #   It is NOT only a default any more, and the exception is worth knowing. It is also the
+    #   answer to "is this caller the session it is acting on", which is what exempts a session
+    #   archiving ITSELF from the refusal that stops one session killing another's in-flight turn
+    #   (Sessions::LiveTurn, #400). So a connection stamped with another session's id inherits that
+    #   session's exemption — which is why ForkSessionService prepares a fork's config for the fork.
     def initialize(tool_groups: nil, allowed_agent_roots: nil, base_url: nil, caller_fingerprint: nil,
                    session_id: nil)
       @tool_groups = Registry.parse_groups(tool_groups)
