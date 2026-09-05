@@ -3553,6 +3553,122 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "[data-spot-hold-recheck]", { text: /Next check/, count: 0 }
   end
 
+  # The same precedence `get_session` applies, on the surface a human reads. A
+  # session parked for an auth outage AFTER the gate held it is waiting on the
+  # account pool, and the spot box below the outage banner must not send the
+  # reader back to the spot gate — nor promise a sweep that skips this session
+  # (SpotSessionHold.held_sessions excludes a row that also carries a park). #642.
+  test "the spot hold banner defers to a newer auth-outage park" do
+    session = Session.create!(
+      prompt: "Fix the bug",
+      status: :waiting,
+      scheduling_class: SessionGenesis::SPOT,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      SpotSessionHold::HELD_AT => 2.days.ago.iso8601,
+      SpotSessionHold::HELD_REASON => "at_utilization_limit",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5-hour window at 87% of its 65% target.",
+      SpotSessionHold::HELD_RETRY_AT => 47.hours.ago.iso8601,
+      SpotSessionHold::HELD_COUNT => 25,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START,
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => 1.day.ago.iso8601
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-hold-superseded]", text: /This is not why the session is waiting now/
+    assert_select "[data-spot-hold-superseded]", text: /the spot-hold sweep skips a session/
+    assert_select "[data-spot-hold-recheck]", false,
+                  "the sweep this sentence promises skips a session that also carries a park"
+  end
+
+  # A demoted hold loses on the carve-out, NOT on age — it can be the newer of the
+  # two records — so the banner must not tell a human the park "was recorded later"
+  # when it was recorded two hours earlier.
+  test "the spot hold banner does not claim a demoted hold is the older record" do
+    session = Session.create!(
+      prompt: "Fix the bug",
+      status: :waiting,
+      scheduling_class: SessionGenesis::SPOT,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => 5.hours.ago.iso8601,
+      SpotSessionHold::HELD_AT => 3.hours.ago.iso8601,
+      SpotSessionHold::HELD_REASON => "at_utilization_limit",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5-hour window at 87% of its 65% target.",
+      SpotSessionHold::HELD_RETRY_AT => 2.hours.ago.iso8601,
+      SpotSessionHold::HELD_COUNT => 4,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-hold-superseded]", text: /nothing is coming to re-arm this hold/
+    assert_select "[data-spot-hold-superseded]", { text: /was recorded later/, count: 0 }
+  end
+
+  # ...and it defers only while the park is the newer record. A hold taken since
+  # is a live hold, and the spot gate really is what this session is waiting on.
+  test "the spot hold banner keeps its re-check when the hold is newer than the park" do
+    session = Session.create!(
+      prompt: "Fix the bug",
+      status: :waiting,
+      scheduling_class: SessionGenesis::SPOT,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => 1.day.ago.iso8601,
+      SpotSessionHold::HELD_AT => 2.minutes.ago.iso8601,
+      SpotSessionHold::HELD_REASON => "fleet_at_cap",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken.",
+      SpotSessionHold::HELD_RETRY_AT => 10.minutes.from_now.iso8601,
+      SpotSessionHold::HELD_COUNT => 1,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-hold-superseded]", false
+    assert_select "[data-spot-hold-recheck]", text: /Next check/
+  end
+
+  # One box, two spot records: the banner used to render whichever the HOLD keys
+  # described, whatever the pause beside it said. Ranked now, like everything else.
+  test "the spot hold banner renders the newer of a hold and a ceiling pause" do
+    session = Session.create!(
+      prompt: "Fix the bug",
+      status: :waiting,
+      scheduling_class: SessionGenesis::SPOT,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      SpotSessionHold::HELD_AT => 3.hours.ago.iso8601,
+      SpotSessionHold::HELD_REASON => "fleet_at_cap",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken.",
+      SpotSessionHold::HELD_RETRY_AT => 10.minutes.from_now.iso8601,
+      SpotSessionHold::HELD_COUNT => 3,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START,
+      SpotSessionPause::PAUSED_AT => 2.minutes.ago.iso8601,
+      SpotSessionPause::PAUSED_REASON => "at_utilization_limit",
+      SpotSessionPause::PAUSED_DETAIL => "Pausing spot sessions: the 5-hour window's spot budget is spent.",
+      SpotSessionPause::PAUSED_COUNT => 1
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-hold-banner] h3", text: /Paused mid-run for quota headroom/
+    assert_select "[data-spot-hold-banner]", text: /spot budget is spent/
+  end
+
   test "should use normal restart for pre-prompt failure with complete setup artifacts even if clone deleted" do
     session = Session.create!(
       prompt: "Fix the bug",

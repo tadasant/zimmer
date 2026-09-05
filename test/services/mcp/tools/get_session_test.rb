@@ -301,4 +301,188 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_includes output, "**Spot gate: start held (`fleet_at_cap`):**"
     refute_includes output, "The prompt that woke it is not lost"
   end
+
+  # The pause branch is reached through the ranking now rather than rendered
+  # unconditionally, so it needs positive coverage and not only the refutations
+  # the multi-mechanism tests below make.
+  test "a spot session paused mid-run by the ceiling reads back the pause" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      SpotSessionPause::PAUSED_AT => "2026-08-22T16:59:15Z",
+      SpotSessionPause::PAUSED_REASON => "at_utilization_limit",
+      SpotSessionPause::PAUSED_DETAIL => "Pausing spot sessions: the 5-hour window's spot budget is spent.",
+      SpotSessionPause::PAUSED_COUNT => 2
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Paused mid-run by the spot ceiling:** Pausing spot sessions:"
+    assert_includes output, "- **Paused at:** 2026-08-22T16:59:15Z"
+    assert_includes output, "- **Pauses so far:** 2"
+    assert_includes output, "- **Resumes when:** the pool's utilization falls"
+  end
+
+  # The other shape that shares the pause record. Nothing interrupted this session,
+  # so it must not be described as a casualty of the ceiling.
+  test "a session parked in the spot queue deliberately reads back as deliberate" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      SpotSessionPause::PAUSED_AT => "2026-08-22T16:59:15Z",
+      SpotSessionPause::PAUSED_REASON => SpotSessionPause::QUEUED_REASON,
+      SpotSessionPause::PAUSED_DETAIL => "Parked in the spot queue on request.",
+      SpotSessionPause::PAUSED_COUNT => 1
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Parked in the spot queue deliberately:**"
+    refute_includes output, "- **Paused mid-run by the spot ceiling:**"
+  end
+
+  # A record with no parseable stamp still gets named, without an empty " from ."
+  # where its timestamp would go.
+  test "a superseded mechanism with no usable timestamp is named without one" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      SpotSessionPause::PAUSED_AT => "not a timestamp",
+      SpotSessionPause::PAUSED_REASON => "at_utilization_limit",
+      SpotSessionPause::PAUSED_DETAIL => "Pausing spot sessions: the 5-hour window's spot budget is spent.",
+      SpotSessionPause::PAUSED_COUNT => 2,
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => "2026-08-22T16:59:30Z"
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "**Also on the record, and not why it is waiting now:** a spot ceiling " \
+                            "pause. It is older than the reason above."
+  end
+
+  # An auth-outage park has its own resume owner — the quota-recovery path, not
+  # the spot gate — and until #642 it was the one dormancy this tool could not say
+  # out loud. A session parked on an empty login pool read back nothing at all.
+  test "an auth-outage park is rendered, and says what brings the session back" do
+    session = sessions(:running)
+    session.update!(status: :waiting, metadata: {
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => "2026-08-22T11:50:51Z",
+      "auth_outage_pool_recovers_at" => 2.hours.from_now.utc.iso8601
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Parked for an auth outage (`quota_exhausted`):** every Claude Code " \
+                            "account is over its quota"
+    assert_includes output, "- **Parked at:** 2026-08-22T11:50:51Z"
+    assert_includes output, "- **Resumes when:** the account pool recovers"
+    assert_includes output, "- **Pool's earliest reset:**"
+    assert_includes output, "Nothing fires at it."
+  end
+
+  # A failed login is a different sentence from an exhausted quota, and the two
+  # want different things from a reader.
+  test "an unrecoverable auth park names the login failure rather than a quota" do
+    session = sessions(:running)
+    session.update!(status: :waiting, metadata: {
+      "auth_outage_reason" => AuthOutageParkService::AUTH_UNRECOVERABLE,
+      "auth_outage_parked_at" => "2026-08-22T11:50:51Z"
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Parked for an auth outage (`auth_unrecoverable`):** the runtime reported"
+    assert_includes output, "re-injecting credentials did not fix it."
+    refute_includes output, "- **Pool's earliest reset:**"
+  end
+
+  # A spot session is woken by the ranked fleet wake in precedence order, not
+  # simply "when the pool recovers" — promising it the next wake would overstate
+  # what it gets, exactly as the session page's banner is careful not to.
+  test "a parked spot session is told the fleet wake reaches it in precedence order" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, precedence: 640, metadata: {
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => "2026-08-22T11:50:51Z"
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "the ranked fleet wake reaches it in precedence order (currently 640)"
+  end
+
+  # Session 6808, as reported (#642): the headline named a start-hold whose own
+  # re-check was two days in the past, while an auth-outage park a full day newer
+  # sat beside it unrendered — pointing every reader at the spot gate when the
+  # account pool was what this session was waiting on.
+  test "an expired start-hold beside a newer outage park reads back the park" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      SpotSessionHold::HELD_AT => "2026-08-21T11:16:53Z",
+      SpotSessionHold::HELD_RETRY_AT => "2026-08-21T12:18:21Z",
+      SpotSessionHold::HELD_REASON => "at_utilization_limit",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5-hour window at 87% of its 65% target.",
+      SpotSessionHold::HELD_COUNT => 25,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START,
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => "2026-08-22T11:50:51Z"
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Parked for an auth outage (`quota_exhausted`):**"
+    refute_includes output, "- **Spot gate: start held"
+    # The hold is still named — it is a real record — but as superseded, and with
+    # the reason the sweep is not coming for it. The old output promised the
+    # opposite in the same breath.
+    assert_includes output, "**Also on the record, and not why it is waiting now:** a spot-gate hold " \
+                            "(`at_utilization_limit`) from 2026-08-21T11:16:53Z."
+    assert_includes output, "nothing is coming to re-arm it"
+    refute_includes output, "spot-hold sweep re-arms it automatically"
+  end
+
+  # Session 7503, as reported (#642): a ceiling pause fifteen seconds OLDER than
+  # the park beside it. Fifteen seconds is still newer, and the two resume from
+  # different places.
+  test "a ceiling pause fifteen seconds older than the park reads back the park" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      SpotSessionPause::PAUSED_AT => "2026-08-22T16:59:15Z",
+      SpotSessionPause::PAUSED_REASON => "at_utilization_limit",
+      SpotSessionPause::PAUSED_DETAIL => "Pausing spot sessions: the 5-hour window's spot budget is spent.",
+      SpotSessionPause::PAUSED_COUNT => 2,
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => "2026-08-22T16:59:30Z"
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Parked for an auth outage (`quota_exhausted`):**"
+    refute_includes output, "- **Paused mid-run by the spot ceiling:**"
+    assert_includes output, "**Also on the record, and not why it is waiting now:** a spot ceiling pause " \
+                            "from 2026-08-22T16:59:15Z. It is older than the reason above."
+  end
+
+  # Recency, not a pecking order. A park that has been sitting there since
+  # yesterday does not outrank the hold the gate took this afternoon.
+  test "a live hold taken after the park takes the headline back from it" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => 1.day.ago.utc.iso8601,
+      SpotSessionHold::HELD_AT => 20.minutes.ago.utc.iso8601,
+      SpotSessionHold::HELD_RETRY_AT => 40.minutes.from_now.utc.iso8601,
+      SpotSessionHold::HELD_REASON => "fleet_at_cap",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken.",
+      SpotSessionHold::HELD_COUNT => 1,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Spot gate: start held (`fleet_at_cap`):**"
+    assert_includes output, "- **Hold re-check:** Next check"
+    refute_includes output, "- **Parked for an auth outage"
+    assert_includes output, "**Also on the record, and not why it is waiting now:** an auth-outage park " \
+                            "(`quota_exhausted`)"
+  end
 end
