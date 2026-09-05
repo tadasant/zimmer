@@ -739,6 +739,14 @@ own sentence, and a headless retry is enqueued. It is not an exemption. The fork
 nothing here lets a session past the fleet cap or past burn pacing; what changes is that a refused
 fork ends instead of joining the queue.
 
+That branch sits **above** the `fleet_at_cap` exemption described earlier, and deliberately. The
+exemption spares an already-`running` session the concurrency limit because refusing it would refuse
+it on the strength of its own slot — and because the refusal would strand it. Neither half holds for
+a summary fork: it is `running` only as bookkeeping, since its deliverer flipped it and no process
+has been spawned, and its refusal is a disposal rather than a deferral, so there is nothing to
+strand. Below the exemption, a fork refused for a full fleet would have been waved through to run as
+one more process on top of it — which is the escape the check before the fork exists is closing.
+
 Holding one was the wrong disposal. A ten-minute deferral, then twenty, then an hour, parks a hidden
 session row and its working directory for far longer than the turn it was deferring would have
 taken — and its claim on the summary record ages out after `PENDING_TIMEOUT`, at which point the

@@ -93,7 +93,8 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
 
     refused = nil
     SpotGateService.stub(:evaluate, held_decision) do
-      assert_enqueued_with(job: SessionStatusSummaryJob, args: [ source.id, { headless: true } ]) do
+      assert_enqueued_with(job: SessionStatusSummaryJob,
+                           args: [ source.id, { headless: true, force: false } ]) do
         refused = SpotSessionHold.hold_if_needed(fork)
       end
     end
@@ -153,6 +154,93 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
 
     assert fork.reload.waiting?
     assert_equal "at_utilization_limit", fork.metadata[SpotSessionHold::HELD_REASON]
+  end
+
+  # The PRODUCTION shape: a dispatched fork is `running` by the time it reaches
+  # the gate, because `deliver_follow_up!` flipped it. It must be returned to the
+  # queue before it is archived, or the fleet reads a slot that never ran.
+  test "a running status summary fork is returned to the queue and then archived" do
+    source = build_session(SessionGenesis::GITHUB_ISSUE)
+    fork = summary_fork_of(source, status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(fork)
+    end
+
+    assert fork.reload.archived?
+    assert_nil fork.running_job_id, "a fork that never ran must not look owned to the orphan sweep"
+  end
+
+  # The escape this change closes. #applies_to? spares an already-`running`
+  # session the fleet cap, so below it a dispatched fork was waved through to run
+  # as one more process on top of a full fleet. The fork branch sits above that
+  # exemption.
+  test "a running status summary fork is discarded on a full fleet rather than waved through" do
+    source = build_session(SessionGenesis::GITHUB_ISSUE)
+    fork = summary_fork_of(source, status: :running)
+
+    SpotGateService.stub(:evaluate, fleet_cap_decision) do
+      assert_no_enqueued_jobs(only: AgentSessionJob) do
+        assert SpotSessionHold.hold_if_needed(fork),
+          "the fleet-cap exemption must not reach Zimmer's own bookkeeping"
+      end
+    end
+
+    assert fork.reload.archived?
+  end
+
+  # The exemption itself is untouched for the operator's work: a running session
+  # refused for a full fleet is still refused on the strength of its own slot,
+  # and still carries on.
+  test "an ordinary running session still passes the fleet cap exemption" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, fleet_cap_decision) do
+      refute SpotSessionHold.hold_if_needed(session)
+    end
+
+    assert session.reload.running?
+  end
+
+  # Defence in depth: the disposal and the log line both swallow their own
+  # failures, so in practice only `return_to_queue!` reaches the rescue. What it
+  # buys is that a disposal that dies degrades to the behavior it replaced rather
+  # than to a fork that runs — and that the turn the fork was carrying survives
+  # the degradation.
+  #
+  # The stub raises ONCE, which is the shape a transient write failure has. A
+  # permanent one fails the fallback `hold!` too, and the exception leaves
+  # `hold_if_needed` — which still refuses the turn, because AgentSessionJob
+  # never reaches its start path.
+  test "a disposal that fails falls back to an ordinary hold carrying the same turn" do
+    source = build_session(SessionGenesis::GITHUB_ISSUE)
+    fork = summary_fork_of(source, status: :running)
+    raised = false
+
+    held = nil
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.stub(:return_to_queue!, lambda { |session|
+        unless raised
+          raised = true
+          raise ActiveRecord::StatementInvalid, "boom"
+        end
+
+        # The second call is the fallback `hold!`'s own, and it does what the
+        # real method does for a running session.
+        session.update!(status: :waiting, running_job_id: nil) if session.running?
+      }) do
+        held = SpotSessionHold.hold_if_needed(fork, follow_up_prompt: "Summarize this session.")
+      end
+    end
+
+    assert held, "a fork whose disposal failed must still be refused"
+    fork.reload
+    assert_not fork.archived?
+    assert_equal "waiting", fork.status
+    assert_equal "at_utilization_limit", fork.metadata[SpotSessionHold::HELD_REASON]
+    assert_equal "Summarize this session.", fork.metadata[SpotSessionHold::HELD_PROMPT],
+      "the deferred turn must not be dropped by the fallback"
   end
 
   test "repeated holds increment the counter" do
@@ -885,14 +973,27 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
 
   # A status-summary fork of `source`, shaped the way
   # SessionStatusSummaryGenerator makes one: the marker is the whole edge.
-  def summary_fork_of(source)
+  def summary_fork_of(source, status: :waiting)
     Session.create!(
       git_root: "https://github.com/t/r.git", prompt: "work",
-      genesis: SessionGenesis::GITHUB_ISSUE, status: :waiting,
+      genesis: SessionGenesis::GITHUB_ISSUE, status: status,
       metadata: {
         "forked_from_session_id" => source.id,
         SessionStatusSummaryGenerator::FORK_MARKER => source.id
       }
+    )
+  end
+
+  # The gate refusing for a FULL FLEET, which is the reason #applies_to? spares a
+  # running session.
+  def fleet_cap_decision
+    SpotGateService::Decision.new(
+      allowed: false, reason: "fleet_at_cap",
+      detail: "5 of 5 session slots taken.",
+      five_hour: nil, weekly: nil, active_sessions: 5, awaiting_sessions: 0, fleet_cap: 5,
+      accounts_read: 2, pool_size: 2,
+      fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0,
+      pool_capacity: nil
     )
   end
 

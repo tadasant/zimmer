@@ -402,7 +402,8 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     record = @session.reload.status_summary
     assert_equal fork.id, record.fork_session_id, "the fixture must have a claimed record"
 
-    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @session.id, { headless: true } ]) do
+    assert_enqueued_with(job: SessionStatusSummaryJob,
+                         args: [ @session.id, { headless: true, force: false } ]) do
       SessionStatusSummaryGenerator.discard_refused_fork(fork, detail: "5 of 5 session slots taken.")
     end
 
@@ -427,6 +428,56 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert fork.reload.archived?, "the fork is disposed of either way"
     assert_equal "pending", record.reload.state
     assert_nil record.error
+  end
+
+  # The record is stamped "It is being retried without a fork" before the fork is
+  # archived, so an archive that dies must not take the retry with it — that
+  # leaves the panel asserting a retry nobody enqueued.
+  test "a refused fork whose archive fails still enqueues the retry" do
+    fork = generate.fork_session
+
+    Session.any_instance.stubs(:archive!).raises(ActiveRecord::StatementInvalid, "boom")
+    assert_enqueued_with(job: SessionStatusSummaryJob,
+                         args: [ @session.id, { headless: true, force: false } ]) do
+      SessionStatusSummaryGenerator.discard_refused_fork(fork, detail: "5 of 5 session slots taken.")
+    end
+
+    assert_equal "failed", @session.reload.status_summary.state
+  end
+
+  # An unforced retry is frequently NO retry: `#call` answers an unforced run
+  # against a record that is not stale with "Summary is current.", and the
+  # Regenerate button is offered regardless of staleness. A discard that dropped
+  # the operator's forcedness would answer their click with a failure that never
+  # clears.
+  test "a refused fork from a forced generation retries forced" do
+    @session.update!(scheduling_class: SessionGenesis::PRIORITY)
+    fork = SessionStatusSummaryGenerator.call(
+      session: @session, file_system: @fs, force: true
+    ).fork_session
+
+    assert fork.status_summary_forced?, "a forced generation must stamp its fork"
+
+    assert_enqueued_with(job: SessionStatusSummaryJob,
+                         args: [ @session.id, { headless: true, force: true } ]) do
+      SessionStatusSummaryGenerator.discard_refused_fork(fork, detail: "5 of 5 session slots taken.")
+    end
+  end
+
+  test "an automatic generation's fork is not stamped forced" do
+    assert_not generate.fork_session.status_summary_forced?
+  end
+
+  # A source deleted while its fork was queued leaves nothing to release. The
+  # fork is still disposed of, and the retry is still enqueued — the job discards
+  # a missing session itself.
+  test "a refused fork whose summary record is gone is still archived" do
+    fork = generate.fork_session
+    @session.status_summary.destroy!
+
+    SessionStatusSummaryGenerator.discard_refused_fork(fork, detail: "5 of 5 session slots taken.")
+
+    assert fork.reload.archived?
   end
 
 
