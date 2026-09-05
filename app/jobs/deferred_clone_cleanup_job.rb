@@ -172,7 +172,6 @@ class DeferredCloneCleanupJob < ApplicationJob
     end
 
     # Check for unpushed artifacts and preserve them before deleting clone
-    artifact_service = CloneArtifactService.new
     dirty_result = artifact_service.check_dirty_state(clone_path)
     artifacts_preserved = false
 
@@ -299,6 +298,14 @@ class DeferredCloneCleanupJob < ApplicationJob
 
   private
 
+  # One CloneArtifactService per run. Memoized because two branches need it — the
+  # dirty check and preservation, and `finalize_trash_expiry`'s artifact question
+  # — and constructing a second would be a second collaborator for a caller to
+  # reason about with nothing to distinguish it from the first.
+  def artifact_service
+    @artifact_service ||= CloneArtifactService.new
+  end
+
   # Durable record that this session's clone was mangled and that the
   # archive-side guard defused it. The refusal is a `.warn` (#415), so this is
   # what keeps the *rate* countable, in SQL, after the log line has aged out:
@@ -376,7 +383,7 @@ class DeferredCloneCleanupJob < ApplicationJob
   # exactly what the preservation path exists to prevent.
   def finalize_trash_expiry(session)
     with_db_retry do
-      if durable_session_storage_exists?(session.id) || CloneArtifactService.new.artifacts_exist?(session.id)
+      if durable_session_storage_exists?(session.id) || artifact_service.artifacts_exist?(session.id)
         session.update_column(:trash_after, trash_deadline_for(session))
       else
         session.update_column(:trash_after, nil)
