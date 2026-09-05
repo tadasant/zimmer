@@ -1,4 +1,6 @@
 class Log < ApplicationRecord
+  include BroadcastsThroughService
+
   belongs_to :session
 
   LEVELS = %w[info error debug warning verbose].freeze
@@ -63,11 +65,12 @@ class Log < ApplicationRecord
       sort_time: created_at
     }
 
-    broadcast_append_to(
-      "session_#{session_id}_timeline",
+    broadcaster.broadcast_partial(
+      action: :append,
+      stream: "session_#{session_id}_timeline",
+      target: "session_#{session_id}_timeline",
       partial: "timeline_items/item",
-      locals: { item: timeline_item },
-      target: "session_#{session_id}_timeline"
+      locals: { item: timeline_item }
     )
   end
 end

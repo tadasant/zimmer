@@ -70,6 +70,79 @@ module BroadcastHelpers
     assert actual_count > 0, "Expected at least one broadcast, but none were sent"
   end
 
+  # === Argument-level broadcast capture ===
+  #
+  # `assert_broadcasts` above counts. This captures, and the difference is the
+  # point: a broadcast sent to the wrong stream or the wrong target still counts
+  # as one broadcast, and the only symptom is a card in the live UI that quietly
+  # stops updating. Tests that pin a call site's stream/target/partial want this.
+  #
+  # It swaps the four Turbo::StreamsChannel class methods for recorders, so it
+  # sees every broadcast in the process — including the ones BroadcastService
+  # makes on a model's behalf — and nothing reaches ActionCable.
+  #
+  # Two things it deliberately does NOT do. It does not nest — an inner capture
+  # would restore the real channel for the rest of an outer one, so it raises
+  # instead. And it cannot see through a Mocha stub of the same method: Mocha
+  # stubs a class method by PREPENDING a module to the singleton class, which
+  # sits in front of anything defined here, so a test that stubs
+  # Turbo::StreamsChannel directly must not also use this.
+  #
+  # @param raises [Exception, nil] when given, every captured broadcast raises it
+  #   afterwards, which is how the failure-isolation tests simulate a dead cable.
+  # @yield [Array<CapturedBroadcast>] the (growing) list, also returned
+  CapturedBroadcast = Struct.new(:action, :stream, :target, :partial, :locals, :html)
+
+  TURBO_BROADCAST_ACTIONS = %i[replace append prepend remove].freeze
+
+  def capture_turbo_broadcasts(raises: nil)
+    raise "capture_turbo_broadcasts does not nest" if @capturing_turbo_broadcasts
+
+    # The restore below UNCOVERS the real implementations rather than putting
+    # them back, which is only correct while they arrive through
+    # `extend Turbo::Streams::Broadcasts`. Assert that here so a turbo-rails
+    # upgrade that defines them directly fails loudly instead of deleting them
+    # for the rest of the worker process.
+    TURBO_BROADCAST_ACTIONS.each do |action|
+      name = :"broadcast_#{action}_to"
+      next unless Turbo::StreamsChannel.singleton_class.instance_methods(false).include?(name)
+
+      raise "Turbo::StreamsChannel.#{name} is now defined directly; capture_turbo_broadcasts must save and restore it"
+    end
+
+    @capturing_turbo_broadcasts = true
+    captured = []
+
+    begin
+      TURBO_BROADCAST_ACTIONS.each do |action|
+        name = :"broadcast_#{action}_to"
+        Turbo::StreamsChannel.define_singleton_method(name) do |*streamables, **options|
+          captured << CapturedBroadcast.new(
+            action,
+            streamables.first,
+            options[:target],
+            options[:partial],
+            options[:locals],
+            options[:html]
+          )
+          raise raises if raises
+
+          nil
+        end
+      end
+
+      yield captured
+      captured
+    ensure
+      @capturing_turbo_broadcasts = false
+      TURBO_BROADCAST_ACTIONS.each do |action|
+        name = :"broadcast_#{action}_to"
+        Turbo::StreamsChannel.singleton_class.send(:remove_method, name) if
+          Turbo::StreamsChannel.singleton_class.instance_methods(false).include?(name)
+      end
+    end
+  end
+
   private
 
   # Count broadcast jobs for a given streamable

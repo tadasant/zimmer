@@ -1372,7 +1372,16 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
     session.resume!
 
-    assert_equal 4, broadcasts_called.length, "All 4 broadcast methods should be called"
+    # Five calls, not four: resume! also changes custom_metadata, and that
+    # callback re-broadcasts the header actions. That second cable write has
+    # always been sent — it became visible to this stub only once
+    # #broadcast_custom_metadata_change stopped duplicating the body of
+    # #broadcast_header_actions and started calling it (#524). Pinned exactly, so
+    # a future change to either count fails here rather than passing quietly.
+    assert_equal(
+      { broadcast_status_badge: 1, broadcast_follow_up_form: 1, broadcast_running_loader: 1, broadcast_header_actions: 2 },
+      broadcasts_called.tally
+    )
   end
 
   test "archive! triggers broadcasts to update Turbo Stream clients" do

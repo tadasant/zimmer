@@ -1,5 +1,6 @@
 class Session < ApplicationRecord
   include ActionView::RecordIdentifier
+  include BroadcastsThroughService
   include SessionStateMachine
   include AtomicJsonMetadata
   include SessionGenesisClassification
@@ -1781,10 +1782,9 @@ class Session < ApplicationRecord
     )
 
     # `ensure`, not a line after #save!, because #save! does not return before the
-    # row's after_create_commit callbacks have run — and two of them raise without
-    # a rescue (#broadcast_create_to_sessions_index does a Turbo/Redis broadcast,
-    # #enqueue_session_inference enqueues SessionTitleJob). A GoodJob enqueue or a
-    # Redis blip in either one comes back out of #save! over a row that is already
+    # row's after_create_commit callbacks have run — and one of them raises without
+    # a rescue (#enqueue_session_inference enqueues SessionTitleJob). A GoodJob
+    # enqueue failure comes back out of #save! over a row that is already
     # committed, which is exactly the state on_created exists to report. Guarded on
     # #persisted? so a genuine validation failure, where no row exists, reports
     # nothing.
@@ -2242,11 +2242,16 @@ class Session < ApplicationRecord
 
     # Replace the session's card in place (wherever it currently lives in the grid,
     # regardless of which category section it has been dragged into).
-    broadcast_individual_card_to_sessions_index(:replace)
+    delivered = broadcast_individual_card_to_sessions_index(:replace)
 
     # Record broadcast time for throttling (only for last_timeline_entry_at changes)
-    # Use update_column to avoid triggering callbacks
-    update_column(:last_broadcast_to_index_at, Time.current) if saved_change_to_last_timeline_entry_at?
+    # Use update_column to avoid triggering callbacks.
+    #
+    # Guarded on `delivered`, because the service swallows a failed broadcast and
+    # returns false rather than raising. Stamping regardless would have
+    # `should_broadcast_to_index?` suppress the next 30 seconds of card updates on
+    # the strength of one that never arrived.
+    update_column(:last_broadcast_to_index_at, Time.current) if delivered && saved_change_to_last_timeline_entry_at?
   end
 
   def broadcast_create_to_sessions_index
@@ -2256,25 +2261,24 @@ class Session < ApplicationRecord
   end
 
   def broadcast_remove_from_sessions_index
-    broadcast_remove_to("sessions_index_individual", target: dom_id(self))
+    broadcaster.broadcast_removal(stream: "sessions_index_individual", target: dom_id(self))
   end
 
   # Renders this session as an individual card and broadcasts to the individual-view channel.
   # Supports :replace (for updates) and :prepend (for new sessions).
   def broadcast_individual_card_to_sessions_index(action)
-    rendered_html = render_index_card_html
     if action == :prepend
-      broadcast_prepend_to(
-        "sessions_index_individual",
-        target: "sessions_grid",
-        html: rendered_html
-      )
+      broadcaster.broadcast_html(
+        action: :prepend,
+        stream: "sessions_index_individual",
+        target: "sessions_grid"
+      ) { render_index_card_html }
     else
-      broadcast_replace_to(
-        "sessions_index_individual",
-        target: dom_id(self),
-        html: rendered_html
-      )
+      broadcaster.broadcast_html(
+        action: :replace,
+        stream: "sessions_index_individual",
+        target: dom_id(self)
+      ) { render_index_card_html }
     end
   end
 
@@ -2288,9 +2292,9 @@ class Session < ApplicationRecord
   end
 
   def broadcast_status_change
-    # Broadcast each component independently with individual error handling.
-    # This ensures that if one broadcast fails (e.g., due to rendering error),
-    # the remaining broadcasts still execute.
+    # Broadcast each component independently. BroadcastService isolates each one,
+    # so a render or cable failure in any of them leaves the rest — and this
+    # method's caller, which is an after_update_commit — unharmed.
     broadcast_status_badge
     # Membership first: a row this status change has just made eligible is
     # inserted by the delivery, and the pill replace below then lands on an
@@ -2306,15 +2310,13 @@ class Session < ApplicationRecord
   end
 
   def broadcast_status_badge
-    broadcast_replace_to(
-      "session_#{id}_status",
+    broadcaster.broadcast_partial(
+      action: :replace,
+      stream: "session_#{id}_status",
       target: "session_#{id}_status_badge",
       partial: "sessions/status_badge",
       locals: { agent_session: self }
     )
-  rescue => e
-    Rails.logger.error "[Session] Broadcast status badge failed for session #{id}: #{e.message}"
-    ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "status_badge" })
   end
 
   # Keep an open Ranked view honest about this session's status.
@@ -2337,15 +2339,13 @@ class Session < ApplicationRecord
   def broadcast_ranked_row
     return if status_summary_fork?
 
-    broadcast_replace_to(
-      RANKED_STREAM,
+    broadcaster.broadcast_partial(
+      action: :replace,
+      stream: RANKED_STREAM,
       target: "ranked_row_status_#{id}",
       partial: "sessions/ranked_row_status",
       locals: { agent_session: self }
     )
-  rescue => e
-    Rails.logger.error "[Session] Broadcast ranked row failed for session #{id}: #{e.message}"
-    ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "ranked_row" })
   end
 
   # Tell every open Ranked view that this session's PLACE in the queue may have
@@ -2378,61 +2378,51 @@ class Session < ApplicationRecord
   def broadcast_ranked_membership
     return if status_summary_fork?
 
-    html = SessionsController.render(
-      partial: "sessions/ranked_delivery",
-      locals: { agent_session: self }
-    )
-    broadcast_append_to(RANKED_STREAM, target: "ranked_deliveries", html: html)
-  rescue => e
-    Rails.logger.error "[Session] Broadcast ranked membership failed for session #{id}: #{e.message}"
-    ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "ranked_membership" })
+    broadcaster.broadcast_html(
+      action: :append,
+      stream: RANKED_STREAM,
+      target: "ranked_deliveries"
+    ) do
+      SessionsController.render(partial: "sessions/ranked_delivery", locals: { agent_session: self })
+    end
   end
 
   def broadcast_follow_up_form
-    # Use SessionsController.render to ensure route helpers (follow_up_session_path) are available
-    # This is necessary because this callback can be triggered from background jobs
-    # Pre-fetch session skills to avoid cache hit in view
-    session_skills = ClaudeSkillsCacheService.get_for_session(self)
-    follow_up_html = SessionsController.render(
-      partial: "sessions/follow_up_form",
-      locals: { agent_session: self, session_skills: session_skills }
-    )
-    broadcast_replace_to(
-      "session_#{id}_status",
-      target: "session_#{id}_follow_up_form",
-      html: follow_up_html
-    )
-  rescue => e
-    Rails.logger.error "[Session] Broadcast follow-up form failed for session #{id}: #{e.message}"
-    ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "follow_up_form" })
+    # Rendered through SessionsController so route helpers (follow_up_session_path)
+    # resolve — this callback can be triggered from background jobs. The skills
+    # lookup is inside the block with the render it feeds, so a failure in either
+    # is isolated the same way.
+    broadcaster.broadcast_html(
+      action: :replace,
+      stream: "session_#{id}_status",
+      target: "session_#{id}_follow_up_form"
+    ) do
+      SessionsController.render(
+        partial: "sessions/follow_up_form",
+        locals: { agent_session: self, session_skills: ClaudeSkillsCacheService.get_for_session(self) }
+      )
+    end
   end
 
   def broadcast_running_loader
-    broadcast_replace_to(
-      "session_#{id}_status",
+    broadcaster.broadcast_partial(
+      action: :replace,
+      stream: "session_#{id}_status",
       target: "session_#{id}_running_loader",
       partial: "sessions/running_loader",
       locals: { agent_session: self }
     )
-  rescue => e
-    Rails.logger.error "[Session] Broadcast running loader failed for session #{id}: #{e.message}"
-    ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "running_loader" })
   end
 
   def broadcast_header_actions
     # Use SessionsController.render to ensure route helpers are available
-    header_actions_html = SessionsController.render(
-      partial: "sessions/session_header_actions",
-      locals: { agent_session: self }
-    )
-    broadcast_replace_to(
-      "session_#{id}_status",
-      target: "session_#{id}_header_actions",
-      html: header_actions_html
-    )
-  rescue => e
-    Rails.logger.error "[Session] Broadcast header actions failed for session #{id}: #{e.message}"
-    ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "header_actions" })
+    broadcaster.broadcast_html(
+      action: :replace,
+      stream: "session_#{id}_status",
+      target: "session_#{id}_header_actions"
+    ) do
+      SessionsController.render(partial: "sessions/session_header_actions", locals: { agent_session: self })
+    end
   end
 
   # Check if metadata fields displayed on the detail page have changed
@@ -2453,58 +2443,34 @@ class Session < ApplicationRecord
   end
 
   def broadcast_metadata_change
-    # Broadcast metadata update to session detail page
-    # Use SessionsController.render to ensure route helpers are available
-    # Pass select data as locals so the partial renders edit affordances
-    # (without these, the edit buttons disappear because the partial checks for them)
-    metadata_html = SessionsController.render(
-      partial: "sessions/session_metadata",
-      locals: metadata_broadcast_locals
-    )
-    broadcast_replace_to(
-      "session_#{id}_status",
-      target: "session_#{id}_metadata",
-      html: metadata_html
-    )
-  rescue => e
-    # Log broadcast errors but don't let them fail the parent operation
-    Rails.logger.error "[Session] Broadcast metadata change failed for session #{id}: #{e.message}"
-    ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "metadata_change" })
+    broadcast_metadata_partial
+  end
+
+  # Replace the metadata partial on the session detail page. Shared by the two
+  # callbacks that need it. Rendered through SessionsController so route helpers
+  # are available — this runs from background jobs — and the select data goes in
+  # as locals, without which the partial drops its edit affordances.
+  def broadcast_metadata_partial
+    broadcaster.broadcast_html(
+      action: :replace,
+      stream: "session_#{id}_status",
+      target: "session_#{id}_metadata"
+    ) do
+      SessionsController.render(partial: "sessions/session_metadata", locals: metadata_broadcast_locals)
+    end
   end
 
   # `mcp_status_changed` defaults to the dirty-tracking answer for the callback path;
   # AtomicJsonMetadata passes it explicitly because a raw UPDATE leaves no dirty state.
   def broadcast_custom_metadata_change(mcp_status_changed: custom_metadata_mcp_status_changed?)
-    # Broadcast header actions update to session detail page
-    # This includes the GitHub PR link button which depends on custom_metadata
-    # Use SessionsController.render to ensure route helpers are available
-    header_actions_html = SessionsController.render(
-      partial: "sessions/session_header_actions",
-      locals: { agent_session: self }
-    )
-    broadcast_replace_to(
-      "session_#{id}_status",
-      target: "session_#{id}_header_actions",
-      html: header_actions_html
-    )
+    # The header actions include the GitHub PR link button, which depends on
+    # custom_metadata. Same stream, target and rendering as the status-change
+    # path, so it is the same method rather than a second copy of it.
+    broadcast_header_actions
 
     # Also broadcast metadata partial if MCP status changed
     # This updates the MCP server status indicators in real-time
-    if mcp_status_changed
-      metadata_html = SessionsController.render(
-        partial: "sessions/session_metadata",
-        locals: metadata_broadcast_locals
-      )
-      broadcast_replace_to(
-        "session_#{id}_status",
-        target: "session_#{id}_metadata",
-        html: metadata_html
-      )
-    end
-  rescue => e
-    # Log broadcast errors but don't let them fail the parent operation
-    Rails.logger.error "[Session] Broadcast custom metadata change failed for session #{id}: #{e.message}"
-    ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "custom_metadata_change" })
+    broadcast_metadata_partial if mcp_status_changed
   end
 
   # The enqueue side of the provenance fan-out. Public alongside the method it
@@ -2513,8 +2479,8 @@ class Session < ApplicationRecord
   def enqueue_provenance_broadcast
     SessionProvenanceBroadcastJob.perform_later(id)
   rescue => e
-    # Swallowed for the same reason broadcast_provenance_change_to_hierarchy
-    # swallows its own failures, and it matters more here: this runs from
+    # Swallowed for the same reason BroadcastService swallows a failed
+    # broadcast, and it matters more here: this runs from
     # after_create_commit, so an exception propagates to the caller — and the
     # caller is the HTTP request that just created the session. A failed enqueue
     # would answer a committed create with a 500, which is precisely the
@@ -2527,23 +2493,20 @@ class Session < ApplicationRecord
 
   def broadcast_provenance_change_to_hierarchy
     SessionHierarchy.new(self).session_ids.each do |viewer_id|
-      viewer = Session.find_by(id: viewer_id)
-      next unless viewer
-
-      html = SessionsController.render(
-        partial: "sessions/session_hierarchy",
-        locals: { agent_session: viewer }
-      )
-
-      Turbo::StreamsChannel.broadcast_replace_to(
-        "session_#{viewer.id}_status",
-        target: "session_#{viewer.id}_provenance",
-        html: html
-      )
+      broadcaster.broadcast_html(
+        action: :replace,
+        stream: "session_#{viewer_id}_status",
+        target: "session_#{viewer_id}_provenance"
+      ) do
+        # Inside the block, so the lookup is covered by the same guard as the
+        # render: this fans out over a whole lineage from a background job, and a
+        # database blip partway through used to be swallowed with the rest. nil
+        # means the session went away between the hierarchy read and here, and
+        # the block returning nil is how the service is told to send nothing.
+        viewer = Session.find_by(id: viewer_id)
+        viewer && SessionsController.render(partial: "sessions/session_hierarchy", locals: { agent_session: viewer })
+      end
     end
-  rescue => e
-    Rails.logger.error "[Session] Broadcast provenance change failed for session #{id}: #{e.message}"
-    ErrorReporter.report_exception(e, context: { session_id: id, broadcast: "provenance_change" })
   end
   public :broadcast_provenance_change_to_hierarchy
 
