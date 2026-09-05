@@ -158,6 +158,15 @@ class Trigger < ApplicationRecord
   validate :validate_last_session_requires_reuse_session, on: :create
   validate :validate_watched_session_not_requester, on: :create
 
+  # A change to the selector reaches the sessions this trigger already spawned
+  # and has not started yet — the whole point of changing it during a backlog.
+  # See #reclassify_spawned_waiting_sessions for what "its own" means here.
+  #
+  # Unconditional rather than `if: :saved_change_to_scheduling_class?`, because
+  # the method also has to CLEAR the count it reports: a second save on the same
+  # instance must not echo the first one's figure.
+  after_update :reclassify_spawned_waiting_sessions
+
   # When a trigger is created with a target session and a one-time schedule,
   # automatically transition the target session into the waiting (dormant)
   # state. This is the "per-session wake-up" path: API callers can schedule a
@@ -383,7 +392,17 @@ class Trigger < ApplicationRecord
   # the two agree, and this one does not read AppSetting once per trigger in a
   # listing of a hundred.
   def default_scheduling_class
-    SessionGenesis.default_class(SessionGenesis.from_condition_types(condition_types))
+    SessionGenesis.default_class(condition_genesis)
+  end
+
+  # The genesis this trigger's own fires stamp. It is what tells the work the
+  # trigger's conditions produced apart from a session someone hand-fired with
+  # Invoke: an Invoke stamps `web_ui` and deliberately does NOT take this
+  # trigger's class (see #session_scheduling_class), so a later change to that
+  # class must not reach it either, even though the session carries this
+  # trigger's id.
+  def condition_genesis
+    SessionGenesis.from_condition_types(condition_types)
   end
 
   # The class this trigger's sessions actually get.
@@ -402,6 +421,48 @@ class Trigger < ApplicationRecord
     return nil if @genesis_override.present?
 
     scheduling_class.presence
+  end
+
+  # How many of this trigger's already-spawned sessions the last save actually
+  # moved between spot and priority. `nil` when the save did not touch the class,
+  # so a caller can tell "nothing to say" from "nothing moved" and echo the count
+  # only when there is one.
+  attr_reader :reclassified_session_count
+
+  # One sentence for the operator about what the selector change just reached, or
+  # nil when the save did not touch the class. Written once here so the flash
+  # notice, the MCP echo and the REST response cannot drift apart.
+  def reclassification_summary
+    return nil if reclassified_session_count.nil?
+    return "No already-spawned waiting sessions needed moving." if reclassified_session_count.zero?
+
+    noun = reclassified_session_count == 1 ? "session" : "sessions"
+    "#{reclassified_session_count} already-spawned waiting #{noun} moved to #{effective_scheduling_class}."
+  end
+
+  # This trigger's own sessions that a change to its selector should reach:
+  # spawned by this trigger's conditions, still `waiting`, and still carrying
+  # the class the trigger stamped on them.
+  #
+  # Every clause is load-bearing:
+  #
+  #   - **This trigger's sessions**, keyed on `metadata.trigger_id`, and not the
+  #     genesis or the agent root. `promote_genesis` sweeps every session of a
+  #     kind, which is exactly what makes it the wrong lever here — five of the
+  #     eight kinds restate a condition type, so a genesis-wide sweep drags in
+  #     the work of every other trigger that shares it (#480).
+  #   - **Spawned by a CONDITION**, so an Invoke's `web_ui` session is out. The
+  #     selector never applied to it, and a change to the selector does not
+  #     either. See #condition_genesis.
+  #   - **Still `waiting`.** A session that has started is past the gate this
+  #     setting governs, and one that is archived or failed is over.
+  #   - **Still carrying `stamped_class`.** A session whose class no longer
+  #     matches what the trigger stamped is one somebody moved by hand, and a
+  #     per-session choice outranks a trigger-wide one, so it stays put.
+  def spawned_waiting_sessions(stamped_class)
+    Session.for_trigger(id)
+      .with_genesis(condition_genesis)
+      .where(status: "waiting", scheduling_class: stamped_class)
   end
 
   # The spot-queue rank stamped on sessions this trigger spawns — nil when the
@@ -725,6 +786,75 @@ class Trigger < ApplicationRecord
 
   def normalize_scheduling_class
     self.scheduling_class = nil if scheduling_class.blank?
+  end
+
+  # Carry a selector change onto the sessions this trigger has already spawned
+  # and not yet started. Without this the setting reaches future sessions only,
+  # so an operator flipping a trigger to priority during a quota backlog watches
+  # the backlog they were trying to release sit exactly where it was (#480).
+  #
+  # The stamp follows the trigger's, so a session spawned before the edit and one
+  # spawned after it are indistinguishable — including a clear back to "derive
+  # it", which returns the sessions to deriving too. The reported COUNT is the
+  # narrower number: sessions whose resolved class actually moved. Rewriting a
+  # stamp that resolves to the same class moves nothing, and saying otherwise
+  # would overstate what the click did — but it is still a write, so it is still
+  # logged on the session that took it.
+  #
+  # Set operations, not a row at a time: this runs inside the trigger's save, in
+  # the operator's request, and #480 is precisely the case where the backlog is
+  # long. The whole sweep is a bounded number of statements however many sessions
+  # it moves. The write re-states the `waiting` and stamp conditions as it goes,
+  # so a session that starts between the read and the write keeps the class it is
+  # running with.
+  #
+  # This lands the class; it does not pull the sessions' deferred re-checks
+  # forward, so a released session starts on its own next tick (#423).
+  def reclassify_spawned_waiting_sessions
+    @reclassified_session_count = nil
+    return unless saved_change_to_scheduling_class?
+
+    previous, current = saved_change_to_scheduling_class
+    candidate_ids = spawned_waiting_sessions(previous).pluck(:id)
+    @reclassified_session_count = 0
+    return if candidate_ids.empty?
+
+    Session
+      .where(id: candidate_ids, status: "waiting", scheduling_class: previous)
+      .update_all(scheduling_class: current, updated_at: Time.current)
+
+    # Read back which rows the write took. `update_all` reports a count and the
+    # audit line has to name rows, and a candidate that started in the meantime
+    # is one the write skipped.
+    written_ids = Session.where(id: candidate_ids, scheduling_class: current).pluck(:id)
+
+    # Whether the RESOLVED class moved is one question for the whole set rather
+    # than one per row: every session in scope carries this trigger's condition
+    # genesis and the class it stamped, so they all resolve the same way.
+    was = previous.presence || default_scheduling_class
+    now = current.presence || default_scheduling_class
+    @reclassified_session_count = written_ids.size unless was == now
+
+    log_reclassification(written_ids, was: was, now: now)
+  end
+
+  # An audit line on every session the sweep wrote, in one INSERT — including the
+  # ones whose resolved class did not move, because the stamp changed even there
+  # and a write with no record of it is what makes a class look self-inflicted.
+  def log_reclassification(session_ids, was:, now:)
+    return if session_ids.empty?
+
+    detail = was == now ? "stamped as #{now}, which it already resolved to" : "set to #{now} (was #{was})"
+    stamped_at = Time.current
+    Log.insert_all(session_ids.map do |session_id|
+      {
+        session_id: session_id,
+        content: "Scheduling class #{detail} by a change to trigger \"#{name}\" (ID: #{id})",
+        level: "info",
+        created_at: stamped_at,
+        updated_at: stamped_at
+      }
+    end)
   end
 
   def normalize_precedence

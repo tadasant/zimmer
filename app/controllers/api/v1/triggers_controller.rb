@@ -110,7 +110,12 @@ class Api::V1::TriggersController < Api::BaseController
   # Update an existing trigger.
   def update
     if @trigger.update(trigger_params)
-      render json: { trigger: trigger_json(@trigger) }
+      # `reclassified_waiting_sessions` is present only when this call changed the
+      # scheduling class: it is how many of the trigger's already-spawned waiting
+      # sessions the change moved. Omitted otherwise, so its absence means "the
+      # class was not touched" rather than "nothing moved".
+      render json: { trigger: trigger_json(@trigger),
+                     reclassified_waiting_sessions: @trigger.reclassified_session_count }.compact
     else
       render_api_error("Validation failed", @trigger.errors.full_messages, status: :unprocessable_entity)
     end
