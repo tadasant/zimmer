@@ -596,16 +596,32 @@ its redirect URI; catalog-configured servers need no flag, because the declared 
 says whether Zimmer can receive the callback.
 :::
 
-:::caution[Re-authorizing a server does not reach an already-running session]
-`McpOauthController#callback` updates the `McpOauthCredential` and calls `McpOauthResumeService`, which
-only re-spawns a session that was *blocked* on OAuth (`failed` with `oauth_required`, or `waiting` with
-`oauth_required_servers`). A session that is `running` or `needs_input` is `:not_blocked`, so the new
-credential is written to the DB but has no effect on the live agent — Claude Code loads its MCP servers
-once at launch and cannot hot-reload them, so Zimmer cannot inject a new connection into the running
-process. For a `running` session that is a runtime limitation; for a `needs_input` session it
-self-heals a turn later, because the next message re-injects the fresh credential on the follow-up
-spawn. The gap is that re-auth gives no immediate feedback or re-establishment.
-Tracked in [#195](https://github.com/tadasant/zimmer/issues/195).
+:::caution[Re-authorizing a server reaches a live session as a notice, not as a reconnect]
+Claude Code reads its MCP servers once, at launch. A running agent process therefore cannot be handed
+a connection it did not start with, and Zimmer does not pretend otherwise: the only mechanism that
+would is killing the process and starting another one, which is the double-process hazard
+[#400](https://github.com/tadasant/zimmer/issues/400) documents.
+
+So `McpOauthResumeService` re-spawns only a session that was *blocked* on OAuth (`failed` with
+`oauth_required`, or `waiting` with `oauth_required_servers`). For a session that is `running` or
+`needs_input` and wires the server whose grant was just renewed, it does three other things
+([#195](https://github.com/tadasant/zimmer/issues/195)) and returns `:reconnect_pending`:
+
+- **injects the fresh credential into the runtime store immediately**, rather than leaving it to be
+  discovered at the next spawn, and clears the runtime's needs-auth memo for it;
+- **records the server** under `metadata["mcp_oauth_reconnect"]`, which renders the session page's
+  *"Authorization complete — reconnects on the next turn"* notice with a button that sends (or, on a
+  running session, queues) an ordinary follow-up message;
+- **writes a line into the session's own timeline** saying the grant is back and that the next message
+  is what reconnects it.
+
+The notice is what the fix is: before it, the credential was written to the DB and *nothing at all*
+reached the session, so the user saw "Successfully authorized", no Notion tools, and no explanation.
+The reconnect itself is still the next turn's `gate_and_inject_oauth!`, which is also where the notice
+is cleared — that spawn has injected the credentials, so the statement about the previous process is
+spent. The button is deliberately a follow-up on the ordinary path rather than a new resume path:
+`enqueue_new_session` replays the session's original prompt, which is the wrong thing to say in the
+middle of a conversation.
 :::
 
 :::note[The replayed turn carries its attachments — when there is still a first turn to replay]

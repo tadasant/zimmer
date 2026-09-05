@@ -5260,6 +5260,13 @@ class AgentSessionJob < ApplicationJob
     return false if oauth_mcp_servers(session).blank?
 
     oauth_result = check_and_inject_oauth_credentials(session, working_directory, log_buffer)
+
+    # This spawn has just injected every credential the session holds, so a
+    # "re-authorized, send a message to reconnect" notice from before it is
+    # answered — whichever way the gate goes. If the gate blocks, the banner the
+    # user needs is the OAuth-required one, not a stale reconnect hint.
+    session.clear_mcp_oauth_reconnect!
+
     return false unless oauth_result[:blocked]
 
     log_buffer.add(blocked_message, level: "warning")

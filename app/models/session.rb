@@ -1520,6 +1520,29 @@ class Session < ApplicationRecord
     (metadata&.dig("oauth_required_servers") || []).filter_map { |s| s["server_name"] || s[:server_name] }
   end
 
+  # Metadata key under which McpOauthResumeService records an MCP OAuth grant
+  # renewed while this session was already live. Shape:
+  #   { "servers" => ["notion"], "authorized_at" => "2026-09-05T10:05:00Z" }
+  MCP_OAUTH_RECONNECT_KEY = "mcp_oauth_reconnect".freeze
+
+  # Names of MCP servers re-authorized while this session was running or waiting
+  # on input — servers the live agent process cannot connect to until it is
+  # relaunched, which the next turn does. Cleared by the spawn gate once a spawn
+  # has actually injected them.
+  # @return [Array<String>]
+  def mcp_oauth_reconnect_servers
+    Array(metadata&.dig(MCP_OAUTH_RECONNECT_KEY, "servers")).compact_blank
+  end
+
+  # Drops the reconnect notice. Called from the spawn gate, which runs on a
+  # session that may be concurrently written, so it removes the one key rather
+  # than rewriting the column.
+  def clear_mcp_oauth_reconnect!
+    return unless metadata&.key?(MCP_OAUTH_RECONNECT_KEY)
+
+    remove_metadata!(MCP_OAUTH_RECONNECT_KEY)
+  end
+
   # Returns true if the session's setup artifacts are complete enough to restart
   # with a follow-up prompt. Returns false when setup never completed (e.g., git
   # clone failed before session_id and clone_path were populated).

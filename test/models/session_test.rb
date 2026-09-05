@@ -4433,4 +4433,48 @@ class SessionTest < ActiveSupport::TestCase
       servers.find { |s| s[:name] == "strad-secrets-staging-rw" }[:unavailable_reason]
     assert_equal false, servers.find { |s| s[:name] == "context7" }[:unavailable]
   end
+
+  # --- the MCP OAuth reconnect notice (#195) --------------------------------
+
+  test "mcp_oauth_reconnect_servers reads the recorded servers and defaults to empty" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test prompt"
+    )
+    assert_empty session.mcp_oauth_reconnect_servers
+
+    session.merge_metadata!(
+      Session::MCP_OAUTH_RECONNECT_KEY => { "servers" => [ "notion", "" ], "authorized_at" => Time.current.iso8601 }
+    )
+    assert_equal [ "notion" ], session.mcp_oauth_reconnect_servers
+  end
+
+  test "clear_mcp_oauth_reconnect! drops only its own key" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test prompt"
+    )
+    session.merge_metadata!(
+      "process_pid" => 99,
+      Session::MCP_OAUTH_RECONNECT_KEY => { "servers" => [ "notion" ], "authorized_at" => Time.current.iso8601 }
+    )
+
+    session.clear_mcp_oauth_reconnect!
+
+    session.reload
+    assert_empty session.mcp_oauth_reconnect_servers
+    assert_not session.metadata.key?(Session::MCP_OAUTH_RECONNECT_KEY)
+    assert_equal 99, session.metadata["process_pid"]
+  end
+
+  test "clear_mcp_oauth_reconnect! is a no-op when there is no notice" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test prompt"
+    )
+    session.merge_metadata!("process_pid" => 99)
+
+    assert_nothing_raised { session.clear_mcp_oauth_reconnect! }
+    assert_equal 99, session.reload.metadata["process_pid"]
+  end
 end

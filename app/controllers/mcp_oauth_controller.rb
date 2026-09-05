@@ -348,7 +348,7 @@ class McpOauthController < ApplicationController
     injector = McpOauthCredentialInjector.new(session, working_directory: working_directory)
     injector.inject_credentials!
     injector.clear_runtime_needs_auth_cache([ server_name ])
-    McpOauthResumeService.new(session).call
+    McpOauthResumeService.new(session, authorized_server: server_name).call
   rescue => e
     Rails.logger.warn(
       "[McpOauthController] reinject_and_resume failed for #{server_name} " \
@@ -420,7 +420,7 @@ class McpOauthController < ApplicationController
     # Resume the session if every blocking OAuth flow is now complete. The
     # service is idempotent and fires the resume exactly once, replaying the
     # session's original prompt.
-    McpOauthResumeService.new(session).call if session
+    McpOauthResumeService.new(session, authorized_server: credential.server_name).call if session
 
     credential
   end

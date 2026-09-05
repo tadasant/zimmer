@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 # Covers the auto-resume decision for sessions blocked on MCP OAuth:
 # the resume fires exactly once when (and only when) the last flow completes,
@@ -407,5 +408,138 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
 
     assert @session.reload.logs.any? { |log| log.content.include?("carrying 1 image") },
       "the resume must say in the session's log what the turn carries"
+  end
+
+  # --- a live session gets a reconnect notice, never a respawn ---------------
+  #
+  # #195: re-authorizing a server for a session that is already running or
+  # waiting on input used to fall straight through to :not_blocked — the
+  # credential was stored and nothing at all reached the session, so the user saw
+  # "Successfully authorized" and a session with no tools from that server.
+
+  # A live session: not blocked on OAuth, and wired to the server being renewed.
+  def live_session(status:, mcp_servers: [ "notion" ])
+    Session.create!(
+      prompt: "Work already under way",
+      agent_runtime: "claude_code",
+      status: status,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      mcp_servers: mcp_servers
+    )
+  end
+
+  test "re-authorizing a server a running session uses records a reconnect notice instead of doing nothing" do
+    session = live_session(status: :running)
+    McpOauthCredentialInjector.any_instance.expects(:inject_credentials!).once
+
+    assert_no_enqueued_jobs do
+      assert_equal :reconnect_pending,
+        McpOauthResumeService.new(session, authorized_server: "notion").call
+    end
+
+    session.reload
+    assert session.running?, "the live session must not be moved out of running"
+    assert_equal [ "notion" ], session.mcp_oauth_reconnect_servers
+    assert session.metadata[Session::MCP_OAUTH_RECONNECT_KEY]["authorized_at"].present?
+    assert session.logs.any? { |log| log.content.include?("notion is authorized again") },
+      "the session's own timeline must say the grant is back and what reconnects it"
+  end
+
+  test "re-authorizing a server a needs_input session uses records the same notice" do
+    session = live_session(status: :needs_input)
+    McpOauthCredentialInjector.any_instance.stubs(:inject_credentials!)
+
+    assert_no_enqueued_jobs do
+      assert_equal :reconnect_pending,
+        McpOauthResumeService.new(session, authorized_server: "notion").call
+    end
+
+    assert_equal [ "notion" ], session.reload.mcp_oauth_reconnect_servers
+  end
+
+  test "a repeated callback for the same server records it once and logs once" do
+    session = live_session(status: :needs_input)
+    McpOauthCredentialInjector.any_instance.stubs(:inject_credentials!)
+
+    2.times do
+      assert_equal :reconnect_pending,
+        McpOauthResumeService.new(session, authorized_server: "notion").call
+    end
+
+    session.reload
+    assert_equal [ "notion" ], session.mcp_oauth_reconnect_servers
+    assert_equal 1, session.logs.count { |log| log.content.include?("notion is authorized again") }
+  end
+
+  test "a second server authorized while the first is still pending joins the notice" do
+    session = live_session(status: :needs_input, mcp_servers: [ "notion", "linear" ])
+    McpOauthCredentialInjector.any_instance.stubs(:inject_credentials!)
+
+    McpOauthResumeService.new(session, authorized_server: "notion").call
+    McpOauthResumeService.new(session, authorized_server: "linear").call
+
+    assert_equal [ "notion", "linear" ], session.reload.mcp_oauth_reconnect_servers
+  end
+
+  test "a live session that does not use the authorized server gets no notice" do
+    session = live_session(status: :running, mcp_servers: [ "linear" ])
+    McpOauthCredentialInjector.any_instance.expects(:inject_credentials!).never
+
+    assert_equal :not_blocked,
+      McpOauthResumeService.new(session, authorized_server: "notion").call
+    assert_empty session.reload.mcp_oauth_reconnect_servers
+  end
+
+  test "a session that is neither blocked nor live gets no notice" do
+    session = live_session(status: :archived)
+
+    assert_equal :not_blocked,
+      McpOauthResumeService.new(session, authorized_server: "notion").call
+    assert_empty session.reload.mcp_oauth_reconnect_servers
+  end
+
+  test "a caller that names no server keeps the old not_blocked answer" do
+    session = live_session(status: :running)
+
+    assert_equal :not_blocked, McpOauthResumeService.new(session).call
+    assert_empty session.reload.mcp_oauth_reconnect_servers
+  end
+
+  test "a session parked on OAuth still resumes rather than being told to reconnect" do
+    authorize_everything
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ @session.id ]) do
+      assert_equal :resumed,
+        McpOauthResumeService.new(@session, authorized_server: "server-a").call
+    end
+    assert_empty @session.reload.mcp_oauth_reconnect_servers
+  end
+
+  # Re-injection is a convenience — it puts the fresh token on disk before the
+  # next spawn does. A store that cannot be written must not cost the user the
+  # notice, which is the part that tells them what to do next.
+  test "a failed re-injection still records the notice" do
+    session = live_session(status: :running)
+    McpOauthCredentialInjector.any_instance.stubs(:inject_credentials!).raises(RuntimeError, "no store")
+
+    assert_equal :reconnect_pending,
+      McpOauthResumeService.new(session, authorized_server: "notion").call
+    assert_equal [ "notion" ], session.reload.mcp_oauth_reconnect_servers
+  end
+
+  # The notice is written with merge_metadata!, so a key another writer set while
+  # the session was mid-turn survives it.
+  test "recording the notice leaves metadata another writer set alone" do
+    session = live_session(status: :running)
+    McpOauthCredentialInjector.any_instance.stubs(:inject_credentials!)
+    session.merge_metadata!("process_pid" => 4242)
+
+    McpOauthResumeService.new(session, authorized_server: "notion").call
+
+    session.reload
+    assert_equal 4242, session.metadata["process_pid"]
+    assert_equal [ "notion" ], session.mcp_oauth_reconnect_servers
   end
 end
