@@ -370,10 +370,10 @@ class TriggerTest < ActiveSupport::TestCase
       "a consumed session-scoped ao_event is spent for good — AoEventTriggerJob skips it forever"
   end
 
-  # A failed sibling is the record of a wake that TRIED and could not. Deleting
-  # it as a side effect of a later sibling firing successfully is the same silent
-  # loss the parking exists to prevent.
-  test "destroy_sibling_wakes! preserves a failed sibling" do
+  # A failed sibling is the record of a wake that TRIED and could not. Sweeping
+  # it up as a side effect of a later sibling firing successfully is the same
+  # silent loss the parking exists to prevent.
+  test "hold_wake_group! leaves a failed sibling unmarked" do
     requester = Session.create!(
       prompt: "Requester",
       agent_runtime: "claude_code",
@@ -408,11 +408,12 @@ class TriggerTest < ActiveSupport::TestCase
     failed_sibling = build_wake.call("Failed sibling", "session_failed")
     failed_sibling.mark_failed(StandardError.new("agent root not found"))
 
-    assert_equal 1, firing.destroy_sibling_wakes!, "only the healthy sibling is moot"
+    assert_equal 1, firing.hold_wake_group!, "only the healthy sibling is spoken for"
 
-    assert_not Trigger.exists?(healthy_sibling.id)
-    assert Trigger.exists?(failed_sibling.id), "a failed sibling carries evidence and must survive"
-    assert_equal "failed", failed_sibling.reload.status
+    assert_not_nil healthy_sibling.reload.wake_held_at
+    assert_nil failed_sibling.reload.wake_held_at,
+      "a failed sibling carries evidence and is not the woken turn's to retire"
+    assert_equal "failed", failed_sibling.status
   end
 
   # condition_types and conditions_summary
@@ -2484,9 +2485,9 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal "waiting", target.status
   end
 
-  # === Tests for destroy_sibling_wakes! ===
+  # === Tests for hold_wake_group! ===
 
-  test "destroy_sibling_wakes! destroys other one-time reuse triggers with same last_session_id" do
+  test "hold_wake_group! holds the firing trigger and every sibling with the same last_session_id" do
     requester = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code", branch: "main", status: :waiting)
     watched = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code", branch: "main", status: :running)
 
@@ -2526,15 +2527,22 @@ class TriggerTest < ActiveSupport::TestCase
       ]
     )
 
-    destroyed = needs_input_wake.destroy_sibling_wakes!
+    held = needs_input_wake.hold_wake_group!
 
-    assert_equal 2, destroyed
-    assert_not Trigger.exists?(failed_wake.id), "sibling failed_wake should be destroyed"
-    assert_not Trigger.exists?(deadline.id), "sibling deadline backstop should be destroyed"
-    assert Trigger.exists?(needs_input_wake.id), "the firing trigger itself is not destroyed by destroy_sibling_wakes!"
+    assert_equal 2, held
+    # The point of tadasant/zimmer#569: the group is still THERE and still armed.
+    # Holding only records who owes it a retirement.
+    assert Trigger.exists?(failed_wake.id), "sibling failed_wake must survive the fire"
+    assert Trigger.exists?(deadline.id), "the deadline backstop must survive the fire"
+    assert_not_nil failed_wake.reload.wake_held_at
+    assert_not_nil deadline.reload.wake_held_at
+    assert_nil deadline.trigger_conditions.first.last_triggered_at,
+      "a held backstop is unfired and can still fire"
+    assert_not_nil needs_input_wake.reload.wake_held_at,
+      "the firing trigger holds itself too — its unfired conditions are the rest of the wait"
   end
 
-  test "destroy_sibling_wakes! does not destroy triggers for a different requester" do
+  test "hold_wake_group! does not hold triggers for a different requester" do
     requester_a = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code", branch: "main", status: :waiting)
     requester_b = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code", branch: "main", status: :waiting)
     watched = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code", branch: "main", status: :running)
@@ -2563,13 +2571,13 @@ class TriggerTest < ActiveSupport::TestCase
       ]
     )
 
-    destroyed = wake_a.destroy_sibling_wakes!
+    held = wake_a.hold_wake_group!
 
-    assert_equal 0, destroyed
-    assert Trigger.exists?(wake_b.id), "wake for a different requester must be left alone"
+    assert_equal 0, held
+    assert_nil wake_b.reload.wake_held_at, "wake for a different requester must be left alone"
   end
 
-  test "destroy_sibling_wakes! does not destroy recurring triggers (not one_time_reuse_trigger?)" do
+  test "hold_wake_group! does not hold recurring triggers (not one_time_reuse_trigger?)" do
     requester = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code", branch: "main", status: :waiting)
     watched = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code", branch: "main", status: :running)
 
@@ -2597,13 +2605,13 @@ class TriggerTest < ActiveSupport::TestCase
       ]
     )
 
-    destroyed = one_time_wake.destroy_sibling_wakes!
+    held = one_time_wake.hold_wake_group!
 
-    assert_equal 0, destroyed
-    assert Trigger.exists?(recurring_trigger.id), "broadcast/recurring trigger must be left alone"
+    assert_equal 0, held
+    assert_nil recurring_trigger.reload.wake_held_at, "broadcast/recurring trigger must be left alone"
   end
 
-  test "destroy_sibling_wakes! is a no-op for triggers that aren't one-time-reuse" do
+  test "hold_wake_group! is a no-op for triggers that aren't one-time-reuse" do
     requester = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code", branch: "main", status: :waiting)
 
     sibling = Trigger.create!(
@@ -2618,19 +2626,20 @@ class TriggerTest < ActiveSupport::TestCase
       ]
     )
 
-    # Recurring trigger should not destroy anything when it "fires"
+    # Recurring trigger should not hold anything when it "fires"
     @trigger.update!(reuse_session: true, last_session_id: requester.id)
     assert_not @trigger.one_time_reuse_trigger?
 
-    destroyed = @trigger.destroy_sibling_wakes!
+    held = @trigger.hold_wake_group!
 
-    assert_equal 0, destroyed
-    assert Trigger.exists?(sibling.id), "siblings should not be destroyed when caller is recurring"
+    assert_equal 0, held
+    assert_nil sibling.reload.wake_held_at, "siblings are not held when the caller is recurring"
+    assert_nil @trigger.reload.wake_held_at
   end
 
-  test "destroy_sibling_wakes! returns 0 when no last_session_id" do
+  test "hold_wake_group! returns 0 when no last_session_id" do
     @trigger.update!(reuse_session: true, last_session_id: nil)
-    assert_equal 0, @trigger.destroy_sibling_wakes!
+    assert_equal 0, @trigger.hold_wake_group!
   end
 
   # Self-healing stale catalog plugins tests
@@ -3079,8 +3088,8 @@ class TriggerTest < ActiveSupport::TestCase
   # === Tests for the bookkeeping-write TOCTOU race (issue pulsemcp/pulsemcp#3919) ===
   #
   # Internal bookkeeping writes (last_triggered_at / last_session_id) must NOT
-  # run create-time/presence validations. A sibling wake firing concurrently
-  # calls #destroy_sibling_wakes!, which destroys this trigger and
+  # run create-time/presence validations. The requester coming to rest
+  # concurrently runs #retire_held_wake_triggers, which destroys this trigger and
   # cascade-deletes its conditions out from under a still-in-memory instance
   # being processed by ScheduleTriggerJob/AoEventTriggerJob. A full-validation
   # save! would then re-run `validates :trigger_conditions, presence:`, find
@@ -3117,8 +3126,8 @@ class TriggerTest < ActiveSupport::TestCase
     AgentSessionJob.stubs(:enqueue_with_prompt)
 
     # Reload fresh so trigger_conditions is unloaded (mirrors how the firing
-    # jobs hold the trigger), then simulate a concurrent sibling wake's
-    # destroy_sibling_wakes! cascade deleting this trigger's only condition.
+    # jobs hold the trigger), then simulate a concurrent retirement cascade
+    # deleting this trigger's only condition.
     trigger = Trigger.find(wake_trigger.id)
     TriggerCondition.where(trigger_id: trigger.id).delete_all
 

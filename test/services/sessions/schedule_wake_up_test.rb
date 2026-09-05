@@ -164,7 +164,7 @@ class Sessions::ScheduleWakeUpTest < ActiveSupport::TestCase
 
   # Additive, and deliberately: an agent routinely arms a wall-clock backstop
   # beside a state-change watcher, whichever fires first wins, and
-  # Trigger#destroy_sibling_wakes! cleans up the rest.
+  # Trigger#hold_wake_group! cleans up the rest.
   test "a second wake leaves the first one armed" do
     session = sessions(:needs_input)
     first = Sessions::ScheduleWakeUp.call(session: session, wake_at: future_wake_at(1.hour), prompt: "early")
@@ -201,7 +201,8 @@ class Sessions::ScheduleWakeUpTest < ActiveSupport::TestCase
     assert_not session.reload.waiting?,
       "the wake should have resumed its session, not left it asleep"
     assert_equal "Resume", session.metadata["pending_follow_up_prompt"]
-    assert_not Trigger.exists?(trigger.id),
-      "a one-time wake that fires is auto-deleted — a surviving trigger means it was parked instead"
+    assert_not_nil trigger.reload.wake_held_at,
+      "a one-time wake that fires is held for the turn it woke — an unheld trigger means it was parked instead"
+    assert_equal "enabled", trigger.status
   end
 end

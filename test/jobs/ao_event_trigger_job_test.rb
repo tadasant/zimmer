@@ -312,7 +312,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
   test "session_archived end-to-end: archive! enqueues job that fires watched-session trigger" do
     # End-to-end coverage that an archive! transition reaches the job and the
     # job fires the watched-session session_archived trigger, including the
-    # one_time_reuse_trigger? auto-destroy at the end. Note: this test stubs
+    # one_time_reuse_trigger? hand-over at the end. Note: this test stubs
     # after_all_transactions_commit to yield immediately, so it does NOT
     # exercise the ordering between synchronous cleanup and async dispatch —
     # the cleanup-ordering regression guard lives in
@@ -366,8 +366,10 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
       watched_session.archive!
     end
 
-    assert_not Trigger.where(id: one_time_trigger.id).exists?,
-      "One-time trigger should auto-destroy after firing on archive (proves the trigger fired)"
+    assert_not_nil one_time_trigger.reload.wake_held_at,
+      "One-time trigger should be held after firing on archive (proves the trigger fired)"
+    assert_not_nil one_time_trigger.trigger_conditions.first.last_triggered_at,
+      "and its only condition is spent"
   end
 
   # === Tests for watched_session_id scoping ===
@@ -537,10 +539,11 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
       "Already-fired condition should not be re-stamped on subsequent transitions"
   end
 
-  test "auto-destroys one-time wake-up trigger after firing" do
+  test "holds a one-time wake-up trigger for the turn it woke, rather than destroying it" do
     # When a trigger's only condition is a session-scoped ao_event, it's a
-    # one-time per-session wake-up. After firing, the trigger should
-    # auto-delete (mirrors ScheduleTriggerJob's one-time cleanup).
+    # one-time per-session wake-up. After firing it is HELD — armed, and owed a
+    # retirement by the turn it just started (tadasant/zimmer#569). It used to be
+    # destroyed here, before that turn had run.
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
 
@@ -585,15 +588,22 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
 
     AoEventTriggerJob.perform_now("session_needs_input", watched_session.id)
 
+    assert Trigger.where(id: one_time_trigger.id).exists?,
+      "the wake must survive the fire so an interrupted turn is not left with nothing"
+    assert_not_nil one_time_trigger.reload.wake_held_at,
+      "and it is marked as owed a retirement by the woken turn"
+
+    # The retirement: the turn comes to rest.
+    target_session.reload.pause!
     assert_not Trigger.where(id: one_time_trigger.id).exists?,
-      "One-time trigger should auto-destroy after firing"
+      "a spent wake must not outlive the turn it woke"
   end
 
-  test "destroys sibling wake triggers when one-time trigger fires" do
+  test "holds sibling wake triggers when one-time trigger fires, and retires them at the pause" do
     # When agents schedule the "triple-wake plus deadline backstop" pattern
     # (needs_input + failed + archived + a deadline backstop sibling group),
-    # firing one trigger should destroy the others — the requester is now
-    # awake, so the rest are moot.
+    # firing one trigger holds the others: moot once the woken turn has run, and
+    # the only thing that will wake it until then.
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
 
@@ -665,10 +675,18 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
 
     AoEventTriggerJob.perform_now("session_needs_input", watched_session.id)
 
-    assert_not Trigger.exists?(needs_input_wake.id), "firing trigger should be destroyed"
-    assert_not Trigger.exists?(failed_wake.id), "sibling failed_wake should be destroyed"
-    assert_not Trigger.exists?(archived_wake.id), "sibling archived_wake should be destroyed"
-    assert_not Trigger.exists?(deadline_backstop.id), "deadline backstop sibling should be destroyed"
+    assert_not_nil needs_input_wake.reload.wake_held_at, "firing trigger should be held"
+    assert_not_nil failed_wake.reload.wake_held_at, "sibling failed_wake should be held"
+    assert_not_nil archived_wake.reload.wake_held_at, "sibling archived_wake should be held"
+    assert_not_nil deadline_backstop.reload.wake_held_at, "deadline backstop sibling should be held"
+    assert_nil deadline_backstop.trigger_conditions.first.last_triggered_at,
+      "and the backstop is still unfired, so it can still rescue an interrupted turn"
+
+    target_session.reload.pause!
+
+    [ needs_input_wake, failed_wake, archived_wake, deadline_backstop ].each do |wake|
+      assert_not Trigger.exists?(wake.id), "#{wake.name} must be retired once the turn comes to rest"
+    end
   end
 
   test "sibling cleanup leaves triggers for unrelated requesters intact" do
@@ -713,8 +731,13 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
 
     AoEventTriggerJob.perform_now("session_needs_input", watched_session.id)
 
-    assert_not Trigger.exists?(wake_for_a.id), "firing trigger destroyed"
-    assert Trigger.exists?(unrelated_wake_for_b.id), "wake aimed at a different requester must survive"
+    assert_not_nil wake_for_a.reload.wake_held_at, "firing trigger held"
+    assert_nil unrelated_wake_for_b.reload.wake_held_at,
+      "wake aimed at a different requester must be left alone"
+
+    target_a.reload.pause!
+    assert_not Trigger.exists?(wake_for_a.id), "the held wake is retired with target A's turn"
+    assert Trigger.exists?(unrelated_wake_for_b.id), "and target B's wake is still untouched"
   end
 
   test "does not auto-destroy multi-condition trigger after firing" do
@@ -847,13 +870,13 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
       "Deadline backstop must be preserved when delivery was dropped"
   end
 
-  test "wake-up to a running requester is queued and siblings are destroyed (end-to-end race scenario)" do
+  test "wake-up to a running requester is queued and siblings are held (end-to-end race scenario)" do
     # The race: a watched session transitions to needs_input while the
     # requester is still running on its previous turn. The primary fix makes
     # follow_up_session! queue the wake message durably (because the trigger
     # is a one_time_reuse_trigger?), so delivery succeeds — and the job then
-    # destroys the firing trigger and its siblings, as it would in the normal
-    # post-pause path.
+    # hands the firing trigger and its siblings to the requester's current turn,
+    # as it would in the normal post-pause path.
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
 
@@ -910,10 +933,14 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     enqueued = requester.enqueued_messages.last
     assert_equal "pending", enqueued.status, "Wake message should be queued for the running requester"
 
-    assert_not Trigger.exists?(firing_wake.id),
-      "Firing trigger should be destroyed — delivery succeeded via queuing"
-    assert_not Trigger.exists?(sibling_failed.id),
-      "Sibling wake should be destroyed — delivery succeeded via queuing"
+    assert_not_nil firing_wake.reload.wake_held_at,
+      "Firing trigger should be held — delivery succeeded via queuing"
+    assert_not_nil sibling_failed.reload.wake_held_at,
+      "Sibling wake should be held — delivery succeeded via queuing"
+
+    requester.reload.pause!
+    assert_not Trigger.exists?(firing_wake.id), "and both are retired when that turn ends"
+    assert_not Trigger.exists?(sibling_failed.id)
   end
 
   # === Queue routing ===
@@ -1253,7 +1280,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     scope_condition_to(watched_session)
     @trigger.update!(reuse_session: true, last_session_id: watched_session.id)
 
-    Trigger.any_instance.stubs(:destroy_sibling_wakes!).raises(StandardError.new("sibling cleanup blew up"))
+    Trigger.any_instance.stubs(:hold_wake_group!).raises(StandardError.new("sibling cleanup blew up"))
 
     alerts = []
     AlertService.stubs(:raise_alert).with do |title, **kwargs|
@@ -1268,7 +1295,7 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     assert_not_nil @condition.reload.last_triggered_at, "this branch requires a persisted guard"
     assert_equal "failed", @trigger.reload.status
   ensure
-    Trigger.any_instance.unstub(:destroy_sibling_wakes!)
+    Trigger.any_instance.unstub(:hold_wake_group!)
   end
 
   test "a session-scoped wake that cannot be parked stays enabled and says so" do

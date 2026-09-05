@@ -86,28 +86,34 @@ class ScheduleTriggerJob < ApplicationJob
     trigger_name = trigger.name
 
     if condition.one_time_schedule?
-      # Destroy sibling wake triggers ONLY on the success path — the failure
-      # path below also destroys one-time triggers, but the wake never actually
-      # delivered (e.g., create_session! raised), so we shouldn't void other
-      # wakes the agent set up to handle the same requester.
+      # Hand the wake group to the requester ONLY on the success path — the
+      # failure path below parks one-time triggers, and a wake that never
+      # delivered (create_session! raised) must not be marked as spoken for.
       #
       # Additionally guard against the silent-drop race: if the wake fired
       # while the requester session was still running and #follow_up_session!
       # couldn't queue the message (recurring trigger with enqueue_messages
-      # off), the wake was dropped. Destroying siblings in that case would
-      # leave the requester with no wakes at all. Keep this trigger and its
-      # siblings in place so a later wake (or the deadline backstop) can
+      # off), the wake was dropped. Marking the group held in that case would
+      # put it on a turn that is not going to run, and the requester's next rest
+      # would retire wakes that never delivered anything. Keep this trigger and
+      # its siblings untouched so a later wake (or the deadline backstop) can
       # actually deliver.
+      #
+      # Holding rather than destroying is tadasant/zimmer#569: the destroy used
+      # to run here, at fire time, before the woken turn had a chance to re-arm
+      # anything. See Trigger#hold_wake_group!.
       if trigger.last_follow_up_dropped?
-        Rails.logger.info "[ScheduleTriggerJob] One-time trigger #{trigger_id} (#{trigger_name}) fired but delivery was dropped (requester still running, no enqueue) — preserving siblings and skipping auto-delete"
-      else
-        sibling_count = trigger.destroy_sibling_wakes!
+        Rails.logger.info "[ScheduleTriggerJob] One-time trigger #{trigger_id} (#{trigger_name}) fired but delivery was dropped (requester still running, no enqueue) — leaving its wake group alone"
+      elsif trigger.one_time_reuse_trigger?
+        sibling_count = trigger.hold_wake_group!
         requester_id = trigger.last_session_id
+        Rails.logger.info "[ScheduleTriggerJob] One-time trigger #{trigger_id} (#{trigger_name}) held after firing, plus #{sibling_count} sibling wake-up trigger(s), for requester session #{requester_id} — retired when its turn comes to rest"
+      else
+        # A one-time schedule that SPAWNS rather than reuses is not a wake and has
+        # no requester to hand itself to. It is spent the moment it fires, so it
+        # auto-deletes exactly as it always did.
         trigger.destroy!
         Rails.logger.info "[ScheduleTriggerJob] One-time trigger #{trigger_id} (#{trigger_name}) auto-deleted after firing"
-        if sibling_count > 0
-          Rails.logger.info "[ScheduleTriggerJob] Destroyed #{sibling_count} sibling wake-up trigger(s) for requester session #{requester_id}"
-        end
       end
     end
 
