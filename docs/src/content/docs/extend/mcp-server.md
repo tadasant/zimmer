@@ -464,6 +464,8 @@ one rule, whichever door the request comes through. Rewriting `.mcp.json` under 
 change nothing anyway — the CLI launches its MCP servers when the process starts. To make a change
 take effect immediately, restart the session.
 
+**`change_mcp_servers` and `change_plugins` can move the target session's status, and that is deliberate.** Those two are the lists that can bring in an MCP server, so both probe the newly selected set for one nobody has authorized yet. When there is one, the answer names it under **Needs authorization** and the session is moved to `failed` with `failure_reason: "oauth_required"` — which is what puts the Authorize buttons on its page for a human. A session that is currently *running* is never moved this way: its already-spawned process cannot see the change either way, and killing a live turn over a config edit would be worse than waiting. Read a `failed` status after one of these calls as "a human has to authorize something", not as a crash.
+
 An empty array is a value, not an absence, on both sides of a session's life: `change_mcp_servers` with `[]` clears the list, and
 `start_session` with `[]` launches with none — the same request means the same thing at launch time
 and at change time. `start_session` names the same four lists (`mcp_servers`, `skills`, `plugins`,

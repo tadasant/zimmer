@@ -191,8 +191,11 @@ module Sessions
       # Never on a running session. The escalation exists to surface Authorize
       # buttons on a session that cannot proceed, and `fail!` accepts `running`
       # — so escalating one would kill a live turn over a change the session's
-      # already-spawned process cannot even see. The caller is still told which
-      # servers need authorizing; it is only the parking that waits.
+      # already-spawned process cannot even see. The metadata is skipped with the
+      # transition rather than written on its own, because both banners key on
+      # `failed?` and would render nothing from it; AgentSessionJob's pre-spawn
+      # gate re-detects the requirement before the next turn. The caller is still
+      # told which servers need authorizing — only the parking waits.
       return if @session.running?
 
       best_effort do

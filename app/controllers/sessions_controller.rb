@@ -3046,14 +3046,6 @@ class SessionsController < ApplicationController
     !prefetch_request?
   end
 
-  # Check OAuth requirements for MCP servers
-  #
-  # Checks if any user-selected MCP servers require OAuth authentication
-  # and don't have valid credentials stored. Used when MCP servers are
-  # added mid-session to detect OAuth requirements upfront.
-  #
-  # @param session [Session] The session to check
-  # @return [Hash] { servers_needing_oauth: Array<Hash> }
   # Mark all unread notifications for a session as read
   #
   # Called when a user visits a session page directly (HTML request) to mark

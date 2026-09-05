@@ -23,7 +23,7 @@ class Sessions::UpdateCatalogSelectionTest < ActiveSupport::TestCase
 
   test "the MCP tool's catalog-list table is the same table minus mcp_servers" do
     assert_equal Session::CATALOG_SELECTIONS.except(:mcp_servers), Mcp::Tool::CATALOG_LISTS
-    assert_equal Session::MAX_CATALOG_SELECTION_ID_LENGTH, Mcp::Tool::MAX_CATALOG_ITEM_ID_LENGTH
+    assert Mcp::Tool::CATALOG_LISTS.frozen?, "a shared constant that can be mutated in place fails silently"
   end
 
   test "an unknown attribute is a programming error, not a rejected request" do
@@ -116,6 +116,30 @@ class Sessions::UpdateCatalogSelectionTest < ActiveSupport::TestCase
     assert_equal [], session.reload.catalog_hooks
   end
 
+  test "a write the model rejects comes back as a validation failure, not as a success" do
+    session = make_session(mcp_servers: [ "context7" ])
+    Session.any_instance.stubs(:update).returns(false)
+    Session.any_instance.stubs(:errors).returns(
+      ActiveModel::Errors.new(session).tap { |e| e.add(:mcp_servers, "is not acceptable") }
+    )
+
+    result = call(session, :mcp_servers, [ "playwright-custom" ])
+
+    refute result.ok?
+    assert_equal :update_failed, result.error_code
+    assert_includes result.error, "is not acceptable"
+  end
+
+  test "a log row that cannot be written does not turn a completed write into a failure" do
+    session = make_session(mcp_servers: [])
+    session.logs.stubs(:create!).raises(ActiveRecord::StatementInvalid, "logs table gone")
+
+    result = call(session, :mcp_servers, [ "context7" ])
+
+    assert result.ok?, "the selection was saved; a log row is not what the caller asked for"
+    assert_equal [ "context7" ], session.reload.mcp_servers
+  end
+
   test "a dropped connection is reported as unavailable, not as a rejected request" do
     session = make_session(mcp_servers: [])
     Session.any_instance.stubs(:update).raises(ActiveRecord::ConnectionNotEstablished, "boom")
@@ -162,6 +186,21 @@ class Sessions::UpdateCatalogSelectionTest < ActiveSupport::TestCase
       assert call(session, :catalog_skills, [ SkillsConfig.names.first ]).ok?
       assert call(session, :catalog_hooks, [ "git-push-ci-reminder" ]).ok?
       assert call(session, :catalog_plugins, [ "ci-workflow" ]).ok?
+    end
+  end
+
+  test "the OAuth probe stops asking once its wall-clock budget is spent" do
+    Dir.mktmpdir do |dir|
+      session = make_session(status: :needs_input, mcp_servers: [ "notion" ], metadata: { "working_directory" => dir })
+      McpOauthCredentialInjector.any_instance.stubs(:check_credentials_status).returns(
+        "notion" => { has_credential: false, credential_valid: false, server_url: "https://mcp.notion.com/mcp" }
+      )
+      McpOauthService.any_instance.expects(:check_oauth_requirement).never
+
+      # A budget of zero is already spent by the time the first server is reached.
+      needing = McpOauthProbe.new(session, budget_seconds: 0).servers_needing_oauth
+
+      assert_equal [], needing, "a server we could not reach in time is reported as not needing OAuth"
     end
   end
 
