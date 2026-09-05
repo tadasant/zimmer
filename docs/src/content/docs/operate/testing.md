@@ -384,32 +384,45 @@ end
 ```
 
 `assert_matches_selector` re-runs the query and asserts the handle it is holding is in the result.
-Two things follow, and both bite here.
+Two *separate* failures fall out of that, and this app is exposed to both.
 
 **It waits `Capybara.default_max_wait_time`, which is 2 seconds.** This app's own
-`cable_reconnect_controller.js` treats a source as merely slow until `grace` (3000ms) has passed and
-backs off exponentially from there. A harness that gives up at 2s expires *before* the page has made
-its first re-subscribe attempt — it is not waiting long enough to see the recovery the app is built
-around.
+`cable_reconnect_controller.js` treats a source as merely slow until `grace` (3000ms) has passed, and
+doubles from there — so re-subscribes land at roughly t=3s, 9s, 21s. A harness that gives up at 2s
+expires *before* the page has made its first re-subscribe attempt: it is not waiting long enough to
+see the recovery the app is built around. No stale node is involved here; the element is simply still
+unconnected.
 
 **It is pinned to one element object.** `cable-reconnect` re-subscribes a stuck source by
 `replaceWith`-ing it out of the document and back in; a Turbo Stream or a frame swap can replace the
-subtree outright. Either way the identity check is asking about a node the page has moved on from, so
-the wait cannot succeed however long it runs — it burns the full timeout and raises.
+subtree outright. Then the identity check is asking about a node the page has moved on from, so the
+wait cannot succeed however long it runs — it burns the full timeout and raises.
 
-That is [run 33949817772](https://github.com/tadasant/zimmer/actions/runs/33949817772), where
+The two are different failures that produce the *same* message, which is why a run that hit one
+cannot be told apart from a run that hit the other. That is
+[run 33949817772](https://github.com/tadasant/zimmer/actions/runs/33949817772), where
 `QueuedMessagesWorkflowTest#test_deleting_message_updates_remaining_message_positions` errored on its
 `visit` on a commit that touched nothing near queued messages — and whose failure screenshot shows the
 page fully rendered, three queued messages and all. Rerunning the job passed.
 
 `test/support/turbo_stream_connection_wait.rb` replaces the wait with a poll of the *document*: it
 re-reads every source on each tick through `page.evaluate_script`, so a source the page replaced
-mid-wait is simply the next reading rather than a wait that can never be satisfied, and its ceiling
-sits above the app's own reconnect backoff. `ApplicationSystemTestCase` overrides
-`connect_turbo_cable_stream_sources` by name, so the fix lands wherever turbo-rails calls it —
-including any action added to `test_connect_after_actions` later — and `wait_for_turbo_streams_connected`,
-the helper tests call after a navigation that does not go through `visit`, runs the same poll. A
-failure now names the channels still pending instead of an element that went stale.
+mid-wait is simply the next reading rather than a wait that can never be satisfied.
+`ApplicationSystemTestCase` overrides `connect_turbo_cable_stream_sources` by name, so the fix lands
+wherever turbo-rails calls it — including any action added to `test_connect_after_actions` later — and
+`wait_for_turbo_streams_connected`, the helper tests call after a navigation that does not go through
+`visit`, runs the same poll. A failure now names the channels still pending instead of an element that
+went stale.
+
+There are two ceilings because the two callers want different amounts of the re-subscribe ladder. The
+post-`visit` one is 5s and covers the *first* re-subscribe: it is spent after every navigation in the
+suite, so buying the second attempt there would multiply the dead time of a systemic ActionCable
+failure for a signal the first attempt already gives. `wait_for_turbo_streams_connected` is 10s and
+covers the first two, because a test that waits explicitly before triggering a broadcast cannot
+proceed at all without a subscriber. Neither is paid when the cable is healthy — the poll returns on
+its first reading. The unit test reads the 3000ms grace out of the Stimulus controller rather than
+restating it, so a controller that starts allowing a source longer than the harness waits fails there
+instead of in CI.
 
 The two rules that keep this from mattering:
 
