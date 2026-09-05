@@ -254,8 +254,14 @@ module CronSchedule
     # Every 10 minutes rather than hourly because of the first run: a deployment
     # that has never had retention meets a table with years of rows in it, and
     # LogRetentionJob drains it a bounded slice at a time. Ten minutes is what
-    # turns that backlog into hours rather than weeks. Steady state is two
-    # primary-key lookups and no deletes.
+    # turns that backlog into hours rather than weeks.
+    #
+    # It runs on `maintenance`, a 2-thread lane, and may hold a thread for its
+    # whole 90-second slice — so at the worst duty cycle that is one of the two
+    # threads for 15% of the time, alongside TokenUsageBackfillJob. That ceiling
+    # only binds while a backlog is draining: in steady state each tick deletes the
+    # ten minutes of rows that just aged out and returns its thread in well under a
+    # second.
     log_retention: {
       cron: "*/10 * * * *",
       class: "LogRetentionJob",
