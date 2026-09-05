@@ -15,10 +15,16 @@
 
 // Escape for interpolation into the picker markup. Its own copy rather than the
 // callers' method, so this module cannot be handed an unbound one.
+//
+// The `textContent` round trip escapes `&`, `<` and `>` — everything a TEXT node
+// needs — and deliberately leaves quotes alone, because a text node does not need
+// them escaped. Quotes are added here anyway: this string is written in a
+// different repository, and one that reached an `attr="..."` interpolation could
+// close the attribute and add an event handler to the row.
 function escapeHtml(text) {
   const div = document.createElement("div")
   div.textContent = text
-  return div.innerHTML
+  return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;")
 }
 
 // Sort unavailable options after available ones, preserving catalog order within

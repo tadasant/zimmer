@@ -112,24 +112,28 @@ export default class extends Controller {
     const scrollTop = window.pageYOffset || document.documentElement.scrollTop
     const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft
 
+    // At least 400px or the input's width, whichever is larger, capped at the
+    // viewport — then SHIFTED LEFT if that width would not fit where the input
+    // sits. Sizing alone is not enough: capping against the space to the right of
+    // the anchor would silently shrink the dropdown whenever the input is far
+    // right, which is how the session page's meta row lays out once its earlier
+    // items wrap. `clientWidth`, not `innerWidth`, because innerWidth counts an
+    // in-flow scrollbar the layout cannot use — that 15px is what put the old
+    // formula 23px off the right edge of a 375px phone.
+    const viewport = document.documentElement.clientWidth
+    const width = Math.min(Math.max(inputRect.width, 400), Math.max(viewport - 16, 0))
+    const left = Math.max(8, Math.min(inputRect.left, viewport - width - 8))
+
     this.dropdownTarget.style.position = 'absolute'
     this.dropdownTarget.style.top = `${inputRect.bottom + scrollTop}px`
-    this.dropdownTarget.style.left = `${inputRect.left + scrollLeft}px`
-    // At least 400px or the input's width, whichever is larger — but never wider
-    // than the space to the RIGHT of where it is anchored. The cap has to measure
-    // from the dropdown's own left edge, not from the whole viewport: the input
-    // sits inside a padded card, so a 400px minimum anchored at x=40 ran 23px off
-    // a 375px phone. `clientWidth` rather than `innerWidth` for the same reason —
-    // innerWidth counts an in-flow scrollbar the layout cannot use.
-    const available = document.documentElement.clientWidth - inputRect.left - 8
-    this.dropdownTarget.style.width = `${Math.min(Math.max(inputRect.width, 400), available)}px`
+    this.dropdownTarget.style.left = `${left + scrollLeft}px`
+    this.dropdownTarget.style.width = `${width}px`
 
     // Populate dropdown - compact single-line format, limit to 10 results
     const displayServers = this.filteredServers.slice(0, 10)
     this.dropdownTarget.innerHTML = displayServers.map((server, index) => `
       <div class="server-item px-3 py-2 cursor-pointer hover:bg-indigo-50 border-b border-gray-100 last:border-b-0 ${index === 0 ? 'bg-gray-50' : ''}"
            data-name="${this.escapeHtml(server.name)}"
-           ${server.unavailable ? `title="${this.escapeHtml(unavailableTitle(server))}"` : ''}
            data-action="click->mcp-server-select#selectItemFromClick">
         <div class="flex items-center justify-between gap-3">
           <span class="text-sm font-medium ${server.unavailable ? 'text-gray-500' : 'text-gray-900'} truncate">${this.escapeHtml(server.title)}</span>
@@ -141,6 +145,14 @@ export default class extends Controller {
         +${this.filteredServers.length - 10} more results (keep typing to narrow)
       </div>
     ` : '')
+
+    // Titles go on as DOM properties rather than into the markup above: the
+    // reason is catalog-authored text, and a property assignment cannot be
+    // broken out of the way an `attr="..."` interpolation can.
+    this.dropdownTarget.querySelectorAll(".server-item").forEach((row) => {
+      const server = displayServers.find((s) => s.name === row.dataset.name)
+      if (server?.unavailable) row.title = unavailableTitle(server)
+    })
 
     this.dropdownTarget.classList.remove("hidden")
     this.selectedIndex = 0
@@ -296,10 +308,13 @@ export default class extends Controller {
     }
   }
 
+  // The `textContent` round trip escapes `&`, `<` and `>`; quotes are added
+  // because several call sites interpolate into an `attr="..."`, where an
+  // unescaped quote would close the attribute and add an event handler.
   escapeHtml(text) {
     const div = document.createElement('div')
     div.textContent = text
-    return div.innerHTML
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
   }
 
   handleAgentRootChange(event) {

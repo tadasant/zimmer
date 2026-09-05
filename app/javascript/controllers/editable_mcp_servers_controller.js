@@ -47,14 +47,18 @@ export default class extends Controller {
 
   repositionDropdown() {
     const inputRect = this.inputTarget.getBoundingClientRect()
+    // Size against the viewport, then shift left if that width would not fit
+    // where the input sits — this picker lives in a `flex-wrap` meta row, so its
+    // anchor moves as the items before it wrap. Capping against the space to the
+    // right instead would shrink it below its 400px minimum on a wide screen.
+    // `clientWidth`, not `innerWidth`, which counts an in-flow scrollbar.
+    const viewport = document.documentElement.clientWidth
+    const width = Math.min(Math.max(inputRect.width, 400), Math.max(viewport - 16, 0))
+    const left = Math.max(8, Math.min(inputRect.left, viewport - width - 8))
+
     this.dropdownTarget.style.top = `${inputRect.bottom}px`
-    this.dropdownTarget.style.left = `${inputRect.left}px`
-    // Update width in case viewport changed. The cap measures from the dropdown's
-    // own left edge, not from the whole viewport — anchored inside a padded card,
-    // a 400px minimum otherwise runs off a phone's right edge. `clientWidth`
-    // rather than `innerWidth`, which counts an in-flow scrollbar.
-    const available = document.documentElement.clientWidth - inputRect.left - 8
-    this.dropdownTarget.style.width = `${Math.min(Math.max(inputRect.width, 400), available)}px`
+    this.dropdownTarget.style.left = `${left}px`
+    this.dropdownTarget.style.width = `${width}px`
   }
 
   edit() {
@@ -187,7 +191,6 @@ export default class extends Controller {
     this.dropdownTarget.innerHTML = displayServers.map((server, index) => `
       <div class="server-item px-3 py-2 cursor-pointer hover:bg-indigo-50 border-b border-gray-100 last:border-b-0 ${index === 0 ? 'bg-gray-50' : ''}"
            data-name="${this.escapeHtml(server.name)}"
-           ${server.unavailable ? `title="${this.escapeHtml(unavailableTitle(server))}"` : ''}
            data-action="click->editable-mcp-servers#selectServerFromClick">
         <div class="flex items-center justify-between gap-3">
           <span class="text-sm font-medium ${server.unavailable ? 'text-gray-500' : 'text-gray-900'} truncate">${this.escapeHtml(server.title)}</span>
@@ -199,6 +202,14 @@ export default class extends Controller {
         +${this.filteredServers.length - 10} more results (keep typing to narrow)
       </div>
     ` : '')
+
+    // Titles go on as DOM properties rather than into the markup above: the
+    // reason is catalog-authored text, and a property assignment cannot be
+    // broken out of the way an `attr="..."` interpolation can.
+    this.dropdownTarget.querySelectorAll(".server-item").forEach((row) => {
+      const server = displayServers.find((s) => s.name === row.dataset.name)
+      if (server?.unavailable) row.title = unavailableTitle(server)
+    })
 
     this.dropdownTarget.classList.remove("hidden")
     this.selectedIndex = 0
@@ -361,9 +372,12 @@ export default class extends Controller {
     }
   }
 
+  // The `textContent` round trip escapes `&`, `<` and `>`; quotes are added
+  // because several call sites interpolate into an `attr="..."`, where an
+  // unescaped quote would close the attribute and add an event handler.
   escapeHtml(text) {
     const div = document.createElement('div')
     div.textContent = text
-    return div.innerHTML
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
   }
 }
