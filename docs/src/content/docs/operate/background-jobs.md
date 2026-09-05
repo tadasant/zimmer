@@ -243,8 +243,9 @@ Two mechanisms, and they do different halves of the job:
 - **`CloneReaper` takes the transcript with the clone**, via `TranscriptDirectoryReaper`, on every
   successful reap. That stops the pile growing.
 - **`OrphanTranscriptDirectoryCleanupJob`** works off the backlog that already exists, six-hourly, at
-  `BATCH_LIMIT` (500) directories per run. It is not scheduled in development: outside a deployment
-  `~/.claude/projects` is a person's own Claude Code history.
+  `BATCH_LIMIT` (1,000) directories per run. It is not scheduled in development, and refuses to run
+  there even by hand: outside a deployment `~/.claude/projects` is a person's own Claude Code
+  history.
 
 ### Classification is forward-only, and uncertainty keeps
 
@@ -271,9 +272,25 @@ Two cases a naive sweeper gets wrong, both found by measuring production:
   clone ownership — while `-rails` falls through to `:unknown` and survives.
 
 The remaining guards are the clone sweep's, for the same reason: liveness is read from the
-filesystem **and** `Session.reap_protected` unioned; a missing or unreadable clones base aborts the
-run rather than treating every directory as orphaned; and a 24-hour `AGE_THRESHOLD` on the
-directory's own mtime is kept even though nothing in the design needs it.
+filesystem **and** `Session.reap_protected` unioned, and a missing or unreadable clones base aborts
+the run rather than treating every directory as orphaned.
+
+Two of them are worth spelling out because they are not quite the clone sweep's:
+
+- **Two fences, because there are two volumes.** `sweepable_clones_base?` asks whether the volume
+  liveness is *read from* belongs to this deployment — the same question, and the same reasoning, as
+  `OrphanCloneFilesystemCleanupJob#reclaimable_root?`. `sweepable_transcript_root?` asks it again of
+  the volume that is *deleted from*, and it has to be asked separately because the two move
+  independently: `AGENT_CLONES_DIR` relocates the clones base and nothing relocates
+  `~/.claude/projects`. Fencing only on the clones base would *permit* the sweep in exactly the
+  configuration a developer runs.
+- **A 24-hour `AGE_THRESHOLD` against the newest mtime in the directory**, not the directory's own.
+  POSIX bumps a directory's mtime when entries are created or removed in it, never when an existing
+  file is appended to — and Claude Code appends to one `<session_id>.jsonl` for the life of a
+  session, so the directory's own mtime effectively freezes at session start. For the clone-derived
+  class the bar is redundant by design; for the `/tmp` class it is the **only** liveness check there
+  is, since nothing on the box can say whether a `/tmp` cwd still exists, so it has to be the real
+  age of the transcript.
 
 Byte counts are measured against the volume, not summed per directory, and the run log reports count
 and bytes separately — per-directory size differs by more than an order of magnitude between

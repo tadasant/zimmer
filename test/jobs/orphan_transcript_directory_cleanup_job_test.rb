@@ -134,7 +134,45 @@ class OrphanTranscriptDirectoryCleanupJobTest < ActiveJob::TestCase
     OrphanTranscriptDirectoryCleanupJob.new.perform
 
     assert File.directory?(orphan),
-      "outside production/staging, ~/.claude/projects is a person's own Claude Code history"
+      "a liveness set difference computed against the wrong database reads every live clone as dead"
+  end
+
+  test "refuses to sweep a transcript root inside a real home directory outside a deployment" do
+    # The clones base is relocated — which is the ordinary developer and CI
+    # configuration, and which PASSES the clones-base fence — while
+    # `~/.claude/projects` is not relocatable and is that person's own Claude Code
+    # history. Fencing only on the clones base would permit exactly this.
+    home = Dir.mktmpdir("orphan-transcript-home")
+    original_home = ENV["HOME"]
+    ENV["HOME"] = home
+    begin
+      @projects_root = File.join(home, ".claude", "projects")
+      ClaudeTranscriptSource.stubs(:projects_root).returns(@projects_root)
+      # An unambiguous orphan by every other rule, so only the fence can save it.
+      orphan = project_dir("-tmp-headless-inference-0", age: OLD)
+
+      OrphanTranscriptDirectoryCleanupJob.new.perform
+
+      assert File.directory?(orphan),
+        "outside production/staging, a transcript root under $HOME is a person's own Claude Code history"
+    ensure
+      ENV["HOME"] = original_home
+      FileUtils.rm_rf(home)
+    end
+  end
+
+  test "the age bar reads the newest file in the directory, not the directory's own mtime" do
+    # POSIX bumps a directory's mtime when entries are created or removed in it,
+    # never when an existing file is appended to — and Claude Code appends to one
+    # .jsonl for the life of a session. Reading the directory alone would call a
+    # transcript being written right now three days old.
+    dir = transcript_dir_for(File.join(@clones_base, "zimmer-main-1770000000-deadbeef"), age: OLD)
+    FileUtils.touch(Dir.glob(File.join(dir, "*.jsonl")).first, mtime: Time.current.to_time)
+
+    OrphanTranscriptDirectoryCleanupJob.new.perform
+
+    assert File.directory?(dir),
+      "a directory whose transcript was written seconds ago is not a day-old orphan"
   end
 
   # --- the production mix, end to end ---------------------------------------
@@ -173,18 +211,24 @@ class OrphanTranscriptDirectoryCleanupJobTest < ActiveJob::TestCase
   # through the app's own derivation, with a transcript file in it.
   def transcript_dir_for(working_directory, age:)
     dir = ClaudeTranscriptSource.new.transcript_directory(working_directory: working_directory)
-    FileUtils.mkdir_p(dir)
-    File.write(File.join(dir, "#{SecureRandom.uuid}.jsonl"), "{}\n")
-    FileUtils.touch(dir, mtime: age.to_time)
-    dir
+    populate(dir, age: age)
   end
 
   # A transcript directory named literally, for the cwds that are not clones.
   def project_dir(name, age:)
-    File.join(@projects_root, name).tap do |path|
-      FileUtils.mkdir_p(path)
-      File.write(File.join(path, "#{SecureRandom.uuid}.jsonl"), "{}\n")
-      FileUtils.touch(path, mtime: age.to_time)
-    end
+    populate(File.join(@projects_root, name), age: age)
+  end
+
+  # `age` is applied to the CONTENTS as well as the directory: the sweep reads
+  # the newest mtime in the tree, not the directory's own, so a fixture that aged
+  # only the directory would be a day old on the outside and seconds old on the
+  # inside — which is precisely the state
+  # OrphanTranscriptDirectoryCleanupJob#newest_mtime exists to refuse.
+  def populate(dir, age:)
+    FileUtils.mkdir_p(File.join(dir, "tool-results"))
+    transcript = File.join(dir, "#{SecureRandom.uuid}.jsonl")
+    File.write(transcript, "{}\n")
+    FileUtils.touch([ transcript, File.join(dir, "tool-results"), dir ], mtime: age.to_time)
+    dir
   end
 end

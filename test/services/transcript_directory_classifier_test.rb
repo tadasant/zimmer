@@ -149,28 +149,37 @@ class TranscriptDirectoryClassifierTest < ActiveSupport::TestCase
     assert_includes kept, "-rails"
   end
 
-  # --- .derived_from?, the clone-deletion direction -------------------------
+  # --- derived_name + covers?, the clone-deletion direction -----------------
+  #
+  # Composed exactly as TranscriptDirectoryReaper composes them, so what is
+  # pinned here is what production runs.
 
-  test "derived_from? claims the clone's own cwd and its subdirectory cwds" do
-    clone_path = "#{CLONES_BASE}/#{LIVE_CLONE}"
+  test "a clone's derived name covers its own cwd and its subdirectory cwds" do
+    name = TranscriptDirectoryClassifier.derived_name(
+      transcript_source: @source, working_directory: "#{CLONES_BASE}/#{LIVE_CLONE}"
+    )
 
     %W[
       -home-rails--zimmer-clones-#{LIVE_CLONE}
       -home-rails--zimmer-clones-#{LIVE_CLONE}-zimmer
       -home-rails--zimmer-clones-#{LIVE_CLONE}-apps-web
     ].each do |entry|
-      assert TranscriptDirectoryClassifier.derived_from?(
-        transcript_source: @source, clone_path: clone_path, entry: entry
-      ), "#{entry} should be derived from #{clone_path}"
+      assert TranscriptDirectoryClassifier.covers?(name, entry),
+        "#{entry} should be covered by #{name}"
     end
   end
 
-  test "derived_from? does not claim another clone's directory" do
-    assert_not TranscriptDirectoryClassifier.derived_from?(
-      transcript_source: @source,
-      clone_path: "#{CLONES_BASE}/#{LIVE_CLONE}",
-      entry: "-home-rails--zimmer-clones-#{DEAD_CLONE}"
+  test "a clone's derived name does not cover another clone's directory" do
+    name = TranscriptDirectoryClassifier.derived_name(
+      transcript_source: @source, working_directory: "#{CLONES_BASE}/#{LIVE_CLONE}"
     )
+
+    assert_not TranscriptDirectoryClassifier.covers?(name, "-home-rails--zimmer-clones-#{DEAD_CLONE}")
+  end
+
+  test "a name that could not be derived covers nothing" do
+    assert_nil TranscriptDirectoryClassifier.derived_name(transcript_source: @source, working_directory: "")
+    assert_not TranscriptDirectoryClassifier.covers?(nil, "-home-rails--zimmer-clones-#{LIVE_CLONE}")
   end
 
   private
