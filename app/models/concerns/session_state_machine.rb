@@ -80,6 +80,8 @@ module SessionStateMachine
   attr_accessor :archive_actor
 
   # What the archive line says when the caller set no actor.
+  ARCHIVE_ACTOR_UNRECORDED = "an unrecorded caller"
+
   # How long after its moment a one-time schedule that has NOT fired yet still
   # counts as a wake-up that is going to happen.
   #
@@ -108,8 +110,6 @@ module SessionStateMachine
   # answer whether an `ao_event` wake aimed at it can still fire, without a
   # lookup per condition.
   WatchedState = Data.define(:status, :archived_at)
-
-  ARCHIVE_ACTOR_UNRECORDED = "an unrecorded caller"
 
   # How many retired row ids the strand ledger line names before it summarises
   # the rest. See record_strand_ledger.
