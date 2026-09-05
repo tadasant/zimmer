@@ -38,7 +38,7 @@ class Api::V1::OutcomeAnalysesController < Api::BaseController
   # One analysis WITH its Segment tree. `:id` is the analyzed session's id or
   # slug, not the analysis row's — the session is what a caller has a handle on.
   def show
-    session = find_session(params[:id])
+    session = Session.locate(params[:id])
     return not_found unless session
 
     analysis = OutcomeAnalysis.current.find_by(session_id: session.id)
@@ -87,26 +87,16 @@ class Api::V1::OutcomeAnalysesController < Api::BaseController
   end
 
   def set_session
-    @session = find_session(params[:session_id])
+    @session = Session.locate(params[:session_id])
     return if @session
 
     render_api_error("Not Found", "No session matches session_id #{params[:session_id].inspect}", status: :not_found)
   end
 
-  def find_session(identifier)
-    return nil if identifier.blank?
-
-    if identifier.to_s.match?(/\A\d+\z/)
-      Session.find_by(id: identifier.to_i)
-    else
-      Session.find_by(slug: identifier.to_s)
-    end
-  end
-
   # Same forgiving treatment as the MCP tool: a stale analyzer id costs the
   # provenance link, not the analysis.
   def analyzer_session
-    find_session(params[:analyzer_session_id])
+    Session.locate(params[:analyzer_session_id])
   end
 
   def analysis_json(analysis, include_tree: false)

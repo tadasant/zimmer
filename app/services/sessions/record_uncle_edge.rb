@@ -124,11 +124,12 @@ module Sessions
     def uncle
       return @uncle if defined?(@uncle)
 
-      # Digits only. `Integer()` would accept Ruby literal forms — "0x10" parses
-      # as 16, "1_0" as 10 — so a malformed declaration would attribute the edge
-      # to an arbitrary other session instead of recording nothing.
-      id = @acting_session_id.to_s.strip[/\A\d+\z/]
-      @uncle = id && Session.find_by(id: id.to_i)
+      # `Session.locate` carries the digits-only guard this rule depends on — a
+      # malformed declaration must record nothing rather than attribute the edge
+      # to an arbitrary other session — and accepts a slug too, so
+      # `acting_session_id` reads the same identifiers as every other session
+      # parameter.
+      @uncle = Session.locate(@acting_session_id)
     end
 
     # Can the actor already reach the junior going down? True when the actor is
