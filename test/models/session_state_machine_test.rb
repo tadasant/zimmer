@@ -666,15 +666,19 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_no_enqueued_jobs(only: EnqueuedMessageDrainJob) { session.pause! }
   end
 
-  # A session that pauses straight into a scheduled sleep is dormant, not idling
-  # on its queue — it has a wake armed, and that wake's turn drains the queue.
-  # The check runs after execute_pending_sleep precisely so it reads this.
-  test "pause that goes straight to sleep schedules no drain" do
+  # A session that pauses straight into a scheduled sleep is still at rest with a
+  # message queued for it, and `waiting` is a resting state the queue is owed
+  # delivery in (#566). The premise this test used to pin — "it has a wake armed,
+  # and that wake's turn drains the queue" — was not true: the wake fires with its
+  # own prompt and the queue stays behind it. The drain is scheduled either way;
+  # EnqueuedMessageDrainJob decides under its own re-read whether this particular
+  # `waiting` session can take the message.
+  test "pause that goes straight to sleep still schedules a drain" do
     session = sessions(:waiting)
     session.update!(status: :running, metadata: { "pending_sleep" => true })
     session.enqueued_messages.create!(content: "later", position: 1, status: "pending")
 
-    assert_no_enqueued_jobs(only: EnqueuedMessageDrainJob) { session.pause! }
+    assert_enqueued_with(job: EnqueuedMessageDrainJob, args: [ session.id ]) { session.pause! }
     assert session.reload.waiting?
   end
 

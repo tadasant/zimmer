@@ -2,13 +2,20 @@
 
 # Delivers the message a session came to rest on top of.
 #
-# The invariant this enforces is the `needs_input` half of the one
+# The invariant this enforces is the idle half of the one
 # Sessions::ArchiveGuard enforces for `archive`: a session must not idle with a
 # message still queued for it. Where the archive half refuses the transition —
 # archiving ends every delivery path, so the only honest answer is not to
-# archive — `needs_input` is recoverable. The session is idle, which is exactly
-# the condition under which a queued message is supposed to be delivered, so the
-# fix is to deliver it and let the session keep running.
+# archive — an idle session is recoverable. It is idle, which is exactly the
+# condition under which a queued message is supposed to be delivered, so the fix
+# is to deliver it and let the session keep running.
+#
+# "Idle" is BOTH resting states, not just `needs_input`. That was the gap behind
+# #566: the three create surfaces all promise the caller delivery "when the
+# session becomes idle", and a session resting in `waiting` — asleep on an
+# `open-pr` self-wake, slept by `action_session sleep`, dormant after a park —
+# already is. Nothing came back for those rows at all. #skip_reason is where the
+# populations of `waiting` that genuinely cannot take a message are named.
 #
 # AgentSessionJob already drains the queue at its four turn-end paths, and does
 # it BEFORE `pause!` so the session never flaps running → needs_input → running.
@@ -139,8 +146,20 @@ class EnqueuedMessageDrainJob < ApplicationJob
   # second agent process against one clone or re-run the session straight back
   # into the wall it just hit.
   def skip_reason(session)
-    return "no longer needs_input (#{session.status})" unless session.needs_input?
+    return "no longer idle (#{session.status})" unless session.idle_for_queued_delivery?
     return "queue is empty" unless session.enqueued_messages.pending.exists?
+
+    # Everything from here to the `nil` is about a session resting in `waiting`
+    # rather than `needs_input`. `needs_input` has exactly one meaning — the turn
+    # ended and nobody is coming — while `waiting` is the resting state Zimmer
+    # puts a session in for four different reasons, and three of them are "asleep
+    # on purpose, with something already scheduled to wake it". Handing a message
+    # to one of those is not an early delivery, it is a fight with whatever owns
+    # the wake.
+    if session.waiting?
+      dormant = dormant_by_design_reason(session)
+      return dormant if dormant
+    end
 
     # The agent process is STILL RUNNING and blocked on a synchronous MCP
     # elicitation. Resuming would spawn a second process and orphan the
@@ -173,6 +192,39 @@ class EnqueuedMessageDrainJob < ApplicationJob
     # be delivered, and pausing the current turn is not the same as withdrawing
     # the next one. The invariant was stated without an exception, so this has
     # none; a caller who wants the message gone deletes it.
+    nil
+  end
+
+  # Why a `waiting` session is asleep on purpose, or nil when it is merely idle.
+  #
+  # `needs_input` never reaches here: it has one meaning and this job is the
+  # answer to it. `waiting` is the overloaded one.
+  #
+  # NOT on this list, deliberately: a session dormant on its own armed wake-up
+  # (`paused_until_scheduled_time?`). That is the case this whole issue is about
+  # — the `open-pr` skill has a session sleep on a bounded self-wake so it does
+  # not occupy the human's action queue while its PR is rated, and the merged-PR
+  # notice is queued rather than sent precisely because the session is `waiting`
+  # rather than `needs_input`. The notice IS what that session is asleep waiting
+  # for, so consuming the wake to deliver it is the point, not a cost.
+  # EnqueuedMessage#stale? is what keeps that honest: a notice whose subject has
+  # moved on is retired rather than delivered, so a wake is only ever spent on a
+  # message that still says something.
+  def dormant_by_design_reason(session)
+    # Never started. A follow-up prompt into a session with no runtime session id
+    # is reclassified by AgentSessionJob as a FRESH START, which runs the
+    # session's own prompt and DISCARDS the follow-up — so "delivering" here
+    # would destroy the message. It drains at the end of the first turn like any
+    # other, through AgentSessionJob's ordinary end-of-turn path.
+    return "has not started yet" if session.never_ran?
+
+    # Held or paused at the spot quota gate. Delivering would enqueue a turn that
+    # SpotSessionHold refuses at the door and re-queues as a fresh row — the
+    # message survives, but it churns position and origin on every pass, and the
+    # gate's own re-check is already the thing that will run it.
+    return "held at the spot quota gate" if SpotSessionHold.held?(session)
+    return "paused in the spot queue" if SpotSessionPause.paused?(session)
+
     nil
   end
 
