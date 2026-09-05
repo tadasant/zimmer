@@ -834,6 +834,39 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal "archived", session.reload.status
   end
 
+  # Two refusals can apply at once. The queued-message one is asked first, so it
+  # is the one the caller reads — and `force` clears both, because it is one flag.
+  test "a queued message and a live turn are both refused, and force clears both" do
+    session = sessions(:running)
+    turn_on_a_worker!(session)
+    queued = session.enqueued_messages.create!(content: "the new prompt", position: 1, status: "pending")
+    caller_tool = tool_for_session(sessions(:needs_input).id)
+
+    error = assert_raises(Mcp::ToolError) { caller_tool.call("action" => "archive", "session_id" => session.id) }
+    assert_includes error.message, "has not been delivered", "the queue refusal is asked first"
+    assert_equal "running", session.reload.status
+
+    result = caller_tool.call("action" => "archive", "session_id" => session.id, "force" => true)
+
+    assert_equal "archived", session.reload.status
+    assert_equal "undelivered", queued.reload.status
+    assert_includes result, "terminated an agent turn that was in flight"
+  end
+
+  # The timeline write is best-effort by design — the archive the caller asked for
+  # has already landed by the time it runs, so it must not be able to undo it.
+  test "a timeline write that fails does not fail the archive it describes" do
+    session = sessions(:running)
+    turn_on_a_worker!(session)
+    session.logs.stubs(:create!).raises(ActiveRecord::StatementInvalid, "boom")
+
+    result = tool_for_session(sessions(:needs_input).id)
+      .call("action" => "archive", "session_id" => session.id, "force" => true)
+
+    assert_equal "archived", session.reload.status
+    assert_includes result, "## Session Archived"
+  end
+
   test "bulk_archive reports a live turn per session and leaves that one alone" do
     live = sessions(:running)
     turn_on_a_worker!(live)
