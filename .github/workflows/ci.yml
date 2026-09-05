@@ -329,6 +329,116 @@ jobs:
       - name: Test GHCR retention selection logic
         run: ruby scripts/ghcr_retention_test.rb
 
+  # ShellCheck over every tracked *.sh file.
+  #
+  # The scripts under scripts/ are not conveniences: clear-root-password-expiry.sh rewrites
+  # root's password ageing, tailnet-reap-node.sh removes tailnet nodes, worker-watchdog.sh
+  # `kill -9`s container shims and `rm -rf`s containerd task directories, and
+  # install-worker-watchdog.sh writes systemd units. All four run as root on the droplets,
+  # over SSH, from the deploy path. `bash -n` proves only that they parse.
+  #
+  # --severity=info, NOT `warning`. SC2086 -- an unquoted expansion, the defect class that
+  # turns `rm -rf $dir/foo` into `rm -rf /foo` when $dir is empty -- is an INFO-level check.
+  # A script whose only content is `d=$1; rm -rf $d/foo` produces zero findings at
+  # `--severity=warning` and one at `--severity=info`. A `warning` floor here would be a job
+  # that reports success while ignoring the thing it was added to catch. The tree is in fact
+  # clean at `--severity=style` as well, so tightening further is a one-word change.
+  #
+  # The binary is a pinned, checksummed static release rather than an apt package or a
+  # marketplace action: the shared self-hosted runner has no shellcheck preinstalled and these
+  # jobs do not run as root, so `apt-get install` is not available to them. Baking it into the
+  # runner image would mean tadasant-internal's ci-runner/ tree, a different repository; the
+  # download keeps this self-contained here. Pinning the version keeps a new upstream release
+  # from failing unrelated PRs, and the checksum is what makes the download safe to trust.
+  #
+  # Scope is tracked *.sh, which is scripts/, .github/scripts/ and .agent-containers/ --
+  # broader than scripts/ alone because .github/scripts/*.sh are deploy-path scripts too, and
+  # at no cost, since the whole set is already clean. The extensionless bash under bin/
+  # (bin/dev, bin/docker-entrypoint, ...) is NOT covered; bringing it in needs edits to the
+  # production container entrypoint, which does not belong in a CI-hygiene change. Neither are
+  # the `run:` blocks in this directory, which are bash but not files -- linting those means
+  # extracting them from the YAML first.
+  shellcheck:
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: self-hosted
+    env:
+      SHELLCHECK_VERSION: "0.10.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)  arch=x86_64;  sha=6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87 ;;
+            aarch64) arch=aarch64; sha=324a7e89de8fa2aed0d0c28f3dab59cf84c6d74264022c00c22af665ed1a09bb ;;
+            *) echo "::error::No pinned shellcheck build for $(uname -m)"; exit 1 ;;
+          esac
+          # `:?`, not plain expansion: `set -u` catches an UNSET RUNNER_TEMP but not an empty
+          # one, and `rm -rf "$dir"` two lines down is exactly the shape this job exists to catch.
+          dir="${RUNNER_TEMP:?}/shellcheck"
+          rm -rf "$dir"; mkdir -p "$dir"
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.${arch}.tar.xz" \
+            -o "$dir/shellcheck.tar.xz"
+          echo "${sha}  ${dir}/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf "$dir/shellcheck.tar.xz" -C "$dir" --strip-components=1
+          echo "$dir" >> "$GITHUB_PATH"
+      - name: ShellCheck every tracked shell script
+        run: |
+          set -euo pipefail
+          shellcheck --version
+
+          mapfile -t files < <(git ls-files '*.sh')
+
+          # A lint job whose file list is empty passes forever while verifying nothing. Refuse
+          # to report success on an empty set.
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No tracked *.sh files matched -- this job would have linted nothing."
+            exit 1
+          fi
+
+          # The same failure in a subtler form: the glob still matches something, but no longer
+          # the root-privileged scripts this job exists for. Name them, so a rename that moves
+          # one out of coverage fails here instead of going unnoticed.
+          for required in \
+            scripts/clear-root-password-expiry.sh \
+            scripts/tailnet-reap-node.sh \
+            scripts/worker-watchdog.sh \
+            scripts/install-worker-watchdog.sh; do
+            case " ${files[*]} " in
+              *" $required "*) ;;
+              *)
+                echo "::error::${required} is not in the lint set. If it was renamed, update this"
+                echo "::error::job's required-file list; if it was deleted, drop it from the list."
+                exit 1
+                ;;
+            esac
+          done
+
+          # The third way to pass while checking nothing, and the one a future change is most
+          # likely to reach for: a repo-root .shellcheckrc, or a file-level `# shellcheck
+          # disable=` sitting above a script's first command, either of which switches checks
+          # off wholesale while this job stays green. Per-site directives are fine and are what
+          # the scripts use -- they sit against one statement and carry their reason.
+          if git ls-files --error-unmatch .shellcheckrc >/dev/null 2>&1; then
+            echo "::error::A tracked .shellcheckrc can disable checks repo-wide while this job"
+            echo "::error::stays green. If that is genuinely wanted, say so here first."
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            if awk '/^[[:space:]]*(#|$)/ { if ($0 ~ /shellcheck[[:space:]]+disable=/) found=1; next }
+                    { exit } END { exit !found }' "$f"; then
+              echo "::error::${f} carries a file-level \`# shellcheck disable=\` above its first"
+              echo "::error::command, which switches those checks off for the whole file. Move it"
+              echo "::error::next to the one statement it excuses."
+              exit 1
+            fi
+          done
+
+          echo "Linting ${#files[@]} shell scripts at --severity=info:"
+          printf '  %s\n' "${files[@]}"
+          shellcheck --severity=info --color=always "${files[@]}"
+
   # Single aggregate gate for branch protection. Set THIS job's name — `all-checks-pass`
   # — as the one required status check under Settings → Branches → main, instead of
   # enumerating every job above. It `needs:` every required job and re-derives a pass/fail
@@ -360,6 +470,7 @@ jobs:
       - docs_site
       - image_excludes_docs
       - retention_logic
+      - shellcheck
     steps:
       - name: Verify no required check failed or was cancelled
         run: |
