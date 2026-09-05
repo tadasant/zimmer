@@ -306,6 +306,10 @@ does — that file is a cross-vendor convention, not a Claude private format, wh
 is why the JSON format hooks live in the shared `McpJsonConfigFormat` module.
 `@tadasant/pi-hooks` runs AIR hooks and `@tadasant/pi-plugins` resolves AIR
 plugins; both are configured by the files `PiAirBridge` generates, described next.
+The adapter is also where Pi's MCP startup budget lives — it has no env-var
+equivalent of Claude's `MCP_TIMEOUT`, so `PiMcpConfigPostProcessor` writes
+`requestTimeoutMs` onto each stdio entry instead. See [Timeouts and
+caching](/air/mcp-servers/#timeouts-and-caching).
 
 **Pi supplies no identity either, and the key is OpenRouter's.** Claude Code and
 Codex both pool subscription accounts that Zimmer rotates; Pi resolves a provider
