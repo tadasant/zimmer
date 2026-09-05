@@ -1336,6 +1336,36 @@ class Session < ApplicationRecord
     failure_reason.present? && PRE_PROMPT_FAILURE_REASONS.include?(failure_reason)
   end
 
+  # Whether this session is parked in the action queue because a turn raised
+  # before the agent ever started and took an undelivered prompt with it.
+  #
+  # `Sessions::ParkUndeliveredTurn` writes that outcome as a `pause` rather than a
+  # `fail` — the point of #439 is that `failed` is somewhere nobody looks — so the
+  # surfaces that render a failure cannot key on `failed?` alone, or the one failure
+  # a human is being asked to act on would be the one they cannot see.
+  #
+  # Deliberately NOT added to PRE_PROMPT_FAILURE_REASONS. Every member of that list
+  # can only be set on a session with no conversation, and this one is the opposite:
+  # the archetype (#439's session 3949) had already completed a turn. Claiming it
+  # failed before its initial prompt would send the restart paths down
+  # `use_initial_prompt`, which spawns fresh against a runtime session id that
+  # already names a conversation.
+  def parked_undelivered_turn?
+    needs_input? && metadata&.dig("failure_reason") == Sessions::ParkUndeliveredTurn::FAILURE_REASON
+  end
+
+  # The prompt a parked turn never delivered, kept so a human can send it again.
+  # @return [String, nil]
+  def undelivered_prompt
+    metadata&.dig(Sessions::ParkUndeliveredTurn::PROMPT_KEY).presence
+  end
+
+  # Whether the failure block belongs on this session's page: a session that failed,
+  # or one parked with a failure it is holding in the action queue.
+  def shows_failure_details?
+    failed? || parked_undelivered_turn?
+  end
+
   # Human-readable one-line summary of why this session failed. Suitable for
   # push notification bodies, titles, and the session UI — a single source of
   # truth so every surface describes a failure the same way.
@@ -1374,6 +1404,17 @@ class Session < ApplicationRecord
         "An MCP server requires a secret Zimmer does not carry — add it to Zimmer's mcp_secrets credentials, " \
           "or deselect the server that needs it"
       end
+    when Sessions::ParkUndeliveredTurn::FAILURE_REASON
+      # Named rather than left to `humanize`, which would render "Undelivered turn"
+      # — true, and no help at all to somebody deciding what to do about it. The two
+      # facts that decide that are that nothing ran and that the prompt is still here.
+      # It says the prompt is KEPT rather than that continuing re-sends it: nothing
+      # re-delivers it automatically, and saying otherwise would be a promise
+      # Sessions::ParkUndeliveredTurn deliberately does not make.
+      klass = metadata&.dig("exception_class").presence
+      detail = klass ? " (#{klass})" : ""
+      "This turn stopped before the agent started#{detail}, so its prompt was never delivered. " \
+        "The prompt is kept on this session's timeline — send it again to run the turn"
     else
       reason.humanize
     end

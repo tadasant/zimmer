@@ -4855,6 +4855,40 @@ button there acts on a set that is always empty. `AgentProcessLiveness.ensure_no
 what actually keeps a stale agent process from surviving into the next turn, and it runs on the
 spawn path in the worker, where the pid means something.
 
+## A transient boot failure that exhausts its retries still fails invisibly
+
+`Sessions::ParkUndeliveredTurn` moves a turn that died before the agent started out of `failed` and
+into the `needs_input` action queue, so the prompt it was carrying is not dropped in silence
+([#439](https://github.com/tadasant/zimmer/issues/439)). It declines to do that for the three
+exception classes `AgentSessionJob` declares a `retry_on` for — `Timeout::Error`,
+`Errno::ECONNRESET`, `Errno::ETIMEDOUT` — while another attempt is still queued, because parking
+would announce an ending in the action queue while a retry was still going to run the same prompt,
+and a human acting on that announcement would race the retry into delivering it twice.
+
+The cost is stated rather than designed around: the **last** of those attempts still lands in
+`failed`, where nothing sweeps it and the homepage does not show it. A boot failure that is
+transient three times running is therefore exactly as invisible as it was before. The park covers
+the deterministic failures, which is the observed shape — the reported case was an `ENOENT` on a
+clone that was wrong and stayed wrong.
+
+Fixing it properly means either parking only on the final attempt (which needs the per-exception
+retry counter ActiveJob keeps privately, not the total this code reads) or making the park itself
+the thing that re-delivers, which reopens the double-run hazard of
+[#400](https://github.com/tadasant/zimmer/issues/400).
+
+## A parked boot failure is invisible to the health rollups
+
+The same park comes to rest in `needs_input`, and `HealthMonitorService#failure_reason_distribution`
+and `#recent_failures` both query `status: :failed`. So a turn parked with
+`failure_reason: "undelivered_turn"` does not appear on `/health`, in `GET /api/v1/health`, or in
+`get_system_health` — a systemic run of boot failures (a broken catalog, say) is visible one session
+at a time in the action queue rather than as a count.
+
+Nothing about the *alerting* changed: the session's ERROR lines, the stamped exception and the
+re-raise into Sentry and the terminal ActiveJob ERROR are all unaffected. It is the operator-facing
+failure-reason histogram that has the blind spot, and widening its query to include parked sessions
+is the fix.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

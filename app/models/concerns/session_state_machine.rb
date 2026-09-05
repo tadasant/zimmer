@@ -180,6 +180,7 @@ module SessionStateMachine
         transitions from: [ :waiting, :needs_input, :failed ], to: :running
         after do
           clear_stale_mcp_failure_metadata
+          clear_undelivered_turn_park
           clear_paused_by_metadata
           clear_enqueued_drain_attempts
           clear_blocked_on_elicitation_marker
@@ -1515,6 +1516,25 @@ module SessionStateMachine
     mcp_failed_servers
     mcp_failure_reason
   ].freeze
+
+  # Drop what Sessions::ParkUndeliveredTurn stamped, now that the session is
+  # running again.
+  #
+  # The park records its outcome in `failure_reason`, which no resume path clears —
+  # so without this the marker outlives the turn that earned it, and the NEXT
+  # ordinary pause would render "This turn stopped before the agent started" on a
+  # session that had just completed a turn perfectly well. Scoped to a row whose
+  # `failure_reason` is exactly the park's own, so it can never eat another
+  # failure's record.
+  def clear_undelivered_turn_park
+    return unless metadata&.dig("failure_reason") == Sessions::ParkUndeliveredTurn::FAILURE_REASON
+
+    remove_metadata!(Sessions::ParkUndeliveredTurn::METADATA_KEYS)
+  rescue => e
+    # Log-only: the consequence is a stale failure line on the session page, which
+    # the next park or failure overwrites. Nothing persistent is left inconsistent.
+    report_swallowed_side_effect(__method__, e, alert: false)
+  end
 
   # Reset the MCP metadata a resuming session must not inherit from its last run.
   #
