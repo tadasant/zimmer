@@ -9541,6 +9541,197 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_match(/playwright-custom are marked failed .* because they did not connect after 3 retries/m, log_text)
   end
 
+  test "check_and_handle_mcp_failure announces a rejected server's verdict once, not on every retry pass of the co-failing one" do
+    # The rejected server stays in the runtime config, so it re-fails its handshake on
+    # every spawn the co-failing server is still riding the ladder for — and the
+    # already-degraded guard at the top of the method does NOT short-circuit then,
+    # because the co-failing server IS new. Re-announcing would print the operator one
+    # "credentials rejected" error and one "left out for the remainder of this session"
+    # warning per pass, and keep rewriting `degraded_at`.
+    failures = [
+      { "name" => "slack-workspace", "status" => "failed", "error" => STDIO_HEALTH_CHECK_CREDENTIAL_ERROR },
+      { "name" => "playwright-custom", "status" => "failed", "error" => "Connection timed out after 30000ms" }
+    ]
+
+    2.times do
+      @session.update!(
+        status: :running,
+        custom_metadata: {
+          "should_fail_session" => true,
+          "mcp_failed_servers" => failures,
+          "mcp_failure_reason" => "MCP server(s) failed to connect: slack-workspace, playwright-custom"
+        }
+      )
+
+      job = AgentSessionJob.new
+      job.process_manager = MockProcessManager.new
+      job.broadcast_service = BroadcastService.new
+      log_buffer = LogBuffer.new(@session)
+      job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+      log_buffer.flush
+      @session.reload
+    end
+
+    assert_equal 2, @session.metadata["mcp_retry_count"], "the co-failing server keeps its ladder"
+
+    log_lines = @session.logs.pluck(:content)
+    assert_equal 1, log_lines.count { |c| c.include?("slack-workspace' rejected its credentials") },
+      "the credential rejection must be reported once, not once per retry pass"
+    assert_equal 1, log_lines.count { |c| c.include?("slack-workspace are marked failed and left out") },
+      "the write-off must be announced once, not once per retry pass"
+  end
+
+  test "check_and_handle_mcp_failure keeps a degraded_at stamp from the pass that set it" do
+    @session.update!(
+      status: :running,
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [
+          { "name" => "slack-workspace", "status" => "failed", "error" => STDIO_HEALTH_CHECK_CREDENTIAL_ERROR },
+          { "name" => "playwright-custom", "status" => "failed", "error" => "Connection timed out after 30000ms" }
+        ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: slack-workspace, playwright-custom"
+      }
+    )
+
+    first = AgentSessionJob.new
+    first.process_manager = MockProcessManager.new
+    first.broadcast_service = BroadcastService.new
+    first.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", LogBuffer.new(@session))
+
+    stamped_at = @session.reload.metadata["mcp_degraded_servers"].first["degraded_at"]
+    assert stamped_at.present?
+
+    travel 5.minutes do
+      @session.update!(
+        status: :running,
+        custom_metadata: {
+          "should_fail_session" => true,
+          "mcp_failed_servers" => [
+            { "name" => "slack-workspace", "status" => "failed", "error" => STDIO_HEALTH_CHECK_CREDENTIAL_ERROR },
+            { "name" => "playwright-custom", "status" => "failed", "error" => "Connection timed out after 30000ms" }
+          ],
+          "mcp_failure_reason" => "MCP server(s) failed to connect: slack-workspace, playwright-custom"
+        }
+      )
+
+      second = AgentSessionJob.new
+      second.process_manager = MockProcessManager.new
+      second.broadcast_service = BroadcastService.new
+      second.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", LogBuffer.new(@session))
+    end
+
+    assert_equal stamped_at, @session.reload.metadata["mcp_degraded_servers"].first["degraded_at"],
+      "degraded_at must say when the session gave up, not when it last re-observed the failure"
+  end
+
+  test "check_and_handle_mcp_failure preserves an earlier write-off when it degrades and retries in one pass" do
+    # schedule_mcp_retry folds the fresh write-off into its own UPDATE. That write must
+    # MERGE with the record — a replace would silently drop an earlier incident's entry,
+    # and #build_degraded_mcp_block would stop telling the agent about a capability it
+    # has already lost.
+    earlier = { "name" => "good-eggs", "error" => "Connection closed", "reason" => "they did not connect after 3 retries", "degraded_at" => 1.hour.ago.iso8601 }
+
+    @session.update!(
+      status: :running,
+      metadata: (@session.metadata || {}).merge("mcp_degraded_servers" => [ earlier ]),
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [
+          { "name" => "slack-workspace", "status" => "failed", "error" => STDIO_HEALTH_CHECK_CREDENTIAL_ERROR },
+          { "name" => "playwright-custom", "status" => "failed", "error" => "Connection timed out after 30000ms" }
+        ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: slack-workspace, playwright-custom"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", LogBuffer.new(@session))
+
+    @session.reload
+    assert_equal "mcp_retry", @session.metadata["paused_by"]
+
+    degraded = @session.metadata["mcp_degraded_servers"].index_by { |s| s["name"] }
+    assert_equal %w[good-eggs slack-workspace], degraded.keys.sort
+    assert_equal earlier, degraded["good-eggs"], "the earlier write-off must survive the retry's UPDATE verbatim"
+    assert_equal "their credentials were rejected", degraded["slack-workspace"]["reason"]
+  end
+
+  test "check_and_handle_mcp_failure heals a corrupt _npx cache on the degrade route too, not only before a retry" do
+    # A degraded server stays in the runtime config precisely so it reconnects for free
+    # once whatever broke it is fixed. A corrupt `_npx/<hash>` tree it left behind is
+    # what makes the next spawn crash identically instead — so the heal has to run here,
+    # on the route that schedules no retry at all.
+    clones_base = File.join(Dir.home, ".zimmer", "clones")
+    clone_dir = File.join(clones_base, "zimmer-test-degrade-heal-#{SecureRandom.hex(4)}")
+    working_directory = File.join(clone_dir, "agents", "agent-roots", "tadas-groceries")
+    corrupt_dir = File.join(working_directory, ".npm-cache", "_npx", "b7c0f8a8df975b78")
+    FileUtils.mkdir_p(File.join(corrupt_dir, "node_modules", "zod", "v4"))
+
+    # One blob that says both things, which is exactly how McpLogPollerService joins a
+    # crashing stdio server's stderr: the credential rejection AND the cache corruption.
+    error =
+      "Server stderr: BrightData: Invalid API key - authentication failed\n" \
+      "Error [ERR_UNSUPPORTED_DIR_IMPORT]: Directory import '#{corrupt_dir}/node_modules/zod/v4' " \
+      "is not supported resolving ES modules | " \
+      "Connection failed after 1436ms (CONNECTION_CLOSED): Connection closed"
+
+    @session.update!(
+      status: :running,
+      metadata: { "working_directory" => working_directory },
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [ { "name" => "slack-workspace", "status" => "failed", "error" => error } ],
+        "mcp_failure_reason" => "MCP server(s) failed to connect: slack-workspace"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+    log_buffer = LogBuffer.new(@session)
+
+    assert File.exist?(corrupt_dir), "precondition: corrupt cache tree exists"
+
+    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+
+    @session.reload
+    assert_nil @session.metadata["mcp_retry_count"], "precondition: this is the no-retry route"
+    assert_equal [ "slack-workspace" ], @session.metadata["mcp_degraded_servers"].map { |s| s["name"] }
+
+    refute File.exist?(corrupt_dir),
+      "the corrupt _npx hash tree must be removed even when the server is left out rather than retried"
+  ensure
+    FileUtils.rm_rf(clone_dir) if defined?(clone_dir) && clone_dir
+  end
+
+  test "check_and_handle_mcp_failure still rides the ladder when the flagged failure names no server" do
+    # The second conjunct of `nothing_left_to_retry`. An empty set is not "every member
+    # reached a definitive verdict" — it is a flagged failure that named nothing, and it
+    # has always ridden the ladder rather than being written off on the spot.
+    @session.update!(
+      status: :running,
+      custom_metadata: {
+        "should_fail_session" => true,
+        "mcp_failed_servers" => [],
+        "mcp_failure_reason" => "MCP server connection failed"
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.process_manager = MockProcessManager.new
+    job.broadcast_service = BroadcastService.new
+
+    assert_equal true, job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", LogBuffer.new(@session))
+
+    @session.reload
+    assert_equal 1, @session.metadata["mcp_retry_count"]
+    assert_equal "mcp_retry", @session.metadata["paused_by"]
+    assert_nil @session.metadata["mcp_degraded_servers"]
+  end
+
   test "server_rejected_credentials? requires both a stderr marker and a credential-rejection phrase" do
     job = AgentSessionJob.new
 
