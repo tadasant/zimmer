@@ -100,6 +100,17 @@ class DeferredCloneCleanupJob < ApplicationJob
     end
   end
 
+  # Restores what the broad handler above would otherwise shadow, exactly as
+  # BundleInstallJob does for the same reason. ActiveSupport resolves rescue
+  # handlers last-registered-wins, so without this line the `rescue_from
+  # StandardError` above silently replaces `ApplicationJob`'s `retry_on
+  # ActiveRecord::StatementTimeout` — and `DatabaseRetry`, which this job includes
+  # and calls through `with_db_retry` on five separate writes, excludes
+  # `QueryAborted` from its own retry list precisely *because* that inherited
+  # handler is there. A database timeout is not a stuck clone and does not want
+  # this job's flat 30s ladder.
+  retry_on ActiveRecord::StatementTimeout, wait: :exponentially_longer, attempts: 5
+
   # @param session_id [Integer] the ID of the session to clean up
   # @param archived_at [String] ISO8601 timestamp of when the session was archived
   def perform(session_id, archived_at)

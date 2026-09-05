@@ -512,6 +512,22 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     assert_enqueued_with(job: DeferredCloneCleanupJob, args: [ @session.id, @archived_at.iso8601 ])
   end
 
+  # ActiveSupport resolves rescue handlers last-registered-wins, so the broad
+  # `rescue_from(StandardError)` this job registers would otherwise swallow
+  # `ApplicationJob`'s `retry_on ActiveRecord::StatementTimeout` — and
+  # `DatabaseRetry`, which this job calls through on every write, leaves
+  # `QueryAborted` to that inherited handler on purpose. The failure is silent, so
+  # it is pinned here rather than left to a comment. Same guard as
+  # BundleInstallJob's.
+  test "a database timeout still reaches retry_on, not the flat retry ladder" do
+    handlers = DeferredCloneCleanupJob.rescue_handlers.map(&:first)
+
+    assert_includes handlers, "StandardError", "the bounded quiet retry is registered"
+    assert_equal "ActiveRecord::StatementTimeout", handlers.last,
+      "retry_on ActiveRecord::StatementTimeout must be re-registered AFTER rescue_from(StandardError), " \
+      "or a database timeout silently takes this job's flat 30s ladder instead of the exponential one"
+  end
+
   test "retries are bounded: the last attempt stops re-enqueueing" do
     GitCloneService.stubs(:cleanup_clone).raises(GoodJob::InterruptError, "Interrupted")
 
