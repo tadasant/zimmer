@@ -900,9 +900,74 @@ the defect. One concrete instance of the general problem in
 [#668](https://github.com/tadasant/zimmer/issues/668).
 :::
 
+## A clone that vanished is rebuilt, not fatal
+
+A session's clone can disappear from under it. `CloneReaper` is the one door a sweep may
+delete a clone through, and it re-asks "is this session live" in the database at the
+moment of deletion rather than trusting the snapshot the sweep opened with
+([#814](https://github.com/tadasant/zimmer/pull/814)). What is left after that is the
+residual case no in-app guard can reach: a volume problem, an operator, a container
+recreation.
+
+That one fault used to get two different answers depending on which code path noticed
+it first, and only one of them was survivable.
+
+- The **follow-up** path recreated the clone from the row's `git_root` / `branch` /
+  `subdirectory` and carried on.
+- The **resume validator** returned `clone directory not found at <path>` and the
+  session went to `failed` — which is terminal, because `failed` rejects `follow_up`.
+  A human's only remaining move was to hand-respawn the task as a brand-new session,
+  losing the session's identity, its transcript and its place in the hierarchy that
+  spawned it. Production session 12280 took that path after running for two hours and
+  ten minutes ([#817](https://github.com/tadasant/zimmer/issues/817)).
+
+Now the resume validator names that one failure apart from the others — it is the only
+one whose cause a rebuild would change — and `AgentSessionJob#recovered_from_lost_clone?`
+routes it into the same recreate branch the follow-up path already uses. Neither service
+re-clones anything itself: both **deliver a follow-up turn**, and the follow-up path does
+the rebuilding, which is how the fix ends up with one implementation of it rather than a
+second.
+
+Which service takes it depends on whether there is a conversation to come back to:
+
+| Zimmer's stored transcript | Service | The turn it delivers |
+| --- | --- | --- |
+| holds a conversation | `Sessions::RecoverLostClone` | `AutomatedPrompts.lost_clone_recovery` — resume the conversation, having been told the tree was rebuilt |
+| holds none | `Sessions::RestartUnstartedTurn` | the session's own prompt — nothing was consumed, so replaying it re-does nothing |
+
+**The prompt is not a `SYSTEM_RECOVERY` nudge, and that is the point.** "Continue where
+you left off" would invite the agent to carry on against a transcript in which it has
+already created files, applied edits and staged changes — none of which survived the
+`git clone`. What that produces is silent: an edit whose "existing" content is the
+committed version, a commit that captures half the work, a test run that passes because
+the broken code is not there. So the message says what was lost, and asks for `git
+status` and a re-read before anything else. The uncommitted work itself is gone either
+way; that part is genuinely terminal.
+
+Four things have to hold, and any one of them missing leaves the pre-existing terminal
+failure exactly as it was:
+
+1. **`git_root` is present** — there is nothing to rebuild from otherwise.
+2. **No process is running at the recorded pid.** A live process means something is
+   still driving the session, and delivering a turn would put a second agent on it. The
+   existing failure path terminates that process; this recovery declines to race it.
+3. **The fault is the missing directory itself.** A missing `session_id`, a malformed
+   one, or a clone that is present but unreadable are facts a rebuild would not change.
+4. **`RetryBudget::LOST_CLONE` (2) is not spent.** A tree that will not stay on disk is
+   an infrastructure problem, and the session fails so that somebody looks at the
+   volume. The budget resets after the house 60 seconds of stability, so two losses an
+   hour apart are two incidents rather than one strike away from terminal.
+
+The on-disk transcript needs no new handling. The follow-up path's
+`restore_regressed_transcript_if_needed` already runs on every path through the recreate
+branch: it re-materializes `session.transcript` into the rebuilt clone when the on-disk
+copy is missing or shorter, writes nothing when the stored transcript holds no
+conversation ([#519](https://github.com/tadasant/zimmer/issues/519)), verifies the write
+landed, and fails loud rather than resuming into a conversation it could not repair.
+
 ## Retry budgets
 
-Seven of those recovery branches are bounded, and every one of them is bounded the same
+Eight of those recovery branches are bounded, and every one of them is bounded the same
 way: a counter in `session.metadata`, a maximum, a timestamp of the last attempt, and a
 set of keys a reset clears. `RetryBudget` (`app/services/retry_budget.rb`) is where each
 of those is declared, once:
@@ -916,6 +981,7 @@ of those is declared, once:
 | `RetryBudget::CONTEXT_LENGTH` | `compact_retry_count` | 2 | `last_compact_at` | `ContextLengthRetryService` |
 | `RetryBudget::SESSION_ID_CONFLICT` | `session_id_conflict_count` | 2 | `last_session_id_conflict_at` | `ProcessLifecycleManager#handle_session_id_conflict` |
 | `RetryBudget::EMPTY_TURN` | `empty_turn_recovery_count` | 2 | `last_empty_turn_recovery_at` | `ProcessLifecycleManager#handle_empty_turn`, `Sessions::RestartUnstartedTurn` |
+| `RetryBudget::LOST_CLONE` | `lost_clone_recovery_count` | 2 | `last_lost_clone_recovery_at` | `Sessions::RecoverLostClone` |
 
 **A budget is per-incident, not per-lifetime.** Step 5 of the monitor loop walks
 `RetryBudget.all` every iteration and hands back any budget whose process has run for

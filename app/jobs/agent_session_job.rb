@@ -809,6 +809,16 @@ class AgentSessionJob < ApplicationJob
         # Validate session state before attempting to resume
         validation_result = validate_session_for_resume(session, clone_path)
         unless validation_result[:valid]
+          # A clone that is gone is the one validation failure with a way out: the row
+          # still holds everything the tree was built from. Rebuild it and resume rather
+          # than failing the session terminally (#817).
+          if validation_result[:lost_clone] &&
+             recovered_from_lost_clone?(session, clone_path, working_directory, process_pid, log_buffer)
+            log_buffer.flush
+            @broadcast_service.session_status(session.reload)
+            return
+          end
+
           log_buffer.add(
             "Session validation failed for resume: #{validation_result[:reason]}",
             level: "error"
@@ -3507,6 +3517,55 @@ class AgentSessionJob < ApplicationJob
     nil
   end
 
+  # The clone this resume was going to run in is gone. Rebuild it and take the turn,
+  # instead of failing the session terminally (#817).
+  #
+  # Two services split the work by whether there is a conversation to come back to,
+  # and both rebuild the tree the same way — by delivering a follow-up turn, which
+  # routes into the follow-up path's existing recreate branch. Neither re-clones here.
+  #
+  #   * Nothing was ever written: this is the unstarted-turn shape arriving through a
+  #     lost clone rather than a dead pid, and Sessions::RestartUnstartedTurn already
+  #     owns it — replaying the session's own prompt is the whole recovery, because
+  #     nothing was consumed and no partial work exists. It declines when a
+  #     conversation exists, which is what makes the two calls complementary rather
+  #     than a race for the same session.
+  #   * There is a conversation: Sessions::RecoverLostClone resumes it, telling the
+  #     agent that the tree it is about to look at was rebuilt from git and that its
+  #     uncommitted work is gone.
+  #
+  # The live-process check is this method's own, and it gates both. A process still
+  # running at the recorded pid means something is driving this session right now, and
+  # delivering a turn would put a second agent on it (#400) — so leave it to the
+  # existing failure path, whose teardown terminates that process. It is also the
+  # honest reading of the situation: this recovery is for a session whose tree went
+  # out from under a runtime that is no longer there.
+  #
+  # @return [Boolean] true when a turn is queued and this job must stand down
+  def recovered_from_lost_clone?(session, clone_path, working_directory, process_pid, log_buffer)
+    if process_running?(process_pid)
+      log_buffer.add(
+        "Not rebuilding the missing clone: process #{process_pid} is still running, so something is " \
+        "still driving this session and a second agent must not be started against it.",
+        level: "warning"
+      )
+      return false
+    end
+
+    restart = Sessions::RestartUnstartedTurn.call(
+      session,
+      working_directory: working_directory,
+      file_system: @file_system,
+      log_buffer: log_buffer
+    )
+    return true if restart.restarted?
+    return false if restart.abandoned?
+
+    Sessions::RecoverLostClone.call(
+      session, clone_path: clone_path, log_buffer: log_buffer
+    ).recovered?
+  end
+
   # Validate session state before attempting to resume Claude CLI session
   # @param session [Session] The session to validate
   # @param clone_path [String] The path to the clone directory
@@ -3530,9 +3589,13 @@ class AgentSessionJob < ApplicationJob
       return { valid: false, reason: "session_id is not a valid UUID format" }
     end
 
-    # Check clone directory exists and is accessible
+    # Check clone directory exists and is accessible.
+    #
+    # `lost_clone: true` names this one fault apart from the others, because it is the
+    # only one with a recovery: the tree can be rebuilt from the row (#817). Everything
+    # else here is a fact about the row or the volume that a rebuild would not change.
     unless @file_system.exists?(clone_path)
-      return { valid: false, reason: "clone directory not found at #{clone_path}" }
+      return { valid: false, reason: "clone directory not found at #{clone_path}", lost_clone: true }
     end
 
     # Verify clone directory is accessible

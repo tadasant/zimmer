@@ -2554,6 +2554,26 @@ whose volume is full of clones belonging to real archived-but-not-yet-reaped ses
 host that needs `StaleCloneCleanupJob` to catch up, or a human. The guard will say so, by name and
 with numbers, instead of letting the clone die partway.
 
+### Rebuilding a lost clone recovers the session, not the work in it
+
+When a live session's clone goes missing, Zimmer re-clones the tree from the row and
+resumes the conversation rather than failing the session — see
+[a clone that vanished is rebuilt, not fatal](/sessions/spawning/#a-clone-that-vanished-is-rebuilt-not-fatal).
+What that recovers is the session: its row, its runtime session id, its polled
+transcript, its place in the hierarchy, the PR it is holding.
+
+**It does not recover the diff.** Everything uncommitted in the lost tree is gone —
+files created, edits not committed, anything staged — and no amount of retrying brings
+it back. The agent is told so in the resume prompt and asked to re-read the tree before
+it does anything else, but "re-read and redo" is a request, not a guarantee: an agent
+that ignores it will reason from a transcript that no longer describes the disk. Work
+already pushed to the remote is safe, which is the practical argument for pushing early.
+
+The rebuild is also bounded at `RetryBudget::LOST_CLONE` (2 attempts, reset after 60
+seconds of stability). A clone that keeps vanishing is a volume problem, and past that
+the session fails so somebody looks at the host rather than watching Zimmer re-clone
+forever.
+
 ### Private repositories are cloned with a PAT, never an SSH key
 
 `GitCloneService` and the local execution provider authenticate to private repos by rewriting an

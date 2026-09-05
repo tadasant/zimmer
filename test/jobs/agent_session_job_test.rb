@@ -4184,7 +4184,12 @@ class AgentSessionJobTest < ActiveJob::TestCase
   end
 
   # Test session validation for resume - missing clone directory
-  test "marks session as failed when clone directory is missing on resume" do
+  #
+  # A missing clone is recoverable now: Zimmer rebuilds the tree from the row and
+  # takes the turn (#817). Both rebuild budgets are spent here so the branch this
+  # test has always been about — the terminal one — is the branch it still reaches.
+  # test/jobs/agent_session_job_lost_clone_recovery_test.rb covers the recovery.
+  test "marks session as failed when clone directory is missing on resume and the rebuild budgets are spent" do
     # Setup session with valid UUID but missing clone
     @session.update!(
       session_id: SecureRandom.uuid,
@@ -4192,7 +4197,9 @@ class AgentSessionJobTest < ActiveJob::TestCase
       metadata: {
         "process_pid" => 12345,
         "clone_path" => "/tmp/nonexistent-clone",
-        "working_directory" => "/tmp/nonexistent-clone"
+        "working_directory" => "/tmp/nonexistent-clone",
+        RetryBudget::EMPTY_TURN.key => RetryBudget::EMPTY_TURN.max,
+        RetryBudget::LOST_CLONE.key => RetryBudget::LOST_CLONE.max
       }
     )
 
