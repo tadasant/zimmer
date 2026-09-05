@@ -3,98 +3,6 @@
   "ignored_warnings": [
     {
       "check_name": "Execute",
-      "code": "Open3.capture3(\"gh\", \"pr\", \"view\", pr_number.to_s, \"--repo\", \"#{owner}/#{repo}\", \"--json\", \"state,mergedAt\")",
-      "confidence": "Medium",
-      "cwe_id": [
-        77
-      ],
-      "file": "app/jobs/git_hub_pull_request_poller_job.rb",
-      "fingerprint": "f47c2f792921701f63afa08eaeee932a3e38ae85db0c5b97e3ee498b525567ee",
-      "line": 60,
-      "link": "https://brakemanscanner.org/docs/warning_types/command_injection/",
-      "location": {
-        "class": "GitHubPullRequestPollerJob",
-        "method": "fetch_pr_status",
-        "type": "method"
-      },
-      "message": "Possible command injection",
-      "note": "False positive: Open3.capture3 with array syntax prevents shell injection. The owner, repo, and pr_number are extracted from a validated GitHub PR URL pattern via regex match (github.com/[^/]+/[^/]+/pull/\\d+), which restricts the character set and prevents path traversal.",
-      "render_path": null,
-      "user_input": "owner",
-      "warning_code": 14,
-      "warning_type": "Command Injection"
-    },
-    {
-      "check_name": "Execute",
-      "code": "Open3.capture3(\"gh\", \"pr\", \"checks\", pr_number.to_s, \"--repo\", \"#{owner}/#{repo}\", \"--json\", \"bucket,state\")",
-      "confidence": "Medium",
-      "cwe_id": [
-        77
-      ],
-      "file": "app/jobs/git_hub_pull_request_poller_job.rb",
-      "fingerprint": "e3b754776e3c746cd8d948b763aad00c8acc992b5ea201d27eb3d7f4408b0668",
-      "line": 135,
-      "link": "https://brakemanscanner.org/docs/warning_types/command_injection/",
-      "location": {
-        "class": "GitHubPullRequestPollerJob",
-        "method": "fetch_ci_status",
-        "type": "method"
-      },
-      "message": "Possible command injection",
-      "note": "False positive: Open3.capture3 with array syntax prevents shell injection. The owner, repo, and pr_number are extracted from a validated GitHub PR URL pattern via regex match (github.com/[^/]+/[^/]+/pull/\\d+), which restricts the character set and prevents path traversal.",
-      "render_path": null,
-      "user_input": "owner",
-      "warning_code": 14,
-      "warning_type": "Command Injection"
-    },
-    {
-      "check_name": "Execute",
-      "code": "Open3.capture3(\"gh\", \"api\", \"#{api_path}?per_page=#{100}&page=#{1}\", \"--jq\", \".\")",
-      "confidence": "Medium",
-      "cwe_id": [
-        77
-      ],
-      "file": "app/jobs/github_comment_poller_job.rb",
-      "fingerprint": "d23ba0e7bdac8ffde94b473588e5f22a5f167653aedac347809b2cf62b7f8fcd",
-      "line": 154,
-      "link": "https://brakemanscanner.org/docs/warning_types/command_injection/",
-      "location": {
-        "class": "GithubCommentPollerJob",
-        "method": "fetch_paginated_comments",
-        "type": "method"
-      },
-      "message": "Possible command injection",
-      "note": "False positive: Open3.capture3 with array syntax prevents shell injection. The api_path is constructed from owner, repo, and pr_number values extracted from validated GitHub PR URLs via regex match (github.com/[^/]+/[^/]+/pull/\\d+), which restricts the character set and prevents path traversal.",
-      "render_path": null,
-      "user_input": "api_path",
-      "warning_code": 14,
-      "warning_type": "Command Injection"
-    },
-    {
-      "check_name": "Execute",
-      "code": "Open3.capture3(\"gh\", \"api\", \"--method\", \"POST\", (\"repos/#{comment_info[:owner]}/#{comment_info[:repo]}/pulls/comments/#{comment_info.dig(:data, \"id\")}/reactions\" or \"repos/#{comment_info[:owner]}/#{comment_info[:repo]}/issues/comments/#{comment_info.dig(:data, \"id\")}/reactions\"), \"-f\", \"content=eyes\")",
-      "confidence": "Medium",
-      "cwe_id": [
-        77
-      ],
-      "file": "app/jobs/github_comment_poller_job.rb",
-      "fingerprint": "7145c4e0795359b952c1ba81d3f77ecc24dcf220c4e292ef1e68b745ef16e98e",
-      "line": 233,
-      "link": "https://brakemanscanner.org/docs/warning_types/command_injection/",
-      "location": {
-        "class": "GithubCommentPollerJob",
-        "method": "add_eyes_reaction",
-        "type": "method"
-      },
-      "message": "Possible command injection",
-      "note": "False positive: Open3.capture3 with array syntax prevents shell injection. The owner and repo are extracted from validated GitHub PR URLs via regex match (github.com/[^/]+/[^/]+/pull/\\d+), and comment_id comes from the GitHub API response itself.",
-      "render_path": null,
-      "user_input": "comment_info[:owner]",
-      "warning_code": 14,
-      "warning_type": "Command Injection"
-    },
-    {
-      "check_name": "Execute",
       "code": "Open3.capture3(\"gh\", \"api\", \"repos/#{comment_info[:owner]}/#{comment_info[:repo]}\", \"--jq\", \".private\")",
       "confidence": "Medium",
       "cwe_id": [
@@ -138,29 +46,6 @@
       "user_input": "McpOauthPendingFlow.create_for_session!(...).authorization_url",
       "warning_code": 18,
       "warning_type": "Redirect"
-    },
-    {
-      "check_name": "Execute",
-      "code": "Open3.capture3(\"gh\", \"api\", \"repos/#{owner}/#{repo}/pulls/#{pr_number}\", \"--jq\", \".mergeable\")",
-      "confidence": "Medium",
-      "cwe_id": [
-        77
-      ],
-      "file": "app/jobs/git_hub_merge_conflict_poller_job.rb",
-      "fingerprint": "ba16e19c568083217a1f537c93d70c778de713e1063840050e60107595e68dab",
-      "line": 155,
-      "link": "https://brakemanscanner.org/docs/warning_types/command_injection/",
-      "location": {
-        "class": "GitHubMergeConflictPollerJob",
-        "method": "fetch_mergeable_field",
-        "type": "method"
-      },
-      "message": "Possible command injection",
-      "note": "False positive: Open3.capture3 with array syntax prevents shell injection. The owner, repo, and pr_number are extracted from a validated GitHub PR URL pattern via regex match (github.com/[^/]+/[^/]+/pull/\\d+), which restricts the character set and prevents path traversal.",
-      "render_path": null,
-      "user_input": "owner",
-      "warning_code": 14,
-      "warning_type": "Command Injection"
     },
     {
       "check_name": "SSLVerify",

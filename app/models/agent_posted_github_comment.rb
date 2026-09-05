@@ -7,7 +7,7 @@
 # comment have the same `user.login`. What Zimmer has that GitHub doesn't is the
 # transcript — it watched the tool call that posted the comment and read the
 # comment URL out of that call's output. TranscriptHooks::GithubCommentAuthorshipHook
-# writes those rows; GithubCommentPollerJob reads them.
+# writes those rows; Github::CommentEvaluator reads them.
 #
 # Rows are global rather than per-session, which is the point: the observed loop
 # was cross-session (session A posts, session B is woken to "reply"), so the fact

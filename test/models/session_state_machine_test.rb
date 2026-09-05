@@ -694,7 +694,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert session.reload.needs_input?, "a failed side effect must not block the transition"
   end
 
-  # The archive line reports these; GitHubPullRequestPollerJob reads the same
+  # The archive line reports these; Github::PrPollPass reads the same
   # answer to decide a session is waiting on a specific event rather than merely
   # idle, so the "never polled" and "bad shape" cases matter to both (#494).
   test "unresolved_pr_urls counts open and never-polled PRs and drops terminal ones" do

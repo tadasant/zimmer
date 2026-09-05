@@ -15,10 +15,10 @@
       "class": "HeartbeatSweepJob",
       "description": "Beat per-session heartbeats: nudge needs_input sessions due for a beat"
     },
-    "github_pull_request_poller": {
+    "github_pr_poll_pass": {
       "cron": "*/30 * * * * *",
-      "class": "GitHubPullRequestPollerJob",
-      "description": "Poll GitHub PR status for sessions with PR URLs"
+      "class": "GithubPrPollPassJob",
+      "description": "Poll GitHub PR status, CI, merge conflicts and comments for sessions with PR URLs"
     },
     "stale_clone_cleanup": {
       "cron": "0 * * * *",
@@ -29,16 +29,6 @@
       "cron": "*/5 * * * *",
       "class": "ElicitationEndpointHealthCheckJob",
       "description": "Probe the MCP approval (elicitation) endpoint agents are pointed at"
-    },
-    "github_comment_poller": {
-      "cron": "*/30 * * * * *",
-      "class": "GithubCommentPollerJob",
-      "description": "Poll GitHub PR comments for sessions with PR URLs"
-    },
-    "github_merge_conflict_poller": {
-      "cron": "*/2 * * * *",
-      "class": "GitHubMergeConflictPollerJob",
-      "description": "Poll GitHub PRs for merge conflicts and notify sessions"
     },
     "token_usage_ingestion": {
       "cron": "*/10 * * * *",
@@ -272,10 +262,10 @@
       "class": "HeartbeatSweepJob",
       "description": "Beat per-session heartbeats: nudge needs_input sessions due for a beat"
     },
-    "github_pull_request_poller": {
+    "github_pr_poll_pass": {
       "cron": "*/30 * * * * *",
-      "class": "GitHubPullRequestPollerJob",
-      "description": "Poll GitHub PR status for sessions with PR URLs"
+      "class": "GithubPrPollPassJob",
+      "description": "Poll GitHub PR status, CI, merge conflicts and comments for sessions with PR URLs"
     },
     "stale_clone_cleanup": {
       "cron": "0 * * * *",
@@ -286,16 +276,6 @@
       "cron": "*/5 * * * *",
       "class": "ElicitationEndpointHealthCheckJob",
       "description": "Probe the MCP approval (elicitation) endpoint agents are pointed at"
-    },
-    "github_comment_poller": {
-      "cron": "*/30 * * * * *",
-      "class": "GithubCommentPollerJob",
-      "description": "Poll GitHub PR comments for sessions with PR URLs"
-    },
-    "github_merge_conflict_poller": {
-      "cron": "*/2 * * * *",
-      "class": "GitHubMergeConflictPollerJob",
-      "description": "Poll GitHub PRs for merge conflicts and notify sessions"
     },
     "token_usage_ingestion": {
       "cron": "*/10 * * * *",
@@ -519,25 +499,15 @@
       "class": "HeartbeatSweepJob",
       "description": "Beat per-session heartbeats: nudge needs_input sessions due for a beat"
     },
-    "github_pull_request_poller": {
+    "github_pr_poll_pass": {
       "cron": "*/30 * * * * *",
-      "class": "GitHubPullRequestPollerJob",
-      "description": "Poll GitHub PR status for sessions with PR URLs"
+      "class": "GithubPrPollPassJob",
+      "description": "Poll GitHub PR status, CI, merge conflicts and comments for sessions with PR URLs"
     },
     "stale_clone_cleanup": {
       "cron": "0 * * * *",
       "class": "StaleCloneCleanupJob",
       "description": "Clean up stale clone directories from archived sessions"
-    },
-    "github_comment_poller": {
-      "cron": "*/30 * * * * *",
-      "class": "GithubCommentPollerJob",
-      "description": "Poll GitHub PR comments for sessions with PR URLs"
-    },
-    "github_merge_conflict_poller": {
-      "cron": "*/2 * * * *",
-      "class": "GitHubMergeConflictPollerJob",
-      "description": "Poll GitHub PRs for merge conflicts and notify sessions"
     },
     "post_deploy_tasks": {
       "cron": "*/2 * * * *",

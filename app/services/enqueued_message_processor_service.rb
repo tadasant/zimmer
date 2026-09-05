@@ -25,7 +25,7 @@ class EnqueuedMessageProcessorService
   # How long the whole staleness sweep may spend re-reading GitHub, across all
   # of a session's queued notices.
   #
-  # GithubPullRequestMergeability::READ_TIMEOUT_SECONDS bounds ONE `gh` child;
+  # The reader's own bound (Github::PrSnapshot::TIMEOUT) covers ONE `gh` child;
   # this bounds the loop, which a session with several conflicting PRs would
   # otherwise multiply out. Past the deadline the remaining notices are treated
   # as not stale and delivered — the same fail-open answer an unreadable PR gets.

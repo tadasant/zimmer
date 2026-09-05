@@ -1297,7 +1297,7 @@ class Trigger < ApplicationRecord
 
     # Use transaction with row-level locking to prevent race conditions.
     # The state check and state change must happen atomically, matching the
-    # pattern in GithubCommentPollerJob and EnqueuedMessageProcessorService.
+    # pattern in Github::CommentEvaluator and EnqueuedMessageProcessorService.
     ActiveRecord::Base.transaction do
       session.lock!
 

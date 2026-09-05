@@ -2,7 +2,7 @@
 
 # Thin wrapper over GitHub's issue/PR search API, used by GithubTriggerPollerJob.
 #
-# Shells out to the `gh` CLI, exactly as GithubCommentPollerJob does, so it reuses
+# Shells out to the `gh` CLI, exactly as Github::CommentEvaluator does, so it reuses
 # the host's existing GitHub credential rather than introducing a second one.
 #
 # ## Why every query pins advanced_search=true
