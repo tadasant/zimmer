@@ -909,11 +909,12 @@ See [A wake is only armed while it can still fire](/sessions/triggers/).
 **A wake in flight is not a wake that was lost**, and both halves of that predicate allow for it —
 `SessionStateMachine::SCHEDULE_FIRE_SETTLE`, ten minutes. "Due" and "fired" are never the same
 instant: `ScheduleTriggerJob` is a one-minute cron, so a one-time schedule reads due, enabled and
-unfired for as long as it takes the next tick to reach it, and an `ao_event` watcher on a session
-that has *just* archived is waiting on an `AoEventTriggerJob` that was enqueued after that
-transaction committed and has not run yet — which is exactly why the archive callback spares a
-`session_archived` watcher instead of deleting it with its siblings. Inside that window both count
-as armed. Outside it, they do not: the scheduler has had every chance and the wake is not coming.
+unfired for as long as it takes the next tick to reach it, and a `session_archived` watcher on a
+session that has *just* archived is waiting on an `AoEventTriggerJob` that was enqueued after that
+transaction committed and has not run yet — which is exactly why the archive callback spares that
+watcher while destroying its siblings. Inside that window both count as armed; the siblings it
+spares nothing for — a `session_needs_input` watcher on the same archived session — read unfireable
+straight away, as they always did. Outside it, they do not: the scheduler has had every chance and the wake is not coming.
 Without the window, a wake scheduled for a round five-minute boundary raced
 `StrandedSleepSweepJob`'s own tick and lost — session 13229's wake came due at 11:20:00, the sweep
 announced to `#alerts` that it could never fire at 11:20:08, and it fired at 11:20:18 into a session
