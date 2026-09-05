@@ -20,9 +20,24 @@
 #   McpOauthProbe.new(session).servers_needing_oauth
 #   # => [{ server_name:, server_url:, credential_key:, ... }, ...]
 class McpOauthProbe
-  def initialize(session, oauth_service: McpOauthService.new)
+  # Wall-clock budget for the network half of the probe.
+  #
+  # Answering "does this server require OAuth?" for a server we hold no
+  # pre-registered client for means asking the server, and McpOauthService gives
+  # each of those requests 30 seconds. A session may select up to 50 servers, so
+  # without a budget an unreachable host — or a handful of them — turns a
+  # config edit into a multi-minute request on whichever surface issued it.
+  #
+  # Running out is not an error: a server we could not reach in time is reported
+  # as not needing OAuth, exactly as an individual failed probe already is. The
+  # spawn gate asks again before the session next runs, and it is not racing a
+  # caller who is waiting.
+  PROBE_BUDGET_SECONDS = 20
+
+  def initialize(session, oauth_service: McpOauthService.new, budget_seconds: PROBE_BUDGET_SECONDS)
     @session = session
     @oauth_service = oauth_service
+    @budget_seconds = budget_seconds
   end
 
   # @return [Array<Hash>] one entry per server that cannot be used until someone
@@ -39,10 +54,15 @@ class McpOauthProbe
     status = McpOauthCredentialInjector.new(@session, working_directory: working_directory).check_credentials_status
     return [] if status.empty?
 
+    @deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @budget_seconds
     status.filter_map { |server_name, server_status| requirement_for(server_name, server_status) }
   end
 
   private
+
+  def budget_exhausted?
+    @deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC) >= @deadline
+  end
 
   def requirement_for(server_name, server_status)
     return nil if server_status[:has_credential] && server_status[:credential_valid]
@@ -70,6 +90,11 @@ class McpOauthProbe
   # configured redirect so any registration this probe performs names the
   # redirect the authorization flow will actually send.
   def probe(server_name, server_url, credential_key)
+    if budget_exhausted?
+      Rails.logger.warn "[McpOauthProbe] Budget spent before probing '#{server_name}'; reporting it as not needing OAuth"
+      return nil
+    end
+
     catalog_server = ServersConfig.find(server_name)
     requirement = @oauth_service.check_oauth_requirement(
       server_url,

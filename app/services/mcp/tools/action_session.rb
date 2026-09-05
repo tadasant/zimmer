@@ -103,11 +103,27 @@ module Mcp
       # Config regeneration is deferred to the next prepare/unarchive for all
       # four, so an archived session picks the new set up when it is next
       # prepared. See the service for why that is the policy everywhere.
+      # `restricted_refusal` is the guard's own text, and it lives on the table
+      # rather than in the method body on purpose: the dispatch reads this table,
+      # so a future tidy-up that routes all four actions through one `when` keeps
+      # the agent-root MCP lock instead of silently dropping it.
       CATALOG_LIST_FIELDS = {
-        "change_mcp_servers" => { attribute: :mcp_servers, param: "mcp_servers" },
+        "change_mcp_servers" => {
+          attribute: :mcp_servers,
+          param: "mcp_servers",
+          restricted_refusal: "MCP servers are locked to the defaults configured for each allowed agent root."
+        },
         "change_skills" => { attribute: :catalog_skills, param: "skills" },
         "change_hooks" => { attribute: :catalog_hooks, param: "hooks" },
-        "change_plugins" => { attribute: :catalog_plugins, param: "plugins" }
+        # Plugins can bundle MCP servers (see Session#derive_mcp_servers_from_plugins),
+        # so on a restricted connection they are a bypass of the same agent-root MCP
+        # lock change_mcp_servers enforces. Skills and hooks carry no such server
+        # expansion, so only plugins inherit the guard.
+        "change_plugins" => {
+          attribute: :catalog_plugins,
+          param: "plugins",
+          restricted_refusal: "Plugins can add MCP servers, which are locked to the defaults configured for each allowed agent root."
+        }
       }.freeze
 
       description <<~DESC
@@ -121,11 +137,11 @@ module Mcp
         - **start_now**: Take a waiting session's next turn now instead of when the scheduler gets round to it — the tool half of the Ranked view's ⋮ menu entry. Reach for it when one session should not wait out the gate's deferred re-check, which can sit up to an hour out. It moves WHEN the turn is asked for and not WHETHER it is allowed: a spot session stays spot, so a window still over its target holds it again — `change_scheduling_class` to "priority" is what removes the gate. A session that has never run has its first turn enqueued, with the images and files it was created with. One that has run before with nothing queued is stranded rather than queued, and is refused with the error naming "follow_up" or "restart" instead; so is one asleep on a wake-up it has not reached, because a pause outranks the queue and it wakes on its own schedule.
         - **archive**: Archive a session (marks as completed). Refused when messages are still queued for the session, since archiving discards them — the error names them, and "force" overrides it deliberately.
         - **unarchive**: Restore an archived session to idle "needs_input" status
-        - **change_mcp_servers**: Update the MCP servers for a session (requires "mcp_servers" parameter; replaces the set)
+        - **change_mcp_servers**: Update the MCP servers for a session (requires "mcp_servers" parameter; replaces the set). Takes effect the next time the session's runtime config is prepared — its next turn, a restart, or an unarchive — never on an already-running process. If a newly selected server needs authorizing, the answer names it under "Needs authorization" and the session is moved to "failed" with failure_reason "oauth_required" so its page shows the Authorize buttons; a session that is currently running is left alone instead.
         - **change_model**: Update the model for a session (requires "model" parameter, e.g., "opus", "sonnet", "fable", "gpt-5.6-sol")
-        - **change_skills**: Update the catalog skills for a session (requires "skills" parameter; replaces the set). Invalid skill IDs are rejected.
-        - **change_hooks**: Update the catalog hooks for a session (requires "hooks" parameter; replaces the set). Invalid hook IDs are rejected.
-        - **change_plugins**: Update the catalog plugins for a session (requires "plugins" parameter; replaces the set). Invalid plugin IDs are rejected.
+        - **change_skills**: Update the catalog skills for a session (requires "skills" parameter; replaces the set). Invalid skill IDs are rejected. Takes effect on the session's next prepare.
+        - **change_hooks**: Update the catalog hooks for a session (requires "hooks" parameter; replaces the set). Invalid hook IDs are rejected. Takes effect on the session's next prepare.
+        - **change_plugins**: Update the catalog plugins for a session (requires "plugins" parameter; replaces the set). Invalid plugin IDs are rejected. Plugins can bundle MCP servers, so this carries the same next-prepare timing and the same OAuth handling as change_mcp_servers.
         - **change_goal**: Update the goal for a session (requires "goal" parameter; empty string clears it)
         - **change_auto_compact_window**: Update the context (auto-compact) window in tokens (requires "auto_compact_window"; applies on the next turn/restart)
         - **change_scheduling_class**: Move this one session between "spot" and "priority" (requires "scheduling_class"; null clears it back to derived). Optionally takes "precedence" (an absolute rank) or "place" (a symbolic one, e.g. "top_of_spot") to place it in the spot queue in the same call — which is what a demotion usually wants, since a demoted session otherwise keeps whatever rank it already had. "place": "top_of_spot" is what the web UI's Demote to spot button does. It applies whichever class you are moving the session to — precedence is carried on a priority session too, and is what a later demotion lands on.
@@ -231,9 +247,8 @@ module Mcp
         when "start_now" then start_now(find_session(args["session_id"]))
         when "archive" then archive(find_session(args["session_id"]), args)
         when "unarchive" then unarchive(find_session(args["session_id"]))
-        when "change_mcp_servers" then change_mcp_servers(find_session(args["session_id"]), args)
+        when *CATALOG_LIST_FIELDS.keys then change_catalog_list(find_session(args["session_id"]), action, args)
         when "change_model" then change_model(find_session(args["session_id"]), args)
-        when "change_skills", "change_hooks", "change_plugins" then change_catalog_list(find_session(args["session_id"]), action, args)
         when "change_goal" then change_goal(find_session(args["session_id"]), args)
         when "change_auto_compact_window" then change_auto_compact_window(find_session(args["session_id"]), args)
         when "change_scheduling_class" then change_scheduling_class(find_session(args["session_id"]), args)
@@ -614,15 +629,6 @@ module Mcp
         summary("Session Unarchived", session.reload, status_label: "New Status")
       end
 
-      def change_mcp_servers(session, args)
-        if context.restricted?
-          raise ToolError, "The \"change_mcp_servers\" action is not allowed when this connection is restricted to " \
-                           "specific agent roots. MCP servers are locked to the defaults configured for each allowed agent root."
-        end
-
-        change_catalog_list(session, "change_mcp_servers", args)
-      end
-
       def change_model(session, args)
         model = args["model"]
         unless model.is_a?(String) && model.present?
@@ -661,13 +667,9 @@ module Mcp
         attribute = spec[:attribute]
         param = spec[:param]
 
-        # Plugins can bundle MCP servers (see Session#derive_mcp_servers_from_plugins),
-        # so on a restricted connection they are a bypass of the same agent-root MCP
-        # lock change_mcp_servers enforces. Skills and hooks carry no such server
-        # expansion, so only plugins inherit the guard.
-        if action == "change_plugins" && context.restricted?
-          raise ToolError, "The \"change_plugins\" action is not allowed when this connection is restricted to " \
-                           "specific agent roots. Plugins can add MCP servers, which are locked to the defaults configured for each allowed agent root."
+        if spec[:restricted_refusal] && context.restricted?
+          raise ToolError, "The \"#{action}\" action is not allowed when this connection is restricted to " \
+                           "specific agent roots. #{spec[:restricted_refusal]}"
         end
 
         unless args[param].is_a?(Array)

@@ -98,9 +98,7 @@ module Mcp
     # This is the trigger-side view of Session::CATALOG_SELECTIONS — the same
     # bounds and the same catalog readers, minus `mcp_servers`, which a Trigger
     # carries under its own name and validates separately.
-    CATALOG_LISTS = Session::CATALOG_SELECTIONS.except(:mcp_servers)
-
-    MAX_CATALOG_ITEM_ID_LENGTH = Session::MAX_CATALOG_SELECTION_ID_LENGTH
+    CATALOG_LISTS = Session::CATALOG_SELECTIONS.except(:mcp_servers).freeze
 
     # Normalize and validate one catalog list: drop blanks, trim each id, and
     # reject any the catalog does not know — listing the valid options, so a
