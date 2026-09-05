@@ -4477,4 +4477,26 @@ class SessionTest < ActiveSupport::TestCase
     assert_nothing_raised { session.clear_mcp_oauth_reconnect! }
     assert_equal 99, session.reload.metadata["process_pid"]
   end
+
+  # Session declares the same four catalog-artifact columns as Trigger but does
+  # not heal — `air prepare` owns its scrub — so it carries no
+  # `unresolved_catalog_references` sidecar. The concern has to survive that:
+  # the "announce once" bookkeeping degrades to "announce every time" rather
+  # than raising on a column that is not there.
+  test "the catalog-reference heal works on a model with no bookkeeping sidecar" do
+    session = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code",
+      branch: "main", status: :waiting)
+    session.update_column(:mcp_servers, [ "keeper", "gone-server" ])
+    ServersConfig.stubs(:all).returns([ OpenStruct.new(name: "keeper") ])
+    ServersConfig.stubs(:exists?).with("keeper").returns(true)
+    ServersConfig.stubs(:exists?).with("gone-server").returns(false)
+    AlertService.stubs(:raise_alert)
+
+    resolvable = nil
+    assert_nothing_raised { resolvable = session.heal_catalog_references! }
+
+    assert_equal [ "keeper" ], resolvable[:mcp_servers]
+    assert_equal [ "keeper" ], session.resolvable_mcp_servers
+    assert_equal [ "keeper", "gone-server" ], session.reload.mcp_servers
+  end
 end

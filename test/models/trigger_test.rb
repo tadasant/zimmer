@@ -1665,8 +1665,11 @@ class TriggerTest < ActiveSupport::TestCase
     end
   end
 
-  # Self-healing stale MCP server tests
-  test "create_session! removes stale MCP servers and creates session with valid ones" do
+  # Fire-time reconciliation of the catalog-artifact columns.
+  #
+  # The policy these pin, in one line: the SESSION never receives a name the
+  # catalog cannot resolve, and the TRIGGER never loses one (zimmer#853).
+  test "create_session! spawns with the resolvable MCP servers and leaves the trigger's list alone" do
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo",
       default_branch: "main",
@@ -1686,12 +1689,14 @@ class TriggerTest < ActiveSupport::TestCase
     # Session should only have the valid server
     assert_equal [ "valid-server" ], session.mcp_servers
 
-    # Trigger should be updated in the database
+    # ...and the trigger should still name both, so the stale one can be remapped
     @trigger.reload
-    assert_equal [ "valid-server" ], @trigger.mcp_servers
+    assert_equal [ "valid-server", "stale-server" ], @trigger.mcp_servers
+    assert_equal({ "stale-server" => @trigger.unresolved_catalog_references["mcp_servers"]["stale-server"] },
+      @trigger.unresolved_catalog_references["mcp_servers"])
   end
 
-  test "create_session! removes all stale MCP servers and creates session with empty list" do
+  test "create_session! spawns with an empty server list when none of them resolve" do
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo",
       default_branch: "main",
@@ -1708,12 +1713,15 @@ class TriggerTest < ActiveSupport::TestCase
 
     session = @trigger.create_session!(prompt: "Test prompt")
 
-    # Session should have empty MCP servers
+    # The trigger still fires — losing every server degrades the session, it
+    # does not brick the trigger (zimmer#207, zimmer#834).
+    assert session.persisted?
     assert_equal [], session.mcp_servers
 
-    # Trigger should be updated in the database
+    # Nothing was taken off the trigger
     @trigger.reload
-    assert_equal [], @trigger.mcp_servers
+    assert_equal [ "stale-a", "stale-b" ], @trigger.mcp_servers
+    assert_equal %w[stale-a stale-b], @trigger.unresolved_catalog_references["mcp_servers"].keys.sort
   end
 
   test "create_session! does not modify MCP servers when all are valid" do
@@ -1756,42 +1764,137 @@ class TriggerTest < ActiveSupport::TestCase
 
     AlertService.expects(:raise_alert).never
 
-    @trigger.heal_catalog_references!
+    resolvable = @trigger.heal_catalog_references!
 
     @trigger.reload
     assert_equal [ "server-a" ], @trigger.mcp_servers
     assert_equal [ "skill-a" ], @trigger.catalog_skills
     assert_equal [ "hook-a" ], @trigger.catalog_hooks
     assert_equal [ "plugin-a" ], @trigger.catalog_plugins
+
+    # Nor is a deployment-wide catalog outage written down as per-row state...
+    assert_equal({}, @trigger.unresolved_catalog_references)
+    # ...and the fire is handed the column untouched rather than an empty list,
+    # so a spawn fails loudly on it instead of quietly dropping every server.
+    assert_equal [ "server-a" ], resolvable[:mcp_servers]
+    assert_equal [ "server-a" ], @trigger.resolvable_mcp_servers
   end
 
-  test "heal_catalog_references! strips the stale entry once the catalog resolves again" do
+  test "heal_catalog_references! filters the unresolvable entry once the catalog resolves again" do
     # The positive control for the guard above: same trigger, same stale names,
-    # a catalog that actually loaded.
+    # a catalog that actually loaded. The entry is filtered OUT of what a fire
+    # would spawn with, and left ON the row.
     @trigger.update_column(:mcp_servers, [ "server-a", "gone-server" ])
     ServersConfig.stubs(:all).returns([ OpenStruct.new(name: "server-a") ])
     ServersConfig.stubs(:exists?).with("server-a").returns(true)
     ServersConfig.stubs(:exists?).with("gone-server").returns(false)
     AlertService.stubs(:raise_alert)
 
-    @trigger.heal_catalog_references!
+    resolvable = @trigger.heal_catalog_references!
 
-    assert_equal [ "server-a" ], @trigger.reload.mcp_servers
+    assert_equal [ "server-a" ], resolvable[:mcp_servers]
+    assert_equal [ "server-a", "gone-server" ], @trigger.reload.mcp_servers
+    assert_equal [ "gone-server" ], @trigger.unresolved_catalog_references["mcp_servers"].keys
   end
 
-  test "the stale MCP server alert keeps its wording, source and dedup key" do
+  # The bookkeeping column exists for exactly this: preserving the reference
+  # without it would turn one alert into one per fire, forever.
+  test "an unresolvable reference is announced once, not on every fire" do
+    @trigger.update_column(:mcp_servers, [ "keeper", "gone-server" ])
+    ServersConfig.stubs(:exists?).with("keeper").returns(true)
+    ServersConfig.stubs(:exists?).with("gone-server").returns(false)
+
+    AlertService.expects(:raise_alert).once
+
+    3.times { @trigger.heal_catalog_references! }
+
+    assert_equal [ "keeper", "gone-server" ], @trigger.reload.mcp_servers
+  end
+
+  test "a second reference going unresolvable is announced even though the first already was" do
+    @trigger.update_column(:mcp_servers, [ "gone-a", "still-here" ])
+    ServersConfig.stubs(:exists?).with("gone-a").returns(false)
+    ServersConfig.stubs(:exists?).with("still-here").returns(true)
+
+    AlertService.expects(:raise_alert).twice
+
+    @trigger.heal_catalog_references!
+
+    # `still-here` now goes too — a second rename, days later.
+    ServersConfig.stubs(:exists?).with("still-here").returns(false)
+    @trigger.heal_catalog_references!
+
+    assert_equal %w[gone-a still-here], @trigger.reload.unresolved_catalog_references["mcp_servers"].keys.sort
+  end
+
+  # The other half of "kept, not deleted": the moment the catalog carries the
+  # name again — a reverted rename, a re-added artifact — the trigger is whole
+  # again with no edit, and a later disappearance announces afresh.
+  test "the bookkeeping clears when a reference resolves again, so a later loss announces again" do
+    @trigger.update_column(:mcp_servers, [ "flapper" ])
+    ServersConfig.stubs(:exists?).with("flapper").returns(false)
+    AlertService.expects(:raise_alert).twice
+
+    @trigger.heal_catalog_references!
+    assert_equal [ "flapper" ], @trigger.reload.unresolved_catalog_references["mcp_servers"].keys
+
+    ServersConfig.stubs(:exists?).with("flapper").returns(true)
+    resolvable = @trigger.heal_catalog_references!
+    assert_equal [ "flapper" ], resolvable[:mcp_servers], "the reference works again with no edit at all"
+    assert_equal({}, @trigger.reload.unresolved_catalog_references)
+
+    ServersConfig.stubs(:exists?).with("flapper").returns(false)
+    @trigger.heal_catalog_references!
+  end
+
+  # A degraded resolve serves a last-known-good tree that can predate a rename,
+  # so a name that is valid today can look unresolvable to this fire. Same call
+  # AirPrepareService#persist_scrubbed_catalog_skills makes.
+  test "a degraded catalog neither announces nor records, but still filters" do
+    @trigger.update_column(:mcp_servers, [ "keeper", "maybe-gone" ])
+    ServersConfig.stubs(:exists?).with("keeper").returns(true)
+    ServersConfig.stubs(:exists?).with("maybe-gone").returns(false)
+    AirCatalogService.stubs(:degraded?).returns(true)
+
+    AlertService.expects(:raise_alert).never
+
+    resolvable = @trigger.heal_catalog_references!
+
+    assert_equal [ "keeper" ], resolvable[:mcp_servers]
+    assert_equal({}, @trigger.reload.unresolved_catalog_references)
+    assert_equal [ "keeper", "maybe-gone" ], @trigger.mcp_servers
+  end
+
+  test "the bookkeeping drops a name the operator has taken off the trigger" do
+    @trigger.update_column(:mcp_servers, [ "gone-server" ])
+    ServersConfig.stubs(:exists?).with("gone-server").returns(false)
+    AlertService.stubs(:raise_alert)
+
+    @trigger.heal_catalog_references!
+    assert_equal [ "gone-server" ], @trigger.reload.unresolved_catalog_references["mcp_servers"].keys
+
+    @trigger.update_column(:mcp_servers, [])
+    @trigger.heal_catalog_references!
+
+    assert_equal({}, @trigger.reload.unresolved_catalog_references)
+  end
+
+  test "the unresolvable MCP server alert states its wording, source and dedup key" do
     @trigger.update_column(:mcp_servers, [ "keeper", "gone-server" ])
     ServersConfig.stubs(:exists?).with("keeper").returns(true)
     ServersConfig.stubs(:exists?).with("gone-server").returns(false)
 
     AlertService.expects(:raise_alert).with do |message, options|
-      assert_equal "Trigger self-healed: stale MCP server(s) removed", message
+      assert_equal "Trigger degraded: MCP server(s) missing from the catalog", message
       assert_equal "Trigger#create_session!", options[:source]
       assert_equal "trigger_stale_mcp_#{@trigger.id}", options[:dedup_key]
       assert_includes options[:details], "Trigger *#{@trigger.name}* (ID: #{@trigger.id})"
-      assert_includes options[:details], "• Removed: gone-server"
-      assert_includes options[:details], "• Remaining: keeper"
-      assert_includes options[:details], "The session will proceed with the remaining servers."
+      assert_includes options[:details], "• Unresolvable: gone-server"
+      assert_includes options[:details], "• Still resolving: keeper"
+      # The words that matter: an operator has to know the name is still there
+      # to remap, and which of the two repairs is theirs to choose.
+      assert_includes options[:details], "KEPT on the trigger — nothing has been deleted"
+      assert_includes options[:details], "If the server was RENAMED"
       assert_includes options[:details], "/triggers/#{@trigger.id}|View trigger in Zimmer>"
       true
     end.once
@@ -1799,7 +1902,7 @@ class TriggerTest < ActiveSupport::TestCase
     @trigger.heal_catalog_references!
   end
 
-  test "the stale hook and plugin alerts keep their derived titles and dedup keys" do
+  test "the hook and plugin alerts keep their derived titles and dedup keys" do
     # `dedup_noun` for these two is derived from the noun rather than declared,
     # and nothing else in the suite pins the strings it produces.
     @trigger.update_column(:catalog_hooks, [ "gone-hook" ])
@@ -1816,20 +1919,24 @@ class TriggerTest < ActiveSupport::TestCase
     @trigger.heal_catalog_references!
 
     assert_includes raised, [
-      "Trigger self-healed: stale catalog hook(s) removed",
+      "Trigger degraded: catalog hook(s) missing from the catalog",
       "Trigger#create_session!",
       "trigger_stale_hooks_#{@trigger.id}"
     ]
     assert_includes raised, [
-      "Trigger self-healed: stale catalog plugin(s) removed",
+      "Trigger degraded: catalog plugin(s) missing from the catalog",
       "Trigger#create_session!",
       "trigger_stale_plugins_#{@trigger.id}"
     ]
-    assert_equal [], @trigger.reload.catalog_hooks
-    assert_equal [], @trigger.catalog_plugins
+    # Every kind is preserved, not only MCP servers — the policy lives in the
+    # concern, so it is the same policy for all four declarations.
+    assert_equal [ "gone-hook" ], @trigger.reload.catalog_hooks
+    assert_equal [ "gone-plugin" ], @trigger.catalog_plugins
+    assert_equal [ "gone-hook" ], @trigger.unresolved_catalog_references["catalog_hooks"].keys
+    assert_equal [ "gone-plugin" ], @trigger.unresolved_catalog_references["catalog_plugins"].keys
   end
 
-  test "create_session! raises alert when stale MCP servers are removed" do
+  test "create_session! raises an alert when an MCP server stops resolving" do
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo",
       default_branch: "main",
@@ -1845,7 +1952,7 @@ class TriggerTest < ActiveSupport::TestCase
 
     # Verify AlertService is called with expected arguments
     AlertService.expects(:raise_alert).with(
-      "Trigger self-healed: stale MCP server(s) removed",
+      "Trigger degraded: MCP server(s) missing from the catalog",
       has_entries(
         source: "Trigger#create_session!",
         dedup_key: "trigger_stale_mcp_#{@trigger.id}"
@@ -1855,7 +1962,7 @@ class TriggerTest < ActiveSupport::TestCase
     @trigger.create_session!(prompt: "Test prompt")
   end
 
-  test "create_session! persists stale MCP server removal to database" do
+  test "create_session! does not rewrite the trigger's MCP servers, and records what it could not resolve" do
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo",
       default_branch: "main",
@@ -1873,10 +1980,63 @@ class TriggerTest < ActiveSupport::TestCase
 
     @trigger.create_session!(prompt: "Test prompt")
 
-    # Verify the database was updated (fresh load, not in-memory)
+    # Fresh load, not in-memory: the configuration column is untouched and the
+    # sidecar carries the two names with a first-seen timestamp each.
     db_trigger = Trigger.find(@trigger.id)
-    assert_equal [ "keeper" ], db_trigger.mcp_servers
+    assert_equal [ "keeper", "removed-1", "removed-2" ], db_trigger.mcp_servers
+    recorded = db_trigger.unresolved_catalog_references["mcp_servers"]
+    assert_equal %w[removed-1 removed-2], recorded.keys.sort
+    recorded.each_value { |seen_at| assert_not_nil Time.iso8601(seen_at) }
   end
+
+  # === zimmer#853 — the reproduction ===
+  #
+  # A catalog RENAME is what this path meets most often, and it arrives looking
+  # exactly like a deletion: the old slug simply stops resolving. Destroying the
+  # name on that reading makes the rename unrecoverable from the trigger's side.
+  test "create_session! keeps an unresolvable MCP server on the trigger and spawns without it" do
+    mock_agent_root = OpenStruct.new(url: "https://github.com/test/repo", default_branch: "main", subdirectory: nil)
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AlertService.stubs(:raise_alert)
+
+    # `slack-workspace` was renamed to `slack-zimmer` in the catalog on 2026-09-03.
+    ServersConfig.stubs(:exists?).with("keeper").returns(true)
+    ServersConfig.stubs(:exists?).with("slack-workspace").returns(false)
+    @trigger.update_column(:mcp_servers, [ "keeper", "slack-workspace" ])
+
+    session = @trigger.create_session!(prompt: "Test prompt")
+
+    assert_equal [ "keeper" ], session.mcp_servers,
+      "the spawned session must not carry a name the catalog cannot resolve"
+    assert_equal [ "keeper", "slack-workspace" ], @trigger.reload.mcp_servers,
+      "the trigger must still name the renamed server, or nothing can remap it afterwards"
+  end
+
+  # The reuse path syncs all four columns onto the session it follows up into,
+  # so it has to filter too — otherwise a reuse would push an unresolvable name
+  # onto a live session that the spawn path would have refused to hand it.
+  test "a reuse fire syncs only the resolvable MCP servers onto the session" do
+    mock_agent_root = OpenStruct.new(url: "https://github.com/test/repo", default_branch: "main", subdirectory: nil)
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+    AlertService.stubs(:raise_alert)
+
+    session = @trigger.create_session!(prompt: "First")
+    session.update_column(:status, Session.statuses[:needs_input])
+    @trigger.update!(reuse_session: true, last_session_id: session.id)
+
+    ServersConfig.stubs(:exists?).with("keeper").returns(true)
+    ServersConfig.stubs(:exists?).with("slack-workspace").returns(false)
+    @trigger.update_column(:mcp_servers, [ "keeper", "slack-workspace" ])
+
+    @trigger.create_session!(prompt: "Second")
+
+    assert_equal [ "keeper" ], session.reload.mcp_servers
+    assert_equal [ "keeper", "slack-workspace" ], @trigger.reload.mcp_servers
+  end
+
 
   # === Tests for reusable_session? including waiting state ===
 
@@ -2203,8 +2363,8 @@ class TriggerTest < ActiveSupport::TestCase
     assert_match(/no successor could be identified/, error.message)
   end
 
-  # Self-healing stale catalog skills tests
-  test "create_session! removes stale catalog skills and creates session" do
+  # Catalog skills: same policy, from the same concern.
+  test "create_session! spawns with the resolvable catalog skills and keeps the rest on the trigger" do
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo",
       default_branch: "main",
@@ -2220,15 +2380,15 @@ class TriggerTest < ActiveSupport::TestCase
 
     session = @trigger.create_session!(prompt: "Test prompt")
 
-    # Trigger should be updated in the database
+    # Trigger keeps both names
     @trigger.reload
-    assert_equal [ "valid-skill" ], @trigger.catalog_skills
+    assert_equal [ "valid-skill", "stale-skill" ], @trigger.catalog_skills
 
-    # Session should use the healed skills list
+    # Session only gets the one the catalog resolves
     assert_equal [ "valid-skill" ], session.catalog_skills
   end
 
-  test "create_session! alerts when stale catalog skills are removed" do
+  test "create_session! alerts when a catalog skill stops resolving" do
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo",
       default_branch: "main",
@@ -2242,7 +2402,7 @@ class TriggerTest < ActiveSupport::TestCase
     @trigger.update_column(:catalog_skills, [ "valid-skill", "gone-skill" ])
 
     AlertService.expects(:raise_alert).with(
-      "Trigger self-healed: stale catalog skill(s) removed",
+      "Trigger degraded: catalog skill(s) missing from the catalog",
       has_entries(
         source: "Trigger#create_session!",
         dedup_key: "trigger_stale_skills_#{@trigger.id}"
@@ -2252,8 +2412,8 @@ class TriggerTest < ActiveSupport::TestCase
     @trigger.create_session!(prompt: "Test prompt")
   end
 
-  # Self-healing stale catalog hooks tests
-  test "create_session! removes stale catalog hooks and creates session" do
+  # Catalog hooks: same policy, from the same concern.
+  test "create_session! spawns with the resolvable catalog hooks and keeps the rest on the trigger" do
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo",
       default_branch: "main",
@@ -2270,7 +2430,7 @@ class TriggerTest < ActiveSupport::TestCase
     session = @trigger.create_session!(prompt: "Test prompt")
 
     @trigger.reload
-    assert_equal [ "valid-hook" ], @trigger.catalog_hooks
+    assert_equal [ "valid-hook", "stale-hook" ], @trigger.catalog_hooks
     assert_equal [ "valid-hook" ], session.catalog_hooks
   end
 
@@ -2741,7 +2901,7 @@ class TriggerTest < ActiveSupport::TestCase
   end
 
   # Self-healing stale catalog plugins tests
-  test "create_session! removes stale catalog plugins and creates session" do
+  test "create_session! spawns with the resolvable catalog plugins and keeps the rest on the trigger" do
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo",
       default_branch: "main",
@@ -2758,7 +2918,7 @@ class TriggerTest < ActiveSupport::TestCase
     session = @trigger.create_session!(prompt: "Test prompt")
 
     @trigger.reload
-    assert_equal [ "valid-plugin" ], @trigger.catalog_plugins
+    assert_equal [ "valid-plugin", "stale-plugin" ], @trigger.catalog_plugins
     assert_equal [ "valid-plugin" ], session.catalog_plugins
   end
 
