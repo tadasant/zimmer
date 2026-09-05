@@ -215,8 +215,8 @@ dominant expense once several long sessions were alive at once
 
 `TranscriptRedactionCache` sits between `TranscriptSource#read` and the redactor and keeps the
 already-redacted prefix of each path, so a poll pays only for the new bytes. Measured against real
-session transcripts on this host: a 22.4 MB one went from **8.9 s to 69 ms** on a warm poll, a
-17.9 MB one from **3.5 s to 63 ms**, and in every case the incremental output's SHA-256 is identical
+session transcripts on this host: a 22.4 MB one went from **8.5 s to 34 ms** on a warm poll, a
+17.9 MB one from **2.8 s to 43 ms**, and in every case the incremental output's SHA-256 is identical
 to the full re-scan's.
 
 That is sound because redaction is **line-decomposable**: splitting the text at a newline and
