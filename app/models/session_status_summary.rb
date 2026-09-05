@@ -17,6 +17,7 @@
 # regenerated, no matter how many times the page is viewed.
 class SessionStatusSummary < ApplicationRecord
   include ActionView::RecordIdentifier
+  include BroadcastsThroughService
 
   belongs_to :session
   belongs_to :fork_session, class_name: "Session", optional: true
@@ -98,13 +99,12 @@ class SessionStatusSummary < ApplicationRecord
   # every other broadcast on this path: a rendering or cable failure must not
   # take down the job that produced the summary.
   def broadcast_panel_replacement
-    broadcast_replace_to(
-      "session_#{session_id}_status",
+    broadcaster.broadcast_partial(
+      action: :replace,
+      stream: "session_#{session_id}_status",
       target: "session_#{session_id}_status_panel",
       partial: "sessions/status_panel",
       locals: { agent_session: session }
     )
-  rescue => e
-    Rails.logger.error "[SessionStatusSummary] Broadcast failed for session #{session_id}: #{e.message}"
   end
 end
