@@ -2056,15 +2056,6 @@ class SessionsController < ApplicationController
     end
   end
 
-  MAX_MCP_SERVERS = 50
-  MAX_MCP_SERVER_NAME_LENGTH = 100
-  MAX_CATALOG_SKILLS = 100
-  MAX_CATALOG_SKILL_NAME_LENGTH = 100
-  MAX_CATALOG_HOOKS = 100
-  MAX_CATALOG_HOOK_NAME_LENGTH = 100
-  MAX_CATALOG_PLUGINS = 50
-  MAX_CATALOG_PLUGIN_ID_LENGTH = 100
-
   def toggle_push_notifications
     @session = find_session
 
@@ -2253,331 +2244,75 @@ class SessionsController < ApplicationController
     head :no_content
   end
 
+  # PATCH /sessions/:id/update_mcp_servers
+  #
+  # The four catalog-selection editors on the session page. Each one checks the
+  # parameter's shape, hands the operation to Sessions::UpdateCatalogSelection —
+  # which the REST and MCP surfaces call too — and renders the answer. The
+  # selection is persisted and takes effect on the session's next prepare; see
+  # the service for why nothing here regenerates the runtime config.
   def update_mcp_servers
     @session = find_session
+    return unless (result = apply_catalog_selection(:mcp_servers, params[:mcp_servers]))
 
-    # Get the new MCP servers list from params
-    mcp_servers = params[:mcp_servers] || []
-
-    # Ensure mcp_servers is an array
-    unless mcp_servers.is_a?(Array)
-      render json: { error: "mcp_servers must be an array" }, status: :unprocessable_entity
-      return
-    end
-
-    # Limit array size to prevent DoS
-    if mcp_servers.length > MAX_MCP_SERVERS
-      render json: { error: "Too many MCP servers (maximum #{MAX_MCP_SERVERS})" }, status: :unprocessable_entity
-      return
-    end
-
-    # Clean and validate entries
-    mcp_servers = mcp_servers.reject(&:blank?).map { |s| s.to_s.strip.first(MAX_MCP_SERVER_NAME_LENGTH) }
-
-    # Validate that all server names exist in the catalog
-    invalid_servers = mcp_servers.reject { |name| ServersConfig.exists?(name) }
-    if invalid_servers.any?
-      render json: { error: "Invalid MCP servers: #{invalid_servers.join(', ')}" }, status: :unprocessable_entity
-      return
-    end
-
-    result = with_db_retry do
-      old_servers = @session.mcp_servers || []
-
-      # Clearing the list has to be recorded as deliberate, or McpServerBackfill
-      # reads the empty column as an accident and restores the root's defaults
-      # the next time the config is regenerated.
-      @session.record_explicit_mcp_servers(mcp_servers)
-
-      if @session.update(mcp_servers: mcp_servers)
-        # Log the change
-        added = mcp_servers - old_servers
-        removed = old_servers - mcp_servers
-
-        # A deliberate removal is not an unexplained loss — forget its status so
-        # later config regenerations don't report it as one.
-        @session.forget_mcp_server_status!(removed)
-
-        changes = []
-        changes << "added: #{added.join(', ')}" if added.any?
-        changes << "removed: #{removed.join(', ')}" if removed.any?
-
-        if changes.any?
-          @session.logs.create!(
-            content: "MCP servers updated (#{changes.join('; ')})",
-            level: "info"
+    respond_to do |format|
+      format.turbo_stream do
+        # Re-render the metadata partial (desktop) and the mobile MCP partial in place,
+        # so the user's follow-up draft and other client state are preserved.
+        # The metadata partial includes the OAuth authorization buttons region, so the
+        # OAuth-required branch is also handled here without a full page reload.
+        locals = mcp_partials_locals(@session)
+        render turbo_stream: [
+          turbo_stream.replace(
+            "session_#{@session.id}_metadata",
+            partial: "sessions/session_metadata",
+            locals: locals
+          ),
+          turbo_stream.replace(
+            "session_#{@session.id}_mobile_mcp_servers",
+            partial: "sessions/mobile_mcp_servers",
+            locals: locals
           )
-        end
-        true
-      else
-        false
+        ]
       end
-    end
-
-    # Check if we already rendered (max retries exceeded)
-    return if performed?
-
-    if result
-      # Regenerate .mcp.json if the session has a working directory
-      regenerate_mcp_config_file(@session)
-
-      # Check for OAuth requirements on the saved servers
-      oauth_result = check_oauth_requirements_for_servers(@session, mcp_servers)
-
-      # If OAuth is required, update session metadata so the UI shows authorization buttons
-      if oauth_result[:servers_needing_oauth].any?
-        with_db_retry do
-          @session.reload
-          @session.update!(
-            metadata: (@session.metadata || {}).merge(
-              "failure_reason" => "oauth_required",
-              "oauth_required_servers" => oauth_result[:servers_needing_oauth]
-            )
-          )
-          # Transition to failed state so the OAuth UI shows
-          @session.fail! if @session.may_fail?
-        end
-
-        @session.logs.create!(
-          content: "OAuth authorization required for: #{oauth_result[:servers_needing_oauth].map { |s| s[:server_name] }.join(', ')}",
-          level: "warning"
-        )
-      elsif @session.metadata&.dig("failure_reason") == "oauth_required"
-        with_db_retry do
-          @session.reload
-          cleaned_metadata = (@session.metadata || {}).except("failure_reason", "oauth_required_servers")
-          @session.update!(metadata: cleaned_metadata)
-        end
+      format.json do
+        render json: {
+          success: true,
+          mcp_servers: result.values,
+          oauth_required: result.oauth_required?,
+          oauth_required_servers: result.servers_needing_oauth
+        }
       end
-
-      respond_to do |format|
-        format.turbo_stream do
-          # Re-render the metadata partial (desktop) and the mobile MCP partial in place,
-          # so the user's follow-up draft and other client state are preserved.
-          # The metadata partial includes the OAuth authorization buttons region, so the
-          # OAuth-required branch is also handled here without a full page reload.
-          locals = mcp_partials_locals(@session)
-          render turbo_stream: [
-            turbo_stream.replace(
-              "session_#{@session.id}_metadata",
-              partial: "sessions/session_metadata",
-              locals: locals
-            ),
-            turbo_stream.replace(
-              "session_#{@session.id}_mobile_mcp_servers",
-              partial: "sessions/mobile_mcp_servers",
-              locals: locals
-            )
-          ]
-        end
-        format.json do
-          render json: {
-            success: true,
-            mcp_servers: mcp_servers,
-            oauth_required: oauth_result[:servers_needing_oauth].any?,
-            oauth_required_servers: oauth_result[:servers_needing_oauth]
-          }
-        end
-      end
-    else
-      render json: { error: @session.errors.full_messages.join(", ") }, status: :unprocessable_entity
     end
   end
 
   # PATCH /sessions/:id/update_catalog_skills
-  # Update catalog skills for a session via the web UI.
   def update_catalog_skills
     @session = find_session
+    return unless (result = apply_catalog_selection(:catalog_skills, params[:catalog_skills]))
 
-    catalog_skills = params[:catalog_skills] || []
-
-    unless catalog_skills.is_a?(Array)
-      render json: { error: "catalog_skills must be an array" }, status: :unprocessable_entity
-      return
-    end
-
-    if catalog_skills.length > MAX_CATALOG_SKILLS
-      render json: { error: "Too many skills (maximum #{MAX_CATALOG_SKILLS})" }, status: :unprocessable_entity
-      return
-    end
-
-    catalog_skills = catalog_skills.reject(&:blank?).map { |s| s.to_s.strip.first(MAX_CATALOG_SKILL_NAME_LENGTH) }
-
-    invalid_skills = catalog_skills.reject { |name| SkillsConfig.exists?(name) }
-    if invalid_skills.any?
-      render json: { error: "Invalid catalog skills: #{invalid_skills.join(', ')}" }, status: :unprocessable_entity
-      return
-    end
-
-    result = with_db_retry do
-      old_skills = @session.catalog_skills || []
-
-      if @session.update(catalog_skills: catalog_skills)
-        added = catalog_skills - old_skills
-        removed = old_skills - catalog_skills
-
-        changes = []
-        changes << "added: #{added.join(', ')}" if added.any?
-        changes << "removed: #{removed.join(', ')}" if removed.any?
-
-        if changes.any?
-          @session.logs.create!(
-            content: "Catalog skills updated (#{changes.join('; ')})",
-            level: "info"
-          )
-        end
-        true
-      else
-        false
-      end
-    end
-
-    return if performed?
-
-    if result
-      render json: { success: true, catalog_skills: catalog_skills }
-    else
-      render json: { error: @session.errors.full_messages.join(", ") }, status: :unprocessable_entity
-    end
+    render json: { success: true, catalog_skills: result.values }
   end
 
   # PATCH /sessions/:id/update_catalog_hooks
   def update_catalog_hooks
     @session = find_session
+    return unless (result = apply_catalog_selection(:catalog_hooks, params[:catalog_hooks]))
 
-    catalog_hooks = params[:catalog_hooks] || []
-
-    unless catalog_hooks.is_a?(Array)
-      render json: { error: "catalog_hooks must be an array" }, status: :unprocessable_entity
-      return
-    end
-
-    if catalog_hooks.length > MAX_CATALOG_HOOKS
-      render json: { error: "Too many hooks (maximum #{MAX_CATALOG_HOOKS})" }, status: :unprocessable_entity
-      return
-    end
-
-    catalog_hooks = catalog_hooks.reject(&:blank?).map { |s| s.to_s.strip.first(MAX_CATALOG_HOOK_NAME_LENGTH) }
-
-    invalid_hooks = catalog_hooks.reject { |name| HooksConfig.exists?(name) }
-    if invalid_hooks.any?
-      render json: { error: "Invalid catalog hooks: #{invalid_hooks.join(', ')}" }, status: :unprocessable_entity
-      return
-    end
-
-    result = with_db_retry do
-      old_hooks = @session.catalog_hooks || []
-
-      if @session.update(catalog_hooks: catalog_hooks)
-        added = catalog_hooks - old_hooks
-        removed = old_hooks - catalog_hooks
-
-        changes = []
-        changes << "added: #{added.join(', ')}" if added.any?
-        changes << "removed: #{removed.join(', ')}" if removed.any?
-
-        if changes.any?
-          @session.logs.create!(
-            content: "Catalog hooks updated (#{changes.join('; ')})",
-            level: "info"
-          )
-        end
-        true
-      else
-        false
-      end
-    end
-
-    return if performed?
-
-    if result
-      render json: { success: true, catalog_hooks: catalog_hooks }
-    else
-      render json: { error: @session.errors.full_messages.join(", ") }, status: :unprocessable_entity
-    end
+    render json: { success: true, catalog_hooks: result.values }
   end
 
   # PATCH /sessions/:id/update_catalog_plugins
   def update_catalog_plugins
     @session = find_session
+    return unless (result = apply_catalog_selection(:catalog_plugins, params[:catalog_plugins]))
 
-    catalog_plugins = params[:catalog_plugins] || []
-
-    unless catalog_plugins.is_a?(Array)
-      render json: { error: "catalog_plugins must be an array" }, status: :unprocessable_entity
-      return
-    end
-
-    if catalog_plugins.length > MAX_CATALOG_PLUGINS
-      render json: { error: "Too many plugins (maximum #{MAX_CATALOG_PLUGINS})" }, status: :unprocessable_entity
-      return
-    end
-
-    catalog_plugins = catalog_plugins.reject(&:blank?).map { |s| s.to_s.strip.first(MAX_CATALOG_PLUGIN_ID_LENGTH) }
-
-    invalid_plugins = catalog_plugins.reject { |id| PluginsConfig.exists?(id) }
-    if invalid_plugins.any?
-      render json: { error: "Invalid catalog plugins: #{invalid_plugins.join(', ')}" }, status: :unprocessable_entity
-      return
-    end
-
-    result = with_db_retry do
-      old_plugins = @session.catalog_plugins || []
-
-      if @session.update(catalog_plugins: catalog_plugins)
-        added = catalog_plugins - old_plugins
-        removed = old_plugins - catalog_plugins
-
-        changes = []
-        changes << "added: #{added.join(', ')}" if added.any?
-        changes << "removed: #{removed.join(', ')}" if removed.any?
-
-        if changes.any?
-          @session.logs.create!(
-            content: "Catalog plugins updated (#{changes.join('; ')})",
-            level: "info"
-          )
-        end
-        true
-      else
-        false
-      end
-    end
-
-    return if performed?
-
-    if result
-      regenerate_mcp_config_file(@session)
-
-      oauth_result = check_oauth_requirements(@session)
-
-      if oauth_result[:servers_needing_oauth].any?
-        with_db_retry do
-          @session.reload
-          @session.update!(
-            metadata: (@session.metadata || {}).merge(
-              "failure_reason" => "oauth_required",
-              "oauth_required_servers" => oauth_result[:servers_needing_oauth]
-            )
-          )
-          @session.fail! if @session.may_fail?
-        end
-
-        @session.logs.create!(
-          content: "OAuth authorization required for: #{oauth_result[:servers_needing_oauth].map { |s| s[:server_name] }.join(', ')}",
-          level: "warning"
-        )
-      end
-
-      render json: {
-        success: true,
-        catalog_plugins: catalog_plugins,
-        oauth_required: oauth_result[:servers_needing_oauth].any?,
-        oauth_required_servers: oauth_result[:servers_needing_oauth]
-      }
-    else
-      render json: { error: @session.errors.full_messages.join(", ") }, status: :unprocessable_entity
-    end
+    render json: {
+      success: true,
+      catalog_plugins: result.values,
+      oauth_required: result.oauth_required?,
+      oauth_required_servers: result.servers_needing_oauth
+    }
   end
 
   # PATCH /sessions/:id/update_model
@@ -3319,87 +3054,6 @@ class SessionsController < ApplicationController
   #
   # @param session [Session] The session to check
   # @return [Hash] { servers_needing_oauth: Array<Hash> }
-  def check_oauth_requirements(session)
-    result = { servers_needing_oauth: [] }
-    return result if session.user_selected_mcp_servers.blank?
-
-    working_directory = session.metadata&.dig("working_directory")
-    return result unless working_directory.present?
-
-    # Use the same logic as AgentSessionJob#check_and_inject_oauth_credentials
-    injector = McpOauthCredentialInjector.new(session, working_directory: working_directory)
-    status = injector.check_credentials_status
-
-    return result if status.empty?
-
-    oauth_service = McpOauthService.new
-
-    status.each do |server_name, server_status|
-      # Skip servers that already have valid credentials
-      next if server_status[:has_credential] && server_status[:credential_valid]
-
-      server_url = server_status[:server_url]
-      next unless server_url.present?
-
-      if server_status[:requires_reauth]
-        result[:servers_needing_oauth] << {
-          server_name: server_name,
-          server_url: server_url,
-          credential_key: server_status[:credential_key],
-          preregistered_oauth: server_status[:preregistered_oauth_config]
-        }
-        next
-      end
-
-      # If pre-registered OAuth config exists, OAuth is required
-      if server_status[:has_preregistered_oauth]
-        result[:servers_needing_oauth] << {
-          server_name: server_name,
-          server_url: server_url,
-          credential_key: server_status[:credential_key],
-          preregistered_oauth: server_status[:preregistered_oauth_config]
-        }
-        next
-      end
-
-      # Otherwise, probe the server to check if OAuth is required. Pass through the
-      # statically-configured client (catalog `oauth` block) so the resolved metadata
-      # carries the pre-registered client rather than the fallback literal, and the
-      # configured redirect so any registration this probe performs names the redirect
-      # the authorization flow will actually send.
-      begin
-        catalog_server = ServersConfig.find(server_name)
-        requirement = oauth_service.check_oauth_requirement(
-          server_url,
-          configured_client_id: catalog_server&.oauth_client_id,
-          configured_client_secret: catalog_server&.oauth_client_secret,
-          configured_redirect_uri: catalog_server&.oauth_redirect_uri
-        )
-        if requirement.required
-          result[:servers_needing_oauth] << {
-            server_name: server_name,
-            server_url: server_url,
-            credential_key: server_status[:credential_key],
-            oauth_metadata: requirement.metadata
-          }
-        end
-      rescue => e
-        Rails.logger.warn "Failed to check OAuth for '#{server_name}': #{e.message}"
-        # Don't block on probe failures
-      end
-    end
-
-    result
-  end
-
-  def check_oauth_requirements_for_servers(session, mcp_servers)
-    original_mcp_servers = session.mcp_servers
-    session.mcp_servers = mcp_servers
-    check_oauth_requirements(session)
-  ensure
-    session.mcp_servers = original_mcp_servers
-  end
-
   # Mark all unread notifications for a session as read
   #
   # Called when a user visits a session page directly (HTML request) to mark
@@ -3461,6 +3115,30 @@ class SessionsController < ApplicationController
     end
   end
 
+  # Run one catalog-selection change and render the failure branch if there is
+  # one. Returns the Result on success and nil once it has rendered, so an
+  # action reads `return unless (result = apply_catalog_selection(...))`.
+  def apply_catalog_selection(attribute, values)
+    label = Session::CATALOG_SELECTIONS.fetch(attribute)[:label]
+    unless values.nil? || values.is_a?(Array)
+      render json: { error: "#{attribute} must be an array" }, status: :unprocessable_entity
+      return nil
+    end
+
+    result = Sessions::UpdateCatalogSelection.call(
+      session: @session,
+      attribute: attribute,
+      values: values || [],
+      actor: :web
+    )
+    return result if result.ok?
+
+    Rails.logger.warn "[SessionsController##{action_name}] #{label} update rejected: #{result.error}"
+    status = result.error_code == :database_unavailable ? :service_unavailable : :unprocessable_entity
+    render json: { error: result.error }, status: status
+    nil
+  end
+
   # Locals for the partials re-rendered after an MCP server change.
   # Mirrors the select-data structure expected by _session_metadata.html.erb and
   # _mobile_mcp_servers.html.erb so they render with edit affordances intact.
@@ -3474,24 +3152,6 @@ class SessionsController < ApplicationController
       available_models: ModelCatalog.model_ids_for(session.agent_runtime),
       goals_for_select: GoalsConfig.all.map { |g| { id: g.id, name: g.name, description: g.description } }
     }
-  end
-
-  # Regenerate .mcp.json and skills in the session's working directory using AIR CLI.
-  # Called after MCP servers are updated to ensure Claude Code uses the new configuration.
-  def regenerate_mcp_config_file(session)
-    working_directory = session.metadata&.dig("working_directory")
-    return unless working_directory.present? && Dir.exist?(working_directory)
-
-    air_service = AirPrepareService.new(
-      session: session,
-      working_directory: working_directory
-    )
-    air_service.prepare!
-
-    Rails.logger.info "AIR prepare completed for session #{session.id} at #{working_directory}"
-  rescue => e
-    # Log the error but don't fail the request - the database was already updated
-    Rails.logger.error "Failed to run AIR prepare for session #{session.id}: #{e.message}"
   end
 
   def session_params
