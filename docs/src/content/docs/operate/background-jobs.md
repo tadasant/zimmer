@@ -1052,10 +1052,14 @@ as its WARN lines.
 
 Most short jobs run on `default`. Six kinds of work are deliberately isolated:
 
-- **`:agents`** — `AgentSessionJob`, capped at eight concurrent turns. A turn may own a nested
-  dev stack; production measured one at roughly 700 MB, so the previous sixteen-slot scheduler
-  could not fit its admitted work under the worker's 10 GiB cgroup. Excess turns stay as durable
-  queued rows and start as slots finish.
+- **`:agents`** — `AgentSessionJob`, capped at eight concurrent turns. The cap is set by what the
+  worker's 10 GiB cgroup can hold, not by the database, because each thread runs a whole agent
+  session. Eight is not a number that has been shown to fit: measured on production at eight, the
+  cgroup's unreclaimable `anon` peaks at 9.07 GiB against that 10 GiB, and the kernel has
+  OOM-killed the GoodJob worker itself ([#981](https://github.com/tadasant/zimmer/issues/981)).
+  Excess turns stay as durable queued rows and start as slots finish — which is the point, since a
+  queued row resumes and a killed worker takes every in-flight turn with it. The measurements and
+  the conditions for raising it are on `agents:` in `config/connection_budget.rb`.
 
 - **`:triggers`** — `AoEventTriggerJob` and `ScheduleTriggerJob`. They were previously starved on
   `default`; `AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD = 120s` exists because of it.
