@@ -127,9 +127,9 @@ module Mcp
       items
     end
 
-    # Sessions are addressable by numeric id or slug, matching the REST API's
-    # find_session behavior. `Session.locate` is that shared parsing; this wraps
-    # it only to turn a miss into the tool surface's own error.
+    # Sessions are addressable by numeric id or slug. `Session.locate` is the
+    # one implementation of that, shared with the web UI and the REST API; this
+    # wraps it only to turn a miss into the tool surface's own error.
     def find_session(identifier)
       raise ToolError, "Missing required parameter: session_id" if identifier.blank?
 

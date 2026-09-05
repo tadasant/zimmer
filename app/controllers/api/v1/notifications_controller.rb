@@ -98,7 +98,7 @@ class Api::V1::NotificationsController < Api::BaseController
       return
     end
 
-    session = Session.find(params[:session_id])
+    session = Session.locate!(params[:session_id])
 
     SendPushNotificationJob.perform_later(session.id, :custom_message, params[:message])
 
