@@ -24,6 +24,10 @@ export function csrfToken() {
 // Headers for a JSON request body. Anything sending FormData wants the browser
 // to set Content-Type itself (it carries the multipart boundary), so those call
 // sites use `csrfToken()` directly instead.
+//
+// `extra` sits between the two: it overrides Content-Type (which a caller may
+// legitimately want) but not the token, because a caller that clobbers the token
+// gets a 422 whose cause is nowhere near the header literal that caused it.
 export function csrfHeaders(extra = {}) {
-  return { "Content-Type": "application/json", "X-CSRF-Token": csrfToken(), ...extra }
+  return { "Content-Type": "application/json", ...extra, "X-CSRF-Token": csrfToken() }
 }
