@@ -282,20 +282,18 @@ class GithubSearchService
       # every agent spawned after it). Idempotent, and never raises — see the class.
       GhTokenProvisioner.ensure!
 
-      stdout, stderr, status = BoundedSubprocess.run(
-        [ "gh", "auth", "status", "--json", "hosts" ], timeout: AUTH_STATUS_TIMEOUT
-      )
+      result = GithubCli.run([ "gh", "auth", "status", "--json", "hosts" ], timeout: AUTH_STATUS_TIMEOUT)
 
-      # SubprocessStatus for the same reason as `search_issues` below: a nil status (child
-      # reaped before the waiter's waitpid) means the preflight produced no result. Unlike
-      # the old code we do not call that "unconfigured" — we never learned anything, so it
-      # is :unknown and the poller says so.
-      unless SubprocessStatus.success?(status)
+      # GithubCli for the same reason as `search_issues` below: a nil status (child reaped
+      # before the waiter's waitpid) and a hang that hit AUTH_STATUS_TIMEOUT both mean the
+      # preflight produced no result. Unlike the old code we do not call that
+      # "unconfigured" — we never learned anything, so it is :unknown and the poller says so.
+      unless result.success?
         return unknown_preflight("gh auth status failed before it could report " \
-                                 "(#{SubprocessStatus.describe_failure(status, stderr)})")
+                                 "(#{result.failure_description})")
       end
 
-      classify_auth_hosts(JSON.parse(stdout))
+      classify_auth_hosts(JSON.parse(result.stdout))
     rescue JSON::ParserError => e
       unknown_preflight("could not parse gh auth status output: #{e.message}")
     rescue Errno::ENOENT => e
@@ -304,9 +302,9 @@ class GithubSearchService
       # for a degradation that is not happening.
       PreflightResult.new(PREFLIGHT_UNCONFIGURED, "the gh CLI is not installed (#{e.message})")
     rescue => e
-      # BoundedSubprocess::TimeoutError lands here: a preflight that hangs against a
-      # degraded API. The tick still skips — a hang must not wedge the singleton — but it
-      # skips as :unknown, so nothing downstream claims the credential is missing.
+      # Anything GithubCli does not turn into a Result — it converts only the timeout.
+      # The tick still skips, as :unknown, so nothing downstream claims the credential
+      # is missing over a failure that says nothing about it.
       unknown_preflight("#{e.class}: #{e.message}")
     end
 
@@ -513,31 +511,31 @@ class GithubSearchService
       command.push("--field", "sort=#{sort}") if sort.present?
       command.push("--field", "order=#{order}") if order.present?
 
-      stdout, stderr, status = BoundedSubprocess.run(command, timeout: REQUEST_TIMEOUT)
+      result = GithubCli.run(command, timeout: REQUEST_TIMEOUT)
 
-      # A nil status is a failed gh call, not a success — see SubprocessStatus for the
-      # full mechanism. Routing it through the same SearchError the poller's per-condition
-      # rescue already handles beats crashing the tick with `undefined method 'success?' for nil`.
-      unless SubprocessStatus.success?(status)
-        message = "gh api search/issues failed: #{SubprocessStatus.describe_failure(status, stderr)}"
-        raise TransientRequestError, message if retryable_failure?(status, stderr)
-
-        raise SearchError, message
-      end
-
-      JSON.parse(stdout)
-    rescue BoundedSubprocess::TimeoutError => e
       # A hung request is a failure like any other network failure: surface it as a
-      # SearchError so the poller's per-condition rescue alerts and retries next tick,
-      # rather than letting the stall propagate as an unfamiliar error class.
+      # SearchError so the poller's per-condition rescue alerts and retries next tick.
       #
-      # Deliberately NOT retried, alone among the transient failures. This one has already
+      # Deliberately NOT retried, alone among the transient failures — which is why it is
+      # tested before `retryable_failure?` rather than folded into it. This one has already
       # spent REQUEST_TIMEOUT — a full 15s of the tick — and a repeat would spend another
       # 15s before it could even reach its backoff, so a hang would cost most of a minute
       # per condition rather than the seconds the retry budget is sized for. It is also the
       # failure a retry helps least: a stalled connection says the API is not answering at
       # all, and the next tick is a better time to ask than three seconds from now.
-      raise SearchError, "gh api search/issues timed out: #{e.message}"
+      raise SearchError, "gh api search/issues timed out: #{result.timeout_message}" if result.timed_out?
+
+      # A nil status is a failed gh call, not a success — see SubprocessStatus for the
+      # full mechanism. Routing it through the same SearchError the poller's per-condition
+      # rescue already handles beats crashing the tick with `undefined method 'success?' for nil`.
+      unless result.success?
+        message = "gh api search/issues failed: #{result.failure_description}"
+        raise TransientRequestError, message if retryable_failure?(result.status, result.stderr)
+
+        raise SearchError, message
+      end
+
+      JSON.parse(result.stdout)
     rescue JSON::ParserError => e
       # The zero-exit twin of the truncation `gh` reports as `unexpected end of JSON input`
       # (observed in production 2026-08-17T13:31:03Z): a body that arrived cut short parses

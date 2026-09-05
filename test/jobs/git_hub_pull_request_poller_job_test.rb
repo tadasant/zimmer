@@ -150,13 +150,13 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     success_status = mock
     success_status.stubs(:success?).returns(true)
 
-    Open3.stubs(:capture3).returns([ merged_response, "", success_status ])
+    BoundedSubprocess.stubs(:run).returns([ merged_response, "", success_status ])
     assert_equal "merged", job.send(:fetch_pr_status, "owner", "repo", "123")
 
-    Open3.stubs(:capture3).returns([ open_response, "", success_status ])
+    BoundedSubprocess.stubs(:run).returns([ open_response, "", success_status ])
     assert_equal "open", job.send(:fetch_pr_status, "owner", "repo", "123")
 
-    Open3.stubs(:capture3).returns([ closed_response, "", success_status ])
+    BoundedSubprocess.stubs(:run).returns([ closed_response, "", success_status ])
     assert_equal "closed", job.send(:fetch_pr_status, "owner", "repo", "123")
   end
 
@@ -251,7 +251,7 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
       { "bucket" => "pass", "state" => "SUCCESS" },
       { "bucket" => "pass", "state" => "SUCCESS" }
     ].to_json
-    Open3.stubs(:capture3).returns([ all_pass_response, "", success_status ])
+    BoundedSubprocess.stubs(:run).returns([ all_pass_response, "", success_status ])
     assert_equal "pass", job.send(:fetch_ci_status, "owner", "repo", "123")
 
     # One failing
@@ -259,7 +259,7 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
       { "bucket" => "pass", "state" => "SUCCESS" },
       { "bucket" => "fail", "state" => "FAILURE" }
     ].to_json
-    Open3.stubs(:capture3).returns([ one_fail_response, "", success_status ])
+    BoundedSubprocess.stubs(:run).returns([ one_fail_response, "", success_status ])
     assert_equal "fail", job.send(:fetch_ci_status, "owner", "repo", "123")
 
     # One pending
@@ -267,7 +267,7 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
       { "bucket" => "pass", "state" => "SUCCESS" },
       { "bucket" => "pending", "state" => "IN_PROGRESS" }
     ].to_json
-    Open3.stubs(:capture3).returns([ one_pending_response, "", success_status ])
+    BoundedSubprocess.stubs(:run).returns([ one_pending_response, "", success_status ])
     assert_equal "pending", job.send(:fetch_ci_status, "owner", "repo", "123")
 
     # Fail takes precedence over pending
@@ -275,7 +275,7 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
       { "bucket" => "fail", "state" => "FAILURE" },
       { "bucket" => "pending", "state" => "IN_PROGRESS" }
     ].to_json
-    Open3.stubs(:capture3).returns([ fail_and_pending_response, "", success_status ])
+    BoundedSubprocess.stubs(:run).returns([ fail_and_pending_response, "", success_status ])
     assert_equal "fail", job.send(:fetch_ci_status, "owner", "repo", "123")
   end
 
@@ -286,8 +286,9 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     success_status.stubs(:success?).returns(true)
     success_status.stubs(:exitstatus).returns(0)
 
-    # No checks
-    Open3.stubs(:capture3).returns([ "[]", "", success_status ])
+    # GitHub answered and the PR has no checks. nil, not CI_STATUS_UNKNOWN: this is a
+    # real reading, so the caller clears any recorded CI status.
+    BoundedSubprocess.stubs(:run).returns([ "[]", "", success_status ])
     assert_nil job.send(:fetch_ci_status, "owner", "repo", "123")
   end
 
@@ -301,19 +302,20 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     pending_response = [
       { "bucket" => "pending", "state" => "IN_PROGRESS" }
     ].to_json
-    Open3.stubs(:capture3).returns([ pending_response, "", pending_status ])
+    BoundedSubprocess.stubs(:run).returns([ pending_response, "", pending_status ])
     assert_equal "pending", job.send(:fetch_ci_status, "owner", "repo", "123")
   end
 
-  test "fetch_ci_status returns nil on command failure" do
+  test "fetch_ci_status reports a command failure as unknown, not as an absence of checks" do
     job = GitHubPullRequestPollerJob.new
 
     fail_status = mock
     fail_status.stubs(:success?).returns(false)
     fail_status.stubs(:exitstatus).returns(1)
 
-    Open3.stubs(:capture3).returns([ "", "Error", fail_status ])
-    assert_nil job.send(:fetch_ci_status, "owner", "repo", "123")
+    BoundedSubprocess.stubs(:run).returns([ "", "Error", fail_status ])
+    assert_equal GitHubPullRequestPollerJob::CI_STATUS_UNKNOWN,
+                 job.send(:fetch_ci_status, "owner", "repo", "123")
   end
 
   test "fetch_ci_status handles skipping status" do
@@ -328,7 +330,7 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
       { "bucket" => "skipping", "state" => "SKIPPED" },
       { "bucket" => "skipping", "state" => "SKIPPED" }
     ].to_json
-    Open3.stubs(:capture3).returns([ all_skipping_response, "", success_status ])
+    BoundedSubprocess.stubs(:run).returns([ all_skipping_response, "", success_status ])
     assert_equal "skipping", job.send(:fetch_ci_status, "owner", "repo", "123")
 
     # Mixed skipping and pass - should return pass
@@ -336,7 +338,7 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
       { "bucket" => "skipping", "state" => "SKIPPED" },
       { "bucket" => "pass", "state" => "SUCCESS" }
     ].to_json
-    Open3.stubs(:capture3).returns([ skipping_and_pass_response, "", success_status ])
+    BoundedSubprocess.stubs(:run).returns([ skipping_and_pass_response, "", success_status ])
     assert_equal "pass", job.send(:fetch_ci_status, "owner", "repo", "123")
   end
 
@@ -352,7 +354,7 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
       { "bucket" => "cancel", "state" => "CANCELLED" },
       { "bucket" => "pass", "state" => "SUCCESS" }
     ].to_json
-    Open3.stubs(:capture3).returns([ cancel_and_pass_response, "", success_status ])
+    BoundedSubprocess.stubs(:run).returns([ cancel_and_pass_response, "", success_status ])
     assert_equal "cancel", job.send(:fetch_ci_status, "owner", "repo", "123")
 
     # Pending takes precedence over cancel
@@ -360,7 +362,7 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
       { "bucket" => "pending", "state" => "IN_PROGRESS" },
       { "bucket" => "cancel", "state" => "CANCELLED" }
     ].to_json
-    Open3.stubs(:capture3).returns([ pending_and_cancel_response, "", success_status ])
+    BoundedSubprocess.stubs(:run).returns([ pending_and_cancel_response, "", success_status ])
     assert_equal "pending", job.send(:fetch_ci_status, "owner", "repo", "123")
 
     # Fail takes precedence over cancel
@@ -368,7 +370,7 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
       { "bucket" => "fail", "state" => "FAILURE" },
       { "bucket" => "cancel", "state" => "CANCELLED" }
     ].to_json
-    Open3.stubs(:capture3).returns([ fail_and_cancel_response, "", success_status ])
+    BoundedSubprocess.stubs(:run).returns([ fail_and_cancel_response, "", success_status ])
     assert_equal "fail", job.send(:fetch_ci_status, "owner", "repo", "123")
   end
 
@@ -668,12 +670,12 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
 
   # ---- Nil subprocess status (ZombieReaperJob reaped the gh child) ----
   #
-  # Open3.capture3 returns `[stdout, stderr, nil]` when something else reaps the child
-  # before its waiter thread does — in production, ZombieReaperJob's blanket
+  # A `gh` call returns `[stdout, stderr, nil]` when something else reaps the child
+  # before Open3's waiter thread does — in production, ZombieReaperJob's blanket
   # `Process.waitpid(-1, WNOHANG)` in this same worker. A nil status is a failed call.
 
   test "fetch_pr_status treats a nil status as a failure instead of raising" do
-    Open3.stubs(:capture3).returns([ "", "gh: connection reset", nil ])
+    BoundedSubprocess.stubs(:run).returns([ "", "gh: connection reset", nil ])
 
     job = GitHubPullRequestPollerJob.new
 
@@ -686,7 +688,7 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
   end
 
   test "fetch_ci_status treats a nil status as a failure, not as the exit-8 pending code" do
-    Open3.stubs(:capture3).returns([ "", "gh: connection reset", nil ])
+    BoundedSubprocess.stubs(:run).returns([ "", "gh: connection reset", nil ])
 
     job = GitHubPullRequestPollerJob.new
 
@@ -696,15 +698,139 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     end
 
     # The success? / exitstatus == 8 line dereferenced the nil twice. Neither branch may
-    # be taken: an unknown exit code is not the "checks pending" code.
-    assert_nil result
+    # be taken: an unknown exit code is not the "checks pending" code, and it is not
+    # "this PR has no checks" either.
+    assert_equal GitHubPullRequestPollerJob::CI_STATUS_UNKNOWN, result
   end
 
   test "fetch_ci_status still treats a real exit 8 as pending checks" do
     checks = [ { "bucket" => "pending", "state" => "IN_PROGRESS" } ].to_json
-    Open3.stubs(:capture3).returns([ checks, "", fake_process_status(exitstatus: 8) ])
+    BoundedSubprocess.stubs(:run).returns([ checks, "", fake_process_status(exitstatus: 8) ])
 
     assert_equal "pending", GitHubPullRequestPollerJob.new.send(:fetch_ci_status, "owner", "repo", "42")
+  end
+
+  # ---- Hung gh call (#458) ----
+  #
+  # A half-open connection to GitHub used to block this job's thread forever. Because
+  # the job is a `total_limit: 1` singleton, that wedged PR polling permanently with
+  # nothing raised and no watchdog to notice. Both `gh` calls now run under a deadline,
+  # and a timeout is an ordinary failed call: nil, logged, asked again next tick.
+
+  test "fetch_pr_status bounds its gh call and asks for the argv it means to run" do
+    BoundedSubprocess.expects(:run)
+      .with([ "gh", "pr", "view", "42", "--repo", "owner/repo", "--json", "state,mergedAt" ],
+            timeout: GitHubPullRequestPollerJob::PR_STATUS_TIMEOUT)
+      .returns([ { "state" => "OPEN", "mergedAt" => nil }.to_json, "", fake_process_status ])
+
+    assert_equal "open", GitHubPullRequestPollerJob.new.send(:fetch_pr_status, "owner", "repo", "42")
+  end
+
+  test "fetch_pr_status treats a timed-out gh call as a failure, never as a missing PR" do
+    BoundedSubprocess.stubs(:run).raises(
+      BoundedSubprocess::TimeoutError,
+      "command timed out after #{GitHubPullRequestPollerJob::PR_STATUS_TIMEOUT}s (process group killed): gh pr view"
+    )
+
+    result = nil
+    assert_nothing_raised do
+      result = GitHubPullRequestPollerJob.new.send(:fetch_pr_status, "owner", "repo", "42")
+    end
+
+    # nil is "we did not learn this PR's state" — poll_pr_statuses skips the PR on nil,
+    # so the recorded status is left alone and the next tick asks again. Any non-nil
+    # answer here would be this poller inventing a state it never read.
+    assert_nil result
+  end
+
+  test "poll_pr_statuses leaves a recorded status untouched when the gh call times out" do
+    @session_with_pr.update!(custom_metadata: {
+      "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ],
+      "github_pull_request_statuses" => { "https://github.com/owner/repo/pull/123" => "open" }
+    })
+
+    # `at_least_once` keeps this honest: if the poll ever stopped shelling out, the
+    # assertions below would pass vacuously.
+    BoundedSubprocess.expects(:run).at_least_once
+      .raises(BoundedSubprocess::TimeoutError, "command timed out after 20s (process group killed): gh pr view")
+
+    assert_nothing_raised do
+      GitHubPullRequestPollerJob.new.send(:poll_pr_statuses, @session_with_pr)
+    end
+
+    @session_with_pr.reload
+    assert_equal({ "https://github.com/owner/repo/pull/123" => "open" },
+                 @session_with_pr.custom_metadata["github_pull_request_statuses"])
+    assert_equal 0, @session_with_pr.enqueued_messages.count,
+      "a hung poll must not be mistaken for a merge"
+  end
+
+  test "fetch_ci_status bounds its gh call and asks for the argv it means to run" do
+    BoundedSubprocess.expects(:run)
+      .with([ "gh", "pr", "checks", "42", "--repo", "owner/repo", "--json", "bucket,state" ],
+            timeout: GitHubPullRequestPollerJob::CI_STATUS_TIMEOUT)
+      .returns([ [ { "bucket" => "pass", "state" => "SUCCESS" } ].to_json, "", fake_process_status ])
+
+    assert_equal "pass", GitHubPullRequestPollerJob.new.send(:fetch_ci_status, "owner", "repo", "42")
+  end
+
+  test "fetch_ci_status treats a timed-out gh call as a failure, not as the exit-8 pending code" do
+    BoundedSubprocess.stubs(:run).raises(
+      BoundedSubprocess::TimeoutError,
+      "command timed out after #{GitHubPullRequestPollerJob::CI_STATUS_TIMEOUT}s (process group killed): gh pr checks"
+    )
+
+    result = nil
+    assert_nothing_raised do
+      result = GitHubPullRequestPollerJob.new.send(:fetch_ci_status, "owner", "repo", "42")
+    end
+
+    # A timeout has no exit code at all, so the `exit_code == 8` branch must not be
+    # taken: a hang is not evidence that checks are pending. Nor is it evidence the PR
+    # has no checks — that is what CI_STATUS_UNKNOWN keeps separate from nil.
+    assert_equal GitHubPullRequestPollerJob::CI_STATUS_UNKNOWN, result
+  end
+
+  test "poll_pr_statuses keeps a recorded CI status when the checks call cannot be read" do
+    pr_url = "https://github.com/owner/repo/pull/123"
+    @session_with_pr.update!(custom_metadata: {
+      "github_pull_request_urls" => [ pr_url ],
+      "github_pull_request_statuses" => { pr_url => "open" },
+      "github_pull_request_ci_statuses" => { pr_url => "fail" }
+    })
+
+    # The PR reads open; only the CI call hangs. Clearing the recorded "fail" here would
+    # publish "this PR has no checks" off the back of a call we never completed — the UI
+    # reads this key, so a red PR would silently stop looking red.
+    job = GitHubPullRequestPollerJob.new
+    job.stubs(:fetch_pr_status).returns("open")
+    BoundedSubprocess.expects(:run).at_least_once
+      .raises(BoundedSubprocess::TimeoutError, "command timed out after 30s (process group killed): gh pr checks")
+
+    assert_nothing_raised { job.send(:poll_pr_statuses, @session_with_pr) }
+
+    @session_with_pr.reload
+    assert_equal({ pr_url => "fail" }, @session_with_pr.custom_metadata["github_pull_request_ci_statuses"])
+  end
+
+  test "poll_pr_statuses clears a recorded CI status when GitHub says there are no checks" do
+    pr_url = "https://github.com/owner/repo/pull/123"
+    @session_with_pr.update!(custom_metadata: {
+      "github_pull_request_urls" => [ pr_url ],
+      "github_pull_request_statuses" => { pr_url => "open" },
+      "github_pull_request_ci_statuses" => { pr_url => "fail" }
+    })
+
+    # The other side of the distinction: an answered call with an empty checks array is
+    # a real reading, and it still clears.
+    job = GitHubPullRequestPollerJob.new
+    job.stubs(:fetch_pr_status).returns("open")
+    BoundedSubprocess.stubs(:run).returns([ "[]", "", fake_process_status(exitstatus: 0) ])
+
+    job.send(:poll_pr_statuses, @session_with_pr)
+
+    @session_with_pr.reload
+    assert_equal({}, @session_with_pr.custom_metadata["github_pull_request_ci_statuses"])
   end
 
   class TestJobWithCIStatusPending < GitHubPullRequestPollerJob

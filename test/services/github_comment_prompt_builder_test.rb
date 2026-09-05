@@ -378,8 +378,8 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
 
     builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
 
-    # Mock the Open3.capture3 call to return private=false (i.e., public repo)
-    Open3.stub(:capture3, [ "false\n", "", mock_success_status ]) do
+    # Mock the gh call to return private=false (i.e., public repo)
+    BoundedSubprocess.stub(:run, [ "false\n", "", mock_success_status ]) do
       assert builder.send(:public_repo?)
     end
   end
@@ -393,8 +393,8 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
 
     builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
 
-    # Mock the Open3.capture3 call to return private=true
-    Open3.stub(:capture3, [ "true\n", "", mock_success_status ]) do
+    # Mock the gh call to return private=true
+    BoundedSubprocess.stub(:run, [ "true\n", "", mock_success_status ]) do
       refute builder.send(:public_repo?)
     end
   end
@@ -408,9 +408,9 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
 
     builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
 
-    # Mock the Open3.capture3 call to return failure
+    # Mock the gh call to return failure
     # When API fails, treat as public to require approval (safer during outages)
-    Open3.stub(:capture3, [ "", "Not Found", mock_failure_status ]) do
+    BoundedSubprocess.stub(:run, [ "", "Not Found", mock_failure_status ]) do
       assert builder.send(:public_repo?)
     end
   end
@@ -425,12 +425,12 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
     builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
 
     call_count = 0
-    mock_capture3 = ->(* args) {
+    mock_gh = ->(*_args, **_kwargs) {
       call_count += 1
       [ "false\n", "", mock_success_status ]
     }
 
-    Open3.stub(:capture3, mock_capture3) do
+    BoundedSubprocess.stub(:run, mock_gh) do
       # Call twice
       result1 = builder.send(:public_repo?)
       result2 = builder.send(:public_repo?)
@@ -478,9 +478,9 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
 
     builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
 
-    # Mock Open3.capture3 to raise an exception
+    # Mock the gh call to raise an exception
     # When exception occurs, treat as public to require approval (safer during outages)
-    Open3.stub(:capture3, ->(*) { raise StandardError, "Connection failed" }) do
+    BoundedSubprocess.stub(:run, ->(*) { raise StandardError, "Connection failed" }) do
       assert builder.send(:public_repo?)
     end
   end
@@ -500,7 +500,7 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
       raise StandardError, "Connection failed"
     }
 
-    Open3.stub(:capture3, mock_capture3_raise) do
+    BoundedSubprocess.stub(:run, mock_capture3_raise) do
       # Call twice - first raises exception, second should use cached result
       result1 = builder.send(:public_repo?)
       result2 = builder.send(:public_repo?)
@@ -528,7 +528,7 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
       [ "false\n", "", mock_success_status ]  # Would return public
     }
 
-    Open3.stub(:capture3, mock_capture3) do
+    BoundedSubprocess.stub(:run, mock_capture3) do
       refute builder.send(:public_repo?), "tadasant repos should be treated as trusted (no warning)"
       assert_equal 0, call_count, "API should not be called for trusted owners"
     end
@@ -551,7 +551,7 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
       [ "false\n", "", mock_success_status ]
     }
 
-    Open3.stub(:capture3, mock_capture3) do
+    BoundedSubprocess.stub(:run, mock_capture3) do
       refute builder.send(:public_repo?), "Trusted owner check should be case-insensitive"
       assert_equal 0, call_count, "API should not be called for trusted owners"
     end
@@ -574,7 +574,7 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
       [ "false\n", "", mock_success_status ]
     }
 
-    Open3.stub(:capture3, mock_capture3) do
+    BoundedSubprocess.stub(:run, mock_capture3) do
       refute builder.send(:public_repo?), "Trusted owner check should be case-insensitive for mixed case"
       assert_equal 0, call_count, "API should not be called for trusted owners"
     end
@@ -597,7 +597,7 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
       [ "false\n", "", mock_success_status ]  # Public repo
     }
 
-    Open3.stub(:capture3, mock_capture3) do
+    BoundedSubprocess.stub(:run, mock_capture3) do
       assert builder.send(:public_repo?), "Non-trusted public repos should show warning"
       assert_equal 1, call_count, "API should be called for non-trusted owners"
     end
@@ -611,13 +611,13 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
     )
 
     observed = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
-    Open3.stub(:capture3, [ "false\n", "", mock_success_status ]) do
+    BoundedSubprocess.stub(:run, [ "false\n", "", mock_success_status ]) do
       refute observed.actionable?
       refute observed.visibility_lookup_failed?
     end
 
     assumed = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
-    Open3.stub(:capture3, [ "", "HTTP 502", mock_failure_status ]) do
+    BoundedSubprocess.stub(:run, [ "", "HTTP 502", mock_failure_status ]) do
       refute assumed.actionable?
       assert assumed.visibility_lookup_failed?
     end
@@ -634,9 +634,83 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
 
     builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
 
-    Open3.stub(:capture3, ->(*) { flunk "should not check visibility for a trusted owner" }) do
+    BoundedSubprocess.stub(:run, ->(*) { flunk "should not check visibility for a trusted owner" }) do
       assert builder.actionable?
     end
+  end
+
+  # ---- Hung gh call (#458) ----
+  #
+  # This lookup runs inside GithubCommentPollerJob's tick, a `total_limit: 1` singleton,
+  # so an unbounded hang here wedged comment polling entirely. It is also the one call
+  # site whose failure branch is not free: it fails CLOSED, so a timeout has to stay a
+  # DEFERRAL — the comment must remain retryable, not be dropped as "public, leave it".
+
+  test "public_repo? bounds its gh call and asks for the argv it means to run" do
+    comment_info = build_comment_info_with_owner(
+      type: "pr",
+      body: "Test",
+      author: "someone",
+      owner: "otherowner",
+      repo: "my-project"
+    )
+
+    builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
+
+    seen = nil
+    recorder = ->(command, **kwargs) {
+      seen = [ command, kwargs ]
+      [ "true\n", "", mock_success_status ]
+    }
+
+    BoundedSubprocess.stub(:run, recorder) do
+      refute builder.send(:public_repo?)
+    end
+
+    assert_equal [ "gh", "api", "repos/otherowner/my-project", "--jq", ".private" ], seen.first
+    assert_equal GithubCommentPromptBuilder::VISIBILITY_TIMEOUT, seen.last[:timeout]
+  end
+
+  test "public_repo? treats a timed-out lookup as an unanswered one, so the comment is deferred" do
+    comment_info = build_comment_info_with_owner(
+      type: "pr",
+      body: "Test",
+      author: "someone",
+      owner: "otherowner",
+      repo: "my-project"
+    )
+
+    builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
+    timeout = ->(*) { raise BoundedSubprocess::TimeoutError, "command timed out after 10s (process group killed)" }
+
+    # Both levels: the failed-call branch warns, the exception handler errors, and the
+    # whole point of the assertions below is which of the two ran.
+    logged = []
+    collect = ->(message) { logged << message.to_s }
+    Rails.logger.stub(:warn, collect) do
+      Rails.logger.stub(:error, collect) do
+        BoundedSubprocess.stub(:run, timeout) do
+          # Fails closed: assume public, so nothing is done publicly on a repo we could
+          # not check. But visibility_lookup_failed? is what makes that an assumption
+          # rather than an observation, and it is what keeps the comment retryable on
+          # later polls.
+          assert builder.send(:public_repo?)
+          assert builder.visibility_lookup_failed?
+        end
+      end
+    end
+
+    # The two assertions above alone would pass on the unbounded code too: the blanket
+    # `rescue StandardError` below #public_repo? already set the flag, cached true and
+    # returned true for any exception. What separates the branches is WHICH branch ran,
+    # and the log line is the only thing that says. A timeout must now reach the ordinary
+    # "the lookup failed" branch — not the exception handler.
+    failed_call = logged.find { |line| line.include?("Failed to check repo visibility") }
+    assert failed_call, "a hung lookup must take the failed-call branch, not the exception " \
+                        "handler; got: #{logged.inspect}"
+    assert_includes failed_call, "TimeoutError"
+    assert logged.none? { |line| line.include?("Exception checking repo visibility") },
+      "the timeout must not reach the blanket exception handler, got: #{logged.inspect}"
   end
 
   private
