@@ -32,20 +32,11 @@ require "automated_prompts"
 #
 class SigtermRetryService
   include DatabaseRetry
+  include RespawnScaffold
 
   # The SIGTERM budget: how many attempts, which metadata keys they live in, and when
   # a stable process wins them back. Declared once in RetryBudget.
   BUDGET = RetryBudget::SIGTERM
-
-  # Interval (seconds) for checking session status during long delays
-  # For delays > 30s, we check status periodically to avoid wasting time
-  # if the user archives/corrupts the session during the wait
-  STATUS_CHECK_INTERVAL = 10
-
-  # Minimum time (seconds) a process must run before retry is considered successful.
-  # This threshold ensures we don't count a transient spawn as success - the process
-  # must demonstrate stability by running continuously for this duration.
-  SUCCESS_THRESHOLD = 5
 
   attr_reader :session, :cli_adapter, :process_manager, :log_buffer, :rate_limit_tracker, :file_system
 
@@ -113,6 +104,9 @@ class SigtermRetryService
   end
 
   private
+
+  # The noun the shared respawn log sentences interpolate.
+  def recovery_label = "SIGTERM retry"
 
   # Spawn a new process and verify it stays running
   # @param working_directory [String] The working directory
@@ -226,85 +220,6 @@ class SigtermRetryService
     log_buffer.flush
     @logger.info("Error during SIGTERM retry", retry_attempt: retry_attempt, error: e.message)
     attempt_retry(working_directory)
-  end
-
-  # Verify a process stays running for the success threshold
-  #
-  # We check every 0.5s to detect failures quickly, but only return success
-  # after the full threshold period to ensure the process is stable and not
-  # just experiencing a transient spawn before crashing.
-  #
-  # @param pid [Integer] Process ID to verify
-  # @param retry_attempt [Integer] Current retry attempt number
-  # @return [Boolean] true if process is verified running, false if it died
-  def verify_process_running(pid, retry_attempt)
-    process_start_time = Time.current
-
-    loop do
-      elapsed = Time.current - process_start_time
-
-      unless process_manager.running?(pid)
-        add_log(
-          "Retry attempt #{retry_attempt} failed - process #{pid} died after #{elapsed.round(1)}s",
-          level: "warning"
-        )
-        return false
-      end
-
-      return true if elapsed >= SUCCESS_THRESHOLD
-
-      sleep(0.5)
-    end
-  end
-
-  # Wait for the specified delay, checking session status periodically for long delays
-  #
-  # For delays > 30s, we check session status every STATUS_CHECK_INTERVAL seconds
-  # to avoid wasting time if the user archives/corrupts the session during the wait.
-  #
-  # @param delay [Integer] Total delay in seconds
-  # @return [Symbol, nil] :aborted if session state changed, nil otherwise
-  def wait_with_status_checks(delay)
-    return nil unless delay.positive?
-
-    # For short delays, just sleep without status checks
-    if delay <= 30
-      sleep(delay)
-      return check_session_status
-    end
-
-    # For long delays, check status periodically
-    remaining = delay
-    while remaining.positive?
-      sleep_time = [ remaining, STATUS_CHECK_INTERVAL ].min
-      sleep(sleep_time)
-      remaining -= sleep_time
-
-      # Check session status periodically
-      abort_result = check_session_status
-      return abort_result if abort_result == :aborted
-    end
-
-    nil
-  end
-
-  # Check if session is still running
-  # @return [Symbol, nil] :aborted if session state changed, nil if still running
-  def check_session_status
-    session.reload
-    unless session.running?
-      add_log(
-        "Session state changed to #{session.status} during retry delay, aborting retry",
-        level: "warning"
-      )
-      return :aborted
-    end
-    nil
-  end
-
-  # Add log entry via log buffer
-  def add_log(content, level: "info")
-    log_buffer.add(content, level: level)
   end
 
   # Check if a valid conversation exists in the transcript

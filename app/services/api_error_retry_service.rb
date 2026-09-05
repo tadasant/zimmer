@@ -51,6 +51,7 @@ require "automated_prompts"
 #
 class ApiErrorRetryService
   include DatabaseRetry
+  include RespawnScaffold
 
   # The API-error budget: attempts, metadata keys, and the stable stretch that wins
   # them back. Declared once in RetryBudget.
@@ -63,12 +64,6 @@ class ApiErrorRetryService
 
   # Maximum delay for a single retry (5 minutes)
   MAX_SINGLE_DELAY = 300
-
-  # Minimum time (seconds) a process must run before retry is considered successful
-  SUCCESS_THRESHOLD = 5
-
-  # Interval (seconds) for checking session status during long delays
-  STATUS_CHECK_INTERVAL = 10
 
   # Error patterns that indicate API server errors (transient, retryable)
   # These match various API error types from the Anthropic API that indicate
@@ -496,6 +491,9 @@ class ApiErrorRetryService
 
   private
 
+  # The noun the shared respawn log sentences interpolate.
+  def recovery_label = "API error retry"
+
   # Whether this error belongs to a classifier other than this service. Keeps the
   # "unclassified" signal honest — an ordinary compact recovery or auth recovery
   # must never be reported as an unknown failure mode.
@@ -668,71 +666,6 @@ class ApiErrorRetryService
     spawn_and_verify_retry(working_directory, retry_attempt)
   end
 
-  # Verify a process stays running for the success threshold
-  #
-  # @param pid [Integer] Process ID to verify
-  # @param retry_attempt [Integer] Current retry attempt number
-  # @return [Boolean] true if process is verified running, false if it died
-  def verify_process_running(pid, retry_attempt)
-    process_start_time = Time.current
-
-    loop do
-      elapsed = Time.current - process_start_time
-
-      unless process_manager.running?(pid)
-        add_log(
-          "API error retry attempt #{retry_attempt} failed - process #{pid} died after #{elapsed.round(1)}s",
-          level: "warning"
-        )
-        return false
-      end
-
-      return true if elapsed >= SUCCESS_THRESHOLD
-
-      sleep(0.5)
-    end
-  end
-
-  # Wait for the specified delay, checking session status periodically
-  #
-  # @param delay [Integer] Total delay in seconds
-  # @return [Symbol, nil] :aborted if session state changed, nil otherwise
-  def wait_with_status_checks(delay)
-    return nil unless delay.positive?
-
-    if delay <= 30
-      sleep(delay)
-      return check_session_status
-    end
-
-    # For long delays, check status periodically
-    remaining = delay
-    while remaining.positive?
-      sleep_time = [ remaining, STATUS_CHECK_INTERVAL ].min
-      sleep(sleep_time)
-      remaining -= sleep_time
-
-      abort_result = check_session_status
-      return abort_result if abort_result == :aborted
-    end
-
-    nil
-  end
-
-  # Check if session is still running
-  # @return [Symbol, nil] :aborted if session state changed, nil if still running
-  def check_session_status
-    session.reload
-    unless session.running?
-      add_log(
-        "Session state changed to #{session.status} during API error retry, aborting",
-        level: "warning"
-      )
-      return :aborted
-    end
-    nil
-  end
-
   # Find the transcript file path for the session
   def find_transcript_path(working_directory)
     source = TranscriptRuntime.source_for(session, file_system: file_system)
@@ -820,10 +753,5 @@ class ApiErrorRetryService
   # @return [Boolean] true if the error is an account usage limit
   def account_quota_limit?(message_text)
     message_text.match?(ACCOUNT_QUOTA_LIMIT_PATTERN)
-  end
-
-  # Add log entry via log buffer
-  def add_log(content, level: "info")
-    log_buffer.add(content, level: level)
   end
 end

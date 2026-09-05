@@ -84,6 +84,7 @@ require "automated_prompts"
 #   #         :aborted, or :not_applicable
 class AuthRecoveryService
   include DatabaseRetry
+  include RespawnScaffold
 
   # Maximum recovery attempts within CONSECUTIVE_WINDOW before giving up.
   MAX_RECOVERY_ATTEMPTS = 3
@@ -106,10 +107,6 @@ class AuthRecoveryService
   # by the time we re-spawn, so there is nothing to wait out — a brief pause just
   # lets filesystem writes settle.
   RETRY_DELAY = 2
-
-  # Minimum time (seconds) a re-spawned process must stay running before the
-  # recovery is considered successful.
-  SUCCESS_THRESHOLD = 5
 
   # The error TYPES Claude Code stamps on a transcript entry when a turn dies for
   # an authentication reason. This is the machine-readable half of the signature,
@@ -269,6 +266,9 @@ class AuthRecoveryService
   end
 
   private
+
+  # The noun the shared respawn log sentences interpolate.
+  def recovery_label = "auth recovery"
 
   # Shared recovery logic: check budget, resolve the identity against the pool,
   # wait briefly, then spawn.
@@ -497,45 +497,6 @@ class AuthRecoveryService
     execute_recovery(working_directory)
   end
 
-  # Verify a process stays running for the success threshold.
-  def verify_process_running(pid, retry_attempt)
-    process_start_time = Time.current
-
-    loop do
-      elapsed = Time.current - process_start_time
-
-      unless process_manager.running?(pid)
-        add_log(
-          "Auth recovery attempt #{retry_attempt} failed — process #{pid} died after #{elapsed.round(1)}s",
-          level: "warning"
-        )
-        return false
-      end
-
-      return true if elapsed >= SUCCESS_THRESHOLD
-
-      sleep(0.5)
-    end
-  end
-
-  # Wait for the delay, checking session status periodically.
-  def wait_with_status_checks(delay)
-    return nil unless delay.positive?
-
-    sleep(delay)
-    check_session_status
-  end
-
-  # Check if the session is still running.
-  def check_session_status
-    session.reload
-    unless session.running?
-      add_log("Session state changed to #{session.status} during auth recovery, aborting", level: "warning")
-      return :aborted
-    end
-    nil
-  end
-
   # Advance the auth line marker to the current transcript length without
   # re-spawning. Used on the unrecoverable path so a later manual resume doesn't
   # re-detect the same entry.
@@ -590,10 +551,5 @@ class AuthRecoveryService
   rescue => e
     @logger.error("Error getting transcript line count", error: e.message)
     0
-  end
-
-  # Add a log entry via the log buffer.
-  def add_log(content, level: "info")
-    log_buffer.add(content, level: level)
   end
 end
