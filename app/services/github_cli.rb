@@ -5,12 +5,14 @@
 # Every `gh` invocation is a network call, and the failure that matters is not a
 # non-zero exit — it is the call that never returns. During a GitHub REST incident
 # a request can stall with the TCP connection half-open: no response, no reset. A
-# bare `Open3.capture3` blocks the calling thread forever on that, and the three
-# PR poll pass (`GithubPrPollPassJob`, which fused the three GitHub pollers) is a
-# `total_limit: 1` singleton, so one hung call
-# holds the only slot and every subsequent tick is a no-op enqueue. Polling freezes
-# with nothing raised and nothing alerted — and unlike `GithubTriggerPollerJob`,
-# none of those three has a heartbeat or a watchdog to notice (#458).
+# bare `Open3.capture3` blocks the calling thread forever on that, and the PR poll
+# pass (`GithubPrPollPassJob`, which fused the three GitHub pollers) is a
+# `total_limit: 1` singleton, so one hung call holds the only slot and every
+# subsequent tick is a no-op enqueue. Polling freezes with nothing raised and
+# nothing alerted — and unlike `GithubTriggerPollerJob`, the pass has no heartbeat
+# and no watchdog to notice (#458). Fusing the three pollers raised the stakes on
+# that rather than lowering them: one hung call now stalls PR status, CI, merge
+# conflicts and comments together.
 #
 # So this wrapper does two things:
 #

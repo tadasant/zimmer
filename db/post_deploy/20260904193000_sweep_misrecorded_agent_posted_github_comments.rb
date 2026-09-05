@@ -9,7 +9,7 @@
 # app/` over this repo — whose own source and docs carry example permalinks — is a
 # read again instead of a post. That fix is forward-only. Every row an earlier
 # false positive already wrote is still in the table, and those rows are what
-# `GithubCommentPollerJob` reads. They are global (unique on
+# `Github::CommentEvaluator` reads. They are global (unique on
 # `[comment_type, comment_id]`), so a HUMAN comment whose id got recorded that way
 # is undeliverable to every session, permanently, and nothing logs the suppression.
 # There is no symptom to look for and the harm does not decay. Merging #899

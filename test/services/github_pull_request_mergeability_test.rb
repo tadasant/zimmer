@@ -6,36 +6,59 @@ class GithubPullRequestMergeabilityTest < ActiveSupport::TestCase
   PR_URL = "https://github.com/tadasant/zimmer/pull/834"
 
   test "reads a mergeable PR as :mergeable" do
-    stub_gh(state: "open", mergeable: true)
+    stub_gh(state: "OPEN", mergeable: "MERGEABLE")
     assert_equal :mergeable, GithubPullRequestMergeability.read(PR_URL)
   end
 
   test "reads a conflicting PR as :conflicting" do
-    stub_gh(state: "open", mergeable: false)
+    stub_gh(state: "OPEN", mergeable: "CONFLICTING")
     assert_equal :conflicting, GithubPullRequestMergeability.read(PR_URL)
   end
 
-  test "reads GitHub's still-computing null as :unknown" do
-    stub_gh(state: "open", mergeable: nil)
+  test "reads GitHub's still-computing UNKNOWN as :unknown" do
+    stub_gh(state: "OPEN", mergeable: "UNKNOWN")
     assert_equal :unknown, GithubPullRequestMergeability.read(PR_URL)
   end
 
-  test "reads an unexpected mergeable value as :unknown" do
-    stub_gh(state: "open", mergeable: "MERGEABLE")
+  # The REST vocabulary this module used to speak. It reads GraphQL's MergeableState
+  # now, through the same Github::PrSnapshot the merge conflict evaluator reads, so
+  # "true"/"false" must never be mistaken for an answer — a `false` read as
+  # "mergeable" would retire a real conflict notice forever.
+  test "reads the old REST mergeable vocabulary as :unknown, never as an answer" do
+    stub_gh(state: "OPEN", mergeable: true)
+    assert_equal :unknown, GithubPullRequestMergeability.read(PR_URL)
+
+    stub_gh(state: "OPEN", mergeable: false)
     assert_equal :unknown, GithubPullRequestMergeability.read(PR_URL)
   end
 
-  # A merged or closed PR reports mergeable: null. Reading that as "no idea"
+  # A merged or closed PR reports no mergeability. Reading that as "no idea"
   # would throw away the one thing GitHub said for certain, and a session woken
   # to resolve conflicts on a merged PR is exactly the harm being avoided.
-  test "a merged PR is :not_open, not :unknown, despite a null mergeable" do
-    stub_gh(state: "closed", mergeable: nil)
+  test "a merged PR is :not_open, not :unknown, despite an absent mergeability" do
+    stub_gh(state: "MERGED", merged_at: "2026-01-01T00:00:00Z", mergeable: "UNKNOWN")
     assert_equal :not_open, GithubPullRequestMergeability.read(PR_URL)
   end
 
-  test "state outranks a stale mergeable reading on a closed PR" do
-    stub_gh(state: "closed", mergeable: false)
+  test "a closed PR is :not_open" do
+    stub_gh(state: "CLOSED", mergeable: "UNKNOWN")
     assert_equal :not_open, GithubPullRequestMergeability.read(PR_URL)
+  end
+
+  test "status outranks a stale mergeability reading on a closed PR" do
+    stub_gh(state: "CLOSED", mergeable: "CONFLICTING")
+    assert_equal :not_open, GithubPullRequestMergeability.read(PR_URL)
+  end
+
+  # Fails OPEN, not closed. A state this could not establish is not evidence the PR
+  # is terminal, and suppressing on it would leave a session asleep on a PR that
+  # will never merge.
+  test "a state this cannot recognise still answers the mergeability question" do
+    stub_gh(state: "DRAFT", mergeable: "CONFLICTING")
+    assert_equal :conflicting, GithubPullRequestMergeability.read(PR_URL)
+
+    stub_gh(state: nil, mergeable: "MERGEABLE")
+    assert_equal :mergeable, GithubPullRequestMergeability.read(PR_URL)
   end
 
   test "a failed gh call is :unknown rather than an answer" do
@@ -44,7 +67,7 @@ class GithubPullRequestMergeabilityTest < ActiveSupport::TestCase
   end
 
   test "a reaped gh child (nil status) is :unknown rather than an answer" do
-    BoundedSubprocess.stubs(:run).returns([ '{"state":"open","mergeable":true}', "", nil ])
+    BoundedSubprocess.stubs(:run).returns([ '{"state":"OPEN","mergeable":"MERGEABLE"}', "", nil ])
     assert_equal :unknown, GithubPullRequestMergeability.read(PR_URL)
   end
 
@@ -76,32 +99,35 @@ class GithubPullRequestMergeabilityTest < ActiveSupport::TestCase
     assert_equal :unknown, GithubPullRequestMergeability.read("https://github.com/../../pull/1")
   end
 
-  test "queries the REST fields the poller reads, under a bounded subprocess" do
+  # The same call the merge conflict evaluator's pass makes, under the same bound.
+  # That is the point: one reader, so the guard that RETIRES a conflict notice and
+  # the evaluator that WROTE it cannot disagree about what "conflicting" means.
+  test "goes through the same bounded reader the poll pass uses" do
     captured = nil
     BoundedSubprocess.stubs(:run).with do |command, **kwargs|
       captured = [ command, kwargs ]
       true
-    end.returns([ '{"state":"open","mergeable":true}', "", fake_process_status(exitstatus: 0) ])
+    end.returns([ '{"state":"OPEN","mergedAt":null,"mergeable":"MERGEABLE"}', "", fake_process_status(exitstatus: 0) ])
 
     GithubPullRequestMergeability.read(PR_URL)
 
     command, kwargs = captured
-    assert_equal [ "gh", "api", "repos/tadasant/zimmer/pulls/834",
-                   "--jq", "{state: .state, mergeable: .mergeable}" ], command
-    assert_equal GithubPullRequestMergeability::READ_TIMEOUT_SECONDS, kwargs[:timeout]
+    assert_equal [ "gh", "pr", "view", "834", "--repo", "tadasant/zimmer",
+                   "--json", Github::PrSnapshot::JSON_FIELDS ], command
+    assert_equal Github::PrSnapshot::TIMEOUT, kwargs[:timeout]
   end
 
   test "only read is public" do
     assert_respond_to GithubPullRequestMergeability, :read
-    refute GithubPullRequestMergeability.respond_to?(:fetch_pull_request),
+    refute GithubPullRequestMergeability.respond_to?(:fetch_snapshot),
       "the helpers are implementation detail, not interface"
     refute GithubPullRequestMergeability.respond_to?(:interpret)
   end
 
   private
 
-  def stub_gh(state:, mergeable:)
-    payload = { "state" => state, "mergeable" => mergeable }.to_json
+  def stub_gh(state:, mergeable:, merged_at: nil)
+    payload = { "state" => state, "mergedAt" => merged_at, "mergeable" => mergeable }.to_json
     BoundedSubprocess.stubs(:run).returns([ payload, "", fake_process_status(exitstatus: 0) ])
   end
 end

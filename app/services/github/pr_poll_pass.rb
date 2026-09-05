@@ -188,9 +188,18 @@ module Github
     #
     # The three used to be three jobs, so a raise in one could not touch the other two.
     # Fusing them would have handed that isolation back to the per-session rescue in
-    # #run — where a raise in the first evaluator also costs the session its remaining
-    # two evaluators AND its stamp, which would then make it due again immediately.
-    # Keeping the boundary here preserves what the three separate jobs gave for free.
+    # #run, where a raise in the first evaluator costs the session its remaining two as
+    # well. Keeping the boundary here preserves what the three separate jobs gave for
+    # free.
+    #
+    # The session IS still stamped for a pass in which an evaluator raised, which is a
+    # deliberate change from the old jobs (a raise there skipped `record_poll!`, so the
+    # session was due again on the next tick). The pass is what got stamped, and the
+    # pass did happen: the other evaluators ran, and the one that raised will raise
+    # again on identical inputs, so retrying it in 30 seconds buys a repeat of the same
+    # error rather than a recovery. It costs nothing for a recently-active session —
+    # PollBackoff's curve answers 0 there and ignores the stamp entirely — and for an
+    # idle one it costs a single gate interval.
     def run_evaluator(session, name)
       yield
     rescue => e
