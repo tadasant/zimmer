@@ -194,7 +194,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
   def decision_carrying(capacity)
     SpotGateService::Decision.new(
       allowed: true, reason: "within_limits", detail: "within limits",
-      five_hour: nil, weekly: nil, active_sessions: 0, fleet_cap: 10,
+      five_hour: nil, weekly: nil, active_sessions: 0, queued_sessions: 0, fleet_cap: 10,
       accounts_read: 1, pool_size: 1,
       fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0,
       pool_capacity: capacity
@@ -489,7 +489,7 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_equal 30, setting.fleet_idle_min_fire_interval_minutes
 
     policy = get_policy
-    assert_match(/Fires while the fleet is running fewer than:\*\* 5 sessions/, policy)
+    assert_match(/Fires while the fleet has fewer turns in flight than:\*\* 5 sessions/, policy)
     assert_match(/For at least:\*\* 10 minutes/, policy)
     assert_match(/At most once every:\*\* 30 minutes \(at most 48 top-ups a day/, policy)
   end

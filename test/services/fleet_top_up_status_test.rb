@@ -20,6 +20,68 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
     FleetTopUpStatus.new(setting: @setting, running_sessions: running, now: now)
   end
 
+  # The split reading, which is what /inference renders. A bare count still
+  # works — AppSetting's own ceiling validation passes one — and reports itself
+  # as wholly executing, since a caller with one number has no split to offer.
+  def split_status(on_a_worker:, queued: 0, asleep: 0, now: Time.current)
+    FleetTopUpStatus.new(
+      setting: @setting, now: now,
+      turns: RunningTurns::Reading.new(
+        on_a_worker: on_a_worker, queued_for_a_worker: queued, asleep: asleep
+      )
+    )
+  end
+
+  # tadasant/zimmer#957: "The fleet is running 15 sessions" was read as a broken
+  # counter because 8 agent processes were alive. The number was right about the
+  # column and wrong about the word — the rest were turns queued behind the
+  # `agents` worker pool — so the sentence has to name the queue.
+  test "the sentence names the queue when turns are waiting for a worker" do
+    s = split_status(on_a_worker: 2, queued: 5)
+
+    assert_equal 7, s.running_sessions
+    assert_equal 2, s.executing_sessions
+    assert_equal 5, s.queued_sessions
+    assert_equal :at_ceiling, s.state
+    assert_match(/7 sessions in flight/, s.sentence)
+    assert_match(/2 on a worker, 5 queued for one/, s.sentence)
+    assert_match(/#{s.worker_slots}-slot agents pool/, s.sentence)
+  end
+
+  # When every turn has a worker the split is the same number twice, and saying
+  # so twice is noise.
+  test "the sentence stays plain when nothing is queued" do
+    s = split_status(on_a_worker: 3)
+
+    assert_equal 3, s.running_sessions
+    assert_equal 0, s.queued_sessions
+    assert_match(/3 sessions in flight/, s.sentence)
+    assert_no_match(/on a worker/, s.sentence)
+  end
+
+  # Sleepers are reported but not counted: the ceiling comparison is made
+  # against the turns the fleet can actually be working on.
+  test "sessions asleep on a wake are reported beside the total, not inside it" do
+    s = split_status(on_a_worker: 1, queued: 1, asleep: 4)
+
+    assert_equal 2, s.running_sessions
+    assert_equal 4, s.asleep_sessions
+    assert s.under_ceiling?, "four sleepers must not push a fleet of two to its ceiling of three"
+  end
+
+  test "the worker pool ceiling is the agents lane's own thread count" do
+    assert_equal ConnectionBudget.good_job_queue_threads[:agents], split_status(on_a_worker: 0).worker_slots
+  end
+
+  test "a bare count still builds a status, and reads as wholly executing" do
+    s = status(running: 2)
+
+    assert_equal 2, s.running_sessions
+    assert_equal 2, s.executing_sessions
+    assert_equal 0, s.queued_sessions
+    assert_equal 0, s.asleep_sessions
+  end
+
   test "a fleet at its ceiling has no clock running toward a fire" do
     s = status(running: 3)
 

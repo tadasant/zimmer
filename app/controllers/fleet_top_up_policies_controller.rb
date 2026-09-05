@@ -7,7 +7,7 @@
 # next minute without a deploy.
 #
 # The card lives on /inference for the reason the spot gate card does: the
-# population it counts — sessions actually running — is the one that page already
+# population it counts — sessions with a turn in flight — is the one that page already
 # reports, and its ceiling is a sibling of the concurrency limit directly above
 # it.
 #

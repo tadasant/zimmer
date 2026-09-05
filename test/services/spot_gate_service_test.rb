@@ -71,7 +71,7 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     seed(current_5h: 0.99, current_7d: 0.99)
 
     [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid, RuntimeError ].each do |klass|
-      Session.stub(:running_claude_code_count, ->(*) { raise klass, "boom" }) do
+      Session.stub(:running_claude_code_turns, ->(*) { raise klass, "boom" }) do
         decision = SpotGateService.evaluate
         assert decision.allowed?, "#{klass} must not be able to hold a session"
         assert_equal "unavailable", decision.reason
@@ -603,6 +603,47 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_match(/3 of 3 session slots taken/, decision.detail)
   end
 
+  # tadasant/zimmer#957. The fleet cap read 15 of 10 while eight agent processes
+  # were alive: `running` is stamped when a turn is handed to a session, so the
+  # column also held turns queued for a worker and rows that had gone back to
+  # sleep on their own wake. The queued ones still count — they take the next
+  # free slot — but a session no start path will run before its wake cannot hold
+  # a slot against anything.
+  test "a running row asleep on its own future wake does not hold the fleet at cap" do
+    seed(current_5h: 0.02, current_7d: 0.10)
+    @setting.update!(spot_max_concurrent_sessions: 2)
+    2.times { |i| running_session(i) }
+    assert SpotGateService.evaluate.held?, "two of two slots taken"
+
+    arm_wake!(Session.where(status: :running).last, at: 20.minutes.from_now)
+    decision = SpotGateService.evaluate
+
+    assert decision.allowed?, "a session Zimmer refuses to start before its wake holds no slot"
+    assert_equal 1, decision.active_sessions
+  end
+
+  # The detail string is what /inference and `get_spot_policy` print, and the
+  # queue is the whole explanation for a slot count above the live agent-process
+  # count. Without it the number reads as a broken counter.
+  test "a fleet-cap hold names the worker pool when turns are queued behind it" do
+    seed(current_5h: 0.02, current_7d: 0.10)
+    @setting.update!(spot_max_concurrent_sessions: 2)
+    working = running_session(0)
+    working.update!(running_job_id: SecureRandom.uuid)
+    GoodJob::Job.create!(active_job_id: working.running_job_id, queue_name: "agents",
+                         job_class: "AgentSessionJob", serialized_params: {},
+                         scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
+    running_session(1)
+
+    decision = SpotGateService.evaluate
+
+    assert_equal "fleet_at_cap", decision.reason
+    assert_equal 2, decision.active_sessions
+    assert_equal 1, decision.queued_sessions
+    assert_match(/2 of 2 session slots taken/, decision.detail)
+    assert_match(/1 on a worker, 1 queued for one/, decision.detail)
+  end
+
   test "the cap is the operator's, and raising it runs work immediately" do
     seed(current_5h: 0.02, current_7d: 0.10)
     @setting.update!(spot_max_concurrent_sessions: 2)
@@ -1015,5 +1056,22 @@ class SpotGateServiceTest < ActiveSupport::TestCase
   def running_session(index, genesis: SessionGenesis::WEB_UI)
     Session.create!(git_root: "https://github.com/t/r.git", prompt: "running #{index}",
                     genesis: genesis, status: :running, agent_runtime: "claude_code")
+  end
+
+  # Arms a one-time wake against `session` for a time that has not come, without
+  # the after_create hooks that would sleep or immediately fire it.
+  def arm_wake!(session, at:)
+    Trigger.new(
+      name: "Wake session ##{session.id}",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "wake up",
+      reuse_session: true,
+      last_session_id: session.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule",
+          configuration: { "scheduled_at" => at.utc.strftime("%Y-%m-%dT%H:%M:%S"), "timezone" => "UTC" } }
+      ]
+    ).save!(validate: true)
   end
 end

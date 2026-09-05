@@ -21,17 +21,30 @@
 # answer no:
 #
 #   1. Is the fleet RUNNING `fleet_idle_max_sessions` or more sessions already?
-#      One population and one number: sessions actually `running`. Every runtime,
-#      every scheduling class, and Zimmer's own status-summary forks all count —
-#      "is anyone doing anything" is about the deployment's capacity to take on
-#      more, and a running Codex session occupies that as much as a Claude one.
-#      `fleet_idle_max_sessions = 1` means simply "nothing running".
+#      One population and one number: sessions with a turn in flight. Every
+#      runtime, every scheduling class, and Zimmer's own status-summary forks all
+#      count — "is anyone doing anything" is about the deployment's capacity to
+#      take on more, and a running Codex session occupies that as much as a
+#      Claude one. `fleet_idle_max_sessions = 1` means simply "nothing running".
+#
+#      "A turn in flight" is deliberately WIDER than "a worker is executing it",
+#      and RunningTurns is where that is decided. `running` is stamped when a
+#      turn is handed to a session, and the `agents` queue sits between that and
+#      a worker picking it up, so on a busy deployment a real share of the number
+#      is turns waiting for a slot. They still count: a queued turn is committed
+#      demand that will take the next free worker, and topping up on top of it
+#      just deepens the queue. What does NOT count is a row asleep on its own
+#      future wake with no worker on it — Zimmer refuses to start those, so they
+#      can consume nothing. #running_turns reports the split, which is what
+#      /inference shows: "15 sessions" reading as a broken counter when 8 were
+#      executing and 7 were queued is [#957](https://github.com/tadasant/zimmer/issues/957).
 #
 #      This is a different population from the one the spot gate's concurrency
 #      limit counts, which is Claude Code sessions only and does not skip frozen
-#      categories (Session.running_claude_code_count). The two ceilings sit on
-#      the same axis and are read together on /inference, but a fleet running
-#      Codex work will not see the same number under both.
+#      categories (Session.running_claude_code_count). Both now read through
+#      RunningTurns, so they agree about what a `running` row means; they still
+#      differ on runtime and on frozen categories, so a fleet running Codex work
+#      will not see the same number under both.
 #
 #      `waiting` sessions do NOT count, of any class, and the reason is what
 #      `waiting` actually holds. It is not a queue — it is Zimmer's only resting
@@ -283,9 +296,19 @@ class FleetIdleMonitor
     # why.
     #
     # See "What counts as idle" for why `waiting` sessions are not in this
-    # number.
+    # number, and why a turn merely QUEUED for a worker still is.
     def running_sessions
-      Session.not_in_frozen_category.where(status: :running).count
+      running_turns.total
+    end
+
+    # The same reading, split into the populations `running` actually holds:
+    # turns a worker is executing, turns queued behind the `agents` pool waiting
+    # for one, and sleepers that are dropped from the total. RunningTurns owns
+    # the distinction; this is where /inference and `get_spot_policy` get it.
+    #
+    # @return [RunningTurns::Reading]
+    def running_turns
+      Session.not_in_frozen_category.running_turns
     end
 
     private
