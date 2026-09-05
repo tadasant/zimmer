@@ -47,7 +47,7 @@ class SlackTriggerPollerJob < ApplicationJob
   queue_as :pollers
 
   # Singleton pattern: at most one poll unfinished (running or queued) at a time,
-  # matching every other poller (GithubCommentPollerJob, CliStatusRefreshJob, …).
+  # matching every other poller (GithubPrPollPassJob, CliStatusRefreshJob, …).
   # The cron enqueues a poll every minute, but a poll can outrun a minute; without
   # this cap those runs pile up — each holding a worker thread — until they
   # saturate the queue's whole thread pool and no other polling work can run.

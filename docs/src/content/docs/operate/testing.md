@@ -230,7 +230,8 @@ to be running.
 
 `AirCatalogServiceTest` has to control that cache to test the service, so its teardown calls
 `AirCatalogService.reset!` — and hands the next test in that worker a cold one. At `--seed 40537` the
-next test was `GithubCommentPollerJobTest#test_poll_comments_for_session_ignores_a_merge_gate_review_comment`,
+next test was the comment poller's `ignores a merge gate review comment` case (then
+`GithubCommentPollerJobTest`, now `Github::CommentEvaluatorTest`),
 which asserts `Open3.expects(:capture3).never`; its `persist_comments!` write broadcast the card, the
 card resolved the catalog, and the run went red on `main` for a subprocess the test never asked for. The
 test was not wrong. Its premise — a warm cache — was being satisfied by whichever test drew the slot

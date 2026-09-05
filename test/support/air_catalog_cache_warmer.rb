@@ -23,8 +23,9 @@
 # Tests that exercise the service itself must control that cache, and
 # AirCatalogServiceTest's teardown calls AirCatalogService.reset! to hand it back
 # empty. Whatever runs next in the same worker then pays for the resolve. That is
-# how GithubCommentPollerJobTest#test_poll_comments_for_session_ignores_a_merge_
-# gate_review_comment failed on main at --seed 40537: it asserts
+# how the comment poller's `ignores a merge gate review comment` case (then
+# GithubCommentPollerJobTest, now Github::CommentEvaluatorTest) failed on main at
+# --seed 40537: it asserts
 # `Open3.expects(:capture3).never`, the assertion only holds while the cache is
 # warm, and nothing in the test made it warm — it was inheriting warmth from
 # whichever test drew the slot before it. A different seed, a different victim.

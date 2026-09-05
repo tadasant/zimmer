@@ -1,7 +1,7 @@
 # The GitHub accounts whose PR comments Zimmer trusts.
 #
 # This is the trust boundary for the whole PR-comment path, and it is one list
-# rather than two. `GithubCommentPollerJob` consults it to decide whether a comment
+# rather than two. `Github::CommentEvaluator` consults it to decide whether a comment
 # may wake a session at all; `GithubCommentPromptBuilder` consults it again to
 # decide whether a *neighbouring* comment's body may be quoted into that session's
 # prompt. Two separate literals would let those answers drift: an outsider who

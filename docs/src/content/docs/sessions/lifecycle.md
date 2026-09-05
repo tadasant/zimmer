@@ -274,7 +274,7 @@ and keep running.
 [#566](https://github.com/tadasant/zimmer/issues/566). The three create surfaces all promise the
 caller delivery *"when the session becomes idle"*, and a session resting in `waiting` — asleep on
 an `open-pr` self-wake, slept by `action_session sleep`, resting after a park — already is. Nothing
-was scheduled to come back for those rows at all: a `GitHubPullRequestPollerJob` merged-PR notice
+was scheduled to come back for those rows at all: a `Github::PrStatusEvaluator` merged-PR notice
 was queued onto session 6377 at `22:56Z`, and was still `pending` when `Sessions::ArchiveGuard`
 named it five hours and nine minutes later. `Session#idle_for_queued_delivery?` is the one predicate
 both schedulers read, and it is `needs_input? || waiting?`.
@@ -1458,7 +1458,7 @@ itself rather than at the call site.
 
 #### …and what the archive cost
 
-Archiving is what takes a session out of `GitHubPullRequestPollerJob`'s scope — `with_github_prs`
+Archiving is what takes a session out of `Github::PrPollPass`'s scope — `with_github_prs`
 excludes archived sessions — so it also ends any chance of the merge message the PR goals in
 `config/goals.json` promise the session: *"the pull-request poller sends this session a message
 when the PR merges, and THAT MESSAGE IS YOUR SIGNAL TO ARCHIVE"*. A session archived before the

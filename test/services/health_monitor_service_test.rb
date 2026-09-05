@@ -1503,7 +1503,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   test "one hung thread beside a lane that is still turning work over is not a wedge" do
     register_workers
     enqueue_lane("pollers", 12, head_waiting_for: 40.minutes)
-    claim_lane("pollers", 1, running_for: 40.minutes, job_class: "GitHubPullRequestPollerJob")
+    claim_lane("pollers", 1, running_for: 40.minutes, job_class: "GithubPrPollPassJob")
     claim_lane("pollers", ConnectionBudget.good_job_queue_threads[:pollers] - 1, running_for: 2.seconds)
 
     stats = @service.system_health[:queue_stats]

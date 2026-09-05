@@ -87,10 +87,15 @@ module CronSchedule
       description: "Beat per-session heartbeats: nudge needs_input sessions due for a beat",
       environments: %i[production staging development]
     },
-    github_pull_request_poller: {
+    # One pass over every session tracking a PR: status, CI, merge conflicts and
+    # comments. It replaced three separate 30s/30s/2m entries that each swept the same
+    # sessions and re-fetched the same PRs (#711); the merge conflict and comment
+    # evaluators keep their old, slower cadences inside the pass rather than as entries
+    # here. See Github::PrPollPass.
+    github_pr_poll_pass: {
       cron: "*/30 * * * * *", # Every 30 seconds
-      class: "GitHubPullRequestPollerJob",
-      description: "Poll GitHub PR status for sessions with PR URLs",
+      class: "GithubPrPollPassJob",
+      description: "Poll GitHub PR status, CI, merge conflicts and comments for sessions with PR URLs",
       environments: %i[production staging development]
     },
     stale_clone_cleanup: {
@@ -111,18 +116,6 @@ module CronSchedule
       class: "ElicitationEndpointHealthCheckJob",
       description: "Probe the MCP approval (elicitation) endpoint agents are pointed at",
       environments: %i[production staging]
-    },
-    github_comment_poller: {
-      cron: "*/30 * * * * *", # Every 30 seconds
-      class: "GithubCommentPollerJob",
-      description: "Poll GitHub PR comments for sessions with PR URLs",
-      environments: %i[production staging development]
-    },
-    github_merge_conflict_poller: {
-      cron: "*/2 * * * *", # Every 2 minutes (merge conflicts are less time-sensitive than CI status)
-      class: "GitHubMergeConflictPollerJob",
-      description: "Poll GitHub PRs for merge conflicts and notify sessions",
-      environments: %i[production staging development]
     },
     token_usage_ingestion: {
       cron: "*/10 * * * *", # Every 10 minutes

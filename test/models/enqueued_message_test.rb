@@ -581,15 +581,15 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
     session = sessions(:running)
     other_pr = "https://github.com/tadasant/zimmer/pull/999"
     session.merge_custom_metadata!(
-      GitHubMergeConflictPollerJob::CONFIRMED_METADATA_KEY => { PR_URL => true, other_pr => true },
-      GitHubMergeConflictPollerJob::SUSPECTED_METADATA_KEY => { PR_URL => true }
+      Github::MergeConflictEvaluator::CONFIRMED_METADATA_KEY => { PR_URL => true, other_pr => true },
+      Github::MergeConflictEvaluator::SUSPECTED_METADATA_KEY => { PR_URL => true }
     )
 
     conflict_message.retire_as_stale!
 
     session.reload
-    confirmed = session.custom_metadata[GitHubMergeConflictPollerJob::CONFIRMED_METADATA_KEY]
-    suspected = session.custom_metadata[GitHubMergeConflictPollerJob::SUSPECTED_METADATA_KEY]
+    confirmed = session.custom_metadata[Github::MergeConflictEvaluator::CONFIRMED_METADATA_KEY]
+    suspected = session.custom_metadata[Github::MergeConflictEvaluator::SUSPECTED_METADATA_KEY]
     refute confirmed.key?(PR_URL), "the confirmed marker must be cleared or the notice is suppressed forever"
     refute suspected.key?(PR_URL)
     assert confirmed.key?(other_pr), "another PR's marker is not ours to clear"
@@ -598,21 +598,21 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
   test "a row a peer already claimed leaves the debounce markers alone" do
     session = sessions(:running)
     session.merge_custom_metadata!(
-      GitHubMergeConflictPollerJob::CONFIRMED_METADATA_KEY => { PR_URL => true }
+      Github::MergeConflictEvaluator::CONFIRMED_METADATA_KEY => { PR_URL => true }
     )
     message = conflict_message
     message.update!(status: "processing")
 
     refute message.retire_as_stale!
 
-    assert session.reload.custom_metadata[GitHubMergeConflictPollerJob::CONFIRMED_METADATA_KEY].key?(PR_URL)
+    assert session.reload.custom_metadata[Github::MergeConflictEvaluator::CONFIRMED_METADATA_KEY].key?(PR_URL)
   end
 
   # The retirement has already committed by then, so a failure resetting the
   # debounce is a missed re-notification rather than a lost message. Raising
   # would turn it into one.
   test "a debounce reset that fails does not undo the retirement" do
-    GitHubMergeConflictPollerJob.stubs(:forget_conflict!).raises(RuntimeError, "metadata write failed")
+    Github::MergeConflictEvaluator.stubs(:forget_conflict!).raises(RuntimeError, "metadata write failed")
     message = conflict_message
 
     assert message.retire_as_stale!

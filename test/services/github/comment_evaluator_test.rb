@@ -1,7 +1,7 @@
 require "test_helper"
 require "mocha/minitest"
 
-class GithubCommentPollerJobTest < ActiveSupport::TestCase
+class Github::CommentEvaluatorTest < ActiveSupport::TestCase
   setup do
     @session_with_pr = sessions(:with_pr_url)
     @session_without_pr = sessions(:running)
@@ -28,7 +28,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "build_pr_comment_data correctly identifies agent comments" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     # Regular user comment
     user_comment = {
@@ -48,7 +48,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "build_pr_comment_data identifies self attribution for agent comments" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     # Agent comment with marker
     agent_comment = {
@@ -67,7 +67,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "build_review_comment_data includes code context" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     review_comment = {
       "id" => 789,
@@ -91,12 +91,12 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_includes result["diff_hunk"], "def method"
   end
 
-  test "poll_comments_for_session updates custom_metadata with new comments" do
+  test "evaluate updates custom_metadata with new comments" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
     # Create job with mocked API calls
-    job = TestJobWithMockedComments.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithMockedComments.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -107,7 +107,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_equal 1, comments["https://github.com/owner/repo/pull/123"]["review_comments"].size
   end
 
-  test "poll_comments_for_session does not create duplicate comments with same ID" do
+  test "evaluate does not create duplicate comments with same ID" do
     # Pre-populate with the same comment that the mock returns (ID 111)
     @session_with_pr.update!(custom_metadata: {
       "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ],
@@ -123,8 +123,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
       }
     })
 
-    job = TestJobWithMockedComments.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithMockedComments.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -136,7 +136,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_equal 1, review_comments.size
   end
 
-  test "poll_comments_for_session enqueues follow-up for whitelisted user comments" do
+  test "evaluate enqueues follow-up for whitelisted user comments" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
     # Mock the prompt builder
@@ -145,8 +145,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     mock_builder.stubs(:build).returns("Test prompt content")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
-    job = TestJobWithWhitelistedComment.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -155,11 +155,11 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_equal "Test prompt content", @session_with_pr.enqueued_messages.first.content
   end
 
-  test "poll_comments_for_session does not enqueue for non-whitelisted users" do
+  test "evaluate does not enqueue for non-whitelisted users" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
-    job = TestJobWithNonWhitelistedComment.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithNonWhitelistedComment.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -167,11 +167,11 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_equal 0, @session_with_pr.enqueued_messages.count
   end
 
-  test "poll_comments_for_session does not enqueue for self attributed comments" do
+  test "evaluate does not enqueue for self attributed comments" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
-    job = TestJobWithAgentComment.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithAgentComment.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -186,13 +186,13 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     # The job holds no list of its own: dispatch and GithubCommentPromptBuilder's
     # thread context must always answer "is this author trusted?" the same way.
-    refute GithubCommentPollerJob.const_defined?(:WHITELISTED_USERS, false),
-      "GithubCommentPollerJob must not keep a second copy of the allowlist"
+    refute Github::CommentEvaluator.const_defined?(:WHITELISTED_USERS, false),
+      "Github::CommentEvaluator must not keep a second copy of the allowlist"
 
     GithubCommentAllowlist.stubs(:trusted?).returns(false)
     GithubCommentAllowlist.stubs(:trusted?).with("someone-new").returns(true)
 
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     dispatchable = { "author" => "someone-new", "attribution" => "someone-new", "id" => 1, "body" => "hi", "created_at" => 1.hour.ago.iso8601 }
     refute_equal "skipped:author_not_whitelisted",
@@ -204,16 +204,16 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "AGENT_COMMENT_MARKER is the expected string" do
-    assert_equal "[CC Says]", GithubCommentPollerJob::AGENT_COMMENT_MARKER
+    assert_equal "[CC Says]", Github::CommentEvaluator::AGENT_COMMENT_MARKER
   end
 
   test "BLACKLISTED_PATTERNS contains deploy command pattern" do
-    assert GithubCommentPollerJob::BLACKLISTED_PATTERNS.any? { |p| p.is_a?(Regexp) }
-    assert_equal 1, GithubCommentPollerJob::BLACKLISTED_PATTERNS.size
+    assert Github::CommentEvaluator::BLACKLISTED_PATTERNS.any? { |p| p.is_a?(Regexp) }
+    assert_equal 1, Github::CommentEvaluator::BLACKLISTED_PATTERNS.size
   end
 
   test "blacklisted_comment? returns true for exact /deploy staging match" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     assert job.send(:blacklisted_comment?, "/deploy staging")
     assert job.send(:blacklisted_comment?, "/Deploy Staging")  # case insensitive
@@ -221,7 +221,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "blacklisted_comment? returns false for non-matching comments" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     assert_not job.send(:blacklisted_comment?, "Please fix this bug")
     assert_not job.send(:blacklisted_comment?, "Can you deploy this?")
@@ -232,11 +232,11 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_not job.send(:blacklisted_comment?, nil)
   end
 
-  test "poll_comments_for_session does not enqueue for blacklisted comments" do
+  test "evaluate does not enqueue for blacklisted comments" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
-    job = TestJobWithBlacklistedComment.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithBlacklistedComment.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -244,11 +244,11 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_equal 0, @session_with_pr.enqueued_messages.count
   end
 
-  test "poll_comments_for_session does not enqueue for blacklisted review comments" do
+  test "evaluate does not enqueue for blacklisted review comments" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
-    job = TestJobWithBlacklistedReviewComment.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithBlacklistedReviewComment.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -256,7 +256,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_equal 0, @session_with_pr.enqueued_messages.count
   end
 
-  test "poll_comments_for_session sends prompt immediately when session is needs_input" do
+  test "evaluate sends prompt immediately when session is needs_input" do
     # Use a session that is in needs_input state
     session_needs_input = sessions(:needs_input)
     session_needs_input.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
@@ -270,8 +270,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     # Track if AgentSessionJob.enqueue_with_prompt is called
     AgentSessionJob.expects(:enqueue_with_prompt).with(session_needs_input.id, "Test prompt for immediate send", images: nil, files: nil).once
 
-    job = TestJobWithWhitelistedComment.new
-    job.send(:poll_comments_for_session, session_needs_input)
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.evaluate(session_needs_input, Github::PrRef.for_session(session_needs_input))
 
     session_needs_input.reload
 
@@ -291,7 +291,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_includes immediate_log.content, "https://github.com/owner/repo/pull/123#issuecomment-333"
   end
 
-  test "poll_comments_for_session enqueues prompt when session is running" do
+  test "evaluate enqueues prompt when session is running" do
     # Use a session that is in running state (status 0)
     session_running = sessions(:running)
     session_running.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
@@ -305,8 +305,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     # Should NOT call AgentSessionJob.enqueue_with_prompt
     AgentSessionJob.expects(:enqueue_with_prompt).never
 
-    job = TestJobWithWhitelistedComment.new
-    job.send(:poll_comments_for_session, session_running)
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.evaluate(session_running, Github::PrRef.for_session(session_running))
 
     session_running.reload
 
@@ -318,7 +318,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert session_running.running?
   end
 
-  test "poll_comments_for_session enqueues prompt when session is waiting" do
+  test "evaluate enqueues prompt when session is waiting" do
     # Use a session that is in waiting state (status 1)
     session_waiting = sessions(:waiting)
     session_waiting.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
@@ -332,8 +332,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     # Should NOT call AgentSessionJob.enqueue_with_prompt
     AgentSessionJob.expects(:enqueue_with_prompt).never
 
-    job = TestJobWithWhitelistedComment.new
-    job.send(:poll_comments_for_session, session_waiting)
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.evaluate(session_waiting, Github::PrRef.for_session(session_waiting))
 
     session_waiting.reload
 
@@ -343,7 +343,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "add_eyes_reaction calls correct API for PR comments" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     comment_info = {
       type: "pr",
@@ -364,14 +364,14 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     mock_status = mock
     mock_status.stubs(:success?).returns(true)
     BoundedSubprocess.expects(:run)
-      .with(expected_command, timeout: GithubCommentPollerJob::REACTION_TIMEOUT)
+      .with(expected_command, timeout: Github::CommentEvaluator::REACTION_TIMEOUT)
       .returns([ "{}", "", mock_status ])
 
     job.send(:add_eyes_reaction, comment_info)
   end
 
   test "add_eyes_reaction calls correct API for review comments" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     comment_info = {
       type: "review",
@@ -392,14 +392,14 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     mock_status = mock
     mock_status.stubs(:success?).returns(true)
     BoundedSubprocess.expects(:run)
-      .with(expected_command, timeout: GithubCommentPollerJob::REACTION_TIMEOUT)
+      .with(expected_command, timeout: Github::CommentEvaluator::REACTION_TIMEOUT)
       .returns([ "{}", "", mock_status ])
 
     job.send(:add_eyes_reaction, comment_info)
   end
 
   test "add_eyes_reaction logs warning on API failure but does not raise" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     comment_info = {
       type: "pr",
@@ -418,7 +418,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "add_eyes_reaction handles malformed comment_info gracefully" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     # Test with nil data
     malformed_info_nil_data = {
@@ -458,7 +458,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     # Track the order of operations
     call_order = []
 
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     # Stub add_eyes_reaction to track when it's called
     job.define_singleton_method(:add_eyes_reaction) do |comment_info|
@@ -484,43 +484,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_equal 1, @session_with_pr.enqueued_messages.count
   end
 
-  # ---- PollBackoff integration ----
-
-  test "perform skips a stale session when its last_polled_at is within the backoff window" do
-    @session_with_pr.update!(
-      metadata: (@session_with_pr.metadata || {}).merge("last_user_activity_at" => 2.days.ago.iso8601),
-      custom_metadata: (@session_with_pr.custom_metadata || {}).merge(
-        "poller_last_polled_at" => { "github_comment_poller" => 1.hour.ago.iso8601 }
-      )
-    )
-
-    # Isolate from other fixtures so .never expectations only check this session
-    Session.stubs(:with_github_prs).returns(Session.where(id: @session_with_pr.id))
-
-    PollBackoff.expects(:record_poll!).never
-    GithubCommentPollerJob.any_instance.expects(:poll_comments_for_session).never
-
-    GithubCommentPollerJob.perform_now
-  end
-
-  test "perform polls and records the poll for a fresh session" do
-    @session_with_pr.update!(
-      metadata: (@session_with_pr.metadata || {}).merge("last_user_activity_at" => 5.minutes.ago.iso8601)
-    )
-
-    # Isolate from other fixtures so the record_poll! expectation only fires for this session
-    Session.stubs(:with_github_prs).returns(Session.where(id: @session_with_pr.id))
-    GithubCommentPollerJob.any_instance.stubs(:poll_comments_for_session)
-    PollBackoff.expects(:record_poll!).with(
-      instance_of(Session),
-      job_key: GithubCommentPollerJob::POLL_BACKOFF_KEY
-    ).at_least_once
-
-    GithubCommentPollerJob.perform_now
-  end
-
   # Test subclass that returns mocked PR and review comments
-  class TestJobWithMockedComments < GithubCommentPollerJob
+  class TestEvaluatorWithMockedComments < Github::CommentEvaluator
     def fetch_pr_comments(_owner, _repo, _pr_number)
       [
         {
@@ -551,7 +516,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   # Test subclass that returns a comment from a whitelisted user
-  class TestJobWithWhitelistedComment < GithubCommentPollerJob
+  class TestEvaluatorWithWhitelistedComment < Github::CommentEvaluator
     def fetch_pr_comments(_owner, _repo, _pr_number)
       [
         {
@@ -570,7 +535,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   # Test subclass that returns a comment from a non-whitelisted user
-  class TestJobWithNonWhitelistedComment < GithubCommentPollerJob
+  class TestEvaluatorWithNonWhitelistedComment < Github::CommentEvaluator
     def fetch_pr_comments(_owner, _repo, _pr_number)
       [
         {
@@ -589,7 +554,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   # Test subclass that returns an agent-generated comment
-  class TestJobWithAgentComment < GithubCommentPollerJob
+  class TestEvaluatorWithAgentComment < Github::CommentEvaluator
     def fetch_pr_comments(_owner, _repo, _pr_number)
       [
         {
@@ -608,7 +573,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   # Test subclass that returns a blacklisted comment (deploy command)
-  class TestJobWithBlacklistedComment < GithubCommentPollerJob
+  class TestEvaluatorWithBlacklistedComment < Github::CommentEvaluator
     def fetch_pr_comments(_owner, _repo, _pr_number)
       [
         {
@@ -627,7 +592,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   # Test subclass that returns a blacklisted review comment (deploy staging command)
-  class TestJobWithBlacklistedReviewComment < GithubCommentPollerJob
+  class TestEvaluatorWithBlacklistedReviewComment < Github::CommentEvaluator
     def fetch_pr_comments(_owner, _repo, _pr_number)
       []
     end
@@ -652,7 +617,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   # === Tests for timestamp filtering ===
 
   test "comment_created_after_tracking_started? returns true when no tracking timestamp" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     comment_data = { "created_at" => "2025-01-01T12:00:00Z" }
     assert job.send(:comment_created_after_tracking_started?, comment_data, nil)
@@ -660,7 +625,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "comment_created_after_tracking_started? returns true when comment created_at is missing" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     comment_data = {}
     assert job.send(:comment_created_after_tracking_started?, comment_data, "2025-01-01T12:00:00Z")
@@ -670,7 +635,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "comment_created_after_tracking_started? returns true when comment is after tracking started" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     # Comment created 1 hour after tracking started
     comment_data = { "created_at" => "2025-01-01T13:00:00Z" }
@@ -680,7 +645,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "comment_created_after_tracking_started? returns true when comment is exactly at tracking start time" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     comment_data = { "created_at" => "2025-01-01T12:00:00Z" }
     tracking_started = "2025-01-01T12:00:00Z"
@@ -689,7 +654,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "comment_created_after_tracking_started? returns false when comment is before tracking started" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     # Comment created 1 hour before tracking started
     comment_data = { "created_at" => "2025-01-01T11:00:00Z" }
@@ -699,7 +664,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "comment_created_after_tracking_started? handles invalid timestamp gracefully" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     comment_data = { "created_at" => "not-a-valid-timestamp" }
     tracking_started = "2025-01-01T12:00:00Z"
@@ -708,7 +673,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert job.send(:comment_created_after_tracking_started?, comment_data, tracking_started)
   end
 
-  test "poll_comments_for_session does not enqueue for comments before tracking started" do
+  test "evaluate does not enqueue for comments before tracking started" do
     @session_with_pr.update!(custom_metadata: {
       "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ],
       "github_pr_tracking_started_at" => { "https://github.com/owner/repo/pull/123" => "2025-01-01T14:00:00Z" }
@@ -717,8 +682,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     # Mock the prompt builder (shouldn't be called since comment is too old)
     GithubCommentPromptBuilder.expects(:new).never
 
-    job = TestJobWithOldComment.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithOldComment.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -730,7 +695,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_equal 0, @session_with_pr.enqueued_messages.count
   end
 
-  test "poll_comments_for_session enqueues comments after tracking started" do
+  test "evaluate enqueues comments after tracking started" do
     @session_with_pr.update!(custom_metadata: {
       "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ],
       "github_pr_tracking_started_at" => { "https://github.com/owner/repo/pull/123" => "2025-01-01T10:00:00Z" }
@@ -742,8 +707,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     mock_builder.stubs(:build).returns("Test prompt content")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
-    job = TestJobWithNewComment.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithNewComment.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -751,7 +716,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_equal 1, @session_with_pr.enqueued_messages.count
   end
 
-  test "poll_comments_for_session allows comments when no tracking timestamp exists (legacy sessions)" do
+  test "evaluate allows comments when no tracking timestamp exists (legacy sessions)" do
     # Legacy session without tracking timestamp
     @session_with_pr.update!(custom_metadata: {
       "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ]
@@ -763,8 +728,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     mock_builder.stubs(:build).returns("Test prompt content")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
-    job = TestJobWithWhitelistedComment.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -773,7 +738,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   # Test subclass with a comment created BEFORE tracking started
-  class TestJobWithOldComment < GithubCommentPollerJob
+  class TestEvaluatorWithOldComment < Github::CommentEvaluator
     def fetch_pr_comments(_owner, _repo, _pr_number)
       [
         {
@@ -792,7 +757,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   # Test subclass with a comment created AFTER tracking started
-  class TestJobWithNewComment < GithubCommentPollerJob
+  class TestEvaluatorWithNewComment < Github::CommentEvaluator
     def fetch_pr_comments(_owner, _repo, _pr_number)
       [
         {
@@ -812,7 +777,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
   # === Tests for review comments with timestamp filtering ===
 
-  test "poll_comments_for_session does not enqueue for review comments before tracking started" do
+  test "evaluate does not enqueue for review comments before tracking started" do
     @session_with_pr.update!(custom_metadata: {
       "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ],
       "github_pr_tracking_started_at" => { "https://github.com/owner/repo/pull/123" => "2025-01-01T14:00:00Z" }
@@ -821,8 +786,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     # Mock the prompt builder (shouldn't be called since comment is too old)
     GithubCommentPromptBuilder.expects(:new).never
 
-    job = TestJobWithOldReviewComment.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithOldReviewComment.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -834,7 +799,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_equal 0, @session_with_pr.enqueued_messages.count
   end
 
-  test "poll_comments_for_session enqueues review comments after tracking started" do
+  test "evaluate enqueues review comments after tracking started" do
     @session_with_pr.update!(custom_metadata: {
       "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ],
       "github_pr_tracking_started_at" => { "https://github.com/owner/repo/pull/123" => "2025-01-01T10:00:00Z" }
@@ -846,8 +811,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     mock_builder.stubs(:build).returns("Test review prompt content")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
-    job = TestJobWithNewReviewComment.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithNewReviewComment.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -856,7 +821,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   # Test subclass with a review comment created BEFORE tracking started
-  class TestJobWithOldReviewComment < GithubCommentPollerJob
+  class TestEvaluatorWithOldReviewComment < Github::CommentEvaluator
     def fetch_pr_comments(_owner, _repo, _pr_number)
       []
     end
@@ -881,7 +846,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   # === Automated comments ===
 
   test "automated_comment? recognizes a Zimmer automation report heading" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     assert job.send(:automated_comment?, merge_gate_body)
     assert job.send(:automated_comment?, "## Merge gate\n\nVerdict: HOLD")
@@ -892,7 +857,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "automated_comment? leaves human comments alone" do
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     assert_not job.send(:automated_comment?, "Please fix this bug")
     assert_not job.send(:automated_comment?, "The merge gate rated this small — do you agree?")
@@ -904,14 +869,14 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_not job.send(:automated_comment?, nil)
   end
 
-  test "poll_comments_for_session ignores a merge gate comment authored by a whitelisted user" do
+  test "evaluate ignores a merge gate comment authored by a whitelisted user" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
     # No follow-up means no GitHub API traffic at all — in particular, no 👀 reaction
     BoundedSubprocess.expects(:run).never
 
-    job = TestJobWithMergeGateComment.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithMergeGateComment.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -921,13 +886,13 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     assert_equal 1, tracked.size
   end
 
-  test "poll_comments_for_session ignores a merge gate review comment" do
+  test "evaluate ignores a merge gate review comment" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
     BoundedSubprocess.expects(:run).never
 
-    job = TestJobWithMergeGateReviewComment.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithMergeGateReviewComment.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -936,7 +901,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
   # === The 👀 reaction is only a promise Zimmer can keep ===
 
-  test "poll_comments_for_session neither reacts nor enqueues when the visibility lookup fails" do
+  test "evaluate neither reacts nor enqueues when the visibility lookup fails" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/otherowner/repo/pull/123" ] })
 
     # A failed `gh api repos/...` is the only gh call we expect: no reaction follows
@@ -945,29 +910,29 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
             timeout: GithubCommentPromptBuilder::VISIBILITY_TIMEOUT)
       .returns([ "", "HTTP 502", fake_process_status(exitstatus: 1) ])
 
-    job = TestJobWithWhitelistedComment.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
     assert_equal 0, @session_with_pr.enqueued_messages.count
   end
 
-  test "poll_comments_for_session neither reacts nor enqueues on an untrusted public repo" do
+  test "evaluate neither reacts nor enqueues on an untrusted public repo" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/otherowner/repo/pull/123" ] })
 
     GithubCommentPromptBuilder.any_instance.stubs(:public_repo?).returns(true)
     BoundedSubprocess.expects(:run).never
 
-    job = TestJobWithWhitelistedComment.new
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
     assert_equal 0, @session_with_pr.enqueued_messages.count
   end
 
-  test "poll_comments_for_session reacts and enqueues for a human comment on a trusted repo" do
+  test "evaluate reacts and enqueues for a human comment on a trusted repo" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/tadasant/zimmer/pull/123" ] })
 
     mock_builder = mock
@@ -976,10 +941,10 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
     reacted_to = []
-    job = TestJobWithWhitelistedComment.new
+    job = TestEvaluatorWithWhitelistedComment.new
     job.define_singleton_method(:add_eyes_reaction) { |info| reacted_to << info.dig(:data, "id") }
 
-    job.send(:poll_comments_for_session, @session_with_pr)
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
 
     @session_with_pr.reload
 
@@ -995,7 +960,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
     reacted_to = []
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
     job.define_singleton_method(:add_eyes_reaction) { |info| reacted_to << info.dig(:data, "id") }
 
     job.send(:enqueue_follow_up_prompt, @session_with_pr, human_comment_info)
@@ -1011,7 +976,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
     reacted_to = []
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
     job.define_singleton_method(:add_eyes_reaction) { |info| reacted_to << info.dig(:data, "id") }
 
     job.send(:enqueue_follow_up_prompt, @session_with_pr, human_comment_info)
@@ -1028,7 +993,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     BoundedSubprocess.stubs(:run).returns([ "", "API error", fake_process_status(exitstatus: 1) ])
 
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     assert_nothing_raised do
       job.send(:enqueue_follow_up_prompt, @session_with_pr, human_comment_info)
@@ -1045,7 +1010,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     BoundedSubprocess.stubs(:run).raises(Errno::ENOENT, "gh")
 
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     assert_nothing_raised do
       job.send(:enqueue_follow_up_prompt, @session_with_pr, human_comment_info)
@@ -1056,7 +1021,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
   # Test subclass that returns the merge gate's rating comment, posted (as it is in
   # production) by `gh` authenticated as a whitelisted human and with no [CC Says] marker
-  class TestJobWithMergeGateComment < GithubCommentPollerJob
+  class TestEvaluatorWithMergeGateComment < Github::CommentEvaluator
     def fetch_pr_comments(_owner, _repo, _pr_number)
       [
         {
@@ -1076,7 +1041,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
   # Test subclass that returns the merge gate's rating as an inline review comment, to
   # cover the review-comment call site of the filter as well as the PR-comment one
-  class TestJobWithMergeGateReviewComment < GithubCommentPollerJob
+  class TestEvaluatorWithMergeGateReviewComment < Github::CommentEvaluator
     def fetch_pr_comments(_owner, _repo, _pr_number)
       []
     end
@@ -1099,7 +1064,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   # Test subclass with a review comment created AFTER tracking started
-  class TestJobWithNewReviewComment < GithubCommentPollerJob
+  class TestEvaluatorWithNewReviewComment < Github::CommentEvaluator
     def fetch_pr_comments(_owner, _repo, _pr_number)
       []
     end
@@ -1131,7 +1096,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     BODY
   end
 
-  # A genuine human comment on a trusted repo, shaped as poll_comments_for_session builds it
+  # A genuine human comment on a trusted repo, shaped as #evaluate builds it
   def human_comment_info
     {
       type: "pr",
@@ -1152,7 +1117,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   # A whitelisted-author comment that a Zimmer session actually posted. Because
   # `gh` authenticates as the human inside every session, this is byte-identical
   # to a human comment from GitHub's side — which is the bug.
-  class TestJobWithAgentPostedComment < GithubCommentPollerJob
+  class TestEvaluatorWithAgentPostedComment < Github::CommentEvaluator
     def fetch_pr_comments(_owner, _repo, _pr_number)
       [
         {
@@ -1172,7 +1137,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
   # The same comment, arriving fresh — inside the window where the authorship hook
   # may not have claimed it yet.
-  class TestJobWithFreshComment < GithubCommentPollerJob
+  class TestEvaluatorWithFreshComment < Github::CommentEvaluator
     # Stamped once, so a later poll sees the same comment aging rather than a new
     # one created at the new "now".
     def created_at
@@ -1212,7 +1177,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     session.reload.custom_metadata.dig("github_comments", "https://github.com/tadasant/zimmer/pull/123", "pr_comments")
   end
 
-  test "poll_comments_for_session does not enqueue a comment another session posted" do
+  test "evaluate does not enqueue a comment another session posted" do
     session = trusted_pr_session
     poster = sessions(:running)
     AgentPostedGithubComment.record!(session: poster, comment_type: "pr", comment_id: 5145406778)
@@ -1221,105 +1186,105 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     # No 👀 either: reacting is a promise to reply, and there is nothing to reply to.
     BoundedSubprocess.expects(:run).never
 
-    TestJobWithAgentPostedComment.new.send(:poll_comments_for_session, session)
+    TestEvaluatorWithAgentPostedComment.new.evaluate(session, Github::PrRef.for_session(session))
 
     assert_equal 0, session.reload.enqueued_messages.count
     assert_equal "skipped:agent_posted", stored_pr_comments(session).first["dispatch_state"]
   end
 
-  test "poll_comments_for_session still records an agent-posted comment in custom_metadata" do
+  test "evaluate still records an agent-posted comment in custom_metadata" do
     session = trusted_pr_session
     AgentPostedGithubComment.record!(session: sessions(:running), comment_type: "pr", comment_id: 5145406778)
     stub_actionable_builder
 
-    TestJobWithAgentPostedComment.new.send(:poll_comments_for_session, session)
+    TestEvaluatorWithAgentPostedComment.new.evaluate(session, Github::PrRef.for_session(session))
 
     stored = stored_pr_comments(session)
     assert_equal 1, stored.size, "the comment is suppressed, not hidden"
     assert_equal 5145406778, stored.first["id"]
   end
 
-  test "poll_comments_for_session defers a comment younger than the attribution grace period" do
+  test "evaluate defers a comment younger than the attribution grace period" do
     session = trusted_pr_session
     stub_actionable_builder
     BoundedSubprocess.expects(:run).never
 
-    TestJobWithFreshComment.new.send(:poll_comments_for_session, session)
+    TestEvaluatorWithFreshComment.new.evaluate(session, Github::PrRef.for_session(session))
 
     assert_equal 0, session.reload.enqueued_messages.count
     assert_equal "deferred", stored_pr_comments(session).first["dispatch_state"]
   end
 
-  test "poll_comments_for_session dispatches a deferred human comment once it ages past the grace period" do
+  test "evaluate dispatches a deferred human comment once it ages past the grace period" do
     session = trusted_pr_session
     stub_actionable_builder
-    job = TestJobWithFreshComment.new
+    job = TestEvaluatorWithFreshComment.new
     job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
 
-    job.send(:poll_comments_for_session, session)
+    job.evaluate(session, Github::PrRef.for_session(session))
     assert_equal "deferred", stored_pr_comments(session).first["dispatch_state"]
 
-    travel (GithubCommentPollerJob::ATTRIBUTION_GRACE_SECONDS + 1).seconds do
-      job.send(:poll_comments_for_session, session)
+    travel (Github::CommentEvaluator::ATTRIBUTION_GRACE_SECONDS + 1).seconds do
+      job.evaluate(session, Github::PrRef.for_session(session))
     end
 
     assert_equal 1, session.reload.enqueued_messages.count
     assert_equal "dispatched", stored_pr_comments(session).first["dispatch_state"]
   end
 
-  test "poll_comments_for_session suppresses a deferred comment the authorship hook claims during the grace period" do
+  test "evaluate suppresses a deferred comment the authorship hook claims during the grace period" do
     # The race the grace period exists for: the poller sees the comment before
     # TranscriptHooks::GithubCommentAuthorshipHook has recorded who posted it.
     session = trusted_pr_session
     stub_actionable_builder
-    job = TestJobWithFreshComment.new
+    job = TestEvaluatorWithFreshComment.new
 
-    job.send(:poll_comments_for_session, session)
+    job.evaluate(session, Github::PrRef.for_session(session))
     assert_equal "deferred", stored_pr_comments(session).first["dispatch_state"]
 
     AgentPostedGithubComment.record!(session: sessions(:running), comment_type: "pr", comment_id: 5145406778)
 
     BoundedSubprocess.expects(:run).never
-    travel (GithubCommentPollerJob::ATTRIBUTION_GRACE_SECONDS + 1).seconds do
-      job.send(:poll_comments_for_session, session)
+    travel (Github::CommentEvaluator::ATTRIBUTION_GRACE_SECONDS + 1).seconds do
+      job.evaluate(session, Github::PrRef.for_session(session))
     end
 
     assert_equal 0, session.reload.enqueued_messages.count
     assert_equal "skipped:agent_posted", stored_pr_comments(session).first["dispatch_state"]
   end
 
-  test "poll_comments_for_session leaves a terminal dispatch_state alone on later polls" do
+  test "evaluate leaves a terminal dispatch_state alone on later polls" do
     session = trusted_pr_session
     stub_actionable_builder
-    job = TestJobWithNonWhitelistedComment.new
+    job = TestEvaluatorWithNonWhitelistedComment.new
 
-    job.send(:poll_comments_for_session, session)
+    job.evaluate(session, Github::PrRef.for_session(session))
     stored = stored_pr_comments(session)
     assert_equal "skipped:author_not_whitelisted", stored.first["dispatch_state"]
 
     # A second poll must not re-open a decision that was already made.
-    job.send(:poll_comments_for_session, session)
+    job.evaluate(session, Github::PrRef.for_session(session))
     assert_equal 1, stored_pr_comments(session).size
     assert_equal "skipped:author_not_whitelisted", stored_pr_comments(session).first["dispatch_state"]
     assert_equal 0, session.reload.enqueued_messages.count
   end
 
-  test "poll_comments_for_session records why a comment with the agent marker was skipped" do
+  test "evaluate records why a comment with the agent marker was skipped" do
     session = trusted_pr_session
     stub_actionable_builder
 
-    TestJobWithAgentComment.new.send(:poll_comments_for_session, session)
+    TestEvaluatorWithAgentComment.new.evaluate(session, Github::PrRef.for_session(session))
 
     assert_equal "skipped:self_marker", stored_pr_comments(session).first["dispatch_state"]
   end
 
-  test "poll_comments_for_session dispatches a human comment when nothing claims it" do
+  test "evaluate dispatches a human comment when nothing claims it" do
     session = trusted_pr_session
     stub_actionable_builder
-    job = TestJobWithWhitelistedComment.new
+    job = TestEvaluatorWithWhitelistedComment.new
     job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
 
-    job.send(:poll_comments_for_session, session)
+    job.evaluate(session, Github::PrRef.for_session(session))
 
     assert_equal 1, session.reload.enqueued_messages.count
     assert_equal "dispatched", stored_pr_comments(session).first["dispatch_state"]
@@ -1330,14 +1295,14 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     stub_actionable_builder
     AgentPostedGithubComment.stubs(:posted_by_agent).raises(ActiveRecord::StatementInvalid, "connection lost")
 
-    job = TestJobWithWhitelistedComment.new
+    job = TestEvaluatorWithWhitelistedComment.new
     job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
-    job.send(:poll_comments_for_session, session)
+    job.evaluate(session, Github::PrRef.for_session(session))
 
     assert_equal 1, session.reload.enqueued_messages.count
   end
   # A comment on a repo whose visibility `gh` cannot report.
-  class TestJobWithUnknownVisibilityComment < GithubCommentPollerJob
+  class TestEvaluatorWithUnknownVisibilityComment < Github::CommentEvaluator
     def created_at
       @created_at ||= 5.minutes.ago.iso8601
     end
@@ -1367,8 +1332,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     failing_builder.stubs(:visibility_lookup_failed?).returns(true)
     GithubCommentPromptBuilder.stubs(:new).returns(failing_builder)
 
-    job = TestJobWithUnknownVisibilityComment.new
-    job.send(:poll_comments_for_session, session)
+    job = TestEvaluatorWithUnknownVisibilityComment.new
+    job.evaluate(session, Github::PrRef.for_session(session))
 
     assert_equal 0, session.reload.enqueued_messages.count
     assert_equal "deferred", stored_pr_comments(session).first["dispatch_state"]
@@ -1376,7 +1341,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     # Once `gh` answers, the same comment goes out rather than having been lost.
     stub_actionable_builder
     job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
-    job.send(:poll_comments_for_session, session)
+    job.evaluate(session, Github::PrRef.for_session(session))
 
     assert_equal 1, session.reload.enqueued_messages.count
     assert_equal "dispatched", stored_pr_comments(session).first["dispatch_state"]
@@ -1390,11 +1355,11 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     failing_builder.stubs(:visibility_lookup_failed?).returns(true)
     GithubCommentPromptBuilder.stubs(:new).returns(failing_builder)
 
-    job = TestJobWithUnknownVisibilityComment.new
+    job = TestEvaluatorWithUnknownVisibilityComment.new
     job.created_at # stamp the comment's age now, so travelling ages the comment itself
 
-    travel (GithubCommentPollerJob::VISIBILITY_RETRY_WINDOW_SECONDS + 60).seconds do
-      job.send(:poll_comments_for_session, session)
+    travel (Github::CommentEvaluator::VISIBILITY_RETRY_WINDOW_SECONDS + 60).seconds do
+      job.evaluate(session, Github::PrRef.for_session(session))
     end
 
     assert_equal "skipped:visibility_unknown", stored_pr_comments(session).first["dispatch_state"]
@@ -1408,8 +1373,8 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     public_builder.stubs(:visibility_lookup_failed?).returns(false)
     GithubCommentPromptBuilder.stubs(:new).returns(public_builder)
 
-    job = TestJobWithWhitelistedComment.new
-    job.send(:poll_comments_for_session, session)
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.evaluate(session, Github::PrRef.for_session(session))
 
     assert_equal "skipped:not_actionable", stored_pr_comments(session).first["dispatch_state"]
   end
@@ -1418,17 +1383,17 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     session = trusted_pr_session
     stub_actionable_builder
 
-    job = TestJobWithWhitelistedComment.new
+    job = TestEvaluatorWithWhitelistedComment.new
     # Die where the process would: after the pre-dispatch write, inside the handover.
     job.define_singleton_method(:enqueue_follow_up_prompt) { |_s, _i| raise Interrupt }
 
-    assert_raises(Interrupt) { job.send(:poll_comments_for_session, session) }
+    assert_raises(Interrupt) { job.evaluate(session, Github::PrRef.for_session(session)) }
 
     assert_equal "dispatching", stored_pr_comments(session).first["dispatch_state"],
       "the comment must be on record before the handover, so it is not re-dispatched forever"
 
     # A later poll leaves that terminal state alone.
-    TestJobWithWhitelistedComment.new.send(:poll_comments_for_session, session)
+    TestEvaluatorWithWhitelistedComment.new.evaluate(session, Github::PrRef.for_session(session))
     assert_equal "dispatching", stored_pr_comments(session).first["dispatch_state"]
     assert_equal 0, session.reload.enqueued_messages.count
   end
@@ -1445,7 +1410,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   test "fetch_paginated_comments treats a nil status as a failed fetch instead of raising" do
     BoundedSubprocess.stubs(:run).returns([ "", "gh: connection reset", nil ])
 
-    job = GithubCommentPollerJob.new
+    job = Github::CommentEvaluator.new
 
     result = nil
     assert_nothing_raised do
@@ -1461,7 +1426,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     BoundedSubprocess.stubs(:run).returns([ "", "gh: connection reset", nil ])
 
     warnings = capture_warn_logs do
-      GithubCommentPollerJob.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
+      Github::CommentEvaluator.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
     end
 
     warning = warnings.find { |line| line.include?("Failed to fetch comments") }
@@ -1474,16 +1439,16 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
   test "fetch_paginated_comments returns the pages it already read when a later page is reaped" do
     # A full first page makes the loop ask for page 2; page 2 loses the race with the reaper.
-    full_page = Array.new(GithubCommentPollerJob::MAX_COMMENTS_PER_PAGE) do |i|
+    full_page = Array.new(Github::CommentEvaluator::MAX_COMMENTS_PER_PAGE) do |i|
       { "id" => i + 1, "user" => { "login" => "someone" }, "body" => "hi" }
     end
     BoundedSubprocess.stubs(:run)
       .returns([ full_page.to_json, "", fake_process_status(exitstatus: 0) ])
       .then.returns([ "", "", nil ])
 
-    result = GithubCommentPollerJob.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
+    result = Github::CommentEvaluator.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
 
-    assert_equal GithubCommentPollerJob::MAX_COMMENTS_PER_PAGE, result.length
+    assert_equal Github::CommentEvaluator::MAX_COMMENTS_PER_PAGE, result.length
     assert_equal 1, result.first["id"]
   end
 
@@ -1502,7 +1467,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     # `rescue StandardError` already swallowed the NoMethodError. The observable delta
     # is which warn line it emits — the reaction failing, not the job throwing.
     warnings = capture_warn_logs do
-      GithubCommentPollerJob.new.send(:add_eyes_reaction, comment_info)
+      Github::CommentEvaluator.new.send(:add_eyes_reaction, comment_info)
     end
 
     warning = warnings.find { |line| line.include?("Failed to add eyes reaction") }
@@ -1524,10 +1489,10 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     BoundedSubprocess.expects(:run).at_least_once.returns([ "", "gh: connection reset", nil ])
 
     # This is the regression: the crash surfaced as
-    # "[GithubCommentPollerJob] Error polling comments for session N: undefined method
+    # "[Github::CommentEvaluator] Error polling comments for session N: undefined method
     # 'success?' for nil" from the per-session rescue in #perform, which is what paged.
     errors = capture_error_logs do
-      assert_nothing_raised { GithubCommentPollerJob.perform_now }
+      assert_nothing_raised { GithubPrPollPassJob.perform_now }
     end
 
     assert_empty errors, "a reaped gh child must not produce an ERROR record — that is what paged"
@@ -1543,24 +1508,24 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   test "fetch_paginated_comments bounds each page and asks for the argv it means to run" do
     BoundedSubprocess.expects(:run)
       .with([ "gh", "api",
-              "repos/owner/repo/issues/1/comments?per_page=#{GithubCommentPollerJob::MAX_COMMENTS_PER_PAGE}&page=1",
+              "repos/owner/repo/issues/1/comments?per_page=#{Github::CommentEvaluator::MAX_COMMENTS_PER_PAGE}&page=1",
               "--jq", "." ],
-            timeout: GithubCommentPollerJob::COMMENT_PAGE_TIMEOUT)
+            timeout: Github::CommentEvaluator::COMMENT_PAGE_TIMEOUT)
       .returns([ "[]", "", fake_process_status(exitstatus: 0) ])
 
-    assert_equal [], GithubCommentPollerJob.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
+    assert_equal [], Github::CommentEvaluator.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
   end
 
   test "fetch_paginated_comments treats a timed-out page as a failed fetch instead of raising" do
     BoundedSubprocess.stubs(:run).raises(
       BoundedSubprocess::TimeoutError,
-      "command timed out after #{GithubCommentPollerJob::COMMENT_PAGE_TIMEOUT}s (process group killed): gh api"
+      "command timed out after #{Github::CommentEvaluator::COMMENT_PAGE_TIMEOUT}s (process group killed): gh api"
     )
 
     result = nil
     warnings = capture_warn_logs do
       assert_nothing_raised do
-        result = GithubCommentPollerJob.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
+        result = Github::CommentEvaluator.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
       end
     end
 
@@ -1575,23 +1540,23 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   test "fetch_paginated_comments returns the pages it already read when a later page times out" do
     # The bound is PER PAGE: a full first page makes the loop ask for page 2, and page 2
     # is the one that hangs. The pages already read survive; the loop does not.
-    full_page = Array.new(GithubCommentPollerJob::MAX_COMMENTS_PER_PAGE) do |i|
+    full_page = Array.new(Github::CommentEvaluator::MAX_COMMENTS_PER_PAGE) do |i|
       { "id" => i + 1, "user" => { "login" => "someone" }, "body" => "hi" }
     end
     BoundedSubprocess.stubs(:run)
       .returns([ full_page.to_json, "", fake_process_status(exitstatus: 0) ])
       .then.raises(BoundedSubprocess::TimeoutError, "command timed out after 20s (process group killed): gh api")
 
-    result = GithubCommentPollerJob.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
+    result = Github::CommentEvaluator.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
 
-    assert_equal GithubCommentPollerJob::MAX_COMMENTS_PER_PAGE, result.length
+    assert_equal Github::CommentEvaluator::MAX_COMMENTS_PER_PAGE, result.length
     assert_equal 1, result.first["id"]
   end
 
   test "add_eyes_reaction swallows a timed-out reaction rather than letting it escape" do
     BoundedSubprocess.stubs(:run).raises(
       BoundedSubprocess::TimeoutError,
-      "command timed out after #{GithubCommentPollerJob::REACTION_TIMEOUT}s (process group killed): gh api"
+      "command timed out after #{Github::CommentEvaluator::REACTION_TIMEOUT}s (process group killed): gh api"
     )
 
     comment_info = {
@@ -1606,7 +1571,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     # follow-up prompt — so a hang has to land in the same swallow every other reaction
     # failure does, and be logged as one.
     warnings = capture_warn_logs do
-      assert_nothing_raised { GithubCommentPollerJob.new.send(:add_eyes_reaction, comment_info) }
+      assert_nothing_raised { Github::CommentEvaluator.new.send(:add_eyes_reaction, comment_info) }
     end
 
     warning = warnings.find { |line| line.include?("Failed to add eyes reaction") }
@@ -1625,7 +1590,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     )
 
     errors = capture_error_logs do
-      assert_nothing_raised { GithubCommentPollerJob.perform_now }
+      assert_nothing_raised { GithubPrPollPassJob.perform_now }
     end
 
     assert_empty errors,

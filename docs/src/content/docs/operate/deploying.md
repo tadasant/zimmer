@@ -272,8 +272,8 @@ sequenceDiagram
 ```
 
 Dropping `sessions.blocked_by_session_id` in one phase did exactly this: 12 `ERROR` records in 12.8
-seconds across `GitHubPullRequestPollerJob`, `GithubCommentPollerJob` and
-`GitHubMergeConflictPollerJob`, which crossed the backend log-error alert threshold and paged
+seconds across the three GitHub pollers of the day — since fused into `GithubPrPollPassJob` — which
+crossed the backend log-error alert threshold and paged
 `#alerts`. The polls it interrupted really did abort — they recovered on the next tick, but a
 PR-merge notification arrived a poll interval late. See
 [zimmer#482](https://github.com/tadasant/zimmer/issues/482).

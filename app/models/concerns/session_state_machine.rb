@@ -137,7 +137,7 @@ module SessionStateMachine
   # Set by the caller immediately before `archive!`. Transient, never persisted.
   attr_accessor :archive_forced
 
-  # PR statuses GitHubPullRequestPollerJob treats as the end of the story. Any
+  # PR statuses Github::PrStatusEvaluator treats as the end of the story. Any
   # other recorded status means Zimmer still expected the PR to move.
   TERMINAL_PR_STATUSES = %w[merged closed].freeze
 
@@ -1112,7 +1112,7 @@ module SessionStateMachine
   #
   # Public because two callers need the same answer for opposite reasons. The
   # archive line reports them as PRs that will now never be announced;
-  # GitHubPullRequestPollerJob reads them as "this session is waiting on a
+  # Github::PrPollPass reads them as "this session is waiting on a
   # specific event", which is what stops PollBackoff's idle-decay from applying
   # to a session whose idleness IS the waiting.
   def unresolved_pr_urls
@@ -1627,7 +1627,7 @@ module SessionStateMachine
   # The pull requests this session opened that Zimmer never saw reach a terminal
   # state, named on the archive line.
   #
-  # Archiving is what removes a session from GitHubPullRequestPollerJob's scope
+  # Archiving is what removes a session from Github::PrPollPass's scope
   # (`with_github_prs` excludes archived and failed sessions), so it also ends any chance
   # of the merge message the PR goals in config/goals.json promise: "the
   # pull-request poller sends this session a message when the PR merges, and

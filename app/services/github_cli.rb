@@ -6,8 +6,8 @@
 # non-zero exit — it is the call that never returns. During a GitHub REST incident
 # a request can stall with the TCP connection half-open: no response, no reset. A
 # bare `Open3.capture3` blocks the calling thread forever on that, and the three
-# GitHub pollers (`GitHubPullRequestPollerJob`, `GithubCommentPollerJob`,
-# `GitHubMergeConflictPollerJob`) are `total_limit: 1` singletons, so one hung call
+# PR poll pass (`GithubPrPollPassJob`, which fused the three GitHub pollers) is a
+# `total_limit: 1` singleton, so one hung call
 # holds the only slot and every subsequent tick is a no-op enqueue. Polling freezes
 # with nothing raised and nothing alerted — and unlike `GithubTriggerPollerJob`,
 # none of those three has a heartbeat or a watchdog to notice (#458).

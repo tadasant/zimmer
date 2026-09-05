@@ -4,7 +4,7 @@ require "json"
 
 # Whether a GitHub PR can be merged into its base branch *right now*.
 #
-# GitHubMergeConflictPollerJob answers a narrower version of the same question
+# Github::MergeConflictEvaluator answers a narrower version of the same question
 # on its own cron tick, and keeps its own copy of the read: it wraps the call in
 # a null-retry loop, feeds the two-poll debounce, and its private methods are
 # what its tests stub. This module is the other caller — the one that has to ask
