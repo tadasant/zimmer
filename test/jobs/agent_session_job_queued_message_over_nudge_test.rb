@@ -136,6 +136,63 @@ class AgentSessionJobQueuedMessageOverNudgeTest < ActiveJob::TestCase
     assert_includes cli.resumed_sessions.first[:prompt], AutomatedPrompts::SYSTEM_RECOVERY
   end
 
+  # THE ONE THAT LOSES THE MESSAGE. Releasing `running_job_id` is something only
+  # the processor's handoff branch does, and that branch is selected by the
+  # session already being `running`. From `needs_input` the processor resumes
+  # instead, leaving `running_job_id` pointing at the job that is standing down —
+  # so the fresh AgentSessionJob would be refused by #perform's concurrency guard
+  # and the message would be gone from the queue with no turn behind it.
+  test "a session that is not running is left to the ordinary follow-up path" do
+    @session.update!(status: :needs_input, running_job_id: SecureRandom.uuid)
+    queue("must not be claimed by a job that is standing down")
+
+    cli = run_job(@session, nudge)
+
+    assert_equal 1, cli.resumed_sessions.length, "the nudge is delivered instead, as before"
+    assert_includes cli.resumed_sessions.first[:prompt], AutomatedPrompts::SYSTEM_RECOVERY
+    refute @session.logs.where("content LIKE ?", "%instead of the automated recovery nudge%").exists?,
+           "the turn must not be handed over when the handoff cannot release the job lock"
+  end
+
+  # A `running` session's may_resume? is false, so the processor performs no
+  # resume — and cancel_pending_one_time_wake_triggers, which a resume would fire,
+  # never runs. The wakes a SYSTEM_RECOVERY resume deliberately preserves survive
+  # the handoff exactly as they survive the nudge.
+  test "the handoff preserves the armed wakes a recovery resume would have kept" do
+    Session.any_instance.expects(:cancel_pending_one_time_wake_triggers).never
+    queue("the actual work")
+
+    run_job(@session, nudge)
+
+    assert_empty @session.enqueued_messages.pending, "the message still took the turn"
+  end
+
+  # A session parked on a quota or auth wall would spend the message on a turn
+  # that hits the same wall and parks again — the refusal EnqueuedMessageDrainJob
+  # and both end-of-turn handoff sites already make.
+  test "a session parked on an auth outage keeps its queued message" do
+    @session.merge_metadata!("auth_outage_reason" => "quota_exhausted")
+    message = queue("do not burn me on the wall")
+
+    run_job(@session, nudge)
+
+    assert_equal "pending", message.reload.status
+  end
+
+  # The gate reads this job's ARGUMENT, but the follow-up arm resolves the prompt
+  # as `pending_follow_up_prompt || follow_up_prompt`. A human prompt stamped
+  # after this job was enqueued is what would actually be delivered, and taking
+  # the turn from it would contradict "scoped to the nudge on purpose".
+  test "a human prompt stamped for this turn is not preempted by the queue" do
+    queue("queued earlier")
+    @session.merge_metadata!("pending_follow_up_prompt" => "Actually, use the other branch")
+
+    cli = run_job(@session, nudge)
+
+    assert_equal 1, cli.resumed_sessions.length
+    assert_includes cli.resumed_sessions.first[:prompt], "Actually, use the other branch"
+  end
+
   test "a session that never established a runtime session id is left to the fresh-start path" do
     # A follow-up prompt into a session with no session_id is reclassified as a
     # FRESH START, which spawns on the session's OWN prompt and discards the

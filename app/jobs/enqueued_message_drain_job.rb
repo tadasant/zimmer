@@ -211,12 +211,49 @@ class EnqueuedMessageDrainJob < ApplicationJob
   # moved on is retired rather than delivered, so a wake is only ever spent on a
   # message that still says something.
   def dormant_by_design_reason(session)
-    # Never started. A follow-up prompt into a session with no runtime session id
-    # is reclassified by AgentSessionJob as a FRESH START, which runs the
-    # session's own prompt and DISCARDS the follow-up — so "delivering" here
-    # would destroy the message. It drains at the end of the first turn like any
-    # other, through AgentSessionJob's ordinary end-of-turn path.
-    return "has not started yet" if session.never_ran?
+    # A job is already driving it. `waiting` is not only a resting state: it is
+    # also where a session sits for the whole of its FIRST START, from the moment
+    # AgentSessionJob claims `running_job_id` through the clone, the session-id
+    # write and the spawn, until the transition to `running` at the far end. That
+    # window is seconds to tens of seconds, and in it the session looks idle by
+    # every other test here — it has a session id, it is not held, nothing is
+    # parked.
+    #
+    # Delivering into it loses the message outright rather than merely delivering
+    # it early. EnqueuedMessageProcessorService would take its `resume!` branch
+    # (the handoff branch, the only one that clears `running_job_id`, is selected
+    # by the session already being `running`), claim and destroy the row, and
+    # enqueue a fresh AgentSessionJob — which the concurrency guard at the top of
+    # #perform then refuses as a duplicate of the live first-start job. Queue
+    # empty, no turn behind it, and the drain counts it a success so nothing
+    # retries or alerts.
+    #
+    # Costs nothing on the paths this job is for: `pause` clears the marker
+    # through cleanup_running_job, and SpotSessionHold#return_to_queue! and
+    # AuthOutageParkService.resume_parked! clear it too, so a session genuinely at
+    # rest carries no job id. Deliberately scoped to `waiting` rather than asked
+    # of both states — a `needs_input` session with a stale job id is the case
+    # this job's whole bounded-retry-and-alert path already exists to report.
+    return "a job is already driving it" if session.running_job_id.present?
+
+    # No runtime session id. A follow-up prompt into a session with none is
+    # reclassified by AgentSessionJob as a FRESH START, which runs the session's
+    # own prompt and DISCARDS the follow-up — so "delivering" here would destroy
+    # the message. It drains at the end of that first turn like any other,
+    # through AgentSessionJob's ordinary end-of-turn path.
+    #
+    # `session_id.blank?`, deliberately, and NOT `never_ran?`. The two differ by
+    # `transcript.blank?`, and the reclassification this guards against keys on
+    # the session id ALONE — so `never_ran?` is the strictly narrower question
+    # and it misses the population that matters most: a session that HAS run,
+    # and therefore has a transcript, whose stale runtime id was released
+    # (AgentSessionJob's failed-resume recovery and
+    # ProcessLifecycleManager#release_stale_runtime_session_id! both write
+    # `session_id = nil` on a session with a full transcript). Such a session
+    # rests in `waiting` looking idle by every other test here, and draining
+    # into it spends the message on a turn that runs `session.prompt` instead
+    # and throws the message away — while the drain logs a delivery.
+    return "has no runtime session id to resume" if session.session_id.blank?
 
     # Held or paused at the spot quota gate. Delivering would enqueue a turn that
     # SpotSessionHold refuses at the door and re-queues as a fresh row — the
@@ -286,7 +323,7 @@ class EnqueuedMessageDrainJob < ApplicationJob
       level: "error"
     )
 
-    alert_on_undeliverable_queue(session.id, count)
+    alert_on_undeliverable_queue(session.id, count, session.status)
   rescue => e
     # This method IS the loud part. It failing silently is the defect again.
     Rails.logger.error(
@@ -295,19 +332,22 @@ class EnqueuedMessageDrainJob < ApplicationJob
     )
   end
 
-  # Posted AFTER the transaction commits, for a sharper version of the reason
+  # Posted AFTER any open transaction commits, for a sharper version of the reason
   # SessionStateMachine#report_swallowed_side_effect gives: AlertService talks to
-  # Slack synchronously (5s connect / 10s read), and everything in this job runs
-  # inside Session.with_session_lock — a transaction that also holds a
-  # per-session advisory lock. Alerting inline would pin both across a network
-  # round trip, blocking any concurrent interrupt on the one session already in
-  # trouble. after_all_transactions_commit runs the block immediately when no
-  # transaction is open, so nothing is deferred that does not need to be.
-  def alert_on_undeliverable_queue(session_id, count)
+  # Slack synchronously (5s connect / 10s read), and this method is reached from
+  # give_up, whose caller may be inside EnqueuedMessageProcessorService's
+  # transaction on a failed delivery. Alerting inline would pin that transaction —
+  # and the `lock!` it holds on this session's row — across a network round trip,
+  # blocking any concurrent interrupt on the one session already in trouble.
+  # after_all_transactions_commit runs the block immediately when no transaction
+  # is open, which is the ordinary case here, so nothing is deferred that does not
+  # need to be. (This job opens no transaction and takes no advisory lock of its
+  # own — see the class header.)
+  def alert_on_undeliverable_queue(session_id, count, status)
     ActiveRecord.after_all_transactions_commit do
       AlertService.raise_alert(
         "Session idle with an undeliverable queued message",
-        details: "Session #{session_id} is in `needs_input` with #{count} message(s) still queued. " \
+        details: "Session #{session_id} is at rest (#{status}) with #{count} message(s) still queued. " \
                  "#{MAX_ATTEMPTS} attempts to deliver them failed, so the session is sitting idle on work " \
                  "it was given. The messages are still `pending` and will go out on the next turn the " \
                  "session takes — but nothing is going to give it one on its own.\n\n" \
