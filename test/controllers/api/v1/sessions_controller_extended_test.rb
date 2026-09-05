@@ -178,7 +178,11 @@ class Api::V1::SessionsControllerExtendedTest < ActionDispatch::IntegrationTest
     assert_equal [], json["session"]["mcp_servers"]
   end
 
-  test "update_catalog_plugins should regenerate runtime MCP config for bundled plugin servers" do
+  # A plugin's bundled servers join the session's effective set the moment the
+  # plugin is selected. The clone's runtime config is NOT rewritten here — that
+  # waits for the session's next prepare, uniformly across all four catalog
+  # lists and all three surfaces. See Sessions::UpdateCatalogSelection.
+  test "update_catalog_plugins adds the plugin's bundled servers without regenerating the runtime config" do
     Dir.mktmpdir do |temp_dir|
       session = sessions(:needs_input)
       session.update!(
@@ -187,7 +191,8 @@ class Api::V1::SessionsControllerExtendedTest < ActionDispatch::IntegrationTest
         metadata: { "working_directory" => temp_dir }
       )
 
-      AirPrepareService.any_instance.expects(:prepare!).once
+      AirPrepareService.any_instance.expects(:prepare!).never
+      McpOauthCredentialInjector.any_instance.stubs(:check_credentials_status).returns({})
 
       patch catalog_plugins_api_v1_session_path(session), params: {
         catalog_plugins: [ "figma-design-workflow" ]

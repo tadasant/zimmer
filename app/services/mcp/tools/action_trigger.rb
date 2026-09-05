@@ -595,12 +595,14 @@ module Mcp
       def validated_mcp_servers!(servers)
         raise ToolError, "The \"mcp_servers\" parameter must be an array." unless servers.is_a?(Array)
 
-        names = servers.reject(&:blank?).map { |name| name.to_s.strip.first(MAX_CATALOG_ITEM_ID_LENGTH) }
-        invalid = names.reject { |name| ServersConfig.exists?(name) }
+        # Normalized by the same rule a session's own mcp_servers write uses, so
+        # a name a trigger stamps onto the sessions it spawns is bounded and
+        # validated exactly as one set on a session directly would be.
+        names, invalid = Sessions::UpdateCatalogSelection.normalize(:mcp_servers, servers)
         return names if invalid.empty?
 
         raise ToolError, "Invalid MCP server(s): #{invalid.join(', ')}. " \
-                         "Valid MCP servers: #{ServersConfig.all.map(&:name).sort.join(', ')}"
+                         "Valid MCP servers: #{Sessions::UpdateCatalogSelection.valid_ids(:mcp_servers).join(', ')}"
       end
 
       # The three AIR-catalog lists, validated exactly the way action_session's

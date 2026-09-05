@@ -26,6 +26,21 @@ class Sessions::UpdateCatalogSelectionTest < ActiveSupport::TestCase
     assert Mcp::Tool::CATALOG_LISTS.frozen?, "a shared constant that can be mutated in place fails silently"
   end
 
+  # Two tables name the same four columns for different reasons: this one holds
+  # what a *write* needs (bounds, labels, the catalog reader), and
+  # CatalogArtifactReferences holds what *validation and healing* need. They are
+  # allowed to differ in what they carry; they are not allowed to disagree about
+  # which columns exist or which catalog decides an id.
+  test "the write table and the model's catalog references agree on columns and catalogs" do
+    references = Session.catalog_artifact_references.index_by(&:attribute)
+
+    assert_equal references.keys.sort, Session::CATALOG_SELECTIONS.keys.sort
+    Session::CATALOG_SELECTIONS.each do |attribute, spec|
+      assert_equal references.fetch(attribute).config_name, spec[:config],
+        "#{attribute} is validated against one catalog and written against another"
+    end
+  end
+
   test "an unknown attribute is a programming error, not a rejected request" do
     assert_raises(ArgumentError) { call(make_session, :not_an_artifact_list, []) }
   end
