@@ -32,8 +32,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
 
   # Poll `block` every `interval` seconds until it returns truthy or `timeout`
   # elapses. Returns the block's last value (truthy on success, false on
-  # timeout). Mirrors the hand-rolled polling in
-  # ApplicationSystemTestCase#wait_for_turbo_streams_connected: deterministic
+  # timeout). Mirrors the polling in TurboStreamConnectionWait: deterministic
   # waiting on observable state instead of a fixed `sleep` that races async work.
   def wait_until(timeout: 15, interval: 0.05)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
