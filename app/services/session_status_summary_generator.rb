@@ -53,6 +53,20 @@ class SessionStatusSummaryGenerator
   # Session.excluding_status_summary_forks (to keep it out of every list an
   # operator reads).
   FORK_MARKER = "status_summary_for_session_id"
+
+  # Stamped on a fork that a FORCED generation stood up, so a disposal that never
+  # runs the fork can retry with the same forcedness the operator asked for.
+  #
+  # An unforced retry is not a smaller version of a forced one; on this record it
+  # is frequently no retry at all. `#call` returns "Summary is current." for an
+  # unforced run against a record that is not stale, and "Session is in the
+  # trash." for an unforced run against an archived source — and the panel's
+  # Regenerate button is offered in both of those states, which is the whole
+  # reason the forced path exists. So a discard that dropped the flag would stamp
+  # "It is being retried without a fork" on the record and then enqueue a job
+  # that declines, leaving the operator's click answered by a failure that never
+  # clears.
+  FORCED_MARKER = "status_summary_forced"
   INLINE_TRANSCRIPT_MAX_CHARS = 80.kilobytes
 
   # Carried by BOTH summary prompts, which is the point of hoisting it into a
@@ -163,8 +177,16 @@ class SessionStatusSummaryGenerator
     source_id = fork.status_summary_source_id
     return if source_id.blank?
 
+    # Locked and re-read inside, like every other writer on this record
+    # (#attach_fork, #release_claim, #publish). A fork whose AgentSessionJob sat
+    # in the `agents` backlog — the congestion that refused it in the first place
+    # — can have outlived PENDING_TIMEOUT and had its claim taken over, and an
+    # unlocked read-then-write would stomp the newer generation to `failed` and
+    # get its fork abandoned as stale.
     summary = SessionStatusSummary.find_by(session_id: source_id)
-    if summary && summary.fork_session_id == fork.id
+    summary&.with_lock do
+      next unless summary.fork_session_id == fork.id
+
       summary.update!(state: "failed", fork_session_id: nil, error: refused_fork_error(detail))
     end
 
@@ -173,7 +195,11 @@ class SessionStatusSummaryGenerator
     # The same downgrade the harvest job applies to a fork that came back with
     # nothing because the pool was empty: re-forking is what produced this
     # refusal, so the retry has to be the path that needs no fork.
-    SessionStatusSummaryJob.perform_later(source_id, headless: true)
+    #
+    # After the archive rather than before it, and the archive swallows its own
+    # failures, so the retry this record has already been stamped as awaiting is
+    # enqueued whatever happens to the fork's own disposal.
+    SessionStatusSummaryJob.perform_later(source_id, headless: true, force: fork.status_summary_forced?)
   rescue StandardError => e
     Rails.logger.error(
       "[SessionStatusSummaryGenerator] Could not discard refused summary fork #{fork&.id}: #{e.class}: #{e.message}"
@@ -189,11 +215,20 @@ class SessionStatusSummaryGenerator
   end
   private_class_method :refused_fork_error
 
+  # Swallows its own failures, the way #abandon_fork and the harvest job's
+  # #archive_fork do. `archive!` runs a long after-block — stranding enqueued
+  # messages, firing `session_archived` triggers, dismissing notifications,
+  # setting the trash expiry — and letting any of that abort the caller would
+  # cancel the headless retry the record has already been stamped as awaiting.
   def self.archive_refused_fork(fork)
     return if fork.archived?
 
     fork.archive_actor = "Zimmer's status-summary fork cleanup (refused by the spot gate)"
     fork.archive! if fork.may_archive?
+  rescue StandardError => e
+    Rails.logger.error(
+      "[SessionStatusSummaryGenerator] Could not archive refused summary fork #{fork.id}: #{e.class}: #{e.message}"
+    )
   end
   private_class_method :archive_refused_fork
 
@@ -268,7 +303,7 @@ class SessionStatusSummaryGenerator
       # would put the last raw index out of range and fail every automatic
       # generation for this session.
       message_index: ForkSessionService.parsed_messages(session.transcript).length - 1,
-      extra_metadata: { FORK_MARKER => session.id },
+      extra_metadata: fork_metadata,
       # The summarizer reads the conversation it was forked with and is told not
       # to run tools — it never builds or boots anything, so it opens no file in
       # the tree and the copy buys it nothing at all. Pruning the dependency
@@ -624,10 +659,15 @@ class SessionStatusSummaryGenerator
   # Whether the spot gate would refuse the fork's turn — asked BEFORE the fork
   # exists, so a refusal costs nothing instead of costing a session row.
   #
-  # The SOURCE session stands in for the fork, and it is a faithful proxy: the
-  # fork inherits the source's genesis and scheduling class, copies its agent
-  # root and model, and is therefore priced and classified identically by
-  # SpotGateService. Asking here rather than after the fork is created is the
+  # The SOURCE session stands in for the fork, and it is a faithful proxy on the
+  # half that decides: the fork inherits the source's genesis and scheduling
+  # class (`assign_scheduling_class`, through `forked_from_session_id`), so the
+  # gate classifies the two identically and reads the same fleet. It is a close
+  # rather than exact proxy on burn — ForkSessionService builds the fork's
+  # metadata from scratch and does not copy `agent_root_key`, so the fork itself
+  # would be priced at the fleet default where the source is priced at its own
+  # sampled rate. That moves one candidate's projected burn, not the reading the
+  # decision turns on. Asking here rather than after the fork is created is the
   # whole point — the gate's answer is the same either way, but only one of the
   # two orderings leaves a session behind when the answer is no.
   #
@@ -642,6 +682,15 @@ class SessionStatusSummaryGenerator
   # Fail-open, like the pool read above: a gate that cannot be read is not
   # evidence of a busy fleet, and guessing "refused" would silently downgrade
   # every generation to the cheaper path.
+  # The markers a summary fork is created with. FORK_MARKER is the edge every
+  # consumer reads; the forced flag rides beside it so a disposal that happens
+  # long after this method returns can still tell what the operator asked for.
+  def fork_metadata
+    metadata = { FORK_MARKER => session.id }
+    metadata[FORCED_MARKER] = true if force
+    metadata
+  end
+
   def fork_would_be_refused?
     return false unless session.spot?
 

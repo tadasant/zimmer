@@ -312,7 +312,7 @@ What that mode does not need is the point of it:
 | Cost | an agent turn | one small-model completion |
 | Reach | the real conversation, its tools, its clone | the rendered transcript tail only |
 
-It is reached from the three places a fork is known not to be able to deliver:
+It is reached from the four places a fork is known not to be able to deliver:
 
 - **The repair sweep during an auth outage.** A runtime with no available account switches to this
   path rather than standing down, admitted by the
@@ -322,21 +322,24 @@ It is reached from the three places a fork is known not to be able to deliver:
   leaving it to a sweep that would re-fork into the same empty pool. A fork that died of something
   else while the pool was healthy is deliberately *not* downgraded — re-forking is the right repair
   there, and stamping a terser blurb as current would stop the sweep ever trying again.
-- **A forced Regenerate while the pool is empty.** The three surfaces that offer it are all forced
-  and none of them consults the pool, so the generator re-checks it rather than trusting the caller.
-  It fails *open*: a pool it cannot read is not evidence of an outage.
-
 - **Any generation at all, forced included, when the pool has nothing to fork on.** The generator
   re-checks the pool itself rather than trusting the caller, because the three forced surfaces — the
   panel's **Regenerate** button, `POST /api/v1/sessions/:id/regenerate_status_summary`, and the MCP
   `action_session` regenerate action — do not consult it. Without that check, pressing Regenerate
-  during an outage paid for a clone copy, watched the fork park, and reported a failure.
+  during an outage paid for a clone copy, watched the fork park, and reported a failure. It fails
+  *open*: a pool it cannot read is not evidence of an outage.
 
 - **Any generation for a spot session while the [spot gate](/sessions/spot-and-priority/#a-status-summary-fork-is-refused-never-queued)
   is refusing.** A fork inherits the source's scheduling class, so a fork of a spot session answers
   to the gate — and standing one up while the gate says no produced a session that ran no turn and
   sat in the queue instead. "The fleet is full" and "the pool is empty" are the same fact from the
   summarizer's point of view, so they get the same answer. This read fails open too.
+
+  It is worth naming the one thing this trades. When the refusal is
+  `at_utilization_limit`, the deferral it replaces spent *nothing*, and this path spends a small
+  Haiku completion against the very window the gate is pacing. That is deliberate and it is the
+  cheaper direction over the whole episode: the fork being deferred was going to spend a full agent
+  turn eventually, and until it did, its source session sat on the homepage with no blurb.
 
 Concurrency is bounded by the two-thread `inference` queue this job shares with `SessionTitleJob` and
 needs-input notification blurbs — see [Blocking inference waits in a lane](/operate/background-jobs/#blocking-inference-waits-in-a-lane-it-does-not-retry-for-admission).

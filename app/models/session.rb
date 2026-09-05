@@ -758,6 +758,14 @@ class Session < ApplicationRecord
     metadata&.dig(SessionStatusSummaryGenerator::FORK_MARKER)
   end
 
+  # True when this summary fork was stood up by a generation an operator ASKED
+  # for, rather than by the automatic refresh. A disposal that never runs the
+  # fork reads this to retry with the same forcedness — see
+  # SessionStatusSummaryGenerator::FORCED_MARKER.
+  def status_summary_forced?
+    metadata&.dig(SessionStatusSummaryGenerator::FORCED_MARKER).present?
+  end
+
   # How many messages at the head of this session's transcript were copied from
   # the session it was forked from, rather than written here.
   #
