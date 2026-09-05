@@ -879,6 +879,48 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal "Follow-up prompt", session.metadata["pending_follow_up_prompt"]
   end
 
+  # MCP server validations. `mcp_servers` is checked at save exactly as
+  # catalog_skills/hooks/plugins are; before zimmer#506 it was the one artifact
+  # kind a trigger could name wrongly and only find out about when it fired.
+  test "mcp_servers must be an array" do
+    @trigger.mcp_servers = "not_an_array"
+    assert_not @trigger.valid?
+    assert_includes @trigger.errors[:mcp_servers], "must be an array"
+  end
+
+  test "mcp_servers validates server names exist in catalog" do
+    ServersConfig.stubs(:exists?).with("valid-server").returns(true)
+    ServersConfig.stubs(:exists?).with("nonexistent-server").returns(false)
+    @trigger.mcp_servers = [ "valid-server", "nonexistent-server" ]
+    assert_not @trigger.valid?
+    assert @trigger.errors[:mcp_servers].any? { |e| e.include?("nonexistent-server") }
+  end
+
+  test "mcp_servers accepts valid server names" do
+    ServersConfig.stubs(:exists?).returns(true)
+    @trigger.mcp_servers = [ "some-server" ]
+    @trigger.valid?
+    assert_empty @trigger.errors[:mcp_servers]
+  end
+
+  test "mcp_servers accepts empty array" do
+    @trigger.mcp_servers = []
+    @trigger.valid?
+    assert_empty @trigger.errors[:mcp_servers]
+  end
+
+  test "a trigger already holding a stale MCP server name still saves when the change is elsewhere" do
+    # `mcp_servers` is `default: [], null: false`, so rows predate this
+    # validation. An edit that does not touch the column must not be blocked by
+    # a name that went stale under it — the fire-time heal is what cleans it up.
+    @trigger.update_column(:mcp_servers, [ "gone-server" ])
+    @trigger.reload
+    ServersConfig.stubs(:exists?).with("gone-server").returns(false)
+
+    assert @trigger.update(name: "Renamed trigger"), @trigger.errors.full_messages.to_sentence
+    assert_equal [ "gone-server" ], @trigger.reload.mcp_servers
+  end
+
   # Catalog skills validations
   test "catalog_skills defaults to empty array" do
     trigger = Trigger.new(
@@ -1597,6 +1639,65 @@ class TriggerTest < ActiveSupport::TestCase
     # Trigger should remain unchanged
     @trigger.reload
     assert_equal [ "server-a", "server-b" ], @trigger.mcp_servers
+  end
+
+  # The empty-catalog guard is load-bearing (zimmer#112): a failed `air resolve`
+  # degrades every config facade to [], and without it healing would read that
+  # as "every reference is stale" and strip all four columns on every trigger.
+  test "heal_catalog_references! removes nothing when the catalogs resolve empty" do
+    @trigger.update_column(:mcp_servers, [ "server-a" ])
+    @trigger.update_column(:catalog_skills, [ "skill-a" ])
+    @trigger.update_column(:catalog_hooks, [ "hook-a" ])
+    @trigger.update_column(:catalog_plugins, [ "plugin-a" ])
+
+    [ ServersConfig, SkillsConfig, HooksConfig, PluginsConfig ].each do |config|
+      config.stubs(:all).returns([])
+      config.stubs(:exists?).returns(false)
+    end
+
+    AlertService.expects(:raise_alert).never
+
+    @trigger.heal_catalog_references!
+
+    @trigger.reload
+    assert_equal [ "server-a" ], @trigger.mcp_servers
+    assert_equal [ "skill-a" ], @trigger.catalog_skills
+    assert_equal [ "hook-a" ], @trigger.catalog_hooks
+    assert_equal [ "plugin-a" ], @trigger.catalog_plugins
+  end
+
+  test "heal_catalog_references! strips the stale entry once the catalog resolves again" do
+    # The positive control for the guard above: same trigger, same stale names,
+    # a catalog that actually loaded.
+    @trigger.update_column(:mcp_servers, [ "server-a", "gone-server" ])
+    ServersConfig.stubs(:all).returns([ OpenStruct.new(name: "server-a") ])
+    ServersConfig.stubs(:exists?).with("server-a").returns(true)
+    ServersConfig.stubs(:exists?).with("gone-server").returns(false)
+    AlertService.stubs(:raise_alert)
+
+    @trigger.heal_catalog_references!
+
+    assert_equal [ "server-a" ], @trigger.reload.mcp_servers
+  end
+
+  test "the stale MCP server alert keeps its wording, source and dedup key" do
+    @trigger.update_column(:mcp_servers, [ "keeper", "gone-server" ])
+    ServersConfig.stubs(:exists?).with("keeper").returns(true)
+    ServersConfig.stubs(:exists?).with("gone-server").returns(false)
+
+    AlertService.expects(:raise_alert).with do |message, options|
+      assert_equal "Trigger self-healed: stale MCP server(s) removed", message
+      assert_equal "Trigger#create_session!", options[:source]
+      assert_equal "trigger_stale_mcp_#{@trigger.id}", options[:dedup_key]
+      assert_includes options[:details], "Trigger *#{@trigger.name}* (ID: #{@trigger.id})"
+      assert_includes options[:details], "• Removed: gone-server"
+      assert_includes options[:details], "• Remaining: keeper"
+      assert_includes options[:details], "The session will proceed with the remaining servers."
+      assert_includes options[:details], "/triggers/#{@trigger.id}|View trigger in Zimmer>"
+      true
+    end.once
+
+    @trigger.heal_catalog_references!
   end
 
   test "create_session! raises alert when stale MCP servers are removed" do
