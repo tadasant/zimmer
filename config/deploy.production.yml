@@ -108,13 +108,27 @@ servers:
       # understood, sustained heavy load still ends in a worker restart that interrupts the
       # sessions on it. What changes is that the rest of the droplet stays up.
       #
-      # One thing above IS now solved rather than accepted. "Jobs whose peak allocation is
-      # a function of the data they touch" still is; "agent sessions" is not. #815 caught a
-      # session's own `bash` at 6.5 GiB of anonymous RSS against this cap, so
-      # ZIMMER_SESSION_MEMORY_MAX_MB (below) now gives each session its own cgroup and its
-      # own bound underneath this one. This cap is still what protects the HOST, and is
-      # still sized on the numbers above; the per-session bound is what stops one session
-      # from being the reason this cap is ever reached.
+      # One NARROW thing above is now solved rather than accepted. #815 caught a session's
+      # own `bash` at 6.5 GiB of anonymous RSS against this cap, so
+      # ZIMMER_SESSION_MEMORY_MAX_MB (below) gives each session its own cgroup and its own
+      # bound underneath this one. That stops ONE RUNAWAY session from being the reason
+      # this cap is reached.
+      #
+      # Read the word "underneath" literally, because the obvious misreading of it has
+      # already been used to argue for more concurrency. cgroup v2 is HIERARCHICAL: the
+      # per-session cgroups live at /sys/fs/cgroup/zimmer.sessions/session-<id>, which is
+      # inside this container's cgroup, so every byte a session charges is charged to this
+      # 10g as well. The per-session bound does NOT move session memory out of this budget
+      # and does NOT create headroom -- six sessions at 4 GiB is 24 GiB against 10g, which
+      # is why it is a runaway bound and not an admission-control budget.
+      #
+      # What is still wide open is N in-budget sessions summing over this cap, which is
+      # #981: on 2026-09-05 eight of them did, with no runaway and the largest process at
+      # 943 MB, and the kernel OOM-killed the GoodJob worker itself. `zimmer.sessions` has
+      # no memory.max of its own, so a pile-up walks straight to this ceiling and the
+      # worker is in the victim pool. Until #981 lands, this cap is the only thing between
+      # a busy `agents` lane and a dead worker -- see config/connection_budget.rb, where
+      # GOOD_JOB_AGENTS_THREADS is held at 8 for exactly this reason.
       memory: 10g
       volume:
         - zimmer_data:/home/rails/.zimmer
