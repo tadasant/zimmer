@@ -463,7 +463,108 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     assert_not File.directory?(@clone_path), "Clone should be deleted even if Docker cleanup raises"
   end
 
+  # A deploy interrupt used to end this job for good: ApplicationJob discards
+  # GoodJob::InterruptError with no retry, and nothing else reclaims the clone
+  # inside the reversible window — StaleCloneCleanupJob's archived scopes require
+  # `trash_after` to be nil and this session has one, and EmptyTrashJob waits for
+  # the deadline. So the tree, its Docker resources and its transcript directory
+  # sat on the durable volume for the full retention period.
+  test "a deploy interrupt re-enqueues the cleanup instead of dropping it" do
+    GitCloneService.stubs(:cleanup_clone).raises(GoodJob::InterruptError, "Interrupted")
+
+    assert_enqueued_with(job: DeferredCloneCleanupJob) do
+      DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+    end
+
+    assert File.directory?(@clone_path), "the clone must survive an interrupted run so the retry can reclaim it"
+  end
+
+  test "an unexpected failure re-enqueues the cleanup" do
+    GitCloneService.stubs(:cleanup_clone).raises(Errno::EIO, "disk went away")
+
+    assert_enqueued_with(job: DeferredCloneCleanupJob) do
+      DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+    end
+  end
+
+  # The job wraps the Compose teardown in its own rescue so a broken Docker
+  # daemon cannot stop the clone being deleted. That rescue used to absorb a
+  # deploy interrupt too — and log it at ERROR, so every deploy landing there
+  # paged for something routine.
+  test "an interrupt during Docker teardown reaches the retry rather than the ERROR channel" do
+    DockerComposeCleanupService.stubs(:cleanup).raises(GoodJob::InterruptError, "Interrupted")
+
+    logged = capture_rails_log do
+      assert_enqueued_with(job: DeferredCloneCleanupJob) do
+        DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+      end
+    end
+
+    assert_no_match(/ERROR/, logged)
+    assert File.directory?(@clone_path), "the clone must survive so the retry can reclaim it"
+  end
+
+  test "the retry carries the same arguments, so it reclaims the same session" do
+    GitCloneService.stubs(:cleanup_clone).raises(GoodJob::InterruptError, "Interrupted")
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    assert_enqueued_with(job: DeferredCloneCleanupJob, args: [ @session.id, @archived_at.iso8601 ])
+  end
+
+  test "retries are bounded: the last attempt stops re-enqueueing" do
+    GitCloneService.stubs(:cleanup_clone).raises(GoodJob::InterruptError, "Interrupted")
+
+    job = DeferredCloneCleanupJob.new(@session.id, @archived_at.iso8601)
+    # `perform_now` increments `executions` before performing, so this run is the
+    # MAX_ATTEMPTS-th and must not queue another.
+    job.executions = DeferredCloneCleanupJob::MAX_ATTEMPTS - 1
+
+    assert_no_enqueued_jobs(only: DeferredCloneCleanupJob) do
+      job.perform_now
+    end
+  end
+
+  # The retry loop must not turn a routine deploy into a page: the "any Zimmer
+  # ERROR → critical" rule reads the log level, so an intermediate attempt has to
+  # stay at or below WARN and only exhaustion may be loud.
+  test "an intermediate attempt never logs at ERROR" do
+    GitCloneService.stubs(:cleanup_clone).raises(GoodJob::InterruptError, "Interrupted")
+
+    logged = capture_rails_log do
+      DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+    end
+
+    assert_no_match(/ERROR/, logged, "a deploy interrupt that will be retried must not reach the ERROR channel")
+  end
+
+  test "exhausting the retries logs at ERROR so it stays alertable" do
+    GitCloneService.stubs(:cleanup_clone).raises(GoodJob::InterruptError, "Interrupted")
+
+    job = DeferredCloneCleanupJob.new(@session.id, @archived_at.iso8601)
+    job.executions = DeferredCloneCleanupJob::MAX_ATTEMPTS - 1
+
+    logged = capture_rails_log { job.perform_now }
+
+    assert_match(/ERROR.*gave up after/, logged)
+  end
+
   private
+
+  # Run `block` against a logger that keeps what it was told, so a test can
+  # assert on the LEVEL a line was written at. The level is the whole point here:
+  # the "any Zimmer ERROR → critical" Grafana rule reads it, so "retried quietly"
+  # and "gave up loudly" are the two behaviours under test.
+  def capture_rails_log
+    buffer = StringIO.new
+    original = Rails.logger
+    Rails.logger = ActiveSupport::TaggedLogging.new(ActiveSupport::Logger.new(buffer))
+    Rails.logger.formatter = ->(severity, _time, _progname, message) { "#{severity} #{message}\n" }
+    yield
+    buffer.string
+  ensure
+    Rails.logger = original
+  end
 
   # Drive the job down its "clone is dirty, artifact creation failed" branch.
   def stub_failed_artifact_preservation

@@ -31,6 +31,47 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
     FileUtils.rm_rf(@clones_base) if @clones_base
   end
 
+  # The maintenance lane has two threads and shares them with the per-archive
+  # DeferredCloneCleanupJob stream. Nothing used to bound how long this hourly
+  # sweep held one of them, and every unit of its work is a recursive delete.
+  test "stops when the wall-clock budget runs out and leaves the rest for the next run" do
+    second = sessions(:waiting)
+    second_clone = File.join(@clones_base, "test-stale-clone-second-#{SecureRandom.hex(4)}")
+    FileUtils.mkdir_p(second_clone)
+    second.update!(
+      status: :archived,
+      archived_at: @stale_archived_at,
+      trash_after: nil,
+      metadata: { "clone_path" => second_clone }
+    )
+
+    job = StaleCloneCleanupJob.new
+    # A fake monotonic clock: the reading that opens the budget, one inside the
+    # window, and then every later reading past it.
+    job.stubs(:monotonic_now).returns(0.0, 0.0, 10_000.0)
+
+    job.perform
+
+    cleaned = [ @clone_path, second_clone ].count { |path| !File.directory?(path) }
+    survived = [ @clone_path, second_clone ].count { |path| File.directory?(path) }
+    assert_equal 1, cleaned, "the run should reclaim exactly the one clone it had budget for"
+    assert_equal 1, survived, "the other is left for the next tick, not lost"
+  end
+
+  test "a spent budget does not stop the sweep from being retried next tick" do
+    job = StaleCloneCleanupJob.new
+    job.stubs(:monotonic_now).returns(0.0, 10_000.0)
+
+    job.perform
+
+    assert File.directory?(@clone_path), "nothing is reclaimed once the budget is gone before the first candidate"
+
+    # The next tick has its own budget and finishes the job.
+    StaleCloneCleanupJob.perform_now
+
+    assert_not File.directory?(@clone_path), "the level-triggered next run picks up what the budget deferred"
+  end
+
   test "cleans up stale clones from archived sessions" do
     assert File.directory?(@clone_path), "Clone should exist before cleanup"
 

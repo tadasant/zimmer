@@ -41,6 +41,38 @@ class OrphanCloneFilesystemCleanupJobTest < ActiveJob::TestCase
   # loop, and each removal costs a Docker Compose teardown bounded at 120s plus a
   # recursive delete. Blinding the snapshot leaves only the guard that asks at the
   # instant of deletion.
+  # The scheduled sweep had a batch cap but no wall-clock ceiling, and each
+  # removal tears down Docker Compose bounded at COMPOSE_DOWN_TIMEOUT (120s) —
+  # 40 minutes holding one of the maintenance lane's two threads. The pressure
+  # path already had this bound; the scheduled one did not.
+  test "the scheduled sweep stops when its wall-clock budget runs out" do
+    second_orphan = File.join(@clones_base, "pulsemcp-main-1770000001-cafebabe")
+    FileUtils.mkdir_p(second_orphan)
+    FileUtils.touch(second_orphan, mtime: 3.days.ago.to_time)
+
+    job = OrphanCloneFilesystemCleanupJob.new
+    job.stubs(:find_orphan_directories).returns([ @orphan_dir, second_orphan ])
+    # The reading that opens the budget, one inside the window, then past it.
+    job.stubs(:monotonic_now).returns(0.0, 0.0, 10_000.0)
+
+    job.perform
+
+    survived = [ @orphan_dir, second_orphan ].count { |path| File.directory?(path) }
+    assert_equal 1, survived, "exactly one orphan is deferred to the next scheduled sweep"
+  end
+
+  test "the scheduled sweep removes the whole batch when the budget allows" do
+    second_orphan = File.join(@clones_base, "pulsemcp-main-1770000001-cafebabe")
+    FileUtils.mkdir_p(second_orphan)
+    FileUtils.touch(second_orphan, mtime: 3.days.ago.to_time)
+
+    OrphanCloneFilesystemCleanupJob.perform_now
+
+    assert_not File.directory?(@orphan_dir)
+    assert_not File.directory?(second_orphan)
+    assert File.directory?(@recent_dir), "the age bar still applies"
+  end
+
   test "refuses to remove a clone a live session owns even when the orphan snapshot missed it" do
     session = sessions(:running)
     session.update!(metadata: { "clone_path" => @orphan_dir })

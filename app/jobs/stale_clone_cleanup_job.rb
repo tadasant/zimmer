@@ -32,6 +32,7 @@ class StaleCloneCleanupJob < ApplicationJob
   include DurableSessionStorage
   queue_as :maintenance
   include SingletonSweep
+  include SweepBudget
 
   # Grace period before considering an archived clone "stale" and eligible for cleanup
   # This should be much longer than the undo window + deferred cleanup delay
@@ -68,6 +69,18 @@ class StaleCloneCleanupJob < ApplicationJob
   # instead of all at once.
   ORPHAN_SWEEP_LIMIT = 200
 
+  # Wall-clock ceiling on one run. ORPHAN_SWEEP_LIMIT and the candidate scopes
+  # bound how many things this job touches; nothing bounded how LONG it holds a
+  # scheduler thread, and every unit it touches is a recursive delete of a whole
+  # directory tree. On `maintenance` — two threads, shared with the per-archive
+  # DeferredCloneCleanupJob stream — an unbounded hourly sweep is half the lane
+  # for as long as it runs. Five minutes an hour is not.
+  #
+  # Nothing is lost by stopping early: this sweep is level-triggered, so the next
+  # tick recomputes the due set and takes whatever this run did not reach. See
+  # SweepBudget for why a continuation is not re-enqueued instead.
+  SWEEP_BUDGET_SECONDS = 5.minutes
+
   # The deployments that own the durable `zimmer_data` volume, and so are the
   # only ones allowed to reap per-session directories inside it. See
   # #sweepable_root?.
@@ -76,6 +89,9 @@ class StaleCloneCleanupJob < ApplicationJob
   def perform
     cleaned_count = 0
     error_count = 0
+    deferred_count = 0
+
+    start_sweep_budget(SWEEP_BUDGET_SECONDS)
 
     stale_clone_candidate_scopes.each do |scope|
       # Materialize candidate ids with an unordered pluck rather than find_each.
@@ -86,6 +102,14 @@ class StaleCloneCleanupJob < ApplicationJob
       # a multi-second full scan into a sub-millisecond index scan. Candidate counts
       # here are tiny (stale clones), so loading the ids up front is cheap.
       scope.pluck(:id).each do |session_id|
+        # Top of the iteration, so the true bound is the budget plus one
+        # session's clone delete. Counted rather than broken out of, so the log
+        # below can say how much was left rather than just that something was.
+        if sweep_budget_spent?
+          deferred_count += 1
+          next
+        end
+
         session = Session.find_by(id: session_id)
         next unless session
 
@@ -100,11 +124,25 @@ class StaleCloneCleanupJob < ApplicationJob
       end
     end
 
-    reap_clone_tombstones
+    # Both remaining phases are recursive deletes too, so they are skipped
+    # wholesale once the budget is gone rather than allowed to start a new one.
+    # Tombstones first, as ever: they are doomed by construction, so when there
+    # is time for only one more thing it should be the cheapest bytes.
+    reap_clone_tombstones unless sweep_budget_spent?
 
-    orphan_dir_result = sweep_orphaned_session_directories
-    cleaned_count += orphan_dir_result[:cleaned]
-    error_count += orphan_dir_result[:errors]
+    if sweep_budget_spent?
+      deferred_count += 1
+    else
+      orphan_dir_result = sweep_orphaned_session_directories
+      cleaned_count += orphan_dir_result[:cleaned]
+      error_count += orphan_dir_result[:errors]
+      deferred_count += orphan_dir_result[:deferred]
+    end
+
+    if deferred_count > 0
+      Rails.logger.warn "[StaleCloneCleanupJob] Sweep budget of #{SWEEP_BUDGET_SECONDS.to_i}s exhausted after " \
+        "cleaning #{cleaned_count}; #{deferred_count} candidate(s) or phase(s) wait for the next run"
+    end
 
     if cleaned_count > 0 || error_count > 0
       Rails.logger.info "[StaleCloneCleanupJob] Completed: cleaned #{cleaned_count} clones, #{error_count} errors"
@@ -348,22 +386,30 @@ class StaleCloneCleanupJob < ApplicationJob
   def sweep_orphaned_session_directories
     cleaned = 0
     errors = 0
+    deferred = 0
 
     unless any_sessions_exist?
       Rails.logger.warn "[StaleCloneCleanupJob] Skipping per-session orphan sweep: the sessions table is empty, " \
         "so every directory would look orphaned"
-      return { cleaned: cleaned, errors: errors }
+      return { cleaned: cleaned, errors: errors, deferred: deferred }
     end
 
     session_directory_roots.each do |label, root|
       next unless sweepable_root?(label, root)
 
+      # A root the budget did not reach is a deferred phase, not a swept one.
+      if sweep_budget_spent?
+        deferred += 1
+        next
+      end
+
       result = sweep_session_directory_root(label, root)
       cleaned += result[:cleaned]
       errors += result[:errors]
+      deferred += result[:deferred]
     end
 
-    { cleaned: cleaned, errors: errors }
+    { cleaned: cleaned, errors: errors, deferred: deferred }
   end
 
   # The roots swept above.
@@ -425,15 +471,16 @@ class StaleCloneCleanupJob < ApplicationJob
     cleaned = 0
     errors = 0
     over_limit = 0
+    deferred = 0
 
     begin
       candidates = Dir.children(root).select { |entry| entry.match?(SESSION_ID_DIR) }
     rescue => e
       Rails.logger.error "[StaleCloneCleanupJob] Failed to list #{label} root #{root}: #{e.class} - #{e.message}"
-      return { cleaned: cleaned, errors: 1 }
+      return { cleaned: cleaned, errors: 1, deferred: deferred }
     end
 
-    return { cleaned: cleaned, errors: errors } if candidates.empty?
+    return { cleaned: cleaned, errors: errors, deferred: deferred } if candidates.empty?
 
     # Asked after the listing, and only about the ids on disk: a bounded primary
     # key lookup, and a superset in time of what the listing saw. Sliced so a
@@ -465,6 +512,13 @@ class StaleCloneCleanupJob < ApplicationJob
           next
         end
 
+        # After the age and ownership checks, so a directory the budget defers is
+        # one this run would otherwise have deleted — not every name on disk.
+        if sweep_budget_spent?
+          deferred += 1
+          next
+        end
+
         Rails.logger.info "[StaleCloneCleanupJob] Sweeping orphaned #{label} dir for deleted session #{entry}: " \
           "#{path} (mtime: #{mtime.iso8601})"
         FileUtils.rm_rf(path)
@@ -484,7 +538,7 @@ class StaleCloneCleanupJob < ApplicationJob
       Rails.logger.info "[StaleCloneCleanupJob] Orphan sweep: removed #{cleaned} #{label} directories"
     end
 
-    { cleaned: cleaned, errors: errors }
+    { cleaned: cleaned, errors: errors, deferred: deferred }
   end
 
   def any_sessions_exist?
