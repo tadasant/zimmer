@@ -918,6 +918,24 @@ module SessionStateMachine
     recovery_pause? && !category&.is_frozen?
   end
 
+  # The tracked PR urls whose last recorded status is not terminal — the PRs this
+  # session is still expecting to move. An url with no recorded status counts as
+  # unresolved: the poller has not established otherwise yet.
+  #
+  # Public because two callers need the same answer for opposite reasons. The
+  # archive line reports them as PRs that will now never be announced;
+  # GitHubPullRequestPollerJob reads them as "this session is waiting on a
+  # specific event", which is what stops PollBackoff's idle-decay from applying
+  # to a session whose idleness IS the waiting.
+  def unresolved_pr_urls
+    urls = custom_metadata&.dig("github_pull_request_urls")
+    return [] unless urls.is_a?(Array)
+
+    statuses = custom_metadata&.dig("github_pull_request_statuses")
+    statuses = {} unless statuses.is_a?(Hash)
+    urls.reject { |url| TERMINAL_PR_STATUSES.include?(statuses[url]) }
+  end
+
   private
 
   # The pause's announcement: the settled `session_needs_input` wake fan-out, and
@@ -1455,12 +1473,7 @@ module SessionStateMachine
   # worth is a sentence in the one place someone asking "where did my session
   # go?" is already looking.
   def unresolved_pr_clause
-    urls = custom_metadata&.dig("github_pull_request_urls")
-    return nil unless urls.is_a?(Array) && urls.any?
-
-    statuses = custom_metadata&.dig("github_pull_request_statuses")
-    statuses = {} unless statuses.is_a?(Hash)
-    unresolved = urls.reject { |url| TERMINAL_PR_STATUSES.include?(statuses[url]) }
+    unresolved = unresolved_pr_urls
     return nil if unresolved.empty?
 
     subject = unresolved.one? ? "1 tracked pull request had" : "#{unresolved.size} tracked pull requests had"
