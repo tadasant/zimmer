@@ -495,6 +495,22 @@ viewed.
 That count only advances on a *successful* generation. A generation that was merely requested, or one
 that failed, leaves it alone, so a failed attempt cannot make a stale summary look current.
 
+### `get_session` renders the duration next to the count, not just the count
+
+Counting in messages is right, and it made one sentence read badly. `get_session`'s freshness line
+said **"current — no transcript events since it was written"** identically for a session that
+answered thirty seconds ago and for four production sessions that had been dead for between 36
+minutes and three hours ([#988](https://github.com/tadasant/zimmer/issues/988)) — so the surface an
+agent checks a stalled child on actively said the stall was not happening.
+
+Zero events is still zero events; the fix is not a different verdict but the **duration** beside it,
+which is what separates quiet from silent. Past
+`CleanupOrphanedSessionsJob::INACTIVITY_THRESHOLD` on a session that is still `running`, that is
+also the point at which Zimmer's own orphan sweep stops believing a quiet session is working, so
+the line says so and renders the timestamp as *silent since*. It stops short of asserting the
+session is dead: a legitimately slow turn — one long tool call, a compaction, a subagent — looks
+identical from here, and reporting it as broken would be the mirror-image bug.
+
 ## The one automatic trigger
 
 Zimmer generates a summary automatically when a session **comes to rest**: the `pause` transition into

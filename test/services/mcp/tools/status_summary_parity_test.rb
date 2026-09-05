@@ -50,6 +50,40 @@ class Mcp::Tools::StatusSummaryParityTest < ActiveSupport::TestCase
     assert_includes output, "**Freshness:** current"
   end
 
+  # #988: "current — no transcript events since it was written" was rendered
+  # identically for a session that answered thirty seconds ago and for four
+  # production sessions that had been dead for between 36 minutes and three hours.
+  # Zero events is still zero events; the duration next to it is what separates
+  # quiet from silent.
+  test "get_session says how long a current summary has been current" do
+    SessionStatusSummary.create!(
+      session: @session, state: "ready", generated_at: 3.minutes.ago,
+      transcript_line_count: 4, summary: "The PR is open and CI is green."
+    )
+
+    output = Mcp::Tools::GetSession.new(context: @context).call("id" => @session.id)
+
+    assert_includes output, "no transcript event has landed in the 3 minutes since it was written"
+    assert_not_includes output, "Zimmer's own orphan sweep",
+      "a session at rest is not silent — it is finished, and must not be flagged"
+  end
+
+  test "get_session flags a running session that has been silent past the orphan sweep's threshold" do
+    @session.update!(status: :running)
+    generated_at = (CleanupOrphanedSessionsJob::INACTIVITY_THRESHOLD + 77.minutes).ago
+    SessionStatusSummary.create!(
+      session: @session, state: "ready", generated_at: generated_at,
+      transcript_line_count: 4, summary: "Waiting on the test run."
+    )
+
+    output = Mcp::Tools::GetSession.new(context: @context).call("id" => @session.id)
+
+    assert_includes output, "This session has been `running` and silent for that whole window"
+    assert_includes output, "silent since #{generated_at.utc.iso8601}"
+    assert_includes output, "A slow turn looks identical from here",
+      "the line must not assert the session is dead — a long tool call reads the same way"
+  end
+
   test "get_session marks a stale summary stale and counts how far behind it is" do
     SessionStatusSummary.create!(
       session: @session, state: "ready", generated_at: 1.hour.ago,

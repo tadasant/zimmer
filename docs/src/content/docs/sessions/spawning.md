@@ -1049,7 +1049,7 @@ the defect. One concrete instance of the general problem in
 
 ## Retry budgets
 
-Seven of those recovery branches are bounded, and every one of them is bounded the same
+Eight recovery branches are bounded, and every one of them is bounded the same
 way: a counter in `session.metadata`, a maximum, a timestamp of the last attempt, and a
 set of keys a reset clears. `RetryBudget` (`app/services/retry_budget.rb`) is where each
 of those is declared, once:
@@ -1063,6 +1063,7 @@ of those is declared, once:
 | `RetryBudget::CONTEXT_LENGTH` | `compact_retry_count` | 2 | `last_compact_at` | `ContextLengthRetryService` |
 | `RetryBudget::SESSION_ID_CONFLICT` | `session_id_conflict_count` | 2 | `last_session_id_conflict_at` | `ProcessLifecycleManager#handle_session_id_conflict` |
 | `RetryBudget::EMPTY_TURN` | `empty_turn_recovery_count` | 2 | `last_empty_turn_recovery_at` | `ProcessLifecycleManager#handle_empty_turn`, `Sessions::RestartUnstartedTurn` |
+| `RetryBudget::SILENT_RECOVERY` | `silent_recovery_count` | 3 | `last_silent_recovery_at` | `Sessions::SilentRecoveryGuard`, from `SessionRecoveryService` and `SessionContinuation` |
 
 **A budget is per-incident, not per-lifetime.** Step 5 of the monitor loop walks
 `RetryBudget.all` every iteration and hands back any budget whose process has run for
@@ -1073,17 +1074,22 @@ apart and then fails permanently on one it should have survived — which is exa
 `session_id_conflict_count` and `empty_turn_recovery_count` did until they became budgets
 ([#727](https://github.com/tadasant/zimmer/issues/727)).
 
-**One budget does not take the 60-second window: `RetryBudget::EMPTY_TURN`, which waits
-`RetryBudget::EMPTY_TURN_RESET_AFTER` (30 min).** Every other budget is spent by a process
-that got going and then broke, so "this process has been up a minute" is real evidence the
-incident is over. The empty-turn branch is the mirror image — it fires only while *neither*
-transcript store holds a conversation, so a process that is merely up proves nothing, and a
-runtime can spend the whole `McpStartupTimeout::SECONDS` (180 s) bringing MCP servers up
-before it writes its first line. Handing that budget back inside the startup window is what
-would turn a bounded empty-session failure into an unbounded restart loop, one cycle per
-timeout. The session-id conflict budget needs no such widening: the refusal is a *spawn-time*
-one, reported and exited within seconds, so two conflicts in one turn arrive seconds apart and
-no reset can land between them.
+**Two budgets do not take the 60-second window: `RetryBudget::EMPTY_TURN` and
+`RetryBudget::SILENT_RECOVERY`, which both wait `RetryBudget::EMPTY_TURN_RESET_AFTER`
+(30 min).** Every other budget is spent by a process that got going and then broke, so "this
+process has been up a minute" is real evidence the incident is over. The empty-turn branch is
+the mirror image — it fires only while *neither* transcript store holds a conversation, so a
+process that is merely up proves nothing, and a runtime can spend the whole
+`McpStartupTimeout::SECONDS` (180 s) bringing MCP servers up before it writes its first line.
+Handing that budget back inside the startup window is what would turn a bounded empty-session
+failure into an unbounded restart loop, one cycle per timeout. The silent-recovery budget takes
+the same window for the same reason sharpened: in the failure it bounds
+([#988](https://github.com/tadasant/zimmer/issues/988)) there is no process at all, so an
+in-process stability window would be decided by whichever unrelated turn happened to run next
+— and its real reset is the explicit one, transcript output since the last restart. The
+session-id conflict budget needs no such widening: the refusal is a *spawn-time* one, reported
+and exited within seconds, so two conflicts in one turn arrive seconds apart and no reset can
+land between them.
 
 A reset clears the counter and the stamp and nothing else. State that is *diagnosis* or
 *position* rather than budget survives it deliberately: `mcp_failed_servers` (which
@@ -1095,7 +1101,7 @@ Failing to *reset* a counter is logged at WARN, not ERROR: the session simply ke
 stale budget and the next stable stretch clears it, which is not worth
 [paging anyone](/operate/observability/#a-failure-the-code-recovered-from-is-logged-at-warn-not-error).
 
-Adding a sixth failure class means adding a declaration. That is what puts it in the
+Adding a ninth failure class means adding a declaration. That is what puts it in the
 reset loop and on [the health surface](/operate/observability/#retry-budgets-on-the-health-surface)
 — neither is a separate thing to remember.
 
