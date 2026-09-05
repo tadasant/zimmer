@@ -1527,4 +1527,83 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
       "A write that RAISES is a real failure and must not be confused with the nil (nothing-to-do) case"
     assert_equal "Failed to write transcript file", result.error
   end
+
+  # zimmer#576: the runtime names its transcript directory after the cwd it was
+  # spawned from, so an unarchive that re-clones to a fresh path re-writes the
+  # whole conversation under a new slug and leaves the previous copy behind.
+  test "recreates the clone at the path the session was using" do
+    base = Dir.mktmpdir("unarchive-clone-path")
+    original_base = ENV["AGENT_CLONES_DIR"]
+    ENV["AGENT_CLONES_DIR"] = base
+    previous_clone = File.join(base, "test-repo-main-12345-abcd")
+    @session.update!(metadata: { "clone_path" => previous_clone, "working_directory" => previous_clone })
+
+    requested_path = :never_called
+    mock_create_clone = lambda do |_git_root, **kwargs|
+      requested_path = kwargs[:clone_path]
+      @mock_fs.mkdir_p(previous_clone)
+      { clone_path: previous_clone, working_directory: previous_clone }
+    end
+
+    GitCloneService.stub :create_clone, mock_create_clone do
+      result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
+
+      assert result.success?, result.error
+      assert_equal true, result.clone_restored
+      assert_equal previous_clone, requested_path,
+        "the re-clone must be aimed at the path whose slug already names the transcript directory"
+      assert_equal previous_clone, @session.reload.metadata["clone_path"]
+
+      assert @mock_fs.exists?(
+        ClaudeTranscriptSource.new.resume_transcript_path(
+          session: @session, working_directory: previous_clone
+        )
+      ), "the conversation must be re-materialized in the one transcript directory it has always had"
+    end
+  ensure
+    ENV["AGENT_CLONES_DIR"] = original_base
+    FileUtils.rm_rf(base)
+  end
+
+  # The reachable occupied-path case: clone_path is still on disk but the
+  # subdirectory beneath it is gone, so the slow path runs with something
+  # standing at the old location. `git clone` refuses a non-empty destination and
+  # its rollback would delete whatever is there, so a fresh path is taken.
+  test "does not aim the re-clone at a path something is still standing at" do
+    base = Dir.mktmpdir("unarchive-clone-path-occupied")
+    original_base = ENV["AGENT_CLONES_DIR"]
+    ENV["AGENT_CLONES_DIR"] = base
+    previous_clone = File.join(base, "test-repo-main-12345-abcd")
+    subdirectory = "packages/web"
+    @session.update!(
+      subdirectory: subdirectory,
+      metadata: {
+        "clone_path" => previous_clone,
+        "working_directory" => File.join(previous_clone, subdirectory)
+      }
+    )
+    # The clone root survives; the subdirectory that was the cwd does not.
+    @mock_fs.mkdir_p(previous_clone)
+
+    fresh_clone = File.join(base, "test-repo-main-99999-efgh")
+    requested_path = :never_called
+    mock_create_clone = lambda do |_git_root, **kwargs|
+      requested_path = kwargs[:clone_path]
+      @mock_fs.mkdir_p(File.join(fresh_clone, subdirectory))
+      { clone_path: fresh_clone, working_directory: File.join(fresh_clone, subdirectory) }
+    end
+
+    GitCloneService.stub :create_clone, mock_create_clone do
+      result = UnarchiveSessionService.call(session: @session, file_system: @mock_fs)
+
+      assert result.success?, result.error
+      assert_nil requested_path,
+        "an occupied path must not be handed to git clone, whose rollback would delete what is there"
+      assert_equal fresh_clone, @session.reload.metadata["clone_path"]
+      assert @mock_fs.directory?(previous_clone), "and the directory standing there must survive"
+    end
+  ensure
+    ENV["AGENT_CLONES_DIR"] = original_base
+    FileUtils.rm_rf(base)
+  end
 end

@@ -167,6 +167,11 @@ created before the rename ([#921](https://github.com/tadasant/zimmer/issues/921)
 that moved its directory under a name the catalog still carries resolves on its own. See
 [the router root's two names](/air/agent-roots/#the-router-roots-two-names).
 
+The recreation after a reaper took it also goes back to the *same path* the session was using, via
+`SessionClonePath.for_recreate`. The runtime names its transcript directory after the cwd, so a
+re-clone at a fresh path re-writes the whole conversation under a new slug and abandons the old
+copy — see [a re-clone lands where the old one was](/sessions/transcripts/#a-re-clone-lands-where-the-old-one-was).
+
 That distinction matters beyond spawn time. Everything that reconnects to a running process it
 did not spawn — a job resuming monitoring, `ProcessLifecycleManager` after a recovery spawn, the
 interrupt and terminate paths — has to rebuild this path, and both context-length recovery and

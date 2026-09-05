@@ -1976,6 +1976,33 @@ of them to `zimmer`. Same root cause as [#67](https://github.com/tadasant/zimmer
 
 ## Sessions
 
+### An unarchive whose subdirectory is gone still opens a second transcript directory
+
+A re-clone lands back at the path the session already occupied, so a conversation keeps one
+transcript directory for its whole life
+([transcripts](/sessions/transcripts/#a-re-clone-lands-where-the-old-one-was)). One shape opts out
+of that: `UnarchiveSessionService`'s slow path also runs when the clone root is still on disk but
+the working directory beneath it — an agent root's `subdirectory` — is not. Something is standing at
+the old path, so `SessionClonePath.for_recreate` declines it (`git clone` refuses a non-empty
+destination, and its rollback deletes whatever it was aimed at), a fresh path is generated, and that
+session writes its conversation under a second slug.
+
+It is rare, it is bounded at one extra directory per occurrence rather than one per resume, and
+`OrphanTranscriptDirectoryCleanupJob` reclaims the stray on its six-hourly pass. Reclaiming the old
+path instead would mean deleting a clone root this service did not create and cannot vouch for,
+which is a worse trade than one leaked directory.
+
+### A re-clone can still be caught by an in-place delete
+
+`AtomicCloneRemoval` normally renames a clone aside before deleting it, which is what makes the path
+safe to re-clone into the moment it disappears. Its fallback — taken on `EXDEV`, or when the rename
+is refused — `rm -rf`s the live path instead. `SessionClonePath` declines a path with a sibling
+`<clone>.deleting-<hex>` marker beside it, and `GitCloneService` claims a caller-supplied
+destination with `mkdir` and falls back to a generated path when it loses, so the two of them close
+the window from both ends. What is not covered is a markerless in-place strip — the marker write is
+best-effort and logs when it fails. The cost is a clone that fails to create and retries, not a
+corrupted one.
+
 ### A retired queued message is recorded, not re-delivered
 
 Archiving a session moves whatever is still queued for it to `undelivered`
