@@ -301,6 +301,30 @@ class TranscriptHooks::GithubCommentAuthorshipHookTest < ActiveSupport::TestCase
       "a grep for the literal is a read, and its output is somebody else's comment"
   end
 
+  test "does NOT record a permalink when the posting literal is in a heredoc body" do
+    # The other caller's half of #873: a heredoc body is written to a file, not run,
+    # so a `gh pr comment` in one is prose. Read as a post it suppresses every
+    # permalink the call printed — a human's comment included, fleet-wide and
+    # permanently.
+    command = "cat > /tmp/runbook.md <<'EOF'\nthen run gh pr comment 281 --body done\nEOF\ncat /tmp/runbook.md"
+    output = "then run gh pr comment 281 --body done\n#{POSTED_URL}\n"
+
+    run_hook(claude_transcript(command: command, output: output))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
+  test "records a comment posted on the line after a heredoc body" do
+    # The #89 direction for this hook: a heredoc reading that walked past its
+    # terminator would hide the post underneath it, and the agent's own comment
+    # would wake the agent back up.
+    command = "cat > /tmp/body.md <<'EOF'\nIt's ready for review.\nEOF\ngh pr comment 281 --body-file /tmp/body.md"
+
+    run_hook(claude_transcript(command: command, output: POSTED_URL))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+  end
+
   test "does NOT record a permalink from rg for the gh pr review literal" do
     output = "app/services/transcript_hooks/github_comment_authorship_hook.rb:46:  # gh pr review — see #{POSTED_URL}"
 

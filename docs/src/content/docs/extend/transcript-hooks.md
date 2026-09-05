@@ -99,13 +99,30 @@ quoted strings out before the create is matched against it, and the split does i
 treating a separator as a separator when it is escaped or quoted: that grep stays one `grep` rather
 than becoming four commands, one of which is the bare literal.
 
+Two shapes of quoting defeat plain pairing, and each has its own rule. A **heredoc body** is not
+quoted by anything the pairing can see — `python3 - <<'PY' … PY` hands its lines to Python — so
+`ShellSegments` finds where the body starts and ends and drops those lines outright rather than
+splitting them. And a **run of three or more quotes** is not a pair: Python's `"""` used to pair its
+first two as an empty string and hand the third to the next quote along, which left everything
+between them outside every quoted span. Both of those stacked up in
+[#873](https://github.com/tadasant/zimmer/issues/873), where a session editing this hook's *test
+file* through a `<<'PY'` heredoc recorded its own fixture strings as pull requests it had opened,
+against a repository that does not exist.
+
+Dropping a line is the one thing here that can lose a real create, so the heredoc reading gives up
+rather than guesses: a delimiter whose terminator it cannot find leaves the whole rest of the script
+read as shell, and a terminator is matched with leading whitespace allowed so it can only end a body
+*early*. A body assumed to run to end-of-input would swallow every command after it and switch a
+session's whole GitHub integration off in silence
+([#89](https://github.com/tadasant/zimmer/issues/89)).
+
 The create is then matched **anywhere** in what is left, rather than at the front of the segment.
 A create sits behind all sorts of things in command position — `cd ... &&`, `GH_TOKEN=x`,
 `timeout 120`, `until ... ; do`, `sudo -E`, `xargs` — and an anchor would drop every one of them it
 did not enumerate. Quoting is likewise read one line at a time, and a line that ends inside an
-unclosed quote falls back to the crude split. Both of those are the same bet: a heredoc body or a
-shell comment carrying an apostrophe or two must not be able to swallow the real `gh pr create` on
-the line below it. Recording too little is the worse failure, and it is silent.
+unclosed quote falls back to the crude split. Both of those are the same bet: a shell comment or an
+unrecognised heredoc body carrying an apostrophe or two must not be able to swallow the real
+`gh pr create` on the line below it. Recording too little is the worse failure, and it is silent.
 
 One quoted string is not data: the script a shell is handed. `bash -lc "cd /repo && gh pr create"` —
 the shape Codex writes in front of every command it runs, and one an agent writes by hand — carries
