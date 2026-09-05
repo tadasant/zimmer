@@ -259,20 +259,25 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     reason_one = prompt[/^1\. \*\*You lacked the authorization scope.*?$/]
 
     assert reason_one.present?, "could not isolate reason 1 from the lifecycle section"
+    # A spawnable root is a third condition on the reason itself, not a footnote to it.
+    assert_includes reason_one, "and no root you could spawn that has it"
     # The claim has to be verified, not assumed.
     assert_includes reason_one, "an unverified \"only a human has this access\" is an assumption, not a finding"
-    # Spawning the root that has the scope is the third exit reason 1 omitted.
+    # Spawning the root that has the scope is the exit reason 1 omitted.
     assert_includes reason_one, "spawn the root that does have the scope"
-    # The ordering is the whole point, and parking survives it as the last step.
-    assert_includes reason_one, "Check, then spawn, then report, then park — parking is the last of those steps, not the first."
+    # A ladder, not a sequence: spawning ends the session's part rather than preceding a park.
+    assert_includes reason_one, "Spawn, report, park: take the first one open to you"
+    assert_includes reason_one, "Spawning is an ending"
   end
 
   # The section's own worked example modelled the unverified claim the reason above
   # forbids ("I don't have the GCP IAM scope"), which is the assumption, not the check.
   test "the worked example for naming reason 1 models the check rather than an assumption" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+    naming_rule = prompt[/^If none of those apply, archive\..*?$/]
 
-    assert_includes prompt, "no root I can reach or spawn has the GCP IAM scope to grant this"
+    assert naming_rule.present?, "could not isolate the name-your-reason rule from the lifecycle section"
+    assert_includes naming_rule, "no root I can reach or spawn has the GCP IAM scope to grant this"
   end
 
   test "session lifecycle principle bounds the queue to one session per human-initiated goal" do
