@@ -29,6 +29,20 @@ class HealthMonitorService
   # worker) and jobs already `claimed` and executing right now. Counting those meant
   # a healthy instance could page purely because somebody scheduled thirty wake-ups
   # for tomorrow. See #queue_statistics.
+  # How far past its retention window the oldest log row may be before
+  # log_retention_health says so. Wide enough that a table a few hours past the
+  # cutoff between LogRetentionJob ticks reads healthy, narrow enough that "there
+  # is more than a week of history nobody is pruning" is still said out loud —
+  # including while a deployment that has never had retention works through its
+  # first backlog, which really is behind.
+  LOG_RETENTION_OVERDUE_GRACE = 7.days
+
+  # How far into the table the verbose half of that check looks. `logs` has no
+  # index that answers "the oldest verbose row" — the level index is not ordered
+  # by id within a level — so the reading is taken over a bounded pk range at the
+  # head, which is where an unpruned verbose row would be.
+  VERBOSE_HEAD_PROBE_ROWS = 25_000
+
   QUEUE_DEPTH_WARNING_THRESHOLD = 50
   QUEUE_DEPTH_CRITICAL_THRESHOLD = 100
 
@@ -483,9 +497,18 @@ class HealthMonitorService
   # production's exposure unknown for exactly that reason. Carried here, it
   # reaches /health, `GET /api/v1/health` and `get_system_health` at once.
   #
-  # Every reading is O(1): `reltuples` and the relation sizes come from the
-  # catalog, and the oldest row is the primary key's first entry — nothing here
-  # scans the table it is reporting on.
+  # The size readings are O(1): `reltuples` and the relation sizes come from the
+  # catalog, so nothing here scans the table it is reporting on. The two age
+  # readings walk the leftmost end of `logs_pkey` — the first live entry, and the
+  # first verbose one within VERBOSE_HEAD_PROBE_ROWS of it — which is cheap except
+  # immediately after a large batch delete has left dead entries there for
+  # autovacuum. That is bounded, not free, which is why the probe is bounded too.
+  #
+  # `oldest_log_at` is the lowest-id row's timestamp rather than a true
+  # `MIN(created_at)`, which without a `created_at` index would be a sequential
+  # scan of the table this panel exists to say is too big. It reads the same under
+  # the ordering LogRetentionJob assumes, and it inherits the same blind spot: a
+  # recent row with a low id makes this look younger than the table really is.
   #
   # Deliberately NOT folded into `overall_status`. The first deployment to run
   # retention really is behind for as long as its initial drain takes, and this
@@ -503,6 +526,7 @@ class HealthMonitorService
     SQL
 
     oldest = Log.order(:id).limit(1).pick(:created_at)
+    oldest_verbose = oldest_verbose_log_at
 
     {
       # `reltuples` is -1 on a table Postgres has never analyzed (PG14+), which is
@@ -511,18 +535,34 @@ class HealthMonitorService
       total_bytes: stats["total_bytes"].to_i,
       index_bytes: stats["index_bytes"].to_i,
       oldest_log_at: oldest,
+      oldest_verbose_log_at: oldest_verbose,
       retention_days: (Log::RETENTION / 1.day).to_i,
       verbose_retention_days: (Log::VERBOSE_RETENTION / 1.day).to_i,
-      status: log_retention_status(oldest)
+      status: log_retention_status(oldest, oldest_verbose)
     }
   rescue StandardError => e
     @logger.warn("Log retention health could not be read", error: e.message)
     {
-      estimated_rows: nil, total_bytes: 0, index_bytes: 0, oldest_log_at: nil,
+      estimated_rows: nil, total_bytes: 0, index_bytes: 0,
+      oldest_log_at: nil, oldest_verbose_log_at: nil,
       retention_days: (Log::RETENTION / 1.day).to_i,
       verbose_retention_days: (Log::VERBOSE_RETENTION / 1.day).to_i,
       status: HealthStatus.new(status: :warning, message: "Log retention status could not be read: #{e.message}")
     }
+  end
+
+  # The oldest verbose row within the first VERBOSE_HEAD_PROBE_ROWS rows by id.
+  #
+  # Checked separately because verbose rows are the bulk of the table and have the
+  # tighter window: a verbose pass that had stopped while the general one kept
+  # running would refill a disk, and `oldest_log_at` alone would read healthy
+  # throughout — every surviving row would be inside the 90-day window.
+  def oldest_verbose_log_at
+    head = Log.order(:id).offset(VERBOSE_HEAD_PROBE_ROWS).limit(1).pick(:id)
+    scope = Log.where(level: Log::VERBOSE_LEVEL)
+    scope = scope.where(id: ..head) if head
+
+    scope.order(:id).limit(1).pick(:created_at)
   end
 
   def estimated_rows(reltuples)
@@ -532,27 +572,34 @@ class HealthMonitorService
     count.negative? ? nil : count
   end
 
-  # A week past the window before "overdue" is claimed. Wide enough that a table
-  # whose oldest row is a few hours past the cutoff between ticks reads healthy,
-  # narrow enough that "there is more than a week of history nobody is pruning" is
-  # still said out loud — including while a deployment that has never had retention
-  # works through its first backlog, which really is behind.
-  LOG_RETENTION_OVERDUE_GRACE = 7.days
-
-  def log_retention_status(oldest)
+  def log_retention_status(oldest, oldest_verbose)
     return HealthStatus.new(status: :healthy, message: "No log rows") if oldest.nil?
 
     age_days = ((Time.current - oldest) / 1.day).round
+    overdue = overdue_window(oldest, Log::RETENTION) || overdue_window(oldest_verbose, Log::VERBOSE_RETENTION)
 
-    if oldest < (Log::RETENTION + LOG_RETENTION_OVERDUE_GRACE).ago
+    if overdue
       HealthStatus.new(
         status: :warning,
-        message: "Oldest log row is #{age_days} days old, past the #{(Log::RETENTION / 1.day).to_i}-day " \
-                 "retention window — LogRetentionJob is behind, or still draining a pre-retention backlog"
+        message: "Oldest #{overdue[:label]}log row is #{overdue[:age_days]} days old, past the " \
+                 "#{overdue[:window_days]}-day retention window — LogRetentionJob is behind, or still " \
+                 "draining a pre-retention backlog"
       )
     else
       HealthStatus.new(status: :healthy, message: "Oldest log row is #{age_days} days old")
     end
+  end
+
+  # The same grace for both windows: a reading is only "overdue" once there is more
+  # than a week of history past the window nobody has pruned.
+  def overdue_window(oldest, window)
+    return nil if oldest.nil? || oldest >= (window + LOG_RETENTION_OVERDUE_GRACE).ago
+
+    {
+      label: window == Log::VERBOSE_RETENTION ? "verbose " : "",
+      age_days: ((Time.current - oldest) / 1.day).round,
+      window_days: (window / 1.day).to_i
+    }
   end
 
   def sigterm_retry_health

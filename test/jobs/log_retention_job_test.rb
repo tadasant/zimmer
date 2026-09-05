@@ -151,8 +151,10 @@ class LogRetentionJobTest < ActiveJob::TestCase
     assert_equal 0, Log.count
     assert statements.size >= 3,
            "10 rows at a batch size of 4 must take at least three statements, not one big DELETE (got #{statements.size})"
-    assert statements.all? { |sql| sql.include?("LIMIT") },
-           "each delete must be bounded by the batch's LIMIT"
+    statements.each do |sql|
+      ids = sql[/IN \((.*?)\)/m, 1].to_s.split(",").size
+      assert_operator ids, :<=, 4, "each delete must name at most one batch of ids, not the whole backlog: #{sql}"
+    end
   end
 
   # The primary-key ceiling is an optimization; the cutoff is a predicate on the
@@ -196,19 +198,46 @@ class LogRetentionJobTest < ActiveJob::TestCase
     assert_equal [ guard.id ], Log.pluck(:id)
   end
 
-  # And it must still converge when the backlog is larger than one probe window,
+  # And it must still converge when the backlog is wider than one probe window —
   # which is what turns "stalled forever" into "drains over a few ticks".
+  #
+  # `probe_rows: 4` rather than the real 25,000, so this exercises the BOUNDED
+  # probe ceiling. At the default the probe's `OFFSET` runs off the end of a
+  # test-sized table, `probe_ceiling` falls through to `Log.maximum(:id)`, and the
+  # branch that actually ships is never executed.
   test "a backlog wider than the probe window drains across ticks" do
     guard = seed_unordered(level: "info", age: 1.hour)
     30.times { |i| seed_unordered(level: "info", age: Log::RETENTION + 10.days + i.minutes) }
 
-    ticks = 0
-    while Log.expired.exists? && ticks < 10
-      LogRetentionJob.perform_now(batch_size: 4)
+    first = LogRetentionJob.perform_now(probe_rows: 4)
+    assert_operator first[:total], :>, 0, "the probe must collect what is inside its window"
+    assert_operator Log.expired.count, :>, 0,
+                    "a probe window of 4 rows cannot drain 30 in one tick — otherwise this tests nothing"
+
+    ticks = 1
+    while Log.expired.exists? && ticks < 20
+      LogRetentionJob.perform_now(probe_rows: 4)
       ticks += 1
     end
 
+    assert_operator ticks, :>, 1, "the point of this test is that it takes more than one tick"
     assert_equal [ guard.id ], Log.pluck(:id), "the backlog above the guard drained in #{ticks} tick(s)"
+  end
+
+  # The residual case the probe does NOT cover, asserted rather than left implied:
+  # more unexpired rows below every expired one than the window is wide. Nothing in
+  # Zimmer can produce it — it takes a renumbered sequence — but a reader deserves
+  # to see the boundary drawn rather than described.
+  test "more unexpired rows than the probe window is wide is a documented stall" do
+    5.times { seed_unordered(level: "info", age: 1.hour) }
+    stale = seed_unordered(level: "info", age: Log::RETENTION + 10.days)
+
+    assert_equal({ expired: 0, verbose: 0, total: 0 }, LogRetentionJob.perform_now(probe_rows: 2))
+    assert Log.exists?(stale.id), "the stall is real, and docs/limitations.md says so"
+
+    # The same table at the shipped probe width collects it, which is why the
+    # limitation is about a renumbered sequence rather than about ordinary use.
+    assert_equal 1, LogRetentionJob.perform_now[:total]
   end
 
   test "retention is an age policy, not a per-session one" do

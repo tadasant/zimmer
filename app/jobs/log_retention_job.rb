@@ -63,10 +63,22 @@
 #     timestamps disagree, where a single recent row with a low id would otherwise
 #     hide every expired row above it FOREVER. Retention silently never running
 #     again is the bug this job exists to fix, so the fallback is not "give up":
-#     it is a ceiling at the PROBE_ROWS-th row, which bounds the tick's work while
-#     still letting it collect anything expired near the head. The window slides
-#     forward as rows go, so a disordered table converges tick by tick instead of
-#     stalling.
+#     it is a ceiling just past the first PROBE_ROWS rows, which bounds the tick's
+#     work while still letting it collect anything expired in that window. As those
+#     rows go the window slides forward, so a table drains tick by tick.
+#
+#     What that does NOT cover, stated rather than implied: more than PROBE_ROWS
+#     unexpired rows sitting below EVERY expired row. The window never reaches past
+#     them and the pass stalls for as long as that holds. It takes a renumbered
+#     sequence or a restore to produce, nothing in Zimmer writes `logs` that way,
+#     and the exact remedy is an index on `created_at` — which is the one thing
+#     this deploy cannot afford to build. Written up in docs/limitations.md.
+#
+# Each pass then walks DOWNWARD from its ceiling, carrying the last id it took as
+# the next batch's ceiling. Restarting each batch at the bottom instead would
+# re-walk everything the previous batches already stepped over — quadratic within
+# a tick, and in the verbose pass's steady state a scan of every non-verbose row
+# between the two windows before reaching the first row it can actually delete.
 class LogRetentionJob < ApplicationJob
   include DatabaseRetry
   include SingletonSweep
@@ -84,18 +96,19 @@ class LogRetentionJob < ApplicationJob
   # a slice always finishes and hands its thread back before the next tick.
   SLICE_BUDGET = 90.seconds
 
-  # How far into the table the head probe looks when the binary search has no
-  # answer. Big enough to make progress on a disordered table, small enough that
-  # the probe costs a bounded pk scan rather than a walk of a hundred million rows.
+  # How many rows the head probe looks past when the binary search has no answer.
+  # Big enough to make progress on a disordered table, small enough that the probe
+  # costs a bounded pk scan rather than a walk of a hundred million rows.
   PROBE_ROWS = 25_000
 
-  def perform(budget: SLICE_BUDGET, batch_size: BATCH_SIZE, now: Time.current)
+  def perform(budget: SLICE_BUDGET, batch_size: BATCH_SIZE, probe_rows: PROBE_ROWS, now: Time.current)
     deadline = monotonic_now + budget.to_f
+    limits = { deadline: deadline, batch_size: batch_size, probe_rows: probe_rows }
 
     # Oldest first: the general window is a superset of the verbose one, so
     # draining it first means the verbose pass has less to walk over.
-    expired = prune(Log.expired(now), cutoff: now - Log::RETENTION, deadline: deadline, batch_size: batch_size)
-    verbose = prune(Log.expired_verbose(now), cutoff: now - Log::VERBOSE_RETENTION, deadline: deadline, batch_size: batch_size)
+    expired = prune(Log.expired(now), cutoff: now - Log::RETENTION, **limits)
+    verbose = prune(Log.expired_verbose(now), cutoff: now - Log::VERBOSE_RETENTION, **limits)
 
     total = expired + verbose
     if total > 0
@@ -114,22 +127,29 @@ class LogRetentionJob < ApplicationJob
   #
   # `scope` already carries the cutoff predicate; `cutoff` is passed separately
   # only so the primary-key ceiling can be computed for the same instant.
-  def prune(scope, cutoff:, deadline:, batch_size:)
-    ceiling = ceiling_id(cutoff)
+  #
+  # The ceiling walks down with the work: each batch takes the highest ids it can
+  # find and the next one starts below them, so a row is stepped over at most once
+  # per tick however many batches it takes. See the header for what restarting at
+  # the bottom would cost the verbose pass in particular.
+  def prune(scope, cutoff:, deadline:, batch_size:, probe_rows:)
+    ceiling = ceiling_id(cutoff, probe_rows: probe_rows)
     return 0 if ceiling.nil?
 
-    bounded = scope.where(id: ..ceiling)
     total = 0
 
     loop do
       return total if monotonic_now >= deadline
 
-      deleted = with_db_retry do
-        Log.where(id: bounded.order(:id).limit(batch_size).select(:id)).delete_all
+      ids = with_db_retry do
+        scope.where(id: ..ceiling).order(id: :desc).limit(batch_size).pluck(:id)
       end
+      return total if ids.empty?
 
-      total += deleted
-      return total if deleted < batch_size
+      total += with_db_retry { Log.where(id: ids).delete_all }
+
+      ceiling = ids.last - 1
+      return total if ids.size < batch_size
     end
   end
 
@@ -144,17 +164,20 @@ class LogRetentionJob < ApplicationJob
   # The search needs its lower bound to be expired to start, and when it is not,
   # `probe_ceiling` takes over rather than the pass giving up. See the header for
   # why "the oldest row is recent" must not be read as "there is nothing to do".
-  def ceiling_id(cutoff)
+  def ceiling_id(cutoff, probe_rows:)
     lowest = Log.minimum(:id)
     return nil if lowest.nil?
 
     # `lowest` is a valid answer from the start once its own row is expired, which
     # is the invariant the search widens: everything at or below `low` is older
     # than the cutoff.
-    return probe_ceiling unless (Log.where(id: lowest).pick(:created_at) || Time.current) < cutoff
+    return probe_ceiling(probe_rows) unless (Log.where(id: lowest).pick(:created_at) || Time.current) < cutoff
 
     low = lowest
+    # Emptied between the two reads — a cascading session delete, say. Nothing to
+    # bound, and `low < nil` would raise something DatabaseRetry does not catch.
     high = Log.maximum(:id)
+    return nil if high.nil?
 
     while low < high
       mid = low + ((high - low + 1) / 2)
@@ -170,12 +193,12 @@ class LogRetentionJob < ApplicationJob
     low
   end
 
-  # The id of the PROBE_ROWS-th row, or the table's largest id when it holds
-  # fewer. An index-only scan of at most PROBE_ROWS entries — cheap enough to run
-  # on every tick of a table with nothing to prune, which is the common case that
-  # reaches it.
-  def probe_ceiling
-    Log.order(:id).offset(PROBE_ROWS).limit(1).pick(:id) || Log.maximum(:id)
+  # The id of the row just past the first `probe_rows` of them, or the table's
+  # largest id when it holds fewer. An index-only scan of at most `probe_rows`
+  # entries — cheap enough to run on every tick of a table with nothing to prune,
+  # which is the common case that reaches it.
+  def probe_ceiling(probe_rows)
+    Log.order(:id).offset(probe_rows).limit(1).pick(:id) || Log.maximum(:id)
   end
 
   def monotonic_now

@@ -59,6 +59,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_operator retention[:index_bytes], :>, 0, "logs carries indexes, so their size should be reported"
     assert retention.key?(:estimated_rows)
     assert retention.key?(:oldest_log_at)
+    assert retention.key?(:oldest_verbose_log_at)
   end
 
   test "log_retention_health reads healthy while the oldest row is inside the window" do
@@ -102,15 +103,38 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   test "a log retention warning does not degrade overall_status" do
     Log.delete_all
     log = Log.create!(session: log_retention_session, content: "ancient", level: "info")
+
+    # Captured while retention still reads healthy, so the comparison below is
+    # between two genuinely different states rather than two reads of one.
+    baseline = @service.full_health_report
+    assert baseline[:log_retention_health][:status].healthy?
+
     stale_at = (Log::RETENTION * 3).ago
     log.update_columns(created_at: stale_at, updated_at: stale_at)
-
-    baseline = @service.full_health_report[:overall_status].status
     report = @service.full_health_report
 
     assert report[:log_retention_health][:status].warning?
-    assert_equal baseline, report[:overall_status].status,
+    assert_equal baseline[:overall_status].status, report[:overall_status].status,
                  "log retention is informational — it must not move the aggregate the alerting reads"
+  end
+
+  # The verbose tier is the bulk of the table and has the tighter window, so a
+  # verbose pass that stopped while the general one kept running would refill a
+  # disk with every surviving row still inside the 90-day window — healthy, by the
+  # only reading the panel had before this.
+  test "log_retention_health warns on a stalled verbose tier even while the general window is clean" do
+    Log.delete_all
+    stale_at = (Log::VERBOSE_RETENTION + HealthMonitorService::LOG_RETENTION_OVERDUE_GRACE + 1.day).ago
+    verbose = Log.create!(session: log_retention_session, content: "stdout", level: "verbose")
+    verbose.update_columns(created_at: stale_at, updated_at: stale_at)
+
+    retention = @service.full_health_report[:log_retention_health]
+
+    assert retention[:status].warning?
+    assert_match(/verbose log row/, retention[:status].message)
+    refute_match(/#{(Log::RETENTION / 1.day).to_i}-day/, retention[:status].message,
+                 "the general window is not what is breached here")
+    assert_in_delta stale_at.to_f, retention[:oldest_verbose_log_at].to_f, 1.0
   end
 
   test "egress_health reflects a degraded cache and drives overall status critical" do
