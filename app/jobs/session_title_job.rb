@@ -286,8 +286,12 @@ class SessionTitleJob < ApplicationJob
     return if title.blank?
 
     with_db_retry do
-      session.remove_metadata!("auto_generated_title")
       session.update!(title: title)
+      # After the title lands, never before: both re-title gates key on this
+      # marker, so dropping it first and then failing the write (the stale-catalog
+      # RecordInvalid is the live case) would leave the session unnamed and
+      # ineligible to be named again.
+      session.remove_metadata!("auto_generated_title")
     end
 
     with_db_retry do

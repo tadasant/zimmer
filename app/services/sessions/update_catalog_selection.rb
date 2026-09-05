@@ -129,19 +129,25 @@ module Sessions
       # REST and MCP copies did not. A dropped PG connection is a transport
       # failure, not a rejected request, so it comes back as its own error code
       # for the surface to answer 503 to rather than as a validation failure.
+      #
+      # Clearing the list also has to be recorded as deliberate, or
+      # McpServerBackfill reads the empty column as an accident and restores the
+      # root's defaults the next time the config is regenerated. It is its own
+      # statement — a jsonb merge, so a concurrent metadata writer keeps its keys
+      # — but it shares the transaction: a list written without its marker is the
+      # state the backfill silently reverts.
+      persisted = nil
       begin
-        persisted = with_db_retry { @session.update(@attribute => values) }
+        with_db_retry do
+          @session.transaction do
+            persisted = @session.update(@attribute => values)
+            @session.record_explicit_mcp_servers!(values) if persisted && @attribute == :mcp_servers
+          end
+        end
       rescue *DatabaseRetry::RETRYABLE_EXCEPTIONS => e
         return database_unavailable_error(e)
       end
       return update_failed_error(values) unless persisted
-
-      # Clearing the list has to be recorded as deliberate, or McpServerBackfill
-      # reads the empty column as an accident and restores the root's defaults
-      # the next time the config is regenerated. Written after the list itself
-      # lands, and in its own statement, so a rejected change records nothing and
-      # a concurrent metadata writer keeps its keys.
-      with_db_retry { @session.record_explicit_mcp_servers!(values) } if @attribute == :mcp_servers
 
       added = values - old_values
       removed = old_values - values

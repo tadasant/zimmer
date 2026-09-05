@@ -189,6 +189,22 @@ class AtomicJsonMetadataTest < ActiveSupport::TestCase
     @session.merge_custom_metadata!("mcp_servers_status" => { "a" => { "status" => "connected" } })
   end
 
+  # `should_broadcast_to_index?` excludes a status-summary fork because the index
+  # does not list one. The concern re-checks that itself rather than inheriting it,
+  # and it has to: a fork is polled like every other session, so without the check
+  # every poll renders and pushes a card for a list the fork is not in.
+  test "merging on a status-summary fork skips the index broadcast it is not listed in" do
+    @session.merge_metadata!(SessionStatusSummaryGenerator::FORK_MARKER => 4321)
+
+    @session.expects(:broadcast_update_to_sessions_index).never
+    @session.expects(:broadcast_metadata_change).once
+
+    @session.merge_metadata!("failure_reason" => "spawn_failed")
+
+    assert_equal "spawn_failed", @session.reload.metadata["failure_reason"],
+      "skipping the broadcast must not skip the write"
+  end
+
   test "a merge that changes nothing broadcasts nothing" do
     @session.expects(:broadcast_update_to_sessions_index).never
     @session.expects(:broadcast_custom_metadata_change).never

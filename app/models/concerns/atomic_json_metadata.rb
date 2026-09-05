@@ -138,7 +138,11 @@ module AtomicJsonMetadata
   # card silently stops updating in someone's browser:
   #
   #   1. the session card on the index — `should_broadcast_to_index?` treats ANY
-  #      `metadata` / `custom_metadata` change as broadcast-worthy;
+  #      `metadata` / `custom_metadata` change as broadcast-worthy, EXCEPT on a
+  #      status-summary fork, which the index does not list. That exclusion is
+  #      re-checked here rather than inherited: a fork is polled like any other
+  #      session, so without it every poll renders and pushes a card for a list it
+  #      is not in;
   #   2. the metadata partial on the detail page — only when a displayed field changed;
   #   3. the header actions on the detail page (the GitHub PR link) — any
   #      `custom_metadata` change.
@@ -155,8 +159,10 @@ module AtomicJsonMetadata
     mcp_status_changed = !metadata_column &&
       before&.dig("mcp_servers_status") != after&.dig("mcp_servers_status")
 
+    index_worthy = !status_summary_fork?
+
     ActiveRecord.after_all_transactions_commit do
-      broadcast_update_to_sessions_index
+      broadcast_update_to_sessions_index if index_worthy
       if metadata_column
         broadcast_metadata_change if display_changed
       else
