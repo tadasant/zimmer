@@ -66,6 +66,10 @@ class AirPrepareService
   # resolution is legitimately slow. Overridable via ENV for ops tuning.
   AIR_PREPARE_TIMEOUT_SECONDS = Integer(ENV.fetch("AIR_PREPARE_TIMEOUT_SECONDS", "600"))
 
+  # Bound on the post-install `air --version` health probe. A functional binary
+  # answers in milliseconds; anything near this is a wedged one.
+  AIR_VERSION_PROBE_TIMEOUT_SECONDS = 10
+
   # Backoff (seconds) between retries when `air prepare` fails transiently — e.g.
   # the catalog clone hits a github.com `ETIMEDOUT` or stalls and is watchdog-
   # killed. Mirrors GitCloneService's clone retry. Overridable via ENV as a
@@ -295,14 +299,21 @@ class AirPrepareService
     end
 
     # Run `air --version` to verify the binary is functional.
+    #
+    # This runs on the `waiting → running` launch path, so the bound has to be a
+    # real one: a half-installed npm tree or a wedged filesystem can leave the
+    # probe hanging, and an unbounded one wedges the session in `waiting` with
+    # nothing raised. BoundedSubprocess SIGKILLs the process group on deadline.
     def air_binary_healthy?(binary)
       return false unless File.exist?(binary)
 
-      Timeout.timeout(10) do
-        _stdout, _stderr, status = Open3.capture3(binary, "--version")
-        SubprocessStatus.success?(status)
-      end
-    rescue StandardError, Timeout::Error
+      _stdout, _stderr, status =
+        BoundedSubprocess.run([ binary, "--version" ], timeout: AIR_VERSION_PROBE_TIMEOUT_SECONDS)
+      SubprocessStatus.success?(status)
+    rescue BoundedSubprocess::TimeoutError, StandardError
+      # TimeoutError is a StandardError and would be caught either way; naming it
+      # keeps the bound visible at the rescue, as run_air_prepare_command! and
+      # refresh_catalog_cache already do a few hundred lines below.
       false
     end
 

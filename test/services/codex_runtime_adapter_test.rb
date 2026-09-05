@@ -737,7 +737,53 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     assert_not_includes command, "--auto-compact-window"
   end
 
+  # zimmer#908: this probe used to sit under `Timeout.timeout { Open3.capture3 }`,
+  # which bounds nothing — the call took as long as `codex --version` took. It runs
+  # under the watchdog now, which SIGKILLs the process group on the deadline.
+  test "installed_cli_version probes under BoundedSubprocess with the version bound" do
+    calls = []
+    probe = ->(command, timeout:) {
+      calls << [ command, timeout ]
+      [ "codex-cli 0.146.0\n", "", exit_status(true) ]
+    }
+
+    BoundedSubprocess.stub(:run, probe) do
+      assert_equal Gem::Version.new("0.146.0"), @adapter.installed_cli_version
+    end
+
+    assert_equal [ [ [ "codex", "--version" ], CodexRuntimeAdapter::VERSION_TIMEOUT ] ], calls
+  end
+
+  test "installed_cli_version is nil when the probe is killed on the deadline" do
+    killed = ->(_command, timeout:) {
+      raise BoundedSubprocess::TimeoutError, "command timed out after #{timeout}s (process group killed)"
+    }
+
+    BoundedSubprocess.stub(:run, killed) do
+      assert_nil @adapter.installed_cli_version
+    end
+  end
+
+  test "installed_cli_version is nil when the probe exits non-zero or is missing" do
+    BoundedSubprocess.stub(:run, ->(*, **) { [ "", "boom", exit_status(false) ] }) do
+      assert_nil @adapter.installed_cli_version
+    end
+
+    BoundedSubprocess.stub(:run, ->(*, **) { raise Errno::ENOENT, "codex" }) do
+      assert_nil @adapter.installed_cli_version
+    end
+  end
+
   private
+
+  # A stand-in for Process::Status. BoundedSubprocess can also hand back nil here
+  # (zimmer#271), which is why the adapter reads it through SubprocessStatus.
+  def exit_status(ok)
+    status = Object.new
+    status.define_singleton_method(:success?) { ok }
+    status.define_singleton_method(:exitstatus) { ok ? 0 : 1 }
+    status
+  end
 
   # Assert that `subsequence` appears as consecutive elements within `array`.
   def assert_includes_subsequence(array, subsequence)

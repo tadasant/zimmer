@@ -382,4 +382,63 @@ class CliStatusServiceTest < ActiveSupport::TestCase
   test "the loading placeholder declares the details key so the view never sees a missing one" do
     assert CliStatusService.loading_placeholder[:tools][:pi].key?(:details)
   end
+
+  # zimmer#908: get_version shells out to arbitrary commands from the CLI_TOOLS
+  # table on the refresh job's thread. It used to do that under
+  # `Timeout.timeout { Open3.capture3 }`, which bounds nothing — one wedged binary
+  # could hold the whole report. Now every attempt is its own bounded child.
+  test "get_version runs each candidate under BoundedSubprocess with the version bound" do
+    calls = []
+    probe = ->(command, timeout:) {
+      calls << [ command, timeout ]
+      [ "gh version 2.67.0 (2026-01-01)\n", "", exit_status(true) ]
+    }
+
+    BoundedSubprocess.stub(:run, probe) do
+      assert_equal "2.67.0", CliStatusService.new.send(:get_version, "gh --version")
+    end
+
+    assert_equal [ [ [ "gh", "--version" ], CliStatusService::VERSION_TIMEOUT ] ], calls
+  end
+
+  test "get_version falls through the || alternatives, bounding each one" do
+    calls = []
+    probe = ->(command, timeout:) {
+      calls << command
+      command.first == "fly" ? [ "", "no", exit_status(false) ] : [ "0.3.47 flyctl\n", "", exit_status(true) ]
+    }
+
+    BoundedSubprocess.stub(:run, probe) do
+      assert_equal "0.3.47", CliStatusService.new.send(:get_version, "fly version || flyctl version")
+    end
+
+    assert_equal [ [ "fly", "version" ], [ "flyctl", "version" ] ], calls
+  end
+
+  test "get_version is nil when the probe is killed on the deadline" do
+    killed = ->(_command, timeout:) {
+      raise BoundedSubprocess::TimeoutError, "command timed out after #{timeout}s (process group killed)"
+    }
+
+    BoundedSubprocess.stub(:run, killed) do
+      assert_nil CliStatusService.new.send(:get_version, "wedged --version")
+    end
+  end
+
+  test "get_version is nil when the binary is missing" do
+    BoundedSubprocess.stub(:run, ->(*, **) { raise Errno::ENOENT, "nope" }) do
+      assert_nil CliStatusService.new.send(:get_version, "nope --version")
+    end
+  end
+
+  private
+
+  # A stand-in for Process::Status. BoundedSubprocess can also hand back nil here
+  # (zimmer#271), which is why get_version reads it through SubprocessStatus.
+  def exit_status(ok)
+    status = Object.new
+    status.define_singleton_method(:success?) { ok }
+    status.define_singleton_method(:exitstatus) { ok ? 0 : 1 }
+    status
+  end
 end
