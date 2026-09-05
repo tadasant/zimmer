@@ -52,13 +52,6 @@ class ForkSessionService
   # can still exhaust the budget and fail, loudly, which is the right outcome.
   COPY_RETRY_DELAYS = [ 0.5, 2.0 ].freeze
 
-  # Installed-dependency trees, excludable from a fork's copy by callers that
-  # know the fork will never build or boot anything. They are the bulk of a
-  # clone — `vendor/bundle` alone is ~300 gem directories in Zimmer's own repo —
-  # and every second the copy spends walking them is a second the source tree
-  # can change underneath it.
-  DEPENDENCY_DIRECTORIES = [ "vendor/bundle", "**/node_modules" ].freeze
-
   # What a fork's title is built from — see #generate_forked_title.
   FORK_TITLE_PREFIX = "Fork of "
   TITLE_OMISSION = "…"
@@ -77,7 +70,8 @@ class ForkSessionService
       .min
   end
 
-  attr_reader :source_session, :message_index, :file_system, :extra_metadata, :copy_exclusions, :scaffold_missing_clone
+  attr_reader :source_session, :message_index, :file_system, :extra_metadata, :copy_exclusions,
+              :scaffold_missing_clone, :copy_source_tree
 
   # @param extra_metadata [Hash] merged into the forked session's metadata at
   #   CREATE time. Callers that need the fork classified from its very first
@@ -94,13 +88,23 @@ class ForkSessionService
   #   the fork an empty working directory instead of failing. Off by default,
   #   and only for callers whose fork does not read the tree — see
   #   #scaffold_clone.
-  def initialize(source_session:, message_index:, file_system: nil, extra_metadata: {}, copy_exclusions: [], scaffold_missing_clone: false)
+  # @param copy_source_tree [Boolean] whether the fork gets a copy of the source
+  #   clone at all. On by default: a user-initiated fork is a working session
+  #   and wants the tree it forked. Off for a fork that never reads the tree,
+  #   which then gets a scaffolded empty working directory whether or not the
+  #   source is still on disk — see #scaffold_clone?. Copying a tree nobody
+  #   opens is not free: it is a per-file recursive walk of a live working tree,
+  #   it runs inline on the caller's thread, and it has no timeout, so on a
+  #   two-thread queue two of them are the whole lane (zimmer#771).
+  def initialize(source_session:, message_index:, file_system: nil, extra_metadata: {}, copy_exclusions: [],
+                 scaffold_missing_clone: false, copy_source_tree: true)
     @source_session = source_session
     @message_index = message_index
     @file_system = file_system || RealFileSystemAdapter.new
     @extra_metadata = extra_metadata || {}
     @copy_exclusions = copy_exclusions || []
     @scaffold_missing_clone = scaffold_missing_clone
+    @copy_source_tree = copy_source_tree
     # Set by the paths that can end on a missing source clone — see
     # #archived_source_session? — and carried out on the Result.
     @source_clone_discarded = false
@@ -342,7 +346,15 @@ class ForkSessionService
   # — DeferredCloneCleanupJob for one archived more than the undo window ago,
   # which is every archived session an operator actually opens later, and
   # StaleCloneCleanupJob for one that failed more than a day ago.
+  #
+  # Such a caller says so with `copy_source_tree: false`, and then the answer
+  # does not depend on the source at all. The two reasons are different in kind
+  # and only one of them is about a missing tree: `scaffold_missing_clone` says
+  # a tree that is *gone* must not fail the fork, while `copy_source_tree: false`
+  # says a tree that is *there* must not be copied either, because nothing will
+  # open it.
   def scaffold_clone?
+    return true unless copy_source_tree
     return false unless scaffold_missing_clone
 
     source_clone_path = source_session.metadata&.dig("clone_path").to_s
@@ -354,13 +366,22 @@ class ForkSessionService
   # working directory that does not exist fails the fork at the process rather
   # than here.
   #
-  # A live source is not an error here, only a rarer one: StaleCloneCleanupJob
-  # reclaims a FAILED session's clone after 24 hours, and a day-old failed
-  # session is exactly the kind an operator opens to press Regenerate. It is
-  # logged at `warn` rather than `info` because the archived case is expected and
-  # this one is worth noticing.
+  # Which branch logs is decided by WHY the tree is empty, because the two are
+  # not the same event.
+  #
+  # A caller that asked for no copy got what it asked for, and a live source is
+  # the normal thing for it to have — `info`. The other two are a scaffold
+  # standing in for a copy the caller DID want, which only a caller passing both
+  # `copy_source_tree: true` and `scaffold_missing_clone: true` can reach: the
+  # source is archived and its tree already reclaimed (expected, `info`), or it is
+  # not in the trash and the tree is gone anyway (`warn` — StaleCloneCleanupJob
+  # reclaims a FAILED session's clone after 24 hours, and a day-old failed session
+  # is exactly the kind an operator opens to press Regenerate).
   def scaffold_clone(new_clone_path)
-    if archived_source_session?
+    if !copy_source_tree
+      @logger.info("Scaffolding an empty clone for a fork that does not copy the source tree",
+        destination: new_clone_path)
+    elsif archived_source_session?
       @logger.info("Scaffolding an empty clone for a fork that does not read the source tree", destination: new_clone_path)
     else
       @logger.warn("Scaffolding an empty clone for a fork of a session that is not in the trash", destination: new_clone_path)
