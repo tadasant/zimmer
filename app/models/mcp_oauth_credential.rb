@@ -12,6 +12,8 @@
 #   credential.refresh! if credential.needs_refresh?
 #   access_token = credential.access_token
 class McpOauthCredential < ApplicationRecord
+  include HttpsTokenEndpoint
+
   PERMANENT_REFRESH_ERRORS = %w[
     invalid_grant
     invalid_client
@@ -23,6 +25,28 @@ class McpOauthCredential < ApplicationRecord
   validates :credential_key, presence: true, uniqueness: true
   validates :client_id, presence: true
   validates :access_token, presence: true
+
+  # #refresh! posts the client_secret and the refresh token to this endpoint as
+  # form parameters, and McpOauthService#post_form derives `use_ssl` from the
+  # very same string — so an http:// value publishes both in the clear, and the
+  # refresh still returns 200 (#892).
+  #
+  # Deliberately *not* a presence validation: the column is nullable and blank is
+  # a meaningful state, meaning "this credential cannot be renewed, re-authorize
+  # it" (see #can_refresh? / #requires_reauth?). It is also what the repair
+  # migration writes into a legacy row. Requiring presence here would make those
+  # rows unsavable, which is the failure this validation exists to avoid.
+  #
+  # There is no loopback carve-out. Unlike XOauthCredential's endpoint, this one
+  # is *discovered* — McpOauthService reads it out of the MCP server's own
+  # authorization-server metadata — so an exception would be triggerable by the
+  # one party outside our control. A remote server naming Zimmer's own loopback
+  # has no legitimate meaning: it would aim a POST carrying an operator-supplied
+  # client secret (the catalog `oauth` block's, threaded through discovery) at
+  # whatever answers on this host's port. The endpoint is operator-editable too,
+  # through the supervisor panel, and one rule with no exceptions is what makes
+  # that surface reviewable.
+  validate :token_endpoint_must_be_https
 
   # Find credentials for a specific server by name and URL
   scope :for_server, ->(server_name, server_url) {
@@ -85,9 +109,19 @@ class McpOauthCredential < ApplicationRecord
     expires_at.nil? || expires_at > Time.current
   end
 
-  # Returns true if this credential can be refreshed (has a refresh_token and token_endpoint)
+  # Returns true if this credential can be refreshed: it has a refresh_token, and
+  # an endpoint Zimmer is willing to send it to.
+  #
+  # The scheme check is what keeps a row the validation cannot reach — one
+  # written with update_column, or one the repair migration has not run over yet
+  # — from ever reaching the wire. Every caller of #refresh! gates on this
+  # (RefreshMcpOauthTokensJob, McpOauthCredentialInjector), so a credential
+  # pointed at a cleartext endpoint is simply never refreshed: no POST, no
+  # rotation, and no half-completed refresh whose save then fails validation.
+  # It reads as requires_reauth? once the access token lapses, which is the
+  # truth — the endpoint has to be rediscovered before this can be renewed.
   def can_refresh?
-    refresh_token.present? && token_endpoint.present?
+    refresh_token.present? && HttpsTokenEndpoint.secure?(token_endpoint)
   end
 
   # Returns true if this credential is expired and cannot refresh.
@@ -131,6 +165,10 @@ class McpOauthCredential < ApplicationRecord
   def refresh!
     raise "Cannot refresh: missing refresh_token" unless refresh_token.present?
     raise "Cannot refresh: missing token_endpoint" unless token_endpoint.present?
+    # Stated here as well as in #can_refresh? because this method is the one that
+    # puts the secret on the wire, and a direct caller that skipped the predicate
+    # must not get a cleartext POST out of it.
+    raise "Cannot refresh: token_endpoint #{HttpsTokenEndpoint.describe(token_endpoint)} is not https" unless HttpsTokenEndpoint.secure?(token_endpoint)
 
     uri = URI(token_endpoint)
     params = {

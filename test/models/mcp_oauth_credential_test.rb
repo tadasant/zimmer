@@ -165,6 +165,100 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     assert_not credential.needs_refresh?
   end
 
+  # --- token_endpoint scheme (#892) ---
+  #
+  # The column decides both where the token request goes and whether TLS is used
+  # (McpOauthService#post_form derives `use_ssl` from it), and the OAuth
+  # client_secret rides in the form body alongside the refresh token. A
+  # non-https value therefore publishes two long-lived credentials in the clear,
+  # and the refresh returns 200 so nothing surfaces. The value is both
+  # operator-editable (McpOauthCredentialDashboard's FORM_ATTRIBUTES) and
+  # discovered from the MCP server's own metadata, so the model is the guard.
+
+  test "token_endpoint rejects anything that is not a plain https URL with a host" do
+    [
+      "http://auth.example.com/token",
+      # No loopback carve-out: the value can arrive from a remote server's
+      # discovery document, where a loopback endpoint has no honest meaning.
+      "http://127.0.0.1:9000/token",
+      "http://[::1]:9000/token",
+      "http://localhost:9000/token",
+      "ftp://auth.example.com/token",
+      "auth.example.com/token",
+      "https:/auth.example.com/token", # single slash — parses, but has no host
+      "https://",
+      "https://auth.example.com/token ", # trailing space — starts right, still unusable
+      "https://auth.example.com/a path" # unparseable — rejected, not raised
+    ].each do |endpoint|
+      credential = McpOauthCredential.new(
+        server_name: "s", server_url: "https://mcp.example.com", credential_key: "s|1",
+        client_id: "cid", access_token: "at", token_endpoint: endpoint
+      )
+
+      assert_not credential.valid?, "#{endpoint.inspect} should have been rejected"
+      assert_equal [ HttpsTokenEndpoint::MESSAGE ], credential.errors[:token_endpoint],
+        "wrong (or missing) error for #{endpoint.inspect}"
+    end
+  end
+
+  test "token_endpoint accepts https case-insensitively, and with userinfo" do
+    [
+      "https://auth.example.com/token",
+      "HTTPS://auth.example.com/token",
+      # McpOauthService#post_form reads userinfo as basic auth on purpose — some
+      # providers document client_secret_basic that way — and over TLS it is as
+      # confidential as any other header. This is where the rule differs from
+      # XOauthCredential's (#894), whose transport would silently ignore it.
+      "https://cid:secret@auth.example.com/token"
+    ].each do |endpoint|
+      credential = McpOauthCredential.new(
+        server_name: "s", server_url: "https://mcp.example.com", credential_key: "s|1",
+        client_id: "cid", access_token: "at", token_endpoint: endpoint
+      )
+
+      assert credential.valid?, "#{endpoint.inspect} should have been accepted: #{credential.errors.full_messages.join(", ")}"
+    end
+  end
+
+  # Deliberately not a presence validation. A blank endpoint means "this
+  # credential cannot be renewed, re-authorize it" — it is what the injector and
+  # the Connectors page read, and what the repair migration writes into a legacy
+  # row. Requiring presence would make exactly those rows unsavable.
+  test "a blank token_endpoint is allowed, and reads as unrefreshable" do
+    [ nil, "" ].each do |blank|
+      credential = McpOauthCredential.new(
+        server_name: "s", server_url: "https://mcp.example.com", credential_key: "s|1",
+        client_id: "cid", access_token: "at", refresh_token: "rt", token_endpoint: blank
+      )
+
+      assert credential.valid?, "#{blank.inspect} should have been accepted: #{credential.errors.full_messages.join(", ")}"
+      assert_not credential.can_refresh?
+    end
+  end
+
+  # The anti-brick guarantee. #refresh! POSTs before it saves, and the cron runs
+  # it unattended, so a legacy row that slipped past the repair migration must
+  # never reach the wire: can_refresh? is false, so no caller invokes refresh!,
+  # and refresh! itself refuses if one does. Neither path rotates a token it
+  # would then fail to persist.
+  test "a legacy cleartext row is never refreshed and never posts" do
+    credential = mcp_oauth_credentials(:expired_with_refresh)
+    credential.update_column(:token_endpoint, "http://refreshable.example.com/oauth/token")
+    credential.reload
+
+    assert_not credential.can_refresh?, "the cron and the injector both gate on can_refresh?"
+    assert credential.requires_reauth?, "an unrefreshable expired credential should ask for re-auth"
+
+    posted = stub_token_post(->(*) { flunk("posted the client secret to a cleartext endpoint") }) do
+      error = assert_raises(RuntimeError) { credential.refresh! }
+      assert_match(/not https/, error.message)
+    end
+    assert_nil posted
+
+    assert_equal "valid-refresh-token", credential.reload.refresh_token,
+      "the refresh token must survive untouched — nothing was rotated"
+  end
+
   test "can_refresh? returns true when refresh_token and token_endpoint are present" do
     credential = mcp_oauth_credentials(:notion)
     credential.refresh_token = "refresh-token-123"

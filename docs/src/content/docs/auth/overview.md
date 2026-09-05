@@ -223,10 +223,35 @@ rather than a `LIKE` approximation of it, because a legacy `http://` row would o
 and only fail validation on the way to *saving* the rotated refresh token — a leak and a dead
 credential in one pass.
 
-`mcp_oauth_credentials.token_endpoint` is editable in the same panel and carries no equivalent
-check; unlike X, those endpoints are discovered from server metadata and a local server on
-`http://localhost` is a plausible thing to point one at, so the right rule there is not the same
-rule. Tracked in [#892](https://github.com/tadasant/zimmer/issues/892).
+`mcp_oauth_credentials.token_endpoint` now carries the same rule, for a worse version of the same
+defect: the MCP refresh grant sends the `client_secret` **and** the refresh token as form
+parameters, so `http://` publishes both — and the refresh still returns `200`, so nothing surfaces.
+
+The MCP endpoint is not only operator-editable, it is **discovered**: `McpOauthService` reads it out
+of each server's own authorization-server metadata. That is why the rule is exceptionless here too,
+loopback included. A carve-out would be triggerable by the one party outside Zimmer's control, and a
+remote server naming this host's loopback has no honest meaning — it would aim a POST carrying an
+operator-supplied client secret at whatever answers on Zimmer's own port. A developer pointing at a
+local MCP server gets a clear refusal instead of a silent cleartext POST.
+
+The rule is enforced at four depths, because the endpoint is read at four:
+
+| Where | What it does |
+| --- | --- |
+| `McpOauthCredential` | Refuses to save a non-https endpoint (blank stays legal — it means "re-authorize me") |
+| `McpOauthCredential#can_refresh?` | False for a cleartext endpoint, so cron and the injector never call `refresh!` on one |
+| `McpOauthPendingFlow` | Refuses to store one, so the *initial* code exchange cannot leak it either |
+| `McpOauthService#post_form` | Raises `InsecureTokenEndpoint` rather than opening a cleartext connection |
+
+`McpOauthController#initiate` checks before it redirects to consent, so a server advertising a
+cleartext token endpoint is refused with a flash naming it — no authorization code is ever minted
+for an endpoint Zimmer will not talk to.
+
+A migration clears any row that predates the rule (to `NULL`, since an MCP token endpoint has no
+default to reset to — re-authorizing rediscovers it). Without that, validation alone would be
+*worse* than nothing: `refresh!` POSTs before it saves, so the secret would still have gone out, the
+provider would have rotated the single-use refresh token, and only then would the save have raised
+`RecordInvalid` — a leak and a permanently unrefreshable credential in one pass.
 
 ## The environment variables that matter
 
