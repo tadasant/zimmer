@@ -858,7 +858,10 @@ Three properties are load-bearing:
   must never strand a session that has finished its work.
 - **It queries by head SHA, not by workflow name.** "Which runs exist because *this* merge landed"
   has one right answer; "which workflows are deploys" is a guess, and the deploy that failed three
-  times on 2026-08-30 was not called `deploy`.
+  times on 2026-08-30 was not called `deploy`. The cost of that is that *every* run on the merge
+  commit counts, including ordinary CI on the base branch — so in a repo with any default-branch
+  push workflow (this one has two) most merges name runs and the merging session sleeps through
+  them. Deliberate: a red `main` from your own merge is your business too.
 - **The wait is a sleep, and it is bounded.** A deploy is a machine wait, so the message tells the
   session to sleep on `wake_me_up_later` rather than park in `needs_input`, and to archive anyway —
   naming the runs — once its budget is spent. Neither an unbounded wait nor a claim on the human's

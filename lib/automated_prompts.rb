@@ -129,8 +129,8 @@ module AutomatedPrompts
   # minutes and can fail for reasons that only exist on the deploy path, and the
   # session archiving on this message is the one holding the context to diagnose it
   # (tadasant/tadasant-internal#1969). Empty for a merge that fired nothing
-  # detectable, which is the common case and leaves this message byte-identical to
-  # what it has always been.
+  # detectable, and for one whose merge commit could not be read at all — both
+  # leave this message byte-identical to what it has always been.
   PR_MERGED_TEMPLATE = <<~PROMPT.strip
     [AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]
 
@@ -257,7 +257,9 @@ module AutomatedPrompts
   def self.post_merge_automation_section(runs:, merge_commit_sha:, repo_slug: nil)
     return "" if merge_commit_sha.blank?
 
-    runs = Array(runs)
+    # Not `Array(runs)`: that turns a Hash into a list of pairs, and a malformed
+    # reading must mean "nothing to report" rather than a bullet list of garbage.
+    runs = runs.is_a?(Array) ? runs : []
     repo_flag = repo_slug.present? ? " --repo #{repo_slug}" : ""
 
     if runs.empty?
@@ -304,9 +306,15 @@ module AutomatedPrompts
     end.join("\n")
   end
 
-  # A run GitHub has stopped working on, whatever it concluded.
+  # A run GitHub has stopped working on AND has said how it ended.
+  #
+  # The conclusion check is not redundant. A run can read `completed` with a null
+  # conclusion for a moment while GitHub settles, and without it that run is
+  # "finished with a conclusion that is not success" — which is how a healthy
+  # deploy gets announced to a session as a failure. Treating it as unfinished is
+  # the safe reading: the session waits and looks again.
   def self.finished_run?(run)
-    run["status"].to_s == "completed"
+    run["status"].to_s == "completed" && run["conclusion"].present?
   end
 
   # A finished run whose conclusion is one a human would call a failure.

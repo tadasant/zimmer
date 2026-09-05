@@ -38,8 +38,17 @@
 # reading this message is the one holding the context to diagnose that
 # (tadasant/tadasant-internal#1969). A session cannot see its repository's
 # workflow triggers from the inside, so the poller answers the question for it
-# rather than asking it to guess — and answers "nothing fired" the vast majority
-# of the time, which leaves the ordinary archive-on-merge path exactly as it was.
+# rather than asking it to guess.
+#
+# The question is "which runs exist because THIS merge landed", not "which of them
+# is a deploy" — the second is a name-matching guess, and the deploy that failed
+# three times on 2026-08-30 was not called `deploy`. So a repository with any
+# workflow on pushes to its default branch — this one has two — will name runs on
+# most merges and the merging session will sleep through them. That cost is
+# deliberate and bounded: a red `main` or a failed release build is the merging
+# session's business too, the wait is a sleep in `waiting` rather than a claim on
+# the human's action queue, and it expires. A merge that fires nothing keeps the
+# archive-immediately path exactly as it was.
 #
 class GitHubPullRequestPollerJob < ApplicationJob
   include DatabaseRetry

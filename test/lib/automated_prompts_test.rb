@@ -46,15 +46,11 @@ class AutomatedPromptsTest < ActiveSupport::TestCase
     )
   end
 
-  # The re-read that suppresses a stale conflict notice needs the PR the notice
-  # is about, and an EnqueuedMessage row carries only its content. So the reader
-  # has to survive a reworded template — a silent nil here would silently disable
-  # the guard behind tadasant/zimmer#835, not break anything visibly.
   # ---- What the merge fired (tadasant/tadasant-internal#1969) ----
   #
-  # "Merged" is the end of the work for most PRs and the halfway point for a PR whose
-  # merge fires a deploy, and a session cannot see which from the inside. So the
-  # message answers it, and each branch below is a different answer.
+  # "Merged" is the end of the work for a PR that fires nothing and the halfway point
+  # for a PR whose merge fires a deploy, and a session cannot see which from the
+  # inside. So the message answers it, and each branch below is a different answer.
 
   test "a merge with nothing known about it reads exactly as it always has" do
     plain = AutomatedPrompts.pr_merged_message("https://github.com/tadasant/zimmer/pull/1")
@@ -129,6 +125,34 @@ class AutomatedPromptsTest < ActiveSupport::TestCase
     refute_includes message, "Wait for those runs before you archive"
   end
 
+  # GitHub can report `completed` with the conclusion not yet filled in. Reading that
+  # as "finished, and not a success" is how a healthy deploy gets announced as a red
+  # one, so it counts as still running and the session looks again.
+  test "a completed run with no conclusion yet is treated as still running" do
+    run = { "name" => "Deploy", "status" => "completed", "conclusion" => nil, "url" => "https://x/1" }
+
+    assert_not AutomatedPrompts.finished_run?(run)
+    assert_not AutomatedPrompts.failed_run?(run)
+
+    message = AutomatedPrompts.pr_merged_message(
+      "https://github.com/tadasant/zimmer/pull/1", merge_commit_sha: "abc1234", post_merge_runs: [ run ]
+    )
+
+    refute_includes message, "already FAILED"
+    assert_includes message, "Wait for those runs before you archive"
+  end
+
+  # A reading that is not a list of runs is not a list of anything. `Array()` would
+  # turn a Hash into a list of pairs and render it as bullets.
+  test "a runs value that is not an array reports no runs" do
+    section = AutomatedPrompts.post_merge_automation_section(
+      runs: { "workflow_runs" => [] }, merge_commit_sha: "abc1234", repo_slug: "o/r"
+    )
+
+    assert_includes section, "gh run list --commit abc1234"
+    refute_includes section, "Wait for those runs before you archive"
+  end
+
   test "a cancelled deploy counts as a failure and a skipped run does not" do
     assert AutomatedPrompts.failed_run?({ "status" => "completed", "conclusion" => "cancelled" })
     assert AutomatedPrompts.failed_run?({ "status" => "completed", "conclusion" => "timed_out" })
@@ -155,6 +179,10 @@ class AutomatedPromptsTest < ActiveSupport::TestCase
     refute_includes section, "--repo "
   end
 
+  # The re-read that suppresses a stale conflict notice needs the PR the notice
+  # is about, and an EnqueuedMessage row carries only its content. So the reader
+  # has to survive a reworded template — a silent nil here would silently disable
+  # the guard behind tadasant/zimmer#835, not break anything visibly.
   test "merge_conflict_pr_url reads back the URL merge_conflict_message wrote" do
     url = "https://github.com/tadasant/zimmer/pull/834"
 

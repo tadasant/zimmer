@@ -6,8 +6,8 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     @session_with_pr = sessions(:with_pr_url)
     @session_without_pr = sessions(:running)
 
-    # Announcing a merge now also asks GitHub what that merge fired, which is two
-    # `gh` calls. Neutralise them by default so no test shells out by accident;
+    # Announcing a merge asks GitHub what that merge fired, which is two `gh`
+    # calls. Neutralise them by default so no test shells out by accident;
     # `{ merge_commit_sha: nil }` is the job's own "could not read it" answer and
     # produces the merged message exactly as it was before that lookup existed.
     # The tests that care about the lookup re-stub this, or stub the fetches under it.
@@ -1020,8 +1020,9 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
   # For a PR whose merge triggers a deploy, the merge notification arrives seconds
   # after the merge and the deploy runs for minutes afterwards — so a session that
   # reads "merged" as "done" archives at the moment its diagnostic context is worth
-  # most. It happened three times in one chain on 2026-08-30. The message now
-  # carries the poller's reading of the workflow runs the merge created.
+  # most. It happened three times in one chain on 2026-08-30. The message carries the
+  # poller's reading of the workflow runs the merge created, and each test below
+  # pins one branch of it.
 
   test "the merged message names post-merge runs still in flight and tells the session to wait" do
     @session_with_pr.update!(status: :running, custom_metadata: {

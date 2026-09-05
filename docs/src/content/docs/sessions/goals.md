@@ -57,7 +57,7 @@ flowchart TD
     B --> C{"Merge gate"}
     C -->|auto-merges| D["Poller delivers<br/>pr_merged_message"]
     D --> H{"Did the merge<br/>fire a deploy?"}
-    H -->|"no runs (the common case)"| E["Session archives"]
+    H -->|"no runs"| E["Session archives"]
     H -->|"runs in flight"| I["Session sleeps on them,<br/>bounded — then archives green,<br/>or diagnoses a red run"]
     I --> E
     C -->|holds for review| F["No message until<br/>a human merges it"]
@@ -66,10 +66,13 @@ flowchart TD
 
 **The one exception to "merged means archive" is a merge that fires a deploy**, and the goal text
 conditions it on something the session can actually read rather than on a guess: the merge message
-itself reports the workflow runs the merge created. Names none — the common case — and the session
-archives immediately, exactly as before. Names runs still in flight and the session sleeps on them,
-bounded, then archives when they are green or diagnoses the one that went red, because it holds
-more context about the change than anything that would pick the failure up later. See [What a merged
+itself reports the workflow runs the merge created. Names none and the session archives immediately,
+exactly as before. Names runs still in flight and the session sleeps on them, bounded, then archives
+when they are green or diagnoses the one that went red, because it holds more context about the
+change than anything that would pick the failure up later. Which branch a repository lands on is a
+property of that repository: one with no workflow on pushes to its default branch never waits, while
+one with one — Zimmer's own repo has two — waits on most merges, deliberately, since a red `main` or
+a failed release build is the merging session's business too. See [What a merged
 PR tells the session](/operate/background-jobs/#what-a-merged-pr-tells-the-session).
 
 Both outcomes are correct by construction, and neither needs a human to tidy up. A held PR puts
