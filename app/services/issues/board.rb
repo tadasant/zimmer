@@ -179,7 +179,7 @@ module Issues
     # Resolves an issue's direction, memoized per issue URL. Passed to Trend as a
     # callable so it never has to know where directions come from — and shared by
     # the loose list, the per-repo summaries and the count strip, which between
-    # them would otherwise resolve the same ~950 issues three times over.
+    # them would otherwise resolve the same ~1,100 issues three times over.
     def direction_for
       @direction_for ||= begin
         cache = {}

@@ -381,9 +381,10 @@ Rails.application.routes.draw do
   end
 
   # Issues: the fleet's work backlog joined to what is going on in GitHub across
-  # the five repos the fleet works. GitHub is read at request time and cached for
-  # a few minutes; `refresh` is the button that drops that cache, and it is a POST
-  # because it costs ten `gh` calls and must not be re-run by a prefetch.
+  # the repos the fleet works. GitHub is read at request time and cached for a few
+  # minutes; `refresh` is the button that drops that cache, and it is a POST
+  # because it costs two `gh` calls per watched repo and must not be re-run by a
+  # prefetch.
   #
   # The promote action is the page's one write, and it is browser-only by design:
   # WorkBacklogPromotionsController is an ApplicationController descendant, so no
