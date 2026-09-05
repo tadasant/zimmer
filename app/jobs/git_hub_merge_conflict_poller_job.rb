@@ -190,10 +190,11 @@ class GitHubMergeConflictPollerJob < ApplicationJob
   # only slot and every later tick is a no-op enqueue — merge conflicts stop being
   # detected with nothing raised and no watchdog to notice (#458).
   #
-  # PER ATTEMPT. `fetch_merge_conflict_status` already calls this up to
-  # `NULL_MAX_RETRIES + 1` times while GitHub computes mergeability, and each of those
-  # is its own round trip that can hang on its own. A timeout is a nil reading, which
-  # this poller already treats as "no answer this tick" and never as "conflicting".
+  # PER ATTEMPT. `fetch_merge_conflict_status` calls this up to `NULL_MAX_RETRIES + 1`
+  # times while GitHub computes mergeability, and each of those is its own round trip
+  # that can hang on its own. A timeout is a nil reading, which this poller already
+  # treats as "no answer this tick" and never as "conflicting" — and which it returns
+  # on immediately rather than retrying, so a hang costs one attempt, not four.
   #
   # 20s matches GithubPullRequestMergeability, which reads the same endpoint: GitHub
   # computes mergeability on demand, so this call is not always the cheap one it looks.

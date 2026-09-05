@@ -18,7 +18,10 @@
 # - "pending" - CI checks still running
 # - "skipping" - CI checks skipped
 # - "cancel" - CI checks cancelled
-# - nil - No CI checks or status unknown
+# - the key is absent - GitHub answered and the PR has no checks configured
+#
+# A CI reading that could not be taken at all is CI_STATUS_UNKNOWN, and leaves the
+# recorded value alone rather than clearing it -- see that constant.
 #
 # When a PR goes from "open" to "merged" the session is told, once, via
 # AutomatedPrompts.pr_merged_message — the merge is either the end of the
@@ -54,8 +57,9 @@ class GitHubPullRequestPollerJob < ApplicationJob
   # Both are deliberately generous. The failure being bounded is a hang, not
   # slowness, and a bound tight enough to fire on a merely-degraded API would
   # trade a rare wedge for a spurious failure on every 30s tick. A timeout here
-  # means "ask again next tick" — `fetch_pr_status` returns nil, and nil is
-  # already the value that leaves the recorded status alone.
+  # means "ask again next tick": `fetch_pr_status` returns nil, which already
+  # leaves the recorded status alone, and `fetch_ci_status` returns
+  # CI_STATUS_UNKNOWN, which is what that constant exists for.
   #
   # `gh pr view` is one REST round trip.
   PR_STATUS_TIMEOUT = 20
@@ -63,6 +67,16 @@ class GitHubPullRequestPollerJob < ApplicationJob
   # aggregates every check run and status on it, so it does more work server-side
   # and returns more rows on a PR with a large matrix.
   CI_STATUS_TIMEOUT = 30
+
+  # What `fetch_ci_status` returns when the call did not complete, as distinct from
+  # the nil it returns when GitHub answered and the PR simply has no checks.
+  #
+  # The two used to be the same nil, and the caller clears the recorded CI status on
+  # nil — so a hung or failed `gh pr checks` erased a real `fail`/`pass` and wrote
+  # "this PR has no checks" in its place. That is the one thing a timeout must never
+  # be allowed to mean, so "we could not ask" gets its own value and the caller
+  # leaves the recorded status alone.
+  CI_STATUS_UNKNOWN = :unknown
 
   def perform
     Session.with_github_prs.find_each do |session|
@@ -117,11 +131,17 @@ class GitHubPullRequestPollerJob < ApplicationJob
       # Fetch CI status only for open PRs
       if status == "open"
         ci_status = fetch_ci_status(owner, repo, pr_number)
-        if ci_status.present?
-          updated_ci_statuses[pr_url] = ci_status
-        else
-          # Clear CI status if not available (e.g., no checks configured)
-          updated_ci_statuses.delete(pr_url)
+
+        # CI_STATUS_UNKNOWN means we could not ask, so neither branch below is right:
+        # leave whatever is recorded and ask again next tick. Clearing here would
+        # report "no checks" for a PR whose CI we merely failed to read.
+        unless ci_status == CI_STATUS_UNKNOWN
+          if ci_status.present?
+            updated_ci_statuses[pr_url] = ci_status
+          else
+            # GitHub answered and the PR has no checks (none configured).
+            updated_ci_statuses.delete(pr_url)
+          end
         end
       else
         # Clear CI status for closed/merged PRs
@@ -232,8 +252,11 @@ class GitHubPullRequestPollerJob < ApplicationJob
     nil
   end
 
-  # Fetch CI check status for a PR
-  # Returns the overall CI status: "pass", "fail", "pending", "skipping", "cancel", or nil
+  # Fetch CI check status for a PR.
+  #
+  # Returns the overall CI status — "pass", "fail", "pending", "skipping", "cancel" —
+  # or nil when GitHub answered and the PR has no checks, or CI_STATUS_UNKNOWN when the
+  # call did not complete. The caller treats those last two differently on purpose.
   def fetch_ci_status(owner, repo, pr_number)
     # Use gh CLI to get CI checks status in JSON format
     # The bucket field categorizes state into: pass, fail, pending, skipping, cancel
@@ -246,7 +269,7 @@ class GitHubPullRequestPollerJob < ApplicationJob
     # failure branch rather than being read as "pending".
     unless result.success? || result.exit_code == 8
       Rails.logger.warn "[GitHubPullRequestPollerJob] gh pr checks command failed: #{result.failure_description}"
-      return nil
+      return CI_STATUS_UNKNOWN
     end
 
     checks = JSON.parse(result.stdout)
@@ -274,6 +297,6 @@ class GitHubPullRequestPollerJob < ApplicationJob
     end
   rescue JSON::ParserError => e
     Rails.logger.error "[GitHubPullRequestPollerJob] Failed to parse gh pr checks output: #{e.message}"
-    nil
+    CI_STATUS_UNKNOWN
   end
 end

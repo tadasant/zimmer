@@ -407,8 +407,8 @@ class GitHubMergeConflictPollerJobTest < ActiveSupport::TestCase
     end
   end
 
-  # Open3.capture3 returns `[stdout, stderr, nil]` when ZombieReaperJob's blanket
-  # `Process.waitpid(-1, WNOHANG)` reaps the gh child before capture3's waiter does.
+  # A `gh` call returns `[stdout, stderr, nil]` when ZombieReaperJob's blanket
+  # `Process.waitpid(-1, WNOHANG)` reaps the child before Open3's waiter thread does.
   # A nil status is a failed API call, so the mergeable field is simply unknown.
   test "fetch_mergeable_field treats a nil status as a failure instead of raising" do
     BoundedSubprocess.stubs(:run).returns([ "", "gh: connection reset", nil ])

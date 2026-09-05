@@ -1436,9 +1436,9 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   # ---- Nil subprocess status (ZombieReaperJob reaped the gh child) ----
   #
   # ZombieReaperJob runs `Process.waitpid(-1, WNOHANG)` in the same worker process as
-  # this poller. When it reaps a `gh` child before Open3.capture3's own waiter thread
-  # does, that thread's waitpid gets ECHILD and `wait_thr.value` returns nil, so
-  # capture3 returns `[stdout, stderr, nil]`. `status.success?` on that nil is what
+  # this poller. When it reaps a `gh` child before Open3's own waiter thread does,
+  # that thread's waitpid gets ECHILD and `wait_thr.value` returns nil, so the call
+  # returns `[stdout, stderr, nil]`. `status.success?` on that nil is what
   # crashed the tick in production and paged. These pin the nil path as a plain
   # failure: warn, retry next tick, never raise, never ERROR.
 

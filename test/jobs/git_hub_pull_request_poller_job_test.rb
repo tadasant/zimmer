@@ -286,7 +286,8 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     success_status.stubs(:success?).returns(true)
     success_status.stubs(:exitstatus).returns(0)
 
-    # No checks
+    # GitHub answered and the PR has no checks. nil, not CI_STATUS_UNKNOWN: this is a
+    # real reading, so the caller clears any recorded CI status.
     BoundedSubprocess.stubs(:run).returns([ "[]", "", success_status ])
     assert_nil job.send(:fetch_ci_status, "owner", "repo", "123")
   end
@@ -305,7 +306,7 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     assert_equal "pending", job.send(:fetch_ci_status, "owner", "repo", "123")
   end
 
-  test "fetch_ci_status returns nil on command failure" do
+  test "fetch_ci_status reports a command failure as unknown, not as an absence of checks" do
     job = GitHubPullRequestPollerJob.new
 
     fail_status = mock
@@ -313,7 +314,8 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     fail_status.stubs(:exitstatus).returns(1)
 
     BoundedSubprocess.stubs(:run).returns([ "", "Error", fail_status ])
-    assert_nil job.send(:fetch_ci_status, "owner", "repo", "123")
+    assert_equal GitHubPullRequestPollerJob::CI_STATUS_UNKNOWN,
+                 job.send(:fetch_ci_status, "owner", "repo", "123")
   end
 
   test "fetch_ci_status handles skipping status" do
@@ -668,8 +670,8 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
 
   # ---- Nil subprocess status (ZombieReaperJob reaped the gh child) ----
   #
-  # Open3.capture3 returns `[stdout, stderr, nil]` when something else reaps the child
-  # before its waiter thread does — in production, ZombieReaperJob's blanket
+  # A `gh` call returns `[stdout, stderr, nil]` when something else reaps the child
+  # before Open3's waiter thread does — in production, ZombieReaperJob's blanket
   # `Process.waitpid(-1, WNOHANG)` in this same worker. A nil status is a failed call.
 
   test "fetch_pr_status treats a nil status as a failure instead of raising" do
@@ -696,8 +698,9 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     end
 
     # The success? / exitstatus == 8 line dereferenced the nil twice. Neither branch may
-    # be taken: an unknown exit code is not the "checks pending" code.
-    assert_nil result
+    # be taken: an unknown exit code is not the "checks pending" code, and it is not
+    # "this PR has no checks" either.
+    assert_equal GitHubPullRequestPollerJob::CI_STATUS_UNKNOWN, result
   end
 
   test "fetch_ci_status still treats a real exit 8 as pending checks" do
@@ -783,8 +786,51 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     end
 
     # A timeout has no exit code at all, so the `exit_code == 8` branch must not be
-    # taken: a hang is not evidence that checks are pending.
-    assert_nil result
+    # taken: a hang is not evidence that checks are pending. Nor is it evidence the PR
+    # has no checks — that is what CI_STATUS_UNKNOWN keeps separate from nil.
+    assert_equal GitHubPullRequestPollerJob::CI_STATUS_UNKNOWN, result
+  end
+
+  test "poll_pr_statuses keeps a recorded CI status when the checks call cannot be read" do
+    pr_url = "https://github.com/owner/repo/pull/123"
+    @session_with_pr.update!(custom_metadata: {
+      "github_pull_request_urls" => [ pr_url ],
+      "github_pull_request_statuses" => { pr_url => "open" },
+      "github_pull_request_ci_statuses" => { pr_url => "fail" }
+    })
+
+    # The PR reads open; only the CI call hangs. Clearing the recorded "fail" here would
+    # publish "this PR has no checks" off the back of a call we never completed — the UI
+    # reads this key, so a red PR would silently stop looking red.
+    job = GitHubPullRequestPollerJob.new
+    job.stubs(:fetch_pr_status).returns("open")
+    BoundedSubprocess.expects(:run).at_least_once
+      .raises(BoundedSubprocess::TimeoutError, "command timed out after 30s (process group killed): gh pr checks")
+
+    assert_nothing_raised { job.send(:poll_pr_statuses, @session_with_pr) }
+
+    @session_with_pr.reload
+    assert_equal({ pr_url => "fail" }, @session_with_pr.custom_metadata["github_pull_request_ci_statuses"])
+  end
+
+  test "poll_pr_statuses clears a recorded CI status when GitHub says there are no checks" do
+    pr_url = "https://github.com/owner/repo/pull/123"
+    @session_with_pr.update!(custom_metadata: {
+      "github_pull_request_urls" => [ pr_url ],
+      "github_pull_request_statuses" => { pr_url => "open" },
+      "github_pull_request_ci_statuses" => { pr_url => "fail" }
+    })
+
+    # The other side of the distinction: an answered call with an empty checks array is
+    # a real reading, and it still clears.
+    job = GitHubPullRequestPollerJob.new
+    job.stubs(:fetch_pr_status).returns("open")
+    BoundedSubprocess.stubs(:run).returns([ "[]", "", fake_process_status(exitstatus: 0) ])
+
+    job.send(:poll_pr_statuses, @session_with_pr)
+
+    @session_with_pr.reload
+    assert_equal({}, @session_with_pr.custom_metadata["github_pull_request_ci_statuses"])
   end
 
   class TestJobWithCIStatusPending < GitHubPullRequestPollerJob

@@ -714,10 +714,11 @@ merely-degraded API would trade a rare wedge for a spurious failure on every 30-
 | `GitHubPullRequestPollerJob::CI_STATUS_TIMEOUT` — `gh pr checks` | 30s | Resolves the head commit, then aggregates every check run on it. |
 | `GithubCommentPollerJob::COMMENT_PAGE_TIMEOUT` — `gh api …/comments` | 20s | **Per page.** The fetch is a pagination loop; a bound on the whole loop is either too tight for a long thread or bounds nothing. A page that times out ends the loop the way a non-zero exit already does — return the pages already read. |
 | `GithubCommentPollerJob::REACTION_TIMEOUT` — `gh api --method POST …/reactions` | 10s | Best-effort 👀; the follow-up prompt does not depend on it, so waiting on it only delays the prompt. |
-| `GitHubMergeConflictPollerJob::MERGEABLE_TIMEOUT` — `gh api …/pulls/N --jq .mergeable` | 20s | **Per attempt** — the null-retry loop calls it up to four times. GitHub computes mergeability on demand, so this is not the cheap call it looks. |
+| `GitHubMergeConflictPollerJob::MERGEABLE_TIMEOUT` — `gh api …/pulls/N --jq .mergeable` | 20s | **Per attempt** — the null-retry loop calls it up to four times while GitHub computes mergeability, which it does on demand, so this is not the cheap call it looks. A *timeout* is returned on immediately rather than retried, so a hang costs one attempt and not four. |
 | `GithubCommentPromptBuilder::VISIBILITY_TIMEOUT` — `gh api repos/{owner}/{repo}` | 10s | Cheap, and cached per builder. This is the one site whose failure branch is not free: it fails **closed**, so a timeout stays a *deferral* — `visibility_lookup_failed?` keeps the comment retryable until `VISIBILITY_RETRY_WINDOW_SECONDS` runs out, rather than dropping it. |
 | `GithubPullRequestMergeability::READ_TIMEOUT_SECONDS` | 20s | Same endpoint, on a session's delivery path rather than a poller tick. |
-| `GateDecisions::LedgerSource::Github::FETCH_TIMEOUT` and `WorkBacklog::Source::FETCH_TIMEOUT` | 60s | Whole-file reads on a post-deploy slice rather than a 30-second tick, so they can afford longer; both raise `Unavailable` on any failure, timeout included. |
+| `GateDecisions::LedgerSource::Github::LIST_TIMEOUT` | 15s | The ledger's directory listing — one `gh api …/contents/<dir>` round trip. |
+| `GateDecisions::LedgerSource::Github::FETCH_TIMEOUT` and `WorkBacklog::Source::FETCH_TIMEOUT` | 60s | Whole-file reads on a post-deploy slice rather than a 30-second tick, so they can afford longer. All three of these raise `Unavailable` on any failure, timeout included. |
 
 Bounding the hang stops the permanent wedge. It does not make a *repeatedly failing* poller visible:
 these three still have no heartbeat and no watchdog, so a poller failing every tick is only as loud
