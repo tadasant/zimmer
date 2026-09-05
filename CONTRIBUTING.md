@@ -45,10 +45,18 @@ bin/rails test test/models/session_test.rb
 ```
 
 A targeted run loads only the files you name, so a test file must require the gems it names instead
-of inheriting them from whatever the full suite loaded first. `ostruct` is the one that bites: it
-ships with Ruby but nothing requires it for you, so a file naming `OpenStruct` without
-`require "ostruct"` passes in CI and raises `NameError` on its own.
-`test/contracts/ostruct_require_contract_test.rb` enforces the require.
+of inheriting them from whatever the full suite loaded first. Two of them bite. `ostruct` ships with
+Ruby but nothing requires it for you, so a file naming `OpenStruct` without `require "ostruct"`
+passes in CI and raises `NameError` on its own. `mocha` is in the Gemfile, but `Bundler.require`
+loads it without the Minitest integration, so a file calling `.stubs` without
+`require "mocha/minitest"` passes in CI and raises `NoMethodError` on its own.
+`test/contracts/ostruct_require_contract_test.rb` and
+`test/contracts/mocha_require_contract_test.rb` enforce the requires.
+
+The corollary is about `test/support/`. `test_helper.rb` auto-requires every non-`_test.rb` file
+there, so a `require` written inside a support helper is a **suite-wide** require and masks its
+absence everywhere else — which is exactly how the mocha case went unnoticed. A helper that needs a
+gem the suite does not otherwise load leaves that require to the test files that call it.
 
 ### Capturing log output in a test
 

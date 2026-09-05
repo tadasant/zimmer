@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # The child -> parent direction of a follow-up: who it reaches, when it refuses,
 # and what stops an accepted report from being silently lost.

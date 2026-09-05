@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class GithubPullRequestMergeabilityTest < ActiveSupport::TestCase
   PR_URL = "https://github.com/tadasant/zimmer/pull/834"

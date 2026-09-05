@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 require "set"
 
 class GitCloneServiceTest < ActiveSupport::TestCase

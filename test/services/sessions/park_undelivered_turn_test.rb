@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # The four conditions the park decides on, one test each, plus the two things it
 # writes that other code reads. The job-level reproduction of #439 lives in

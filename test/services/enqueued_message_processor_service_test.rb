@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
   setup do

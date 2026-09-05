@@ -60,10 +60,23 @@ unless is_test_database
   ERROR
 end
 
-# Load test support files (excluding test files themselves)
-Dir[Rails.root.join("test/support/**/*.rb")].each do |f|
-  require f unless f.end_with?("_test.rb")
-end
+# Load test support files (excluding test files themselves).
+#
+# Every file this loads is loaded for every run, so a `require` written inside
+# one of them is not local to that helper — it is a suite-wide require, and it
+# hides the absence of the same require in every test file. A helper that needs
+# a library the suite does not otherwise load has to leave that require to the
+# test files that use it. `test/contracts/mocha_require_contract_test.rb`
+# enforces that for `mocha/minitest`, the one that has actually bitten (#874).
+#
+# The list is a constant so that contract can assert against exactly the files
+# loaded here, rather than a second copy of this glob that could drift from it.
+AUTO_REQUIRED_SUPPORT_FILES = Dir[Rails.root.join("test/support/**/*.rb")]
+  .reject { |f| f.end_with?("_test.rb") }
+  .sort
+  .freeze
+
+AUTO_REQUIRED_SUPPORT_FILES.each { |f| require f }
 
 # Pre-install the AIR CLI and pre-warm the AirCatalogService cache once at test
 # boot, before parallelize() forks workers. Two reasons:

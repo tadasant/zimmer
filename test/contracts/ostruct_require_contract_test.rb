@@ -43,9 +43,9 @@ require "tempfile"
 # is a violation slipping through rather than a false alarm.
 #
 # Scope is deliberately this one gem. The same shape with `mocha/minitest` is
-# tracked in zimmer#874, which also covers the wrinkle that a require landing in
-# `test/support/**` becomes a de-facto suite-wide one, since `test_helper.rb`
-# loads that directory for every run.
+# `mocha_require_contract_test.rb` next door, which also carries the rule about a
+# require landing in `test/support/**` becoming a de-facto suite-wide one, since
+# `test_helper.rb` loads that directory for every run (zimmer#874).
 class OstructRequireContractTest < ActiveSupport::TestCase
   # `OpenStruct` parses to a constant read; `::OpenStruct` to a constant path
   # with no parent. Both name the top-level constant, so both need the require.

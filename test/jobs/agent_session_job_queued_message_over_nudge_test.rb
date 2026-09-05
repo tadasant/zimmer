@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 require "automated_prompts"
 require_relative "../support/mock_process_manager"
 require_relative "../support/mock_file_system_adapter"
