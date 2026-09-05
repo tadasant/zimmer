@@ -205,6 +205,11 @@
       "class": "OrphanCloneFilesystemCleanupJob",
       "description": "Remove clone directories on disk with no matching session in the database"
     },
+    "orphan_transcript_directory_cleanup": {
+      "cron": "45 */6 * * *",
+      "class": "OrphanTranscriptDirectoryCleanupJob",
+      "description": "Remove runtime transcript directories whose working directory no longer exists"
+    },
     "cleanup_stale_triggers": {
       "cron": "15 * * * *",
       "class": "CleanupStaleTriggersJob",
@@ -441,6 +446,11 @@
       "cron": "30 */6 * * *",
       "class": "OrphanCloneFilesystemCleanupJob",
       "description": "Remove clone directories on disk with no matching session in the database"
+    },
+    "orphan_transcript_directory_cleanup": {
+      "cron": "45 */6 * * *",
+      "class": "OrphanTranscriptDirectoryCleanupJob",
+      "description": "Remove runtime transcript directories whose working directory no longer exists"
     },
     "cleanup_stale_triggers": {
       "cron": "15 * * * *",
