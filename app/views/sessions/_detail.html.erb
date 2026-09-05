@@ -142,6 +142,7 @@
       <div class="md:hidden">
         <%= render "sessions/auth_outage_banner", agent_session: @session %>
         <%= render "sessions/spot_hold_banner", agent_session: @session %>
+        <%= render "sessions/mcp_oauth_reconnect_banner", agent_session: @session %>
         <%= render "sessions/failure_details", agent_session: @session %>
       </div>
 

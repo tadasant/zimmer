@@ -342,13 +342,13 @@ class McpOauthController < ApplicationController
   # not turn the click into a 500; the flash + redirect still happen.
   #
   # @return [Symbol, nil] the McpOauthResumeService result (:resumed, :partial,
-  #   :not_blocked), or nil when re-injection/resume raised.
+  #   :reconnect_pending, :not_blocked), or nil when re-injection/resume raised.
   def reinject_and_resume(session, server_name)
     working_directory = session.metadata&.dig("working_directory")
     injector = McpOauthCredentialInjector.new(session, working_directory: working_directory)
     injector.inject_credentials!
     injector.clear_runtime_needs_auth_cache([ server_name ])
-    McpOauthResumeService.new(session).call
+    McpOauthResumeService.new(session, authorized_server: server_name).call
   rescue => e
     Rails.logger.warn(
       "[McpOauthController] reinject_and_resume failed for #{server_name} " \
@@ -417,10 +417,15 @@ class McpOauthController < ApplicationController
 
     Rails.logger.info "[McpOauthController] OAuth credentials stored for #{credential.server_name}"
 
-    # Resume the session if every blocking OAuth flow is now complete. The
-    # service is idempotent and fires the resume exactly once, replaying the
-    # session's original prompt.
-    McpOauthResumeService.new(session).call if session
+    # Hand the completed authorization to the session it was started from. A
+    # session parked on it resumes once every blocking flow is done — idempotently,
+    # exactly once, replaying its original prompt. A session that is already live
+    # gets the credential re-injected and a "reconnects on the next turn" notice
+    # instead, because a running agent cannot be given a connection it did not
+    # launch with. Nothing happens when the flow has no session behind it (the
+    # Connectors page), which is why that route cannot notify a live session
+    # sharing the same grant.
+    McpOauthResumeService.new(session, authorized_server: credential.server_name).call if session
 
     credential
   end

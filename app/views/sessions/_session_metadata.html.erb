@@ -768,6 +768,7 @@
   <% end %>
   <%= render "sessions/auth_outage_banner", agent_session: agent_session %>
   <%= render "sessions/spot_hold_banner", agent_session: agent_session %>
+  <%= render "sessions/mcp_oauth_reconnect_banner", agent_session: agent_session %>
   <% if agent_session.failed? && agent_session.metadata&.dig("failure_reason") == "oauth_required" %>
     <div class="mt-2">
       <%= render "sessions/mcp_oauth_required_banner", agent_session: agent_session %>

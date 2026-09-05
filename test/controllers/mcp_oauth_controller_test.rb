@@ -196,6 +196,45 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     assert_equal [ "server-b" ], @session.metadata["oauth_required_servers"].map { |s| s["server_name"] }
   end
 
+  # #195: the callback used to store the credential and stop there for a session
+  # that was running or waiting on input — nothing reached the session at all.
+  test "the callback tells a running session that the grant is back" do
+    live = Session.create!(
+      prompt: "Work already under way",
+      agent_runtime: "claude_code",
+      status: :running,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      mcp_servers: [ "notion" ]
+    )
+    flow = McpOauthPendingFlow.create!(
+      session: live,
+      server_name: "notion",
+      server_url: "https://mcp.notion.com/mcp",
+      state: "state-live",
+      code_verifier: "v" * 43,
+      authorization_endpoint: "https://mcp.notion.com/authorize",
+      token_endpoint: "https://mcp.notion.com/token",
+      client_id: "test-client",
+      redirect_uri: "http://localhost:3000/mcp_oauth/callback",
+      mcp_server_config: { "type" => "http", "url" => "https://mcp.notion.com/mcp", "headers" => {} },
+      expires_at: 1.hour.from_now
+    )
+    McpOauthCredentialInjector.any_instance.stubs(:inject_credentials!)
+
+    assert_no_enqueued_jobs do
+      stub_token_exchange(token_response) do
+        get mcp_oauth_callback_path, params: { state: flow.state, code: "auth-code" }
+      end
+    end
+
+    assert_redirected_to session_path(live)
+    live.reload
+    assert live.running?, "the callback must not disturb a session that is mid-turn"
+    assert_equal [ "notion" ], live.mcp_oauth_reconnect_servers
+  end
+
   test "initiate re-injects and resumes when a valid credential already exists (no dead-end)" do
     # Both servers already authorized in the DB — the classic false-positive
     # banner: Zimmer holds valid tokens, yet the session was parked oauth_required.
