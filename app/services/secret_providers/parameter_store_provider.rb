@@ -90,6 +90,23 @@ module SecretProviders
       legacy_namespaces.flat_map { |ns| snapshot[ns]&.keys || [] }.uniq.sort
     end
 
+    # The names the store HOLDS but this Zimmer refuses to serve, because their
+    # envelope declares a value encoding it does not implement (see
+    # {ParameterStore::GcpClient#decoded_value}).
+    #
+    # These read exactly like a name that was never seeded — the chain falls
+    # through to the next provider, and the row says `Unresolved` — so without
+    # this list an operator has no way to tell the two apart. Free, like
+    # {#legacy_variables}: the snapshot already carries it.
+    #
+    # @return [Array<String>] sorted; names, never values.
+    def undecodable_variables
+      snapshot = @cache.get(@namespaces)
+      return [] unless snapshot.is_a?(ParameterStore::GcpClient::Snapshot)
+
+      snapshot.undecodable.sort
+    end
+
     # The full canonical path a variable occupies (or would occupy) in the store.
     # The Connectors page shows this; it is an address, not a secret.
     def path_for(variable)

@@ -82,6 +82,112 @@ module ParameterStore
       assert_no_match(/error/, error.message, "the response body must not be echoed")
     end
 
+    # --- the envelope's declared encoding --------------------------------------
+    #
+    # The value below is chosen so that base64 and base64url are NOT the same
+    # string for it: `?` and `>` land on `/` and `+` in the standard alphabet and
+    # on `_` and `-` in the url-safe one, and the url-safe spelling is unpadded.
+    # A value that round-tripped identically under both would prove nothing about
+    # which decoder is in use.
+
+    ENCODES_DIFFERENTLY = "sk-live-?~>"
+
+    test "the two alphabets really do disagree about the test value" do
+      assert_equal "c2stbGl2ZS0_fj4", Base64.urlsafe_encode64(ENCODES_DIFFERENTLY, padding: false)
+      assert_equal "c2stbGl2ZS0/fj4=", Base64.strict_encode64(ENCODES_DIFFERENTLY)
+    end
+
+    test "decodes a secret whose envelope declares base64url" do
+      @fake.seed_console_secret("STRAD_API_KEY", ENCODES_DIFFERENTLY)
+
+      assert_equal({ "STRAD_API_KEY" => ENCODES_DIFFERENTLY }, @client.resolve(@namespace))
+    end
+
+    test "a value a JSON payload could not carry literally survives the round trip" do
+      # The reason the console encodes at all: `:render` substitutes the bytes
+      # into the payload TEXT, and Parameter Manager rejects the result as an
+      # injection when they carry JSON structure.
+      tokens = %([{"id":"1","token":"t"}])
+      @fake.seed_console_secret("STRAD_TOKENS", tokens)
+
+      assert_equal tokens, @client.resolve(@namespace).fetch("STRAD_TOKENS")
+    end
+
+    test "an envelope with no encoding field is served byte-identically" do
+      # The regression that would be worse than the bug: a value written before
+      # the encoding existed, or by Zimmer's own WriteClient, is literal bytes.
+      # It must not be decoded just because it happens to look decodable — and
+      # this one does, being valid unpadded base64url in its own right.
+      @fake.seed_secret("LITERAL", "c2stbGl2ZS0_fj4")
+
+      assert_equal({ "LITERAL" => "c2stbGl2ZS0_fj4" }, @client.resolve(@namespace))
+    end
+
+    test "a non-secret parameter with no encoding field is served byte-identically" do
+      @fake.seed_plain("MCP_REGION", "dXMtZWFzdDE")
+
+      assert_equal({ "MCP_REGION" => "dXMtZWFzdDE" }, @client.resolve(@namespace))
+    end
+
+    test "refuses a value whose envelope declares an encoding this Zimmer does not implement" do
+      @fake.seed_secret("FUTURE", "whatever", encoding: "rot13")
+
+      resolved = @client.resolve_all([ @namespace ])
+
+      assert_empty resolved.fetch(@namespace), "an unimplemented encoding must not be guessed at"
+      assert_equal [ "FUTURE" ], resolved.undecodable
+    end
+
+    test "refusing an unimplemented encoding says so, naming the variable and not the value" do
+      @fake.seed_secret("FUTURE", "sk-live-value", encoding: "rot13")
+      logged = capture_parameter_store_errors { @client.resolve(@namespace) }
+
+      assert_match(/FUTURE/, logged)
+      assert_match(/rot13/, logged)
+      assert_no_match(/sk-live-value/, logged, "the value must never reach the log")
+    end
+
+    test "refuses a value labelled base64url whose bytes are not base64url" do
+      @fake.seed_secret("LIAR", "not base64url at all!", encoding: GcpClient::VALUE_ENCODING)
+
+      resolved = @client.resolve_all([ @namespace ])
+
+      assert_empty resolved.fetch(@namespace)
+      assert_equal [ "LIAR" ], resolved.undecodable
+    end
+
+    test "refuses a value labelled base64url that decodes to invalid UTF-8" do
+      @fake.seed_secret("BINARY", Base64.urlsafe_encode64("\xC3\x28".b, padding: false),
+        encoding: GcpClient::VALUE_ENCODING)
+
+      assert_empty @client.resolve(@namespace)
+    end
+
+    test "accepts the standard alphabet and padding under a base64url label" do
+      # A value seeded by hand as plain base64 decodes to the same bytes, and is
+      # refused only if it does not decode — never for how it is spelled.
+      @fake.seed_secret("HAND_SEEDED", Base64.strict_encode64(ENCODES_DIFFERENTLY),
+        encoding: GcpClient::VALUE_ENCODING)
+
+      assert_equal ENCODES_DIFFERENTLY, @client.resolve(@namespace).fetch("HAND_SEEDED")
+    end
+
+    test "one refused parameter does not take the rest of the namespace down with it" do
+      @fake.seed_console_secret("GOOD", "sk-live-good")
+      @fake.seed_secret("BAD", "whatever", encoding: "rot13")
+
+      resolved = @client.resolve_all([ @namespace ])
+
+      assert_equal({ "GOOD" => "sk-live-good" }, resolved.fetch(@namespace))
+      assert_equal [ "BAD" ], resolved.undecodable
+    end
+
+    test "nothing is undecodable when every envelope is honoured" do
+      @fake.seed_console_secret("GOOD", "sk-live-good")
+
+      assert_empty @client.resolve_all(Namespace.read_namespaces).undecodable
+    end
+
     # --- resolve_all -----------------------------------------------------------
 
     test "resolve_all buckets each namespace separately, in one pass over the project" do
@@ -119,6 +225,19 @@ module ParameterStore
 
       assert_equal [ Capabilities::READ_SECRET_VALUE ],
         @client.held_permissions(Capabilities::PROBED_PERMISSIONS)
+    end
+
+    private
+
+    # Everything the block logs at error level, as one string.
+    def capture_parameter_store_errors
+      io = StringIO.new
+      previous = Rails.logger
+      Rails.logger = ActiveSupport::Logger.new(io).tap { |l| l.level = Logger::ERROR }
+      yield
+      io.string
+    ensure
+      Rails.logger = previous
     end
   end
 end
