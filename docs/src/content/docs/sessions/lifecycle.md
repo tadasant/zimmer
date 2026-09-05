@@ -1158,6 +1158,36 @@ reverted rather than reset onto) and deletes what the restore added. A clone mis
 subdirectory fails `air prepare` with `ENOENT` and takes the session down with it, so a pristine
 clone is the better of the two losses.
 
+#### A restore never shortens the conversation
+
+Unarchive re-materializes `session.transcript` at the runtime's resume path, because normally the
+stored copy is the durable record and the file is gone or stale. Sometimes that direction is
+**backwards**. The runtime's transcript lives under `~/.claude/projects`, keyed by the sanitized
+working directory and the runtime session id rather than inside the clone, so it outlives the clone
+being deleted — and it can hold turns the stored copy never caught.
+
+A session that archives itself writes its closing turn to disk and is killed moments later, so
+anything the last poll missed exists only in that file. Writing the stored copy over it destroyed
+the only remaining record of the agent's answer, and left the resumed agent with no memory of what
+it had just said — session 13908 woke up and had to be asked to repeat itself.
+
+So the restore compares first. When the file on disk holds **more** lines than the stored copy, it
+is kept as it is and `session.transcript` is healed from it instead. The guard only ever grows the
+record: a file that is shorter or equal is the ordinary stale case and is still overwritten, and a
+failure to read it falls back to writing the stored copy rather than failing the unarchive. Once the
+file is judged longer, though, that verdict stands even if copying it into the record then fails —
+falling back to the write at that point would destroy the turns the guard exists to save. It is the
+same rule `TranscriptPollerService` applies in the other direction, where a shorter file on disk
+means the clone was recreated and must not be allowed to erase history.
+
+The read goes through the runtime's transcript source rather than a bare file read, because that is
+where decompression and [secret redaction](/operate/secrets-parameter-store/) live and
+`session.transcript` is served to the UI, the REST and MCP APIs, and the transcript archive.
+The adopted turns are not re-broadcast into a timeline that has just rendered them, and nothing
+special is needed to get that: every unarchive clears `broadcast_message_count` as one of the stale
+retry keys, and the poller rebuilds it from the stored transcript — the healed one — on its next
+pass.
+
 The clone unarchive rebuilds is not required to have the path the session row remembers. A session
 freezes its agent root's `subdirectory` at creation time, so renaming that root's directory in the
 catalog leaves every pre-existing session naming a path `main` no longer has — and the refusal is
