@@ -647,7 +647,7 @@ default — derives it from the trigger's condition type. The payload reports bo
 (what was chosen, usually `null`) and `effective_scheduling_class` (what its sessions actually get).
 Changing it applies to sessions the trigger spawns from then on **and** to that trigger's own
 already-spawned sessions still in `waiting` — see [what a class change
-reaches](/sessions/spot-and-priority/#where-the-class-comes-from). A `PATCH` that changed the class
+reaches](/sessions/spot-and-priority/#stored-only-when-someone-chose-it). A `PATCH` that changed the class
 carries `reclassified_waiting_sessions`: how many of those sessions actually moved between classes.
 The key is absent when the request did not touch the class, so its absence means "not asked" rather
 than "nothing moved".

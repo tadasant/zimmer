@@ -1336,7 +1336,7 @@ by hand stays where they put it. Every surface that changes the class reports ho
 moved. To move a session it does not reach — one that has already started, say — move that session:
 the button on its hold banner, the selector on its detail page, or `action_session`'s
 `change_scheduling_class`. See
-[Spot and priority](/sessions/spot-and-priority/#where-the-class-comes-from) for the full rule.
+[Spot and priority](/sessions/spot-and-priority/#stored-only-when-someone-chose-it) for the full rule.
 
 A trigger can also predefine the **precedence** its sessions get (`Trigger#precedence`, same three
 surfaces). Higher is worked first, on an absolute scale — 100000 comes before 50 — and it orders the

@@ -249,6 +249,46 @@ class TriggerSchedulingClassTest < ActiveSupport::TestCase
     assert_equal "No already-spawned waiting sessions needed moving.", @schedule.reclassification_summary
   end
 
+  test "a hand-fired Invoke session is not reclassified" do
+    # The selector is withheld from an Invoke on purpose — a human pressed the
+    # button and the session takes web_ui's class. A later change to the selector
+    # must not reach it either, even though it carries this trigger's id.
+    stub_agent_root_for(@schedule)
+    invoked = @schedule.create_session!(prompt: "Test", genesis: SessionGenesis::WEB_UI)
+    assert_nil invoked.scheduling_class
+    assert invoked.priority?
+
+    @schedule.update!(scheduling_class: SessionGenesis::SPOT)
+
+    assert_nil invoked.reload.scheduling_class, "the selector never applied to it"
+    assert invoked.priority?
+    assert_equal 0, @schedule.reclassified_session_count
+  end
+
+  test "a session that is not waiting is left alone whatever its status" do
+    @schedule.update!(scheduling_class: SessionGenesis::SPOT)
+    stub_agent_root_for(@schedule)
+    parked = @schedule.create_session!(prompt: "Test")
+    parked.update_column(:status, "needs_input")
+
+    @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    assert_equal SessionGenesis::SPOT, parked.reload.scheduling_class
+    assert_equal 0, @schedule.reclassified_session_count
+  end
+
+  test "a whole backlog moves in one change, not just the first session" do
+    @schedule.update!(scheduling_class: SessionGenesis::SPOT)
+    stub_agent_root_for(@schedule)
+    backlog = 3.times.map { |i| @schedule.create_session!(prompt: "Held work #{i}") }
+
+    @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    backlog.each { |session| assert session.reload.priority?, "session #{session.id} should have moved" }
+    assert_equal 3, @schedule.reclassified_session_count
+    assert_equal "3 already-spawned waiting sessions moved to priority.", @schedule.reclassification_summary
+  end
+
   test "a session an operator already moved by hand stays where they put it" do
     @schedule.update!(scheduling_class: SessionGenesis::SPOT)
     stub_agent_root_for(@schedule)
@@ -300,5 +340,7 @@ class TriggerSchedulingClassTest < ActiveSupport::TestCase
     assert_equal SessionGenesis::SPOT, session.reload.scheduling_class, "the stamp still follows the trigger's"
     assert session.spot?
     assert_equal 0, @schedule.reclassified_session_count
+    assert session.logs.reload.any? { |l| l.content.include?("which it already resolved to") },
+      "a write with no record of it is what makes a class look self-inflicted"
   end
 end

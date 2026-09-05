@@ -493,7 +493,11 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     trigger = triggers(:enabled_schedule_trigger)
     trigger.update!(scheduling_class: SessionGenesis::SPOT)
     session = sessions(:waiting)
-    session.update!(scheduling_class: SessionGenesis::SPOT, metadata: { "trigger_id" => trigger.id })
+    # A trigger-spawned session carries the trigger's condition genesis; the sweep
+    # keys on it to leave a hand-fired Invoke's web_ui session alone.
+    session.update!(scheduling_class: SessionGenesis::SPOT,
+      genesis: SessionGenesis::SCHEDULE,
+      metadata: { "trigger_id" => trigger.id })
 
     patch api_v1_trigger_path(trigger), params: { scheduling_class: "priority" }, headers: @headers
 
