@@ -1,21 +1,19 @@
 # frozen_string_literal: true
 
-# The re-spawn-and-verify mechanics shared by every auto-recovery service.
+# The re-spawn-and-verify mechanics every auto-recovery service shares.
 #
-# Four services answer the same question — "the agent process died or errored; is the
-# replacement actually alive?" — and each one used to carry its own verbatim copy of
-# the verification loop, the delay-with-status-checks loop, the abort check and the
-# log shim:
+# Four services answer one question — "the agent process died or errored; is the
+# replacement actually alive?" — and this is the single answer they share:
 #
 #   SigtermRetryService          the process took a SIGTERM
 #   ApiErrorRetryService         the transcript holds an Anthropic API error
 #   ContextLengthRetryService    the context window overflowed
 #   AuthRecoveryService          the runtime reported it is not logged in
 #
-# This is the code that runs when a session is already in trouble, which makes it the
-# code least likely to get a second reader. Four copies means a fix lands in one of
-# them, and the symptom — one recovery path behaving unlike the other three — reads as
-# anything but a duplication bug.
+# One copy matters here because this is the code that runs when a session is already
+# in trouble, and so the code least likely to get a second reader. Split across four
+# services, a fix lands in one of them and the symptom — one recovery path behaving
+# unlike the other three — reads as anything but a duplication bug.
 #
 # What genuinely differs between the four stays on the concrete classes: their
 # detection predicate, their retry budget and delay schedule, and `recovery_label`,
@@ -24,6 +22,8 @@
 # Hosts must provide `session`, `process_manager` and `log_buffer` readers, and a
 # private `recovery_label`.
 module RespawnScaffold
+  extend ActiveSupport::Concern
+
   # Minimum time (seconds) a re-spawned process must stay up before the re-spawn counts
   # as successful. Checking every half second catches a fast crash quickly, but success
   # is only declared after the full stretch: a process that spawns and dies a second
@@ -77,13 +77,13 @@ module RespawnScaffold
   # that the wait is broken into STATUS_CHECK_INTERVAL slices so a session the user
   # archives mid-wait aborts promptly instead of at the end of a five-minute sleep.
   #
-  # ContextLengthRetryService deliberately never calls this. Its corrective action is
+  # ContextLengthRetryService never calls this, deliberately. Its corrective action is
   # the `/compact` prompt itself rather than waiting out a transient, so it has no delay
-  # schedule and re-spawns immediately; `wait_with_status_checks(0)` would return
-  # without checking anything. The abort check it does need — session state changing
-  # between detection and spawn — it makes directly via `check_session_status` right
-  # before spawning, the same way the other three do. So the absence is a missing
-  # *delay*, not a missing check, and nothing changes by inheriting the method unused.
+  # schedule and re-spawns immediately — and `wait_with_status_checks(0)` returns
+  # without checking anything anyway. The abort check it does need — session state
+  # changing between detection and spawn — it makes directly via `check_session_status`
+  # right before spawning, the same way the other three do. What it lacks is a delay,
+  # not a check.
   #
   # @param delay [Integer] Total delay in seconds
   # @return [Symbol, nil] :aborted if session state changed, nil otherwise
