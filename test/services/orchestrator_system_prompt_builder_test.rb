@@ -248,6 +248,23 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     assert_includes prompt, "It is not an escape hatch for \"I wasn't sure.\""
   end
 
+  # Reason 1 used to offer two exits — do it yourself, or report to a parent — and
+  # presented missing scope as terminal. A session that could have spawned the root
+  # owning the fix parked instead, four times, while an alert kept firing (#859).
+  test "reason 1 requires checking and spawning before a session parks on missing scope" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+
+    # The claim has to be verified, not assumed.
+    assert_includes prompt, "**Did you look?** `get_configs` lists the roots and servers this connection can reach"
+    assert_includes prompt, "name the root or tool you checked and did not find"
+    assert_includes prompt, "an unverified \"only a human has this access\" is an assumption, not a finding"
+    # Spawning the root that has the scope is the third exit reason 1 omitted.
+    assert_includes prompt, "**Can you spawn it?** If you hold session-spawning tools, start a session on the root that has the scope"
+    # The ordering is the whole point, and parking stays sanctioned once both come back negative.
+    assert_includes prompt, "Check, then spawn, then park"
+    assert_includes prompt, "when the check comes back empty and you cannot spawn, park, which is exactly what this reason is for"
+  end
+
   test "session lifecycle principle bounds the queue to one session per human-initiated goal" do
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
