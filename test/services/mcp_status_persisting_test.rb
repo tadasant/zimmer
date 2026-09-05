@@ -150,6 +150,58 @@ class McpStatusPersistingTest < ActiveSupport::TestCase
     assert_equal "failed", @session.custom_metadata.dig("mcp_servers_status", "context7", "status")
   end
 
+  # --- the same floor, applied before any detector runs (issue #465) ----------
+  #
+  # Session#seed_mcp_servers_status_floor! is the other half of the floor above:
+  # the detector-side seeding only happens once a poll reaches this module, and
+  # the paths that run before that (a resume, the spawn itself) need the same
+  # guarantee with the same semantics. These assert they really are the same
+  # semantics, so the two cannot drift.
+
+  test "the floor lists every trackable server, user-selected and injected alike" do
+    @session.update!(
+      mcp_servers: [ "context7" ],
+      custom_metadata: { "injected_mcp_servers" => [ "playwright-custom" ] }
+    )
+
+    assert @session.seed_mcp_servers_status_floor!
+
+    statuses = @session.reload.custom_metadata["mcp_servers_status"]
+    assert_equal({ "context7" => { "status" => "pending" }, "playwright-custom" => { "status" => "pending" } },
+      statuses)
+  end
+
+  test "the floor never overwrites a status already recorded" do
+    @host.update_session_mcp_status("context7" => { status: "connected", connected_at: "2026-09-04T10:00:00Z" })
+    # A second server arrives after that status was recorded, so the floor has
+    # something to add and must add only that.
+    @session.reload.update!(mcp_servers: [ "context7", "playwright-custom" ])
+
+    assert @session.seed_mcp_servers_status_floor!
+
+    statuses = @session.reload.custom_metadata["mcp_servers_status"]
+    assert_equal "connected", statuses.dig("context7", "status")
+    assert_equal "2026-09-04T10:00:00Z", statuses.dig("context7", "connected_at")
+    assert_equal "pending", statuses.dig("playwright-custom", "status")
+  end
+
+  test "the floor writes nothing when every trackable server already has an entry" do
+    @host.update_session_mcp_status("context7" => { status: "connected" })
+    @session.reload
+
+    Session.any_instance.expects(:merge_custom_metadata!).never
+
+    refute @session.seed_mcp_servers_status_floor!
+  end
+
+  test "the floor writes nothing for a session with no trackable servers" do
+    @session.update!(mcp_servers: [], custom_metadata: {})
+
+    refute @session.seed_mcp_servers_status_floor!
+
+    assert_nil @session.reload.custom_metadata["mcp_servers_status"]
+  end
+
   # --- retiring a degraded server that came back (issue #521) -----------------
 
   test "a degraded server that reconnects has its write-off retired" do

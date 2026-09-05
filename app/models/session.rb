@@ -1761,6 +1761,40 @@ class Session < ApplicationRecord
     custom_metadata&.dig("injected_mcp_servers") || []
   end
 
+  # Seed the `pending` floor under `custom_metadata["mcp_servers_status"]`: one
+  # entry per server this session has wired, for any that has none yet.
+  #
+  # The floor is what makes the four readings of that key distinguishable. The
+  # REST API and the get_session MCP tool hand `custom_metadata` back verbatim, so
+  # a server with no entry is not reported as "configured and not connected yet" —
+  # it is simply not in the blob, which reads as "not configured at all", and
+  # in the triage this was reported from it read as "the servers never came up"
+  # (#465). An entry per server is what tells absent from pending, and pending
+  # from connected or failed.
+  #
+  # Writing `pending` only where no entry exists is the whole safety property: the
+  # floor is a floor, so a real status — from this run's detector or an earlier
+  # one — is never overwritten by it. McpStatusPersisting applies the same floor
+  # on every poll; this is the form used by the paths that run *before* any
+  # detector has had a chance to, and by anything that has just reset the hash.
+  #
+  # @return [Boolean] true when an entry was added and persisted. False when there
+  #   was nothing to add, so a no-op call issues no UPDATE and re-broadcasts no
+  #   session card.
+  def seed_mcp_servers_status_floor!
+    trackable = all_mcp_servers
+    return false if trackable.empty?
+
+    current = custom_metadata&.dig("mcp_servers_status") || {}
+    missing = trackable.reject { |name| current.key?(name) }
+    return false if missing.empty?
+
+    merge_custom_metadata!(
+      "mcp_servers_status" => current.merge(missing.index_with { { "status" => "pending" } })
+    )
+    true
+  end
+
   # Drop connection-status entries for MCP servers a user deliberately removed.
   #
   # `custom_metadata["mcp_servers_status"]` records the runtime status of each

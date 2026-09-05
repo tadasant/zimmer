@@ -1354,6 +1354,18 @@ class AgentSessionJob < ApplicationJob
         # MCP server packages need to be downloaded.
         mcp_config_path = session.all_mcp_servers.present? ? File.join(working_directory, ".mcp.json") : nil
 
+        # The last point before the process starts at which the EFFECTIVE server
+        # set is fully known — AIR prepare has run above, so `all_mcp_servers` now
+        # includes whatever it auto-injected. Floor `mcp_servers_status` here so
+        # every one of those servers is listed as `pending` from the moment the
+        # runtime is handed the config, rather than from whenever the first
+        # transcript poll happens to reach McpStatusPersisting. A first run whose
+        # process dies before it writes a transcript never gets that far, and left
+        # no entry at all — which a get_session or REST reader cannot tell from
+        # "this session has no MCP servers" (#465). A no-op when every server
+        # already has an entry, so this issues no extra UPDATE per turn.
+        session.seed_mcp_servers_status_floor!
+
         # Only use --resume if Claude CLI has actually been started before for this session.
         # Clone-only sessions have a session_id but Claude CLI has never been run,
         # so we need to use --session-id for their first prompt.

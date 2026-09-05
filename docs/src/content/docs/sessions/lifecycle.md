@@ -344,6 +344,32 @@ Clears a pile of stale state: MCP failure flags, the `paused_by` marker, the
 importantly, it cancels pending one-time wake-up triggers targeting this session, so a scheduled
 wake doesn't fire on a session you already resumed by hand.
 
+#### `mcp_servers_status` is reset on resume, not deleted
+
+`clear_stale_mcp_failure_metadata` drops four keys outright — `should_fail_session`,
+`mcp_connection_checked`, `mcp_failed_servers`, `mcp_failure_reason` — because each is a verdict
+the *previous* run reached, and a resume that inherited `should_fail_session` would fail the new
+run before its servers had any chance to connect.
+
+`custom_metadata["mcp_servers_status"]` is treated differently: every entry is reset to
+`{"status": "pending"}` for the servers in `Session#all_mcp_servers`, rather than the key being
+deleted. Its entries do all have to go — a `connected` recorded by the process that just exited
+says nothing about the one about to start — but deleting the key is what left it **missing
+entirely** on sessions that plainly had MCP servers
+([#465](https://github.com/tadasant/zimmer/issues/465)). It came back only once the next run got
+far enough for `TranscriptPollerService` to reach `McpStatusPersisting`, and a run that died
+before its transcript appeared never got there. The REST API and the `get_session` MCP tool hand
+`custom_metadata` back verbatim, so an absent key reads as "this session has no MCP servers" —
+and, in the triage that reported the defect, as "the servers never came up". `pending` says what
+is actually true at a resume, and the detector upgrades each entry as its evidence arrives. A
+session with no trackable servers still loses the key, which is the honest answer for it.
+
+An unchanged floor writes nothing, so an ordinary resume of an already-`pending` session issues no
+extra `UPDATE`. The same floor is applied one more time per turn, in `AgentSessionJob` immediately
+before the spawn — the first point at which `air prepare` has run and `all_mcp_servers` therefore
+includes whatever AIR auto-injected. See
+[A server that fails before it connects is listed as `pending`](/auth/mcp-oauth/#a-server-that-fails-before-it-connects-is-listed-as-pending-not-omitted).
+
 #### A live execution is not an interruption
 
 "Interrupted" is one column. `GoodJob::Job#perform` raises `InterruptError` whenever it picks a
