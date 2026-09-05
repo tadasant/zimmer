@@ -9,6 +9,28 @@ require "support/issues_helpers"
 class Issues::GithubSnapshotTest < ActiveSupport::TestCase
   include IssuesHelpers
 
+  # The repo list is the page's whole scope, and three separate things downstream
+  # assume properties of it that nothing else enforces.
+  test "the repo list covers every repo the fleet works, including the AIR framework" do
+    assert_includes Issues::GithubSnapshot::REPOS, "pulsemcp/air",
+                    "the AIR framework repo the agent-harness layer is built on is one the fleet works"
+    assert_equal Issues::GithubSnapshot::REPOS.uniq, Issues::GithubSnapshot::REPOS
+    assert Issues::GithubSnapshot::REPOS.all? { |repo| repo.match?(%r{\A[\w.-]+/[\w.-]+\z}) },
+           "every entry is an owner/repo `gh` can search"
+  end
+
+  test "repo names are unique across the list, which is what lets the page print the short name alone" do
+    shorts = Issues::GithubSnapshot::REPOS.map { |repo| repo.split("/").last }
+
+    assert_equal shorts.uniq, shorts,
+                 "two repos sharing a name would render as the same row, filter option and trend series"
+  end
+
+  test "the trend palette has a slot for every repo, so none folds into the grey residual" do
+    assert_operator Issues::Trend::MAX_SERIES, :>=, Issues::GithubSnapshot::REPOS.length,
+                    "segment=repo must give each repo its own colour rather than bucketing the tail as `other`"
+  end
+
   test "transforms search results into issues, and drops pull requests" do
     raw = stub_search({
       "tadasant/zimmer" => [ search_item(number: 1, labels: %w[bug convergent]),
@@ -42,7 +64,7 @@ class Issues::GithubSnapshotTest < ActiveSupport::TestCase
     assert snapshot.failed?
     assert_equal [ "tadasant/motet" ], snapshot.errors.keys
     assert_match "boom", snapshot.errors["tadasant/motet"]
-    assert_equal 1, snapshot.issues.length, "the other four repos still answered"
+    assert_equal 1, snapshot.issues.length, "the other repos still answered"
   end
 
   test "an unexpected error in one repo is caught rather than 500ing the page" do

@@ -13,8 +13,13 @@ module IssuesHelper
     DIRECTION_TONES.fetch(direction.to_s, "bg-gray-100 text-gray-700")
   end
 
-  # "tadasant/zimmer" -> "zimmer". The owner is the same for all five repos, so
-  # printing it in every row costs a column and says nothing.
+  # "tadasant/zimmer" -> "zimmer". The owner used to be the same for every repo,
+  # which is no longer true — `pulsemcp/air` sits beside the tadasant ones. The
+  # short name is still what gets printed, because repo names are unique across
+  # Issues::GithubSnapshot::REPOS and an owner column would repeat the same
+  # string down five rows out of six. Where the owner matters it is one hover or
+  # one click away: the per-repo cards link to `github.com/<owner>/<repo>/issues`
+  # and the repo filter carries the full name as each option's title.
   def issue_repo_short(repo)
     repo.to_s.split("/").last
   end

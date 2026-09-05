@@ -170,6 +170,30 @@ class Issues::BoardTest < ActiveSupport::TestCase
     assert_equal issues.length, result.loose_total
   end
 
+  test "the per-repo strip covers every watched repo, whoever owns it" do
+    snapshot = github_snapshot(issues: [ github_issue(repo: "pulsemcp/air", number: 1, labels: [ "convergent" ]) ])
+
+    summaries = board(snapshot: snapshot).repo_summaries
+    assert_equal Issues::GithubSnapshot::REPOS, summaries.map(&:repo),
+                 "a repo the page reads but never summarises is a repo whose count silently vanishes"
+
+    air = summaries.find { |summary| summary.repo == "pulsemcp/air" }
+    assert_equal 1, air.open_count
+    assert_equal 1, air.directions[Issues::Direction::CONVERGENT]
+  end
+
+  test "the repo filter reaches a repo outside the tadasant org" do
+    snapshot = github_snapshot(issues: [ github_issue(repo: "tadasant/zimmer", number: 1),
+                                         github_issue(repo: "pulsemcp/air", number: 2) ])
+
+    assert_equal [ "pulsemcp/air" ],
+                 board(snapshot: snapshot, filters: { "repo" => "pulsemcp/air" }).trend_issues.map(&:repo)
+  end
+
+  test "every watched repo is offered as a filter option" do
+    assert_equal [], Issues::GithubSnapshot::REPOS - board.repo_options
+  end
+
   test "a repo whose search failed is reported rather than shown as zero open issues" do
     snapshot = github_snapshot(issues: [], errors: { "tadasant/motet" => "boom" })
 
