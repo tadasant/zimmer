@@ -153,24 +153,33 @@ re-delivery — arrives carrying that same prompt and must still be allowed to r
 The job's refusal decides whether a fork is handed a **new** turn. It never sees a respawn that
 happens *inside* a turn it already admitted, and there are two families of those. `RespawnScaffold`
 is mixed into the four services that kill and re-spawn the runtime mid-turn — `SigtermRetryService`,
-`ApiErrorRetryService`, `ContextLengthRetryService` and `AuthRecoveryService`.
-`ProcessLifecycleManager#spawn_continuation` is the other: a compaction continuation, a signal-death
-or OOM resume, an account rotation after a quota exit. Every prompt either family carries is a
-continuation instruction — *"continue where you left off"*, *"Continue with the previous task"* — so
-for a fork every one of them means "resume your source's task", exactly as the nudge did.
+`ApiErrorRetryService`, `ContextLengthRetryService` and `AuthRecoveryService`, each holding its own
+`cli_adapter.resume`. `ProcessLifecycleManager#spawn_continuation` is the other: a compaction
+continuation, a signal-death or OOM resume, an account rotation after a quota exit, a
+session-id-conflict resume.
 
-Both refuse a summary fork, and both **bring it to rest** rather than walking away from it. That
-part is load-bearing: these paths signal an abandoned exit with `:aborted`, which means *somebody
-else owns this*, and the job that receives it transitions nothing. Returning that while leaving the
-fork `running` with a dead process would hand it straight back to the orphan sweep and its nudge —
-the thing being prevented, reached the long way round. Pausing is what makes the claim true, and is
-the same disposal the job-entry refusal uses, so a summary fork that stops has one ending wherever
-it was stopped from.
+**The test is the prompt, not the fork**, and it is deliberately the same one the job applies —
+`SessionStatusSummaryGenerator.fork_prompt?`. The rule two sections up holds here too: a turn that
+was never spent arrives carrying the summary request and must still run. `SigtermRetryService` is
+exactly that case, because it prefers a `pending_follow_up_prompt` over the recovery nudge, and for a
+fork interrupted before it consumed its prompt that pending prompt *is* the summary request.
+Refusing on the marker alone would cost a blurb every time a deploy landed mid-generation. Every
+other prompt these paths carry is a continuation instruction — *"continue where you left off"*,
+*"Continue with the previous task"*, `/compact` — which for a fork means "resume your source's task".
 
-A quota exit is asked about one step earlier still, before `rotate_for_quota!` rather than after it.
-Both of that path's exits reach `spawn_continuation` and would be refused there — but by then the
-rotation has moved the whole runtime onto a fresh account, which is a fleet-wide, once-per-account
-move spent on a session that is about to stop, on the one resource the fleet is actually short of.
+A refusal **brings the fork to rest** rather than walking away from it, with the same two arms as
+the job-entry guard: pause a `running` fork, enqueue the harvest directly for a `waiting` one. That
+part is load-bearing. These paths signal an abandoned exit with `:aborted`, which means *somebody
+else owns this*, and the job that receives it transitions nothing — so returning it while leaving the
+fork `running` with a dead process would leave the fork holding a full repository clone until a sweep
+collected it. Pausing is what makes the claim true, and it means a summary fork that stops has one
+ending wherever it was stopped from.
+
+Two paths ask one step earlier still, before the account rotation rather than after it —
+`attempt_account_rotation`, and `AuthRecoveryService` before its coordinator resolves. Both would be
+refused at the spawn anyway, but by then the rotation has moved the whole runtime onto a fresh
+account: a fleet-wide, once-per-account move spent on a session that is about to stop, on the one
+resource the fleet is actually short of.
 
 This is [#724](https://github.com/tadasant/zimmer/issues/724): a router made **one** `start_session`
 call, carrying an `idempotency_key`, and two sessions came into existence doing the work. The second

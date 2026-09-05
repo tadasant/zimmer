@@ -289,6 +289,15 @@ class AuthRecoveryService
       return :exhausted
     end
 
+    # Asked BEFORE the coordinator, for the reason the budget check above is:
+    # `resolve!` can rotate the whole pool onto a fresh account, and a
+    # status-summary fork is about to be refused at the spawn either way. Same
+    # ordering concern, same fix — do not burn an account on a session that will
+    # not spend it. `check_session_status` performs the refusal and the disposal.
+    if session.status_summary_fork?
+      return :aborted if check_session_status(resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY) == :aborted
+    end
+
     plan = coordinator.resolve!(working_directory)
 
     case plan.outcome
@@ -324,7 +333,7 @@ class AuthRecoveryService
     @logger.info("Auth recovery: identity resolved, retrying",
       outcome: plan.outcome, retry_attempt: retry_attempt, account: plan.account&.email)
 
-    abort_result = wait_with_status_checks(RETRY_DELAY)
+    abort_result = wait_with_status_checks(RETRY_DELAY, resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY)
     return :aborted if abort_result == :aborted
 
     # Record the attempt and advance the line marker so this auth entry isn't
@@ -434,7 +443,7 @@ class AuthRecoveryService
   # @param retry_attempt [Integer] Current attempt number
   # @return [Symbol] :success, :exhausted, :unrecoverable, :aborted
   def spawn_and_verify_recovery(working_directory, retry_attempt)
-    abort_result = check_session_status
+    abort_result = check_session_status(resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY)
     return :aborted if abort_result == :aborted
 
     add_log("Resuming session after refreshing login identity", level: "info")
