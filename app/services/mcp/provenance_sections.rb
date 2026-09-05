@@ -67,13 +67,16 @@ module Mcp
         return lines
       end
 
-      lines << "The lineage graph this session belongs to, origin first. Indentation is the SPAWN edge: it means \"spawned\", NOT \"most recently talked to\" — a session is routinely followed up by a router other than the one that spawned it."
+      lines << "The lineage graph this session belongs to, origin first. Indentation is the SPAWN edge: it means \"spawned\", NOT \"most recently talked to\" — a session is routinely followed up by a router other than the one that spawned it. The one exception is spelled out on the line itself, in parentheses."
       lines << "- **Origin session:** ##{hierarchy.origin.id}"
       lines << "- **Sessions in this hierarchy:** #{hierarchy.size}"
       lines << ""
       lines << "```"
       lines << Sanitize.sanitize_for_fence(hierarchy.to_outline)
       lines << "```"
+      if hierarchy.redrawn_edges?
+        lines << "A line ending `(shown under #N ...)` is one where indentation could NOT be made to mean \"spawned\": Zimmer reached that session through an uncle edge rather than a spawn edge, or the node ceiling cut the branch it belongs on and it was appended so it would still be visible. Read that line's position as \"drawn here\", not as \"spawned by the line above\". Zimmer writes those parentheses, never the session — a title cannot forge one, because titles are neutralized before they reach this fence."
+      end
       if hierarchy.uncle_edges?
         lines << "A line marked `also senior: #N` carries an UNCLE edge: session #N queued or interrupted that session, so Zimmer treats #N as an additional parent — a sibling of the spawn parent — on the assumption that a session which inspected another and decided to redirect it holds information that session does not. Uncle edges are self-declared by the calling session, so read one as a claim of seniority rather than as proof of it."
       end
