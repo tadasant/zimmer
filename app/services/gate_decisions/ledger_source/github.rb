@@ -59,14 +59,14 @@ module GateDecisions
         command = [ "gh", "api", path ]
         command += [ "-H", "Accept: application/vnd.github.raw" ] if raw
 
-        stdout, stderr, status = BoundedSubprocess.run(command, timeout: timeout)
-        unless SubprocessStatus.success?(status)
-          raise Unavailable, "gh api #{path} failed (#{SubprocessStatus.describe_failure(status, stderr)})"
+        result = GithubCli.run(command, timeout: timeout)
+        # A non-zero exit, an exit code lost to a reap, and a call that hung until its
+        # deadline are all the same answer here: we did not get the ledger. See GithubCli.
+        unless result.success?
+          raise Unavailable, "gh api #{path} failed (#{result.failure_description})"
         end
 
-        stdout
-      rescue BoundedSubprocess::TimeoutError => e
-        raise Unavailable, e.message
+        result.stdout
       rescue Errno::ENOENT
         raise Unavailable, "the gh CLI is not installed in this container, so the ledger JSON " \
                            "cannot be fetched. Point #{DIR_ENV_VAR} at a checkout instead."
