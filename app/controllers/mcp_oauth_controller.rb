@@ -337,8 +337,9 @@ class McpOauthController < ApplicationController
   # Handles the "Authorize" click for a server Zimmer already holds a valid
   # credential for: re-inject the token into the runtime store, clear the
   # runtime's needs-auth cache so the CLI retries with it, then run the resume
-  # service (which clears the OAuth metadata and re-enqueues the original run
-  # once every required server is authorized). Best-effort — a failure here must
+  # service (which clears the OAuth metadata and re-enqueues the session once
+  # every required server is authorized — with the turn it was blocked on, or
+  # with the original run when it was owed none). Best-effort — a failure here must
   # not turn the click into a 500; the flash + redirect still happen.
   #
   # @return [Symbol, nil] the McpOauthResumeService result (:resumed, :partial,
@@ -419,7 +420,8 @@ class McpOauthController < ApplicationController
 
     # Hand the completed authorization to the session it was started from. A
     # session parked on it resumes once every blocking flow is done — idempotently,
-    # exactly once, replaying its original prompt. A session that is already live
+    # exactly once, delivering the turn it was blocked on and falling back to its
+    # original prompt when it was owed none. A session that is already live
     # gets the credential re-injected and a "reconnects on the next turn" notice
     # instead, because a running agent cannot be given a connection it did not
     # launch with. Nothing happens when the flow has no session behind it (the
