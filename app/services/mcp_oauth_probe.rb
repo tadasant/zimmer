@@ -102,6 +102,19 @@ class McpOauthProbe
       configured_client_secret: catalog_server&.oauth_client_secret,
       configured_redirect_uri: catalog_server&.oauth_redirect_uri
     )
+
+    # Keep what the server just told us. This probe is one of the two places
+    # Zimmer actually asks; every other surface used to fall back to assuming a
+    # remote server might need OAuth, and recording the answer here is what turns
+    # that assumption into a fact for them.
+    McpServerOauthRequirement.record!(
+      server_name: server_name,
+      credential_key: credential_key,
+      server_url: server_url,
+      determination: requirement.determination,
+      detail: requirement.error
+    )
+
     return nil unless requirement.required
 
     {
@@ -114,6 +127,13 @@ class McpOauthProbe
     # A probe that cannot reach the server says nothing about whether it needs
     # OAuth, and blocking the edit on that would be worse than missing a banner.
     Rails.logger.warn "[McpOauthProbe] Failed to check OAuth for '#{server_name}': #{e.message}"
+    McpServerOauthRequirement.record!(
+      server_name: server_name,
+      credential_key: credential_key,
+      server_url: server_url,
+      determination: McpServerOauthRequirement::UNDETERMINED,
+      detail: e.message
+    )
     nil
   end
 end
