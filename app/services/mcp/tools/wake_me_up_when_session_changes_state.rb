@@ -240,12 +240,13 @@ module Mcp
       # ONE trigger carrying one condition per event, rather than one trigger each.
       #
       # A Trigger ORs its conditions, so the shapes are equivalent in what they
-      # fire on — but not in what they cost. A fired one-time wake destroys the
-      # requester's sibling wake triggers, so three separate triggers mean three
-      # writes to make and three to re-make on every wake; one trigger means one.
-      # Trigger#one_time_reuse_trigger? already asks `all?` of the conditions, and
-      # AoEventTriggerJob fires per condition and then destroys the trigger, so a
-      # multi-condition wake needs nothing new from either.
+      # fire on — but not in what they cost. A fired one-time wake takes the
+      # requester's sibling wake triggers with it, so three separate triggers mean
+      # three writes to make and three to re-make on every wake; one trigger means
+      # one. Trigger#one_time_reuse_trigger? already asks `all?` of the conditions,
+      # and AoEventTriggerJob fires per condition and then hands the whole group to
+      # the requester (Trigger#hold_wake_group!), so a multi-condition wake needs
+      # nothing new from either.
       def create_wake_trigger!(session, watched_session_id, event_names, prompt)
         Trigger.create!(
           name: "Wake session ##{session.id} on #{event_names.join('/')} of session ##{watched_session_id}",

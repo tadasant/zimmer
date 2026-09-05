@@ -661,6 +661,47 @@ intent would leave the session in `waiting` with nothing armed and no `paused_by
 recovery sweeps. A deliberate sleep (`POST /api/v1/sessions/:id/sleep` on a running session) carries
 no marker and is always executed, because arming nothing is exactly what it means.
 
+#### A wake-fire resume holds the wake-ups until the turn it starts is over
+
+The other exception, and it is about *when* rather than *whether*. When a wake fires and resumes its
+requester, the rest of the wake group really is moot — but only once the woken turn has run. It used
+to be voided at fire time, in two places at once: this callback consumed every pending one-time wake
+aimed at the session, and the firing job then destroyed the sibling trigger rows. Re-arming is the
+woken turn's job and happens at the *end* of that turn, so between the fire and a successful re-arm
+the session held nothing at all — and a turn interrupted anywhere in that window (a deploy restart,
+a killed process, a transient failure) left it asleep with no wake, indistinguishable from a session
+sleeping correctly ([#569](https://github.com/tadasant/zimmer/issues/569)).
+
+`Trigger#follow_up_session!` therefore sets a transient `wake_fire_resume` flag around its delivery,
+and `cancel_pending_one_time_wake_triggers` takes a **hold** branch: the conditions are left unfired
+and the trigger rows are stamped `wake_held_at`. A held wake is still `enabled` and can still fire.
+What the stamp records is that this turn owes it a retirement.
+
+Only a trigger that is *nothing but* one-shot wakes is held, because holding hands the whole row to
+the retirement. A trigger mixing an unfired one-shot with a recurring schedule or a Slack condition
+does other work, so its one-shot is consumed the old way and the row is left alone.
+
+`retire_held_wake_triggers` pays that debt, from the `pause` and `archive` callbacks. Two details
+carry the whole design:
+
+- It runs on `pause` **unless the pause is one Zimmer entered on the turn's behalf** —
+  `Session#turn_stood_down_before_it_ran?`. Three markers answer it, and all three mean the prompt
+  was never delivered: `paused_by = "recovery"` (a process Zimmer restarted under a live turn),
+  `failure_reason = "undelivered_turn"` (a turn that raised during setup — `ParkUndeliveredTurn`
+  states explicitly that it writes no `paused_by`), and `auth_outage_reason` (a turn stood down
+  because the account pool was empty). A woken turn that never ran has not had its chance to
+  re-arm, so retiring there would re-open the window at the one moment it has to stay shut.
+- It only takes rows carrying `wake_held_at`. Wakes the woken turn armed *for itself* carry no mark,
+  so the pause that retires the old group leaves the new one alone. `failed` triggers are exempt as
+  everywhere else — they are the record of a wake that tried and could not, and the user's to clear;
+  re-arming one clears its hold mark, so the re-arm is not destroyed by the next pause.
+- It is deliberately **not** called from `fail`. A `failed` session is not reliably a finished one —
+  `CleanupOrphanedSessionsJob` recovers `failed` sessions carrying `GoodJob::InterruptError` or the
+  recovery marker, which is an interrupted turn wearing a different status.
+
+Retiring is as load-bearing as holding, and both halves are tested. A wake that outlives its wait
+and fires into a later, unrelated one fails silently in exactly the same way the bug does.
+
 One recovery path deliberately does *not* preserve: when `continue_recovered_session` finds a queued
 user message, it delivers that instead of the recovery prompt, via a normal `resume!`. A waiting
 user message means someone has taken the session over, which is the case the cancelling semantics
@@ -1385,7 +1426,7 @@ only. The split is by consequence, not by severity of the exception:
 
 | | Callbacks | Why |
 | --- | --- | --- |
-| **Alerts** | `set_archived_at`, `cleanup_running_job`, `clear_stale_mcp_failure_metadata`, `clear_auth_recovery_budget`, `execute_pending_sleep`, `cancel_pending_one_time_wake_triggers`, `clear_pending_sleep`, `set_blocked_on_elicitation_marker`, `cleanup_watched_session_ao_event_triggers`, `fire_ao_event_triggers`, `clear_trash_expiry` | The failure leaves persistent state inconsistent and nothing reconciles it — a resumed session that re-fails on a stale MCP flag, an armed wake-up that fires into live work, a restored session still queued for deletion. |
+| **Alerts** | `set_archived_at`, `cleanup_running_job`, `clear_stale_mcp_failure_metadata`, `clear_auth_recovery_budget`, `execute_pending_sleep`, `cancel_pending_one_time_wake_triggers`, `retire_held_wake_triggers`, `clear_pending_sleep`, `set_blocked_on_elicitation_marker`, `cleanup_watched_session_ao_event_triggers`, `fire_ao_event_triggers`, `clear_trash_expiry` | The failure leaves persistent state inconsistent and nothing reconciles it — a resumed session that re-fails on a stale MCP flag, an armed wake-up that fires into live work, a restored session still queued for deletion. |
 | **Logs only** | `reset_elapsed_time_counter`, `log_state_change`, `clear_blocked_on_elicitation_marker`, `clear_paused_by_metadata`, `mark_notifications_stale`, `dismiss_notifications`, `enqueue_failure_push_notification`, `enqueue_debounced_needs_input_push_notification`, `enqueue_session_inference_if_needed`, `set_trash_expiry`, `enqueue_deferred_cleanup` | Cosmetic, best-effort by construction, or already covered by a reconciling sweep — `CleanupExpiredElicitationsJob` for a stranded elicitation marker, `StaleCloneCleanupJob` for a nil `trash_after`, `EmptyTrashJob` for a missed cleanup enqueue. A second alert path to an event that already self-heals is just noise. |
 
 The alert's dedup key is the **callback name, not the session**. A sick database hits the same

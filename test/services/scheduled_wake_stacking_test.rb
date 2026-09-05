@@ -164,8 +164,15 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
     end
 
     assert session.reload.running?, "expected the wake to start the session, got #{session.status}"
-    refute Trigger.exists?(trigger.id),
-      "a spent one-time wake is auto-deleted, so it cannot re-sleep the session mid-work"
+    # The wake is held rather than destroyed, and its schedule is spent, so it
+    # cannot fire again and cannot re-sleep the session mid-work. Session#pause
+    # retires it when the turn it woke comes to rest.
+    assert_not_nil trigger.reload.wake_held_at
+    assert_not_nil trigger.trigger_conditions.first.last_triggered_at,
+      "the schedule is spent, so nothing can re-sleep the session mid-work"
+
+    session.reload.pause!
+    refute Trigger.exists?(trigger.id), "and the held wake is retired with the turn"
   end
 
   # A pause is a FLOOR, not a promotion. "Not before 3pm" does not mean "and then

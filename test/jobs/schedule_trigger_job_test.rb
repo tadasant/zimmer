@@ -373,10 +373,12 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
   end
 
   # The condition is advanced BEFORE the post-fire cleanup runs, so a raise from
-  # #destroy_sibling_wakes! or the auto-delete arrives with the schedule already
-  # spent and the session already created. Parking is still right — the error
-  # must not vanish — but promising a re-arm would be a lie, and acting on it
-  # would duplicate the session.
+  # that cleanup — the auto-delete on a spawning trigger, #hold_wake_group! on a
+  # reuse wake — arrives with the schedule already spent and the session already
+  # created. Parking is still right — the error must not vanish — but promising a
+  # re-arm would be a lie, and acting on it would duplicate the session. Both
+  # cleanup shapes are covered: this test stubs the auto-delete, and the one below
+  # stubs the hold.
   test "a raise after the schedule was consumed parks the trigger without promising a re-arm" do
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
@@ -385,7 +387,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     trigger = one_time_condition.trigger
     one_time_condition.update!(last_triggered_at: nil)
 
-    Trigger.any_instance.stubs(:destroy_sibling_wakes!).raises(StandardError.new("sibling cleanup blew up"))
+    Trigger.any_instance.stubs(:destroy!).raises(StandardError.new("auto-delete blew up"))
 
     captured_details = nil
     AlertService.stubs(:raise_alert).with do |_title, **kwargs|
@@ -408,7 +410,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     assert_match(/will NOT re-fire/, captured_details)
 
     # And re-arming really does not duplicate the session.
-    Trigger.any_instance.unstub(:destroy_sibling_wakes!)
+    Trigger.any_instance.unstub(:destroy!)
     trigger.toggle!
 
     travel_to Time.zone.parse("2026-04-15 19:05:00 UTC") do
@@ -416,6 +418,55 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
         ScheduleTriggerJob.perform_now
       end
     end
+  end
+
+  # The reuse-wake half of the same shape: the raise comes from #hold_wake_group!
+  # rather than from the auto-delete. The trigger must still be parked with its
+  # error — and the park is what protects it, because
+  # SessionStateMachine#retire_held_wake_triggers exempts `failed` rows. The hold
+  # mark is already on it by then: the resume the fire went through marks the
+  # group before the job's own call, which is the belt-and-braces half of the
+  # hold and the reason a raise here cannot lose the wake.
+  test "a raise from the wake hold still parks the trigger, and the park protects it" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-hold"))
+
+    requester = Session.create!(
+      prompt: "Requester",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo",
+      status: :needs_input,
+      metadata: {}
+    )
+
+    one_time_condition = trigger_conditions(:one_time_schedule_condition)
+    trigger = one_time_condition.trigger
+    trigger.update!(reuse_session: true, last_session_id: requester.id)
+    one_time_condition.update!(last_triggered_at: nil)
+
+    Trigger.any_instance.stubs(:hold_wake_group!).raises(StandardError.new("hold blew up"))
+    AlertService.stubs(:raise_alert)
+
+    travel_to Time.zone.parse("2026-04-15 19:00:00 UTC") do
+      ScheduleTriggerJob.perform_now
+    end
+
+    trigger.reload
+    assert_equal "failed", trigger.status, "the error must be recorded, not swallowed"
+    assert_not_nil trigger.wake_held_at, "the resume had already marked the group"
+    assert_not_nil one_time_condition.reload.last_triggered_at,
+      "the fire got far enough to consume the schedule"
+
+    # The requester's next pause must leave the parked evidence alone, hold mark
+    # or not — and re-arming it sheds the mark, so the re-arm is not destroyed by
+    # the pause after that.
+    requester.reload.pause!
+    assert Trigger.exists?(trigger.id), "a parked wake is the user's to clear"
+
+    trigger.toggle!
+    assert_nil trigger.reload.wake_held_at
+  ensure
+    Trigger.any_instance.unstub(:hold_wake_group!)
   end
 
   test "the alert for a failed one-time fire says the trigger was kept and how to re-arm it" do
@@ -442,7 +493,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
       "the alert should link the trigger the user has to re-arm"
   end
 
-  test "destroys sibling wake triggers when one-time schedule fires" do
+  test "holds sibling wake triggers when one-time schedule fires, and retires them at the pause" do
     AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
 
@@ -495,9 +546,15 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
       ScheduleTriggerJob.perform_now
     end
 
-    assert_not Trigger.exists?(firing_trigger.id), "firing one-time trigger destroyed"
-    assert_not Trigger.exists?(sibling_needs_input.id), "ao_event sibling destroyed"
-    assert_not Trigger.exists?(sibling_deadline.id), "schedule sibling destroyed"
+    assert_not_nil firing_trigger.reload.wake_held_at, "firing one-time trigger held"
+    assert_not_nil sibling_needs_input.reload.wake_held_at, "ao_event sibling held"
+    assert_not_nil sibling_deadline.reload.wake_held_at, "schedule sibling held"
+
+    requester.reload.pause!
+
+    assert_not Trigger.exists?(firing_trigger.id), "firing one-time trigger retired with the turn"
+    assert_not Trigger.exists?(sibling_needs_input.id), "ao_event sibling retired"
+    assert_not Trigger.exists?(sibling_deadline.id), "schedule sibling retired"
   end
 
   test "does not destroy siblings when one-time trigger firing fails" do
