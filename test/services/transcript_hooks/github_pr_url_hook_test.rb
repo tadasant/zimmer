@@ -555,6 +555,39 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     assert_nil tracked_urls
   end
 
+  test "ignores a same-repo PR the create's own body cites" do
+    # A create result is routinely the created PR serialized back, `body` and
+    # all — and a body written by the `open-pr` skill cites other pull requests
+    # as a matter of course. One create opens one PR, so the result vouches for
+    # the first URL on this repo and no others; without that cap the session
+    # would be handed every PR it linked to (#214).
+    run_hook(
+      claude_mcp_call(id: "toolu_mcp"),
+      claude_mcp_result(
+        id: "toolu_mcp",
+        text: %({"html_url":"https://github.com/owner/repo/pull/140",) +
+              %("body":"Supersedes https://github.com/owner/repo/pull/12 and follows https://github.com/owner/repo/pull/13"})
+      )
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/140" ], tracked_urls
+  end
+
+  test "ignores a same-repo PR quoted by an MCP create against a different repository" do
+    # The half of the guard the URL's own repo cannot decide: the create opened
+    # someone else's PR, and its result echoes a URL on *this* repo. The repo the
+    # input names is what rejects it.
+    run_hook(
+      claude_mcp_call(id: "toolu_mcp", input: { owner: "other", repo: "proj", title: "T", body: "ports https://github.com/owner/repo/pull/141" }),
+      claude_mcp_result(
+        id: "toolu_mcp",
+        text: %({"html_url":"https://github.com/other/proj/pull/9","body":"ports https://github.com/owner/repo/pull/141"})
+      )
+    )
+
+    assert_nil tracked_urls
+  end
+
   test "ignores a foreign PR quoted in the result of an MCP create on this repo" do
     # The repo the input names bounds what its result may vouch for, the same way
     # a create command's `--repo` does: a body that echoes back a related PR must

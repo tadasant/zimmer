@@ -3627,14 +3627,21 @@ Heuristics have two failure directions and neither announces itself:
   enumerated, so each new one costs a session before it is recognised: the REST fallback agents reach
   for when GitHub's GraphQL API is down took session
   [5679](https://zimmer.tadasant.com/sessions/5679) to discover, and the GitHub MCP route was
-  structurally invisible until [#559](https://github.com/tadasant/zimmer/issues/559). Two edges
+  structurally invisible until [#559](https://github.com/tadasant/zimmer/issues/559). Four edges
   remain on the MCP tier now that it exists. It is held to the session's own repo on both ends — the
-  repo the call's input names and the repo the URL belongs to — so an MCP create against a *different*
-  repository records nothing, where the same create through `gh pr create --repo other/proj` would;
-  that asymmetry is deliberate, because the tool name is a convention matched across servers whose
-  semantics Zimmer has not verified. And Pi sessions are not covered at all: the `pi-mcp-adapter`
-  extension calls every server through one `mcp` proxy tool rather than by name, so there is no
-  `mcp__<server>__create_pull_request` in a Pi transcript to key on.
+  repo the call's input names, when it names one, and the repo the URL belongs to — so an MCP create
+  against a *different* repository records nothing, where the same create through `gh pr create
+  --repo other/proj` would; that asymmetry is deliberate, because the tool name is a convention
+  matched across servers whose semantics Zimmer has not verified. It records only the **first**
+  same-repo URL in a create's result, since one create opens one PR and a result that serializes the
+  created PR back carries whatever other pull requests its `body` cites — so a server that printed a
+  cited PR ahead of the one it created would record the wrong one. "A failed create is not evidence"
+  holds only as far as the runtime says a call failed, and on Codex nothing does: an exit code comes
+  from an `exec_command_end` line that only a shell call gets, so an MCP result there always reads as
+  a success, and a failed create whose error text quotes a same-repo PR URL would be recorded. And Pi
+  sessions are not covered at all: the `pi-mcp-adapter` extension calls every server through one
+  `mcp` proxy tool rather than by name, so there is no `mcp__<server>__create_pull_request` in a Pi
+  transcript to key on.
 
 The warning log a PR-flavored goal gets when a session comes to rest (`pause`, `fail` or `archive`)
 covers the second case only, and only when the goal happens to mention pull requests. There is no
