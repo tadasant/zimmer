@@ -18,15 +18,23 @@ sidebar:
 | `test-system` | `bin/rails test:system` — the Chrome-driven browser suite; `PARALLEL_WORKERS=1` |
 | `retention_logic` | `ruby scripts/ghcr_retention_test.rb` (pure Ruby, no Rails boot) |
 | `docs_site` | Builds this documentation site |
+| `image_excludes_docs` | Asserts `docs/` is absent from the image build context — see [Deploying](/operate/deploying/#the-docs-never-ship-in-the-image) |
+| `shellcheck` | ShellCheck at `--severity=info` over every tracked `*.sh` file |
 | `all-checks-pass` | Aggregate gate — `needs:` every job above and fails if any failed or was cancelled |
 
 ## The single branch-protection gate
 
 `all-checks-pass` is the one status check to require under **Settings → Branches → main**, instead
-of enumerating every job. It runs with `if: ${{ always() }}` (so a failed dependency can't leave it
-perpetually "skipped" and block the branch), fails if any dependency reported `failure` or
-`cancelled`, and treats a `skipped` dependency — the fork-guarded jobs skip on fork PRs — as neither
-a pass nor a failure.
+of enumerating every job. It runs with `if: ${{ !cancelled() }}`, fails if any dependency reported
+`failure` or `cancelled`, and treats a `skipped` dependency — the fork-guarded jobs skip on fork
+PRs — as neither a pass nor a failure.
+
+`!cancelled()` rather than `always()`, and rather than a bare `needs:`. A bare `needs:` job is
+skipped when any dependency fails, which would leave the required check perpetually "skipped" and
+block the branch. `always()` overshoots the other way: this workflow sets `cancel-in-progress:
+true`, so every superseded run would reach the gate, see `cancelled` in `needs.*.result`, and exit
+1 — turning a cancelled run into a failed one and tripping the CI-failure alert, which deliberately
+stays quiet on `cancelled`.
 
 ## The browser suite runs
 
@@ -38,6 +46,38 @@ because it pins `PARALLEL_WORKERS=1` — the persistent per-worker `--user-data-
 assumed pre-provisioned on the runner; the CI branch of that file points Selenium at
 `/usr/bin/chromium-browser` with `--no-sandbox`. This closes
 [#87](https://github.com/tadasant/zimmer/issues/87).
+
+## Shell scripts are linted, not just parsed
+
+`shellcheck` runs over every `*.sh` file `git ls-files` reports — `scripts/`, `.github/scripts/`
+and `.agent-containers/`. The scripts in the first two are not conveniences: they run as root on
+the droplets, over SSH, out of the deploy path. `clear-root-password-expiry.sh` rewrites root's
+password ageing, `tailnet-reap-node.sh` removes tailnet nodes, `worker-watchdog.sh` sends `kill
+-9` to container shims and `rm -rf`s containerd task directories, and `install-worker-watchdog.sh`
+writes systemd units. `bash -n` proves those parse and nothing more.
+
+**The floor is `--severity=info`, and that is the load-bearing part.** SC2086 — an unquoted
+expansion, so `rm -rf $dir/foo` becomes `rm -rf /foo` when `$dir` is empty — is an *info*-level
+check, not a warning. A script whose whole body is `d=$1; rm -rf $d/foo` draws zero findings at
+`--severity=warning` and one at `--severity=info`. A `warning` floor would have been a green job
+that ignored the defect class it was added for. The tree is clean at `--severity=style` too, so
+tightening further is a one-word change.
+
+The job downloads a pinned, checksummed shellcheck release into `$RUNNER_TEMP`. The shared
+self-hosted runner has no shellcheck on it and CI jobs there do not run as root, so `apt-get
+install` is not an option; putting it in the runner image would mean a different repository.
+
+Three guards keep the job from passing while checking nothing. It fails on an empty file list; it
+fails if any of the four root-privileged scripts above has dropped out of the set, which is the
+failure mode a glob invites; and it fails on a repo-root `.shellcheckrc` or a file-level `#
+shellcheck disable=` above a script's first command, either of which switches checks off wholesale
+while the job stays green. Per-site directives are fine and are what the scripts use — they sit
+against one statement and carry their reason.
+
+The extensionless bash under `bin/` (`bin/dev`, `bin/docker-entrypoint`, `bin/agent-dev`,
+`bin/ensure-playwright-browsers`, `bin/preinstall-mcp-packages`) is **not** covered. Those draw 12
+findings between them, all benign on inspection, but clearing them means editing the production
+container entrypoint — not something to do inside a CI change.
 
 ## What CI does not run
 

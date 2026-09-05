@@ -66,6 +66,8 @@ SSH_OPTS=(
 # `usermod -p '*'` sets an INVALID hash, not an empty one -- `passwd -d` would leave the
 # field blank, which means "no password required" rather than "no password login".
 # `chage -M -1` disables aging, so the box cannot re-expire itself later.
+# shellcheck disable=SC2016  # deliberate: the single quotes keep `$(date …)` unexpanded so it
+# runs on the remote box. Expanding it here would stamp the runner's date into root's ageing.
 repair='
   set -eu
   usermod -p "*" root
@@ -90,6 +92,8 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   # failed". Safe under `set -e` -- the `||` list succeeds, and the assignment returns 0 even
   # when rc is non-zero.
   rc=0
+  # shellcheck disable=SC2029  # expanding $repair client-side is how the script text gets
+  # there; its own `$(date …)` is single-quoted above and still expands remotely.
   ssh "${SSH_OPTS[@]}" root@"${HOST}" "$repair" || rc=$?
 
   if [ "$rc" -eq 0 ]; then
