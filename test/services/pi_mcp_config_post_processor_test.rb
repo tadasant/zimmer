@@ -111,6 +111,84 @@ class PiMcpConfigPostProcessorTest < ActiveSupport::TestCase
     assert_includes raw, "\n  ", "expected pretty-printed JSON, got: #{raw[0, 80]}"
   end
 
+  # ---------------------------------------------------------------------------
+  # MCP startup timeout
+  #
+  # Pi's MCP client is the pi-mcp-adapter extension, whose only per-entry budget
+  # is `requestTimeoutMs` — measured at 60,000ms by default against the pinned
+  # 2.32.1, which a cold clone's npm download can eat into. See
+  # PiMcpConfigPostProcessor#apply_startup_timeouts!.
+  # ---------------------------------------------------------------------------
+
+  test "every seeded stdio server gets the shared MCP startup budget" do
+    process!
+
+    assert_equal McpStartupTimeout::MILLISECONDS,
+      config.dig("mcpServers", "playwright-custom", "requestTimeoutMs")
+  end
+
+  test "a non-npx stdio server gets the same budget" do
+    @mock_fs.write(config_path, JSON.generate(
+      "mcpServers" => { "not-npx" => { "type" => "stdio", "command" => "/usr/local/bin/thing" } }
+    ))
+
+    process!
+
+    assert_equal McpStartupTimeout::MILLISECONDS,
+      config.dig("mcpServers", "not-npx", "requestTimeoutMs")
+  end
+
+  test "an http server is not given a startup budget" do
+    @mock_fs.write(config_path, JSON.generate(
+      "mcpServers" => { "acme-http" => { "type" => "http", "url" => "https://acme.example.com/mcp" } }
+    ))
+
+    process!
+
+    servers = config["mcpServers"]
+    assert_nil servers.dig("acme-http", "requestTimeoutMs"),
+      "an http entry reaches an already-running server and has no cold start to absorb"
+    assert_nil servers.dig("zimmer-self-session", "requestTimeoutMs"),
+      "the auto-injected Zimmer entries are http and must not be given one either"
+  end
+
+  test "an entry that already names its own request timeout keeps it" do
+    @mock_fs.write(config_path, JSON.generate(
+      "mcpServers" => {
+        "explicit" => { "type" => "stdio", "command" => "node", "requestTimeoutMs" => 9_000 }
+      }
+    ))
+
+    process!
+
+    assert_equal 9_000, config.dig("mcpServers", "explicit", "requestTimeoutMs")
+  end
+
+  # ensure_baseline! runs for a session with nothing configured, but it parses
+  # whatever `.mcp.json` is already on the clone — and a session that HAD MCP
+  # servers and no longer does (a follow-up, an unarchive, a fork) reaches it
+  # with the previous run's stdio entries still in that file.
+  test "ensure_baseline! gives a stdio server already on the clone the budget" do
+    @session.update!(mcp_servers: [])
+    @mock_fs.write(config_path, JSON.generate(
+      "mcpServers" => { "leftover" => { "type" => "stdio", "command" => "node" } }
+    ))
+
+    processor.ensure_baseline!
+
+    assert_equal McpStartupTimeout::MILLISECONDS,
+      config.dig("mcpServers", "leftover", "requestTimeoutMs")
+  end
+
+  # One budget, three spellings. A change to Claude's millisecond constant that
+  # did not reach Pi would leave the third runtime on its client's own default.
+  test "Pi's budget is the same one Claude gets from MCP_TIMEOUT" do
+    process!
+
+    assert_equal ClaudeSpawnEnv::MCP_TIMEOUT_MS,
+      config.dig("mcpServers", "playwright-custom", "requestTimeoutMs")
+  end
+
   private
 
   def processor
