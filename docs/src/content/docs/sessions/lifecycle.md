@@ -871,9 +871,11 @@ The automatic recovery paths do not call `resume_for_system_recovery!` directly 
 sweeps, not the hung-process auto-restart, not the stranded-sleep rescue, not the failed-session
 retry, not the auto-continue after a job interruption. They go through
 `Session#claim_system_recovery_turn!`, which takes the row lock, refuses a session the trash
-swallowed since the caller read it, and calls the preserving resume only on the way to `:claimed` —
-see [Spawning and monitoring](/sessions/spawning/) for both halves of that guard and for the
-resumers outside this family that lock by hand instead,
+swallowed since the caller read it — or one whose work has been handed to a replacement that is
+carrying it ([#801](https://github.com/tadasant/zimmer/issues/801)) — and calls the preserving
+resume only on the way to `:claimed`. See [Spawning and
+monitoring](/sessions/spawning/#refusing-to-resume-a-session-whose-work-moved) for all of that
+guard and for the resumers outside this family that lock by hand instead,
 [#554](https://github.com/tadasant/zimmer/issues/554) for what it costs when it is missing, and
 [#753](https://github.com/tadasant/zimmer/issues/753) for the tail of the family.
 

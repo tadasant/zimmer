@@ -208,7 +208,8 @@ class HealthController < ApplicationController
   #
   # `skipped` carries a reason per session — a missing working directory, or a
   # recovery turn `Session#claim_system_recovery_turn!` refused because the row is
-  # in the trash or already running. Flashing counts and dropping that list left
+  # in the trash, already running, or superseded by the session that replaced it.
+  # Flashing counts and dropping that list left
   # the dashboard saying "No sessions to retry" to an operator who had just asked
   # for one specific session by id, which is indistinguishable from a bug. The
   # JSON surfaces have always returned the whole hash; this is the HTML one

@@ -416,14 +416,24 @@ class SessionRecoveryService
   # (#400). Neither retries — the session is left where it is, which for the
   # archived case is the trash and for the running case is somebody else's turn.
   #
-  # @param outcome [Symbol] :archived or :not_resumable
+  # A third refusal, `:superseded`, says the work moved: another session was
+  # created to replace this one and is carrying its task, so restarting the hung
+  # one would re-do work that has already been done elsewhere (#801). Like the
+  # other two it does not retry, and like them it leaves the session where it is
+  # — a human can still resume it with a follow-up.
+  #
+  # @param outcome [Symbol] :archived, :not_resumable or :superseded
   # @param process_pid [Integer, nil] the hung pid this recovery was about
   # @return [nil]
   def refuse_auto_restart(outcome, process_pid)
     message =
-      if outcome == :archived
+      case outcome
+      when :archived
         "Not auto-restarting after hung process: this session is in the trash. An archived " \
         "session takes no turn, so no agent was started."
+      when :superseded
+        "Not auto-restarting after hung process: #{session.replacement_refusal_clause}. " \
+        "Restarting would re-do work another session has already taken over, so no agent was started."
       else
         "Not auto-restarting after hung process: this session is #{session.status} and cannot be " \
         "resumed. Something else is already driving it, so no second agent was started."
