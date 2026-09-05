@@ -244,9 +244,25 @@ class Api::V1::SessionsController < Api::BaseController
         return
       end
 
+      # A live turn is the other thing an archive discards, and this endpoint
+      # carries no caller identity at all — the API key is the fleet's. So it
+      # takes the same answer the MCP tool gives an unidentified connection:
+      # refuse, and let `force` through. See Sessions::LiveTurn.
+      if !force && Sessions::LiveTurn.in_flight?(@session)
+        render_api_error(
+          "A turn is in flight",
+          Sessions::LiveTurn.refusal_message(@session),
+          status: :unprocessable_entity
+        )
+        return
+      end
+
+      destroyed_turn = force && Sessions::LiveTurn.in_flight?(@session)
+
       @session.archive_actor = "the REST API"
       @session.archive_forced = force
       @session.archive!
+      note_archive_over_live_turn(@session, "the REST API") if destroyed_turn
       render json: {
         session: session_json(@session.reload),
         message: "Session moved to trash",
@@ -1052,15 +1068,19 @@ class Api::V1::SessionsController < Api::BaseController
     AlertBatcher.with_batch do
       sessions.each do |session|
         queued = force ? [] : Sessions::ArchiveGuard.pending_messages(session)
+        live_turn = Sessions::LiveTurn.in_flight?(session)
 
         if queued.any?
           # Reported and skipped rather than aborting the batch, matching the MCP
           # twin. `force` applies to the whole batch, not one member of it.
           errors << { id: session.id, message: Sessions::ArchiveGuard.refusal_message(session, queued, batch: true) }
+        elsif !force && live_turn
+          errors << { id: session.id, message: Sessions::LiveTurn.refusal_message(session, batch: true) }
         elsif session.may_archive?
           session.archive_actor = "the REST API (bulk)"
           session.archive_forced = force
           session.archive!
+          note_archive_over_live_turn(session, "the REST API (bulk)") if live_turn
           archived_count += 1
         else
           errors << { id: session.id, message: "Cannot archive from status: #{session.status}" }
@@ -1168,6 +1188,19 @@ class Api::V1::SessionsController < Api::BaseController
   end
 
   private
+
+  # Record a forced archive that killed a live turn on the timeline of the
+  # session it happened to. The twin of Mcp::Tools::ActionSession's, and it has
+  # to exist separately because the two surfaces share no archive code.
+  #
+  # Best-effort: a timeline write must not fail an archive that has already
+  # landed.
+  def note_archive_over_live_turn(session, actor)
+    session.logs.create!(content: Sessions::LiveTurn.forced_over_live_turn_log(actor), level: "warning")
+  rescue StandardError => e
+    Rails.logger.error("[Api::V1::SessionsController] Failed to record a forced archive over a live turn " \
+                       "on session #{session.id}: #{e.message}")
+  end
 
   # Refuse a restart while the session is paused until a time it has not reached.
   #

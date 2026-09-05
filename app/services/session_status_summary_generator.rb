@@ -406,6 +406,18 @@ class SessionStatusSummaryGenerator
         return Result.new(outcome: :skipped, message: "Session is in the trash.")
       end
 
+      # And the same question for a conversation that came alive during the fork,
+      # which is the #400 timeline exactly: the fork was taken at 01:50:24 and the
+      # new prompt landed at 01:50:25. A check asked only before the fork would
+      # have missed it by a second. Unlike the trash check above, this one applies
+      # to a forced run too — `force` never makes a second agent on a live
+      # conversation safe — and it does not skip: the blurb is still owed, so the
+      # fork is disposed of and the headless path writes it.
+      if conversation_live?
+        abandon_fork(fork)
+        return run_headless(summary, line_count)
+      end
+
       prepare_fork(fork)
 
       # The record names the fork BEFORE the fork is dispatched. The fork's turn

@@ -274,6 +274,16 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   # `force` overrides the refusals that are about waste. This one is about a
   # second agent on a live conversation, which pressing Regenerate does not make
   # safe — so a forced run goes headless too rather than forking.
+  # Neither marker is cleaned up on the way into a terminal state, so without a
+  # status guard a `failed` session holding a stranded message would read as live
+  # forever and never be given a fork again.
+  test "a stranded prompt on a failed session is not a live conversation" do
+    @session.update!(status: :failed)
+    @session.enqueued_messages.create!(content: "nothing will ever deliver this", position: 1, status: "pending")
+
+    assert_not Sessions::LiveTurn.undelivered_prompt?(@session)
+  end
+
   test "a forced regeneration of a live conversation still goes headless" do
     @session.update!(status: :running)
     turn_on_a_worker!(@session)
@@ -285,6 +295,30 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
 
     assert_equal :ready, result.outcome
     assert_nil @session.reload.status_summary.fork_session_id
+  end
+
+  # The window the incident actually landed in: the fork was taken at 01:50:24 and
+  # the new prompt arrived at 01:50:25. A check asked only BEFORE the fork misses
+  # it by a second, so the same question is asked again after the fork exists —
+  # and the fork is thrown away rather than dispatched.
+  test "a conversation that comes alive while the fork is being made throws the fork away" do
+    inference = FakeInference.new("Working on the new prompt.")
+    dispatched = []
+    Session.any_instance.stubs(:deliver_follow_up!).with { |prompt, *| dispatched << prompt; true }
+
+    result = SessionStatusSummaryGenerator.call(
+      session: @session,
+      file_system: @fs,
+      inference_service: inference,
+      fork_service: fork_service_running { @session.enqueued_messages.create!(content: "the new prompt", position: 1, status: "pending") }
+    )
+
+    assert_equal :ready, result.outcome, "the blurb is still owed, so the headless path writes it"
+    assert_empty dispatched, "the fork must not be sent the summary prompt"
+    assert_nil @session.reload.status_summary.fork_session_id
+
+    fork = Session.where("metadata->>? = ?", SessionStatusSummaryGenerator::FORK_MARKER, @session.id.to_s).sole
+    assert_equal "archived", fork.status, "the fork is disposed of, not left holding a clone"
   end
 
   # The guard has to be narrow enough to leave the fork path alone, which is

@@ -1305,28 +1305,18 @@ once it has come to rest.
 Only if you have decided to destroy the running turn: re-call with "force": true.
 ```
 
-Three things bound it, and each matters:
+Four things bound it, and each matters:
 
-- **A session archiving itself is never refused.** That is the normal ending, its own turn is the
-  one in flight, and it is the only caller that knows whether that turn is finished — refusing it
-  would break the completion signal the whole lifecycle policy rests on. Identity comes from the connection, not the request body:
-  `RuntimeConfigPostProcessor` stamps `session_id` onto the URL of the Zimmer server it injects into
-  a session's own runtime config, `Mcp::Context` carries it, and nothing a caller sends can forge it.
-  It is the same check `SelfSessionActionSession#enforce_self_report!` already makes for
-  `message_parent`. A connection that names *no* session is refused rather than waved through — it
-  is not the session either, and `force` is one call away while the turn is not.
-- **Only a turn a worker has actually picked up counts.** A turn still queued in the `agents` lane
-  is *cancelled* by an archive, not destroyed, and that is what the caller asked for.
-- **`force` still works, and the loss stops being silent.** A forced archive over a live turn writes
-  a `warning` on the target's own timeline — *"Archived by … while an agent turn was in flight — the
-  running process was terminated mid-turn and its uncommitted work discarded. This was not the
-  session finishing."* — and the tool's answer says the same thing back to the caller. The session
-  cannot report this itself; it is the thing being terminated.
+- **A session archiving itself is never refused.** That is the normal ending: its own turn is the one in flight, and it is the only caller that knows whether that turn is finished. Refusing it would break the completion signal the whole lifecycle policy rests on. Identity comes from the connection rather than the request body — `RuntimeConfigPostProcessor` stamps `session_id` onto the URL of the Zimmer server it injects into a session's own runtime config, and `Mcp::Context` carries it, so nothing a caller sends can forge it. `SelfSessionActionSession#enforce_self_report!` reads the same field for `message_parent`, with the opposite polarity for an unidentified caller: it lets one through, and this guard refuses one. A connection that names no session is not the session either, and `force` is one call away while the destroyed turn is not.
+- **Only a turn a live worker is executing counts** — an unfinished `AgentSessionJob` row that `JobLiveness` calls `:running`. A turn still queued in the `agents` lane is *cancelled* by an archive rather than destroyed, which is what the caller asked for; and a row left behind by a SIGKILLed worker is a corpse, so a stuck session stays archivable by the sweeps that exist to clear it.
+- **`force` still works, and the loss stops being silent.** A forced archive over a live turn writes a `warning` on the target's own timeline — *"Archived by … while an agent turn was in flight — the running process was terminated mid-turn and its uncommitted work discarded. This was not the session finishing."* — and the answer says the same thing back to the caller. The session cannot report this itself; it is the thing being terminated.
+- **A fork's connection names the fork.** `ForkSessionService` used to prepare a fork's runtime config for the *source* session, which stamped the source's `session_id` onto the fork's Zimmer MCP entry — and `RuntimeConfigPostProcessor#with_session_id` leaves a URL that already carries one alone, so re-preparing for the fork on its first turn did not correct it. A fork therefore held a connection that identified it as its source, and would have read as that source archiving *itself*. The config is now prepared for the fork.
 
-The system-initiated archives (`HealthMonitorService`'s stale sweep, the status-summary fork
-cleanup, `SessionStatusSummaryHarvestJob`) do **not** consult it, for the same reason they do not
-consult `Sessions::ArchiveGuard`: a refusal none of them could reconsider would be a fleet-wide
-stuck state with no human in the loop to clear it.
+`POST /api/v1/sessions/:id/archive` and its bulk twin ask the same question, and they reach the unidentified-caller branch every time: the REST API key belongs to the whole fleet, so nothing about the request says who is calling. An agent that reaches for `curl` gets the same refusal the MCP tool would give it, and the same `force` override.
+
+The **web UI's Trash button** is deliberately exempt. It is the interactive door — a person is looking at the session page with the running turn rendered in front of them — which is the same distinction the Restart button draws when it consumes a pause that the non-interactive doors refuse to.
+
+The system-initiated archives (`HealthMonitorService`'s stale sweep, the status-summary fork cleanup, `SessionStatusSummaryHarvestJob`) do **not** consult it, for the same reason they do not consult `Sessions::ArchiveGuard`: a refusal none of them could reconsider would be a fleet-wide stuck state with no human in the loop to clear it.
 
 #### A forced archive records, it does not page
 
