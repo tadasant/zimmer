@@ -90,20 +90,25 @@ class ScheduleTriggerJob < ApplicationJob
       # failure path below parks one-time triggers, and a wake that never
       # delivered (create_session! raised) must not be marked as spoken for.
       #
-      # Additionally guard against the silent-drop race: if the wake fired
-      # while the requester session was still running and #follow_up_session!
-      # couldn't queue the message (recurring trigger with enqueue_messages
-      # off), the wake was dropped. Marking the group held in that case would
-      # put it on a turn that is not going to run, and the requester's next rest
-      # would retire wakes that never delivered anything. Keep this trigger and
-      # its siblings untouched so a later wake (or the deadline backstop) can
-      # actually deliver.
+      # Additionally guard against the silent-drop race: if #follow_up_session!
+      # neither delivered nor queued the prompt, the wake was dropped. Marking
+      # the group held in that case would put it on a turn that is not going to
+      # run, and the requester's next rest would retire wakes that never
+      # delivered anything. Keep this trigger and its siblings untouched so a
+      # later wake (or the deadline backstop) can actually deliver.
+      #
+      # A pure wake — `one_time_reuse_trigger?` — never reaches this for the
+      # `enqueue_messages: false` reason, because #follow_up_session! bypasses
+      # that flag for wakes by design. What DOES reach it is a requester in a
+      # state no branch of #follow_up_session! delivers to (archived, failed), or
+      # a mixed trigger whose schedule rides alongside a recurring condition. So
+      # the log below names the outcome rather than guessing at a cause.
       #
       # Holding rather than destroying is tadasant/zimmer#569: the destroy used
       # to run here, at fire time, before the woken turn had a chance to re-arm
       # anything. See Trigger#hold_wake_group!.
       if trigger.last_follow_up_dropped?
-        Rails.logger.info "[ScheduleTriggerJob] One-time trigger #{trigger_id} (#{trigger_name}) fired but delivery was dropped (requester still running, no enqueue) — leaving its wake group alone"
+        Rails.logger.info "[ScheduleTriggerJob] One-time trigger #{trigger_id} (#{trigger_name}) fired but the prompt was neither delivered nor queued — leaving its wake group alone"
       elsif trigger.one_time_reuse_trigger?
         sibling_count = trigger.hold_wake_group!
         requester_id = trigger.last_session_id

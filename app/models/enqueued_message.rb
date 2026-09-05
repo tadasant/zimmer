@@ -107,6 +107,53 @@ class EnqueuedMessage < ApplicationRecord
   scope :ordered, -> { order(position: :asc) }
   scope :staleness_checked, -> { where(origin: STALENESS_CHECKED_ORIGINS) }
 
+  # Who wrote a prompt that is being put BACK into the durable queue after a
+  # delivery attempt refused to run it.
+  #
+  # Two callers reach here, and both share the same predicament: a trigger fire, a
+  # human follow-up and Zimmer's own recovery nudge all arrive at them as the same
+  # opaque string, long after whoever wrote it is gone. `SpotSessionHold` is the
+  # gate refusing the turn; `Sessions::RequeueSkippedPrompt` is the concurrency
+  # guard skipping the job. Every other create site knows its own origin and names
+  # it literally.
+  #
+  # Most of what this sees is somebody else's message and is `caller`, which is the
+  # default and the wider bucket for exactly that reason. The two it can name are
+  # the recovery nudge and the merge-conflict notice — the first because
+  # `AutomatedPrompts.system_recovery?` is the same predicate `AgentSessionJob`
+  # already keys `resume_for_system_recovery!` off, the second because the notice
+  # has to be stamped for the delivery-time staleness re-read to find it
+  # (EnqueuedMessage#stale?), and a re-queued notice takes the longest gap of all
+  # before anybody reads it.
+  #
+  # Getting this wrong in either direction is bounded and neither is silent: a
+  # nudge mis-stamped `caller` pages the way it did before, and a caller's message
+  # could only be mis-stamped by opening with the nudge template verbatim. That
+  # second direction is REACHABLE rather than impossible — a follow-up sent to a
+  # spot-class session travels deliver_follow_up! -> AgentSessionJob ->
+  # hold_if_needed -> here — and three things bound it: the column is settable by
+  # no request (every create site names its attributes literally, and no permit
+  # list mentions `origin`), so this is a content collision rather than field
+  # injection; the only thing the collision buys is silence about the collider's
+  # OWN discarded message; and AgentSessionJob already keys
+  # `resume_for_system_recovery!` off this same predicate, so recognising the nudge
+  # by its body is a mechanism this codebase already relies on rather than one
+  # introduced here. Threading an explicit origin down from each of the dozen
+  # senders would close it properly and is the right shape if this ever needs to be
+  # airtight.
+  #
+  # @param prompt [Object]
+  # @return [String] one of ORIGINS
+  def self.origin_for_prompt(prompt)
+    if AutomatedPrompts.system_recovery?(prompt)
+      "automated_recovery_nudge"
+    elsif AutomatedPrompts.merge_conflict_pr_url(prompt).present?
+      "automated_merge_conflict"
+    else
+      "caller"
+    end
+  end
+
   # Mark message as sent
   def mark_as_sent!
     update!(status: "sent")
