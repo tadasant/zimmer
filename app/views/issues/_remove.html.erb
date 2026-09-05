@@ -1,0 +1,27 @@
+<%# Take this item off the queue, by judgement, with a reason.
+
+    Posts to WorkBacklogRemovalsController — the browser surface, not the API-key
+    surface every agent session holds. The row is not deleted: it stays as
+    history, carrying the reason and who.
+
+    THE ONE CONTROL ON THIS PAGE WITH NO VISIBLE UNDO. Promote spawns a session
+    you can see and archive; a pin can be released. A remove drops queued work,
+    and the only way back is an append. So the confirmation NAMES THE KEY it is
+    about to remove — a mis-wired form is caught by the reader before it is caught
+    by anyone else — and the controller's flash names the key it actually removed.
+
+    A closed issue is the case this exists for, so the row says so: the reason
+    field is pre-filled with `issue_closed` when GitHub says the issue is closed,
+    which is the same word WorkBacklog::Pull would eventually remove it under. It
+    is a default, not a constraint — a human's reason is free text. %>
+<%= form_with url: remove_work_backlog_item_path(row.item, query_params), method: :post,
+    data: { turbo_confirm: "Remove #{row.key} from the queue? It stops being work the fleet will pick up. The row stays as history with the reason, but nothing re-queues it." },
+    class: "flex flex-col sm:flex-row items-end sm:items-center gap-1 sm:justify-end" do %>
+  <%= text_field_tag "reason", (row.issue_closed? ? WorkBacklogItem::ISSUE_CLOSED_REASON : nil),
+      id: "reason_#{row.item.id}", maxlength: 500, required: true,
+      placeholder: "why", title: "Why #{row.key} is being removed — free text, kept on the row as history",
+      "aria-label": "Reason for removing #{row.key}",
+      class: "w-16 sm:w-24 text-xs border border-gray-300 rounded px-1.5 py-1" %>
+  <%= submit_tag "Remove", name: nil,
+      class: "text-xs px-2 py-1 border border-rose-300 text-rose-700 rounded hover:bg-rose-50 whitespace-nowrap cursor-pointer" %>
+<% end %>

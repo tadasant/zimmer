@@ -31,15 +31,19 @@
       <% end %>
     </div>
 
-    <%# The one honest note the page owes its reader, in the place the click is.
-        Zimmer's browser surface authenticates nobody — the perimeter is the
-        tailnet, and agent sessions run inside it (#371, #220). "Promote" is
-        drawn away from the API-key and MCP surfaces a session is handed, which
-        is a real boundary and a weaker one than "a person did this". %>
+    <%# The one honest note the page owes its reader, in the place the clicks
+        are. Zimmer's browser surface authenticates nobody — the perimeter is the
+        tailnet, and agent sessions run inside it (#371, #220). The four
+        operations are drawn away from the API-key and MCP surfaces a session is
+        handed, which is a real boundary and a weaker one than "a person did
+        this". %>
     <p class="text-xs text-gray-500 mb-4">
-      Promote spawns a <code class="text-[11px]">priority</code> session immediately. It is reachable only from this
-      browser surface — no API key and no MCP tool can pull the lever — but Zimmer's web UI authenticates nobody, so
-      that boundary means "came in through a browser", not "a person clicked it".
+      Each queued row carries the work backlog's four human-only operations: <strong>Promote</strong> spawns a
+      <code class="text-[11px]">priority</code> session immediately, <strong>Pin</strong> hand-places the item at a
+      precedence an agent will never re-rank, <strong>Unpin</strong> releases that, and <strong>Remove</strong> takes
+      the item off the queue with a reason and keeps the row as history. All four are reachable only from this browser
+      surface — no API key and no MCP tool can pull these levers — but Zimmer's web UI authenticates nobody, so that
+      boundary means "came in through a browser", not "a person clicked it".
     </p>
 
     <% if @promoted_session %>

@@ -1509,18 +1509,48 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       assert_text LONG_TOKEN_TITLE
       assert_no_horizontal_overflow("issues page")
 
-      # Promote is the last column of the queue table and the whole point of the
-      # page. It has to be REACHABLE, not merely un-clipped — a button behind a
-      # sideways scroll inside the table is the original report's exact shape.
-      promote_right = page.evaluate_script(<<~JS)
+      # The queue row's four human-only controls are the last column and the whole
+      # point of the page. Each has to be REACHABLE, not merely un-clipped — a
+      # control behind a sideways scroll inside the table is the original report's
+      # exact shape. Pin and Remove each pair an input with a submit, and side by
+      # side those two pairs set the column's min-content width, which a table
+      # cannot shrink below; `issues/_pin` and `issues/_remove` stack them below
+      # `sm:` for exactly this assertion.
+      {
+        "Promote" => "form[action*='/promote'] button",
+        "Pin" => "form[action*='/pin'] input[type=submit]",
+        "precedence field" => "input[name=precedence]",
+        "Remove" => "form[action*='/remove'] input[type=submit]",
+        "reason field" => "input[name=reason]"
+      }.each do |label, selector|
+        right = page.evaluate_script(<<~JS)
+          (function () {
+            const b = document.querySelector("#{selector}");
+            return b ? Math.round(b.getBoundingClientRect().right) : null;
+          })()
+        JS
+        assert right, "the queue rendered no #{label} to measure"
+        assert_operator right, :<=, MOBILE_WIDTH,
+          "the #{label} ends #{right - MOBILE_WIDTH}px past the #{MOBILE_WIDTH}px viewport"
+      end
+
+      # A pinned row swaps the precedence field for Unpin, which is a different
+      # control in the same column — measured too, or the swap could reintroduce
+      # the overflow the stack above fixed.
+      item.update!(pinned: true, precedence: 6500)
+      visit issues_path
+      assert_no_horizontal_overflow("issues page with a pinned row")
+      unpin_right = page.evaluate_script(<<~JS)
         (function () {
-          const b = document.querySelector("form[action*='/promote'] button");
+          const b = document.querySelector("form[action*='/pin'] button");
           return b ? Math.round(b.getBoundingClientRect().right) : null;
         })()
       JS
-      assert promote_right, "the queue rendered no Promote button to measure"
-      assert_operator promote_right, :<=, MOBILE_WIDTH,
-        "the Promote button ends #{promote_right - MOBILE_WIDTH}px past the #{MOBILE_WIDTH}px viewport"
+      assert unpin_right, "a pinned row rendered no Unpin button to measure"
+      assert_operator unpin_right, :<=, MOBILE_WIDTH,
+        "the Unpin button ends #{unpin_right - MOBILE_WIDTH}px past the #{MOBILE_WIDTH}px viewport"
+      item.update!(pinned: false, precedence: 6000)
+      visit issues_path
 
       # Every chart control, at the widest window and the segmentation that puts
       # the most series on screen.
