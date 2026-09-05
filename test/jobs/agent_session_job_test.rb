@@ -7459,6 +7459,133 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal "recovery", @session.metadata["paused_by"]
   end
 
+  # ---------------------------------------------------------------------------
+  # The archive branch's final transcript poll
+  # ---------------------------------------------------------------------------
+  #
+  # THE BUG THESE PIN. Every other exit from the monitoring loop polls the
+  # transcript one last time before it kills the process — the interrupt branch,
+  # the needs_input branch, both superseded-ownership branches and the reaped-exit
+  # path all do it, each so an in-flight assistant message is not lost. The
+  # `archived?` branch did not, and it is the branch where the loss is both most
+  # likely and permanent: the ordinary way a session reaches it is the agent
+  # archiving ITSELF, and the `action_session` call that archives rides in the
+  # same assistant turn as the closing message the human is waiting to read.
+  #
+  # Session 13908 is the observed case. Its stored transcript ends at 23:11:49
+  # with a tool result; its MCP log shows the archive call firing at 23:12:01 and
+  # the connection closing at 23:12:04. The eleven seconds in between — the
+  # thinking, the multi-paragraph answer, and the archive call itself — were on
+  # disk (the runtime writes a turn's blocks before executing the tool in them)
+  # and never reached `session.transcript`. An archived session is never polled
+  # again, so the Transcript panel rendered two items for a 58-message session and
+  # the answer was gone.
+  #
+  # Session 13918 pins WHERE the poll has to go. Zimmer stored 144 lines; the file
+  # on disk holds 149, and the five it lost are the archive call, its result, and
+  # the agent's closing text — written at 23:48:39, twelve seconds AFTER the
+  # archive call at 23:48:27. The runtime keeps writing while it is being shut
+  # down, so a poll placed before `terminate_process` would still lose the answer.
+  # This test writes the closing message from inside the termination for exactly
+  # that reason.
+  test "a session that archives itself keeps the closing turn it wrote as it was killed" do
+    working_directory = "/tmp/archived-final-poll-clone"
+    stderr_path = File.join(working_directory, "claude_stderr.log")
+
+    opening = JSON.generate(
+      "type" => "user",
+      "message" => { "role" => "user", "content" => "Where is the session that was meant to refactor this?" },
+      "timestamp" => "2026-09-04T23:07:41Z"
+    )
+    closing = JSON.generate(
+      "type" => "assistant",
+      "message" => { "role" => "assistant", "content" => [ { "type" => "text", "text" => "THE ANSWER the human is waiting to read." } ] },
+      "timestamp" => "2026-09-04T23:12:01Z"
+    )
+
+    @session.update!(transcript: opening + "\n", metadata: { "working_directory" => working_directory, "clone_path" => working_directory })
+
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.mkdir_p(working_directory)
+    mock_fs.write(stderr_path, "")
+
+    # The transcript file as the last poll left it, in the directory the runtime
+    # derives from the working directory.
+    transcript_dir = File.join(File.expand_path("~"), ".claude", "projects", PathSanitizer.sanitize(working_directory))
+    mock_fs.mkdir_p(transcript_dir)
+    transcript_path = File.join(transcript_dir, "conversation.jsonl")
+    mock_fs.write(transcript_path, opening + "\n")
+
+    session_id = @session.id
+    calls = []
+
+    mock_process_manager.wait_hook = ->(_pid, _flags) { nil }
+    mock_process_manager.running_hook = ->(_pid) { true }
+    mock_cli_adapter.execute_hook = ->(_opts) { { pid: 4321, stderr_log_path: stderr_path } }
+
+    original_poll = job.method(:poll_and_broadcast_transcript)
+    polling = ->(session) do
+      calls << :poll
+      original_poll.call(session)
+    end
+
+    # The runtime is still writing while it is shut down — 13918 wrote its answer
+    # twelve seconds after archiving. `terminate_process` blocks until the process
+    # is confirmed gone, so this is the moment the last line lands.
+    terminating = ->(*) do
+      calls << :terminate
+      mock_fs.write(transcript_path, opening + "\n" + closing + "\n")
+    end
+
+    job.stub(:terminate_process, terminating) do
+      job.stub(:poll_and_broadcast_transcript, polling) do
+        GitCloneService.stub(:create_clone, { clone_path: working_directory, working_directory: working_directory }) do
+          Thread.stub(:new, ->(&block) {
+            mock_thread = Object.new
+            def mock_thread.alive?; false; end
+            def mock_thread.kill; end
+            def mock_thread.join(*); end
+            mock_thread
+          }) do
+            # The window the bug lives in, reproduced exactly: the agent finishes
+            # its turn in the gap AFTER the loop's routine poll and BEFORE the
+            # next trip round the top. The closing message lands on disk and the
+            # `action_session` call in the same turn archives the session, so the
+            # next iteration goes straight down the `archived?` branch. Anything
+            # that branch does not capture is lost for good.
+            agent_finished = false
+            job.stub(:sleep, ->(_) do
+              next if agent_finished
+
+              agent_finished = true
+              calls << :agent_archived_itself
+              Session.where(id: session_id).update_all(status: Session.statuses[:archived], archived_at: Time.current)
+            end) do
+              job.perform(@session.id)
+            end
+          end
+        end
+      end
+    end
+
+    assert_includes calls, :agent_archived_itself,
+      "the test must actually reach the window it is about"
+    assert_includes calls, :terminate, "the archived session's process must still be killed"
+    assert_operator calls.rindex(:poll), :>, calls.index(:terminate),
+      "the archived branch must poll AFTER the process is gone: the runtime writes its " \
+      "closing message while it is being shut down, so polling first still loses it"
+
+    assert_includes @session.reload.transcript.to_s, "THE ANSWER the human is waiting to read.",
+      "the final poll must capture the turn the agent wrote between the last poll and the archive"
+  end
+
   # Note: wait_and_confirm_still_running has been moved to ProcessLifecycleManager
   # Tests for this method are in test/services/process_lifecycle_manager_test.rb
 
