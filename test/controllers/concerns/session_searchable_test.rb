@@ -118,6 +118,55 @@ class SessionSearchableTest < ActiveSupport::TestCase
     assert_empty search(%("agent_root_key":"zimmer-orchestrator"))
   end
 
+  # Canonicalising is not free: jsonb orders an object's keys by length then bytewise,
+  # not the way the writer wrote them. A two-key fragment is therefore only findable in
+  # Postgres's order. It was never dependable before either — it matched or not
+  # depending on the writer — but it is dependably one way now, and this test is here so
+  # that stays a decision rather than a surprise. limitations.md says the same thing
+  # where callers read.
+  test "jsonb key order, not insertion order, is what a multi-key fragment must match" do
+    session = build_session(metadata: { "zebra" => "1", "agent_root_key" => ROOT_KEY, "clone_path" => "/tmp/x" })
+
+    # Postgres sorts these as zebra (5), clone_path (10), agent_root_key (14).
+    assert_includes search(%("clone_path": "/tmp/x", "agent_root_key": "#{ROOT_KEY}")), session.id
+    assert_not_includes search(%("agent_root_key": "#{ROOT_KEY}", "clone_path": "/tmp/x")), session.id
+
+    # A single pair — what the tool's own description tells a caller to search — is
+    # unaffected by ordering, in either spelling.
+    assert_includes search(SPACED), session.id
+    assert_includes search(COMPACT), session.id
+  end
+
+  test "a NULL metadata column is skipped, not an error" do
+    session = build_session(title: "a legacy row with no metadata")
+    Session.where(id: session.id).update_all(metadata: nil)
+
+    assert_empty search(SPACED)
+    assert_includes search("legacy row with no metadata"), session.id, "the other columns still answer"
+  end
+
+  # `transcript` stays on `::text`. It has one writer, so it needs no canonicalising —
+  # and it carries no expression index, so unlike `metadata` it can hold a NUL byte that
+  # `::jsonb` would raise on, for every content search on every surface.
+  test "CONTENT_PREDICATE canonicalises the metadata columns and leaves transcript alone" do
+    predicate = SessionSearchable::CONTENT_PREDICATE
+
+    assert_includes predicate, "metadata::jsonb::text"
+    assert_includes predicate, "custom_metadata::jsonb::text"
+    assert_includes predicate, "transcript::text ILIKE :q"
+    assert_not_includes predicate, "transcript::jsonb"
+  end
+
+  test "the bounded content search matches what the cheap search matches" do
+    session = build_session
+    session.merge_metadata!("agent_root_key" => ROOT_KEY)
+
+    matched, = SessionContentSearch.new(scope: Session.where(id: created_ids), query: COMPACT, limit: 10).call
+      .then { |r| [ r.matched_ids ] }
+
+    assert_includes matched, session.id, "the compact spelling must reach the scan too"
+  end
+
   test "search_binds respells structural JSON spacing and leaves everything else alone" do
     binds = SessionSearchable.search_binds(%("root":"zimmer"))
     assert_equal %(%"root":"zimmer"%), binds[:q]
@@ -130,7 +179,10 @@ class SessionSearchableTest < ActiveSupport::TestCase
     # Already-canonical input is left exactly as it is.
     assert_equal %(%"root": "zimmer"%), SessionSearchable.search_binds(%("root": "zimmer"))[:q_json]
 
-    # LIKE metacharacters are still escaped, and the respelling does not disturb them.
+    # LIKE metacharacters are still escaped, and the respelling does not disturb them —
+    # including where a rewrite lands immediately before one.
     assert_equal %(%a\\%b\\_c%), SessionSearchable.search_binds("a%b_c")[:q_json]
+    assert_equal %(%x, \\%y%), SessionSearchable.search_binds("x,%y")[:q_json]
+    assert_equal %(%"k": \\_v%), SessionSearchable.search_binds(%("k":_v))[:q_json]
   end
 end

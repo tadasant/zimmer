@@ -60,21 +60,37 @@ module SessionSearchable
   # Postgres's canonical form whatever the writer did. It is a no-op for
   # `custom_metadata`, already jsonb, and stays one when `metadata` becomes jsonb (#847).
   #
-  # The cast cannot fail on a row this app can write. `jsonb` is stricter than `json`
-  # in one way that matters — it rejects a `\u0000` in a string — but Postgres refuses
-  # that byte on the way in too (`PG::UntranslatableCharacter`), on the attribute write
-  # and on the atomic merge alike, so no stored `metadata` contains one. Duplicate keys,
-  # the other `json`-only shape, cast fine and collapse to the last one, which is the
-  # key Rails hands back on read anyway.
+  # The cast normalises more than spacing: `1e2` becomes `100`, an escaped unicode
+  # sequence becomes the character it names, `\/` becomes `/`, a pretty-printed blob
+  # collapses, and duplicate keys collapse to the last — which is the one Rails hands
+  # back on read anyway. Every one of those makes matching more truthful, not less.
   #
-  # `transcript` is deliberately NOT canonicalised. It has a single writer — an
-  # ordinary attribute write — so its text is already deterministic, and parsing a
-  # multi-megabyte document into jsonb per row would spend exactly the budget
-  # SessionContentSearch's bound exists to protect.
+  # It also REORDERS an object's keys, by length then bytewise, and that is the one
+  # thing canonicalising takes away. A fragment spanning the comma BETWEEN two keys now
+  # matches only if the caller happened to spell them in Postgres's order, so search one
+  # key/value pair, or a value, rather than two pairs in a row. That fragment was never
+  # dependable — before this change it matched or not depending on the writer — but it
+  # is now dependably one way, which is worth stating rather than leaving as a surprise.
+  # docs/src/content/docs/limitations.md says it where callers read.
+  #
+  # The cast cannot fail on a `metadata` row, and the reason is an index rather than the
+  # type. `jsonb` rejects a `\u0000` inside a string where `json` accepts it happily — but
+  # `index_sessions_on_agent_root_key` is an unconditional expression index over
+  # `metadata ->> 'agent_root_key'`, and `->>` rejects that byte too, so every write to
+  # this column already has to survive the same check. Drop or narrow that index and
+  # this guarantee goes with it.
+  #
+  # `transcript` is deliberately NOT canonicalised, for two reasons, and the second is
+  # the one that bites. Parsing a multi-megabyte document into jsonb per row would spend
+  # exactly the budget SessionContentSearch's bound exists to protect — and `transcript`
+  # carries no expression index, so unlike `metadata` it CAN hold a `\u0000`: an ordinary
+  # attribute write stores one without complaint, and `transcript::jsonb` would then
+  # raise `PG::UntranslatableCharacter` on every content search, across all three
+  # surfaces, for as long as that one session existed.
   METADATA_PREDICATE = <<~SQL.squish
     title ILIKE :q
-    OR metadata::jsonb::text ILIKE :q OR metadata::jsonb::text ILIKE :q_json
-    OR custom_metadata::jsonb::text ILIKE :q OR custom_metadata::jsonb::text ILIKE :q_json
+    OR metadata::jsonb::text ILIKE ANY (ARRAY[:q, :q_json])
+    OR custom_metadata::jsonb::text ILIKE ANY (ARRAY[:q, :q_json])
   SQL
   CONTENT_PREDICATE = "#{METADATA_PREDICATE} OR transcript::text ILIKE :q"
 
@@ -86,13 +102,16 @@ module SessionSearchable
   # about — one that `custom_metadata`, jsonb since the day it was added, has always
   # returned.
   #
-  # Two rewrites, both exact rather than heuristic. In JSON every structural colon
-  # closes a string key, so `":` is that colon and nothing else — `https://…` is
-  # untouched. Canonical jsonb puts one space after every `:` and every `,`.
+  # Canonical jsonb puts one space after every `:` and every `,`. Every structural colon
+  # is preceded by a closing quote, since a JSON key is always a string, so `":` finds
+  # them and leaves `https://…` alone. The converse is very nearly true rather than
+  # exactly: an escaped quote inside a value matches too. That only widens the pattern —
+  # `:q_json` is an extra alternative, never a replacement — so a miss here costs
+  # nothing, which is why the cheap rule is the right one.
   #
   # This is the SAME phrase spelled twice, not a set of per-word ORs (#405): adjacency
   # and order still hold, and the rewritten pattern is a whole substring like the
-  # original.
+  # original. Only the JSON columns get it; `title` and `transcript` bind `:q` alone.
   JSON_KEY_COLON = /":(?! )/
   JSON_COMMA = /,(?! )/
 
