@@ -31,13 +31,11 @@
 #
 class ContextLengthRetryService
   include DatabaseRetry
+  include RespawnScaffold
 
   # The context-length compact budget. After BUDGET.max attempts we assume compaction
   # isn't helping and fail the session. Declared once in RetryBudget.
   BUDGET = RetryBudget::CONTEXT_LENGTH
-
-  # Minimum time (seconds) a process must run before recovery is considered successful
-  SUCCESS_THRESHOLD = 5
 
   # Error patterns that indicate context length exceeded
   # These patterns match various Claude API error messages for context overflow
@@ -112,6 +110,9 @@ class ContextLengthRetryService
   end
 
   private
+
+  # The noun the shared respawn log sentences interpolate.
+  def recovery_label = "context length compact"
 
   # Check if stderr or transcript contains a context length error pattern
   #
@@ -467,52 +468,5 @@ class ContextLengthRetryService
     end
 
     spawn_and_verify_recovery(working_directory, retry_attempt)
-  end
-
-  # Verify a process stays running for the success threshold
-  #
-  # We check every 0.5s to detect failures quickly, but only return success
-  # after the full threshold period to ensure the process is stable.
-  #
-  # @param pid [Integer] Process ID to verify
-  # @param retry_attempt [Integer] Current retry attempt number
-  # @return [Boolean] true if process is verified running, false if it died
-  def verify_process_running(pid, retry_attempt)
-    process_start_time = Time.current
-
-    loop do
-      elapsed = Time.current - process_start_time
-
-      unless process_manager.running?(pid)
-        add_log(
-          "Compact attempt #{retry_attempt} failed - process #{pid} died after #{elapsed.round(1)}s",
-          level: "warning"
-        )
-        return false
-      end
-
-      return true if elapsed >= SUCCESS_THRESHOLD
-
-      sleep(0.5)
-    end
-  end
-
-  # Add log entry via log buffer
-  def add_log(content, level: "info")
-    log_buffer.add(content, level: level)
-  end
-
-  # Check if session is still running
-  # @return [Symbol, nil] :aborted if session state changed, nil if still running
-  def check_session_status
-    session.reload
-    unless session.running?
-      add_log(
-        "Session state changed to #{session.status} during compact recovery, aborting",
-        level: "warning"
-      )
-      return :aborted
-    end
-    nil
   end
 end
