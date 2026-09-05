@@ -241,7 +241,8 @@ The rule is enforced at four depths, because the endpoint is read at four:
 | `McpOauthCredential` | Refuses to save a non-https endpoint (blank stays legal — it means "re-authorize me") |
 | `McpOauthCredential#can_refresh?` | False for a cleartext endpoint, so cron and the injector never call `refresh!` on one |
 | `McpOauthPendingFlow` | Refuses to store one, so the *initial* code exchange cannot leak it either |
-| `McpOauthService#post_form` | Raises `InsecureTokenEndpoint` rather than opening a cleartext connection |
+| `McpOauthService#post_form` | Raises `InsecureEndpoint` rather than opening a cleartext connection |
+| `McpOauthService#post_json` | The same rule on the DCR registration endpoint, whose response mints a client secret |
 
 `McpOauthController#initiate` checks before it redirects to consent, so a server advertising a
 cleartext token endpoint is refused with a flash naming it — no authorization code is ever minted

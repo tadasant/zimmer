@@ -167,8 +167,12 @@ class McpOauthCredential < ApplicationRecord
     raise "Cannot refresh: missing token_endpoint" unless token_endpoint.present?
     # Stated here as well as in #can_refresh? because this method is the one that
     # puts the secret on the wire, and a direct caller that skipped the predicate
-    # must not get a cleartext POST out of it.
-    raise "Cannot refresh: token_endpoint #{HttpsTokenEndpoint.describe(token_endpoint)} is not https" unless HttpsTokenEndpoint.secure?(token_endpoint)
+    # must not get a cleartext POST out of it. Same exception class the transport
+    # raises, so the one rule has one type however it is tripped.
+    unless HttpsTokenEndpoint.secure?(token_endpoint)
+      raise McpOauthService::InsecureEndpoint,
+        "Cannot refresh #{server_name} (#{credential_key}): token_endpoint #{HttpsTokenEndpoint.describe(token_endpoint)} is not https"
+    end
 
     uri = URI(token_endpoint)
     params = {

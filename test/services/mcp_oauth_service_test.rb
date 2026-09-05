@@ -648,7 +648,7 @@ class McpOauthServiceTest < ActiveSupport::TestCase
       "http://localhost:9000/oauth/token"
     ].each do |endpoint|
       Net::HTTP.stub(:start, ->(*, **, &_block) { flunk("opened a connection to #{endpoint}") }) do
-        error = assert_raises(McpOauthService::InsecureTokenEndpoint) do
+        error = assert_raises(McpOauthService::InsecureEndpoint) do
           @service.post_form(URI(endpoint), { client_secret: "s3cret" })
         end
         assert_match(/must be https/, error.message)
@@ -660,7 +660,7 @@ class McpOauthServiceTest < ActiveSupport::TestCase
   # can arrive from a remote discovery document and can carry userinfo, so it is
   # rendered scheme://host:port/path and nothing else.
   test "post_form's refusal names the endpoint without its userinfo" do
-    error = assert_raises(McpOauthService::InsecureTokenEndpoint) do
+    error = assert_raises(McpOauthService::InsecureEndpoint) do
       @service.post_form(URI("http://client-id:s3cret@auth.example.com/oauth/token"), { code: "abc" })
     end
 
@@ -679,6 +679,40 @@ class McpOauthServiceTest < ActiveSupport::TestCase
     Net::HTTP.stub(:start, ->(*, **, &_block) { flunk("opened a cleartext connection") }) do
       assert_nil @service.exchange_code_for_tokens(flow.reload, "the-code")
     end
+  end
+
+  # Dynamic Client Registration is the same hole one request earlier, and it fires
+  # inside check_oauth_requirement — i.e. BEFORE McpOauthController#initiate's own
+  # check — so the guard has to live in the transport. The registration_endpoint
+  # comes from the same discovery document, and the DCR *response* carries a
+  # freshly minted client_id and client_secret.
+  test "perform_dcr refuses a cleartext registration endpoint instead of registering" do
+    auth_server = {
+      "authorization_endpoint" => "https://auth.example.com/authorize",
+      "token_endpoint" => "https://auth.example.com/token",
+      "registration_endpoint" => "http://auth.example.com/register"
+    }
+
+    Net::HTTP.stub(:new, ->(*) { flunk("opened a connection to a cleartext registration endpoint") }) do
+      result = @service.send(:perform_dcr, auth_server["registration_endpoint"], "https://mcp.example.com",
+        auth_server_metadata: auth_server, configured_redirect_uri: nil)
+
+      # perform_dcr rescues and returns nil, which the controller already renders
+      # as "Dynamic Client Registration failed".
+      assert_nil result
+    end
+  end
+
+  # The refusal must survive post_json's own generic rescue — swallowed into a
+  # debug line it would read as an ordinary network blip.
+  test "post_json raises rather than swallowing a cleartext registration endpoint" do
+    error = assert_raises(McpOauthService::InsecureEndpoint) do
+      @service.send(:post_json, "http://client-id:s3cret@auth.example.com/register", { client_name: "x" })
+    end
+
+    assert_match(/registration endpoint must be https/, error.message)
+    assert_includes error.message, "http://auth.example.com/register"
+    assert_not_includes error.message, "s3cret"
   end
 
   # --- extract_tokens (nested Slack authed_user shape) ---
