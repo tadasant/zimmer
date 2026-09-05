@@ -3808,12 +3808,13 @@ class AgentSessionJob < ApplicationJob
   # When MCP failure is detected:
   # 1. Log the failure details
   # 2. Terminate the Claude CLI process
-  # 3. For non-OAuth failures: retry with exponential backoff (up to MCP_BUDGET.max)
-  # 4. On OAuth failure: transition to failed state, so a human can authorize the
+  # 3. On OAuth failure: transition to failed state, so a human can authorize the
   #    connector at /connectors and restart
-  # 5. On any other definitive failure — retries exhausted, or a static credential
-  #    the provider rejected — leave the server out and resume the session on the
-  #    servers that did connect (#degrade_mcp_servers!)
+  # 4. Otherwise classify EACH remaining failed server on its own and act on all of
+  #    them in one pass: a static credential the provider rejected, or a server whose
+  #    retries are exhausted, is left out and the session resumes on the ones that did
+  #    connect (#degrade_mcp_servers!); everything else retries with exponential
+  #    backoff (up to MCP_BUDGET.max). One handshake can produce both at once.
   #
   # MCP connection failures are often transient — especially during deploys, where
   # the auto-recovery system restarts sessions before MCP servers have finished
@@ -4029,7 +4030,18 @@ class AgentSessionJob < ApplicationJob
       # from inside the session — so stopping the session buys nothing and costs the
       # whole transcript. The server is left out and the session runs on the ones that
       # did connect.
-      static_credential_failures.each do |server|
+      #
+      # Only the ones this session has not already given up on. A rejected server stays
+      # in the runtime config, so it re-fails its handshake on every retry spawn a
+      # co-failing server is still riding the ladder for — and the guard at the top of
+      # this method does not short-circuit then, because that co-failing server IS new.
+      # Announcing the same verdict once per pass would print the operator four copies
+      # of "credentials rejected" and four of "left out for the remainder of this
+      # session" for one server, and would keep rewriting its `degraded_at` so the
+      # field read "last re-degraded at" instead of "when we gave up".
+      newly_rejected = new_mcp_failures(session, static_credential_failures)
+
+      newly_rejected.each do |server|
         # Env vars as well as headers: a stdio server carries its credential in an env
         # var (`SLACK_BOT_TOKEN`) and configures no headers at all, so naming only the
         # headers named nothing for exactly the class of server this branch now catches.
@@ -4051,17 +4063,21 @@ class AgentSessionJob < ApplicationJob
         )
       end
 
-      if static_credential_failures.any?
+      if newly_rejected.any?
         log_buffer.flush
 
         Rails.logger.warn(
           "MCP static-credential authentication failed — server left out without retry " \
-          "| session_id=#{session.id} failed_servers=#{static_credential_failures.map { |s| s["name"] }.join(",")}"
+          "| session_id=#{session.id} failed_servers=#{newly_rejected.map { |s| s["name"] }.join(",")}"
         )
       end
 
+      degradations = mcp_degradations(newly_rejected, "their credentials were rejected")
+
+      # The exclusion is drawn from EVERY rejected server, not just the newly-recorded
+      # ones: a verdict already on the record is still a verdict, and putting that
+      # server back on the ladder is exactly what this branch exists to prevent.
       rejected_names = static_credential_failures.filter_map { |server| server["name"] }.to_set
-      degradations = mcp_degradations(static_credential_failures, "their credentials were rejected")
 
       # What is left is still owed the ladder: an ordinary transient failure, or an
       # OAuth-capable server the `already_authorized` cascade above just cleared the
@@ -4297,8 +4313,13 @@ class AgentSessionJob < ApplicationJob
 
   # Remove any partially-populated `_npx/<hash>` cache tree that a failed MCP
   # server blamed — for an extraction-time tar/rename error (TAR_ENTRY_ERROR /
-  # ENOTEMPTY) or a transitive MODULE_NOT_FOUND — so the next retry installs it
+  # ENOTEMPTY) or a transitive MODULE_NOT_FOUND — so the next attempt installs it
   # cleanly. No-op when the failure isn't an `_npx` cache-corruption error.
+  #
+  # "The next attempt" is a retry for a server still on the ladder, and the next
+  # SPAWN for one being left out: a degraded server stays in the runtime config so it
+  # reconnects for free once whatever broke it is fixed, and a corrupt cache tree left
+  # behind is what would make that spawn crash identically instead.
   #
   # @param session [Session] The current session
   # @param failed_servers [Array<Hash>] entries shaped { "name" =>, "error" => }
@@ -4312,7 +4333,7 @@ class AgentSessionJob < ApplicationJob
 
     if result[:healed]
       log_buffer.add(
-        "Healed corrupt _npx cache before retry — removed: " \
+        "Healed corrupt _npx cache — removed: " \
         "#{result[:removed_paths].join(', ')}",
         level: "warning"
       )
