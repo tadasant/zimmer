@@ -683,13 +683,34 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
     builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
     timeout = ->(*) { raise BoundedSubprocess::TimeoutError, "command timed out after 10s (process group killed)" }
 
-    BoundedSubprocess.stub(:run, timeout) do
-      # Fails closed: assume public, so nothing is done publicly on a repo we could not
-      # check. But visibility_lookup_failed? is what makes that an assumption rather
-      # than an observation, and it is what keeps the comment retryable on later polls.
-      assert builder.send(:public_repo?)
-      assert builder.visibility_lookup_failed?
+    # Both levels: the failed-call branch warns, the exception handler errors, and the
+    # whole point of the assertions below is which of the two ran.
+    logged = []
+    collect = ->(message) { logged << message.to_s }
+    Rails.logger.stub(:warn, collect) do
+      Rails.logger.stub(:error, collect) do
+        BoundedSubprocess.stub(:run, timeout) do
+          # Fails closed: assume public, so nothing is done publicly on a repo we could
+          # not check. But visibility_lookup_failed? is what makes that an assumption
+          # rather than an observation, and it is what keeps the comment retryable on
+          # later polls.
+          assert builder.send(:public_repo?)
+          assert builder.visibility_lookup_failed?
+        end
+      end
     end
+
+    # The two assertions above alone would pass on the unbounded code too: the blanket
+    # `rescue StandardError` below #public_repo? already set the flag, cached true and
+    # returned true for any exception. What separates the branches is WHICH branch ran,
+    # and the log line is the only thing that says. A timeout must now reach the ordinary
+    # "the lookup failed" branch — not the exception handler.
+    failed_call = logged.find { |line| line.include?("Failed to check repo visibility") }
+    assert failed_call, "a hung lookup must take the failed-call branch, not the exception " \
+                        "handler; got: #{logged.inspect}"
+    assert_includes failed_call, "TimeoutError"
+    assert logged.none? { |line| line.include?("Exception checking repo visibility") },
+      "the timeout must not reach the blanket exception handler, got: #{logged.inspect}"
   end
 
   private

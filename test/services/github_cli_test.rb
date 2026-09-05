@@ -93,6 +93,12 @@ class GithubCliTest < ActiveSupport::TestCase
   #
   # Comments are stripped before matching, because the files that explain this hazard
   # name `Open3.capture3` and `BoundedSubprocess.run` in prose while calling neither.
+  #
+  # It is a whole-file substring match over `app/**/*.rb`, not a parse: it catches the
+  # regression it was written for — a call site reverted to a bare shell-out — and it
+  # will not catch a `gh` argv built as `%w[gh api]` or through a constant, a shell-out
+  # via `capture2`/`popen3`/backticks/`system`, or one added under `lib/`. Every `gh`
+  # argv in the tree is a `"gh"` literal under `app/` today; widen this if that changes.
   ALLOWED_GH_SHELL_OUT = [ "app/services/github_cli.rb" ].freeze
 
   test "no code outside GithubCli builds a gh argv and shells out directly" do
