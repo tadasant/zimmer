@@ -547,6 +547,24 @@ class AuthOutageParkService
     session.metadata&.dig("auth_outage_reason").present?
   end
 
+  # The pool's earliest rollover as recorded at park time, parsed.
+  #
+  # An ESTIMATE for a surface to show — nothing reads it back and nothing fires
+  # at it (see this class's header). It lives here rather than in a view helper
+  # because `get_session` renders the same sentence for an agent that the session
+  # page renders for a human, and the two must not drift.
+  #
+  # @param session [Session, nil]
+  # @return [Time, nil]
+  def self.pool_recovery_time(session)
+    raw = session&.metadata&.dig("auth_outage_pool_recovers_at")
+    return nil if raw.blank?
+
+    Time.iso8601(raw.to_s)
+  rescue ArgumentError
+    nil
+  end
+
   # Can the sweep hand this runtime's pool to a session it is about to start?
   #
   # The `status` column, deliberately, and not the evidence-based

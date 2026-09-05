@@ -1057,6 +1057,32 @@ Two sweeps hand out recovered capacity, and both read precedence:
 The two populations are different (`auth_outage_reason` parks versus `paused_by: "spot_quota"`) and
 neither can start the other's sessions.
 
+### Three parks, one headline
+
+A session can carry all three park records at once, because none of them clears the others: the gate
+writes `spot_hold_*` when it refuses a turn, the ceiling writes `spot_pause_*` when it interrupts one,
+and `AuthOutageParkService` writes `auth_outage_*` when the login pool has nothing usable. The session
+page and `get_session` both have to answer one question anyway — *why is this waiting?* — and the
+three answers point at three different resume owners, so naming the wrong one sends the reader to a
+sweep that is not coming.
+
+`SessionWaitingReason` is the single ranking both surfaces read:
+
+| Rule | Why |
+| --- | --- |
+| **Newest wins.** Each mechanism stamps when it was recorded; the last one to fire is what put the session where it is now | Session 7503 carried a ceiling pause recorded *fifteen seconds* before its auth-outage park, and read back the pause |
+| A mechanism with **no usable timestamp** ranks below every mechanism that has one | "No stamp" is not "the beginning of time" |
+| An **overdue hold cannot be the current reason while another mechanism is present** | `SpotSessionHold.held_sessions` excludes a session that also carries a pause or a park, and `#rearm!` refuses one — so the sweep that repairs a stalled ladder will never touch it, and `recheck_sentence`'s promise would be false. An overdue hold that is the *only* mechanism keeps the headline, because there the sweep really is its owner |
+
+Losing mechanisms are named rather than dropped. `get_session` prints one **Also on the record, and
+not why it is waiting now** line each, with the reason it lost. The session page draws one box per
+mechanism rather than a list, so its spot banner renders whichever of the hold and the pause ranks
+higher — and when an auth-outage park has superseded that, it says so in prose and drops the
+re-check sentence, whose promise of a sweep does not hold for a session carrying a park. Before
+this, `get_session` concatenated the hold and pause lines with no precedence between them and never
+rendered the outage park at all, so a session parked on an empty pool read back a two-day-old spot
+hold and a promise of a sweep that skipped it ([#642](https://github.com/tadasant/zimmer/issues/642)).
+
 ### Quick filters
 
 Three one-click filter states sit above the search box, because they are the ones worth reaching
@@ -1078,6 +1104,7 @@ control that combines with the others, and each persists exactly as pressing **A
 | Read how many spot sessions are asleep in the spot queue | Spot gate card on `/inference` | `get_spot_policy` |
 | Read when the account pool regains capacity, and the soonest 7-day rollover behind it | Account Pool section on `/inference` | `get_spot_policy` |
 | Read why one session was paused mid-run, and what resumes it | Banner on the session page | `get_session` |
+| Read which of a hold, a pause and an auth-outage park is why a session is waiting | Ranked banners on the session page | `get_session` |
 | Toggle gating, set the two priority reserves, set the max sessions at once | `/inference` | `action_spot_policy` (`set_gating`) |
 | Read the backlog top-up ceiling, stretch and cooldown, and where the fleet sits against them | Backlog top-up card on `/inference` | `get_spot_policy` |
 | Set the backlog top-up ceiling, stretch and cooldown | Backlog top-up card on `/inference` | `action_spot_policy` (`set_top_up`) |

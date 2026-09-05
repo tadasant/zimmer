@@ -20,21 +20,6 @@ module SessionsHelper
     ExceptionMessageHighlighter.highlights(exception_message)
   end
 
-  # When the account pool that parked this session is expected to roll over, as
-  # AuthOutageParkService estimated it at park time. An estimate for the banner —
-  # nothing fires at it. Returns nil when the session isn't parked, when no reset
-  # time was knowable, or when the stored value isn't a parseable timestamp, so
-  # the banner falls back rather than raising on metadata written by an older
-  # release.
-  def auth_outage_pool_recovery_time(agent_session)
-    raw = agent_session.metadata&.dig("auth_outage_pool_recovers_at")
-    return nil if raw.blank?
-
-    Time.iso8601(raw.to_s)
-  rescue ArgumentError
-    nil
-  end
-
   # Resolve a goal value to its display name using predefined goals.
   # Returns the matching goal name, "Custom" if set but unrecognized, or nil if blank.
   def goal_display_name(goal, goals_for_select)
