@@ -19,6 +19,17 @@ class RuntimeLoginAttemptDashboard < Administrate::BaseDashboard
     updated_at: Field::DateTime
   }.freeze
 
+  # DELIBERATELY_OMITTED
+  # columns that exist on the table and are intentionally not rendered here.
+  # test/dashboards/dashboard_schema_coverage_test.rb reads this, so an omission
+  # is a reviewed decision rather than a gap nobody noticed.
+  DELIBERATELY_OMITTED = [
+    # The authorization code a human pastes back from the runtime's login page —
+    # a credential that exchanges for an account token. /supervisor is behind a
+    # single shared password, so this is not something to render there.
+    :pasted_code
+  ].freeze
+
   COLLECTION_ATTRIBUTES = %i[
     id
     claude_account

@@ -198,8 +198,11 @@ In `db/schema.rb`:
 `XOauthCredential`'s own header admits it: *"access_token / refresh_token are stored as plain text…
 Security relies on database access controls."*
 
-Combined with an unauthenticated Administrate panel that renders those columns, database access
-controls are the only control, and the admin panel bypasses them.
+Combined with an Administrate panel that renders those columns as *editable* resources, database
+access controls are close to the only control — and what stands between the panel and them is one
+shared HTTP Basic password, not a database grant. That realm [fails
+closed](#the-one-exception-supervisor-is-behind-http-basic), so an unconfigured deployment has no
+panel at all; a configured one has exactly one credential in front of the plaintext.
 :::
 
 ### In transit, at least, one field is guarded

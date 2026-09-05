@@ -7,8 +7,14 @@ class SessionDashboard < Administrate::BaseDashboard
   # Each different type represents an Administrate::Field object,
   # which determines how the attribute is displayed
   # on pages throughout the dashboard.
+  #
+  # Every column on `sessions` is either here or in DELIBERATELY_OMITTED below —
+  # test/dashboards/dashboard_schema_coverage_test.rb enforces that, because
+  # Administrate renders a panel that is missing a column without complaining.
   ATTRIBUTE_TYPES = {
     id: Field::Number,
+    slug: Field::String,
+    title: Field::String,
     agent_runtime: Field::String,
     branch: Field::String,
     config: Field::String.with_options(searchable: false),
@@ -21,12 +27,66 @@ class SessionDashboard < Administrate::BaseDashboard
     mcp_server_env: Field::String.with_options(searchable: false),
     mcp_server_headers: Field::String.with_options(searchable: false),
     mcp_servers: Field::String.with_options(searchable: false),
+    catalog_skills: Field::String.with_options(searchable: false),
+    catalog_plugins: Field::String.with_options(searchable: false),
+    catalog_hooks: Field::String.with_options(searchable: false),
     prompt: Field::Text,
+    goal: Field::Text,
     git_root: Field::String,
+    subdirectory: Field::String,
+    repository_name: Field::String,
     status: Field::Select.with_options(searchable: false, collection: ->(field) { field.resource.class.send(field.attribute.to_s.pluralize).keys }),
+    visibility: Field::String,
+    snoozed_until: Field::DateTime,
+    archived_at: Field::DateTime,
+    trash_after: Field::DateTime,
+    # The scheduling axes. Both are plain strings/integers on the model rather than
+    # enums, so they are rendered as such; the spot gate reads them, not this panel.
+    scheduling_class: Field::String,
+    precedence: Field::Number,
+    genesis: Field::String,
+    # `parent_session` and `category` carry the two foreign keys on the table.
+    # Administrate cannot infer the class behind `parent_session`, hence class_name.
+    parent_session: Field::BelongsTo.with_options(class_name: "Session"),
+    category: Field::BelongsTo,
+    # The bags the rest of the app hangs structured state off. `metadata` is
+    # Zimmer's own (clone_path, agent_root_key, trigger_id); `custom_metadata` is
+    # the caller's. Between them they answer most "why is this session like this"
+    # questions, which is the reason someone opens this page at all.
+    metadata: Field::String.with_options(searchable: false),
+    custom_metadata: Field::String.with_options(searchable: false),
+    session_notes: Field::Text,
+    session_notes_updated_at: Field::DateTime,
+    # The runtime's own id for the conversation (the Claude Code / Codex session
+    # id), not a foreign key into this table — `parent_session` is that.
+    session_id: Field::String,
+    job_id: Field::String,
+    running_job_id: Field::String,
+    idempotency_key: Field::String,
+    heartbeat_enabled: Field::Boolean,
+    heartbeat_interval_seconds: Field::Number,
+    heartbeat_last_beat_at: Field::DateTime,
+    is_autonomous: Field::Boolean,
+    push_notifications_enabled: Field::Boolean,
+    favorited: Field::Boolean,
+    sort_order: Field::Number,
+    auto_compact_window: Field::Number,
+    last_broadcast_to_index_at: Field::DateTime,
+    last_timeline_entry_at: Field::DateTime,
     created_at: Field::DateTime,
     updated_at: Field::DateTime
   }.freeze
+
+  # DELIBERATELY_OMITTED
+  # columns that exist on the table and are intentionally not rendered here.
+  # The schema-coverage test reads this, so an omission is a reviewed decision
+  # rather than a gap nobody noticed.
+  DELIBERATELY_OMITTED = [
+    # The whole conversation, as JSON. Routinely multiple megabytes on a long
+    # session — rendering it would make the show page unusable and the index
+    # page slow enough to time out. /sessions/:id streams it properly.
+    :transcript
+  ].freeze
 
   # COLLECTION_ATTRIBUTES
   # an array of attributes that will be displayed on the model's index page.
@@ -35,34 +95,39 @@ class SessionDashboard < Administrate::BaseDashboard
   # Feel free to add, remove, or rearrange items.
   COLLECTION_ATTRIBUTES = %i[
     id
+    title
     status
     prompt
     git_root
+    created_at
   ].freeze
 
   # SHOW_PAGE_ATTRIBUTES
   # an array of attributes that will be displayed on the model's show page.
-  SHOW_PAGE_ATTRIBUTES = %i[
-    id
-    agent_runtime
-    branch
-    config
-    execution_provider
-    logs
-    subagent_transcripts
-    mcp_server_env
-    mcp_server_headers
-    mcp_servers
-    prompt
-    git_root
-    status
-    created_at
-    updated_at
-  ].freeze
+  #
+  # Everything ATTRIBUTE_TYPES knows about: this is the page someone opens to
+  # answer "why is this session in this state", and a field missing from it is
+  # invisible rather than obviously absent.
+  SHOW_PAGE_ATTRIBUTES = ATTRIBUTE_TYPES.keys.freeze
 
   # FORM_ATTRIBUTES
   # an array of attributes that will be displayed
   # on the model's form (`new` and `edit`) pages.
+  #
+  # Deliberately much shorter than the list above. Most of these columns are
+  # written by the state machine, the scheduler or the runtime, and a generic
+  # form that lets an operator hand-edit `archived_at`, `job_id` or
+  # `heartbeat_last_beat_at` is a way to corrupt a session, not to operate one.
+  # Two fields are left out for a sharper reason than that, and they are the
+  # same reason twice: each has a companion the generic form would not write.
+  # Every writer of `session_notes` also stamps `session_notes_updated_at`, so
+  # an edit here would silently date the notes wrong. Every writer of `title`
+  # also clears `metadata["auto_generated_title"]`, which is the flag
+  # SessionTitleJob reads to decide whether it may re-title a session — so a
+  # title typed here would be quietly overwritten by the next titling run.
+  #
+  # The purpose-built surfaces (/sessions/:id, the REST API, the MCP tools) own
+  # all of these; this panel reads them.
   FORM_ATTRIBUTES = %i[
     agent_runtime
     branch
@@ -73,6 +138,7 @@ class SessionDashboard < Administrate::BaseDashboard
     mcp_server_headers
     mcp_servers
     prompt
+    goal
     git_root
     status
   ].freeze

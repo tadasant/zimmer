@@ -14,7 +14,16 @@ class McpOauthCredentialDashboard < Administrate::BaseDashboard
     refresh_token: Field::Text.with_options(searchable: false),
     expires_at: Field::DateTime,
     scopes: Field::String,
+    # The RFC 8707 resource indicator the token was issued for, when the server
+    # asks for one.
+    resource: Field::String,
     token_endpoint: Field::String,
+    # Set when the server rejected a refresh grant, so Zimmer stops retrying one
+    # and re-runs the full authorization flow instead. Readable but not on the
+    # form: McpOauthController and McpOauthRuntimeReconciler derive it from
+    # whether a token exchange actually returned a refresh token, so a hand
+    # edit here would desync the Connectors page until the next exchange.
+    refresh_token_unsupported: Field::Boolean,
     created_at: Field::DateTime,
     updated_at: Field::DateTime
   }.freeze
@@ -39,7 +48,9 @@ class McpOauthCredentialDashboard < Administrate::BaseDashboard
     client_secret
     expires_at
     scopes
+    resource
     token_endpoint
+    refresh_token_unsupported
     created_at
     updated_at
   ].freeze
@@ -57,6 +68,7 @@ class McpOauthCredentialDashboard < Administrate::BaseDashboard
     refresh_token
     expires_at
     scopes
+    resource
     token_endpoint
   ].freeze
 
