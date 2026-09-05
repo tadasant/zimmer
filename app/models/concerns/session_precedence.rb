@@ -28,6 +28,10 @@
 # beneath it, rather than sinking to the bottom of the queue. Callers that know
 # better (MCP `start_session`, the REST API, a trigger's predefined value) name
 # their own and are never overridden.
+#
+# One kind of spawn is not a child in that sense and does not inherit: a
+# status-summary fork, which is Zimmer writing a blurb about the source rather
+# than work continuing from it. See #precedence_parent.
 module SessionPrecedence
   extend ActiveSupport::Concern
 
@@ -193,8 +197,32 @@ module SessionPrecedence
   def assign_precedence
     return if @precedence_explicitly_set
 
-    parent = genesis_parent_record
+    parent = precedence_parent
     self.precedence = parent ? self.class.clamp_precedence(parent.precedence.to_i + CHILD_BUMP) : DEFAULT
     @precedence_explicitly_set = false
+  end
+
+  # The session this one takes its rank from, or nil for "nobody has said
+  # anything".
+  #
+  # A STATUS-SUMMARY FORK HAS NO SUCH SESSION. CHILD_BUMP is a statement about
+  # work: the child a session spawns to finish its own job goes first, so a tree
+  # of work stays contiguous. A summary fork is not doing the source's job — it
+  # is Zimmer writing a blurb ABOUT the source, and inheriting the bump landed it
+  # one rank above the very session it was summarizing (#712). The queue an
+  # operator arranged then had Zimmer's own bookkeeping at the head of it.
+  #
+  # DEFAULT rather than the source's own value: the two would tie, and `ranked`
+  # breaks a tie on `created_at`, so a fork would still be ordered against real
+  # work rather than out of the way of it. Zero is what the scale means by
+  # "nobody has said anything", which is the truth about a fork — no operator
+  # ever placed it.
+  #
+  # Only the SUMMARY fork. A fork an operator made by hand is a working session
+  # continuing the source's line of work, and it keeps the bump.
+  def precedence_parent
+    return nil if status_summary_fork?
+
+    genesis_parent_record
   end
 end

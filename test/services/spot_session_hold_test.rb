@@ -72,6 +72,89 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     assert session.metadata[SpotSessionHold::HELD_RETRY_AT].present?
   end
 
+  # --- Zimmer's own bookkeeping ---------------------------------------------
+
+  # #712. A summary fork exists to run one turn of a few seconds and be
+  # harvested. Deferring that by ten minutes, then twenty, then an hour parked a
+  # hidden session row for longer than the thing it was summarizing was likely to
+  # sit still — and once its claim aged past PENDING_TIMEOUT the next generation
+  # forked AGAIN for the same source while the first stayed queued. Nothing
+  # abandoned a fork that was dispatched and never ran, so the pile-up had no
+  # bound on it.
+  #
+  # The gate's answer is still no. What changes is the disposal.
+  test "a status summary fork is discarded rather than held" do
+    source = build_session(SessionGenesis::GITHUB_ISSUE)
+    fork = summary_fork_of(source)
+    record = SessionStatusSummary.create!(
+      session: source, state: "pending", requested_at: Time.current,
+      requested_line_count: 10, fork_session: fork
+    )
+
+    refused = nil
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert_enqueued_with(job: SessionStatusSummaryJob, args: [ source.id, { headless: true } ]) do
+        refused = SpotSessionHold.hold_if_needed(fork)
+      end
+    end
+
+    assert refused, "the turn is still refused — this is a disposal, not an exemption"
+
+    fork.reload
+    assert fork.archived?, "a refused fork must be disposed of, not left in the queue"
+    assert_not SpotSessionHold.held?(fork)
+    assert_nil fork.metadata[SpotSessionHold::HELD_REASON],
+      "no hold record, so no re-check ladder and no hidden session in `waiting`"
+
+    record.reload
+    assert_equal "failed", record.state
+    assert_nil record.fork_session_id
+    assert_match(/refused by the spot gate/, record.error)
+  end
+
+  # The refusal is what must not regress: a fork that slipped THROUGH the gate
+  # would be a session running outside the fleet cap and outside burn pacing,
+  # which is the defect in the other direction (#601).
+  test "a discarded status summary fork does not run" do
+    source = build_session(SessionGenesis::GITHUB_ISSUE)
+    fork = summary_fork_of(source)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert_no_enqueued_jobs(only: AgentSessionJob) do
+        assert SpotSessionHold.hold_if_needed(fork), "a refused fork must not be allowed to start"
+      end
+    end
+  end
+
+  # A fork the gate ALLOWS is an ordinary turn. The disposal branch sits after
+  # the decision, so nothing here may throw a fork away that could have run.
+  test "a status summary fork the gate allows is left alone" do
+    source = build_session(SessionGenesis::GITHUB_ISSUE)
+    fork = summary_fork_of(source)
+
+    SpotGateService.stub(:evaluate, allowed_decision) do
+      refute SpotSessionHold.hold_if_needed(fork)
+    end
+
+    assert fork.reload.waiting?, "an allowed fork carries on into the normal start path"
+  end
+
+  # The disposal is for the SUMMARY fork alone. A fork an operator made by hand
+  # is a working session and is deferred like any other spot work.
+  test "an ordinary fork is still held" do
+    source = build_session(SessionGenesis::GITHUB_ISSUE)
+    fork = Session.create!(git_root: "https://github.com/t/r.git", prompt: "work",
+                           genesis: SessionGenesis::GITHUB_ISSUE, status: :waiting,
+                           metadata: { "forked_from_session_id" => source.id })
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert SpotSessionHold.hold_if_needed(fork)
+    end
+
+    assert fork.reload.waiting?
+    assert_equal "at_utilization_limit", fork.metadata[SpotSessionHold::HELD_REASON]
+  end
+
   test "repeated holds increment the counter" do
     session = build_session(SessionGenesis::GITHUB_ISSUE)
 
@@ -798,6 +881,19 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
       args.dig(2, :files)
     assert_match(/carried with it, carrying 1 image and 1 file\./,
       session.logs.order(:id).last.content)
+  end
+
+  # A status-summary fork of `source`, shaped the way
+  # SessionStatusSummaryGenerator makes one: the marker is the whole edge.
+  def summary_fork_of(source)
+    Session.create!(
+      git_root: "https://github.com/t/r.git", prompt: "work",
+      genesis: SessionGenesis::GITHUB_ISSUE, status: :waiting,
+      metadata: {
+        "forked_from_session_id" => source.id,
+        SessionStatusSummaryGenerator::FORK_MARKER => source.id
+      }
+    )
   end
 
   def held_decision

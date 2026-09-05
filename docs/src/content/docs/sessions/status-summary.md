@@ -101,8 +101,9 @@ headless inference call (the substrate `SessionTitleJob` uses for titles and cat
 sees a truncated, flattened rendering of the transcript, which is exactly where those specifics get
 lost. The fork gets the real conversation at the real point it stopped.
 
-That trade only holds while a fork can actually run. When it cannot, the one-shot completion is not a
-worse summary than the fork's — it is a summary against no summary at all, which is why it exists as
+That trade only holds while a fork can actually run. When it cannot — the login pool is empty, or the
+spot gate is refusing — the one-shot completion is not a worse summary than the fork's; it is a
+summary against no summary at all, which is why it exists as
 [the pool-independent path](#the-pool-independent-path) below.
 
 **The inherited goal is stripped, and that is not optional.** A fork inherits the source's goal, and
@@ -331,14 +332,21 @@ It is reached from the three places a fork is known not to be able to deliver:
   `action_session` regenerate action — do not consult it. Without that check, pressing Regenerate
   during an outage paid for a clone copy, watched the fork park, and reported a failure.
 
+- **Any generation for a spot session while the [spot gate](/sessions/spot-and-priority/#a-status-summary-fork-is-refused-never-queued)
+  is refusing.** A fork inherits the source's scheduling class, so a fork of a spot session answers
+  to the gate — and standing one up while the gate says no produced a session that ran no turn and
+  sat in the queue instead. "The fleet is full" and "the pool is empty" are the same fact from the
+  summarizer's point of view, so they get the same answer. This read fails open too.
+
 Concurrency is bounded by the two-thread `inference` queue this job shares with `SessionTitleJob` and
 needs-input notification blurbs — see [Blocking inference waits in a lane](/operate/background-jobs/#blocking-inference-waits-in-a-lane-it-does-not-retry-for-admission).
 A headless run blocks a worker thread on a subprocess for up to `HEADLESS_TIMEOUT`; excess generations
 remain queued once until a lane worker is free, while maintenance on `default` keeps moving.
 
 The queue placement is unconditional. The caller does not decide whether a generation blocks — the
-generator does, on `headless || pool_exhausted?` — so a generation enqueued as a fork by a `pause`
-transition can become a blocking subprocess the moment the pool runs dry.
+generator does, on `headless || pool_exhausted? || fork_would_be_refused?` — so a generation enqueued
+as a fork by a `pause` transition can become a blocking subprocess the moment the pool runs dry or
+the fleet fills.
 Two properties keep it honest:
 
 - **A refusal never becomes a blurb**, and the guard has two halves because the wording half is not

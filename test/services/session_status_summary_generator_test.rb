@@ -180,6 +180,18 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     end
   end
 
+  # The gate refusing, as SpotGateService reports it.
+  def refusing_decision
+    SpotGateService::Decision.new(
+      allowed: false, reason: "fleet_at_cap",
+      detail: "5 of 5 session slots taken.",
+      five_hour: nil, weekly: nil, active_sessions: 5, awaiting_sessions: 0, fleet_cap: 5,
+      accounts_read: 1, pool_size: 1,
+      fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0,
+      pool_capacity: nil
+    )
+  end
+
   def generate_headless(answer, **opts)
     inference = FakeInference.new(answer)
     result = SessionStatusSummaryGenerator.call(
@@ -323,6 +335,98 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_difference -> { Session.count }, 1 do
       assert_equal :started, generate.outcome
     end
+  end
+
+  # #712. A fork inherits the source's scheduling class, so a fork of a spot
+  # session answers to the spot gate — and standing one up while the gate is
+  # refusing left a session that ran no turn sitting in the queue, hidden from
+  # every list an operator reads. "The fleet is full" and "the pool is empty" are
+  # the same fact to the summarizer, so they get the same answer.
+  test "a spot session's generation falls back to the one-shot path when the gate is refusing" do
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:active])
+    @session.update!(scheduling_class: SessionGenesis::SPOT)
+    inference = FakeInference.new("Where things stand.")
+
+    result = nil
+    SpotGateService.stub(:evaluate, refusing_decision) do
+      assert_no_difference -> { Session.count }, "no fork may be created while the gate is refusing" do
+        result = SessionStatusSummaryGenerator.call(
+          session: @session, file_system: @fs, inference_service: inference
+        )
+      end
+    end
+
+    assert_equal :ready, result.outcome
+    assert_equal "Where things stand.", @session.reload.status_summary.summary
+    assert_equal 1, inference.prompts.size
+  end
+
+  # A PRIORITY source is not gated, so nothing about this check may change what
+  # it does. Most sessions are priority; a fork-suppressing bug here would be
+  # fleet-wide and silent.
+  test "a priority session still forks while the gate is refusing" do
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:active])
+    @session.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    SpotGateService.stub(:evaluate, refusing_decision) do
+      assert_difference -> { Session.count }, 1 do
+        assert_equal :started, generate.outcome
+      end
+    end
+  end
+
+  # Fail-open, exactly like the pool read beside it: a gate that cannot be read
+  # is not evidence of a busy fleet, and guessing "refused" would downgrade every
+  # spot session's blurb to the terser path forever.
+  test "a gate that cannot be read still forks" do
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:active])
+    @session.update!(scheduling_class: SessionGenesis::SPOT)
+
+    SpotGateService.stub(:start_decision, ->(*) { raise ActiveRecord::ConnectionNotEstablished, "no db" }) do
+      assert_difference -> { Session.count }, 1 do
+        assert_equal :started, generate.outcome
+      end
+    end
+  end
+
+  # --- Disposal of a fork the gate refused anyway ---------------------------
+
+  # The two checks race: the fleet can fill between the generator asking and the
+  # fork's turn reaching the gate. A refused fork is thrown away rather than
+  # parked, so the pile-up the hold used to build has nothing to build from.
+  test "a refused fork is archived, releases its claim and retries without a fork" do
+    fork = nil
+    assert_difference -> { Session.count }, 1 do
+      fork = generate.fork_session
+    end
+    record = @session.reload.status_summary
+    assert_equal fork.id, record.fork_session_id, "the fixture must have a claimed record"
+
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @session.id, { headless: true } ]) do
+      SessionStatusSummaryGenerator.discard_refused_fork(fork, detail: "5 of 5 session slots taken.")
+    end
+
+    assert fork.reload.archived?, "a refused fork must not outlive the generation"
+    record.reload
+    assert_equal "failed", record.state
+    assert_nil record.fork_session_id
+    assert_match(/refused by the spot gate/, record.error)
+    assert_match(/5 of 5 session slots taken/, record.error)
+  end
+
+  # A forced Regenerate that took the record over while this fork was queued has
+  # moved on. Stamping this fork's refusal on that claim would report it as the
+  # newer generation's outcome.
+  test "a refused fork does not touch a record that has moved on" do
+    fork = generate.fork_session
+    record = @session.reload.status_summary
+    record.update!(state: "pending", fork_session_id: nil, requested_at: Time.current)
+
+    SessionStatusSummaryGenerator.discard_refused_fork(fork, detail: "5 of 5 session slots taken.")
+
+    assert fork.reload.archived?, "the fork is disposed of either way"
+    assert_equal "pending", record.reload.state
+    assert_nil record.error
   end
 
 
