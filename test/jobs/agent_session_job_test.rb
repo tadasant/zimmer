@@ -3501,7 +3501,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   # not just slow — "Could not resolve host" matches GitCloneService's transient patterns,
   # so it burns the whole CLONE_RETRY_DELAYS_SECONDS ladder in real Kernel.sleep before
   # giving up, and nothing asserts the outcome either way.
-  def perform_session_job(session)
+  def perform_session_job(session, follow_up_prompt = nil)
     job = AgentSessionJob.new
     mock_fs = MockFileSystemAdapter.new
     job.process_manager = MockProcessManager.new
@@ -3526,7 +3526,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
           def mock_thread.join(*); end
           mock_thread
         }) do
-          job.perform(session.id)
+          job.perform(session.id, follow_up_prompt)
         end
       end
     end
@@ -3587,6 +3587,132 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     assert_not_nil skip_log(@session), "an agent turn that has been running for hours is not stale"
     assert_nil supersede_log(@session)
+  end
+
+  # --- A skipped job must not take the prompt down with it (zimmer#983) ---
+  #
+  # The guard above is right: a genuinely live job holds the session and this one
+  # must not start a second agent against the same clone. What was wrong is what
+  # happened to the prompt this job was carrying. By the time a job reaches the
+  # guard the prompt exists ONLY as its argument — EnqueuedMessageProcessorService
+  # destroys the queue row inside the transaction that enqueues the job, and neither
+  # it nor the REST/MCP follow-up paths stamp `pending_follow_up_prompt`. The
+  # else-branch was a bare `return`, so session 13229's `wake_me_up_later` prompt was
+  # gone with no row, no retry and no record.
+
+  test "a skipped job puts the prompt it was carrying back in the durable queue" do
+    register_running_job(
+      @session,
+      created_at: 2.minutes.ago,
+      locked_by_id: live_good_job_process.id,
+      locked_at: 2.minutes.ago,
+      performed_at: 2.minutes.ago
+    )
+
+    perform_session_job(@session, "Wake up: report on the verification you scheduled")
+    @session.reload
+
+    assert_not_nil skip_log(@session), "the guard still refuses the turn — that part was never wrong"
+    message = @session.enqueued_messages.pending.sole
+    assert_equal "Wake up: report on the verification you scheduled", message.content,
+      "the prompt must survive the skip; losing it here is #983"
+    assert_not_nil @session.logs.find { |log| log.content.include?("was NOT lost") },
+      "the drop was silent — the save must not be"
+  end
+
+  test "the queued prompt is delivered when the job that held the session ends its turn" do
+    # The other half of "late rather than lost": the row the guard parked is picked up
+    # by the ordinary end-of-turn drain, so the prompt reaches the agent one turn later.
+    register_running_job(
+      @session,
+      created_at: 2.minutes.ago,
+      locked_by_id: live_good_job_process.id,
+      locked_at: 2.minutes.ago,
+      performed_at: 2.minutes.ago
+    )
+    perform_session_job(@session, "The prompt that lost the race")
+
+    # The holder finishes: it releases the session, which is what the drain keys off.
+    @session.reload.update!(running_job_id: nil, status: :running)
+
+    assert_enqueued_with(job: AgentSessionJob) do
+      EnqueuedMessageProcessorService.new(@session).process_next_message
+    end
+    assert_empty @session.reload.enqueued_messages.pending, "the parked row was delivered, not left behind"
+  end
+
+  test "the parked prompt is drained by the ordinary pause transition" do
+    # The other delivery route, and the one that runs unattended: `pause` fires
+    # drain_enqueued_messages_after_pause, which schedules EnqueuedMessageDrainJob.
+    # Without this, the requeue would depend on a caller remembering to drain.
+    register_running_job(
+      @session,
+      created_at: 2.minutes.ago,
+      locked_by_id: live_good_job_process.id,
+      locked_at: 2.minutes.ago,
+      performed_at: 2.minutes.ago
+    )
+    perform_session_job(@session, "The prompt the holder will hand on")
+    @session.reload.update!(status: :running, running_job_id: nil)
+
+    assert_enqueued_with(job: EnqueuedMessageDrainJob, args: [ @session.id ]) do
+      @session.pause!
+    end
+  end
+
+  test "a skipped job carrying no prompt queues nothing" do
+    # A first start, a monitoring re-attach or a clone-only job has nothing to lose,
+    # and must not manufacture a turn out of the skip.
+    register_running_job(
+      @session,
+      created_at: 2.minutes.ago,
+      locked_by_id: live_good_job_process.id,
+      locked_at: 2.minutes.ago,
+      performed_at: 2.minutes.ago
+    )
+
+    perform_session_job(@session)
+    @session.reload
+
+    assert_not_nil skip_log(@session)
+    assert_empty @session.enqueued_messages.pending
+  end
+
+  test "a skipped job carrying a recovery nudge queues nothing" do
+    # The live turn the guard just deferred to IS the answer to "are you still
+    # working". Queuing the nudge would barge that turn's rest with a settled question.
+    register_running_job(
+      @session,
+      created_at: 2.minutes.ago,
+      locked_by_id: live_good_job_process.id,
+      locked_at: 2.minutes.ago,
+      performed_at: 2.minutes.ago
+    )
+
+    perform_session_job(@session, AutomatedPrompts.system_recovery(reason: "deploy sweep"))
+    @session.reload
+
+    assert_empty @session.enqueued_messages.pending
+    assert_not_nil @session.logs.find { |log| log.content.include?("automated nudge") },
+      "dropping the nudge is deliberate, so it is written down rather than silent"
+  end
+
+  test "a superseded job delivers its prompt itself rather than queuing it" do
+    # The requeue belongs to the SKIP branch only. A superseded job goes on to run the
+    # turn, so parking a copy in the queue would spend a second turn on the same prompt.
+    register_running_job(
+      @session,
+      created_at: 20.seconds.ago,
+      locked_by_id: dead_good_job_process.id,
+      locked_at: 20.seconds.ago,
+      performed_at: 20.seconds.ago
+    )
+
+    perform_session_job(@session, "A prompt the superseding job will actually run")
+    @session.reload
+
+    assert_not_nil supersede_log(@session)
+    assert_empty @session.enqueued_messages.pending
   end
 
   test "does not supersede a queued job that has waited longer than the old two-minute threshold" do
