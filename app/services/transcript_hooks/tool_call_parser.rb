@@ -8,9 +8,12 @@
 # extraction its own comment called for, so GithubCommentAuthorshipHook could ask
 # the same questions without a second copy of the shape handling.
 #
-# Three questions are answered:
+# Four questions are answered:
 #   - #tool_call_ids_matching(pattern) — the ids of shell invocations whose command
 #     matches a pattern (Claude tool_use ids / Codex call_ids).
+#   - #structured_tool_calls — every tool call as { id:, name:, input: } — the
+#     non-shell ones included, which is how a hook sees an MCP tool doing what a
+#     `gh` command would otherwise have done.
 #   - #tool_results — every tool result as { id:, text:, is_error: }.
 #   - #assistant_texts — the agent's own prose, message by message.
 #
@@ -81,6 +84,21 @@ class TranscriptHooks::ToolCallParser
   # Every shell invocation in the transcript.
   # @return [Array<Hash>] each { id: String, command: String }
   def shell_calls
+    raise NotImplementedError
+  end
+
+  # Every tool call in the transcript, whatever tool it invoked, with its
+  # arguments as a Hash. #shell_calls is the specialized view of the subset that
+  # runs a shell; this is the view a hook needs when the thing it is looking for
+  # arrived as a structured call instead of a command — an MCP server's
+  # `create_pull_request` rather than `gh pr create`.
+  #
+  # Both runtimes name an MCP tool `mcp__<server>__<tool>` (Claude Code joins the
+  # two with `__`; codex-rs does the same through `MCP_TOOL_NAME_DELIMITER`), so
+  # the name is comparable across shapes even though nothing else about them is.
+  #
+  # @return [Array<Hash>] each { id: String, name: String, input: Hash }
+  def structured_tool_calls
     raise NotImplementedError
   end
 

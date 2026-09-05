@@ -3594,8 +3594,9 @@ Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
 ### PR ownership is a transcript heuristic, and both ways of being wrong are silent
 
 `GithubPrUrlHook` decides which PRs belong to a session by reading its transcript for evidence that
-the session *opened* one: a successful create (`gh pr create`, or a POST to the REST
-`repos/OWNER/REPO/pulls` endpoint), a failed `gh pr create` that says the branch's PR already
+the session *opened* one: a successful create (`gh pr create`, a POST to the REST
+`repos/OWNER/REPO/pulls` endpoint, or an MCP `create_pull_request` tool call), a failed `gh pr
+create` that says the branch's PR already
 exists, or the agent's own prose claiming it opened a PR on this repo. Everything else — a PR read
 with `gh pr view`, a PR URL arriving in a user message or a Zimmer notification — is ignored on
 purpose, because recording it is how one session ends up receiving another session's review comments
@@ -3621,11 +3622,26 @@ Heuristics have two failure directions and neither announces itself:
   residual edge, on top of the `gh api` endpoint path it reads as written.
 - **Too tight** and a session's own PR is never recorded, so `GitHubPullRequestPollerJob`,
   `GithubCommentPollerJob` and `GitHubMergeConflictPollerJob` all quietly do nothing for it. A PR
-  opened through a path the hook can't see — an MCP GitHub tool's `create_pull_request`, which is a
-  structured tool call rather than a shell command, or the web UI — and never mentioned in the
-  agent's prose lands here. The shell shapes are enumerated, so each new one costs a session before
-  it is recognised: the REST fallback agents reach for when GitHub's GraphQL API is down took
-  session [5679](https://zimmer.tadasant.com/sessions/5679) to discover.
+  opened through a path the hook can't see — the web UI, a wrapper script, an MCP tool whose name is
+  not `create_pull_request` — and never mentioned in the agent's prose lands here. The shapes are
+  enumerated, so each new one costs a session before it is recognised: the REST fallback agents reach
+  for when GitHub's GraphQL API is down took session
+  [5679](https://zimmer.tadasant.com/sessions/5679) to discover, and the GitHub MCP route was
+  structurally invisible until [#559](https://github.com/tadasant/zimmer/issues/559). Four edges
+  remain on the MCP tier now that it exists. It is held to the session's own repo on both ends — the
+  repo the call's input names, when it names one, and the repo the URL belongs to — so an MCP create
+  against a *different* repository records nothing, where the same create through `gh pr create
+  --repo other/proj` would; that asymmetry is deliberate, because the tool name is a convention
+  matched across servers whose semantics Zimmer has not verified. It records only the **first**
+  same-repo URL in a create's result, since one create opens one PR and a result that serializes the
+  created PR back carries whatever other pull requests its `body` cites — so a server that printed a
+  cited PR ahead of the one it created would record the wrong one. "A failed create is not evidence"
+  holds only as far as the runtime says a call failed, and on Codex nothing does: an exit code comes
+  from an `exec_command_end` line that only a shell call gets, so an MCP result there always reads as
+  a success, and a failed create whose error text quotes a same-repo PR URL would be recorded. And Pi
+  sessions are not covered at all: the `pi-mcp-adapter` extension calls every server through one
+  `mcp` proxy tool rather than by name, so there is no `mcp__<server>__create_pull_request` in a Pi
+  transcript to key on.
 
 The warning log a PR-flavored goal gets when a session comes to rest (`pause`, `fail` or `archive`)
 covers the second case only, and only when the goal happens to mention pull requests. There is no
@@ -4296,9 +4312,9 @@ ways to not fire.
 **The PR URL was never recorded.** The poller iterates `Session.with_github_prs`, which needs
 `custom_metadata["github_pull_request_urls"]` populated, and that is filled by
 `TranscriptHooks::GithubPrUrlHook` — a deliberately tight heuristic over the transcript. A PR
-opened through a GitHub MCP tool, `gh api`, a wrapper script, a subagent whose tool calls do not
-reach the main transcript, or against a different repository than the session's own (the
-`same_repo?` gate) records nothing. `warn_if_pr_goal_captured_no_url` notices and writes a
+opened through a wrapper script, a subagent whose tool calls do not reach the main transcript, an
+MCP tool on a Pi session (where every server is called through one proxy tool), or against a
+different repository than the session's own (the `same_repo?` gate) records nothing. `warn_if_pr_goal_captured_no_url` notices and writes a
 session-timeline warning, but nothing the agent reads. The prompt and the goal text both tell the
 agent to check `get_session` and archive if no URL was recorded, which is an instruction, not a
 guarantee.
