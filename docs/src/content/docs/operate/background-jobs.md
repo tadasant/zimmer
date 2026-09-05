@@ -74,6 +74,7 @@ From `config.good_job.cron`:
 | 10m | `TranscriptArchiveJob` | Rebuild `latest.zip` under `~/.zimmer/transcript_archives` — the `zimmer_data` volume both roles mount, **not** `Rails.root/storage`. Cron runs in the `worker` container and every reader of the archive is an HTTP route in `web`, so a path on the container layer would be invisible to the reader and wiped by each deploy ([#714](https://github.com/tadasant/zimmer/issues/714)). Override with `AGENT_TRANSCRIPT_ARCHIVE_DIR`, onto a path both roles share. Reads one session at a time and archives at most `MAX_SESSIONS_PER_RUN` per tick, checkpointing the slice it finished — loading every changed session at once is what OOM-killed the production worker every ten minutes ([#719](https://github.com/tadasant/zimmer/issues/719)). Change detection compares the later of `sessions.updated_at` and the session's newest subagent-transcript `updated_at`, because a session's zip entry carries both and `SubagentTranscript` does not `touch:` its parent ([#720](https://github.com/tadasant/zimmer/issues/720)). A run with a backlog logs `deferred to the next tick` at WARN |
 | 10m | `TokenUsageIngestionJob` | Sweep recent transcripts into the token-spend ledger. Scans only files touched in the last two hours; the lookback overlaps the interval generously because ingestion is idempotent on `request_id`, so a missed run closes itself on the next pass. History that predates the job is swept once by `TokenUsageBackfillJob`. See [Token spend](/operate/costs/). |
 | 5m | `TokenUsageBackfillJob` | Sweep the WHOLE transcript corpus into the ledger, once, in two-minute slices against a `token_usage_backfills` run that records the cursor. Starts itself on the first tick after a deploy when no sweep has ever finished, and costs one indexed lookup per tick forever after. Runs on `maintenance`, not `pollers` or `default`: it holds its thread for minutes and must not delay latency-sensitive pollers or control work. See [Token spend](/operate/costs/). |
+| 10m | `LogRetentionJob` | Delete `logs` rows past their retention window — the only thing that bounds a table written on the hot path of every session. Runs on `maintenance`, not `default` or `pollers`: it may hold its thread for a 90-second slice while a backlog drains, and must not delay latency-sensitive polling. See [Log retention](#log-retention) below. |
 | 2m | `PostDeployTaskJob` | Run the one-time post-deploy tasks in `db/post_deploy/` — the `after_party`-shaped mechanism for an ops step that has to ship with the deploy. Each task is claimed with a conditional `UPDATE` on its `post_deploy_task_runs` row, worked inside a 90-second budget, and never worked again once it succeeds; a task too slow for one slice returns `CONTINUE` and resumes from its cursor. Runs on `default`, not `pollers`, because a task can hold its thread for the whole budget. See [Deploying](/operate/deploying/#one-time-post-deploy-tasks). |
 | 15m | `ExperimentalFlagBackfillJob` | Label sessions that predate experimental-setting tracking with what each setting was, inferred from the date the setting landed. One INSERT ... SELECT with a NOT EXISTS guard per setting, so every tick after the first writes nothing. Runs on `default`. See [Token spend](/operate/costs/). |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |
@@ -158,6 +159,114 @@ files run before autoload paths are configured, so `CronSchedule` has to already
 the boot dies with `NameError` during `:load_environment_config` rather than starting a worker with
 a partial schedule.
 :::
+
+## Log retention
+
+The `logs` table is written on the hot path of every session — one row per timeline line, plus one
+per line of the runtime CLI's stdout — so without retention it grows with total fleet activity,
+forever. It had none until [#437](https://github.com/tadasant/zimmer/issues/437). On staging that
+reached **124M rows / 24 GB of a 31 GB Postgres volume**; the disk filled, backends could not write
+`pg_internal.init`, the checkpointer hit `ENOSPC` and PANICked, and Postgres spent fifty minutes in
+a crash-recovery loop. An unbounded log table on a full disk takes the whole database down, not just
+logging.
+
+`LogRetentionJob` bounds it, every 10 minutes, in every environment.
+
+### Two windows, because the two kinds of row are worth different amounts
+
+| Rows | Kept | Why |
+| --- | --- | --- |
+| `level: "verbose"` — raw runtime-CLI stdout, buffered a line at a time by `AgentSessionJob` | `Log::VERBOSE_RETENTION` — **7 days** | The overwhelming majority of the table, and the only level the timeline hides by default: it renders under the `verbose` filter and nowhere else. The same conversation is in the transcript, which is what the timeline actually shows. Seven days covers debugging a live incident |
+| everything else — `info`, `warning`, `error`: `[State Machine] …`, `Process spawned with PID …`, enqueued-message bookkeeping | `Log::RETENTION` — **90 days** | Low volume, and this is the readable history of an archived session. A quarter is long enough that the session anyone comes back to still has its timeline |
+
+Both are absolute ages. A bound that depends on how many sessions exist is not a bound.
+
+The policy lives on `Log`; `LogRetentionJob` is only how it is enforced.
+
+### It is designed to meet a table that is already enormous
+
+The first deployment to run this meets years of rows and no maintenance window, so a single
+`DELETE FROM logs WHERE created_at < …` is not on the table — it would hold one transaction over a
+hundred million rows and block on locks for as long as it took. Instead each tick deletes in chunks
+of `BATCH_SIZE` (5,000) rows, one transaction each, and stops at `SLICE_BUDGET` (90 seconds) whether
+or not the backlog is drained. The next tick resumes. A deployment starting from 124M rows converges
+over hours, with no human, no shell, and no separate drain step.
+
+It deletes **by primary key**. Each pass computes a *ceiling* — an id worth scanning up to — and
+drives the delete off `id <= ceiling`, which is a pk range scan. That is why the change ships no
+`created_at` index: building one over 124M rows would happen inside `db:prepare` at container boot,
+which kamal-proxy health-gates on a `deploy_timeout` of 120 seconds, so it would fail the very deploy
+that ships the fix.
+
+The ceiling comes from a binary search (~31 single-row index lookups) for the id below which every
+row is older than the cutoff. That search needs the lowest-id row to be expired, and when it is not,
+a **head probe** takes over: a ceiling just past the first 25,000 rows. Normally "the oldest row is
+inside the window" means there is nothing to do — but it also describes a table whose ids and
+timestamps disagree, where one recent row with a low id would otherwise hide every expired row above
+it *forever*. Retention silently never running again is the bug this job exists to fix, so the
+fallback bounds the tick's work instead of giving up, and the window slides forward as those rows go.
+What the probe does not cover is written up in [Known limitations](/limitations/).
+
+Each pass then walks **downward** from its ceiling, carrying the lowest id it took as the next
+batch's ceiling, so a row is stepped over at most once per tick. Restarting each batch at the bottom
+would be quadratic within a tick — and worse in the verbose pass's steady state, where the 7-day
+ceiling spans every surviving non-verbose row aged 7–90 days while the rows it can actually delete
+sit at the *top* of that range, so every batch would re-scan the whole prefix before reaching one.
+
+Either way the cutoff stays a predicate on the delete itself, so the ceiling only ever decides how
+much of the table one tick looks at. It can never widen what is deleted, and a row inside its
+retention window is never deleted whatever the ceiling says.
+
+The same PR drops `index_logs_on_session_id`, which was fully redundant with the leading column of
+`index_logs_on_session_id_and_created_at` — including for the `ON DELETE CASCADE` from `sessions` —
+and was being maintained on every insert.
+
+### Deleting does not shrink the files
+
+Postgres marks the space reusable and the table stops growing, but the heap already allocated comes
+back only with `VACUUM FULL` (takes an `ACCESS EXCLUSIVE` lock and needs free space equal to the
+table) or `pg_repack` (online, same space requirement). That is a one-time reclamation per
+environment, and it is deliberately **not** something this job does:
+
+- **Development / staging** — Postgres runs in a container on the droplet's own disk. Autovacuum
+  reclaims to the free space map on its own; a `VACUUM FULL logs` is only worth it if the disk needs
+  the gigabytes back, and it needs that much headroom to run at all.
+- **Production** — DigitalOcean Managed Postgres. There is no shell; run `VACUUM (FULL) logs` or
+  `pg_repack` through the managed cluster's own connection if the storage ceiling is close.
+
+Neither is required for the fix to work. Retention stops the growth on the first tick either way.
+
+### Answering "is retention running?" without a shell
+
+`logs` was unmeasurable on production until this shipped — no shell on the managed cluster, no
+`psql` in a session container, and managed-Postgres storage is not scraped into VictoriaMetrics
+([#181](https://github.com/tadasant/zimmer/issues/181)), which is why #437 was filed with
+production's exposure unknown. `HealthMonitorService#log_retention_health` now carries the estimated
+row count, total and index size, the age of the oldest row, and the age of the oldest **verbose** row
+— checked separately because verbose rows are the bulk of the table and have the tighter window, so a
+verbose pass that stopped while the general one kept running would refill a disk with every surviving
+row still inside the 90-day window. All of it on three surfaces at once:
+
+| Surface | Where |
+| --- | --- |
+| **Web** | `/health` → the *Log Retention* panel |
+| **REST** | `GET /api/v1/health` → `health_report.log_retention_health` |
+| **MCP** | `get_system_health` |
+
+The size readings are O(1): `pg_class.reltuples` and the relation sizes come from the catalog, so
+nothing scans the table. The two age readings walk the leftmost end of `logs_pkey` — the first live
+entry, and the first verbose one within 25,000 rows of it — which is cheap except just after a large
+batch delete has left dead entries there for autovacuum. Bounded, not free, which is why the verbose
+probe is bounded too. And `oldest_log_at` is the lowest-id row's timestamp rather than a true
+`MIN(created_at)`, which without a `created_at` index would be a sequential scan of the very table
+the panel exists to say is too big; it reads the same under the ordering the prune assumes, and
+inherits the same blind spot.
+
+The panel reads *warning* once the oldest row is more than a week past the 90-day window — which a
+deployment working through its first backlog genuinely is. That status is deliberately excluded from
+the report's `overall_status`, because `overall_status` is what `SystemHealthMonitorJob` and the
+alerting read, and turning the whole report yellow for a day while a backlog drains exactly on
+schedule is how people learn to ignore it.
 
 ## A deleted session takes its directories with it
 

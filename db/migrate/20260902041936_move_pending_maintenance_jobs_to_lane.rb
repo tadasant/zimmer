@@ -8,6 +8,11 @@
 # post-deploy task with the same class list converges rows that are locked during
 # this migration after their interrupted attempt releases its lock.
 class MovePendingMaintenanceJobsToLane < ActiveRecord::Migration[8.1]
+  # Every job whose code declares `queue_as :maintenance`, which
+  # test/migrations/move_pending_maintenance_jobs_to_lane_test.rb pins against
+  # app/jobs/. A job added to the lane after this migration ran has no inherited
+  # rows for it to move — it is on the list so that the pin stays a real check
+  # rather than one nobody can fail.
   JOB_CLASSES = %w[
     BundleInstallJob
     CacheClearJob
@@ -16,6 +21,7 @@ class MovePendingMaintenanceJobsToLane < ActiveRecord::Migration[8.1]
     DeploymentRecoveryJob
     DockerCleanupJob
     EmptyTrashJob
+    LogRetentionJob
     McpPackageReinstallJob
     OrphanCloneFilesystemCleanupJob
     OrphanTranscriptDirectoryCleanupJob
