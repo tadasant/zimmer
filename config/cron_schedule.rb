@@ -286,6 +286,12 @@ module CronSchedule
       description: "Re-run a status-summary generation that never landed, for sessions already at rest",
       environments: %i[production staging]
     },
+    abandoned_status_summary_fork_sweep: {
+      cron: "17 * * * *", # Hourly, off the top of the hour — the reap window is AbandonedStatusSummaryForkSweepJob::ABANDONED_AFTER, so cadence only bounds the wait, not the threshold
+      class: "AbandonedStatusSummaryForkSweepJob",
+      description: "Archive status-summary forks that were created and never given their summary prompt",
+      environments: %i[production staging]
+    },
     quota_reset_checker: {
       cron: "*/15 * * * *", # Every 15 minutes
       class: "QuotaResetCheckerJob",

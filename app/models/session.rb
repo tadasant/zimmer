@@ -65,6 +65,15 @@ class Session < ApplicationRecord
     where("metadata->>? IS NULL", SessionStatusSummaryGenerator::FORK_MARKER)
   }
 
+  # The other side of the scope above: only the forks. Written as the exact
+  # negation of it so the two can never disagree about what a fork is — the one
+  # sweep that reaps forks (AbandonedStatusSummaryForkSweepJob) must select
+  # precisely the set every operator-facing list hides, or it would be reaping
+  # sessions somebody can see.
+  scope :status_summary_forks, lambda {
+    where("metadata->>? IS NOT NULL", SessionStatusSummaryGenerator::FORK_MARKER)
+  }
+
   # The sessions Zimmer spawns to analyze another session's transcript for the
   # Outcomes view (OutcomeAnalyses::SpawnAnalysisSession). An "Analyze All" batch
   # can put hundreds of these in flight at once, so they carry a marker that makes
