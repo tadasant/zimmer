@@ -259,13 +259,16 @@ class SessionContentSearch
 
   def matching_ids(chunk_ids)
     Session.where(id: chunk_ids)
-      .where(SessionSearchable::CONTENT_PREDICATE, q: search_term)
+      .where(SessionSearchable::CONTENT_PREDICATE, search_binds)
       .pluck(:id)
       .to_set
   end
 
-  def search_term
-    @search_term ||= "%#{ActiveRecord::Base.sanitize_sql_like(query)}%"
+  # The predicate's binds are built where the predicate is spelled, so this scan
+  # matches exactly what the cheap search matches — including the JSON respelling
+  # `:q_json` carries.
+  def search_binds
+    @search_binds ||= SessionSearchable.search_binds(query)
   end
 
   # A server-side ceiling under the wall-clock budget, so a single pathological

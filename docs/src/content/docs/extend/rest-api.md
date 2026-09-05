@@ -262,6 +262,22 @@ phrase when you want to confirm a session said something, and one word when you 
 Both the dashboard and `quick_search_sessions` match the same way, on the title and metadata columns
 as well as on the transcript.
 
+**The JSON columns are matched in Postgres's canonical spelling, and both spellings of a query
+work.** `metadata` is a `json` column, which stores whatever bytes the writer produced. Zimmer has
+two writers for it — an ordinary attribute write, which serialises `{"agent_root_key":"zimmer"}`,
+and the atomic `merge_metadata!` UPDATE, which serialises `{"agent_root_key": "zimmer"}` — so until
+[#930](https://github.com/tadasant/zimmer/issues/930) a query spanning a key's colon found a session
+or did not depending on which writer had touched the row last. The same query, seconds apart,
+returned different sets. Both columns are now read through `::jsonb::text`, which renders one
+canonical form whoever wrote the row, and the query is tried in both spellings: `"key":"value"` and
+`"key": "value"` find the same sessions. A zero result is no longer a coin flip on which writer touched
+the row last.
+
+One thing canonical form costs you: `jsonb` orders an object's keys by length then bytewise, not in the
+order they were written, so a fragment spanning the comma **between** two keys only matches if you spelled
+them in Postgres's order. Search one key/value pair, or a value — both are unaffected. See
+[Limitations](/limitations/#a-metadata-search-matches-postgress-key-order-so-a-two-key-fragment-is-unreliable).
+
 `search_contents` matches `transcript::text` — the stored JSON, not the rendered conversation. A
 phrase broken across a line break is `\n` in that text and does not match, and a hit can land in a
 tool argument or a file path rather than in anything anybody said. Keep the phrase short and inside
