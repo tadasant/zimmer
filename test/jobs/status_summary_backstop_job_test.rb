@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # The repair path behind the one automatic trigger: a session already at rest has
 # no further transition to regenerate on, so a generation that never landed would

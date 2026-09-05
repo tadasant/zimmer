@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 # Verifies the architectural fix for the duplicate-delivery / dropped-message
 # race in the interrupt path (see app/services/sessions/interrupt_service.rb).

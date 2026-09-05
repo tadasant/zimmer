@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class XOauthTokenVendorTest < ActiveSupport::TestCase
   test "returns nil for a non-X variable without touching the database" do

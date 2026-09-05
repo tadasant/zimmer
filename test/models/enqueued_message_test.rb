@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 class EnqueuedMessageTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper

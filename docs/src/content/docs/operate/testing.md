@@ -467,13 +467,32 @@ and still `NoMethodError` in production. See
 [Adding an agent harness](/extend/agent-harness/#retry-strategy-the-five-predicates).
 :::
 
-A second one guards a different kind of contract — not between runtimes, but between a test file and
-the gems it names. **`test/contracts/ostruct_require_contract_test.rb`** parses every `.rb` under
-`test/` with Prism and asserts that a file naming `OpenStruct` requires `ostruct` itself. `ostruct`
-ships with Ruby but is not required for you (a default gem on 3.4, bundled from 3.5), and the suite
-shares one process, so the first file to require it silently covers every file loaded after it.
-Without the contract, whether a file works on its own is decided by the order the runner loads files
-in. See [#787](https://github.com/tadasant/zimmer/issues/787).
+Two more guard a different kind of contract — not between runtimes, but between a test file and the
+gems it names. Both parse the `.rb` files under `test/` with Prism, and both exist because the suite
+shares one process, so the first file to require a gem silently covers every file loaded after it.
+Without them, whether a file works on its own is decided by the order the runner loads files in.
+
+- **`test/contracts/ostruct_require_contract_test.rb`** asserts that a file naming `OpenStruct`
+  requires `ostruct` itself. `ostruct` ships with Ruby but is not required for you — a default gem on
+  3.4, bundled from 3.5. See [#787](https://github.com/tadasant/zimmer/issues/787).
+- **`test/contracts/mocha_require_contract_test.rb`** asserts the same for `mocha/minitest`: a file
+  calling `stubs`, `expects`, `any_instance`, `unstub` or `stub_everything`, or naming `Mocha`, has
+  to require it. `Bundler.require` loads the `mocha` gem but not its Minitest integration, which is
+  what defines those methods. See [#874](https://github.com/tadasant/zimmer/issues/874).
+
+The mocha contract carries a second assertion the ostruct one does not need, and it is the one that
+makes the first meaningful. `test_helper.rb` auto-requires every non-`_test.rb` file under
+`test/support/**`, so a `require` written inside a support helper is not local to that helper — it is
+a **suite-wide require**, and it hides the absence of the same require everywhere else. One line in
+`test/support/x_oauth_test_helpers.rb` was loading mocha for the entire suite, which is why 21 files
+had accumulated an undeclared dependency on it and why
+[#764](https://github.com/tadasant/zimmer/issues/764) could not be reproduced as reported. So no file
+every run loads may require `mocha/minitest` — the auto-required support helpers, and `test_helper.rb`
+itself along with the two other roots every test file loads by name.
+
+A support helper that stubs is still fine — `XOauthTestHelpers` and `McpAvailabilityHelpers` both do.
+It just cannot declare the dependency on its callers' behalf; the test files that call it declare it.
+That is the one case neither contract can see, since each reads a single file at a time.
 
 ## Running tests
 
@@ -487,11 +506,9 @@ bin/brakeman
 The convention in `AGENTS.md`: run **targeted** tests locally, let CI run the full suite.
 
 A targeted run loads only the files you name, so it is the run that usually exposes a missing
-`require`. A test file has to require the gems it names — `ostruct` today — rather than inheriting
-them from whatever the full suite happened to load first. The contract test above enforces that for
-`ostruct`; `mocha/minitest` is the same hazard and is not yet covered
-([#874](https://github.com/tadasant/zimmer/issues/874)), which also covers the wrinkle that a require
-landing anywhere in `test/support/**` becomes a de-facto suite-wide one.
+`require`. A test file has to require the gems it names — `ostruct` and `mocha/minitest` today —
+rather than inheriting them from whatever the full suite happened to load first. The contract tests
+above enforce both.
 
 ## The philosophy, such as it is
 
