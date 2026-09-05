@@ -582,6 +582,27 @@ class Session < ApplicationRecord
   # while still preventing runaway/typo values from polluting the spawn env.
   MAX_AUTO_COMPACT_WINDOW = 1_000_000
 
+  # The four AIR-catalog selection lists a session carries, and the rules that
+  # bound each one. This is the single source of truth: the web, REST and MCP
+  # surfaces all reach it through Sessions::UpdateCatalogSelection, and
+  # Mcp::Tool::CATALOG_LISTS is the trigger-side view of the three that a
+  # Trigger also stamps onto the sessions it spawns.
+  #
+  # `label` is the noun phrase every surface puts in its error text and, capitalized,
+  # at the head of the `logs` row — so "Too many catalog skills (maximum 100)" reads
+  # the same whichever door the request came through. `title` heads the MCP tool's
+  # markdown. `config` names the catalog reader that decides whether an id exists.
+  CATALOG_SELECTIONS = {
+    mcp_servers: { label: "MCP servers", title: "MCP Servers", max: 50, config: "ServersConfig" },
+    catalog_skills: { label: "catalog skills", title: "Skills", max: 100, config: "SkillsConfig" },
+    catalog_hooks: { label: "catalog hooks", title: "Hooks", max: 100, config: "HooksConfig" },
+    catalog_plugins: { label: "catalog plugins", title: "Plugins", max: 50, config: "PluginsConfig" }
+  }.freeze
+
+  # Every catalog id is truncated to this before it is validated, so an
+  # unbounded string can neither reach the column nor the error message.
+  MAX_CATALOG_SELECTION_ID_LENGTH = 100
+
   # Heartbeat: how often (in seconds) an enabled heartbeat may beat. The floor
   # keeps the recurring sweep from hammering a session; the ceiling caps a beat
   # at once per day. The UI presents a curated subset of these values.

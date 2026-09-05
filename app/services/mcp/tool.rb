@@ -89,17 +89,18 @@ module Mcp
     # The three AIR-catalog lists a record can carry — a Session directly, a
     # Trigger for the sessions it spawns — with the bound each is checked
     # against. Keyed by the model attribute, because every tool that writes one
-    # of these writes it under that name; `action_session`'s change_skills /
-    # change_hooks / change_plugins and `action_trigger`'s create / update both
-    # validate through this one table so a caller gets the same answer either
+    # of these writes it under that name; `action_trigger`'s create / update
+    # validate through this one table, and `action_session`'s change_skills /
+    # change_hooks / change_plugins reach the same rules through
+    # Sessions::UpdateCatalogSelection, so a caller gets the same answer either
     # way.
-    CATALOG_LISTS = {
-      catalog_skills: { label: "Skills", max: 100, config: "SkillsConfig" },
-      catalog_hooks: { label: "Hooks", max: 100, config: "HooksConfig" },
-      catalog_plugins: { label: "Plugins", max: 50, config: "PluginsConfig" }
-    }.freeze
+    #
+    # This is the trigger-side view of Session::CATALOG_SELECTIONS — the same
+    # bounds and the same catalog readers, minus `mcp_servers`, which a Trigger
+    # carries under its own name and validates separately.
+    CATALOG_LISTS = Session::CATALOG_SELECTIONS.except(:mcp_servers)
 
-    MAX_CATALOG_ITEM_ID_LENGTH = 100
+    MAX_CATALOG_ITEM_ID_LENGTH = Session::MAX_CATALOG_SELECTION_ID_LENGTH
 
     # Normalize and validate one catalog list: drop blanks, trim each id, and
     # reject any the catalog does not know — listing the valid options, so a
@@ -117,16 +118,12 @@ module Mcp
       spec = CATALOG_LISTS.fetch(attribute)
 
       raise ToolError, "The \"#{param_name}\" parameter must be an array." unless items.is_a?(Array)
-      raise ToolError, "Maximum #{spec[:max]} #{spec[:label].downcase}" if items.length > spec[:max]
+      raise ToolError, "Too many #{spec[:label]} (maximum #{spec[:max]})" if items.length > spec[:max]
 
-      items = items.reject(&:blank?).map { |item| item.to_s.strip.first(MAX_CATALOG_ITEM_ID_LENGTH) }
-
-      config = spec[:config].constantize
-      invalid = items.reject { |id| config.exists?(id) }
+      items, invalid = Sessions::UpdateCatalogSelection.normalize(attribute, items)
       if invalid.any?
-        valid = config.all.map(&:id).sort
-        raise ToolError, "Invalid #{spec[:label].downcase}: #{invalid.join(', ')}. " \
-                         "Valid #{spec[:label].downcase}: #{valid.join(', ')}"
+        raise ToolError, "Invalid #{spec[:label]}: #{invalid.join(', ')}. " \
+                         "Valid #{spec[:label]}: #{Sessions::UpdateCatalogSelection.valid_ids(attribute).join(', ')}"
       end
 
       items

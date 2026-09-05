@@ -649,7 +649,7 @@ module Mcp
       def catalog_lists_summary(trigger)
         CATALOG_LISTS.keys.map do |attribute|
           list = trigger.public_send(attribute).presence
-          "#{CATALOG_LISTS.fetch(attribute)[:label].downcase}: #{list ? list.join(', ') : '(agent root defaults)'}"
+          "#{CATALOG_LISTS.fetch(attribute)[:title].downcase}: #{list ? list.join(', ') : '(agent root defaults)'}"
         end.join(" | ")
       end
 

@@ -23,6 +23,17 @@ class Api::V1::SessionsController < Api::BaseController
 
   rescue_from PlacementError, with: :render_placement_error
 
+  # The `error` titles the catalog-selection endpoints answer with, keyed by the
+  # code Sessions::UpdateCatalogSelection returns. The titles are this surface's
+  # vocabulary; the detail sentence under them is the service's, so it now reads
+  # the same as the web UI's and the MCP tool's.
+  CATALOG_SELECTION_ERROR_TITLES = {
+    too_many: "Too many entries",
+    invalid_entries: "Invalid entries",
+    update_failed: "Update failed",
+    database_unavailable: "Service unavailable"
+  }.freeze
+
   before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat, :set_category ]
 
   # GET /api/v1/sessions
@@ -795,189 +806,42 @@ class Api::V1::SessionsController < Api::BaseController
     }
   end
 
-  # PATCH /api/v1/sessions/:id/mcp_servers
-  # Update MCP servers for a session.
+  # The four catalog-selection endpoints. Each checks the parameter's shape,
+  # hands the operation to Sessions::UpdateCatalogSelection — the same service
+  # the web UI and the `action_session` MCP tool call — and renders the answer.
+  # The selection is persisted and takes effect on the session's next prepare;
+  # nothing here regenerates the runtime config. See the service for why.
   #
-  # Request body:
-  #   - mcp_servers: Array of MCP server names (max 50)
+  # PATCH /api/v1/sessions/:id/mcp_servers
+  # Request body: mcp_servers — array of MCP server names (max 50)
   def update_mcp_servers
-    mcp_servers = params[:mcp_servers] || []
+    return unless (result = apply_catalog_selection(:mcp_servers, params[:mcp_servers]))
 
-    unless mcp_servers.is_a?(Array)
-      render_api_error("Invalid parameter", "mcp_servers must be an array", status: :unprocessable_entity)
-      return
-    end
-
-    if mcp_servers.length > 50
-      render_api_error("Too many servers", "Maximum 50 MCP servers", status: :unprocessable_entity)
-      return
-    end
-
-    mcp_servers = mcp_servers.reject(&:blank?).map { |s| s.to_s.strip.first(100) }
-
-    # Validate server names
-    invalid_servers = mcp_servers.reject { |name| ServersConfig.exists?(name) }
-    if invalid_servers.any?
-      render_api_error("Invalid servers", "Invalid MCP servers: #{invalid_servers.join(', ')}", status: :unprocessable_entity)
-      return
-    end
-
-    old_servers = @session.mcp_servers || []
-
-    # Clearing the list has to be recorded as deliberate, or McpServerBackfill
-    # reads the empty column as an accident and restores the root's defaults the
-    # next time the config is regenerated.
-    @session.record_explicit_mcp_servers(mcp_servers)
-
-    if @session.update(mcp_servers: mcp_servers)
-      added = mcp_servers - old_servers
-      removed = old_servers - mcp_servers
-
-      # A deliberate removal is not an unexplained loss — forget its status so
-      # later config regenerations don't report it as one.
-      @session.forget_mcp_server_status!(removed)
-
-      changes = []
-      changes << "added: #{added.join(', ')}" if added.any?
-      changes << "removed: #{removed.join(', ')}" if removed.any?
-
-      if changes.any?
-        @session.logs.create!(content: "MCP servers updated via API (#{changes.join('; ')})", level: "info")
-      end
-
-      render json: { session: session_json(@session), message: "MCP servers updated" }
-    else
-      render_api_error("Update failed", @session.errors.full_messages, status: :unprocessable_entity)
-    end
+    render json: catalog_selection_json(result, "MCP servers updated")
   end
 
   # PATCH /api/v1/sessions/:id/catalog_skills
-  # Update catalog skills for a session.
-  #
-  # Request body:
-  #   - catalog_skills: Array of skill names (max 100)
+  # Request body: catalog_skills — array of catalog skill ids (max 100)
   def update_catalog_skills
-    catalog_skills = params[:catalog_skills] || []
+    return unless apply_catalog_selection(:catalog_skills, params[:catalog_skills])
 
-    unless catalog_skills.is_a?(Array)
-      render_api_error("Invalid parameter", "catalog_skills must be an array", status: :unprocessable_entity)
-      return
-    end
-
-    if catalog_skills.length > SessionsController::MAX_CATALOG_SKILLS
-      render_api_error("Too many skills", "Maximum #{SessionsController::MAX_CATALOG_SKILLS} catalog skills", status: :unprocessable_entity)
-      return
-    end
-
-    catalog_skills = catalog_skills.reject(&:blank?).map { |s| s.to_s.strip.first(SessionsController::MAX_CATALOG_SKILL_NAME_LENGTH) }
-
-    invalid_skills = catalog_skills.reject { |name| SkillsConfig.exists?(name) }
-    if invalid_skills.any?
-      render_api_error("Invalid skills", "Invalid catalog skills: #{invalid_skills.join(', ')}", status: :unprocessable_entity)
-      return
-    end
-
-    old_skills = @session.catalog_skills || []
-
-    if @session.update(catalog_skills: catalog_skills)
-      added = catalog_skills - old_skills
-      removed = old_skills - catalog_skills
-      changes = []
-      changes << "added: #{added.join(', ')}" if added.any?
-      changes << "removed: #{removed.join(', ')}" if removed.any?
-
-      if changes.any?
-        @session.logs.create!(content: "Catalog skills updated via API (#{changes.join('; ')})", level: "info")
-      end
-
-      render json: { session: session_json(@session), message: "Catalog skills updated" }
-    else
-      render_api_error("Update failed", @session.errors.full_messages, status: :unprocessable_entity)
-    end
+    render json: { session: session_json(@session), message: "Catalog skills updated" }
   end
 
   # PATCH /api/v1/sessions/:id/catalog_hooks
+  # Request body: catalog_hooks — array of catalog hook ids (max 100)
   def update_catalog_hooks
-    catalog_hooks = params[:catalog_hooks] || []
+    return unless apply_catalog_selection(:catalog_hooks, params[:catalog_hooks])
 
-    unless catalog_hooks.is_a?(Array)
-      render_api_error("Invalid parameter", "catalog_hooks must be an array", status: :unprocessable_entity)
-      return
-    end
-
-    if catalog_hooks.length > SessionsController::MAX_CATALOG_HOOKS
-      render_api_error("Too many hooks", "Maximum #{SessionsController::MAX_CATALOG_HOOKS} catalog hooks", status: :unprocessable_entity)
-      return
-    end
-
-    catalog_hooks = catalog_hooks.reject(&:blank?).map { |s| s.to_s.strip.first(SessionsController::MAX_CATALOG_HOOK_NAME_LENGTH) }
-
-    invalid_hooks = catalog_hooks.reject { |name| HooksConfig.exists?(name) }
-    if invalid_hooks.any?
-      render_api_error("Invalid hooks", "Invalid catalog hooks: #{invalid_hooks.join(', ')}", status: :unprocessable_entity)
-      return
-    end
-
-    old_hooks = @session.catalog_hooks || []
-
-    if @session.update(catalog_hooks: catalog_hooks)
-      added = catalog_hooks - old_hooks
-      removed = old_hooks - catalog_hooks
-      changes = []
-      changes << "added: #{added.join(', ')}" if added.any?
-      changes << "removed: #{removed.join(', ')}" if removed.any?
-
-      if changes.any?
-        @session.logs.create!(content: "Catalog hooks updated via API (#{changes.join('; ')})", level: "info")
-      end
-
-      render json: { session: session_json(@session), message: "Catalog hooks updated" }
-    else
-      render_api_error("Update failed", @session.errors.full_messages, status: :unprocessable_entity)
-    end
+    render json: { session: session_json(@session), message: "Catalog hooks updated" }
   end
 
   # PATCH /api/v1/sessions/:id/catalog_plugins
+  # Request body: catalog_plugins — array of catalog plugin ids (max 50)
   def update_catalog_plugins
-    catalog_plugins = params[:catalog_plugins] || []
+    return unless (result = apply_catalog_selection(:catalog_plugins, params[:catalog_plugins]))
 
-    unless catalog_plugins.is_a?(Array)
-      render_api_error("Invalid parameter", "catalog_plugins must be an array", status: :unprocessable_entity)
-      return
-    end
-
-    if catalog_plugins.length > SessionsController::MAX_CATALOG_PLUGINS
-      render_api_error("Too many plugins", "Maximum #{SessionsController::MAX_CATALOG_PLUGINS} catalog plugins", status: :unprocessable_entity)
-      return
-    end
-
-    catalog_plugins = catalog_plugins.reject(&:blank?).map { |s| s.to_s.strip.first(SessionsController::MAX_CATALOG_PLUGIN_ID_LENGTH) }
-
-    invalid_plugins = catalog_plugins.reject { |id| PluginsConfig.exists?(id) }
-    if invalid_plugins.any?
-      render_api_error("Invalid plugins", "Invalid catalog plugins: #{invalid_plugins.join(', ')}", status: :unprocessable_entity)
-      return
-    end
-
-    old_plugins = @session.catalog_plugins || []
-
-    if @session.update(catalog_plugins: catalog_plugins)
-      added = catalog_plugins - old_plugins
-      removed = old_plugins - catalog_plugins
-      changes = []
-      changes << "added: #{added.join(', ')}" if added.any?
-      changes << "removed: #{removed.join(', ')}" if removed.any?
-
-      if changes.any?
-        @session.logs.create!(content: "Catalog plugins updated via API (#{changes.join('; ')})", level: "info")
-      end
-
-      regenerate_mcp_config_file(@session)
-
-      render json: { session: session_json(@session), message: "Catalog plugins updated" }
-    else
-      render_api_error("Update failed", @session.errors.full_messages, status: :unprocessable_entity)
-    end
+    render json: catalog_selection_json(result, "Catalog plugins updated")
   end
 
   # PATCH /api/v1/sessions/:id/model
@@ -1564,19 +1428,41 @@ class Api::V1::SessionsController < Api::BaseController
     render_api_error("Invalid placement", error.message, status: :unprocessable_entity)
   end
 
-  def regenerate_mcp_config_file(session)
-    working_directory = session.metadata&.dig("working_directory")
-    return unless working_directory.present? && Dir.exist?(working_directory)
+  # Run one catalog-selection change and render the failure branch if there is
+  # one. Returns the Result on success and nil once it has rendered, so an action
+  # reads `return unless apply_catalog_selection(...)`.
+  #
+  def apply_catalog_selection(attribute, values)
+    unless values.nil? || values.is_a?(Array)
+      render_api_error("Invalid parameter", "#{attribute} must be an array", status: :unprocessable_entity)
+      return nil
+    end
 
-    air_service = AirPrepareService.new(
-      session: session,
-      working_directory: working_directory
+    result = Sessions::UpdateCatalogSelection.call(
+      session: @session,
+      attribute: attribute,
+      values: values || [],
+      actor: :api
     )
-    air_service.prepare!
+    return result if result.ok?
 
-    Rails.logger.info "AIR prepare completed for session #{session.id} at #{working_directory}"
-  rescue => e
-    Rails.logger.error "Failed to run AIR prepare for session #{session.id}: #{e.message}"
+    status = result.error_code == :database_unavailable ? :service_unavailable : :unprocessable_entity
+    render_api_error(CATALOG_SELECTION_ERROR_TITLES.fetch(result.error_code, "Update failed"), result.error, status: status)
+    nil
+  end
+
+  # A selection that can carry an MCP server (`mcp_servers`, `catalog_plugins`)
+  # is probed for OAuth, and a server that needs authorizing parks the session
+  # for a human. The web UI renders Authorize buttons off that; a REST caller
+  # gets the same two fields, so it can say why the session's status moved
+  # rather than having to infer it.
+  def catalog_selection_json(result, message)
+    {
+      session: session_json(@session.reload),
+      message: message,
+      oauth_required: result.oauth_required?,
+      oauth_required_servers: result.servers_needing_oauth
+    }
   end
 
   # Re-read one session's transcript from the filesystem and persist it.

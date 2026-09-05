@@ -4755,13 +4755,15 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_includes json_response["error"], "Invalid MCP servers"
   end
 
-  test "should regenerate mcp.json when working directory exists" do
+  # The regeneration policy, asserted rather than assumed: a catalog-selection
+  # change persists and stops. AIR is not run, so the clone's .mcp.json is left
+  # exactly as it was until the session's next prepare — its next turn, a
+  # restart, or an unarchive, each of which re-runs AIR anyway.
+  test "updating mcp_servers does not regenerate the clone's mcp.json" do
     Dir.mktmpdir do |temp_dir|
-      # Start with an initial .mcp.json file (simulate existing session)
-      initial_mcp_path = File.join(temp_dir, ".mcp.json")
+      mcp_path = File.join(temp_dir, ".mcp.json")
       original_content = '{"mcpServers": {"old-server": {"command": "test"}}}'
-      File.write(initial_mcp_path, original_content)
-      original_mtime = File.mtime(initial_mcp_path)
+      File.write(mcp_path, original_content)
 
       session = Session.create!(
         git_root: "https://github.com/test/repo.git",
@@ -4770,36 +4772,16 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
         metadata: { "working_directory" => temp_dir }
       )
 
-      # Wait a tiny bit to ensure mtime difference is detectable
-      sleep 0.01
+      AirPrepareService.any_instance.expects(:prepare!).never
 
-      # Stub AirPrepareService to write a realistic .mcp.json instead of shelling out to npx
-      AirPrepareService.any_instance.stubs(:prepare!).with do
-        File.write(initial_mcp_path, JSON.pretty_generate({
-          "mcpServers" => { "playwright-custom" => { "command" => "npx", "args" => [ "-y", "playwright-mcp" ] } }
-        }))
-        true
-      end
-
-      # Update MCP servers to playwright (which has no required secrets)
       patch update_mcp_servers_session_url(session),
             params: { mcp_servers: [ "playwright-custom" ] },
             as: :json
 
       assert_response :success
-      session.reload
-      assert_equal [ "playwright-custom" ], session.mcp_servers
-
-      # Verify .mcp.json was regenerated
-      assert File.exist?(initial_mcp_path)
-      new_mtime = File.mtime(initial_mcp_path)
-      assert new_mtime > original_mtime, "File should have been updated"
-
-      # Verify new content has valid structure with playwright server
-      mcp_content = JSON.parse(File.read(initial_mcp_path))
-      assert mcp_content.key?("mcpServers")
-      assert mcp_content["mcpServers"].key?("playwright-custom")
-      assert_not mcp_content["mcpServers"].key?("old-server")
+      assert_equal [ "playwright-custom" ], session.reload.mcp_servers
+      assert_equal original_content, File.read(mcp_path),
+        "the write must not touch the clone's runtime config"
     end
   end
 
@@ -4858,7 +4840,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal [ "context7" ], session.mcp_servers
   end
 
-  test "should regenerate mcp.json when catalog plugin bundles MCP servers" do
+  test "updating catalog_plugins does not regenerate the clone's mcp.json" do
     Dir.mktmpdir do |temp_dir|
       session = Session.create!(
         git_root: "https://github.com/test/repo.git",
@@ -4868,7 +4850,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
         metadata: { "working_directory" => temp_dir }
       )
 
-      AirPrepareService.any_instance.expects(:prepare!).once
+      AirPrepareService.any_instance.expects(:prepare!).never
       McpOauthCredentialInjector.any_instance.stubs(:check_credentials_status).returns({})
 
       patch update_catalog_plugins_session_url(session),
@@ -4878,6 +4860,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       assert_response :success
       session.reload
       assert_equal [ "figma-design-workflow" ], session.catalog_plugins
+      # The servers the plugin bundles are part of the session's effective set
+      # immediately; only the on-disk config waits for the next prepare.
       assert_includes session.all_mcp_servers, "remote-fs-screenshots"
       assert_includes session.all_mcp_servers, "figma"
       assert_includes session.all_mcp_servers, "image-diff"
@@ -4886,7 +4870,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "should clear mcp.json mcpServers when mcp_servers is empty" do
+  test "clearing mcp_servers leaves the clone's mcp.json for the next prepare" do
     Dir.mktmpdir do |temp_dir|
       session = Session.create!(
         git_root: "https://github.com/test/repo.git",
@@ -4895,26 +4879,116 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
         metadata: { "working_directory" => temp_dir }
       )
 
-      # Create an initial .mcp.json file with servers
-      initial_mcp_path = File.join(temp_dir, ".mcp.json")
-      File.write(initial_mcp_path, '{"mcpServers": {"playwright-custom": {}}}')
+      mcp_path = File.join(temp_dir, ".mcp.json")
+      File.write(mcp_path, '{"mcpServers": {"playwright-custom": {}}}')
 
-      # Stub AirPrepareService to write empty mcpServers instead of shelling out to npx
-      AirPrepareService.any_instance.stubs(:prepare!).with do
-        File.write(initial_mcp_path, JSON.pretty_generate({ "mcpServers" => {} }))
-        true
-      end
+      AirPrepareService.any_instance.expects(:prepare!).never
 
-      # Clear MCP servers
       patch update_mcp_servers_session_url(session),
             params: { mcp_servers: [] },
             as: :json
 
       assert_response :success
+      assert_equal [], session.reload.mcp_servers
+      assert_equal({ "playwright-custom" => {} }, JSON.parse(File.read(mcp_path))["mcpServers"],
+        "the on-disk config is rewritten by the next prepare, not by the write")
+    end
+  end
 
-      # Verify .mcp.json was regenerated with empty mcpServers
-      mcp_content = JSON.parse(File.read(initial_mcp_path))
-      assert_equal({}, mcp_content["mcpServers"])
+  # --- The four catalog editors, one rule --------------------------------------
+  #
+  # The web third of the 4 x 3 matrix. All four editors run through
+  # Sessions::UpdateCatalogSelection, so the cap, the truncation, the unknown-id
+  # rejection, the log row and the regeneration policy are one behaviour with
+  # four names — asserted here against the same table the REST and MCP surfaces
+  # are asserted against.
+  WEB_CATALOG_EDITORS = [
+    { attribute: :mcp_servers, path: :update_mcp_servers_session_url },
+    { attribute: :catalog_skills, path: :update_catalog_skills_session_url },
+    { attribute: :catalog_hooks, path: :update_catalog_hooks_session_url },
+    { attribute: :catalog_plugins, path: :update_catalog_plugins_session_url }
+  ].freeze
+
+  def catalog_session(label)
+    Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Matrix #{label}")
+  end
+
+  def patch_catalog(editor, session, values)
+    patch send(editor[:path], session), params: { editor[:attribute] => values }, as: :json
+  end
+
+  test "every catalog editor enforces its cap" do
+    WEB_CATALOG_EDITORS.each do |editor|
+      spec = Session::CATALOG_SELECTIONS.fetch(editor[:attribute])
+      valid = Sessions::UpdateCatalogSelection.valid_ids(editor[:attribute]).first
+
+      patch_catalog(editor, catalog_session(editor[:attribute]), Array.new(spec[:max] + 1, valid))
+
+      assert_response :unprocessable_entity, editor[:attribute].to_s
+      assert_equal "Too many #{spec[:label]} (maximum #{spec[:max]})",
+        JSON.parse(response.body)["error"], editor[:attribute].to_s
+    end
+  end
+
+  test "every catalog editor truncates an over-long id before validating it" do
+    over_long = "z" * (Session::MAX_CATALOG_SELECTION_ID_LENGTH + 25)
+
+    WEB_CATALOG_EDITORS.each do |editor|
+      patch_catalog(editor, catalog_session(editor[:attribute]), [ over_long ])
+
+      assert_response :unprocessable_entity, editor[:attribute].to_s
+      error = JSON.parse(response.body)["error"]
+      assert_includes error, "z" * Session::MAX_CATALOG_SELECTION_ID_LENGTH
+      assert_not_includes error, over_long, "#{editor[:attribute]} echoed the untruncated id"
+    end
+  end
+
+  test "every catalog editor rejects an id outside its catalog and leaves the list alone" do
+    WEB_CATALOG_EDITORS.each do |editor|
+      spec = Session::CATALOG_SELECTIONS.fetch(editor[:attribute])
+      session = catalog_session(editor[:attribute])
+
+      patch_catalog(editor, session, [ "no-such-entry" ])
+
+      assert_response :unprocessable_entity, editor[:attribute].to_s
+      assert_equal "Invalid #{spec[:label]}: no-such-entry", JSON.parse(response.body)["error"]
+      assert_equal [], session.reload.public_send(editor[:attribute]).to_a
+    end
+  end
+
+  test "every catalog editor writes one log row with no surface suffix" do
+    WEB_CATALOG_EDITORS.each do |editor|
+      spec = Session::CATALOG_SELECTIONS.fetch(editor[:attribute])
+      session = catalog_session(editor[:attribute])
+      id = Sessions::UpdateCatalogSelection.valid_ids(editor[:attribute]).first
+
+      assert_difference -> { session.logs.count }, 1, editor[:attribute].to_s do
+        patch_catalog(editor, session, [ id ])
+      end
+
+      assert_response :success
+      assert_equal "#{spec[:label].upcase_first} updated (added: #{id})", session.logs.last.content
+    end
+  end
+
+  test "no catalog editor regenerates the session's runtime config" do
+    Dir.mktmpdir do |dir|
+      AirPrepareService.any_instance.expects(:prepare!).never
+      McpOauthCredentialInjector.any_instance.stubs(:check_credentials_status).returns({})
+
+      WEB_CATALOG_EDITORS.each do |editor|
+        session = Session.create!(
+          git_root: "https://github.com/test/repo.git",
+          prompt: "Matrix #{editor[:attribute]}",
+          metadata: { "working_directory" => dir }
+        )
+        id = Sessions::UpdateCatalogSelection.valid_ids(editor[:attribute]).first
+
+        patch_catalog(editor, session, [ id ])
+
+        assert_response :success, editor[:attribute].to_s
+        assert_equal [ id ], session.reload.public_send(editor[:attribute])
+      end
     end
   end
 
@@ -5893,7 +5967,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :unprocessable_entity
     json_response = JSON.parse(response.body)
-    assert_includes json_response["error"], "Too many skills"
+    assert_includes json_response["error"], "Too many catalog skills"
   end
 
   test "show page should display skills edit button even when no skills configured" do
