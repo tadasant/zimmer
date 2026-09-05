@@ -82,6 +82,51 @@ class McpServerAvailabilityTest < ApplicationSystemTestCase
     end
   end
 
+  # The reason is catalog-authored text written in a different repository, and it
+  # lands in a template literal assigned to innerHTML. A quote that escaped into
+  # the row's `title` attribute could close it and add an event handler, so the
+  # reason is rendered as text and the title is set as a DOM property.
+  test "a reason carrying quotes and angle brackets renders inert" do
+    hostile = %(Use "the other one" <img src=x onerror=alert(1)> instead)
+    catalog = AVAILABILITY_CATALOG.deep_dup
+    catalog["strad-secrets-oauth"]["unavailable"] = hostile
+    AirCatalogService.stubs(:entries_for).returns({})
+    AirCatalogService.stubs(:entries_for).with(:mcp).returns(catalog)
+    SecretsInterpolator.any_instance.stubs(:resolution)
+      .returns(SecretsInterpolator::Resolution.new(state: :found, source: "a stubbed provider"))
+
+    visit new_session_path
+    find("[data-mcp-server-select-target='input']").click
+    assert_selector ".server-item", minimum: 1
+
+    row = find(".server-item[data-name='strad-secrets-oauth']")
+    assert_includes row.text, hostile, "the reason is shown verbatim, as text"
+    assert_includes row[:title], hostile, "and survives intact in the title property"
+    assert_equal 0, page.all("img[src='x']", visible: :all).size,
+      "nothing in the reason may become an element"
+    assert_no_selector ".server-item[onerror]"
+  end
+
+  # The session detail page drives a second controller over the same payload, and
+  # the two build their row markup separately — so the badge has to be asserted
+  # there rather than inferred from the form.
+  test "the session page's MCP editor renders the same badge and reason" do
+    session = Session.create!(prompt: "Test prompt", status: :waiting, agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git", branch: "main")
+
+    with_mixed_availability_catalog do
+      visit session_path(session)
+      find("[data-action~='click->editable-mcp-servers#edit']", match: :first).click
+      input = find("[data-editable-mcp-servers-target='input']")
+      input.click
+      input.fill_in with: "strad"
+      assert_selector ".server-item", minimum: 1
+
+      assert_text "STRAD_STAGING_API_KEY unresolved"
+      assert_selector ".server-item", text: "Unavailable", minimum: 1
+    end
+  end
+
   # The badge and the reason are new markup inside a dropdown row that is already
   # width-capped at `innerWidth - 32`, and the warning chip gains an icon beside
   # its text. Both land on a screen people read on a phone, so both are measured

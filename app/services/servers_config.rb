@@ -156,7 +156,12 @@ class ServersConfig
         # `${VAR}` does not resolve or its OAuth flow was never completed, and
         # only ConnectorStatusProbe can tell you that. Anything serializing "can
         # Zimmer use this?" wants McpServerOptions, not this field.
-        unavailable: unavailable_reason
+        #
+        # Named for the accessor rather than for the catalog key (`unavailable`),
+        # because McpServerOptions already publishes an `unavailable` that is a
+        # boolean. Two hashes describing one server must not use one key for two
+        # types.
+        unavailable_reason: unavailable_reason
       }
 
       if stdio?

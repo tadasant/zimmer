@@ -229,8 +229,8 @@ class ServersConfigTest < ActiveSupport::TestCase
     assert hash.key?(:args)
     assert hash.key?(:env)
     assert_equal false, hash[:remote?]
-    assert hash.key?(:unavailable), "to_h carries the catalog's own availability declaration"
-    assert_nil hash[:unavailable], "a catalog that says nothing declares nothing"
+    assert hash.key?(:unavailable_reason), "to_h carries the catalog's own availability declaration"
+    assert_nil hash[:unavailable_reason], "a catalog that says nothing declares nothing"
   end
 
   test "to_h carries the catalog's unavailable declaration when there is one" do
@@ -245,7 +245,7 @@ class ServersConfigTest < ActiveSupport::TestCase
 
     hash = ServersConfig.find("dead").to_h
 
-    assert_equal "The endpoint no longer serves Zimmer.", hash[:unavailable],
+    assert_equal "The endpoint no longer serves Zimmer.", hash[:unavailable_reason],
       "normalized, so a newline cannot split the line it lands on"
   end
 

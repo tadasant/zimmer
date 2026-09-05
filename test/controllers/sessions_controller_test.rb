@@ -443,6 +443,29 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal false, servers.find { |s| s["name"] == "context7" }["unavailable"]
   end
 
+  # The turbo-stream re-render after a write goes through mcp_partials_locals,
+  # which is a third copy of the payload. Without this the editor would show the
+  # flags on load and lose them the moment you saved a change.
+  test "the turbo-stream re-render after an MCP write carries the flags" do
+    session = sessions(:active_session)
+
+    with_mixed_availability_catalog do
+      patch update_mcp_servers_session_url(session),
+        params: { mcp_servers: [ "context7" ] },
+        headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    end
+    assert_response :success
+
+    value = css_select("[data-editable-mcp-servers-available-servers-value]")
+      .first["data-editable-mcp-servers-available-servers-value"]
+    servers = JSON.parse(value)
+
+    assert_equal true, servers.find { |s| s["name"] == "strad-secrets-staging-rw" }["unavailable"]
+    assert_equal "STRAD_STAGING_API_KEY unresolved",
+      servers.find { |s| s["name"] == "strad-secrets-staging-rw" }["unavailable_reason"]
+    assert_equal false, servers.find { |s| s["name"] == "context7" }["unavailable"]
+  end
+
   # Test create action - success cases
   test "should create session" do
     assert_difference("Session.count") do

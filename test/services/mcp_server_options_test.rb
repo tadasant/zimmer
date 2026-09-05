@@ -9,6 +9,8 @@ require "mocha/minitest"
 # server wrongly flagged is one a human stops using, and a server wrongly cleared
 # is a session that dies at prepare time.
 class McpServerOptionsTest < ActiveSupport::TestCase
+  setup { McpServerOptions::Cache.reset }
+
   teardown do
     Mocha::Mockery.instance.teardown
   end
@@ -91,6 +93,24 @@ class McpServerOptionsTest < ActiveSupport::TestCase
     assert_equal 4, options.size
     assert options.none? { |o| o[:unavailable] }, "say nothing rather than claim everything is broken"
     assert options.all? { |o| o[:title].present? }
+  end
+
+  # A single PATCH to a session's mcp_servers reaches this three times — the
+  # broadcast callback, the OAuth park, and the action's own turbo-stream locals
+  # — and each one used to pay for a full probe.
+  test "the probe runs once per request, however many callers ask" do
+    ConnectorStatusProbe.expects(:all).once.returns([])
+
+    McpServerOptions::Cache.reset
+    3.times { McpServerOptions.all }
+  end
+
+  test "the memo does not outlive the request" do
+    with_mixed_availability_catalog { McpServerOptions.all }
+    McpServerOptions::Cache.reset
+
+    ConnectorStatusProbe.expects(:all).once.returns([])
+    McpServerOptions.all
   end
 
   test "the fallback says why in the log" do

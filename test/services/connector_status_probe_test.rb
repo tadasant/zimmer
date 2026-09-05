@@ -578,6 +578,32 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
     end
   end
 
+  # BLOCKING_STATES and the `case` inside #unavailable_reason are two lists that
+  # have to stay in step. A state added to the first without a branch in the
+  # second reports `unavailable: true` with a `null` reason — which the pickers
+  # degrade past silently, so the only surface that would notice is a REST client
+  # reading a contract that promises the two move together.
+  test "every blocking state says why" do
+    reasons = {
+      missing_configuration: probe("secrets-service-account", SECRETS_SERVICE_ACCOUNT),
+      needs_authorization: probe("notion", OAUTH_SERVER),
+      declared_unavailable: probe("dead", OAUTH_SERVER.merge("unavailable" => "Gone.")),
+      needs_reauth: nil
+    }
+    with_catalog("notion", OAUTH_SERVER) do
+      create_credential("notion", OAUTH_SERVER, expires_at: 1.hour.ago, refresh_token: nil, token_endpoint: nil)
+    end
+    reasons[:needs_reauth] = probe("notion", OAUTH_SERVER)
+
+    assert_equal ConnectorStatusProbe::BLOCKING_STATES.to_set, reasons.keys.to_set,
+      "a blocking state with no case here is one whose reason would come back null"
+    reasons.each do |state, status|
+      assert_equal state, status.state
+      assert status.unavailable_reason.present?, "#{state} must say why"
+      assert status.unavailable_reason(markdown: false).present?, "#{state} must say why in plain text too"
+    end
+  end
+
   test "an available server explains nothing in either dress" do
     status = probe("secrets-service-account", SECRETS_SERVICE_ACCOUNT, resolvable: [ "STRAD_API_KEY" ])
 

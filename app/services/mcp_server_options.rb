@@ -18,39 +18,69 @@
 # states that mean "Zimmer could not find out" (`:store_unavailable`,
 # `:probe_failed`): they report as available, because flagging a working server
 # as broken during a secret-store blip is the more expensive mistake.
-#
-# What it costs: one `ConnectorStatusProbe.all` per call — no network call to
-# any MCP server, one indexed credential lookup per OAuth-capable entry, and
-# secret resolution through the provider chain, which holds a 60-second
-# namespace snapshot. Measured at ~14ms warm for an 18-server catalog. Callers
-# that render more than one picker in a request should call this once and pass
-# the result down rather than calling it per picker.
 class McpServerOptions
+  # One probe per request (and per job), not one per caller.
+  #
+  # A single `PATCH /sessions/:id/mcp_servers` reaches this three times: the
+  # `after_update_commit` broadcast rebuilds the metadata partial's locals, the
+  # OAuth branch can park the session and rebuild them again, and the action then
+  # renders its own turbo-stream locals. `ActiveSupport::CurrentAttributes` is
+  # reset by the executor around every request and every job, so this is a memo
+  # with exactly request lifetime — it cannot serve a caller a readiness answer
+  # computed for some earlier request, which is what a TTL cache would do.
+  #
+  # Deliberately not a longer-lived cache. The staleness would land on the one
+  # signal whose freshness is the point: someone who has just authorized a
+  # connector at /connectors and come back to the form must not be told it is
+  # still broken.
+  class Cache < ActiveSupport::CurrentAttributes
+    attribute :options
+  end
+
   # Every catalog server as a select-list option.
+  #
+  # What it costs, once per request: no network call to any MCP server, one
+  # indexed credential lookup per OAuth-capable entry, and secret resolution
+  # through the provider chain, which holds a 60-second namespace snapshot.
+  # Measured at ~50ms cold and ~14ms warm for an 18-server catalog, in 2 queries.
   #
   # @return [Array<Hash>] `{name:, title:, description:, unavailable:, unavailable_reason:}`
   def self.all
+    Cache.options ||= build
+  end
+
+  # @return [Array<Hash>]
+  def self.build
     ConnectorStatusProbe.all.map { |status| option(status.server, status) }
   rescue => e
     # A picker that cannot be built is far worse than one without availability
-    # flags: the form would offer nothing at all. Individual bad entries already
-    # degrade to :probe_failed inside the probe, so reaching here means the whole
-    # computation failed — fall back to the catalog and say nothing about
+    # flags: the form would offer no servers at all, which reads as an empty
+    # catalog. Individual bad entries already degrade to :probe_failed inside the
+    # probe, so reaching here means the shared setup failed — say nothing about
     # availability rather than claiming everything is broken.
+    #
+    # Narrow on purpose: a catalog that will not resolve raises in
+    # `ServersConfig.all`, which the fallback calls too, so that case still
+    # surfaces rather than being swallowed into a silently flagless list. What
+    # this covers is the probe's own shared setup and anything unexpected above
+    # the per-server rescue.
     Rails.logger.warn "[McpServerOptions] availability unavailable, falling back to catalog: #{e.class}: #{e.message}"
+    ErrorReporter.report_exception(e, context: { service: "McpServerOptions" })
     ServersConfig.all.map { |server| option(server, nil) }
   end
+  private_class_method :build
 
   # @param server [ServersConfig::Server]
   # @param status [ConnectorStatusProbe::Status, nil]
   # @return [Hash]
   def self.option(server, status)
+    unavailable = status ? !status.available? : false
     {
       name: server.name,
       title: server.title,
       description: server.description,
-      unavailable: status ? !status.available? : false,
-      unavailable_reason: status&.available? == false ? status.unavailable_reason(markdown: false) : nil
+      unavailable: unavailable,
+      unavailable_reason: unavailable ? status.unavailable_reason(markdown: false) : nil
     }
   end
   private_class_method :option
