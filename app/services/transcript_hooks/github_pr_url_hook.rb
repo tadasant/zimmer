@@ -235,9 +235,9 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # A recovery pause is Zimmer restarting its own interrupted process — a deploy,
   # a re-picked job row — and the session is resumed from it within seconds by a
   # sweep that promised to. The state machine defers the call there on the same
-  # test it defers the pause's wake and push on, and makes it when that promise
-  # expires (SessionStateMachine#announcement_deferred_to_recovery_sweep? and
-  # #announce_deferred_needs_input!).
+  # test it defers the pause's wake and push on
+  # (SessionStateMachine#announcement_deferred_to_recovery_sweep?), and
+  # SessionContinuation makes it when that promise expires.
   #
   # `failed` and `archived` are not literally terminal — `resume` runs from
   # `failed` and `unarchive_to_*` from `archived` — so this shares `pause`'s
