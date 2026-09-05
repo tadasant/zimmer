@@ -360,6 +360,66 @@ The translation is a net under two rules, not a replacement for them:
   test submitted `2026-08-26`, applied a range in the year **828**, and passed, because the only
   assertion on the result was that the word "Showing" appeared somewhere.
 
+### The post-`visit` readiness check: a wait pinned to one element
+
+The third one fires before the test body runs at all, which is what makes it hard to read. The
+backtrace names `visit` and nothing else:
+
+```
+Capybara::ExpectationNotMet: Item does not match the provided selector
+    test/application_system_test_case.rb:196:in 'ApplicationSystemTestCase#visit'
+    test/system/queued_messages_workflow_test.rb:259:in 'block in <class:QueuedMessagesWorkflowTest>'
+```
+
+That message is not ours and not Capybara's `visit` either. turbo-rails wraps `visit` on every system
+test — `config.turbo.test_connect_after_actions` defaults to `%i[visit]`, and its engine defines
+`def visit(...) = super.tap { connect_turbo_cable_stream_sources }` on `ActionDispatch::SystemTestCase`
+— so its readiness check runs after every navigation in the whole suite. Its implementation resolves
+the unconnected `<turbo-cable-stream-source>` elements **once**, then waits on each resolved handle:
+
+```ruby
+all(:turbo_cable_stream_source, connected: false, wait: 0).each do |element|
+  element.assert_matches_selector(:turbo_cable_stream_source, connected: true)
+end
+```
+
+`assert_matches_selector` re-runs the query and asserts the handle it is holding is in the result.
+Two things follow, and both bite here.
+
+**It waits `Capybara.default_max_wait_time`, which is 2 seconds.** This app's own
+`cable_reconnect_controller.js` treats a source as merely slow until `grace` (3000ms) has passed and
+backs off exponentially from there. A harness that gives up at 2s expires *before* the page has made
+its first re-subscribe attempt — it is not waiting long enough to see the recovery the app is built
+around.
+
+**It is pinned to one element object.** `cable-reconnect` re-subscribes a stuck source by
+`replaceWith`-ing it out of the document and back in; a Turbo Stream or a frame swap can replace the
+subtree outright. Either way the identity check is asking about a node the page has moved on from, so
+the wait cannot succeed however long it runs — it burns the full timeout and raises.
+
+That is [run 33949817772](https://github.com/tadasant/zimmer/actions/runs/33949817772), where
+`QueuedMessagesWorkflowTest#test_deleting_message_updates_remaining_message_positions` errored on its
+`visit` on a commit that touched nothing near queued messages — and whose failure screenshot shows the
+page fully rendered, three queued messages and all. Rerunning the job passed.
+
+`test/support/turbo_stream_connection_wait.rb` replaces the wait with a poll of the *document*: it
+re-reads every source on each tick through `page.evaluate_script`, so a source the page replaced
+mid-wait is simply the next reading rather than a wait that can never be satisfied, and its ceiling
+sits above the app's own reconnect backoff. `ApplicationSystemTestCase` overrides
+`connect_turbo_cable_stream_sources` by name, so the fix lands wherever turbo-rails calls it —
+including any action added to `test_connect_after_actions` later — and `wait_for_turbo_streams_connected`,
+the helper tests call after a navigation that does not go through `visit`, runs the same poll. A
+failure now names the channels still pending instead of an element that went stale.
+
+The two rules that keep this from mattering:
+
+- **Don't hold an element across anything that can re-render.** `find` then act is fine; `find`, wait,
+  then act is a bet on the page standing still. `page.evaluate_script` is the escape hatch —
+  `Capybara::Session` sends it straight to the driver rather than through a resolved node.
+- **A readiness check belongs on the condition, not on an object.** "Is every stream source connected"
+  is a question about the page; "did *this* element gain an attribute" is a question about a handle,
+  and the page is entitled to throw the handle away.
+
 ## The catalog coupling — read this before you debug
 
 :::danger[A broken catalog fails every session test at once]
