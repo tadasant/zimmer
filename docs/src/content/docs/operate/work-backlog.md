@@ -86,15 +86,19 @@ once serialise instead of both computing "10 below the lowest peer" from the sam
 | Read the queue | anyone with the group | `get_work_backlog`, `GET /api/v1/work_backlog_items` |
 | Append a cleared issue | the issue work gate | `append_work_backlog_item`, `POST /api/v1/work_backlog_items` |
 | Pull the top N into spot sessions, removing dead ones for a mechanical reason | the groomer | `pull_work_backlog_items`, `POST /api/v1/work_backlog_items/pull` |
-| Pin or hand-place an item | a human | `PATCH …/:id/pin`, `PATCH …/:id/unpin` — **REST only** |
-| Remove an item by judgement | a human | `POST …/:id/remove` — **REST only** |
-| Start an item now, as a `priority` session | a human | `POST …/:id/start_now` — **REST only** |
+| Pin or hand-place an item | a human | `PATCH …/:id/pin`, `PATCH …/:id/unpin`, or the row's Pin / Unpin controls on [`/issues`](/operate/issues-view/#the-four-human-only-operations) — **no MCP tool** |
+| Remove an item by judgement | a human | `POST …/:id/remove`, or the row's Remove control on `/issues` — **no MCP tool** |
+| Start an item now, as a `priority` session | a human | `POST …/:id/start_now`, or the row's Promote control on `/issues` — **no MCP tool** |
 
 The mechanical operations are agent-callable and the discretionary ones are not, and that split is
 enforced by absence: there is no MCP tool that pins, places, removes by free-text reason, or
-promotes to priority, and a test asserts none appears. The one removal an agent may make is on a
-pull, with a reason drawn from a fixed vocabulary of observed facts — `issue_closed`,
-`issue_has_open_pr`, `session_already_working`, `trust_failed` — not typed.
+promotes to priority, and a test asserts none appears. The browser half of each discretionary
+operation is a controller of its own — `WorkBacklogPromotionsController`, `WorkBacklogPinsController`,
+`WorkBacklogRemovalsController` — descending from `ApplicationController` rather than
+`Api::BaseController`, so a form on `/issues` reaches them and the fleet's shared API key does not.
+The one removal an agent may make is on a pull, with a reason drawn from a fixed vocabulary of
+observed facts — `issue_closed`, `issue_has_open_pr`, `session_already_working`, `trust_failed` —
+not typed.
 
 The `work_backlog` MCP tool group is **opt-in**, like `gate_decisions`: a connection has to name
 it, so neither `zimmer-sessions` nor the unscoped `zimmer` server carries the writes. The queue is

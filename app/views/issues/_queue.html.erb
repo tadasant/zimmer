@@ -67,7 +67,18 @@
                 <br><%= gate_link %>
               <% end %>
             </td>
-            <td class="px-2 sm:px-3 py-2 text-right"><%= render "promote", row: row, query_params: query_params %></td>
+            <%# The four human-only operations, stacked rather than in a row: side
+                by side they are two text inputs and three buttons, which is wider
+                than the issue title column on a phone. Stacked, the column is as
+                wide as its widest control and the rest of the table keeps its
+                space. %>
+            <td class="px-2 sm:px-3 py-2 text-right">
+              <div class="flex flex-col items-end gap-1">
+                <%= render "promote", row: row, query_params: query_params %>
+                <%= render "pin", row: row, query_params: query_params %>
+                <%= render "remove", row: row, query_params: query_params %>
+              </div>
+            </td>
           </tr>
         <% end %>
         <% if rows.empty? %>

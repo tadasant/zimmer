@@ -149,7 +149,9 @@ class McpControllerTest < ActionDispatch::IntegrationTest
     assert_equal [ "get_work_backlog" ], readonly
 
     # No tool on ANY connection pins, hand-places, removes by judgement or
-    # promotes an item — those are the REST controller's, on purpose.
+    # promotes an item — those are the REST controller's and the browser's, on
+    # purpose. The browser half is WorkBacklogPromotionsController,
+    # WorkBacklogPinsController and WorkBacklogRemovalsController.
     everything = Mcp::Registry::VALID_GROUPS.join(",")
     all_tools = rpc("tools/list", path: "/mcp?tool_groups=#{everything}")["result"]["tools"].map { |t| t["name"] }
     assert_empty all_tools.grep(/pin|place|remove|start_now|promote/)

@@ -123,4 +123,16 @@ module IssuesHelper
 
     issue_safe_link(value, "gate session", class: "text-[11px] text-indigo-600 hover:text-indigo-800")
   end
+
+  # The tooltip on the pin field: what precedence means, and where each cost band
+  # sits. Built from WorkBacklog::Ranking rather than written out, so a band that
+  # moves does not leave a wrong number on fifty rows.
+  def pin_precedence_hint(key)
+    bands = WorkBacklogItem::COSTS.map do |cost|
+      band = WorkBacklog::Ranking.band_for(cost)
+      "#{cost} #{band.floor}\u2013#{band.ceiling}"
+    end
+
+    "Precedence to pin #{key} at \u2014 higher is pulled sooner. Bands: #{bands.join(', ')}."
+  end
 end
