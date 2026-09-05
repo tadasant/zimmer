@@ -41,6 +41,12 @@ Capybara.disable_animation = true
 require_relative "support/detached_node_error_translation"
 DetachedNodeErrorTranslation.install!
 
+# turbo-rails' own post-`visit` readiness check waits on a cached element handle
+# for 2 seconds; this app replaces stream sources to recover them and allows 3
+# seconds before doing so. #connect_turbo_cable_stream_sources below overrides it
+# with a poll that re-reads the document. Full diagnosis in the support file.
+require_relative "support/turbo_stream_connection_wait"
+
 # Generate a unique user data directory for each parallel test worker
 # This allows Chrome to reuse profile data between tests, significantly
 # reducing browser startup time while maintaining isolation between workers.
@@ -143,9 +149,9 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
     page.execute_script("arguments[0].click()", element.native)
   end
 
-  # Wait until every <turbo-cable-stream-source> on the page has its ActionCable
-  # subscription confirmed (signaled by Turbo setting a `connected` attribute on
-  # the element after `subscriptionConnected` fires).
+  # Wait until every <turbo-cable-stream-source> element present in the page has
+  # its ActionCable subscription confirmed (signaled by Turbo setting a `connected`
+  # attribute on the element after `subscriptionConnected` fires).
   #
   # Capybara's `visit` returns as soon as the HTML response is parsed, but the
   # WebSocket subscription handshake happens asynchronously after the JS runs.
@@ -156,27 +162,47 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   # exists and the assertion that waits for the broadcast-rendered element
   # times out.
   #
-  # Call this helper after `visit` and before triggering any change you expect
-  # to propagate via Turbo Streams. Raises if no `<turbo-cable-stream-source>`
-  # exists on the page — that case is intentional: a test that relies on Turbo
-  # Stream broadcasts should fail loudly if the source element is missing
-  # rather than silently passing because no broadcast was ever needed.
-  def wait_for_turbo_streams_connected(timeout: 5)
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
-    loop do
-      ready = page.evaluate_script(<<~JS)
-        (function() {
-          const sources = document.querySelectorAll('turbo-cable-stream-source');
-          if (sources.length === 0) return false;
-          return Array.from(sources).every(el => el.hasAttribute('connected'));
-        })()
-      JS
-      return if ready
-      if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
-        raise Capybara::ExpectationNotMet,
-          "Turbo Stream subscriptions did not connect within #{timeout}s"
-      end
-      sleep 0.05
+  # Call this helper after any navigation that does NOT go through `visit` (the
+  # dashboard drawer, a `click_link`) and before triggering a change you expect to
+  # propagate via Turbo Streams. `visit` already runs the same wait — see
+  # #connect_turbo_cable_stream_sources below.
+  #
+  # Raises if no `<turbo-cable-stream-source>` ever appears — that case is
+  # intentional: a test that relies on Turbo Stream broadcasts should fail loudly
+  # if the source element is missing rather than silently passing because no
+  # broadcast was ever needed.
+  def wait_for_turbo_streams_connected(timeout: TurboStreamConnectionWait::TIMEOUT)
+    TurboStreamConnectionWait.wait(timeout:, require_source: true) do
+      page.evaluate_script(TurboStreamConnectionWait::READING_SCRIPT)
+    end
+  end
+
+  # turbo-rails runs this after every `visit` in the suite — its engine defines
+  # `def visit(...) = super.tap { connect_turbo_cable_stream_sources }` on
+  # ActionDispatch::SystemTestCase, driven by `config.turbo
+  # .test_connect_after_actions`, which defaults to `%i[visit]`.
+  #
+  # Its own implementation resolves the unconnected sources once and then waits on
+  # each *cached element handle* to gain `[connected]`, for at most
+  # `Capybara.default_max_wait_time` (2s). That is both too short for this app —
+  # `cable_reconnect_controller.js` allows a source 3s before it even attempts a
+  # re-subscribe — and pinned to an element the page is entitled to replace, which
+  # is exactly what that controller's `replaceWith` re-subscribe does. Either way
+  # the wait raises `Capybara::ExpectationNotMet: Item does not match the provided
+  # selector` from inside `visit`, before the test body runs.
+  #
+  # Overriding the method rather than the `visit` wrapper keeps the fix wherever
+  # turbo-rails chooses to call it, including any action added to
+  # `test_connect_after_actions` later. The full diagnosis is in
+  # test/support/turbo_stream_connection_wait.rb and in
+  # docs/src/content/docs/operate/testing.md.
+  #
+  # Unlike #wait_for_turbo_streams_connected this does not require a source to
+  # exist: most pages in the suite broadcast nothing, and a page with no sources
+  # has nothing to wait for.
+  def connect_turbo_cable_stream_sources
+    TurboStreamConnectionWait.wait(require_source: false) do
+      page.evaluate_script(TurboStreamConnectionWait::READING_SCRIPT)
     end
   end
 
