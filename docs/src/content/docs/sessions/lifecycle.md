@@ -680,6 +680,84 @@ comes to rest wherever it already was — `needs_input` or `waiting` on the ordi
 `failed` when the caller was the InterruptError-failed branch — for a human to restart, which is the
 honest state for one Zimmer cannot restart itself.
 
+With one exception, and it is the permanent case the budget is *not* sized for: a session that
+never ran. See below.
+
+#### A session that never ran comes to rest in `waiting`, not in the action queue
+
+`needs_input` is the homepage's action list — the set of sessions a person is expected to decide
+something about. A session that was interrupted while its first job was starting, or that the
+[spot gate](/sessions/spot-and-priority/) held before it was ever dispatched, has nothing to ask.
+`waiting` is the state that already models "waiting for compute", and it is the only one anything
+re-dispatches from: every start path reads `waiting`, so a never-dispatched session parked in
+`needs_input` is both a slot in somebody's queue and a dead end where the work simply never
+happens.
+
+On 2026-08-22 a sweep of the spot queue found 42 spot-class sessions in `needs_input`, exactly one
+of them there for a sanctioned reason. Two populations accounted for most of the rest: ~28
+interrupted in one window on 2026-08-20 (`interrupted_start_requeue_count`, a `job_started_at`, and
+a transcript holding only the spawn prompt), and sessions held at `at_utilization_limit` and then
+abandoned by a recovery pass with `recovery_continue_abandoned: "no session_id found, working
+directory not found or invalid"`.
+
+`Sessions::ReturnToQueue` is the rest-state selection, called at the two points where Zimmer stops
+trying to continue a session it paused for its own recovery and would otherwise leave it wherever
+the pause put it:
+
+- **`SessionContinuation#abandon_or_retry_continue`** — the sweeps' give-up above.
+- **`AgentSessionJob#auto_continue_after_interrupt`** — the immediate continuation after an
+  interrupt, which declines when there is no runtime session to resume. Without this the session
+  waits out twelve doomed sweep attempts (about an hour) before reaching the give-up, sitting in
+  the action queue for all of it.
+
+It moves a session only when every one of these holds, and each condition is doing work:
+
+| Condition | Why |
+| --- | --- |
+| Resting in `needs_input` | `sleep` is `needs_input → waiting`; anywhere else there is nothing to correct |
+| No runtime `session_id` | The predicate every other recovery path uses for "has never run" |
+| `RuntimeConversationPresence` says no conversation | A runtime that mints its own id (Codex) can have written a whole turn while Zimmer's column is blank; re-queueing that session would run its prompt twice |
+| A prompt to run | The same carve-out `StalledSessionStart` makes — a prompt-less session is waiting on a human, and no sweep would start it |
+| Not in a frozen category | A parked bucket every bulk flow leaves alone |
+| No wake of its own armed | `StalledSessionStart` partitions a session with a pending one-time wake out of its batch, and that disqualifier is not a metadata marker, so the return could not drop it — a session moved with one armed would be read by neither owner |
+| `unstarted_requeue_count` under `MAX_RETURNS` | See the bound below |
+
+The move drops `paused_by` with it. That marker is what both recovery sweeps select on **and** one
+of `StalledSessionStart`'s dormant markers, so leaving it behind would hand the session straight
+back to the sweeps that just gave up on it while hiding it from the sweep that can actually start
+it.
+
+**Who picks the session up again.** `waiting` is only the right answer because something reads it,
+and two owners cover every shape this moves:
+
+| The returned session | Picked up by |
+| --- | --- |
+| ordinary — no dormant marker | `StalledSessionStart` (`StalledStartSweepJob`, every 5 minutes) restarts a `waiting` session with no runtime session id, a prompt and no queued turn |
+| held by the spot gate | `SpotHoldSweepJob` (every 5 minutes) re-arms the re-check ladder. `SpotSessionHold.held?` requires `waiting`, so a held session parked in `needs_input` is invisible to it — which is exactly how the second population stopped being re-checked |
+
+**"Picked up" is not always "restarted", and the difference is deliberate.** A session older than
+`StalledSessionStart::MAX_STALL_AGE` (1 day) is **failed** by that sweep rather than started, with a
+`failure_reason` naming the wait — its first turn is stale by definition, and a day-old one is a
+gamble a human should take deliberately from a `failed` row they can see. So a returned session that
+has been sitting for days lands in `failed`, not in `running`. That is still the point of the move:
+`failed` is a visible row with a reason on it, and `needs_input` was a slot in the action queue that
+nothing was ever going to act on. The spot-held row is unaffected either way — `spot_hold_reason`
+keeps those sessions out of `StalledSessionStart`'s population entirely, and `SpotHoldSweepJob` puts
+them back on the gate's ladder rather than aging them out.
+
+**The bound.** `Sessions::ReturnToQueue::MAX_RETURNS` caps how many times one session may be sent
+back, for the same reason `MAX_INTERRUPTED_START_REQUEUES` caps the replay: a session that keeps
+reaching a give-up, being returned, being re-dispatched and reaching the give-up again would loop
+for as long as the deployment stays broken. Past the budget the session rests in `needs_input`
+after all, with `unstarted_requeue_exhausted` recording why, and a human is the right next step.
+The counter is deliberately **not** in `Session::STALE_RETRY_METADATA_KEYS`: a resume clears that
+set, so a session that runs for one second and dies again would get its whole budget back on every
+cycle.
+
+A session that *has* a conversation behind it is untouched by all of this. Its `needs_input` may be
+a real question, and the give-up still rests it there and still makes the announcement the recovery
+pause deferred.
+
 The budget is sized for the *other* thing the validation reports. A missing working directory can be
 transient — a volume not yet mounted after a boot, a clone being restored — so the count is set to
 roughly an hour against the 5-minute cron, long enough for a blip to clear and still bounded. The

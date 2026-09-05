@@ -3451,6 +3451,16 @@ class AgentSessionJob < ApplicationJob
 
     unless session.session_id.present?
       Rails.logger.warn "[AgentSessionJob] Cannot auto-continue session #{session.id}: no session_id"
+      # There is no runtime session to resume because this one never got as far
+      # as issuing one — so the pause above has parked a session with an empty
+      # transcript in the human action queue, with nothing to ask and nothing
+      # coming for it but twelve doomed sweep attempts an hour long. `waiting` is
+      # where a session that has not run belongs, and the sweeps that read it
+      # will dispatch this one again (#602).
+      Sessions::ReturnToQueue.call(
+        session,
+        reason: "the job starting it was interrupted before it issued a runtime session id"
+      )
       return
     end
 

@@ -235,13 +235,19 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
   end
 
   test "the suppressed watcher is woken by the sweep it was deferred to giving up" do
-    # No session_id, so every sweep fails validation and spends an attempt. This is
-    # the strand this suppression could have caused: the watcher was armed inside
-    # the pause window and nothing else will ever re-emit the event for it.
+    # A runtime session to resume but no clone left to resume it in, so every sweep
+    # fails validation and spends an attempt. This is the strand this suppression
+    # could have caused: the watcher was armed inside the pause window and nothing
+    # else will ever re-emit the event for it.
+    #
+    # The session has run, deliberately. One that never ran is returned to the
+    # queue by the same give-up (Sessions::ReturnToQueue) rather than resting in
+    # `needs_input`, so there would be no `needs_input` to announce — see
+    # CleanupOrphanedSessionsJobTest.
     @watched.update!(
       status: :needs_input,
       running_job_id: nil,
-      session_id: nil,
+      session_id: SecureRandom.uuid,
       metadata: { "paused_by" => "recovery" }
     )
 
