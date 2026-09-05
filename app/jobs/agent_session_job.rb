@@ -1380,14 +1380,124 @@ class AgentSessionJob < ApplicationJob
           session.session_id.present? &&
           (follow_up_prompt.present? || reusing_existing_clone)
 
+        # A resume needs a conversation to resume INTO, and `runtime_started` cannot
+        # tell us there is one: it is written the moment a pid is recorded, before the
+        # runtime has produced a line. A first job killed in its opening seconds — a
+        # deploy, an OOM, a SIGTERM — therefore leaves the flag true over an id no
+        # conversation was ever filed under, and Claude Code answers `--resume` for it
+        # with "No conversation found with session ID" on stderr and exit 0, which
+        # every recovery path reads as a completed turn (zimmer#401, prod session 3735).
+        #
+        # ProcessLifecycleManager catches that after the fact, from stderr and from the
+        # empty transcript. This is the same conclusion reached one step earlier, where
+        # it costs nothing: spawn fresh, carrying the prompt this turn arrived with,
+        # instead of spending a doomed process and a recovery budget to learn it.
+        # (#renew_session_id_held_by_a_stub! then takes a new id if a stub file holds
+        # the old one, so `--session-id` is not refused as "already in use".)
+        #
+        # Asked of BOTH transcript stores, so a lagging poller or an unreadable clone
+        # can never on its own be enough to abandon a conversation that really exists —
+        # and asked only when there is a prompt to carry, because a fresh spawn with
+        # nothing to say is worse than a resume that might work.
+        #
+        # `spawn_prompt` is the prompt this spawn carries, which from here on can differ
+        # from the one the turn was delivered with. `follow_up_prompt` keeps naming the
+        # delivered one, because the transitions below it still key on what was
+        # delivered (resume_for_recovery_prompt preserves wake-ups only for a nudge).
+        spawn_prompt = follow_up_prompt
+        spawn_prompt_with_goal = nil
+        if is_resume && (follow_up_prompt.present? || session.prompt.present?) &&
+            !RuntimeConversationPresence.persisted?(
+              # `session.working_directory` as the fallback, as
+              # #clear_runtime_started_if_nothing_persisted does: a blank one would
+              # silently reduce the question to Zimmer's polled copy alone.
+              session: session,
+              working_directory: working_directory.presence || session.working_directory,
+              file_system: @file_system
+            )
+          log_buffer.add(
+            "The runtime session id #{session.session_id} holds no conversation — starting a fresh " \
+            "#{runtime_label} conversation instead of resuming one that does not exist",
+            level: "warning"
+          )
+          is_resume = false
+
+          # A runtime that mints its own id (Codex) ignores the one Zimmer holds, so the
+          # fresh spawn writes a NEW rollout while the stored id still names the old,
+          # conversation-free one — and CodexTranscriptSource#find_main_transcript
+          # prefers the file whose name carries that id, so the poller would read the
+          # abandoned stub for the whole turn and report an empty transcript over work
+          # that really happened. ProcessLifecycleManager#fresh_start! releases the id
+          # for exactly this reason; this is the same release, one step earlier.
+          #
+          # It inherits fresh_start!'s exposure with it: until transcript polling reads
+          # the new rollout's id back, a session with no `session_id` reclassifies a
+          # follow-up as a fresh start (see the branch this method opens with), so a
+          # message arriving in that window runs `session.prompt` instead. The window is
+          # seconds and the alternative — a poller pinned to a file the runtime has
+          # abandoned — lasts the whole turn.
+          if TranscriptRuntime.normalizer_for(session).mints_own_session_id? && session.session_id.present?
+            log_buffer.add(
+              "Releasing stale runtime session id #{session.session_id} so transcript polling " \
+              "re-attaches to the transcript this turn writes",
+              level: "info"
+            )
+            with_db_retry { session.update_column(:session_id, nil) }
+          end
+
+          # A nudge — "you may have been interrupted, carry on where you left off" — is
+          # the wrong thing to say to a conversation that does not exist, and it is what
+          # every restart path sends: the deploy sweep, the orphan sweep, the heartbeat,
+          # the web UI's Restart button, `action_session` restart. Delivered into a fresh
+          # conversation it names no task at all, so the agent has nothing to do and
+          # parks again looking finished. That is why restarting prod session 3735 never
+          # recovered it, three separate times.
+          #
+          # So replay the work that never happened instead — the same substitution
+          # Sessions::RestartUnstartedTurn makes when it reaches the same conclusion from
+          # the recovery side. A human's own follow-up is never substituted: their words
+          # go through untouched, even into a conversation with no history behind them.
+          if AutomatedPrompts.nudge?(follow_up_prompt) && (replayable = replayable_prompt(session))
+            log_buffer.add(
+              "There is no conversation for the nudge to continue, so this turn replays the work " \
+              "that never happened instead",
+              level: "warning"
+            )
+            spawn_prompt = replayable
+            # Built once and reused below: the expansion stamps a timestamp when the
+            # session carries notes, and the slot has to hold the string actually
+            # delivered — AuthOutageParkService compares it against the transcript.
+            spawn_prompt_with_goal = build_prompt_with_goal(spawn_prompt, session)
+            # The per-turn recovery slot has to hold the prompt actually being
+            # delivered: ProcessLifecycleManager#recovery_prompt prefers it, so leaving
+            # the nudge there would put it straight back on any fresh start later in
+            # this same turn.
+            with_db_retry do
+              session.merge_metadata!("active_follow_up_prompt" => spawn_prompt_with_goal)
+            end
+          elsif follow_up_prompt.present?
+            # Said plainly on the session's own timeline, because the agent about to
+            # read this turn cannot say it: the message is being delivered into a
+            # conversation with no history behind it, so anything the session appears
+            # to have done before is not in its context. Nothing is rewritten — a
+            # human's words are delivered as they were written — but a reader looking
+            # at an answer that ignores the past deserves to find out why here.
+            log_buffer.add(
+              "This turn is being delivered into a fresh conversation: nothing that came before it " \
+              "is in the agent's context, because nothing was ever written",
+              level: "warning"
+            )
+          end
+        end
+
         # Log the resume decision for debugging (helps diagnose "Session ID already in use" errors)
         log_buffer.add(
           "[DIAGNOSTIC] Spawn decision: runtime_started=#{runtime_previously_started}, follow_up=#{follow_up_prompt.present?}, reusing_clone=#{reusing_existing_clone}, is_resume=#{is_resume}",
           level: "debug"
         )
 
-        if follow_up_prompt.present?
-          prompt_with_goal = build_prompt_with_goal(follow_up_prompt, session)
+        if spawn_prompt.present?
+          prompt_with_goal = spawn_prompt_with_goal || build_prompt_with_goal(spawn_prompt, session)
         elsif is_resume
           # Genuine resume: the runtime CLI actually started before
           # (runtime_started=true) and we are reusing its clone. The CLI restores
@@ -4394,6 +4504,34 @@ class AgentSessionJob < ApplicationJob
     # line, and "it never wrote a conversation" is then not something we know.
     clear_runtime_started_if_nothing_persisted(session, log_buffer) if result.success?
     result
+  end
+
+  # The turn a nudge stands in for when there is no conversation to nudge: the work
+  # this session was supposed to do and demonstrably has not.
+  #
+  # The same raw-text chain as Sessions::RestartUnstartedTurn#prompt, and raw for the
+  # same reason — the caller expands it itself, so a key holding an already-expanded
+  # prompt would wrap the goal block around it twice. `pending_follow_up_prompt` is
+  # absent from the chain because it has already been folded into `follow_up_prompt`
+  # by the time the spawn decision runs. `sent_message` leads it: a human message the
+  # web UI stamped is cleared only once transcript polling sees it land, so one still
+  # sitting there on a session with no conversation is a turn nobody ever received,
+  # and replaying the original prompt over it would drop what the human asked for.
+  #
+  # Returns nil when the best candidate is itself a nudge — HeartbeatSweepJob
+  # overwrites `session.prompt` with its beat — because replacing one nudge with
+  # another recovers nothing while logging that it did.
+  #
+  # @return [String, nil]
+  def replayable_prompt(session)
+    [
+      session.metadata&.dig("sent_message"),
+      session.prompt,
+      # Last, and only reachable when `prompt` is itself a nudge: HeartbeatSweepJob
+      # overwrites the column with its beat and leaves this key alone, so for a
+      # session created from the chat bubble it still holds the human's own words.
+      session.metadata&.dig("original_prompt")
+    ].filter_map(&:presence).find { |candidate| !AutomatedPrompts.nudge?(candidate) }
   end
 
   # A process Zimmer killed before the runtime wrote anything leaves no

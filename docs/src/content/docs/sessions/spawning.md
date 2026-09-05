@@ -750,10 +750,18 @@ conversation (Claude Code's `ai-title`, `queue-operation`, `attachment`, `last-p
 list has not met counts as conversation — over-reporting costs one wasted resume, under-reporting
 abandons real history.
 
-Three places act on that answer:
+Four places act on that answer:
 
 - **Failed-resume and empty-turn recovery** restart under a **new** runtime session id, because both
   have already established there is nothing under the old one to keep.
+- **`AgentSessionJob`'s spawn decision** asks the same question *before* it builds `--resume`.
+  `runtime_started` cannot answer it — the flag is written the moment a pid is recorded, so a first
+  job killed in its opening seconds leaves it true over an id no conversation was ever filed under.
+  When neither store holds a conversation the turn spawns fresh instead, carrying its prompt —
+  asked only when there is a prompt to carry, since a fresh spawn with nothing to say would be worse
+  than a resume that might work. The recoveries above still catch everything this misses; asking here just means a doomed process and a
+  recovery budget are not spent learning what the transcript already says
+  ([#401](https://github.com/tadasant/zimmer/issues/401)).
 - **`ProcessLifecycleManager#spawn`** checks, before an initial (`--session-id`) spawn, whether a
   transcript already holds the id it is about to assert. If one does and it carries no conversation,
   the spawn takes a new id rather than spending the conflict budget discovering the refusal. This is
@@ -767,6 +775,43 @@ Without those, the session burned its `RetryBudget::SESSION_ID_CONFLICT` budget 
 permanently, dropping whatever request it carried: `failed` sessions reject `follow_up`, the
 status-summary fork died of the same fault on its own new id, and nothing in any queue read as "a
 request was lost" ([#519](https://github.com/tadasant/zimmer/issues/519)).
+
+Starting fresh is only half of a recovery, though, because of *what* a restart says. Every restart
+path for a session that has already run — the web UI's button, `POST /api/v1/sessions/:id/restart`,
+`action_session` with `restart`, the deploy and orphan sweeps, the heartbeat — sends a **nudge**
+(all three restart doors send `session.prompt` instead when setup failed before the prompt ever
+reached the runtime): `AutomatedPrompts::SYSTEM_RECOVERY`
+("you may have been interrupted, continue where you left off") or `AutomatedPrompts::HEARTBEAT`
+("keep making progress toward the goal"). `AutomatedPrompts.nudge?` is the predicate for that class
+of prompt: one that names no task of its own and means something only when read against a
+conversation that already exists. In a conversation that exists, a nudge is exactly right. In one
+that does not, it names nothing at all, so the agent starts over with nothing to do and comes to
+rest again looking finished.
+
+So when the spawn decision above concludes there is nothing to resume **and** the turn it was handed
+is a nudge, it replays the work that never happened instead — `metadata["sent_message"]` first, then
+`session.prompt`. The order matters: a message a human typed in the web UI is cleared only once
+transcript polling sees it land, so one still sitting on a session with no conversation is a turn
+nobody ever received, and replaying the original prompt over it would drop what they asked for. The
+replacement is skipped when the best candidate is itself a nudge, which is not hypothetical —
+`HeartbeatSweepJob` overwrites `session.prompt` with its own beat, and swapping one nudge for
+another recovers nothing while logging that it did. A human's own follow-up is never substituted:
+their words go through as written, even into a conversation with no history behind them.
+`Sessions::RestartUnstartedTurn` makes the same substitution from the recovery side, off a chain
+that differs in two ways worth knowing: it also consults `pending_follow_up_prompt` (already folded
+into this turn's prompt by the time the spawn decision runs), and it does not screen out a nudge
+candidate, because it is not reached on the path that writes one into the prompt column.
+
+Whatever is chosen also overwrites `active_follow_up_prompt`, so a fresh start later in the same
+turn replays the work rather than putting the nudge back — that slot is what
+`ProcessLifecycleManager#recovery_prompt` prefers.
+
+One more piece of bookkeeping travels with the downgrade, for runtimes that mint their own id.
+Codex ignores the id Zimmer hands it and writes a new rollout, and
+`CodexTranscriptSource#find_main_transcript` prefers the file whose name carries the stored id — so
+starting fresh without releasing that id would leave the poller reading the rollout the turn just
+abandoned, and Zimmer would report an empty transcript over work that really happened. The id is
+dropped here for the same reason `fresh_start!` drops it.
 
 ### Not every "API error" in the transcript is the API
 

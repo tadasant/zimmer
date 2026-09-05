@@ -73,4 +73,28 @@ class AutomatedPromptsTest < ActiveSupport::TestCase
     assert_not AutomatedPrompts.system_recovery?(AutomatedPrompts::HEARTBEAT)
     assert_not AutomatedPrompts.system_recovery?(AutomatedPrompts.pr_merged_message("https://example.com/pull/1"))
   end
+
+  # A prompt that names no task of its own is the one AgentSessionJob must not deliver
+  # into a conversation that does not exist (#401). Both members matter, and so does
+  # the REASONED variant: nearly every real sender calls system_recovery(reason:), so a
+  # nudge? that only recognised the bare constant would leave the deploy sweep, the
+  # orphan sweep, the spot-queue resume and the auth-outage unpark unprotected while
+  # every test still passed.
+  test "nudge? recognises the prompts that only mean something against an existing conversation" do
+    assert AutomatedPrompts.nudge?(AutomatedPrompts::SYSTEM_RECOVERY)
+    assert AutomatedPrompts.nudge?(AutomatedPrompts.system_recovery(reason: "the deploy sweep"))
+    assert AutomatedPrompts.nudge?(AutomatedPrompts::HEARTBEAT)
+  end
+
+  # The rest carry their own instruction — a limit and what to do about it, a PR to
+  # fix, a merge that happened — so they are ordinary turns and must not be replaced.
+  test "nudge? claims nothing that carries its own instruction" do
+    assert_not AutomatedPrompts.nudge?(nil)
+    assert_not AutomatedPrompts.nudge?(:symbol)
+    assert_not AutomatedPrompts.nudge?("")
+    assert_not AutomatedPrompts.nudge?("Post the alert triage summary to #alerts")
+    assert_not AutomatedPrompts.nudge?(AutomatedPrompts.memory_limit_recovery(limit: "4 GB", peak: "4.1 GB"))
+    assert_not AutomatedPrompts.nudge?(AutomatedPrompts.merge_conflict_message("https://example.com/pull/1"))
+    assert_not AutomatedPrompts.nudge?(AutomatedPrompts.pr_merged_message("https://example.com/pull/1"))
+  end
 end
