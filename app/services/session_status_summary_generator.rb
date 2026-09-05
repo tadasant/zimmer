@@ -316,7 +316,13 @@ class SessionStatusSummaryGenerator
     # (#712). "The fleet is full" and "the pool is empty" are the same fact from
     # the summarizer's point of view — the fork cannot deliver — and they get the
     # same answer.
-    return run_headless(summary, line_count) if headless || pool_exhausted? || fork_would_be_refused?
+    #
+    # A LIVE CONVERSATION is the one condition here that is not about whether the
+    # fork could deliver. It could; it must not be stood up anyway, because what
+    # it would deliver is a second agent reading a snapshot the session has
+    # already moved past (#400). See #conversation_live?.
+    return run_headless(summary, line_count) if headless || pool_exhausted? || fork_would_be_refused? ||
+                                                conversation_live?
 
     fork_args = {
       source_session: session,
@@ -660,6 +666,43 @@ class SessionStatusSummaryGenerator
   end
 
   def inference_service = @inference_service ||= HeadlessInferenceService.new
+
+  # Is this session's conversation still moving? Then it does not get a fork.
+  #
+  # THE DEFECT THIS EXISTS FOR (#400). A fork is a SECOND AGENT, with the
+  # session's whole conversation, its clone lineage and its MCP servers. It is
+  # dispatched with `--resume`, so the runtime injects its own
+  # `"Continue from where you left off."` scaffolding on top of a transcript
+  # that was copied at a fixed message index — and nothing in what it reads says
+  # the session has moved on since. When the source session was unarchived and
+  # handed a new prompt one second after the copy was taken, the fork worked
+  # from 737 messages of pre-archive context, concluded the work was already
+  # done, and archived the session — killing the live turn that had the new
+  # prompt. From inside that context the inference was correct; the fork had
+  # simply been told the wrong thing.
+  #
+  # The refusals above are all about whether a summary is WORTH generating. This
+  # one is about whether the fork is a safe way to generate it, and the answer
+  # is only ever yes for a conversation at rest. A snapshot of one that is
+  # moving is stale before the summarizer reads it.
+  #
+  # Not a refusal, because there is a right way to do it: the headless one-shot
+  # answers from the same transcript, spends no agent turn, boots no MCP server
+  # and can therefore act on nothing. It is a slightly terser blurb, which is
+  # the trade #run_headless already documents — and "the session is busy right
+  # now" is the moment an operator most wants to read the panel, so refusing
+  # would be the wrong way round.
+  #
+  # Applies to a FORCED run too. `force` overrides the reasons that are about
+  # waste; this one is about a second agent on a live conversation, which
+  # pressing Regenerate does not make safe.
+  def conversation_live?
+    reason = Sessions::LiveTurn.describe(session)
+    return false if reason.nil?
+
+    @logger.info("Summarizing without a fork: the session's conversation is live", reason: reason)
+    true
+  end
 
   # Whether this runtime's login pool has anything left to run a fork on.
   #
