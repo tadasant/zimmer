@@ -23,7 +23,9 @@ class DockerComposeCleanupServiceTest < ActiveSupport::TestCase
       "--timeout", "30"
     ]
 
-    Open3.expects(:capture3).with(*expected_command).returns([ "", "", stub(success?: true, exitstatus: 0) ])
+    BoundedSubprocess.expects(:run)
+      .with(expected_command, timeout: DockerComposeCleanupService::COMPOSE_DOWN_TIMEOUT)
+      .returns([ "", "", stub(success?: true, exitstatus: 0) ])
 
     result = DockerComposeCleanupService.cleanup(@clone_path)
 
@@ -31,7 +33,7 @@ class DockerComposeCleanupServiceTest < ActiveSupport::TestCase
   end
 
   test "returns false when clone_path is nil" do
-    Open3.expects(:capture3).never
+    BoundedSubprocess.expects(:run).never
 
     result = DockerComposeCleanupService.cleanup(nil)
 
@@ -41,7 +43,7 @@ class DockerComposeCleanupServiceTest < ActiveSupport::TestCase
   test "returns false when compose file does not exist" do
     FileUtils.rm_rf(@compose_dir)
 
-    Open3.expects(:capture3).never
+    BoundedSubprocess.expects(:run).never
 
     result = DockerComposeCleanupService.cleanup(@clone_path)
 
@@ -49,7 +51,7 @@ class DockerComposeCleanupServiceTest < ActiveSupport::TestCase
   end
 
   test "returns true even when docker compose down exits non-zero" do
-    Open3.expects(:capture3).returns([ "", "error: something went wrong", stub(success?: false, exitstatus: 1) ])
+    BoundedSubprocess.expects(:run).returns([ "", "error: something went wrong", stub(success?: false, exitstatus: 1) ])
 
     result = DockerComposeCleanupService.cleanup(@clone_path)
 
@@ -57,17 +59,33 @@ class DockerComposeCleanupServiceTest < ActiveSupport::TestCase
   end
 
   test "returns false and does not raise when docker command raises an error" do
-    Open3.expects(:capture3).raises(Errno::ENOENT, "docker not found")
+    BoundedSubprocess.expects(:run).raises(Errno::ENOENT, "docker not found")
 
     result = DockerComposeCleanupService.cleanup(@clone_path)
 
     assert_not result, "Should return false when an error occurs"
   end
 
+  # The bound is real now, so it can actually fire — a Docker daemon that has
+  # stopped answering (the #502 cgroup-OOM shape) gets its process group SIGKILLed
+  # at COMPOSE_DOWN_TIMEOUT instead of holding the caller forever. Cleanup stays
+  # non-fatal, which is what OrphanCloneFilesystemCleanupJob's wall-clock budget
+  # assumes; the change is that the budget now holds.
+  test "returns false and does not raise when the compose down is killed on the deadline" do
+    BoundedSubprocess.expects(:run).raises(
+      BoundedSubprocess::TimeoutError,
+      "command timed out after 120s (process group killed): docker compose down"
+    )
+
+    result = DockerComposeCleanupService.cleanup(@clone_path)
+
+    assert_not result, "a watchdog kill is logged and swallowed, not raised at the caller"
+  end
+
   test "returns false when clone_path does not exist on disk" do
     nonexistent_path = "/tmp/nonexistent-clone-#{SecureRandom.hex(4)}"
 
-    Open3.expects(:capture3).never
+    BoundedSubprocess.expects(:run).never
 
     result = DockerComposeCleanupService.cleanup(nonexistent_path)
 

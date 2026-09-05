@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "open3"
-
 # Background job to keep Claude Code CLI up to date.
 #
 # Runs daily via cron to execute `claude update`, which checks for and installs
@@ -22,6 +20,9 @@ class ClaudeCodeUpdateJob < ApplicationJob
 
   # 2-minute timeout for the update command
   UPDATE_TIMEOUT = 120
+
+  # Bound on the `claude --version` probe taken either side of the update.
+  VERSION_TIMEOUT = 30
 
   def perform
     before_version = current_version
@@ -48,27 +49,27 @@ class ClaudeCodeUpdateJob < ApplicationJob
   private
 
   def current_version
-    stdout, _stderr, status = Timeout.timeout(30) do
-      Open3.capture3("claude", "--version")
-    end
+    stdout, _stderr, status =
+      BoundedSubprocess.run([ "claude", "--version" ], timeout: VERSION_TIMEOUT)
     return nil unless SubprocessStatus.success?(status)
 
     # Extract semver from output like "2.1.87 (Claude Code)"
     match = stdout.strip.match(/(\d+\.\d+\.\d+)/)
     match ? match[1] : nil
-  rescue Errno::ENOENT, Timeout::Error
+  rescue Errno::ENOENT, BoundedSubprocess::TimeoutError
     nil
   end
 
+  # Returns the [stdout, stderr, status] triple `perform` destructures, including
+  # on every failure branch — SubprocessStatus.describe_failure reads the nil
+  # status as a failure rather than dereferencing it.
   def run_update
-    Timeout.timeout(UPDATE_TIMEOUT) do
-      Open3.capture3("claude", "update")
-    end
+    BoundedSubprocess.run([ "claude", "update" ], timeout: UPDATE_TIMEOUT)
   rescue Errno::ENOENT
     Rails.logger.error "[ClaudeCodeUpdateJob] claude binary not found in PATH"
     [ nil, "claude binary not found", nil ]
-  rescue Timeout::Error
-    Rails.logger.error "[ClaudeCodeUpdateJob] Update timed out after #{UPDATE_TIMEOUT}s"
+  rescue BoundedSubprocess::TimeoutError
+    Rails.logger.error "[ClaudeCodeUpdateJob] Update timed out after #{UPDATE_TIMEOUT}s (process group killed)"
     [ nil, "timeout", nil ]
   end
 end

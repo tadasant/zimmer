@@ -48,6 +48,14 @@ jobs:
         run: |
           bundle exec ruby -r./test/support/two_phase_column_drop_guard \
             -e 'report = TwoPhaseColumnDropGuard.report; abort(report) unless report.empty?'
+      # Same reasoning as above: InertSubprocessTimeoutGuard is Rails-free, so it
+      # answers here in seconds rather than after a full suite boot. See
+      # docs/operate/background-jobs.md, "`Timeout.timeout` around
+      # `Open3.capture3` bounds nothing".
+      - name: Inert subprocess timeout guard
+        run: |
+          bundle exec ruby -r./test/support/inert_subprocess_timeout_guard \
+            -e 'report = InertSubprocessTimeoutGuard.report; abort(report) unless report.empty?'
 
   security:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}

@@ -1,8 +1,5 @@
 # frozen_string_literal: true
 
-require "open3"
-require "timeout"
-
 # Service for cleaning up Docker Compose resources associated with a clone directory.
 #
 # When agent sessions use Docker containers (via .agent-containers/docker-compose.dev.yml),
@@ -52,9 +49,7 @@ class DockerComposeCleanupService
         "--timeout", CONTAINER_STOP_TIMEOUT.to_s
       ]
 
-      stdout, stderr, status = Timeout.timeout(COMPOSE_DOWN_TIMEOUT) do
-        Open3.capture3(*command)
-      end
+      stdout, stderr, status = BoundedSubprocess.run(command, timeout: COMPOSE_DOWN_TIMEOUT)
 
       if SubprocessStatus.success?(status)
         Rails.logger.info "[DockerComposeCleanupService] Docker Compose down succeeded"
