@@ -71,7 +71,7 @@ class FleetTopUpStatus
   # behind the `agents` queue, and the real ceiling on #executing_sessions
   # whatever either policy number is set to. An operator reading a queue that
   # never drains needs this number next to the one they configured.
-  def worker_slots = ConnectionBudget.good_job_queue_threads[:agents]
+  def worker_slots = RunningTurns.worker_slots
 
   def state
     return :at_ceiling unless under_ceiling?

@@ -531,7 +531,7 @@ class SpotGateService
   # against the total: a queued turn is committed demand that takes the next free
   # worker, so admitting more spot work on the strength of it only deepens the
   # queue.
-  def turns = @active_sessions ||= Session.running_claude_code_turns
+  def turns = @turns ||= Session.running_claude_code_turns
 
   def active_sessions = turns.total
 
@@ -589,7 +589,7 @@ class SpotGateService
       allowed: true, reason: "unavailable",
       detail: "Could not evaluate the spot gate (#{error.class}); allowing the session.",
       five_hour: nil, weekly: nil,
-      active_sessions: @active_sessions&.total, queued_sessions: @active_sessions&.queued_for_a_worker,
+      active_sessions: @turns&.total, queued_sessions: @turns&.queued_for_a_worker,
       fleet_cap: nil, accounts_read: nil, pool_size: nil,
       fleet_burn_usd_per_minute: nil, candidate_burn_usd_per_minute: nil,
       pool_capacity: nil
@@ -663,7 +663,7 @@ class SpotGateService
     return "" unless queued_sessions.positive?
 
     " (#{turns.on_a_worker} on a worker, #{queued_sessions} queued for one behind the " \
-      "#{ConnectionBudget.good_job_queue_threads[:agents]}-slot agents pool)"
+      "#{RunningTurns.worker_slots}-slot agents pool)"
   end
 
   # Why one window refused, in money when the model has money and in percentages
