@@ -27,6 +27,7 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
   end
 
   teardown do
+    GoodJob::CurrentThread.execution_interrupted = nil
     @scratch_env.nil? ? ENV.delete("AGENT_SCRATCH_DIR") : ENV["AGENT_SCRATCH_DIR"] = @scratch_env
     FileUtils.remove_entry(@scratch_base) if @scratch_base && Dir.exist?(@scratch_base)
     FileUtils.rm_rf(@clone_path) if @clone_path && File.directory?(@clone_path)
@@ -463,7 +464,153 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     assert_not File.directory?(@clone_path), "Clone should be deleted even if Docker cleanup raises"
   end
 
+  # A deploy interrupt must not end this job: ApplicationJob discards
+  # GoodJob::InterruptError with no retry, and nothing else reclaims the clone
+  # inside the reversible window — StaleCloneCleanupJob's archived scopes require
+  # `trash_after` to be nil and this session has one, and EmptyTrashJob waits for
+  # the deadline. Dropping the run leaves the tree, its Docker resources and its
+  # transcript directory on the durable volume for the full retention period.
+  #
+  # Driven through GoodJob's own mechanism rather than by injecting the exception:
+  # `GoodJob::ActiveJobExtensions::InterruptErrors` raises from an `around_perform`
+  # when `CurrentThread.execution_interrupted` is set, BEFORE the body runs. It is
+  # never raised from inside `perform`, so a test that stubbed a collaborator to
+  # raise it would pin a path production cannot take.
+  test "a deploy interrupt re-enqueues the cleanup instead of dropping it" do
+    interrupt_the_next_execution
+
+    assert_enqueued_with(job: DeferredCloneCleanupJob) do
+      DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+    end
+
+    assert File.directory?(@clone_path), "the clone must survive an interrupted run so the retry can reclaim it"
+  end
+
+  test "an unexpected failure re-enqueues the cleanup" do
+    GitCloneService.stubs(:cleanup_clone).raises(Errno::EIO, "disk went away")
+
+    assert_enqueued_with(job: DeferredCloneCleanupJob) do
+      DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+    end
+  end
+
+  test "the retry carries the same arguments, so it reclaims the same session" do
+    interrupt_the_next_execution
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    assert_enqueued_with(job: DeferredCloneCleanupJob, args: [ @session.id, @archived_at.iso8601 ])
+  end
+
+  # The retry makes this reachable, and it is the expensive way to get it wrong:
+  # a first run preserves artifacts and deletes the clone, then fails on the way
+  # out; the retry finds no clone on disk and takes the "nothing left to hold the
+  # deadline open for" branch. `durable_session_storage_exists?` knows about
+  # scratch, the Claude config dir and the attachment trees — not about the
+  # preserved bundle and patch — so clearing `trash_after` there hands the row to
+  # StaleCloneCleanupJob, which deletes the only copy of the session's unpushed
+  # work three days early.
+  # Stubbed rather than written to disk: the artifacts path is keyed by session id
+  # under the shared ~/.zimmer volume, and the fixture id is the same in every
+  # parallel test worker — a real directory here is visible to the other workers'
+  # copies of this test.
+  test "a retry after artifacts were preserved does not clear the trash deadline" do
+    CloneArtifactService.any_instance.stubs(:artifacts_exist?).returns(true)
+    FileUtils.rm_rf(@clone_path) # the previous attempt already deleted it
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    @session.reload
+    assert_not_nil @session.trash_after,
+      "preserved artifacts must hold the trash deadline open, or StaleCloneCleanupJob reaps them within the hour"
+    assert_in_delta @archived_at + SessionStateMachine::TRASH_RETENTION_PERIOD, @session.trash_after, 5
+  end
+
+  test "a clean session with no artifacts and nothing durable still clears the trash deadline" do
+    CloneArtifactService.any_instance.stubs(:artifacts_exist?).returns(false)
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    assert_nil @session.reload.trash_after
+  end
+
+  # ActiveSupport resolves rescue handlers last-registered-wins, so the broad
+  # `rescue_from(StandardError)` this job registers would otherwise swallow
+  # `ApplicationJob`'s `retry_on ActiveRecord::StatementTimeout` — and
+  # `DatabaseRetry`, which this job calls through on every write, leaves
+  # `QueryAborted` to that inherited handler on purpose. The failure is silent, so
+  # it is pinned here rather than left to a comment. Same guard as
+  # BundleInstallJob's.
+  test "a database timeout still reaches retry_on, not the flat retry ladder" do
+    handlers = DeferredCloneCleanupJob.rescue_handlers.map(&:first)
+
+    assert_includes handlers, "StandardError", "the bounded quiet retry is registered"
+    assert_equal "ActiveRecord::StatementTimeout", handlers.last,
+      "retry_on ActiveRecord::StatementTimeout must be re-registered AFTER rescue_from(StandardError), " \
+      "or a database timeout silently takes this job's flat 30s ladder instead of the exponential one"
+  end
+
+  test "retries are bounded: the last attempt stops re-enqueueing" do
+    interrupt_the_next_execution
+
+    job = DeferredCloneCleanupJob.new(@session.id, @archived_at.iso8601)
+    # `perform_now` increments `executions` before performing, so this run is the
+    # MAX_ATTEMPTS-th and must not queue another.
+    job.executions = DeferredCloneCleanupJob::MAX_ATTEMPTS - 1
+
+    assert_no_enqueued_jobs(only: DeferredCloneCleanupJob) do
+      job.perform_now
+    end
+  end
+
+  # The retry loop must not turn a routine deploy into a page: the "any Zimmer
+  # ERROR → critical" rule reads the log level, so an intermediate attempt has to
+  # stay at or below WARN and only exhaustion may be loud.
+  #
+  # The expectation is set on `Rails.logger`, which `ActiveJob::Base.logger` is
+  # the same object as here — so it also covers `ActiveJob::LogSubscriber`, whose
+  # "Error performing …" / "Discarded …" lines are the class of ERROR the
+  # `rescue_from`-over-`retry_on` design exists to avoid.
+  test "an intermediate attempt never logs at ERROR" do
+    interrupt_the_next_execution
+
+    Rails.logger.expects(:error).never
+    # Usually the same object, but expect on both rather than asserting that:
+    # a deployment that ever splits them would silently narrow this test instead
+    # of failing it.
+    ActiveJob::Base.logger.expects(:error).never unless ActiveJob::Base.logger.equal?(Rails.logger)
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+  end
+
+  test "exhausting the retries logs at ERROR so it stays alertable" do
+    interrupt_the_next_execution
+
+    job = DeferredCloneCleanupJob.new(@session.id, @archived_at.iso8601)
+    job.executions = DeferredCloneCleanupJob::MAX_ATTEMPTS - 1
+
+    logged = []
+    Rails.logger.stubs(:error).with { |*args| logged << args.join(" "); true }
+
+    job.perform_now
+
+    assert logged.any? { |message| message.include?("gave up after") },
+      "the last attempt must say so at ERROR; got: #{logged.inspect}"
+    assert logged.any? { |message| message.include?(@session.id.to_s) },
+      "and must name the session whose clone is left behind"
+  end
+
   private
+
+  # Run `block` against a logger that keeps what it was told, so a test can
+  # assert on the LEVEL a line was written at. The level is the whole point here:
+  # the "any Zimmer ERROR → critical" Grafana rule reads it, so "retried quietly"
+  # and "gave up loudly" are the two behaviours under test.
+  # Put GoodJob's interrupt flag up for the next execution, the way a worker that
+  # re-picks a row whose `performed_at` is already set does.
+  def interrupt_the_next_execution
+    GoodJob::CurrentThread.execution_interrupted = 1.minute.ago
+  end
 
   # Drive the job down its "clone is dirty, artifact creation failed" branch.
   def stub_failed_artifact_preservation
