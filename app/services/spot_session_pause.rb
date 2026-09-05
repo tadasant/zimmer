@@ -424,10 +424,19 @@ class SpotSessionPause
     # MAX_RESUMES_PER_SWEEP. A fail-open decision (gating off, no reading) has no
     # cap to read, and its answer is "spot work runs" — so the batch size alone
     # bounds it.
+    #
+    # Measured against every turn IN FLIGHT — on a worker or queued for one — and
+    # not against the cap's own count, which is worker occupancy alone. #resume!
+    # flips the session to `running` and enqueues its job, so a session this
+    # sweep puts back lands in the queue rather than on a worker. Reading only
+    # the occupancy would leave the next sweep's headroom identical to this
+    # one's, and a fleet whose workers are all busy would drain the whole pause
+    # queue into the `agents` lane a batch every five minutes.
     def resume_budget(decision)
       return MAX_RESUMES_PER_SWEEP if decision.fleet_cap.nil?
 
-      headroom = [ decision.fleet_cap - decision.active_sessions.to_i, 0 ].max
+      in_flight = decision.active_sessions.to_i + decision.awaiting_sessions.to_i
+      headroom = [ decision.fleet_cap - in_flight, 0 ].max
 
       [ headroom, MAX_RESUMES_PER_SWEEP ].min
     end

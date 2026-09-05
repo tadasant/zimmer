@@ -132,7 +132,10 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
       # never ran. The hook has its own test below. Enough of them to reach the
       # ceiling, since that is what the sweep reads.
       running = Array.new(3) { session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY) }
-      running.each { |s| s.update_columns(status: Session.statuses[:running]) and on_a_worker!(s) }
+      running.each do |s|
+        s.update_columns(status: Session.statuses[:running])
+        on_a_worker!(s)
+      end
 
       travel 1.minute
       assert_not FleetIdleMonitor.check!
@@ -646,7 +649,6 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
 
     session(status: :running).update!(agent_runtime: other)
     session(status: :running)
-
 
     assert_equal 2, FleetIdleMonitor.running_sessions
   end

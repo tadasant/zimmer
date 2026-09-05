@@ -35,8 +35,16 @@
 #      future wake: this ceiling is a statement about how much of the fleet is
 #      occupied, and a queue is a statement about demand. #running_turns reports
 #      both beside the count, which is what /inference shows — the split
-#      [#957](https://github.com/tadasant/zimmer/issues/957) asked for, now
-#      printed next to the number rather than folded into it.
+#      [#957](https://github.com/tadasant/zimmer/issues/957) asked for.
+#
+#      The cost of the narrowing, stated because it is real: a queue is no longer
+#      evidence of blockage. A wedged `agents` lane — this cron thread alive, no
+#      worker dequeuing — reads as nothing on a worker behind an arbitrarily deep
+#      queue, and fires. The ordinary saturated fleet does not, because its
+#      workers are busy and hold the ceiling; and the session a fire spawns is
+#      priority and ungated, so it joins the same stuck queue rather than making
+#      anything worse. Questions 2 and 3 are what cover a deployment that is
+#      blocked for a reason Zimmer can actually see.
 #
 #      **The `agents` pool therefore bounds this ceiling at
 #      RunningTurns.worker_slots.** A `fleet_idle_max_sessions` above that can
