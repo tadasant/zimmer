@@ -358,6 +358,42 @@ a remote to come back from — ask `Session.reap_protected?` immediately before 
 inheriting the status their scope matched. `CloneReaper` cannot cover those: they are keyed by
 session, not by path.
 
+## Giving a clone its gems
+
+`BundleInstallJob` runs on `maintenance` right after a clone is created, so an agent can start
+reading and editing while the gems land. Two properties of it are load-bearing, and both come from
+[#410](https://github.com/tadasant/zimmer/issues/410).
+
+**The clone is never pinned to a bundle that is not there.** Bundler reads `<clone>/.bundle/config`,
+and a `BUNDLE_PATH` in that file overrides the image's `BUNDLE_PATH=/usr/local/bundle` — a local
+config wins over the environment, which is what made the original failure so bad. The job used to
+write that file *first*, so an install interrupted partway left the clone pinned at a half-populated
+`vendor/bundle` and every Ruby command in it died with `Bundler::GemNotFound`, listing gems that were
+installed in the image the whole time. The job now passes `BUNDLE_PATH` to its subprocesses through
+the environment only — `bundle install` driven that way persists no config of its own — and writes
+`.bundle/config` last, after `bundle check` confirms the path it is about to name really does satisfy
+the Gemfile. A job killed at any point leaves a partial `vendor/bundle` and no config: a clone that
+is not installed yet, not a clone that is broken.
+
+**An interrupted install resumes.** The job was `discard_on StandardError`, so a deploy ended the
+install for good. It now retries up to `MAX_ATTEMPTS` (3) with a `RETRY_WAIT` (30s) backoff, and
+`GoodJob::InterruptError` is retried along with everything else rather than quietly discarded — that
+is the case the retry exists for. The handler is a plain `rescue_from` calling `retry_job` rather
+than `retry_on`, because `retry_on` instruments `:retry_stopped` on exhaustion and ActiveJob logs
+that event at ERROR, which trips the "any Zimmer ERROR → critical" alert on every deploy. Exhaustion
+here lands at WARN, plus a session log line telling the agent to run `bundle install` itself.
+
+**Most clones never install anything.** When a clone's `Gemfile` and `Gemfile.lock` are
+byte-identical to the ones the image was built from, `/usr/local/bundle` already holds every gem in
+the lockfile — development and test groups included, since the image's `BUNDLE_WITHOUT=development`
+only excludes a gem when *all* of its groups are excluded. The job checks that, runs `bundle check`
+against the shared bundle to prove it, and only then points `.bundle/config` there. That takes under
+a second instead of a couple of minutes, and saves ~380 MB per clone. It bails to a normal install
+if the lockfile differs, if the configured path is relative or missing, or if `bundle check` says no
+— the proof is not optional, because a clone pointed at a bundle that does not satisfy it would
+reproduce the exact failure above. The one cost is in
+[Limitations](/limitations/#a-clone-sharing-the-images-bundle-cannot-install-a-gem-into-it).
+
 ## Noticing when a live session has lost its working tree
 
 The state left behind on 2026-09-02 was trivially visible on disk: a clone directory holding nothing
@@ -1096,7 +1132,7 @@ magnitude of headroom, read off the timeouts in the code rather than guessed:
 | `default` | 15m | Ordinary callback and control work — milliseconds to seconds. The longest designed hold is `PostDeployTaskJob::SLICE_BUDGET` (90s), after which the task returns and resumes from its cursor next tick |
 | `pollers` | 15m | One poll of an external API per tick |
 | `triggers` | 15m | The same shape as `pollers` |
-| `maintenance` | 90m | Its worst designed case, not a typical one: `OrphanCloneFilesystemCleanupJob`'s scheduled path removes up to `BATCH_LIMIT` (20) directories with no wall-clock budget, each tearing down Docker Compose bounded at `COMPOSE_DOWN_TIMEOUT` (120s) — 40 minutes of entirely correct work. `StaleCloneCleanupJob`'s `ORPHAN_SWEEP_LIMIT` (200 recursive deletes) and `BundleInstallJob` are unbounded in the same direction |
+| `maintenance` | 90m | Its worst designed case, not a typical one: `OrphanCloneFilesystemCleanupJob`'s scheduled path removes up to `BATCH_LIMIT` (20) directories with no wall-clock budget, each tearing down Docker Compose bounded at `COMPOSE_DOWN_TIMEOUT` (120s) — 40 minutes of entirely correct work. `StaleCloneCleanupJob`'s `ORPHAN_SWEEP_LIMIT` (200 recursive deletes) and `BundleInstallJob` are unbounded in the same direction (`BundleInstallJob` retries up to three times, so its worst case is three installs) |
 | `auth` | 30m | `RuntimeLoginJob::MAX_DURATION` (12 minutes) |
 
 The capacity is scaled by live workers rather than taken per process because a Kamal cutover

@@ -4019,18 +4019,34 @@ is an operator running `kamal accessory reboot devdb -d <dest>`.
 
 ---
 
-## An interrupted `BundleInstallJob` leaves a clone permanently broken
+## A clone sharing the image's bundle cannot install a gem into it
 
-`BundleInstallJob` installs a clone's gems into `vendor/bundle` in the background while the agent is
-already working, and it is declared `discard_on StandardError` — deliberately, so a failed install
-does not retry forever. The cost is that an install interrupted partway (a deploy, a SIGTERM) never
-resumes and never retries. The clone is left with a `.bundle/config` pointing at a half-populated
-`vendor/bundle`, and every `bin/rails` invocation afterwards dies with `Bundler::GemNotFound` listing
-gems that are plainly installed in the image.
+This is the residue of a larger limitation that is gone. `BundleInstallJob` used to write
+`.bundle/config` before the gems it named existed, so an install interrupted partway (a deploy, a
+SIGTERM) left the clone pinned to a half-populated `vendor/bundle` — and every Ruby command in it
+died with `Bundler::GemNotFound`, listing gems that are plainly installed in the image. The job now
+writes that config last, only after `bundle check` confirms the bundle is complete, and it retries
+instead of discarding, so an interrupt leaves a clone that is *not installed yet* rather than one
+that is broken. See [Background jobs](/operate/background-jobs/).
 
-Nothing surfaces this at the agent's prompt; the session log line is the only trace. `bin/agent-dev`
-heals it with `bundle check || bundle install` before doing anything else, but any other Ruby command
-in the clone hits it first.
+What remains is the cost of the fast path. When a clone's `Gemfile` and `Gemfile.lock` are
+byte-identical to the ones the image was built from — the common case for a clone of this repo —
+the job skips the install entirely and points `.bundle/config` at the image's `/usr/local/bundle`,
+which already holds every gem in the lockfile. That saves ~300 gem downloads and ~380 MB per clone.
+But `/usr/local/bundle/ruby/<version>/gems` is root-owned, and a session runs as `rails`, so the
+moment a checkout *changes* the Gemfile, `bundle install` fails with a permission error naming a
+path that has nothing to do with the repository.
+
+The recovery is one command, and `bin/agent-dev` runs it for you:
+
+```bash
+bundle config set --local path vendor/bundle
+bundle install
+```
+
+An agent that adds a gem and runs a bare `bundle install` sees the permission error first. It is a
+loud, specific failure with a one-line fix, which is why it is preferred to re-vendoring 380 MB into
+every clone on the chance that one of them will add a gem.
 
 ---
 
