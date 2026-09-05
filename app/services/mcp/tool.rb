@@ -128,18 +128,12 @@ module Mcp
     end
 
     # Sessions are addressable by numeric id or slug, matching the REST API's
-    # find_session behavior.
+    # find_session behavior. `Session.locate` is that shared parsing; this wraps
+    # it only to turn a miss into the tool surface's own error.
     def find_session(identifier)
       raise ToolError, "Missing required parameter: session_id" if identifier.blank?
 
-      session = if identifier.to_s.match?(/\A\d+\z/)
-        Session.find_by(id: identifier.to_i)
-      else
-        Session.find_by(slug: identifier.to_s)
-      end
-
-      raise ToolError, "Session not found: #{identifier}" unless session
-      session
+      Session.locate(identifier) || raise(ToolError, "Session not found: #{identifier}")
     end
 
     # The session that is CALLING — the one a self-management tool acts on when its

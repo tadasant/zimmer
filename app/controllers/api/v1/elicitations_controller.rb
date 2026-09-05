@@ -181,17 +181,13 @@ class Api::V1::ElicitationsController < Api::BaseController
     params[:_meta]&.to_unsafe_h || {}
   end
 
-  # Find the Zimmer session from the meta session-id
+  # Find the Zimmer session from the meta session-id, by id or slug.
+  #
+  # `Session.locate` does not retry a numeric identifier as a slug: digits mean
+  # an id on every surface, and the only slug such a retry could find is an
+  # all-digit one, which the model refuses to write.
   def find_session_from_meta(meta)
-    session_identifier = meta["com.pulsemcp/session-id"]
-    return nil unless session_identifier.present?
-
-    # Try by Zimmer ID first (only if numeric), then by slug
-    if session_identifier.to_s.match?(/\A\d+\z/)
-      Session.find_by(id: session_identifier) || Session.find_by(slug: session_identifier)
-    else
-      Session.find_by(slug: session_identifier)
-    end
+    Session.locate(meta["com.pulsemcp/session-id"])
   end
 
   # The deadline for this request.

@@ -1854,6 +1854,100 @@ class SessionTest < ActiveSupport::TestCase
     assert_not_equal session.id.to_s, session.to_param
   end
 
+  # === Session.locate / Session.locate! ===
+  #
+  # The one implementation of "sessions are addressable by numeric id or slug".
+
+  test "locate finds a session by numeric id, as a String or an Integer" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test")
+
+    assert_equal session, Session.locate(session.id)
+    assert_equal session, Session.locate(session.id.to_s)
+    assert_equal session, Session.locate("  #{session.id}  ")
+  end
+
+  test "locate finds a session by slug" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", slug: "locate-me-20260830-1102")
+
+    assert_equal session, Session.locate("locate-me-20260830-1102")
+  end
+
+  # The #731 bug, at the model. Sessions here are routinely titled after an
+  # issue or PR number, so `title.parameterize` plus the `-YYYYMMDD-HHMM` stamp
+  # makes a digit-LEADING slug the common case — and "728-…".to_i is 728.
+  test "locate resolves a digit-prefixed slug to that session, not to the id its digits spell" do
+    decoy = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Decoy")
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test",
+      slug: "#{decoy.id}-fix-the-poller-20260830-1102"
+    )
+
+    located = Session.locate("#{decoy.id}-fix-the-poller-20260830-1102")
+
+    assert_equal session, located
+    assert_not_equal decoy, located
+  end
+
+  # `Integer()` would accept Ruby literal forms, so "0x10" would resolve to #16.
+  test "locate treats a non-decimal numeric literal as a slug, not as an id" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", slug: "0x10")
+
+    assert_equal session, Session.locate("0x10")
+    # Underscores are not legal in a slug, so this can only ever be a miss —
+    # never the id 16 that `Integer("1_6")` would produce.
+    assert_nil Session.locate("1_6")
+  end
+
+  test "locate returns nil for a blank identifier rather than matching an empty slug" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test")
+    session.update_columns(slug: "")
+
+    assert_nil Session.locate(nil)
+    assert_nil Session.locate("")
+    assert_nil Session.locate("   ")
+    assert_equal session, Session.locate(session.id)
+  end
+
+  test "locate returns nil for a miss" do
+    assert_nil Session.locate(999_999_999)
+    assert_nil Session.locate("no-such-slug-20260830-1102")
+  end
+
+  test "locate! returns the session, and raises RecordNotFound on a miss" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", slug: "locate-bang-20260830-1102")
+
+    assert_equal session, Session.locate!("locate-bang-20260830-1102")
+    assert_equal session, Session.locate!(session.id)
+
+    assert_raises(ActiveRecord::RecordNotFound) { Session.locate!("no-such-slug-20260830-1102") }
+    assert_raises(ActiveRecord::RecordNotFound) { Session.locate!(999_999_999) }
+    assert_raises(ActiveRecord::RecordNotFound) { Session.locate!(nil) }
+  end
+
+  # A purely numeric slug is refused on write for exactly this reason: it would
+  # be unreachable, because digits always mean an id.
+  test "a purely numeric slug is rejected" do
+    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", slug: "728")
+
+    assert_not session.valid?
+    assert_includes session.errors[:slug].join, "only digits"
+  end
+
+  test "a legacy row holding a purely numeric slug can still be updated on its other attributes" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test")
+    session.update_columns(slug: "728")
+
+    assert session.reload.update(title: "A new title")
+    assert_equal "728", session.reload.slug
+  end
+
+  test "a digit-prefixed slug is accepted — only an all-digit one is not" do
+    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", slug: "728-fix-the-poller-20260830-1102")
+
+    assert session.valid?, session.errors.full_messages.join(", ")
+  end
+
   # === Additional git_root_format validation tests ===
   test "git_root_format should accept SSH URLs with hyphens and underscores" do
     session = Session.new(

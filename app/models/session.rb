@@ -670,6 +670,16 @@ class Session < ApplicationRecord
   validates :git_root, presence: true
   validates :branch, presence: true
   validates :slug, uniqueness: true, format: { with: /\A[a-z0-9-]+\z/, message: "only allows lowercase letters, numbers, and hyphens" }, allow_nil: true
+  # A purely numeric slug is unaddressable. `to_param` would put it in a URL,
+  # and every surface that resolves "id or slug" reads digits as an id
+  # (`Session.locate`) — so a session slugged "728" is reachable only as session
+  # #728, which is a different session. `slug` is caller-supplied on the REST
+  # create/update and on the MCP `start_session` tool, and the format validation
+  # above permits digits, so this is a reachable write, not a hypothetical one.
+  #
+  # Guarded on `slug_changed?` so a legacy row already holding one can still be
+  # updated on its other attributes; only a write to `slug` itself is refused.
+  validate :slug_is_not_purely_numeric, if: :slug_changed?
   # An absent key must reach the column as NULL, never as "". The partial unique
   # index is `WHERE idempotency_key IS NOT NULL`, and `allow_nil` does not cover
   # an empty string — so a client that always serializes the field ("" when it has
@@ -1312,6 +1322,42 @@ class Session < ApplicationRecord
   # Override to_param to use slug if available, otherwise use id
   def to_param
     slug.presence || id.to_s
+  end
+
+  # The inverse of `to_param`: resolve a session from an identifier that may be
+  # either a numeric id or a slug. The single implementation of "sessions are
+  # addressable by numeric id or slug" — the convention the web UI, the REST API
+  # and the MCP tools all share. Every surface calls this rather than parsing the
+  # identifier itself.
+  #
+  # Digits only means an id, and that guard is the whole point. Slugs are
+  # `title.parameterize` plus a `-YYYYMMDD-HHMM` stamp, and sessions here are
+  # routinely titled after an issue or PR number, so a digit-LEADING slug is the
+  # common case. Parsing with `to_i` resolves "728-fix-the-poller-20260830-1102"
+  # to session #728 — a stranger — with no error. `Integer()` is no better: it
+  # accepts Ruby literal forms, so "0x10" resolves to #16.
+  #
+  # A numeric identifier is never retried as a slug. The only slug that retry
+  # could find is an all-digit one, which shadows another session's id on every
+  # surface, including the URLs `to_param` builds — `slug_is_not_purely_numeric`
+  # refuses to write one. For any row predating that validation, the id wins
+  # here, deliberately and on every surface at once.
+  #
+  # @param identifier [String, Integer, nil] a session id or slug
+  # @return [Session, nil] nil for blank input or a miss
+  def self.locate(identifier)
+    key = identifier.to_s.strip
+    return nil if key.blank?
+
+    key.match?(/\A\d+\z/) ? find_by(id: key.to_i) : find_by(slug: key)
+  end
+
+  # `locate`, for callers whose contract is to raise on a miss.
+  #
+  # @raise [ActiveRecord::RecordNotFound]
+  # @return [Session]
+  def self.locate!(identifier)
+    locate(identifier) || raise(ActiveRecord::RecordNotFound, "No session #{identifier.inspect}")
   end
 
   # Check if the session was recently recovered by the cleanup job. The detail
@@ -2348,6 +2394,13 @@ class Session < ApplicationRecord
     ImageStorageService.cleanup_for(id)
   rescue => e
     Rails.logger.warn "[Session] Failed to reclaim directories for deleted session #{id}: #{e.class} - #{e.message}"
+  end
+
+  # See the validation declaration for why a slug of all digits is refused.
+  def slug_is_not_purely_numeric
+    return if slug.blank?
+
+    errors.add(:slug, "cannot be only digits — it would be indistinguishable from a session id") if slug.match?(/\A\d+\z/)
   end
 
   # Whether a rejected write is another session having claimed the slug we were

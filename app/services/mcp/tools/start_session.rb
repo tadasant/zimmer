@@ -25,7 +25,8 @@ module Mcp
         STRONGLY RECOMMENDED: Always set a title — treat it as effectively required. The title appears in the Zimmer web UI and push notifications, making sessions identifiable at a glance. Compose a short, descriptive title (under 70 characters) that captures what the session is doing (e.g. "Fix login redirect loop on mobile Safari", "Add dark mode toggle to settings page"). Only omit if you truly have zero context about the session purpose, which should be extremely rare.
       TEXT
 
-      SLUG_DESC = "URL-friendly identifier for the session. Must be unique."
+      SLUG_DESC = "URL-friendly identifier for the session. Must be unique, and cannot be all digits — " \
+                  "an all-digit identifier always resolves as a session id, so such a slug would be unreachable."
 
       GOAL_DESC = 'Goal ID from get_configs (e.g. "pr_merged"). The description is automatically resolved and passed to the agent as context.'
 

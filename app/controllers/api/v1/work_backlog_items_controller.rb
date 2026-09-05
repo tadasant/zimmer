@@ -204,21 +204,14 @@ class Api::V1::WorkBacklogItemsController < Api::BaseController
   # is a claim the caller makes, exactly like elsewhere in this API. Provenance,
   # never authorization. A stale id is dropped rather than failing the write.
   def acting_session
-    find_session(params[:acting_session_id])
+    Session.locate(params[:acting_session_id])
   end
 
   # The same field under the gate-decisions controller's name, so an API
   # consumer moving between the two "mirror" endpoints is not surprised; the
   # pull/start name is accepted too.
   def writing_session
-    find_session(params[:writing_session_id].presence || params[:acting_session_id])
-  end
-
-  def find_session(identifier)
-    identifier = identifier.to_s
-    return nil if identifier.blank?
-
-    identifier.match?(/\A\d+\z/) ? Session.find_by(id: identifier.to_i) : Session.find_by(slug: identifier)
+    Session.locate(params[:writing_session_id].presence || params[:acting_session_id])
   end
 
   def set_item
