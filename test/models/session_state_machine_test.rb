@@ -1763,31 +1763,67 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       "no sweep will reach this session, so its recovery pause is where the miss becomes permanent"
   end
 
-  # The promise the deferral rests on expiring: SessionContinuation gives up,
-  # calls #announce_deferred_needs_input!, and the session is left resting in the
-  # action queue with nobody coming for it. The warning is due at that point too.
+  # The promise the deferral rests on expiring, driven through the real sweep
+  # rather than by calling the make-good directly: with no session_id every
+  # continue attempt fails validation, and the pass that spends
+  # MAX_CONTINUE_ATTEMPTS drops the marker and abandons the session. Nothing
+  # sweeps it after that, so this is where the deferred warning comes due.
   test "the deferred warning is written when the recovery promise expires" do
     session = pr_goal_session
     session.start!
     session.update!(metadata: session.metadata.to_h.merge("paused_by" => "recovery"))
     session.pause!
+    session.update!(running_job_id: nil, session_id: nil)
     assert_empty missing_pr_url_warnings(session)
 
-    session.announce_deferred_needs_input!
+    (SessionContinuation::MAX_CONTINUE_ATTEMPTS - 1).times { CleanupOrphanedSessionsJob.perform_now }
+    assert_empty missing_pr_url_warnings(session),
+      "a recovery-paused session with budget left is still on its way back to running"
+
+    CleanupOrphanedSessionsJob.perform_now
 
     assert_equal 1, missing_pr_url_warnings(session).size,
       "giving up on the recovery is what turns that pause into a rest state"
   end
 
-  test "the deferred announcement is made even when the missing-PR-URL check raises" do
+  # And it must not be gated on the session resting in `needs_input`, the way the
+  # give-up *announcement* is. A recovery pause carrying `pending_sleep` is
+  # bounced straight on to `waiting` by execute_pending_sleep with nothing armed
+  # to resume it (CleanupOrphanedSessionsJob calls that "a permanently stranded
+  # dead state"), so it is the session most in need of the warning and the one a
+  # resting-state guard would skip.
+  test "the deferred warning is written for a session the interrupt bounced to waiting" do
+    session = pr_goal_session
+    session.start!
+    session.update!(metadata: session.metadata.to_h.merge("paused_by" => "recovery", "pending_sleep" => true))
+
+    session.pause!
+
+    assert session.reload.waiting?, "execute_pending_sleep bounces this pause straight on to waiting"
+    session.update!(running_job_id: nil, session_id: nil)
+
+    SessionContinuation::MAX_CONTINUE_ATTEMPTS.times { CleanupOrphanedSessionsJob.perform_now }
+
+    assert_equal 1, missing_pr_url_warnings(session).size,
+      "a stranded session must not lose the warning its interrupt pause deferred"
+  end
+
+  test "abandoning a recovery pause completes when the missing-PR-URL check raises" do
     session = pr_goal_session
     session.start!
     session.update!(metadata: session.metadata.to_h.merge("paused_by" => "recovery"))
     session.pause!
+    session.update!(running_job_id: nil, session_id: nil)
+    before = session.needs_input_transition_count
 
     TranscriptHooks::GithubPrUrlHook.stub(:warn_if_pr_goal_captured_no_url, ->(*) { raise "boom" }) do
-      assert_nothing_raised { session.announce_deferred_needs_input! }
+      assert_nothing_raised do
+        SessionContinuation::MAX_CONTINUE_ATTEMPTS.times { CleanupOrphanedSessionsJob.perform_now }
+      end
     end
+
+    assert_equal before + 1, session.reload.needs_input_transition_count,
+      "the deferred announcement is the load-bearing half and must survive a broken warning"
   end
 
   # A warning that breaks a state transition is worse than the thing it warns
