@@ -101,25 +101,51 @@ class SupersededSessionRecoveryTurnTest < ActiveJob::TestCase
     assert_equal "running", @session.reload.status
   end
 
-  # The refusal repeats where the other two do not: a superseded session stays
-  # selected by both sweeps every five minutes forever, so `paused_by` — the
-  # marker they select on — is dropped once, and the timeline says so once.
-  test "the refusal stops the sweep re-reading the session and records why" do
+  # The refusal repeats where the other two do not — the reading can change, so it
+  # is re-decided every pass — but the NOISE is bounded: one timeline line per
+  # replacement, not one every five minutes.
+  test "the refusal is written once however many times the sweep runs" do
     replacement = archived_replacement
 
-    CleanupOrphanedSessionsJob.perform_now
-    CleanupOrphanedSessionsJob.perform_now
-    CleanupOrphanedSessionsJob.perform_now
+    3.times { CleanupOrphanedSessionsJob.perform_now }
 
     @session.reload
-    assert_nil @session.metadata["paused_by"],
-      "a superseded session must stop being selected by the sweeps"
-    assert_equal "superseded by session #{replacement.id}",
-      @session.metadata[SessionContinuation::CONTINUE_ABANDONED_KEY]
     refusals = @session.logs.select { |log| log.content.include?("handed to session #{replacement.id}") }
     assert_equal 1, refusals.size,
       "the refusal must be written once, not on every five-minute pass"
+    assert_equal replacement.id.to_s, @session.metadata[SessionContinuation::SUPERSEDED_BY_KEY].to_s
     assert_equal "needs_input", @session.status
+  end
+
+  # `paused_by` is what both recovery sweeps select on, and it is ALSO a dormant
+  # marker in StrandedSleepRescue and StalledSessionStart. Dropping it would stop
+  # the re-evaluation below and hand the session to two sweeps that never ask
+  # whether its work moved.
+  test "the refusal leaves the recovery marker in place" do
+    archived_replacement
+
+    CleanupOrphanedSessionsJob.perform_now
+
+    assert_equal "recovery", @session.reload.metadata["paused_by"]
+  end
+
+  # The safety valve the narrow predicate promises, end to end: a replacement
+  # that is carrying the work today can fail tomorrow, and the session it
+  # replaced has to become resumable again when it does.
+  test "a session refused while its replacement was live resumes once that replacement fails" do
+    replacement = replacement_for(@session, status: :running)
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      CleanupOrphanedSessionsJob.perform_now
+    end
+    assert_equal "needs_input", @session.reload.status
+
+    Session.where(id: replacement.id).update_all(status: Session.statuses[:failed])
+
+    assert_enqueued_jobs 1, only: AgentSessionJob do
+      CleanupOrphanedSessionsJob.perform_now
+    end
+    assert_equal "running", @session.reload.status
   end
 
   # Both sweeps share SessionContinuation, and the deployment one runs on every
@@ -347,6 +373,73 @@ class SupersededSessionRecoveryTurnTest < ActiveJob::TestCase
     end
 
     assert_equal [ @session.id ], results[:retried]
+  end
+
+  # ---------------------------------------------------------------------------
+  # The two sweeps outside the claim family
+  # ---------------------------------------------------------------------------
+
+  # StrandedSleepRescue reaches a superseded session only when it carries no
+  # dormant marker. Its generic refusal spends no budget and writes nothing, and
+  # its candidates are ordered by `updated_at` — so the session would sit at the
+  # head of that ordering forever, consuming one of five action slots per pass.
+  test "the stranded-sleep sweep abandons a superseded session instead of head-blocking on it" do
+    replacement = archived_replacement
+    Session.where(id: @session.id).update_all(status: Session.statuses[:waiting])
+    @session.remove_metadata!("paused_by")
+    stranded = Session.find(@session.id)
+
+    outcome = nil
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      outcome = StrandedSleepRescue.send(:repair!, stranded, StructuredLogger.new({ service: "test" }))
+    end
+
+    assert_equal :abandoned, outcome
+    @session.reload
+    assert @session.metadata[StrandedSleepRescue::ABANDONED].present?,
+      "the marker is what takes the session out of the sweep's own candidate relation"
+    assert_equal "waiting", @session.status
+    assert @session.logs.any? { |log| log.content.include?("handed to session #{replacement.id}") }
+  end
+
+  # ReturnToQueue moves a never-ran session back to `waiting`, which is exactly
+  # where StalledSessionStart picks it up and starts it — #801 arriving through
+  # the dispatch door instead of the resume one.
+  test "a superseded session is not returned to the dispatch queue" do
+    never_ran = Session.create!(
+      prompt: "Implement #683",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      status: :needs_input,
+      metadata: { "paused_by" => "recovery" }
+    )
+    replacement_for(never_ran, status: :archived)
+
+    result = Sessions::ReturnToQueue.call(never_ran, reason: "recovery could not continue it")
+
+    assert result.declined?, "a session whose work moved must not be re-dispatched"
+    assert_includes result.message, "moved to a replacement"
+    assert_equal "needs_input", never_ran.reload.status
+  end
+
+  # And the negative: an ordinary never-ran session still goes back to the queue.
+  test "a never-ran session with no replacement is still returned to the queue" do
+    never_ran = Session.create!(
+      prompt: "Implement something",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      status: :needs_input,
+      metadata: { "paused_by" => "recovery" }
+    )
+
+    result = Sessions::ReturnToQueue.call(never_ran, reason: "recovery could not continue it")
+
+    assert result.returned?, "the ordinary path must be untouched: #{result.message}"
+    assert_equal "waiting", never_ran.reload.status
   end
 
   private

@@ -49,6 +49,13 @@ module SessionContinuation
   # reader can tell a session Zimmer gave up on from one it never looked at.
   CONTINUE_ABANDONED_KEY = "recovery_continue_abandoned"
 
+  # Names the replacement whose existence refused this session a recovery turn.
+  # Written once per replacement, and read to decide whether the refusal has
+  # already been said — see #record_supersession_refusal_once. Listed in
+  # Session::STALE_RETRY_METADATA_KEYS, so a session that does get resumed (its
+  # replacement failed, or a human took it over) starts saying it again.
+  SUPERSEDED_BY_KEY = "recovery_refused_superseded_by"
+
   private
 
   # Continue a session that was paused by recovery.
@@ -121,31 +128,36 @@ module SessionContinuation
   #
   # Deliberately NOT routed through abandon_or_retry_continue: that counts attempts
   # against a budget and eventually drops `paused_by` so the sweeps stop selecting
-  # the session. The first two refusals here do not want that. An archived session
+  # the session. None of the three refusals here wants that. An archived session
   # is already invisible to both sweeps (they select on `needs_input` / `waiting` /
   # `failed`), so there is no loop to bound — and burning the budget, or dropping
   # `paused_by`, would sabotage the recovery that is owed to the session if it is
   # later unarchived. A `running` session is being driven by somebody else right
   # now, and will pause on its own.
   #
-  # `:superseded` is the exception, and it is handled below: a superseded session
-  # IS selected by these sweeps, every five minutes, forever. See
-  # #stop_sweeping_superseded_session.
+  # `:superseded` keeps `paused_by` for two reasons of its own, and both are
+  # load-bearing. The reading can still CHANGE: a replacement that is `running` or
+  # `waiting` today can fail tomorrow, and once it has, the session it replaced is
+  # resumable again — so the refusal has to be re-decided on every pass rather
+  # than settled once. And `paused_by` is a dormant marker in BOTH
+  # `StrandedSleepRescue::DORMANT_MARKERS` and
+  # `StalledSessionStart::DORMANT_MARKERS`, so dropping it would hand the session
+  # to two sweeps that never ask this question. What is bounded instead is the
+  # NOISE: see #record_supersession_refusal_once.
   #
   # @param session [Session] the session whose claim was refused
   # @param outcome [Symbol] :archived, :not_resumable or :superseded, from
   #   Session#claim_system_recovery_turn!
   # @return [Boolean] always false — the session was not continued
   def refuse_recovery_turn(session, outcome)
+    if outcome == :superseded
+      return record_supersession_refusal_once(session)
+    end
+
     message =
-      case outcome
-      when :archived
+      if outcome == :archived
         "Not continuing this session after #{continuation_source}: it is in the trash. " \
         "An archived session takes no turn, so no agent was started and no prompt was delivered."
-      when :superseded
-        "Not continuing this session after #{continuation_source}: #{session.replacement_refusal_clause}. " \
-        "Resuming it would re-do work another session has already taken over, so no agent was " \
-        "started and no prompt was delivered. Send this session a follow-up if you want it to run anyway."
       else
         "Not continuing this session after #{continuation_source}: it is #{session.status} and " \
         "cannot be resumed. Something else is already driving it, so no second agent was started."
@@ -158,57 +170,67 @@ module SessionContinuation
     # session" is asked from the session page, and a log that silently failed to
     # write would leave exactly the blank both sweeps' callers rescue around.
     session.logs.create!(content: message, level: "info")
-    stop_sweeping_superseded_session(session) if outcome == :superseded
     false
   end
 
-  # Take a superseded session out of the sweeps' selection, once, and say where
-  # it has come to rest.
+  # Say once that this session's work moved, and say nothing on the passes after.
   #
-  # Unlike the other two refusals, this one repeats. A superseded session sits in
-  # `needs_input` (or `waiting`, or `failed`) carrying `paused_by: "recovery"` —
-  # exactly what both sweeps select on — and nothing about it will ever change,
-  # so without this the five-minute cron re-reads it and writes the same refusal
-  # to its timeline forever. That is the 500-identical-log-lines pathology
-  # MAX_CONTINUE_ATTEMPTS exists to bound, and here it is not worth a budget:
-  # the work moved, and no number of retries moves it back.
+  # The refusal itself has to be re-decided every five minutes — a replacement
+  # can fail, and then the session it replaced is resumable again — so unlike the
+  # other two refusals this one is re-reached indefinitely. Writing the line each
+  # time is the 500-identical-log-lines pathology MAX_CONTINUE_ATTEMPTS exists to
+  # bound; writing it once is the whole of what needs bounding here, because the
+  # refusal costs one indexed query and no writes on every pass after the first.
   #
-  # Dropping `paused_by` is what stops the selection. The session stays exactly
-  # where it is — this is not an archive, and a human can still resume it with a
-  # follow-up — and CONTINUE_ABANDONED_KEY records why nothing is coming for it,
-  # the same marker the attempt-budget give-up writes, so one reader answers
-  # "did Zimmer look at this session and decide against it?" for both.
+  # The marker is what makes it once, and it names the REPLACEMENT rather than
+  # being a bare flag: a session replaced again by a different session is a
+  # different fact and gets said again.
   #
-  # The announcement is the same debt: a recovery pause fires no
+  # `paused_by` deliberately stays (see #refuse_recovery_turn), so the session is
+  # still selected by these two sweeps and still invisible to the two dispatch
+  # sweeps that read it as a dormant marker.
+  #
+  # The announcement rides the same marker. A recovery pause fires no
   # `session_needs_input` wake and sends no push, on the promise that a sweep
-  # will continue the session. This refusal is that promise expiring, so the
-  # session's arrival in the human action queue is announced here rather than
-  # never. Only for a session actually resting in `needs_input`; see
-  # #announce_abandoned_pause.
+  # will continue the session; this refusal is that promise expiring, so the
+  # session's arrival in the human action queue is announced once rather than
+  # never. It does NOT spend the deferred missing-PR warning that the
+  # attempt-budget give-up spends (#558): that warning fires when a session's
+  # goal named a PR and no URL was recorded, which is true of a session whose
+  # work moved and is a false alarm there — the replacement opened the PR.
   #
-  # It does NOT spend the deferred missing-PR warning that the attempt-budget
-  # give-up spends (#558), and that difference is deliberate. That warning fires
-  # when a session's goal named a PR and no URL was recorded — true of a session
-  # whose work moved to a replacement, and a false alarm there: the replacement
-  # opened the PR. The refusal message above is the honest account of this
-  # session's state.
-  #
-  # No second timeline line either. The refusal the caller just wrote already
-  # says what happened and what a human can do about it; this only stops the
-  # sweeps coming back.
-  def stop_sweeping_superseded_session(session)
+  # @param session [Session] the session whose claim was refused as superseded
+  # @return [Boolean] always false — the session was not continued
+  def record_supersession_refusal_once(session)
     replacement = session.replacement_carrying_work
-    session.merge_metadata!(
-      { CONTINUE_ABANDONED_KEY => "superseded by session #{replacement&.id}" },
-      [ "paused_by", CONTINUE_ATTEMPTS_KEY ]
+    already = session.metadata&.dig(SUPERSEDED_BY_KEY)
+    return false if replacement && already.to_s == replacement.id.to_s
+
+    session.logs.create!(
+      content: "Not continuing this session after #{continuation_source}: " \
+               "#{session.replacement_refusal_clause(replacement)}. Resuming it would re-do work " \
+               "another session has already taken over, so no agent was started and no prompt was " \
+               "delivered. Send this session a follow-up if you want it to run anyway.",
+      level: "info"
     )
-    announce_abandoned_pause(session)
-  rescue => e
-    # Best-effort. The refusal itself is already recorded above; failing to drop
-    # the marker costs a repeated log line, not a wrong resume.
-    Rails.logger.error(
-      "[#{self.class.name}] Could not stop sweeping superseded session #{session.id}: #{e.message}"
+    Rails.logger.info(
+      "[#{self.class.name}] Session #{session.id} not continued after #{continuation_source}: " \
+      "superseded by session #{replacement&.id}"
     )
+
+    # Best-effort from here. The refusal is already on the timeline, which is
+    # what a reader of the session asks; a marker that will not save costs a
+    # repeated log line on the next pass, never a wrong resume.
+    begin
+      session.merge_metadata!(SUPERSEDED_BY_KEY => replacement&.id)
+      announce_abandoned_pause(session)
+    rescue => e
+      Rails.logger.error(
+        "[#{self.class.name}] Could not record the supersession marker on session #{session.id}: #{e.message}"
+      )
+    end
+
+    false
   end
 
   # Deliver the user's next pending enqueued message instead of the automated

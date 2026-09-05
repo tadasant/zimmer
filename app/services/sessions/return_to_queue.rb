@@ -77,6 +77,17 @@ module Sessions
   #      with one armed would be read by neither owner. A session with its own
   #      next event has a way back anyway; there is nothing here to correct.
   #   7. **Budget left.** See MAX_RETURNS.
+  #   8. **Its work has not moved.** A session another session was created to
+  #      replace, and whose replacement is carrying the work, must not be put
+  #      back where a sweep will start it — `StalledSessionStart` reads exactly
+  #      the shape this service produces, so returning it would run the
+  #      replacement's task a second time. That is
+  #      [#801](https://github.com/tadasant/zimmer/issues/801) arriving through
+  #      the dispatch door rather than the resume one, and it is the same session
+  #      population: #801's own 11924 failed before its first turn, so it had no
+  #      runtime session id, which is condition 2. Declining leaves it resting in
+  #      `needs_input` for a human, which is the honest place for a session whose
+  #      work happened elsewhere.
   class ReturnToQueue
     # How many times one session may be sent back to the queue before Zimmer
     # stops doing it and lets the session rest in `needs_input` after all.
@@ -174,6 +185,7 @@ module Sessions
       return "category is frozen" if session.category&.is_frozen?
       return "a wake of its own is armed" if session.awaiting_scheduled_wake?
       return "the runtime wrote a conversation" if conversation_persisted?
+      return "its work moved to a replacement session" if session.replacement_carrying_work
 
       nil
     end

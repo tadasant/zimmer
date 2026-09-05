@@ -106,20 +106,47 @@ it.
 - **A `failed` replacement does not count.** That is the case where the original may still be the
   best hope. The reading is also not transitive: one hop is what the convention records, and
   guessing further is how a narrow refusal becomes a broad one.
-- **It is confined to the automated family.** A human's follow-up, restart or queued message never
-  reaches this method — `continue_recovered_session` prefers a queued user message *before* it asks
-  for a claim — so a human can always resume a superseded session by hand.
+- **A human can always resume it by hand.** A follow-up, a restart and a queued message all reach
+  the session by routes that never come through this claim — `continue_recovered_session` prefers a
+  queued user message *before* it asks for one. One human-facing route *does* come through it:
+  `HealthMonitorService#retry_failed_sessions`, which is what `/health`'s Retry button and
+  `action_health` drive, so an operator retrying a superseded session by id is refused. That
+  refusal is reported in `skipped` on every surface that flow already answers on, rather than being
+  a silent no-op.
 
 And it is observable rather than silent: every caller writes the refusal to the session's own
-timeline naming the replacement, and the failed-session retry also returns it in `skipped`.
+timeline naming the replacement.
 
-`:superseded` is the one refusal that drops `paused_by`. Unlike the other two, it repeats: a
-superseded session stays selected by both sweeps every five minutes forever and nothing about it
-will ever change, which is the 500-identical-log-lines pathology `MAX_CONTINUE_ATTEMPTS` exists to
-bound. Here it is not worth a budget — the work moved, and no number of retries moves it back — so
-the sweep stops selecting the session, records `recovery_continue_abandoned`, and announces the
-`needs_input` the recovery pause had deferred. The session is left where it is; this is not an
-archive.
+Unlike the other two refusals, this one **repeats**, and `paused_by` deliberately stays on the
+session. Two reasons, both load-bearing. The reading can still change — a replacement that is
+`running` or `waiting` today can fail tomorrow, and once it has, the session it replaced is
+resumable again — so the refusal is re-decided on every pass rather than settled once. And
+`paused_by` is a dormant marker in both `StrandedSleepRescue::DORMANT_MARKERS` and
+`StalledSessionStart::DORMANT_MARKERS`, so dropping it would hand the session to two sweeps that
+never ask this question at all.
+
+What *is* bounded is the noise. `recovery_refused_superseded_by` names the replacement the refusal
+was about, and the timeline line and the deferred `needs_input` announcement are written once per
+replacement rather than every five minutes — the 500-identical-log-lines pathology
+`MAX_CONTINUE_ATTEMPTS` exists to bound, arriving from a new direction. The key is in
+`Session::STALE_RETRY_METADATA_KEYS`, so a session that does get resumed starts saying it again.
+
+Two sweeps outside the claim family needed their own answer, both because they read sessions the
+claim never sees.
+
+- **`StrandedSleepRescue`** can reach a superseded session asleep in `waiting` with no dormant
+  marker. Its generic "could not claim" branch spends no budget and writes nothing, and its
+  candidates are ordered by `updated_at` — so such a session would sit at the head of that ordering
+  forever, consuming one of five action slots on every pass. It stamps `stranded_sleep_abandoned`
+  instead, which takes the session out of its own candidate relation, and says so on the timeline.
+  No alert: this is Zimmer working as intended, not a defect to investigate.
+- **`Sessions::ReturnToQueue`** gains an eighth condition. It moves a session that never ran back to
+  `waiting`, where `StalledSessionStart` starts it — so returning a superseded one would run the
+  replacement's task a second time. That is #801 arriving through the dispatch door rather than the
+  resume one, and it is the same population: 11924 failed before its first turn, so it had no
+  runtime session id, which is that service's second condition.
+
+Nothing here archives anything. A refused session is left exactly where it is.
 
 The other half of #801 is the **back-reference**. `replaces_session` was written on the replacement
 only, so 11924 carried nothing pointing at 11931 — not for the sweep, not for a human on its page,
