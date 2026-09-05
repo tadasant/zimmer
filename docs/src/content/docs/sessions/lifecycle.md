@@ -138,7 +138,9 @@ transition, and it does nine things beyond changing status:
    otherwise indistinguishable from "no PR to record" — see
    [transcript hooks](/extend/transcript-hooks/). Never raises, and once per **session**, not once
    per event: `fail` and `archive` call it too, and the dedup is on the warning log itself, so a
-   session that pauses, warns, and later archives says it once.
+   session that pauses, warns, and later archives says it once. Skipped on a **recovery pause**, for
+   the reason steps 4 and 5 are skipped on one — see
+   [which pauses announce themselves](#which-pauses-announce-themselves).
 2. `cleanup_running_job` — clears `running_job_id`.
 3. `bump_needs_input_transition_counter` — one increment of
    `custom_metadata["needs_input_count"]`, handed to both of the next two steps as their debounce
@@ -251,6 +253,10 @@ That matters because a fired one-time wake destroys its siblings. The pattern [`
 Which is why the carve-out asks whether a sweep is actually coming, not merely whether the marker is set. A session parked in a **frozen category** is excluded from every query in both sweeps (`Session.not_in_frozen_category`), so there is no deferral to make — nothing continues it, and `SessionContinuation` never runs to announce it later either. That pause is announced at the time, like any other stop. `AgentSessionJob`'s recovery-pause writers do not check the category, because they run inside the session's own job rather than in a bulk recovery flow; `SessionRecoveryService` bails on a frozen category before it ever pauses.
 
 Two edges the deferred announcement deliberately does not cover. A session abandoned in `failed` already fired `session_failed` and an unconditional failure push when it failed. A session bounced to `waiting` by `execute_pending_sleep` is dormant, and telling a watcher it "needs input" would be a claim about a state it is not in — the settled event would drop it anyway.
+
+**The missing-PR warning is deferred on the same test, and lands with the same announcement.** Step 1 of the pause is a *backstop*, and its budget is one warning per session — so the pause that spends it has to be a pause the session actually came to rest in. A recovery pause is not: nothing about the session's pull-request work is settled, it is on its way back to `running`, and it is the one pause nobody is told about. Session 5679 spent its whole budget on a deploy interrupt six minutes in, ran for two more days, opened a PR through a route `GithubPrUrlHook` did not recognise, and came to rest with nothing recorded and nothing said ([#558](https://github.com/tadasant/zimmer/issues/558)). So `pause` skips step 1 whenever it skips steps 4 and 5, and a frozen-category recovery pause writes it at the time, exactly as it announces at the time.
+
+The make-good is `SessionContinuation`'s give-up branch, one line above the deferred announcement — and unlike the announcement it is **not** gated on `resting_in_needs_input?`. The warning is a factual timeline note rather than a claim that a human is needed, so it is due in whatever state the session was abandoned in, and the state that needs it most is the one the guard excludes: a recovery pause carrying `pending_sleep` is bounced straight on to `waiting` by `execute_pending_sleep` with nothing armed to resume it. `fail` and `archive` stay unconditional behind that, so the warning is deferred rather than lost: a session that is never resumed says it when it is failed or trashed.
 
 #### A session does not idle on its own queue
 

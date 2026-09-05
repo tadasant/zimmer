@@ -212,6 +212,10 @@ timeline saying no PR URL has been captured. All three rest states call it — `
 miss while the same session can still act on it; `fail` and `archive` catch the sessions `pause`
 never sees (one that dies mid-turn, one trashed straight from `needs_input`). Once per session, not
 once per event: the dedup is on the warning log, so extra call sites cost nothing in timeline spam.
+One budget only buys one shot, though, so `pause` skips the call on a **recovery pause** — Zimmer
+restarting its own interrupted process, where nothing about the session's PR work is settled — and
+makes it later if that recovery never comes. See
+[which pauses announce themselves](/sessions/lifecycle/#which-pauses-announce-themselves).
 The goal match is a phrase match ("open a PR", "the PR is open", the `open-pr` skill), not a bare
 mention, because the catalog's read-only goal says *"do not create files, PRs, or branches"*.
 :::

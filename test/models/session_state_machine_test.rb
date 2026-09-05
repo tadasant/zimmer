@@ -1676,6 +1676,156 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_equal 1, missing_pr_url_warnings(session).size, "archive must not repeat the warning fail already wrote"
   end
 
+  # One budget of one warning per session only buys one shot, so the pause that
+  # spends it has to be a pause the session actually came to rest in. A recovery
+  # pause is not: Zimmer's own process was interrupted and a sweep is about to
+  # continue the session. It is also the pause that fires no wake and sends no
+  # push, so the warning it wrote was one nobody was ever shown (#558).
+
+  test "a recovery pause does not spend the missing-PR-URL warning" do
+    session = pr_goal_session
+    session.start!
+    session.update!(metadata: session.metadata.to_h.merge("paused_by" => "recovery"))
+
+    session.pause!
+
+    assert_empty missing_pr_url_warnings(session),
+      "a pause Zimmer caused is not a rest state and must not spend the session's one warning"
+    assert session.reload.needs_input?, "only the warning is deferred — the transition still happens"
+  end
+
+  # The shape this came from: session 5679 started at 13:05:44Z, took a deploy
+  # interrupt at 13:11:19Z, warned at 13:11:20Z, resumed at 13:11:24Z, then ran
+  # for two more days, opened a PR through a route the hook did not recognise,
+  # and came to rest at 03:01:06Z the next day with nothing recorded and nothing
+  # said. The warning belongs at the end of that, where the miss is true — not at
+  # minute six, where every session with a PR goal looks identical.
+  test "a session interrupted early still warns at the rest state it reaches later" do
+    session = pr_goal_session
+    session.start!
+
+    # 13:11:19Z — worker shutdown during a deploy. AgentSessionJob's
+    # InterruptError handler writes the marker, then pauses the session.
+    session.update!(metadata: session.metadata.to_h.merge("paused_by" => "recovery"))
+    session.pause!
+    assert_empty missing_pr_url_warnings(session), "the interrupt pause must say nothing"
+
+    # 13:11:24Z — the auto-continue. `resume` clears the marker.
+    session.resume!
+    assert_not session.recovery_pause?, "resume clears the recovery marker"
+
+    # Two days later: the turn ends, the session hands back to its human, and
+    # still nothing is recorded.
+    session.pause!
+
+    warnings = missing_pr_url_warnings(session)
+    assert_equal 1, warnings.size,
+      "the pause the session actually came to rest in is the one that must warn"
+    resumed = session.logs.where(content: "[State Machine] Session resumed").last
+    assert_operator warnings.first.id, :>, resumed.id,
+      "and it must be written at that pause, not carried over from the interrupt"
+  end
+
+  # The other half of the same bet: deferring must not turn into repeating. The
+  # dedup guard is untouched, so however many interrupts a session takes, the
+  # first real hand-back warns and no later one does.
+  test "a session that takes several interrupts and then rests warns exactly once" do
+    session = pr_goal_session
+    session.start!
+
+    3.times do
+      session.update!(metadata: session.metadata.to_h.merge("paused_by" => "recovery"))
+      session.pause!
+      session.resume!
+    end
+
+    session.pause!
+    session.resume!
+    session.pause!
+
+    assert_equal 1, missing_pr_url_warnings(session).size,
+      "the budget is still one warning per session — deferring it must not multiply it"
+  end
+
+  # Deferral is only safe where a sweep is actually coming. Both recovery sweeps
+  # scope through Session.not_in_frozen_category, so for a session parked in a
+  # frozen category this pause IS the rest state, and skipping the warning would
+  # delete it rather than defer it. Same carve-out the pause's announcement takes.
+  test "a recovery pause in a frozen category warns, because no sweep is coming" do
+    session = pr_goal_session
+    session.update!(category: Category.create!(name: "Parked #{SecureRandom.hex(3)}", is_frozen: true))
+    session.start!
+    session.update!(metadata: session.metadata.to_h.merge("paused_by" => "recovery"))
+
+    session.pause!
+
+    assert_equal 1, missing_pr_url_warnings(session).size,
+      "no sweep will reach this session, so its recovery pause is where the miss becomes permanent"
+  end
+
+  # The promise the deferral rests on expiring, driven through the real sweep
+  # rather than by calling the make-good directly: with no session_id every
+  # continue attempt fails validation, and the pass that spends
+  # MAX_CONTINUE_ATTEMPTS drops the marker and abandons the session. Nothing
+  # sweeps it after that, so this is where the deferred warning comes due.
+  test "the deferred warning is written when the recovery promise expires" do
+    session = pr_goal_session
+    session.start!
+    session.update!(metadata: session.metadata.to_h.merge("paused_by" => "recovery"))
+    session.pause!
+    session.update!(running_job_id: nil, session_id: nil)
+    assert_empty missing_pr_url_warnings(session)
+
+    (SessionContinuation::MAX_CONTINUE_ATTEMPTS - 1).times { CleanupOrphanedSessionsJob.perform_now }
+    assert_empty missing_pr_url_warnings(session),
+      "a recovery-paused session with budget left is still on its way back to running"
+
+    CleanupOrphanedSessionsJob.perform_now
+
+    assert_equal 1, missing_pr_url_warnings(session).size,
+      "giving up on the recovery is what turns that pause into a rest state"
+  end
+
+  # And it must not be gated on the session resting in `needs_input`, the way the
+  # give-up *announcement* is. A recovery pause carrying `pending_sleep` is
+  # bounced straight on to `waiting` by execute_pending_sleep with nothing armed
+  # to resume it (CleanupOrphanedSessionsJob calls that "a permanently stranded
+  # dead state"), so it is the session most in need of the warning and the one a
+  # resting-state guard would skip.
+  test "the deferred warning is written for a session the interrupt bounced to waiting" do
+    session = pr_goal_session
+    session.start!
+    session.update!(metadata: session.metadata.to_h.merge("paused_by" => "recovery", "pending_sleep" => true))
+
+    session.pause!
+
+    assert session.reload.waiting?, "execute_pending_sleep bounces this pause straight on to waiting"
+    session.update!(running_job_id: nil, session_id: nil)
+
+    SessionContinuation::MAX_CONTINUE_ATTEMPTS.times { CleanupOrphanedSessionsJob.perform_now }
+
+    assert_equal 1, missing_pr_url_warnings(session).size,
+      "a stranded session must not lose the warning its interrupt pause deferred"
+  end
+
+  test "abandoning a recovery pause completes when the missing-PR-URL check raises" do
+    session = pr_goal_session
+    session.start!
+    session.update!(metadata: session.metadata.to_h.merge("paused_by" => "recovery"))
+    session.pause!
+    session.update!(running_job_id: nil, session_id: nil)
+    before = session.needs_input_transition_count
+
+    TranscriptHooks::GithubPrUrlHook.stub(:warn_if_pr_goal_captured_no_url, ->(*) { raise "boom" }) do
+      assert_nothing_raised do
+        SessionContinuation::MAX_CONTINUE_ATTEMPTS.times { CleanupOrphanedSessionsJob.perform_now }
+      end
+    end
+
+    assert_equal before + 1, session.reload.needs_input_transition_count,
+      "the deferred announcement is the load-bearing half and must survive a broken warning"
+  end
+
   # A warning that breaks a state transition is worse than the thing it warns
   # about — and on these two events the transition is running cleanup.
   test "archive completes its cleanup when the missing-PR-URL check raises" do

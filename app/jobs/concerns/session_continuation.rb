@@ -228,6 +228,14 @@ module SessionContinuation
                  "This session will not be retried again — restart it to try once more.",
         level: "error"
       )
+      # The missing-PR warning the recovery pause deferred (#558) comes due here,
+      # and it is due whatever state the session is abandoned in — unlike the
+      # announcement below, which is only honest about a session that really is
+      # resting in `needs_input`. A recovery pause carrying `pending_sleep` is
+      # bounced straight on to `waiting` by `execute_pending_sleep`, with nothing
+      # armed to resume it; that session is the most stranded of the lot, and it
+      # is exactly the one the resting-state guard would skip. Never raises.
+      session.warn_if_pr_goal_captured_no_url
       announce_abandoned_pause(session)
       return false
     end

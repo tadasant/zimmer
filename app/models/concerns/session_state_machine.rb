@@ -136,7 +136,17 @@ module SessionStateMachine
         transitions from: :running, to: :needs_input
         after do
           log_state_change("Session paused, waiting for input")
-          warn_if_pr_goal_captured_no_url
+          # Deferred on exactly the pauses the announcement below is deferred on,
+          # and for the same reason: a recovery pause is Zimmer restarting its own
+          # interrupted process, so nothing about this session's PR work is
+          # settled and nobody is being told about the pause anyway. The budget is
+          # one warning per session, so spending it here spends it at the moment it
+          # carries the least information — every PR-goal session has no PR at
+          # minute six. Session 5679 spent its whole budget on a deploy interrupt
+          # six minutes in, ran for two more days, opened a PR through a route the
+          # hook did not recognise, and came to rest with nothing recorded and
+          # nothing said (#558).
+          warn_if_pr_goal_captured_no_url unless announcement_deferred_to_recovery_sweep?
           cleanup_running_job
           clear_auth_recovery_budget
           if status_summary_fork?
@@ -892,6 +902,36 @@ module SessionStateMachine
     announce_needs_input(bump_needs_input_transition_counter)
   end
 
+  # Say so when a session whose goal is about opening a pull request reaches a
+  # rest state with no PR recorded. Zimmer's GitHub integrations all key off
+  # custom_metadata["github_pull_request_urls"], and an empty list looks exactly
+  # like a session that had no PR to record — so the warning is the only thing
+  # that distinguishes "nothing to do" from "the association never happened".
+  # The rule and the wording live with the hook that populates the list.
+  #
+  # Called from `pause`, `fail` and `archive` — the three transitions after
+  # which nothing runs unless a person comes back. `pause` catches the miss
+  # while the session can still act on it; `fail` and `archive` catch the
+  # sessions `pause` never sees. The hook deduplicates on the warning log
+  # itself, so a session that pauses, warns and later archives is warned once,
+  # not twice.
+  #
+  # `pause` skips the call on a recovery pause, which is not a rest state at all
+  # (#558). Public because the make-good for that skip is not a transition:
+  # SessionContinuation calls this when the recovery promise expires, which is
+  # the moment the deferred warning comes due. Since the budget is one warning
+  # per session, the call site that spends it decides where in the session's life
+  # the warning lands.
+  #
+  # The rescue is not redundant with the hook's own: the hook's guard cannot
+  # cover the constant lookup that reaches it, and on `fail` and `archive` an
+  # escaping exception would abort a transition that is cleaning up.
+  def warn_if_pr_goal_captured_no_url
+    TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url(self)
+  rescue => e
+    Rails.logger.error "[SessionStateMachine] Failed to check for a missing PR URL: #{e.message}"
+  end
+
   # Whether a `needs_input` announcement for this session is being DEFERRED to a
   # recovery sweep, rather than skipped outright. That distinction is the whole
   # safety argument, so it is the question every caller asks.
@@ -1093,29 +1133,6 @@ module SessionStateMachine
     raise if DatabaseTransactionState.aborted_by?(e)
 
     Rails.logger.error "[SessionStateMachine] Failed to tag experimental settings: #{e.message}"
-  end
-
-  # Say so when a session whose goal is about opening a pull request reaches a
-  # rest state with no PR recorded. Zimmer's GitHub integrations all key off
-  # custom_metadata["github_pull_request_urls"], and an empty list looks exactly
-  # like a session that had no PR to record — so the warning is the only thing
-  # that distinguishes "nothing to do" from "the association never happened".
-  # The rule and the wording live with the hook that populates the list.
-  #
-  # Called from `pause`, `fail` and `archive` — the three transitions after
-  # which nothing runs unless a person comes back. `pause` catches the miss
-  # while the session can still act on it; `fail` and `archive` catch the
-  # sessions `pause` never sees. The hook deduplicates on the warning log
-  # itself, so a session that pauses, warns and later archives is warned once,
-  # not twice.
-  #
-  # The rescue is not redundant with the hook's own: the hook's guard cannot
-  # cover the constant lookup that reaches it, and on `fail` and `archive` an
-  # escaping exception would abort a transition that is cleaning up.
-  def warn_if_pr_goal_captured_no_url
-    TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url(self)
-  rescue => e
-    Rails.logger.error "[SessionStateMachine] Failed to check for a missing PR URL: #{e.message}"
   end
 
   # The archive event's timeline line: who did it, and what it cost.
