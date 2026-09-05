@@ -13,11 +13,11 @@ require "mocha/minitest"
 # somebody's open tab. So each call site below pins its action, stream, target
 # and partial by value.
 #
-# The second half is the behaviour this routing exists to buy — see #524. Six of
+# The second half is the behaviour this routing exists to buy — see #524. Five of
 # these methods used to have no rescue at all while sitting on `after_*_commit`,
-# so a dead cable failed whoever saved the row; seven logged at ERROR, which on
-# this deployment is a page for the exact transient the circuit breaker exists to
-# absorb quietly.
+# so a dead cable failed whoever saved the row; the other ten logged at ERROR,
+# which on this deployment is a page for the exact transient the circuit breaker
+# exists to absorb quietly.
 class BroadcastDelegationTest < ActiveSupport::TestCase
   setup do
     @session = sessions(:running)
@@ -298,6 +298,48 @@ class BroadcastDelegationTest < ActiveSupport::TestCase
     assert_operator BroadcastService.circuit_breaker_failures, :>, 0
   end
 
+  test "a render failure is not retried" do
+    renders = 0
+    SessionsController.stubs(:render).with { renders += 1; raise StandardError, "partial blew up" }
+
+    @session.send(:broadcast_header_actions)
+
+    assert_equal 1, renders,
+                 "a partial that raises will raise again — retrying it just sleeps on a commit-callback thread"
+  end
+
+  test "a failed card broadcast does not stamp the index throttle" do
+    @session.update_column(:last_timeline_entry_at, 1.minute.ago)
+    @session.last_timeline_entry_at = Time.current
+    @session.save!
+    @session.update_column(:last_broadcast_to_index_at, nil)
+
+    capture_turbo_broadcasts(raises: StandardError.new("cable down")) do
+      @session.send(:broadcast_update_to_sessions_index)
+    end
+
+    assert_nil @session.reload.last_broadcast_to_index_at,
+               "stamping the throttle for a broadcast that never landed would suppress the next 30s of card updates"
+  end
+
+  test "the provenance fan-out skips a viewer that disappeared, without failing the rest" do
+    parent = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Parent", status: :running)
+    child = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Child",
+                            parent_session_id: parent.id, status: :running)
+    assert_includes SessionHierarchy.new(child).session_ids, parent.id
+
+    # The lookup happens inside the guard, so a session that vanished between the
+    # hierarchy read and the render sends nothing rather than raising.
+    Session.stubs(:find_by).with(id: parent.id).returns(nil)
+    Session.stubs(:find_by).with(id: child.id).returns(child)
+
+    captured = capture_turbo_broadcasts { child.broadcast_provenance_change_to_hierarchy }
+
+    assert_not_includes captured.map(&:stream), "session_#{parent.id}_status"
+    assert_includes captured.map(&:stream), "session_#{child.id}_status"
+    assert_equal 0, BroadcastService.circuit_breaker_failures, "a missing viewer is not a broadcast failure"
+  end
+
   private
 
   def assert_broadcast_arguments(callable, action:, stream:, target:, partial: nil, locals: nil, html: false)
@@ -319,5 +361,15 @@ class BroadcastDelegationTest < ActiveSupport::TestCase
     else
       assert_nil broadcast.html
     end
+
+    # Capturing at the channel means the partial is never rendered, so pinning
+    # its NAME alone would let a partial that raises under the request-less
+    # render the channel performs go unnoticed — the exact failure class
+    # test/contracts/broadcast_contract_test.rb exists for. Render it here with
+    # the captured locals.
+    return unless broadcast.partial
+
+    rendered = SessionsController.render(partial: broadcast.partial, locals: broadcast.locals || {})
+    assert rendered.present?, "#{broadcast.partial} rendered empty"
   end
 end

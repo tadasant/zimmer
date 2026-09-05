@@ -98,9 +98,14 @@ class BroadcastService
     end
   end
 
-  def initialize(turbo_channel: Turbo::StreamsChannel)
+  # @param error_context [Hash] extra context attached to every failure this
+  #   instance reports. Model-side callers pass the record they are broadcasting
+  #   for, so a report keeps naming its subject now that every broadcast funnels
+  #   through one report site rather than one per method.
+  def initialize(turbo_channel: Turbo::StreamsChannel, error_context: {})
     @turbo_channel = turbo_channel
-    @logger = StructuredLogger.new({ service: "BroadcastService" })
+    @error_context = error_context
+    @logger = StructuredLogger.new({ service: "BroadcastService" }.merge(error_context))
   end
 
   # Broadcast a timeline message (from transcript)
@@ -429,11 +434,12 @@ class BroadcastService
   end
 
   # Put HTML on `target`. Pass `html:` when it is already rendered, or a block
-  # when producing it can itself fail — the block runs INSIDE the retry and the
-  # rescue, so a render error is isolated exactly like a cable error. That
-  # matters: most of the model-side callers render through
-  # `SessionsController.render`, and a partial that raises is the failure mode
-  # this service is supposed to absorb.
+  # when producing it can itself fail — the block runs INSIDE the guard, so a
+  # render error is isolated exactly like a cable error. That matters: most of
+  # the model-side callers render through `SessionsController.render`, and a
+  # partial that raises is the failure mode this service is supposed to absorb.
+  # It also lets a caller do its own lookups in there rather than outside the
+  # guard; a block that returns nil means "nothing to say", and nothing is sent.
   def broadcast_html(action:, stream:, target:, html: nil, &renderer)
     raise ArgumentError, "pass either html: or a block" unless html.nil? ^ renderer.nil?
 
@@ -517,13 +523,26 @@ class BroadcastService
 
     retries = 0
     begin
-      rendered = html_renderer ? html_renderer.call : html
+      if html_renderer
+        # Rendering is deterministic, so a partial that raises will raise again
+        # on every attempt. Retrying it just spends MAX_RETRIES sleeps on a
+        # thread that is usually inside an after_*_commit — flag it and skip
+        # straight to recording the failure.
+        rendering = true
+        rendered = html_renderer.call
+        rendering = false
+        # A renderer with nothing to say — the record it was going to describe
+        # is gone. Not a failure, and nothing to send.
+        return false if rendered.nil?
+      else
+        rendered = html
+      end
       perform_broadcast(method: method, stream: stream, target: target, partial: partial, locals: locals, html: rendered)
       record_success
       true
     rescue => e
       retries += 1
-      if retries <= MAX_RETRIES
+      if !rendering && retries <= MAX_RETRIES
         delay = RETRY_BASE_DELAY * (2 ** (retries - 1))
         @logger.debug("Broadcast failed, retrying", attempt: retries, delay: delay, error: e.message)
         sleep delay
@@ -558,38 +577,48 @@ class BroadcastService
     end
   end
 
-  # Record a failed broadcast (thread-safe)
+  # Record a failed broadcast (thread-safe).
+  #
+  # Only the counter and the breaker are touched under the mutex. Logging and
+  # ErrorReporter are deliberately outside it: reporting serializes an event and
+  # hands it to Sentry's background worker, and doing that while holding a
+  # process-global lock would make every *successful* broadcast on every other
+  # thread queue behind it for the length of an outage.
   def record_failure(error, stream:, target:)
+    failures = nil
+    opened = false
+
     self.class.circuit_breaker_mutex.synchronize do
       self.class.circuit_breaker_failures += 1
+      failures = self.class.circuit_breaker_failures
 
-      # WARN, not ERROR, and deliberately so. The deployment runs an "any Zimmer
-      # ERROR -> critical" Grafana rule (see ApplicationJob), so an error line
-      # here would page a human for a dropped cable write — the exact condition
-      # the circuit breaker below exists to absorb quietly, and the reason #86
-      # built the breaker and the "live updates paused" banner in the first
-      # place. The signal is not lost: ErrorReporter is not level-based and does
-      # not page, so every failure still lands in GlitchTip with its backtrace.
-      @logger.warn(
-        "Broadcast failed after retries",
-        stream: stream,
-        target: target,
-        error: error.message,
-        failures: self.class.circuit_breaker_failures
-      )
-      ErrorReporter.report_exception(
-        error,
-        context: { service: "BroadcastService", stream: stream, target: target, failures: self.class.circuit_breaker_failures }
-      )
-
-      # Open circuit breaker if threshold exceeded
-      if self.class.circuit_breaker_failures >= CIRCUIT_BREAKER_THRESHOLD
+      if failures >= CIRCUIT_BREAKER_THRESHOLD && self.class.circuit_breaker_opened_at.nil?
         self.class.circuit_breaker_opened_at = Time.current
         # Publish to the shared cache so the web process can tell the user their
         # page has stopped updating, instead of freezing it and looking fine.
         self.class.publish_circuit_open(self.class.circuit_breaker_opened_at + CIRCUIT_BREAKER_RESET_TIME)
-        @logger.warn("Circuit breaker opened due to repeated failures", failures: self.class.circuit_breaker_failures)
+        opened = true
       end
     end
+
+    # WARN, not ERROR, and deliberately so. The deployment runs an "any Zimmer
+    # ERROR -> critical" Grafana rule (see ApplicationJob), so an error line here
+    # would page a human for a dropped cable write — the exact condition the
+    # circuit breaker exists to absorb quietly, and the reason #86 built the
+    # breaker and the "live updates paused" banner in the first place. The signal
+    # is not lost: ErrorReporter is not level-based and does not page, so every
+    # failure still lands in GlitchTip with its backtrace.
+    @logger.warn(
+      "Broadcast failed after retries",
+      stream: stream,
+      target: target,
+      error: error.message,
+      failures: failures
+    )
+    ErrorReporter.report_exception(
+      error,
+      context: @error_context.merge(service: "BroadcastService", stream: stream, target: target, failures: failures)
+    )
+    @logger.warn("Circuit breaker opened due to repeated failures", failures: failures) if opened
   end
 end

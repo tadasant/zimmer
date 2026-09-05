@@ -1729,14 +1729,22 @@ routes those callbacks through `BroadcastService#broadcast_partial` / `#broadcas
 
 Two consequences worth knowing:
 
-- **A broadcast can no longer fail its caller.** Six of those methods sit on `after_*_commit` and had
-  no `rescue` at all, so a render or cable failure propagated into whatever had just saved the row —
-  a poller, a state-machine transition, the agent job.
+- **A broadcast can no longer fail its caller.** Five of those methods sit on `after_*_commit` and
+  had no `rescue` at all, so a render or cable failure propagated into whatever had just saved the
+  row — a poller, a state-machine transition, the agent job.
 - **A dropped broadcast is a `WARN`, not a page.** After `MAX_RETRIES` the service logs at WARN and
   reports the exception to `ErrorReporter`. That is deliberate: this deployment pages on *any* Zimmer
   `ERROR` line (see `ApplicationJob`), and a transient cable failure is precisely what the breaker
   exists to absorb quietly. `ErrorReporter` is not level-based and does not page, so the failure is
-  still visible in GlitchTip with its backtrace.
+  still visible in GlitchTip with its backtrace — and because every broadcast now reports from one
+  place, `BroadcastsThroughService` passes the record it is broadcasting for as `error_context` so
+  the report still names its subject.
+
+A render error is not retried. `#broadcast_html` takes a block rather than a string precisely so the
+render happens inside the guard, and a partial that raises will raise identically on every attempt —
+retrying it would spend `MAX_RETRIES` sleeps on a thread that is usually inside an
+`after_*_commit`. A block that returns `nil` means "nothing to say" and sends nothing, which is how
+a caller does its own lookups inside the guard.
 
 The UI says so while that lasts: a "Live updates paused" banner sits under the network-egress banner
 in the layout, on every page. It reports that broadcasts are failing, that your sessions are still
