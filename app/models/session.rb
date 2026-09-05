@@ -6,6 +6,7 @@ class Session < ApplicationRecord
   include SessionPrecedence
   include SessionVisibility
   include RunningTurns
+  include CatalogArtifactReferences
 
   has_many :logs, dependent: :destroy
   has_many :subagent_transcripts, dependent: :destroy
@@ -661,14 +662,12 @@ class Session < ApplicationRecord
   # and honor it (Claude does; runtimes without a token-budget knob ignore it).
   validates :auto_compact_window, numericality: { only_integer: true, greater_than: 0, less_than_or_equal_to: MAX_AUTO_COMPACT_WINDOW }
   validates :heartbeat_interval_seconds, numericality: { only_integer: true, greater_than_or_equal_to: HEARTBEAT_MIN_INTERVAL_SECONDS, less_than_or_equal_to: HEARTBEAT_MAX_INTERVAL_SECONDS }
-  validate :mcp_servers_must_be_array
-  validate :mcp_servers_must_exist_in_catalog, if: :mcp_servers_changed?
-  validate :catalog_skills_must_be_array
-  validate :catalog_skills_must_exist_in_catalog, if: :catalog_skills_changed?
-  validate :catalog_hooks_must_be_array
-  validate :catalog_hooks_must_exist_in_catalog, if: :catalog_hooks_changed?
-  validate :catalog_plugins_must_be_array
-  validate :catalog_plugins_must_exist_in_catalog, if: :catalog_plugins_changed?
+  # The catalog-artifact columns. Each declaration registers the pair of
+  # validators CatalogArtifactReferences defines — see the concern.
+  catalog_reference :mcp_servers,     config: ServersConfig, noun: "server", alert_noun: "MCP server",     dedup_noun: "mcp"
+  catalog_reference :catalog_skills,  config: SkillsConfig,  noun: "skill",  alert_noun: "catalog skill"
+  catalog_reference :catalog_hooks,   config: HooksConfig,   noun: "hook",   alert_noun: "catalog hook"
+  catalog_reference :catalog_plugins, config: PluginsConfig, noun: "plugin", alert_noun: "catalog plugin"
   validate :git_root_format, if: :git_root?
   # parent_session_id is client-supplied (POST /api/v1/sessions permits it, and the
   # dashboard passes it straight through from params), and `belongs_to ..., optional:
@@ -2136,71 +2135,6 @@ class Session < ApplicationRecord
     end
 
     false
-  end
-
-  def mcp_servers_must_be_array
-    return if mcp_servers.nil? || mcp_servers.is_a?(Array)
-
-    errors.add(:mcp_servers, "must be an array")
-  end
-
-  def mcp_servers_must_exist_in_catalog
-    return if mcp_servers.nil? || !mcp_servers.is_a?(Array)
-
-    # Filter out blank entries (Rails params can send [""] for empty arrays)
-    non_blank_servers = mcp_servers.reject(&:blank?)
-    invalid_servers = non_blank_servers.reject { |name| ServersConfig.exists?(name) }
-    return if invalid_servers.empty?
-
-    errors.add(:mcp_servers, "contains invalid server(s): #{invalid_servers.join(', ')}")
-  end
-
-  def catalog_skills_must_be_array
-    return if catalog_skills.nil? || catalog_skills.is_a?(Array)
-
-    errors.add(:catalog_skills, "must be an array")
-  end
-
-  def catalog_skills_must_exist_in_catalog
-    return if catalog_skills.nil? || !catalog_skills.is_a?(Array)
-
-    non_blank_skills = catalog_skills.reject(&:blank?)
-    invalid_skills = non_blank_skills.reject { |name| SkillsConfig.exists?(name) }
-    return if invalid_skills.empty?
-
-    errors.add(:catalog_skills, "contains invalid skill(s): #{invalid_skills.join(', ')}")
-  end
-
-  def catalog_hooks_must_be_array
-    return if catalog_hooks.nil? || catalog_hooks.is_a?(Array)
-
-    errors.add(:catalog_hooks, "must be an array")
-  end
-
-  def catalog_hooks_must_exist_in_catalog
-    return if catalog_hooks.nil? || !catalog_hooks.is_a?(Array)
-
-    non_blank_hooks = catalog_hooks.reject(&:blank?)
-    invalid_hooks = non_blank_hooks.reject { |name| HooksConfig.exists?(name) }
-    return if invalid_hooks.empty?
-
-    errors.add(:catalog_hooks, "contains invalid hook(s): #{invalid_hooks.join(', ')}")
-  end
-
-  def catalog_plugins_must_be_array
-    return if catalog_plugins.nil? || catalog_plugins.is_a?(Array)
-
-    errors.add(:catalog_plugins, "must be an array")
-  end
-
-  def catalog_plugins_must_exist_in_catalog
-    return if catalog_plugins.nil? || !catalog_plugins.is_a?(Array)
-
-    non_blank_plugins = catalog_plugins.reject(&:blank?)
-    invalid_plugins = non_blank_plugins.reject { |id| PluginsConfig.exists?(id) }
-    return if invalid_plugins.empty?
-
-    errors.add(:catalog_plugins, "contains invalid plugin(s): #{invalid_plugins.join(', ')}")
   end
 
   def parent_session_must_exist
