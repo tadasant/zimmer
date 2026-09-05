@@ -793,6 +793,40 @@ Redaction is also irreversible and applies only from the moment it shipped. Tran
 that still hold whatever the agent printed until `bin/rails open_transcripts:redact_stored` is run
 against them.
 
+### The redaction cache buys speed with memory, and can be out of date by one poll
+
+🟡 `TranscriptRedactionCache` keeps the already-redacted prefix of each hot transcript so a poll costs
+the appended bytes rather than the whole file — 8.5 s down to 34 ms on a real 22.4 MB transcript
+([#477](https://github.com/tadasant/zimmer/issues/477)). Four edges come with it:
+
+- **It costs roughly one extra copy of every hot transcript in memory.** Bounded at 128 MB
+  process-wide, 64 entries, and 64 MB for any single transcript, with least-recently-read eviction
+  and a 15-minute idle sweep. Past those bounds a transcript goes back to costing a full re-scan
+  every poll — correct, just slow, which is exactly the old behavior.
+- **Invalidation samples rather than hashes the whole prefix.** It checks the length, that the commit
+  point still lands after a newline in the bytes being read now, that the known-credential set has not
+  changed generation, and 16 KB fingerprints of the file's head and of the bytes just before the commit
+  point. A rewrite that changed only the *middle* of a transcript, left its length and both fingerprints
+  intact, and kept every line boundary would be served the old prefix for that region. Usually that
+  means stale bytes rather than leaked ones — the cached prefix is redactor output, so re-emitting it
+  cannot itself leak. But the honest version is stronger than that: such a rewrite could also introduce
+  a `-----BEGIN … PRIVATE KEY-----` opener into the prefix whose body lands in the tail, and the tail's
+  scan would not see the opener, so the key body would be emitted unarmored. Nothing in Zimmer rewrites
+  a transcript that way — the runtime appends, and the resume restore rewrites from byte 0 with the
+  stored, already-redacted bytes — and closing it would mean hashing the whole prefix on every poll,
+  which is the O(total size) cost the cache exists to remove.
+- **The known-credential set is versioned, so a late-arriving credential still costs a full re-scan.**
+  That set rebuilds on a 60-second TTL and every tier degrades to "missing" rather than raising when
+  its source is unreachable, so a credential can be absent from one window and present in the next.
+  The old full re-scan scrubbed it retroactively out of the whole transcript for free; the cache buys
+  that back by discarding any prefix redacted under an older generation. Expect an occasional full
+  re-scan of a hot transcript when a secret rotates or a provider blips.
+- **A transcript carrying multi-line PEM armor stops advancing its commit point.** The armor walk is
+  the one stage that spans newlines, so the commit point never crosses a line that could open a
+  block. A transcript with one degrades toward re-scanning from that line on every poll. JSONL
+  transcripts carry the escaped-in-JSON form, which opens and closes on one line and does not stall
+  anything.
+
 ### Nothing is encrypted at rest
 
 🔴 Uniform trust means Zimmer leans on the perimeter rather than field-level encryption. No model declares
