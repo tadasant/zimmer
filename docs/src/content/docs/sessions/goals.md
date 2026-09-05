@@ -197,14 +197,14 @@ as its last act. `needs_input` is a deliberate signal that a human is required, 
 exactly four sanctioned reasons to send it:
 
 1. The agent lacked the authorization scope or tools to finish, with no parent session to report
-   back to. When there *is* a parent, the prompt names the route: `action_session` with
+   back to and no root it could spawn that has the scope. When there *is* a parent, the prompt names the route: `action_session` with
    [`message_parent`](/extend/mcp-server/#message_parent-the-one-action-that-exists-only-here),
    which resolves the parent server-side and carries a `wrong_scope` / `missing_tools` reason. The
-   session reports and archives instead of parking. Two steps come before either ending, because
-   missing scope is often a routing step rather than a dead end: the agent has to name the root or
-   tool it looked for and did not find, and spawn the root that *does* have the scope when it holds
-   session-spawning tools. Check, then spawn, then report, then park — parking is the last of those
-   steps, not the first.
+   session reports and archives instead of parking. Before either ending, the agent has to name the
+   root or tool it looked for and did not find, and — when it holds session-spawning tools — spawn
+   the root that *does* have the scope and hand the work over. Spawn, report, park: the agent takes
+   the first one open to it, and parking is last. Spawning is an ending like reporting is, not a
+   step the session takes before parking on the child it just started.
 2. The session opened a PR whose merge disposition is unsettled. *How* it holds is the `open-pr`
    skill's terminal steps rather than this list: asleep in `waiting` on a bounded self-wake while
    the merge gate is still rating the PR, because that is a machine wait. What brings the session
