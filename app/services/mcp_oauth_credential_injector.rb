@@ -254,6 +254,13 @@ class McpOauthCredentialInjector
       refresh_failed = credential.present? && !credential.active? && credential.can_refresh?
       requires_reauth = credential&.requires_reauth?
 
+      # What the server itself last said, recorded by whichever probe last asked
+      # it (the spawn gate or McpOauthProbe). One of
+      # McpServerOauthRequirement::DETERMINATIONS — "undetermined" when nothing
+      # has been recorded, or when an "advertised: not required" answer has gone
+      # stale.
+      determination = McpServerOauthRequirement.determination_for(credential_key)
+
       status[server_name] = {
         server_url: server_config[:url],
         credential_key: credential_key,
@@ -262,9 +269,19 @@ class McpOauthCredentialInjector
         needs_refresh: credential&.needs_refresh?,
         refresh_failed: refresh_failed,
         requires_reauth: requires_reauth,
-        # If pre-registered OAuth config exists, OAuth is required
-        # Otherwise, we can't know without probing the server
-        oauth_required: preregistered_oauth.present? ? true : nil,
+        # true / false when we know, nil when we do not — and nil still means
+        # "assume it might be", exactly as before. A pre-registered OAuth config
+        # settles it on Zimmer's side; otherwise the answer is the one the server
+        # advertised, and only a recorded advertisement can say "no".
+        oauth_required: preregistered_oauth.present? ? true : McpServerOauthRequirement.oauth_required_for(credential_key),
+        # How we know, for whoever is triaging "why does it say I need to
+        # authorize this?". Carried alongside the boolean rather than folded into
+        # it, because "the server said no" and "we could not tell" both leave the
+        # boolean falsy and are not the same fact. Always the server's own
+        # advertisement — a pre-registered config is Zimmer-side knowledge and
+        # reports itself through :has_preregistered_oauth, not by pretending the
+        # server advertised something.
+        oauth_determination: determination,
         has_preregistered_oauth: preregistered_oauth.present?,
         # Use to_public_h to avoid exposing client_secret in status
         preregistered_oauth_config: preregistered_oauth&.to_public_h
@@ -276,6 +293,18 @@ class McpOauthCredentialInjector
 
   # Returns a list of MCP servers that are missing required OAuth credentials.
   #
+  # Three sources answer "does this server need OAuth?", in decreasing authority:
+  # a requirement the caller has just established itself, the determination the
+  # server last advertised (recorded by whichever probe last asked it), and —
+  # when neither settles it — the original assumption, unchanged: a remote server
+  # we cannot classify might need OAuth, so treat it as if it does.
+  #
+  # That last branch is deliberately still a guess. Erring the other way is the
+  # dangerous direction: a server wrongly decided not to need OAuth never gets
+  # credentials and fails at the point of use, silently, where an over-eager
+  # assumption merely offers an Authorize button nobody needed. So only a
+  # recorded advertisement can answer "no"; absence of one cannot.
+  #
   # @param oauth_requirements [Hash] Map of server_name => requires_oauth (boolean)
   # @return [Array<Hash>] List of servers missing credentials
   def missing_credentials(oauth_requirements = {})
@@ -284,15 +313,22 @@ class McpOauthCredentialInjector
 
     status.each do |server_name, server_status|
       requires_oauth = oauth_requirements[server_name]
+      requires_oauth = server_status[:oauth_required] if requires_oauth.nil?
 
-      # If we don't know if OAuth is required, assume it might be for remote servers
-      requires_oauth = true if requires_oauth.nil? && server_status[:server_url].present?
+      if requires_oauth.nil? && server_status[:server_url].present?
+        Rails.logger.info(
+          "[McpOauthCredentialInjector] #{server_name}: #{server_status[:oauth_determination]} — " \
+          "assuming OAuth may be required"
+        )
+        requires_oauth = true
+      end
 
       if requires_oauth && !server_status[:has_credential]
         missing << {
           server_name: server_name,
           server_url: server_status[:server_url],
-          credential_key: server_status[:credential_key]
+          credential_key: server_status[:credential_key],
+          oauth_determination: server_status[:oauth_determination]
         }
       end
     end

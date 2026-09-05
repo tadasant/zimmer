@@ -5347,6 +5347,18 @@ class AgentSessionJob < ApplicationJob
           configured_redirect_uri: catalog_server&.oauth_redirect_uri
         )
 
+        # Keep what the server just told us, so the surfaces that cannot probe —
+        # the Connectors page, `get_configs`, the injector's own accounting —
+        # read a recorded fact instead of assuming a remote server might need
+        # OAuth. Best-effort by contract: it never affects this gate's answer.
+        McpServerOauthRequirement.record!(
+          server_name: server_name,
+          credential_key: server_status[:credential_key],
+          server_url: server_url,
+          determination: requirement.determination,
+          detail: requirement.error
+        )
+
         if requirement.required
           log_buffer.add(
             "MCP server '#{server_name}' requires OAuth authorization",
@@ -5358,9 +5370,17 @@ class AgentSessionJob < ApplicationJob
             credential_key: server_status[:credential_key],
             oauth_metadata: requirement.metadata
           }
-        else
+        elsif requirement.determination == McpServerOauthRequirement::ADVERTISED_NOT_REQUIRED
           log_buffer.add(
-            "MCP server '#{server_name}' does not require OAuth",
+            "MCP server '#{server_name}' does not require OAuth (advertised: not required)",
+            level: "info"
+          )
+        else
+          # Not the same statement, and worth saying differently: the server did
+          # not answer "no", we simply could not get an answer out of it.
+          log_buffer.add(
+            "MCP server '#{server_name}': could not determine whether OAuth is required" \
+            "#{requirement.error.present? ? " (#{requirement.error})" : ''}; not blocking the spawn",
             level: "info"
           )
         end
@@ -5368,6 +5388,13 @@ class AgentSessionJob < ApplicationJob
         log_buffer.add(
           "Warning: Failed to check OAuth for '#{server_name}': #{e.message}",
           level: "warning"
+        )
+        McpServerOauthRequirement.record!(
+          server_name: server_name,
+          credential_key: server_status[:credential_key],
+          server_url: server_url,
+          determination: McpServerOauthRequirement::UNDETERMINED,
+          detail: e.message
         )
         # Don't block on probe failures - the server might not be OAuth-protected
       end

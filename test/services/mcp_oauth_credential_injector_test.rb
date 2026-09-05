@@ -792,6 +792,115 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     assert_equal [], injector.delete_runtime_credentials([ "off-catalog" ])
   end
 
+  # --- the OAuth-required determination ---------------------------------------
+  #
+  # Whether a remote server needs OAuth used to be a guess: no static credential
+  # header and no stored token meant "it might", every time. These three tests
+  # pin the three branches that replaced it — the server said yes, the server
+  # said no, and nobody could tell — with the third one being the regression
+  # guard: undetermined has to keep meaning "assume it might be".
+
+  test "check_credentials_status reports an advertised OAuth requirement as a fact" do
+    key = with_remote_server("determined-yes")
+    McpServerOauthRequirement.record!(
+      server_name: "determined-yes", credential_key: key,
+      determination: McpServerOauthRequirement::ADVERTISED_REQUIRED
+    )
+
+    status = injector_for("determined-yes").check_credentials_status
+
+    assert_equal true, status["determined-yes"][:oauth_required]
+    assert_equal McpServerOauthRequirement::ADVERTISED_REQUIRED,
+      status["determined-yes"][:oauth_determination]
+  end
+
+  test "check_credentials_status reports an advertised absence of an OAuth requirement" do
+    key = with_remote_server("determined-no")
+    McpServerOauthRequirement.record!(
+      server_name: "determined-no", credential_key: key,
+      determination: McpServerOauthRequirement::ADVERTISED_NOT_REQUIRED
+    )
+
+    status = injector_for("determined-no").check_credentials_status
+
+    assert_equal false, status["determined-no"][:oauth_required]
+    assert_equal McpServerOauthRequirement::ADVERTISED_NOT_REQUIRED,
+      status["determined-no"][:oauth_determination]
+  end
+
+  test "check_credentials_status leaves an unprobed server undetermined rather than deciding" do
+    with_remote_server("never-probed")
+
+    status = injector_for("never-probed").check_credentials_status
+
+    assert_nil status["never-probed"][:oauth_required],
+      "nil is what preserves 'we could not tell'; false would silently deny credentials"
+    assert_equal McpServerOauthRequirement::UNDETERMINED,
+      status["never-probed"][:oauth_determination]
+  end
+
+  test "missing_credentials asks for authorization when the server advertised it" do
+    key = with_remote_server("determined-yes")
+    McpServerOauthRequirement.record!(
+      server_name: "determined-yes", credential_key: key,
+      determination: McpServerOauthRequirement::ADVERTISED_REQUIRED
+    )
+
+    missing = injector_for("determined-yes").missing_credentials
+
+    assert_equal [ "determined-yes" ], missing.map { |entry| entry[:server_name] }
+    assert_equal McpServerOauthRequirement::ADVERTISED_REQUIRED, missing.first[:oauth_determination]
+  end
+
+  test "missing_credentials does not ask for authorization the server said it does not need" do
+    key = with_remote_server("determined-no")
+    McpServerOauthRequirement.record!(
+      server_name: "determined-no", credential_key: key,
+      determination: McpServerOauthRequirement::ADVERTISED_NOT_REQUIRED
+    )
+
+    assert_empty injector_for("determined-no").missing_credentials
+  end
+
+  # The regression guard for the constraint that matters: erring strict is the
+  # dangerous direction. With nothing recorded — no probe has ever run, or the
+  # one that ran could not reach the server — the old assumption still applies.
+  test "missing_credentials still assumes OAuth might be required when nothing is known" do
+    with_remote_server("never-probed")
+
+    missing = injector_for("never-probed").missing_credentials
+
+    assert_equal [ "never-probed" ], missing.map { |entry| entry[:server_name] }
+    assert_equal McpServerOauthRequirement::UNDETERMINED, missing.first[:oauth_determination]
+  end
+
+  test "missing_credentials still assumes OAuth might be required when an advertised no has gone stale" do
+    key = with_remote_server("stale-no")
+    record = McpServerOauthRequirement.record!(
+      server_name: "stale-no", credential_key: key,
+      determination: McpServerOauthRequirement::ADVERTISED_NOT_REQUIRED
+    )
+    record.update_column(:determined_at, (McpServerOauthRequirement::NOT_REQUIRED_TTL + 1.day).ago)
+
+    missing = injector_for("stale-no").missing_credentials
+
+    assert_equal [ "stale-no" ], missing.map { |entry| entry[:server_name] }
+  end
+
+  # An explicit requirement from the caller still wins: it was established for
+  # this call, and the recorded determination is only what the server last said.
+  test "missing_credentials prefers a requirement the caller established itself" do
+    key = with_remote_server("determined-no")
+    McpServerOauthRequirement.record!(
+      server_name: "determined-no", credential_key: key,
+      determination: McpServerOauthRequirement::ADVERTISED_NOT_REQUIRED
+    )
+
+    missing = injector_for("determined-no").missing_credentials("determined-no" => true)
+
+    assert_equal [ "determined-no" ], missing.map { |entry| entry[:server_name] }
+  end
+
   private
 
   # Points CodexMcpCredentialWriter's credential-store constant at a temp file
@@ -889,6 +998,23 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   end
 
   # Helper to create a mock server config object
+  # A remote catalog server with no static credential header and no stored
+  # credential — the shape whose OAuth requirement used to be pure guesswork.
+  # Returns the credential key its determination is filed under.
+  def with_remote_server(name, url: "https://#{name}.example.com/mcp")
+    ServersConfig.stubs(:find).returns(nil)
+    ServersConfig.stubs(:find).with(name).returns(
+      mock_server_config(name: name, type: "streamable-http", url: url)
+    )
+    McpOauthCredential.compute_credential_key(name, { type: "streamable-http", url: url, headers: {} })
+  end
+
+  def injector_for(*server_names)
+    session = Object.new
+    session.define_singleton_method(:mcp_servers) { server_names }
+    McpOauthCredentialInjector.new(session, working_directory: @working_directory)
+  end
+
   def mock_server_config(name:, type:, url:, headers: {})
     config = Object.new
     config.define_singleton_method(:name) { name }

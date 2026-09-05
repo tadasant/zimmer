@@ -73,6 +73,15 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
       error: ParameterStore::StoreError.new(message, 503))
   end
 
+  def record_determination(name, config, determination)
+    with_catalog(name, config) do
+      key = McpOauthCredential.compute_credential_key(name, ServersConfig.credential_config(name))
+      McpServerOauthRequirement.record!(
+        server_name: name, credential_key: key, determination: determination
+      )
+    end
+  end
+
   def probe(name, config, resolvable: [], unavailable_vars: {})
     interpolator = SecretsInterpolator.new
     interpolator.stubs(:resolution).returns(ABSENT)
@@ -212,6 +221,39 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
     assert status.actionable?
     assert status.authorizable?, "the Connectors page can start this flow"
     assert_match "you don't need a session", status.summary
+  end
+
+  # "Needs authorization" had one voice for two causes: a server that advertises
+  # an OAuth requirement, and a remote server nobody could classify that Zimmer
+  # assumes might need one. Only the second is a guess, and telling them apart is
+  # what lets someone triaging "the agent says it needs to authorize this server"
+  # know which of the three known causes they are looking at.
+  test "an unclassified OAuth server says the requirement is an assumption" do
+    status = probe("notion", OAUTH_SERVER)
+
+    assert_equal :needs_authorization, status.state
+    assert_equal McpServerOauthRequirement::UNDETERMINED, status.oauth_determination
+    assert_match "assumes it might", status.summary
+  end
+
+  test "an OAuth server that advertised its requirement does not hedge" do
+    record_determination("notion", OAUTH_SERVER, McpServerOauthRequirement::ADVERTISED_REQUIRED)
+
+    status = probe("notion", OAUTH_SERVER)
+
+    assert_equal :needs_authorization, status.state
+    assert_equal McpServerOauthRequirement::ADVERTISED_REQUIRED, status.oauth_determination
+    assert_no_match(/assumes it might/, status.summary)
+  end
+
+  test "an OAuth server that served an unauthenticated request says so on the row" do
+    record_determination("notion", OAUTH_SERVER, McpServerOauthRequirement::ADVERTISED_NOT_REQUIRED)
+
+    status = probe("notion", OAUTH_SERVER)
+
+    assert_equal :needs_authorization, status.state,
+      "the row still offers the flow — an advertisement is not proof, and the button is recoverable"
+    assert_match "may not need authorization at all", status.summary
   end
 
   test "an expired credential with a refresh token reports token expired" do

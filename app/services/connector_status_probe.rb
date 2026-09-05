@@ -81,16 +81,18 @@ class ConnectorStatusProbe
   class Status
     include ActionView::Helpers::DateHelper
 
-    attr_reader :server, :state, :missing_variables, :credential, :error_message, :variable_sources
+    attr_reader :server, :state, :missing_variables, :credential, :error_message, :variable_sources,
+      :oauth_determination
 
     def initialize(server:, state:, missing_variables: [], credential: nil, error_message: nil,
-      variable_sources: [])
+      variable_sources: [], oauth_determination: nil)
       @server = server
       @state = state
       @missing_variables = missing_variables
       @credential = credential
       @error_message = error_message
       @variable_sources = variable_sources
+      @oauth_determination = oauth_determination
     end
 
     def server_name = server.name
@@ -170,7 +172,8 @@ class ConnectorStatusProbe
       when :no_credential_required
         "The catalog entry for this server configures no credential, so there is nothing to set up."
       when :needs_authorization
-        "No OAuth credential is stored yet. Authorize it here — you don't need a session."
+        "No OAuth credential is stored yet. Authorize it here — you don't need a session." \
+        "#{determination_sentence}"
       when :token_expired
         "The stored access token has expired. It has a refresh token, so RefreshMcpOauthTokensJob will renew it automatically."
       when :needs_reauth
@@ -210,6 +213,30 @@ class ConnectorStatusProbe
     def requires_periodic_reauth? = !!credential&.requires_periodic_reauth?
 
     private
+
+    # Why this row says what it says, when the reason is the OAuth determination
+    # rather than the stored credential.
+    #
+    # "Needs authorization" has two very different causes and used to read the
+    # same for both: a server that advertises an OAuth requirement, and a remote
+    # server nobody could classify, which Zimmer assumes might need one. Only the
+    # second is a guess, and only the second is worth chasing when the server
+    # turns out not to need OAuth at all. Silent when the answer adds nothing —
+    # a server that advertised its requirement is not a mystery.
+    #
+    # @return [String]
+    def determination_sentence
+      case oauth_determination
+      when McpServerOauthRequirement::ADVERTISED_NOT_REQUIRED
+        " Note: the last check found this server serving unauthenticated requests, " \
+        "so it may not need authorization at all."
+      when McpServerOauthRequirement::UNDETERMINED
+        " Zimmer has not been able to confirm that this server requires OAuth — " \
+        "no check has returned an answer — so it assumes it might."
+      else
+        ""
+      end
+    end
 
     # Ready has two shapes: an OAuth flow that has been completed, and a server
     # whose static credential variables are all set. Saying which one is what
@@ -254,8 +281,9 @@ class ConnectorStatusProbe
   # surfaces cannot drift.
   #
   # What this costs, stated honestly, because a routing session calls it on its
-  # critical path: one indexed credential lookup per OAuth-capable server, and
-  # secret resolution through SecretProviders' chain. When the Parameter Store
+  # critical path: one indexed credential lookup per OAuth-capable server (plus a
+  # second indexed lookup, for the recorded OAuth determination, on the ones with
+  # no credential), and secret resolution through SecretProviders' chain. When the Parameter Store
   # link is configured that chain CAN go to Google — it holds a 60-second
   # namespace snapshot, and a variable missing from the snapshot forces one
   # re-read (rate-limited to once per 10s across the process). That is the same
@@ -338,22 +366,35 @@ class ConnectorStatusProbe
 
   def oauth_status
     credential = stored_credential
-    return status(:needs_authorization) if credential.nil?
-    return status(:ready, credential: credential) if credential.active?
-    return status(:token_expired, credential: credential) if credential.can_refresh?
+    return status(:ready, credential: credential) if credential&.active?
+    return status(:token_expired, credential: credential) if credential&.can_refresh?
+    return status(:needs_reauth, credential: credential) if credential
 
-    status(:needs_reauth, credential: credential)
+    # No credential at all. This is the row where the difference between a server
+    # that advertises OAuth and one nobody could classify is worth saying out
+    # loud, so it carries the recorded determination. Still a local read —
+    # McpServerOauthRequirement holds what an earlier probe already learned, and
+    # this class does not contact MCP servers.
+    status(:needs_authorization, oauth_determination: McpServerOauthRequirement.determination_for(credential_key))
   end
 
   # The credential the injector would find for this server — keyed on the same
   # {type, url, headers} digest, so a catalog change that invalidates the key
   # shows up here as "needs authorization" exactly as it does at spawn time.
   def stored_credential
-    config = ServersConfig.credential_config(server.name)
-    return nil if config.nil?
+    return nil if credential_key.nil?
 
-    key = McpOauthCredential.compute_credential_key(server.name, config)
-    McpOauthCredential.for_credential_key(key).order(updated_at: :desc).first
+    McpOauthCredential.for_credential_key(credential_key).order(updated_at: :desc).first
+  end
+
+  # The {type, url, headers} digest this server's credential and OAuth
+  # determination are both filed under. nil when the server has no catalog
+  # credential config, memoized through `defined?` so that nil is cached too.
+  def credential_key
+    return @credential_key if defined?(@credential_key)
+
+    config = ServersConfig.credential_config(server.name)
+    @credential_key = config && McpOauthCredential.compute_credential_key(server.name, config)
   end
 
   def status(state, **attrs)

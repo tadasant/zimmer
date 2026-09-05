@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_05_160000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_05_170000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -416,6 +416,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_160000) do
     t.index ["session_id", "server_name"], name: "index_mcp_oauth_pending_flows_on_session_id_and_server_name", unique: true
     t.index ["session_id"], name: "index_mcp_oauth_pending_flows_on_session_id"
     t.index ["state"], name: "index_mcp_oauth_pending_flows_on_state", unique: true
+  end
+
+  create_table "mcp_server_oauth_requirements", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "credential_key", null: false
+    t.string "detail"
+    t.string "determination", null: false
+    t.datetime "determined_at", null: false
+    t.string "server_name", null: false
+    t.string "server_url"
+    t.datetime "updated_at", null: false
+    t.index ["credential_key"], name: "index_mcp_server_oauth_requirements_on_credential_key", unique: true
+    t.index ["server_name"], name: "index_mcp_server_oauth_requirements_on_server_name"
   end
 
   create_table "notifications", force: :cascade do |t|
