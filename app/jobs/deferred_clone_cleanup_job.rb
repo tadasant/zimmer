@@ -38,9 +38,10 @@ class DeferredCloneCleanupJob < ApplicationJob
   # full TRASH_RETENTION_PERIOD.
   #
   # Five, not BundleInstallJob's three, because the failure this exists for is a
-  # deploy interrupt and Zimmer deploys several times an hour on a busy day —
-  # three interrupted runs in a row is a shape that actually happens, and it is
-  # not evidence that the cleanup itself is impossible.
+  # deploy interrupt and Zimmer deploys several times an hour on a busy day.
+  # Three interrupted runs in a row is a shape that happens, and it is not
+  # evidence that the cleanup itself is impossible. One attempt is spent by the
+  # interrupt-detecting execution itself, since GoodJob raises before the body.
   MAX_ATTEMPTS = 5
 
   # Backoff between attempts. Long enough that a retry lands after the deploy
@@ -48,20 +49,24 @@ class DeferredCloneCleanupJob < ApplicationJob
   # shutdown, matching BundleInstallJob::RETRY_WAIT.
   RETRY_WAIT = 30.seconds
 
-  # Retry quietly instead of `retry_on`, and for the same two reasons
-  # BundleInstallJob does it this way.
+  # A bounded quiet retry, in the shape BundleInstallJob uses and for the same
+  # reasons.
   #
-  # *Why retry at all.* `perform` has always ended in `raise` with a comment
-  # saying it re-raises "to trigger job retry", and that has not been true since
-  # GoodJob 4: `GoodJob.retry_on_unhandled_error` defaults to false, so an
-  # unhandled error records itself and finishes the row. The same applies to a
-  # deploy interrupt, which `ApplicationJob.discard_interrupt_quietly` discards
-  # on the stated grounds that "deploy-orphaned sessions/jobs are recovered
-  # separately (CleanupOrphanedSessionsJob / DeploymentRecoveryJob)" — true of
-  # sessions, not of this job, which neither of them knows about. Re-running is
-  # safe: every branch below re-reads the session, re-checks `archived?` and
-  # re-checks the clone directory, and CloneReaper asks who owns the path again
-  # at the moment of deletion.
+  # *Why retry.* Two things end a run without finishing it, and neither surfaces
+  # as a failure. A deploy: GoodJob re-picks a row whose `performed_at` is
+  # already set and its `InterruptErrors` around_perform raises
+  # `GoodJob::InterruptError` before this `perform` body runs, which
+  # `ApplicationJob.discard_interrupt_quietly` discards with no retry, on the
+  # stated grounds that "deploy-orphaned sessions/jobs are recovered separately
+  # (CleanupOrphanedSessionsJob / DeploymentRecoveryJob)" — which holds for
+  # sessions and not for this job, which neither of them knows about. And any
+  # other exception: `GoodJob.retry_on_unhandled_error` defaults to false, so an
+  # unhandled error records itself and finishes the row. Either way the clone
+  # survives with nothing left to reclaim it, so the run has to come back.
+  #
+  # Re-running is safe: every branch below re-reads the session, re-checks
+  # `archived?` and re-checks the clone directory, and CloneReaper asks who owns
+  # the path again at the moment of deletion.
   #
   # *Why not `retry_on`.* `retry_on ..., attempts: N` instruments
   # `:retry_stopped`, which ActiveJob's LogSubscriber logs at ERROR and which
@@ -70,13 +75,13 @@ class DeferredCloneCleanupJob < ApplicationJob
   #
   # Registered AFTER the inherited `discard_interrupt_quietly` handler and
   # deliberately not re-registering it: `GoodJob::InterruptError < StandardError`
-  # and rescue handlers resolve last-registered-wins, so interrupts land here and
-  # are retried. An intermediate attempt logs at INFO so a self-resolving deploy
-  # makes no noise; only exhaustion is loud, because a cleanup that has failed
-  # five times is a real problem and the clone it could not delete is now held
-  # for the whole retention window. Nothing here may raise: an exception out of a
-  # `rescue_from` block is reported at ERROR, which is the one way this could
-  # still trip the alert it exists to avoid.
+  # and rescue handlers resolve last-registered-wins, so an interrupt lands here
+  # and is retried. An intermediate attempt logs at INFO so a self-resolving
+  # deploy makes no noise; only exhaustion is loud, because a cleanup that has
+  # failed five times is a real problem and its clone is then held for the whole
+  # retention window. Nothing here may raise: an exception out of a `rescue_from`
+  # block is reported at ERROR, which is the one way this could still trip the
+  # alert it exists to avoid.
   rescue_from(StandardError) do |error|
     if executions < MAX_ATTEMPTS
       Rails.logger.info(
@@ -94,8 +99,9 @@ class DeferredCloneCleanupJob < ApplicationJob
     else
       Rails.logger.error(
         "[DeferredCloneCleanupJob] gave up after #{executions} attempts with " \
-        "#{error.class.name}: #{error.message}. The clone is held until its trash deadline for " \
-        "EmptyTrashJob to reap."
+        "#{error.class.name}: #{error.message}. Session #{session_id}'s clone is left on disk for a " \
+        "periodic reaper (EmptyTrashJob at its trash deadline, or StaleCloneCleanupJob within the " \
+        "hour if that deadline was already cleared)."
       )
     end
   end
@@ -247,13 +253,6 @@ class DeferredCloneCleanupJob < ApplicationJob
     # This must happen first because the compose file lives inside the clone.
     docker_cleaned = begin
       DockerComposeCleanupService.cleanup(clone_path)
-    rescue GoodJob::InterruptError
-      # Not "unexpectedly", and not this rescue's business: a deploy landing here
-      # has to reach the retry handler at the top of this class, because the run
-      # it interrupted is the only thing that reclaims this clone inside the
-      # reversible window. Absorbing it would also put an ERROR line on the wire
-      # on every deploy that lands mid-teardown.
-      raise
     rescue => e
       Rails.logger.error "[DeferredCloneCleanupJob] Docker cleanup raised unexpectedly: #{e.class} - #{e.message}"
       false
@@ -361,9 +360,21 @@ class DeferredCloneCleanupJob < ApplicationJob
   # cleared when nothing restorable is left on disk. A scratch directory or
   # prompt attachments outlive the undo window, so they hold the deadline open
   # for the full reversible window even when the clone was clean.
+  #
+  # Preserved artifacts hold it open too, and they are the reason this asks a
+  # second question rather than trusting `durable_session_storage_exists?`
+  # alone — that helper covers scratch, the Claude config dir and the two
+  # attachment trees, and knows nothing about the git bundle and patch. A retry
+  # is what makes the gap reachable: a first run can preserve artifacts, delete
+  # the clone, and then fail on the way out, and the retry arrives to find no
+  # clone on disk and takes this branch. Clearing the deadline there hands the
+  # row to StaleCloneCleanupJob's archived-and-untrashed scope, whose
+  # `cleanup_session_clone` calls `cleanup_artifacts` — deleting the only copy
+  # of the session's unpushed work three days before its deadline, which is
+  # exactly what the preservation path exists to prevent.
   def finalize_trash_expiry(session)
     with_db_retry do
-      if durable_session_storage_exists?(session.id)
+      if durable_session_storage_exists?(session.id) || CloneArtifactService.new.artifacts_exist?(session.id)
         session.update_column(:trash_after, trash_deadline_for(session))
       else
         session.update_column(:trash_after, nil)

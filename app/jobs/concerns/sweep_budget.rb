@@ -50,6 +50,8 @@ module SweepBudget
     monotonic_now >= @sweep_deadline
   end
 
+  private
+
   def monotonic_now
     Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end

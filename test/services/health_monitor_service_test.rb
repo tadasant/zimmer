@@ -1549,11 +1549,16 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_operator ceilings["inference"], :>, SessionTitleJob::INFERENCE_TIMEOUT.seconds
     assert_operator ceilings["default"], :>, PostDeployTaskJob::SLICE_BUDGET
     assert_operator ceilings["auth"], :>, RuntimeLoginJob::MAX_DURATION
-    # OrphanCloneFilesystemCleanupJob's scheduled path: BATCH_LIMIT removals, each
-    # bounded only by DockerComposeCleanupService::COMPOSE_DOWN_TIMEOUT.
-    worst_maintenance_sweep = OrphanCloneFilesystemCleanupJob::BATCH_LIMIT *
-                              DockerComposeCleanupService::COMPOSE_DOWN_TIMEOUT
-    assert_operator ceilings["maintenance"], :>, worst_maintenance_sweep.seconds
+    # Every scheduled sweep on `maintenance` bounds itself with SweepBudget, and
+    # each checks the budget at the TOP of an iteration — so its longest designed
+    # hold is the budget plus one more unit of work, the most expensive of which
+    # is a Docker Compose teardown.
+    worst_maintenance_sweep = [
+      OrphanCloneFilesystemCleanupJob::SWEEP_BUDGET_SECONDS,
+      StaleCloneCleanupJob::SWEEP_BUDGET_SECONDS,
+      EmptyTrashJob::SWEEP_BUDGET_SECONDS
+    ].max + DockerComposeCleanupService::COMPOSE_DOWN_TIMEOUT.seconds
+    assert_operator ceilings["maintenance"], :>, worst_maintenance_sweep
   end
 
   # Two lanes wedged at once are two problems; the page names the one that has been

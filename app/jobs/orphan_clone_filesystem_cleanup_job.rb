@@ -67,10 +67,10 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
   # true bound is this budget plus one directory's teardown.
   RECLAIM_BUDGET_SECONDS = 60
 
-  # The same ceiling for the SCHEDULED sweep, which had none. The argument above
-  # is not specific to the pressure path: 20 orphans that each need a full
-  # compose teardown is 40 minutes either way, and on this path it is spent
-  # holding one of `maintenance`'s two scheduler threads while the per-archive
+  # The same ceiling for the SCHEDULED sweep. The argument above is not specific
+  # to the pressure path: 20 orphans that each need a full compose teardown is 40
+  # minutes either way, and on this path it is spent holding one of
+  # `maintenance`'s two scheduler threads while the per-archive
   # DeferredCloneCleanupJob stream queues behind it. Larger than
   # RECLAIM_BUDGET_SECONDS because nothing is waiting on this run — the pressure
   # path runs synchronously on the session launch path and has a session wedged
@@ -103,17 +103,22 @@ class OrphanCloneFilesystemCleanupJob < ApplicationJob
     return unless File.directory?(clones_base)
     return unless reclaimable_root?(clones_base)
 
+    start_sweep_budget(SWEEP_BUDGET_SECONDS)
+
     # Reap first: a tombstone is a clone whose delete was interrupted between the
     # rename and the recursive unlink (#412). It is doomed by construction, so
     # there is nothing to weigh — take the bytes back before considering anything
     # a session might still own.
+    #
+    # Inside the budget rather than ahead of it, so the ceiling covers the whole
+    # run. The reap is still one unbudgeted unit — AtomicCloneRemoval::REAP_LIMIT
+    # caps it at 50 tombstones but each is a whole recursive delete — which is
+    # what SweepBudget means by "the budget plus one more unit of work".
     AtomicCloneRemoval.reap_tombstones(clones_base)
 
     orphans = find_orphan_directories(clones_base)
     cleaned = 0
     deferred = 0
-
-    start_sweep_budget(SWEEP_BUDGET_SECONDS)
 
     orphans.first(BATCH_LIMIT).each do |dir_path|
       # Top of the iteration, so the true bound is the budget plus one

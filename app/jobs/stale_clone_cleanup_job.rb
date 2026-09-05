@@ -70,11 +70,11 @@ class StaleCloneCleanupJob < ApplicationJob
   ORPHAN_SWEEP_LIMIT = 200
 
   # Wall-clock ceiling on one run. ORPHAN_SWEEP_LIMIT and the candidate scopes
-  # bound how many things this job touches; nothing bounded how LONG it holds a
+  # bound how many things this job touches; this bounds how LONG it holds a
   # scheduler thread, and every unit it touches is a recursive delete of a whole
   # directory tree. On `maintenance` — two threads, shared with the per-archive
-  # DeferredCloneCleanupJob stream — an unbounded hourly sweep is half the lane
-  # for as long as it runs. Five minutes an hour is not.
+  # DeferredCloneCleanupJob stream — an unbounded hourly sweep would be half the
+  # lane for as long as it runs. Five minutes an hour is not.
   #
   # Nothing is lost by stopping early: this sweep is level-triggered, so the next
   # tick recomputes the due set and takes whatever this run did not reach. See
@@ -89,7 +89,11 @@ class StaleCloneCleanupJob < ApplicationJob
   def perform
     cleaned_count = 0
     error_count = 0
-    deferred_count = 0
+    # Two counters, because they are two units: individual candidates the budget
+    # did not reach, and whole phases it skipped. Summing them would produce a
+    # number in no unit at all.
+    deferred_candidates = 0
+    deferred_phases = 0
 
     start_sweep_budget(SWEEP_BUDGET_SECONDS)
 
@@ -106,7 +110,7 @@ class StaleCloneCleanupJob < ApplicationJob
         # session's clone delete. Counted rather than broken out of, so the log
         # below can say how much was left rather than just that something was.
         if sweep_budget_spent?
-          deferred_count += 1
+          deferred_candidates += 1
           next
         end
 
@@ -128,20 +132,26 @@ class StaleCloneCleanupJob < ApplicationJob
     # wholesale once the budget is gone rather than allowed to start a new one.
     # Tombstones first, as ever: they are doomed by construction, so when there
     # is time for only one more thing it should be the cheapest bytes.
-    reap_clone_tombstones unless sweep_budget_spent?
+    if sweep_budget_spent?
+      deferred_phases += 1
+    else
+      reap_clone_tombstones
+    end
 
     if sweep_budget_spent?
-      deferred_count += 1
+      deferred_phases += 1
     else
       orphan_dir_result = sweep_orphaned_session_directories
       cleaned_count += orphan_dir_result[:cleaned]
       error_count += orphan_dir_result[:errors]
-      deferred_count += orphan_dir_result[:deferred]
+      deferred_candidates += orphan_dir_result[:deferred]
+      deferred_phases += orphan_dir_result[:deferred_phases]
     end
 
-    if deferred_count > 0
+    if deferred_candidates > 0 || deferred_phases > 0
       Rails.logger.warn "[StaleCloneCleanupJob] Sweep budget of #{SWEEP_BUDGET_SECONDS.to_i}s exhausted after " \
-        "cleaning #{cleaned_count}; #{deferred_count} candidate(s) or phase(s) wait for the next run"
+        "cleaning #{cleaned_count}; #{deferred_candidates} candidate(s) and #{deferred_phases} phase(s) " \
+        "wait for the next run"
     end
 
     if cleaned_count > 0 || error_count > 0
@@ -387,11 +397,12 @@ class StaleCloneCleanupJob < ApplicationJob
     cleaned = 0
     errors = 0
     deferred = 0
+    deferred_phases = 0
 
     unless any_sessions_exist?
       Rails.logger.warn "[StaleCloneCleanupJob] Skipping per-session orphan sweep: the sessions table is empty, " \
         "so every directory would look orphaned"
-      return { cleaned: cleaned, errors: errors, deferred: deferred }
+      return { cleaned: cleaned, errors: errors, deferred: deferred, deferred_phases: deferred_phases }
     end
 
     session_directory_roots.each do |label, root|
@@ -399,7 +410,7 @@ class StaleCloneCleanupJob < ApplicationJob
 
       # A root the budget did not reach is a deferred phase, not a swept one.
       if sweep_budget_spent?
-        deferred += 1
+        deferred_phases += 1
         next
       end
 
@@ -409,7 +420,7 @@ class StaleCloneCleanupJob < ApplicationJob
       deferred += result[:deferred]
     end
 
-    { cleaned: cleaned, errors: errors, deferred: deferred }
+    { cleaned: cleaned, errors: errors, deferred: deferred, deferred_phases: deferred_phases }
   end
 
   # The roots swept above.

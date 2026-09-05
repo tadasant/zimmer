@@ -2898,8 +2898,9 @@ and `EmptyTrashJob` are deliberately kept off a session that carries one
 is reclaimed at exactly the rate that lane drains, and nothing else is watching.
 
 The lane has two threads, shared with the recurring sweeps, and the job's arrival rate is one row per
-archive — bounded by nothing. Capping the sweeps at `SWEEP_BUDGET_SECONDS` and retrying interrupted
-cleanups both raise the share of that lane the reaper gets, but neither makes it elastic: while the
+archive — bounded by nothing. Capping the scheduled sweeps at `SWEEP_BUDGET_SECONDS` and retrying interrupted
+cleanups both raise the share of that lane the reaper gets, but neither makes it elastic — and `BundleInstallJob`
+and `McpPackageReinstallJob` remain unbudgeted on the same two threads: while the
 fleet archives faster than two threads can reclaim, the backlog and the bytes behind it grow
 together. On 2026-09-05 that reached 124 ready rows, a head of line two hours old, and 276 clone
 directories holding 43 GB.
@@ -2907,7 +2908,7 @@ directories holding 43 GB.
 The lever that would close the gap is `GOOD_JOB_MAINTENANCE_THREADS`, and it is not free: every
 scheduler thread is a PostgreSQL connection the deployment promises, so raising it moves
 `ConnectionBudget#required_backends` and the `app_required_backends` Terraform variable checked
-against the managed cluster's plan ([connection budget](/operate/provisioning/)). Until then the
+against the managed cluster's plan ([the connection budget](/operate/deploying/#the-database-connection-budget)). Until then the
 `starved_lane` page — `maintenance`, 100 ready, 60 minutes — is the signal that it has fallen behind,
 and it is an accurate one.
 
