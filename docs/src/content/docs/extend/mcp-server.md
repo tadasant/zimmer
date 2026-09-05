@@ -199,9 +199,10 @@ hundreds of megabytes and up to ten minutes stale.
 Two defaults matter when the question is "does this work already have a session?". `show_archived`
 defaults to `false`, and a session that finished a piece of work has archived itself — so a
 duplicate check has to pass `show_archived: true` or name `archived` in `status`, or it misses
-exactly the sessions it is looking for. And each result's prompt line is a preview, the first
-100 characters, so an issue URL named later in a prompt is not visible in the listing; `query` does
-not read the prompt column, so search for the identifier a router put in `custom_metadata` instead.
+exactly the sessions it is looking for. And each result's prompt line — which only a
+`verbose: true` row carries at all — is a preview, the first 100 characters, so an issue URL named
+later in a prompt is not visible in the listing; `query` does not read the prompt column, so search
+for the identifier a router put in `custom_metadata` instead.
 
 Rows are **compact by default**: they carry status, runtime, pause, board visibility, genesis and
 scheduling class, precedence and both timestamps, and omit six per-session fields — slug, category,
@@ -280,50 +281,16 @@ session — those are the human's levers over what the fleet works on next and e
 controller. The one removal an agent may make is on a pull, with a reason from a fixed vocabulary of
 observed facts. `zimmer-work-backlog` (mcp.json) is the one catalog entry that names the group.
 
-`get_session_provenance` returns those same two sections on their own, for one `session_id`, and
-returns them **uncut** — it exists to serve that record and nothing else, so it has no budget to
-spend. Zimmer injects neither into a session's turns, so this is the tool a session calls to read its
+`get_session_provenance` returns those same two sections on their own, for one `session_id`, with
+every entry it lists rendered in full — it exists to serve that record and nothing else, so it has no
+content budget to spend. It lists the newest 25 entries, as it always has, and always includes every
+entry `get_session`'s summary listed; a record longer than 25 says how many older ones no MCP call
+returns. Zimmer injects neither into a session's turns, so this is the tool a session calls to read its
 own provenance — and its description, not a block in the prompt, is where the caveats that record has
 to be read with are stated. Like `get_session` it is in `self_session` as well as `sessions`, because
 the auto-injected self-session server is the only surface every session carries.
 
-## Payload budgets: what a tool result may cost
-
-A tool result the runtime refuses is worse than a small one. Two of these tools grew past that limit
-and were spilled to a file instead of returned ([#652](https://github.com/tadasant/zimmer/issues/652)):
-`quick_search_sessions` at its own advertised `per_page: 100`, and `get_session` on an ordinary
-session — 77,258 characters with `include_transcript: false`, of which almost none was session state.
-It was the router's brief in `Current Prompt`, that same brief again as `active_follow_up_prompt`
-inside the metadata JSON, and a hierarchy's worth of them replayed in the message record. The fleet
-skills budget forty `get_session` reads a run to tell an outage-parked session from a paused one;
-at that size a run could afford two.
-
-Both tools now render less by default and take `verbose: true` to render everything, unchanged from
-before. `get_session`'s default cuts exactly three things — nothing else in the dump moves:
-
-| Block | Default | Whole thing |
-| --- | --- | --- |
-| `Current Prompt` | first 1,000 characters | `verbose: true` |
-| Long string values in `System Metadata` / `Custom Metadata` | first 300 characters per value; keys and nesting untouched | `verbose: true` |
-| `Human Messages` | newest 5 `here` **and** newest 5 `elsewhere` entries, content cut to 300 characters | `get_session_provenance`, or `verbose: true` |
-
-The one rule that governs all of it: **a cut is only acceptable if the caller can see it happened.**
-A response that quietly drops the tail of a value reads exactly like one where the value ended there,
-and the `Human Messages` block is the fallback both agent gates use to establish that a human asked
-for something — a gate that cannot tell a shortened record from an empty one is required to hold
-rather than guess. So every cut carries its own marker with the value's real length; the block's two
-counts are always of the *whole* record, never of what was rendered; the omitted entries are counted
-out loud next to the call that returns them; and when nothing needed cutting the block says
-`**Complete:** every entry in this record is listed below, in full` rather than staying silent. The
-`here`/`elsewhere` split of the entry budget is deliberate for the same reason: `here` is the half
-that answers "did a human ask *this* session for this?", so a chatty hierarchy cannot push it off the
-list.
-
-Everything a scheduler reads is short and is never cut: status, scheduling class, precedence, the
-waiting-reason lines, and the `auth_outage_*` / `spot_hold_*` / `spot_pause_*` metadata keys.
-
-Note the corollary for
-anything calling `action_session` with `follow_up`: a follow-up issued over this API is
+Note the corollary for anything calling `action_session` with `follow_up`: a follow-up issued over this API is
 machine-authored and records nothing, which is deliberate — pass `parent_session_id` to
 `start_session` so the session you spawn can see the human context you were given.
 
@@ -669,6 +636,56 @@ The usual caution applies to anything it returns: the dollar figures are list pr
 subscription-billed accounts, so they are a comparable unit across models rather than money owed,
 and a model with no configured rate contributes zero and is named explicitly rather than being
 folded silently into a total. See [Token spend](/operate/costs/).
+
+## Payload budgets: what a tool result may cost
+
+A tool result the runtime refuses is worse than a small one. Two of these tools grew past that limit
+and were spilled to a file instead of returned ([#652](https://github.com/tadasant/zimmer/issues/652)):
+`quick_search_sessions` at its own advertised `per_page: 100`, and `get_session` on an ordinary
+session — 77,258 characters with `include_transcript: false`, of which almost none was session state.
+It was the router's brief in `Current Prompt`, that same brief again as `active_follow_up_prompt`
+inside the metadata JSON, and a hierarchy's worth of them replayed in the message record. The fleet
+skills budget forty `get_session` reads a run to tell an outage-parked session from a paused one;
+at that size a run could afford two.
+
+Both tools render less by default and take `verbose: true` to render everything. `get_session`'s
+default cuts exactly three things — nothing else in the dump moves:
+
+| Block | Default | Whole thing |
+| --- | --- | --- |
+| `Current Prompt` | first 1,000 characters | `verbose: true` |
+| Long string values in `System Metadata` / `Custom Metadata` | first 300 characters per value; keys and nesting untouched | `verbose: true` |
+| `Human Messages` | newest 5 `here` **and** newest 5 `elsewhere` entries, content cut to 300 characters | `get_session_provenance`, or `verbose: true` — both list the newest 25 in full |
+
+The one rule that governs all of it: **a cut is only acceptable if the caller can see it happened.**
+A response that quietly drops the tail of a value reads exactly like one where the value ended there,
+and the `Human Messages` block is the fallback both agent gates use to establish that a human asked
+for something — a gate that cannot tell a shortened record from an empty one is required to hold
+rather than guess. So every cut carries its own marker with the value's real length; the block's two
+counts are always of the *whole* record, never of what was rendered; the omitted entries are counted
+out loud next to the call that returns them; and when nothing needed cutting the block says
+`**Complete:** every entry in this record is listed below, in full` rather than staying silent.
+
+The rule cuts both ways, and the second edge is easier to miss: **a pointer that cannot deliver is
+the same failure arrived at from the other side.** `get_session_provenance` renders every entry it
+lists in full, but it lists the newest 25 — a cap it has always had — so on a record longer than
+that, "fetch the rest there" would be a dead end. So the block computes what that call would return
+before it points at it: it names the newest-25 window explicitly, and it says how many entries fall
+outside it and are returned by no MCP call at all. The uncut rendering does not point at itself.
+
+Two things make those pointers true rather than aspirational. The summary's selection is a **subset**
+of the uncut rendering's by construction — the uncut one lists the newest 25 *plus* the newest 5 of
+each origin — so every entry the summary shows is an entry `get_session_provenance` shows. And the
+`here`/`elsewhere` split of the entry budget applies to both: `here` is the half that answers "did a
+human ask *this* session for this?", so a hierarchy with 25 recent `elsewhere` entries cannot push
+the `here` ones out of either rendering.
+
+`**Complete:**` is qualified when the hierarchy walk itself was truncated — the block then says every
+entry the walk *reached* is listed, and points at the truncation note above it — because "complete"
+is the strongest word this block has and it must not be read as covering sessions nobody searched.
+
+Everything a scheduler reads is short and is never cut: status, scheduling class, precedence, the
+waiting-reason lines, and the `auth_outage_*` / `spot_hold_*` / `spot_pause_*` metadata keys.
 
 ## Protocol
 

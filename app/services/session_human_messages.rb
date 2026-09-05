@@ -104,9 +104,9 @@ class SessionHumanMessages
   # record served without that is missing the part that answers the question.
   #
   # Takes the entries the caller actually rendered rather than a count, because
-  # the two renderings no longer show the same slice: `get_session` summarises
-  # the record per origin, and a roster note for somebody whose message is not
-  # on screen describes nobody.
+  # the renderings show different slices — `get_session` summarises the record
+  # per origin — and a roster note for somebody whose message is not on screen
+  # describes nobody.
   def described_among(among)
     among.select { |entry| entry.author_notes.present? }.uniq(&:author)
   end

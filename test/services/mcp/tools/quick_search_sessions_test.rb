@@ -279,7 +279,8 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
   # A row that quietly dropped six fields would read exactly like a session that
   # has none of them set, so the omission is named in every response that has one.
   test "every compact response names what it omitted and how to get it back" do
-    notice = "*Compact rows: slug, category, repository, branch, prompt, mcp_servers are omitted"
+    notice = "*Compact rows: the **Slug:**, **Category:**, **Repository:**, **Branch:**, **Prompt:**, " \
+             "**MCP Servers:** lines are omitted"
 
     assert_includes @tool.call("id" => sessions(:running).id), notice
     assert_includes @tool.call("status" => "running"), notice

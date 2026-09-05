@@ -30,11 +30,12 @@ module Mcp
       # the shape of the page. Dropping them roughly halves a row and puts the
       # advertised page size back within reach.
       #
-      # Nothing is hidden by dropping them: the header names every one of them and
-      # names the two calls that return them. The scheduling fields — status,
+      # Nothing is hidden by dropping them: the header names every one of them —
+      # spelled as the row labels a caller greps for, not as attribute names —
+      # and names the two calls that return them. The scheduling fields — status,
       # paused, visibility, genesis, class, precedence, timestamps — are always
       # rendered, because they are what this listing is read for.
-      COMPACT_OMITTED_FIELDS = %w[slug category repository branch prompt mcp_servers].freeze
+      COMPACT_OMITTED_FIELDS = [ "Slug", "Category", "Repository", "Branch", "Prompt", "MCP Servers" ].freeze
 
       tool_name "quick_search_sessions"
 
@@ -352,7 +353,8 @@ module Mcp
         return [] if verbose
 
         [
-          "*Compact rows: #{COMPACT_OMITTED_FIELDS.join(', ')} are omitted so a full page fits in one " \
+          "*Compact rows: the #{COMPACT_OMITTED_FIELDS.map { |field| "**#{field}:**" }.join(', ')} lines are " \
+          "omitted so a full page fits in one " \
           "tool result. Every scheduling field is here. Pass `verbose: true` for the full rows, or " \
           "`get_session` for one session in full.*",
           ""

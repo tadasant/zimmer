@@ -148,6 +148,14 @@ module Mcp
 
       shown = shown_entries(record, per_origin_limit)
       omitted = entries.size - shown.size
+      # What the uncut rendering — `get_session_provenance`, and `get_session`
+      # with `verbose: true` — would itself list. Every pointer below is written
+      # against this rather than against the whole record, because that rendering
+      # has a cap of its own (MAX_HUMAN_MESSAGES) that no MCP call lifts. Telling
+      # a caller to fetch entries no call returns is the same failure as cutting
+      # them silently, arrived at from the opposite direction.
+      retrievable = per_origin_limit.nil? ? shown : shown_entries(record, nil)
+      unretrievable = entries.size - retrievable.size
       # Sanitize once, up front, and let the same string decide both whether this
       # rendering is a summary and what each entry shows. Measuring the raw
       # content here and the sanitized content below would agree only for as long
@@ -166,11 +174,9 @@ module Mcp
         lines << "- **This is a summary of the record, not the record.** " \
                  "#{summary_scope_sentence(record, shown, omitted, per_origin_limit, content_limit)} " \
                  "The two counts above are of the WHOLE record and are unaffected. " \
-                 "`get_session_provenance` on this session returns every entry, uncut; " \
-                 "`get_session` with `verbose: true` returns the same."
+                 "#{restore_sentence(per_origin_limit, unretrievable)}"
       elsif content_limit
-        lines << "- **Complete:** every entry in this record is listed below, in full. This surface would cut an " \
-                 "entry longer than #{TextBudget.delimited(content_limit)} characters and say so; none needed it."
+        lines << complete_line(record, content_limit)
       end
 
       lines << ""
@@ -190,29 +196,98 @@ module Mcp
         (cut ? TextBudget.hard_truncate(content, content_limit) : content).each_line { |line| lines << "  #{line.chomp}" }
         lines << "  ```"
         if cut
+          # Safe to name those two unconditionally: `shown_entries` makes the
+          # summary's selection a subset of theirs, so an entry listed here is
+          # always an entry they list too.
           lines << "  #{TextBudget.truncation_note(shown: content_limit, total: content.length,
             restore: 'Full text: `get_session_provenance` on this session, or `get_session` with `verbose: true`.')}"
         end
       end
 
-      if omitted.positive?
-        lines << ""
-        lines << "_#{omitted} older #{'entry'.pluralize(omitted)} not shown here — counted above, and returned in full by " \
-                 "`get_session_provenance`._"
-      end
+      lines.concat(omission_footer(omitted, unretrievable))
 
       lines.concat(people_lines(record, shown))
     end
 
-    # Which entries this rendering lists, in the record's own chronological
-    # order. Without a per-origin limit it is the newest MAX_HUMAN_MESSAGES,
-    # unchanged.
+    # Which entries a rendering lists, in the record's own chronological order.
+    #
+    # Two selections, and the summary's is a SUBSET of the uncut one by
+    # construction. That is what makes the summary's "fetch the rest with
+    # `get_session_provenance`" true rather than aspirational: without the union
+    # below, a per-origin pick could surface an old `here` entry that the uncut
+    # rendering's newest-25 window does not reach, and the pointer under it would
+    # lead nowhere.
+    #
+    # The union earns its place on the uncut rendering in its own right. A
+    # hierarchy with 25 recent `elsewhere` entries would otherwise push every
+    # `here` entry out of the record's own tool — and `here` is the half a gate
+    # reads to establish that a human asked THIS session for something.
     def shown_entries(record, per_origin_limit)
-      return record.entries.last(MAX_HUMAN_MESSAGES) if per_origin_limit.nil?
+      newest_per_origin = lambda do |limit|
+        record.here_entries.last(limit) + record.elsewhere_entries.last(limit)
+      end
 
-      keep = (record.here_entries.last(per_origin_limit) +
-              record.elsewhere_entries.last(per_origin_limit)).map { |entry| entry.message.id }.to_set
-      record.entries.select { |entry| keep.include?(entry.message.id) }
+      keep = if per_origin_limit
+        newest_per_origin.call(per_origin_limit)
+      else
+        record.entries.last(MAX_HUMAN_MESSAGES) + newest_per_origin.call(SUMMARY_ENTRIES_PER_ORIGIN)
+      end
+
+      ids = keep.map { |entry| entry.message.id }.to_set
+      record.entries.select { |entry| ids.include?(entry.message.id) }
+    end
+
+    # Where the entries this rendering did not list can be read — stated exactly,
+    # including the case where the answer is "nowhere".
+    #
+    # `unretrievable` is how many entries fall outside even the uncut rendering.
+    # They are on the record and counted above, and no MCP call returns them;
+    # saying so is the point. On the uncut rendering itself there is nothing to
+    # point at, so it does not pretend there is.
+    def restore_sentence(per_origin_limit, unretrievable)
+      if per_origin_limit.nil?
+        return "This is already the fullest rendering: `get_session_provenance` and `get_session` with " \
+               "`verbose: true` list the newest #{MAX_HUMAN_MESSAGES}, which is what you are reading. No MCP " \
+               "call returns the older ones."
+      end
+
+      sentence = "`get_session_provenance` on this session returns the newest #{MAX_HUMAN_MESSAGES} in full, " \
+                 "as does `get_session` with `verbose: true` — including every entry listed above."
+      return sentence if unretrievable.zero?
+
+      "#{sentence} The #{unretrievable} older than that window are on the record and counted above, but no " \
+      "MCP call returns them."
+    end
+
+    def omission_footer(omitted, unretrievable)
+      return [] unless omitted.positive?
+
+      elsewhere = omitted - unretrievable
+      tail = if elsewhere.positive? && unretrievable.positive?
+        "#{elsewhere} of them are returned in full by `get_session_provenance`; the other #{unretrievable} " \
+        "fall outside its newest-#{MAX_HUMAN_MESSAGES} window and no MCP call returns them"
+      elsif elsewhere.positive?
+        "returned in full by `get_session_provenance`"
+      else
+        "outside `get_session_provenance`'s newest-#{MAX_HUMAN_MESSAGES} window, so no MCP call returns them"
+      end
+
+      [ "", "_#{omitted} older #{'entry'.pluralize(omitted)} not shown here — counted above, and #{tail}._" ]
+    end
+
+    # The other half of the pair: this rendering IS the record. Qualified when
+    # the hierarchy walk was cut, because "complete" is the strongest word this
+    # block has and it must not be read as covering sessions nobody searched.
+    def complete_line(record, content_limit)
+      if record.hierarchy.truncated?
+        return "- **Every entry the hierarchy walk reached is listed below, in full** — but the walk itself was " \
+               "truncated (see the note above), so sessions it did not reach may hold entries this record does " \
+               "not. An entry longer than #{TextBudget.delimited(content_limit)} characters would be cut here " \
+               "and say so; none needed it."
+      end
+
+      "- **Complete:** every entry in this record is listed below, in full. This surface would cut an " \
+      "entry longer than #{TextBudget.delimited(content_limit)} characters and say so; none needed it."
     end
 
     # The one sentence that says exactly what this rendering left out. It is the
@@ -223,9 +298,9 @@ module Mcp
       parts = []
       if omitted.positive?
         parts << if per_origin_limit
-          "Listed: the newest #{[ per_origin_limit, record.here_count ].min} of #{record.here_count} " \
-          "authored HERE, and the newest #{[ per_origin_limit, record.elsewhere_count ].min} of " \
-          "#{record.elsewhere_count} authored elsewhere — #{shown.size} of #{shown.size + omitted} entries."
+          "Listed: #{origin_clause('HERE', record.here_count, per_origin_limit)}, and " \
+          "#{origin_clause('elsewhere', record.elsewhere_count, per_origin_limit)} — #{shown.size} of " \
+          "#{shown.size + omitted} entries."
         else
           "The newest #{shown.size} of #{shown.size + omitted} entries are listed; the other #{omitted} are not."
         end
@@ -235,6 +310,16 @@ module Mcp
                  "entry that was cut says so under its own text, with its real length."
       end
       parts.join(" ")
+    end
+
+    # One half of that sentence. Spelled out rather than rendered as "the newest
+    # 0 of 0", because the half a gate cares about is `here` and "none" is the
+    # reading it needs to take away.
+    def origin_clause(origin, count, per_origin_limit)
+      return "none authored #{origin}" if count.zero?
+      return "all #{count} authored #{origin}" if count <= per_origin_limit
+
+      "the newest #{per_origin_limit} of #{count} authored #{origin}"
     end
   end
 end
