@@ -51,9 +51,10 @@ class ConnectorStatusProbe
   ].freeze
 
   # The states in which attaching the server to a session cannot work, and no
-  # amount of waiting changes that. This is the definition both surfaces read:
-  # the Connectors page renders it per row, and `get_configs` omits these
-  # servers from the options it offers an agent.
+  # amount of waiting changes that. This is the definition every surface reads:
+  # the Connectors page renders it per row, `get_configs` omits these servers
+  # from the options it offers an agent, and `McpServerOptions` flags them in
+  # the web pickers and the REST server lists.
   #
   # :token_expired is deliberately absent — that credential has a refresh token
   # and RefreshMcpOauthTokensJob renews it without anyone's help.
@@ -107,15 +108,22 @@ class ConnectorStatusProbe
     # the server name, and its job is to let a reader tell "exists but cannot be
     # used" from "does not exist". nil when the server is available.
     #
-    # Markdown, because its reader is `get_configs` and its output is markdown.
+    # Markdown by default, because its first reader was `get_configs` and that
+    # output is markdown. The web pickers and the REST lists ask for
+    # `markdown: false`, where a backtick would render as a backtick. Same
+    # states and the same words either way — only the variable names change
+    # dress, so the two surfaces cannot say different things.
+    #
     # The Connectors page renders #summary instead — same states, a sentence
     # each, addressed to someone who can go and fix them.
     #
+    # @param markdown [Boolean] backtick `${VAR}` names for a markdown reader
     # @return [String, nil]
-    def unavailable_reason
+    def unavailable_reason(markdown: true)
       case state
       when :missing_configuration
-        "#{missing_variables.map { |name| "`#{name}`" }.join(', ')} unresolved"
+        names = missing_variables.map { |name| markdown ? "`#{name}`" : name }
+        "#{names.join(', ')} unresolved"
       when :needs_authorization
         "OAuth authorization not completed"
       when :needs_reauth

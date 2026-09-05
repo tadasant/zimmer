@@ -31,15 +31,13 @@ class Api::V1::ConfigsController < Api::BaseController
 
   private
 
-  # Returns MCP server metadata (non-sensitive fields only)
+  # Returns MCP server metadata (non-sensitive fields only), each carrying
+  # whether Zimmer can start it right now. A client picking from this list has
+  # the same stake the session form's picker does: attaching a server whose
+  # `${VAR}` does not resolve fails the whole session at prepare time, not just
+  # that server. `unavailable_reason` is nil exactly when `unavailable` is false.
   def mcp_servers_data
-    ServersConfig.all.map do |server|
-      {
-        name: server.name,
-        title: server.title,
-        description: server.description
-      }
-    end
+    McpServerOptions.all
   end
 
   # Returns agent root configurations

@@ -179,13 +179,7 @@ class TriggersController < ApplicationController
 
   def load_form_data
     @agent_roots = AgentRootsConfig.all
-    @servers_for_select = ServersConfig.all.map do |server|
-      {
-        name: server.name,
-        title: server.title,
-        description: server.description
-      }
-    end
+    @servers_for_select = McpServerOptions.all
 
     @goals = GoalsConfig.all.map do |goal|
       {

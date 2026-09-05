@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 class ServersConfigTest < ActiveSupport::TestCase
   # Test loading servers
@@ -228,6 +229,24 @@ class ServersConfigTest < ActiveSupport::TestCase
     assert hash.key?(:args)
     assert hash.key?(:env)
     assert_equal false, hash[:remote?]
+    assert hash.key?(:unavailable), "to_h carries the catalog's own availability declaration"
+    assert_nil hash[:unavailable], "a catalog that says nothing declares nothing"
+  end
+
+  test "to_h carries the catalog's unavailable declaration when there is one" do
+    entries = {
+      "dead" => {
+        "title" => "Dead Server", "description" => "Retired.",
+        "type" => "streamable-http", "url" => "https://example.com/mcp",
+        "unavailable" => "  The endpoint no longer\nserves Zimmer.  "
+      }
+    }
+    AirCatalogService.stubs(:entries_for).with(:mcp).returns(entries)
+
+    hash = ServersConfig.find("dead").to_h
+
+    assert_equal "The endpoint no longer serves Zimmer.", hash[:unavailable],
+      "normalized, so a newline cannot split the line it lands on"
   end
 
   # Test to_json method

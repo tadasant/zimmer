@@ -558,6 +558,32 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
     assert_equal "`BETA` unresolved", status.unavailable_reason
   end
 
+  # get_configs renders the reason into markdown; the web pickers and the REST
+  # lists render it into HTML, where a backtick is just a backtick. Same states
+  # and the same words, so the surfaces cannot end up saying different things.
+  test "the reason drops its markdown on request, and only its markdown" do
+    config = STDIO_WITH_SECRET.merge("env" => { "A" => "${ALPHA}", "B" => "${BETA}" })
+    status = probe("multi", config, resolvable: [ "ALPHA" ])
+
+    assert_equal "BETA unresolved", status.unavailable_reason(markdown: false)
+  end
+
+  test "the states with no markdown in their reason read identically either way" do
+    [
+      probe("notion", OAUTH_SERVER),
+      probe("dead", OAUTH_SERVER.merge("unavailable" => "Gone."))
+    ].each do |status|
+      assert_equal status.unavailable_reason, status.unavailable_reason(markdown: false),
+        "#{status.state} has no markdown to drop"
+    end
+  end
+
+  test "an available server explains nothing in either dress" do
+    status = probe("secrets-service-account", SECRETS_SERVICE_ACCOUNT, resolvable: [ "STRAD_API_KEY" ])
+
+    assert_nil status.unavailable_reason(markdown: false)
+  end
+
   test "a ready server is available and has nothing to explain" do
     status = probe("secrets-service-account", SECRETS_SERVICE_ACCOUNT, resolvable: [ "STRAD_API_KEY" ])
 

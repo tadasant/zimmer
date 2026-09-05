@@ -408,11 +408,18 @@ be deleted.
 The page never contacts the MCP server itself and never displays a secret value;
 it reports presence and where to set what is absent.
 
-The same probe decides what an agent is offered. **Missing configuration**, **Needs
+The same probe decides what anyone is offered. **Missing configuration**, **Needs
 authorization**, **Needs re-auth** and **Unavailable** block a spawn, so `get_configs` leaves those
 servers out of its MCP-server list and names them in a trailing **Unavailable** roster instead —
 one line and a compact reason each. **Token expired** does not block, because the refresh job
-resolves it. → [Availability, and what an agent is offered](/air/mcp-servers/#availability-and-what-an-agent-is-offered)
+resolves it.
+
+The human surfaces read the same four states through `McpServerOptions`: the MCP-server pickers on
+the new-session form, the trigger form and the session detail page show such a server with an
+**Unavailable** badge and its reason, sorted below the ones that work, and `GET /api/v1/configs` and
+`GET /api/v1/mcp_servers` carry `unavailable` and `unavailable_reason` per server. They flag rather
+than omit because a human, unlike an agent, is usually one click on this page away from fixing the
+reason. → [Availability, and what an agent is offered](/air/mcp-servers/#availability-and-what-an-agent-is-offered)
 
 ### How the list fills in, and why it re-orders itself
 

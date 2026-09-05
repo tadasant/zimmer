@@ -2531,7 +2531,7 @@ class Session < ApplicationRecord
   def metadata_broadcast_locals
     {
       agent_session: self,
-      servers_for_select: ServersConfig.all.map { |s| { name: s.name, title: s.title, description: s.description } },
+      servers_for_select: McpServerOptions.all,
       catalog_skills_for_select: SkillsConfig.all.map { |s| { id: s.id, name: s.name, title: s.title, description: s.description, category: s.category } },
       catalog_hooks_for_select: HooksConfig.all.map { |h| { id: h.id, name: h.name, title: h.title, description: h.description } },
       plugins_for_select: PluginsConfig.all.map { |p| { id: p.id, title: p.title, description: p.description } },
