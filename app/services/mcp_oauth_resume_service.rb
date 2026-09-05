@@ -113,14 +113,12 @@ class McpOauthResumeService
     # transcript in between is no longer replaying a first turn.
     images, files = session.transcript.present? ? [ [], [] ] : attachments
 
-    session.update!(
-      status: "waiting",
-      metadata: session.metadata.merge(
-        "oauth_complete" => true,
-        "failure_reason" => nil,
-        "oauth_required_servers" => nil
-      )
+    session.merge_metadata!(
+      "oauth_complete" => true,
+      "failure_reason" => nil,
+      "oauth_required_servers" => nil
     )
+    session.update!(status: "waiting")
 
     AgentSessionJob.enqueue_new_session(session.id, images: images.presence, files: files.presence)
 
@@ -196,8 +194,6 @@ class McpOauthResumeService
       "#{remaining.length} of #{required_servers.length} servers still need authorization"
     )
 
-    session.update!(
-      metadata: session.metadata.merge("oauth_required_servers" => remaining)
-    )
+    session.merge_metadata!("oauth_required_servers" => remaining)
   end
 end

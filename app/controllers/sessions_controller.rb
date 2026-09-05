@@ -1187,10 +1187,8 @@ class SessionsController < ApplicationController
           # Update session with transcript AND update broadcast_message_count
           # This prevents duplicate messages when TranscriptPollerJob runs again
           result = with_db_retry do
-            @session.update!(
-              transcript: transcript_content,
-              metadata: (@session.metadata || {}).merge("broadcast_message_count" => message_count)
-            )
+            @session.merge_metadata!("broadcast_message_count" => message_count)
+            @session.update!(transcript: transcript_content)
 
             @session.logs.create!(
               content: "Transcript refreshed manually from filesystem (#{message_count} messages)",
@@ -1420,10 +1418,8 @@ class SessionsController < ApplicationController
 
           # Update session with transcript AND update broadcast_message_count
           result = with_db_retry do
-            session.update!(
-              transcript: transcript_content,
-              metadata: (session.metadata || {}).merge("broadcast_message_count" => message_count)
-            )
+            session.merge_metadata!("broadcast_message_count" => message_count)
+            session.update!(transcript: transcript_content)
 
             session.logs.create!(
               content: "Transcript refreshed via bulk refresh (#{message_count} messages)",
@@ -1675,7 +1671,7 @@ class SessionsController < ApplicationController
 
         # Mark this as a user-initiated pause so refresh_all doesn't auto-continue it.
         # Sessions paused by deployment recovery have paused_by: "recovery" instead.
-        @session.update!(metadata: (@session.metadata || {}).merge("paused_by" => "user"))
+        @session.merge_metadata!("paused_by" => "user")
       end
 
       # IMPORTANT: Terminate the process BEFORE updating session status to needs_input.
@@ -1795,8 +1791,8 @@ class SessionsController < ApplicationController
               level: "info"
             )
 
-            cleaned_metadata = (@session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
-            @session.update!(running_job_id: nil, metadata: cleaned_metadata)
+            @session.remove_metadata!(Session::STALE_RETRY_METADATA_KEYS)
+            @session.update!(running_job_id: nil)
             if @session.may_resume?
               @session.resume!
             elsif @session.may_start?
@@ -1966,11 +1962,11 @@ class SessionsController < ApplicationController
       return
     end
 
-    # Remove auto_generated_title flag when user manually edits the title
-    updated_metadata = (@session.metadata || {}).except("auto_generated_title")
-
     result = with_db_retry do
-      if @session.update(title: title, metadata: updated_metadata)
+      if @session.update(title: title)
+        # Remove the auto_generated_title flag now the user has edited the title
+        # by hand. After the update so a rejected title leaves the flag alone.
+        @session.remove_metadata!("auto_generated_title")
         @session.logs.create!(
           content: "Session title updated to: #{title}",
           level: "info"
@@ -3641,7 +3637,7 @@ class SessionsController < ApplicationController
 
         # Clear running_job_id and stale retry metadata before enqueuing.
         # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
-        cleaned_metadata = (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
+        stale_keys = Session::STALE_RETRY_METADATA_KEYS
 
         # For pre-prompt failures (MCP connection failed, spawn failed, etc.),
         # also clear runtime_started so the restart job uses --session-id
@@ -3650,14 +3646,10 @@ class SessionsController < ApplicationController
         # errors because the conversation on Anthropic's servers is empty/broken.
         # We don't clear runtime_started for normal restarts because those
         # sessions have real conversation history that --resume can continue.
-        if use_initial_prompt
-          cleaned_metadata = cleaned_metadata.except("runtime_started")
-        end
+        stale_keys += [ "runtime_started" ] if use_initial_prompt
 
-        session.update!(
-          running_job_id: nil,
-          metadata: cleaned_metadata
-        )
+        session.remove_metadata!(stale_keys)
+        session.update!(running_job_id: nil)
         session.resume! if session.may_resume?
 
         # Enqueue a job with the chosen prompt to resume execution
@@ -3727,17 +3719,13 @@ class SessionsController < ApplicationController
         # Setup artifacts (clone_path, working_directory, etc.) are cleared because
         # the previous setup attempt failed partway through and may have left
         # partial/inconsistent state.
-        cleaned_metadata = (session.metadata || {}).except(
-          *Session::STALE_RETRY_METADATA_KEYS,
-          *Session::SETUP_ARTIFACT_KEYS,
-          *SpotSessionHold::METADATA_KEYS
+        session.remove_metadata!(
+          Session::STALE_RETRY_METADATA_KEYS,
+          Session::SETUP_ARTIFACT_KEYS,
+          SpotSessionHold::METADATA_KEYS
         )
 
-        session.update!(
-          running_job_id: nil,
-          session_id: nil,
-          metadata: cleaned_metadata
-        )
+        session.update!(running_job_id: nil, session_id: nil)
         session.resume! if session.may_resume?
 
         # Enqueue as a new session (not a follow-up) to trigger the full setup
@@ -3849,13 +3837,13 @@ class SessionsController < ApplicationController
 
         # Clear stale retry metadata for fresh execution.
         # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
-        cleaned_metadata = (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
+        stale_keys = Session::STALE_RETRY_METADATA_KEYS
 
         # For pre-prompt failures, also clear runtime_started so the job
         # uses --session-id (with --mcp-config) instead of --resume.
-        cleaned_metadata = cleaned_metadata.except("runtime_started") if use_initial_prompt
+        stale_keys += [ "runtime_started" ] if use_initial_prompt
 
-        session.update!(metadata: cleaned_metadata)
+        session.remove_metadata!(stale_keys)
 
         # Update session status to running BEFORE enqueuing the job
         # This ensures the resume! callback clears custom_metadata MCP flags

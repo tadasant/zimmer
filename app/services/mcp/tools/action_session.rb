@@ -406,7 +406,7 @@ module Mcp
         raise ToolError, "Session is not running" unless session.running?
 
         # Mark as user-initiated so the pause push notification is skipped.
-        session.update!(metadata: (session.metadata || {}).merge("paused_by" => "user"))
+        session.merge_metadata!("paused_by" => "user")
         session.pause!
 
         summary("Session Paused", session, status_label: "New Status")
@@ -474,12 +474,13 @@ module Mcp
         restart_prompt = use_initial_prompt ? session.prompt : AutomatedPrompts::SYSTEM_RECOVERY
 
         ActiveRecord::Base.transaction do
-          cleaned_metadata = (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
+          stale_keys = Session::STALE_RETRY_METADATA_KEYS
           # For pre-prompt failures, drop runtime_started so the restart uses
           # --session-id (with --mcp-config) instead of --resume.
-          cleaned_metadata = cleaned_metadata.except("runtime_started") if use_initial_prompt
+          stale_keys += [ "runtime_started" ] if use_initial_prompt
 
-          session.update!(running_job_id: nil, metadata: cleaned_metadata)
+          session.remove_metadata!(stale_keys)
+          session.update!(running_job_id: nil)
           session.resume!
 
           AgentSessionJob.enqueue_with_prompt(session.id, restart_prompt)
@@ -492,12 +493,6 @@ module Mcp
         raise ToolError, "No git_root configured for restart from scratch" if session.git_root.blank?
 
         refuse_if_paused!(session)
-
-        cleaned_metadata = (session.metadata || {}).except(
-          *Session::STALE_RETRY_METADATA_KEYS,
-          *Session::SETUP_ARTIFACT_KEYS,
-          *SpotSessionHold::METADATA_KEYS
-        )
 
         # The replacement turn IS the original first turn — same prompt, new
         # clone, new session_id — so it carries the attachments that turn was
@@ -516,7 +511,12 @@ module Mcp
                      "(git clone, MCP config, process spawn)#{carrying}",
             level: "info"
           )
-          session.update!(running_job_id: nil, session_id: nil, metadata: cleaned_metadata)
+          session.remove_metadata!(
+            Session::STALE_RETRY_METADATA_KEYS,
+            Session::SETUP_ARTIFACT_KEYS,
+            SpotSessionHold::METADATA_KEYS
+          )
+          session.update!(running_job_id: nil, session_id: nil)
           session.resume! if session.may_resume?
           AgentSessionJob.enqueue_new_session(session.id, images: images.presence, files: files.presence)
           session.logs.create!(
@@ -988,10 +988,8 @@ module Mcp
           )
         end
 
-        session.update!(
-          transcript: content,
-          metadata: (session.metadata || {}).merge("broadcast_message_count" => message_count)
-        )
+        session.merge_metadata!("broadcast_message_count" => message_count)
+        session.update!(transcript: content)
         session.logs.create!(content: "Transcript refreshed via MCP (#{message_count} messages)", level: "info")
 
         summary("Session Refreshed", session, message: "Transcript refreshed (#{message_count} messages)")
@@ -1096,10 +1094,8 @@ module Mcp
           return false
         end
 
-        session.update!(
-          transcript: content,
-          metadata: (session.metadata || {}).merge("broadcast_message_count" => message_count)
-        )
+        session.merge_metadata!("broadcast_message_count" => message_count)
+        session.update!(transcript: content)
         session.logs.create!(content: "Transcript refreshed via MCP bulk refresh (#{message_count} messages)", level: "info")
 
         true

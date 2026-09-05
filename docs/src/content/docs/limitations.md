@@ -2394,46 +2394,33 @@ time the old thread reads, the size check passes and a mid-line fragment is logg
 replacement's own thread then re-emits the same bytes from byte 0. The window is one iteration wide
 (≤0.5s) and the damage is duplicated `verbose` log lines, not lost data.
 
-### Not every session `metadata` writer is atomic, and the whole-column writers are the majority
+### Two writers of the same session metadata key still lose one of them
 
-`Session#merge_metadata!` and friends push the merge into PostgreSQL as one statement, so they cannot
-erase keys they did not name. See [Metadata races](/sessions/spawning/#metadata-races).
+`Session#merge_metadata!` and friends push the merge into PostgreSQL as one statement, so a writer
+cannot erase keys it did not name. Every writer to `sessions.metadata` and `sessions.custom_metadata`
+in `app/` goes through them ([#70](https://github.com/tadasant/zimmer/issues/70)), and
+`NoWholeColumnMetadataWritersTest` scans `app/` on every CI run so a new whole-column
+read-modify-write cannot be added without someone adding it to that test's allowlist and saying why.
+See [Metadata races](/sessions/spawning/#metadata-races).
 
-They are not what most of the app does. Counted against this commit, `app/` holds **34 atomic call
-sites across 15 files** and **93 whole-column read-modify-writes across 27 files** — the
-`update!(metadata: (session.metadata || {}).merge(…))` shape that rewrites the entire column from a
-snapshot the caller read earlier. `AgentSessionJob` alone has 23 of them against 11 atomic calls.
-That is not a handful of stragglers, and anyone scoping
-[#70](https://github.com/tadasant/zimmer/issues/70) off a smaller number will under-estimate it
-substantially.
+What that does not buy:
 
-Where a lost update is genuinely harmless: the terminal failure paths. 21 of the 93 name
-`failure_reason` or `exit_status` in their payload, and 13 of `AgentSessionJob`'s 23 are immediately
-followed by `session.fail!` — the session is ending, so a neighbouring key erased on the way out
-changes nothing. Naming those keys is not a clean proxy on its own, though. Four of the 21 are on
-sessions that keep going. `AgentSessionJob` writes `exit_status` onto a session it is *parking* for an
-auth outage. `McpOauthResumeService#resume!` clears `failure_reason` on the way back to `waiting`.
-And `CleanupOrphanedSessionsJob` and `DeploymentRecoveryJob` each strip `failure_reason` while
-stamping `"paused_by" => "recovery"` onto a session they are about to continue — the most alive
-writes in the whole set, since they are resurrecting a `failed` session, not ending one.
-
-Where it is not harmless, the writers are on live sessions and some are hot:
-
-- `TranscriptPollerService` — four whole-column writes, three of them inside `poll_and_broadcast`
-  itself (two `update_columns` on the metadata-only paths, and the batch that carries `transcript`
-  and `last_timeline_entry_at` together). This is the worker's single most frequent metadata writer,
-  and it is why `interrupt_terminate_pid` is *harder* to lose than it was rather than impossible.
-- `AgentSessionJob`'s `"paused_by" => "recovery"` writes, its `clone_retry_count` writes, and the
-  `mcp_retry` park — all on a session that keeps running afterwards.
-- Eight `update_column` metadata writes in `SessionStateMachine`'s AASM callbacks, which fire no
-  callbacks of their own at all — four on `resume`, the rest on `pause`, `block_on_elicitation`, and
-  the needs-input counter.
-- Both session controllers (19 sites between them) and the MCP `action_session` tool, which write
-  from the web process while the job's monitoring loop is writing from the worker.
-
-No amount of atomic merging serializes two writers of the *same* key either — last writer still wins.
-
-Tracked in [#70](https://github.com/tadasant/zimmer/issues/70).
+- **Two writers of the same key are still last-writer-wins.** The merge is atomic per statement, not
+  serialized per key. `broadcast_message_count`, the retry counters and the needs-input counter are
+  all read-then-increment, so two of them racing lose a count. Nothing in the row is a ledger.
+- **A site that writes metadata and another column no longer does it in one `UPDATE`.** Converting
+  `update!(running_job_id: nil, metadata: …)` splits it into a merge and an `update!`. Where the pair
+  is already inside a transaction — every restart path, the recovery claims, the spot pause — a reader
+  outside still sees both or neither. Where it is not, a reader can catch the row between them. Every
+  such pair is followed by an AASM transition that was a third statement already, so no caller gained
+  a window it did not have.
+- **The scan covers `app/` only.** `db/post_deploy/20260830100500_fix_clone_path_metadata.rb` still
+  writes the whole column; it is a one-time repair that has already run, and it deletes a key
+  conditionally, which is why it was left as it shipped.
+- **Creation paths still assign the column in memory.** `Session.create_from_agent_root!`, the two
+  session controllers and MCP `start_session` build `metadata` before the row exists, where there is
+  no other writer to race and nothing to merge into. `Session#record_explicit_mcp_servers` is the
+  in-memory form for those surfaces; `#record_explicit_mcp_servers!` is the persisted twin.
 
 ### A killed worker reads as alive for up to 5 minutes, and a follow-up sent in that window is dropped
 

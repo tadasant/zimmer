@@ -234,13 +234,11 @@ class ApiErrorRetryService
       # transient rate limit to be misclassified as a quota limit (because the scan hits
       # the old quota entry first).
       with_db_retry do
-        session.update!(
-          metadata: (session.metadata || {}).merge(
-            "last_quota_limit_at" => Time.current.iso8601,
-            "last_quota_limit_message" => @detected_quota_message,
-            "quota_limit_count" => (session.metadata&.dig("quota_limit_count") || 0) + 1,
-            "api_error_last_checked_line" => get_transcript_line_count(working_directory)
-          )
+        session.merge_metadata!(
+          "last_quota_limit_at" => Time.current.iso8601,
+          "last_quota_limit_message" => @detected_quota_message,
+          "quota_limit_count" => (session.metadata&.dig("quota_limit_count") || 0) + 1,
+          "api_error_last_checked_line" => get_transcript_line_count(working_directory)
         )
       end
 

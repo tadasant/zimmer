@@ -91,12 +91,7 @@ class TranscriptPollerService
 
       # Batch update metadata if we have changes
       if metadata_updates.any?
-        with_db_retry do
-          @session.reload
-          @session.update_columns(
-            metadata: (@session.metadata || {}).merge(metadata_updates)
-          )
-        end
+        with_db_retry { @session.merge_metadata!(metadata_updates) }
       end
       # Return nil (not false) to indicate "waiting" state vs actual failure
       # This allows the caller to distinguish between expected waiting and real problems
@@ -122,12 +117,7 @@ class TranscriptPollerService
 
       # Batch update metadata if we have changes
       if metadata_updates.any?
-        with_db_retry do
-          @session.reload
-          @session.update_columns(
-            metadata: (@session.metadata || {}).merge(metadata_updates)
-          )
-        end
+        with_db_retry { @session.merge_metadata!(metadata_updates) }
       end
       # Return nil (not false) to indicate "waiting" state vs actual failure
       return nil
@@ -250,12 +240,15 @@ class TranscriptPollerService
       # runs when new_messages.length > broadcast_count (otherwise messages_to_broadcast
       # is empty), i.e. the transcript grew. A shrink can only surface in the else
       # branch below, which is guarded.
-      # Batch update: combine transcript, metadata, and last_timeline_entry_at in a single update
+      # The metadata half goes through the jsonb merge rather than riding the same
+      # update!: this is the worker's most frequent metadata writer, and a
+      # whole-column write from here is what makes `interrupt_terminate_pid` and
+      # `pending_follow_up_prompt` losable on a live turn.
       with_db_retry do
         @session.reload
+        @session.merge_metadata!(metadata_updates)
         @session.update!(
           transcript: transcript_content,
-          metadata: (@session.metadata || {}).merge(metadata_updates),
           last_timeline_entry_at: Time.current
         )
       end
@@ -292,12 +285,11 @@ class TranscriptPollerService
         end
       end
 
-      updates[:metadata] = (@session.metadata || {}).merge(metadata_updates) if metadata_updates.any?
-
-      if updates.any?
+      if updates.any? || metadata_updates.any?
         with_db_retry do
           @session.reload
-          @session.update!(updates)
+          @session.merge_metadata!(metadata_updates) if metadata_updates.any?
+          @session.update!(updates) if updates.any?
         end
       end
     end
@@ -792,10 +784,8 @@ class TranscriptPollerService
     # transcript messages, even though MCP tools are being actively called.
     with_db_retry do
       @session.reload
-      @session.update!(
-        metadata: (@session.metadata || {}).merge("broadcast_mcp_log_count" => logs.length),
-        last_timeline_entry_at: Time.current
-      )
+      @session.merge_metadata!("broadcast_mcp_log_count" => logs.length)
+      @session.update!(last_timeline_entry_at: Time.current)
     end
   rescue => e
     Rails.logger.error "[TranscriptPollerService] Error broadcasting MCP logs: #{e.message}"

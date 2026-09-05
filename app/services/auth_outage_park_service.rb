@@ -613,13 +613,14 @@ class AuthOutageParkService
 
       prompt = AutomatedPrompts.system_recovery(reason: resume_prompt_reason(reason))
 
-      metadata = (session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
+      updates = {}
       if reason == AUTH_UNRECOVERABLE
-        metadata[EARLY_WAKE_LOG_KEY] =
+        updates[EARLY_WAKE_LOG_KEY] =
           (recent_early_wakes(session) + [ Time.current ]).map { |at| at.utc.iso8601 }
       end
 
-      session.update!(running_job_id: nil, metadata: metadata)
+      session.merge_metadata!(updates, Session::STALE_RETRY_METADATA_KEYS)
+      session.update!(running_job_id: nil)
       session.resume!
 
       # Stamp the prompt BEFORE leaving the transaction, and after `resume!` so a reader
@@ -759,11 +760,12 @@ class AuthOutageParkService
       fingerprint = self.class.pool_fingerprint(session.agent_runtime)
       outage[POOL_FINGERPRINT_KEY] = fingerprint if fingerprint.present?
 
-      # Reload first: #sleep_session! wrote pending_sleep straight to the row.
-      # Merging into the in-memory copy would clobber it — and pending_sleep is
-      # the whole mechanism by which a parked session actually goes dormant.
+      # The merge is a single statement, so #sleep_session!'s `pending_sleep` —
+      # written straight to the row, and the whole mechanism by which a parked
+      # session goes dormant — survives it whatever this object holds. The reload
+      # is here so the in-memory copy the caller goes on to read is that row.
       session.reload
-      session.update!(metadata: (session.metadata || {}).merge(outage))
+      session.merge_metadata!(outage)
     end
   end
 
@@ -785,7 +787,7 @@ class AuthOutageParkService
     if session.needs_input?
       session.sleep!
     elsif session.running?
-      session.update!(metadata: (session.metadata || {}).merge("pending_sleep" => true))
+      session.merge_metadata!("pending_sleep" => true)
     else
       @logger.info("Not sleeping a parked session that is neither running nor idle",
         status: session.status)

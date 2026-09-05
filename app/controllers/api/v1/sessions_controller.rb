@@ -515,7 +515,7 @@ class Api::V1::SessionsController < Api::BaseController
   def pause
     if @session.running?
       # Mark as user-initiated pause so push notification is skipped
-      @session.update!(metadata: (@session.metadata || {}).merge("paused_by" => "user"))
+      @session.merge_metadata!("paused_by" => "user")
       @session.pause!
       render json: { session: session_json(@session) }
     else
@@ -544,13 +544,13 @@ class Api::V1::SessionsController < Api::BaseController
     # one whose wake set was destroyed, and would resume it fifteen minutes later
     # saying its wake had been lost. The marker is in STALE_RETRY_METADATA_KEYS,
     # so any resume or restart clears it.
-    metadata = (@session.metadata || {}).merge(Session::DELIBERATE_SLEEP_KEY => Time.current.iso8601)
+    updates = { Session::DELIBERATE_SLEEP_KEY => Time.current.iso8601 }
 
     if @session.needs_input?
-      @session.update!(metadata: metadata)
+      @session.merge_metadata!(updates)
       @session.sleep!
     else
-      @session.update!(metadata: metadata.merge("pending_sleep" => true))
+      @session.merge_metadata!(updates.merge("pending_sleep" => true))
     end
 
     render json: { session: session_json(@session) }
@@ -593,16 +593,14 @@ class Api::V1::SessionsController < Api::BaseController
     ActiveRecord::Base.transaction do
       # Clear stale retry and transcript polling metadata before resuming.
       # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
-      cleaned_metadata = (@session.metadata || {}).except(*Session::STALE_RETRY_METADATA_KEYS)
+      stale_keys = Session::STALE_RETRY_METADATA_KEYS
 
       # For pre-prompt failures, also clear runtime_started so the restart
       # uses --session-id (with --mcp-config) instead of --resume.
-      cleaned_metadata = cleaned_metadata.except("runtime_started") if use_initial_prompt
+      stale_keys += [ "runtime_started" ] if use_initial_prompt
 
-      @session.update!(
-        running_job_id: nil,
-        metadata: cleaned_metadata
-      )
+      @session.remove_metadata!(stale_keys)
+      @session.update!(running_job_id: nil)
       @session.resume!
 
       AgentSessionJob.enqueue_with_prompt(@session.id, restart_prompt)
@@ -693,10 +691,8 @@ class Api::V1::SessionsController < Api::BaseController
           return
         end
 
-        @session.update!(
-          transcript: transcript_content,
-          metadata: (@session.metadata || {}).merge("broadcast_message_count" => message_count)
-        )
+        @session.merge_metadata!("broadcast_message_count" => message_count)
+        @session.update!(transcript: transcript_content)
 
         @session.logs.create!(
           content: "Transcript refreshed via API (#{message_count} messages)",
@@ -1208,12 +1204,6 @@ class Api::V1::SessionsController < Api::BaseController
       return
     end
 
-    cleaned_metadata = (session.metadata || {}).except(
-      *Session::STALE_RETRY_METADATA_KEYS,
-      *Session::SETUP_ARTIFACT_KEYS,
-      *SpotSessionHold::METADATA_KEYS
-    )
-
     # The replacement turn IS the original first turn — same prompt, new clone,
     # new session_id — so it carries the attachments that turn was created with
     # (Sessions::FirstTurnAttachments, which never raises). Replaying all of them
@@ -1231,11 +1221,12 @@ class Api::V1::SessionsController < Api::BaseController
         level: "info"
       )
 
-      session.update!(
-        running_job_id: nil,
-        session_id: nil,
-        metadata: cleaned_metadata
+      session.remove_metadata!(
+        Session::STALE_RETRY_METADATA_KEYS,
+        Session::SETUP_ARTIFACT_KEYS,
+        SpotSessionHold::METADATA_KEYS
       )
+      session.update!(running_job_id: nil, session_id: nil)
       session.resume! if session.may_resume?
       AgentSessionJob.enqueue_new_session(session.id, images: images.presence, files: files.presence)
 
@@ -1497,10 +1488,8 @@ class Api::V1::SessionsController < Api::BaseController
       return false
     end
 
-    session.update!(
-      transcript: transcript_content,
-      metadata: (session.metadata || {}).merge("broadcast_message_count" => message_count)
-    )
+    session.merge_metadata!("broadcast_message_count" => message_count)
+    session.update!(transcript: transcript_content)
 
     session.logs.create!(
       content: "Transcript refreshed via API bulk refresh (#{message_count} messages)",
