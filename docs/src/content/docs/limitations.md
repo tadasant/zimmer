@@ -2972,6 +2972,17 @@ Three bounds worth knowing:
   passive condition meeting a busy old thread for the first time can spawn several sessions at once,
   bounded only by the trigger's `max_sessions_per_minute` burst cap (above which the rest are
   *dropped*).
+- **A quiet tracked thread can wait several polls to be noticed.** A thread whose parent has scrolled
+  out of the last 50 top-level messages costs a `conversations.replies` call to re-check, so the
+  poller spends a fixed budget of `MAX_TRACKED_THREAD_RECHECKS` (20) of them per channel per poll:
+  10 on the most-recently-active threads and 10 rotating through the rest. Everything inside
+  `RECHECK_HORIZON` is visited — that is the fix for
+  [#518](https://github.com/tadasant/zimmer/issues/518) — but the *first* reply in a thread that had
+  gone quiet can sit for up to `ceil((n - 10) / 10)` polls before Zimmer sees it, which is about 17
+  minutes on a channel tracking 172 threads. Once it is seen the thread joins the always-checked
+  band, so the rest of the conversation answers at the ordinary one-minute cadence. Migrating Slack
+  ingestion to Events API webhooks ([#141](https://github.com/tadasant/zimmer/issues/141),
+  [#217](https://github.com/tadasant/zimmer/issues/217)) would remove the wait entirely.
 - **`participating_threads` and `bot_activity_timestamps` grow monotonically** inside the
   condition's `configuration` JSONB, exactly like the `channel_timestamps` and `thread_timestamps`
   hashes they sit beside. Nothing prunes any of the four — and because all four live on the

@@ -73,10 +73,27 @@ class SlackTriggerPollerJob < ApplicationJob
   DEFERRAL_BASE_DELAY = 30
   MAX_DEFERRAL_DELAY = 10.minutes.to_i
 
-  # Cap on how many aged-out tracked threads to re-check per channel per poll,
-  # bounding the extra conversations.replies calls. Prioritized by most-recent
-  # tracked activity so the busiest long-lived threads are always covered.
+  # How many aged-out tracked threads to re-check per channel per POLL. Each one
+  # costs a conversations.replies call — a synthesized parent has no latest_reply,
+  # so the cheap skip cannot fire for it — and Slack rate-limits that method hard
+  # enough to have taken the whole poller down before (#509, #522). This is what
+  # keeps a channel's fan-out flat no matter how many threads it tracks.
+  #
+  # It is a per-poll BUDGET, not a cap on how many threads are covered. Threads
+  # that do not fit are carried to the next poll by #rotating_recheck_slice, so
+  # everything inside RECHECK_HORIZON is still visited — later rather than never.
   MAX_TRACKED_THREAD_RECHECKS = 20
+
+  # How much of that budget is reserved for the most-recently-active tracked
+  # threads, which are re-checked on EVERY poll instead of in rotation.
+  #
+  # A conversation that is actually live has to be answered at the poll cadence,
+  # so the ranking this job used to apply to the whole budget is kept for this
+  # band. The rotation below is the WAKE-UP path: it exists to notice the first
+  # reply in a thread that had gone quiet, and that reply advances the thread's
+  # tracked timestamp, which promotes it into this band for as long as the
+  # back-and-forth lasts.
+  HOT_TRACKED_THREAD_RECHECKS = 10
 
   # Only re-check tracked threads whose last seen reply is within this window;
   # older ones are treated as dead to avoid steady wasted API calls. A thread
@@ -95,7 +112,7 @@ class SlackTriggerPollerJob < ApplicationJob
   #
   # Threads are deliberately NOT bounded by this: a reply to a thread Zimmer is part
   # of is addressed to that conversation however old it is. Those are bounded by
-  # RECHECK_HORIZON instead, via the tracked-thread recheck cap.
+  # RECHECK_HORIZON instead, via the tracked-thread re-check.
   CHANNEL_ENGAGEMENT_WINDOW = 6.hours
 
   # How far back a thread that passive listening has no cursor for may be replayed.
@@ -774,7 +791,9 @@ class SlackTriggerPollerJob < ApplicationJob
     end
 
     # Only threads that actually moved produce updates, so a channel of dormant
-    # tracked threads costs no writes at all.
+    # tracked threads costs no writes here. (A channel tracking more threads than
+    # one poll's re-check budget still writes its rotation cursor — see
+    # #advance_recheck_cursor! — which is one row update, not a per-thread one.)
     if thread_ts_updates.any?
       condition.update!(configuration: condition.configuration.merge(
         "thread_timestamps" => condition.thread_timestamps.merge(thread_ts_updates),
@@ -834,25 +853,97 @@ class SlackTriggerPollerJob < ApplicationJob
   # once its parent scrolls past that window, even though it remains tracked in
   # thread_timestamps. Without this, replies to such a thread are silently missed.
   #
-  # Fan-out is one conversations.replies call per re-checked thread, so bound these
-  # aged-out additions (the recent-window parents are already limited by
+  # Fan-out is one conversations.replies call per re-checked thread, so eligibility
+  # is bounded first (the recent-window parents are already limited by
   # fetch_recent_thread_parents): drop threads with no tracked activity within
-  # RECHECK_HORIZON (treated as dead) and keep only the MAX_TRACKED_THREAD_RECHECKS
-  # most-recently-active per channel. Threads already covered by the recent window
-  # are skipped to avoid duplicate fetches.
+  # RECHECK_HORIZON, treated as dead, and drop threads the recent window already
+  # covers, to avoid duplicate fetches. What survives is then spread across polls
+  # by #rotating_recheck_slice rather than truncated — see there for why.
   def aged_out_thread_parents(condition, channel_id, covered_parents)
     already_covered = covered_parents.map(&:ts).to_set
     horizon_ts = RECHECK_HORIZON.ago.to_f
 
-    condition.thread_timestamps
-      .select do |key, last_reply_ts|
-        key.start_with?("#{channel_id}:") &&
-          !already_covered.include?(key.split(":", 2).last) &&
-          last_reply_ts.to_f >= horizon_ts
-      end
-      .sort_by { |_key, last_reply_ts| -last_reply_ts.to_f }
-      .first(MAX_TRACKED_THREAD_RECHECKS)
-      .map { |key, _last_reply_ts| RecheckThreadParent.new(key.split(":", 2).last, nil, nil) }
+    eligible = condition.thread_timestamps.select do |key, last_reply_ts|
+      key.start_with?("#{channel_id}:") &&
+        !already_covered.include?(key.split(":", 2).last) &&
+        last_reply_ts.to_f >= horizon_ts
+    end
+
+    rotating_recheck_slice(condition, channel_id, eligible)
+      .map { |key| RecheckThreadParent.new(key.split(":", 2).last, nil, nil) }
+  end
+
+  # This poll's slice of the channel's eligible tracked threads, at most
+  # MAX_TRACKED_THREAD_RECHECKS of them.
+  #
+  # The budget used to be a truncation: keep the 20 most-recently-active and drop
+  # the rest, every poll, forever. A live condition here tracks hundreds of threads
+  # across its channels, so that silently voided RECHECK_HORIZON's promise for most
+  # of them — and self-reinforcingly, since the ranking is by tracked activity and a
+  # reply nobody fetched never advances a tracked timestamp. A thread that fell out
+  # of the top 20 had no way back in (#518).
+  #
+  # Raising the budget is not the answer: each of these threads costs a
+  # conversations.replies call precisely because its synthesized parent has no
+  # latest_reply to skip on, and there is no Slack call that answers "did any of
+  # these 172 threads move?" in one request. So the budget stays flat and the
+  # coverage rotates:
+  #
+  #   * HOT_TRACKED_THREAD_RECHECKS slots go to the most-recently-active threads,
+  #     every poll — the old behaviour, kept for conversations that are live;
+  #   * the remaining slots walk the rest in a stable order, resuming where the
+  #     last poll stopped and wrapping around.
+  #
+  # Every eligible thread is therefore visited within
+  # ceil(rest / rotating_slots) polls — 17 minutes for 172 threads at the
+  # one-minute cadence — at exactly the API cost of the old truncation. The wait is
+  # latency, not loss: a thread's cursor is untouched while it waits its turn, so
+  # when its slot comes up `oldest:` still points at the last reply Zimmer saw and
+  # every reply since is fetched and fired.
+  #
+  # Ordering the rotation band by thread key rather than by activity is deliberate.
+  # The cursor is a position in that order, so an order that reshuffles under it as
+  # cursors advance could step over the same thread repeatedly.
+  def rotating_recheck_slice(condition, channel_id, eligible)
+    return eligible.keys if eligible.size <= MAX_TRACKED_THREAD_RECHECKS
+
+    by_recency = eligible.sort_by { |_key, last_reply_ts| -last_reply_ts.to_f }.map(&:first)
+    # At least one rotating slot always survives the split. A hot band tuned up to
+    # the whole budget would be the old truncation again, under a new name.
+    hot = by_recency.first([ HOT_TRACKED_THREAD_RECHECKS, MAX_TRACKED_THREAD_RECHECKS - 1 ].min)
+    rest = by_recency.drop(hot.size).sort
+    slots = MAX_TRACKED_THREAD_RECHECKS - hot.size
+
+    cursor = condition.thread_recheck_cursors[channel_id]
+    resume_at = (cursor.present? && rest.index { |key| key > cursor }) || 0
+    rotating = rest.rotate(resume_at).first(slots)
+
+    advance_recheck_cursor!(condition, channel_id, rotating.last)
+
+    Rails.logger.info(
+      "[SlackTriggerPollerJob] Condition #{condition.id} tracks #{eligible.size} aged-out threads " \
+      "in #{channel_id}, over the per-poll budget of #{MAX_TRACKED_THREAD_RECHECKS} — re-checking " \
+      "#{hot.size} most-recent + #{rotating.size} rotating (full sweep every " \
+      "#{(rest.size.to_f / slots).ceil} polls)"
+    )
+
+    hot + rotating
+  end
+
+  # Remember where the rotation stopped, so the next poll resumes after it.
+  #
+  # Written BEFORE the threads are actually re-checked, unlike every per-thread
+  # cursor in this job. A failure part-way through the slice therefore costs those
+  # threads their turn — but only their turn: their thread_timestamps entries are
+  # untouched, so the next pass round the ring fetches from the same `oldest:` and
+  # nothing is lost. Deferring the write until after the loop would buy a retry
+  # sooner at the price of threading the value through both call sites.
+  def advance_recheck_cursor!(condition, channel_id, last_key)
+    return if last_key.blank?
+
+    condition.update!(configuration: condition.configuration.merge(
+      "thread_recheck_cursors" => condition.thread_recheck_cursors.merge(channel_id => last_key)
+    ))
   end
 
   # Fetch recent thread parents from a channel to catch old threads with new replies.
