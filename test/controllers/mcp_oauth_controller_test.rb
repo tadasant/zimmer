@@ -331,11 +331,14 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
       "oauth" => { "clientId" => "1601185624273.8899143856786", "clientSecret" => "operator-supplied-secret" }
     })
 
-    initiate_catalog_server(configured_server, token_endpoint: "http://evil.example.com/token")
+    # The endpoint carries userinfo on purpose: the flash renders it, and
+    # HttpsTokenEndpoint.describe is what has to strip the embedded secret.
+    initiate_catalog_server(configured_server, token_endpoint: "http://cid:leaked-in-the-url@evil.example.com/token")
 
     assert_redirected_to session_path(@session)
-    assert_match(/not https/i, flash[:error])
+    assert_match(/must be an https:\/\/ URL/i, flash[:error])
     assert_match(%r{http://evil\.example\.com/token}, flash[:error])
+    assert_no_match(/leaked-in-the-url/, flash[:error].to_s)
     assert_no_match(/operator-supplied-secret/, flash[:error].to_s)
 
     assert_nil McpOauthPendingFlow.for_session(@session).find_by(server_name: "slack-reframe"),
@@ -354,7 +357,18 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     initiate_catalog_server(configured_server, token_endpoint: "http://127.0.0.1:6379/token")
 
     assert_redirected_to session_path(@session)
-    assert_match(/not https/i, flash[:error])
+    assert_match(/must be an https:\/\/ URL/i, flash[:error])
+    assert_nil McpOauthPendingFlow.for_session(@session).find_by(server_name: "slack-reframe")
+
+    # And the other refusal the same guard covers: a discovery document that names
+    # no token endpoint at all. Saying "not https" about a value that does not
+    # exist would send someone hunting for a scheme to fix. (This used to be a
+    # RecordInvalid 500 from McpOauthPendingFlow's presence validation.)
+    initiate_catalog_server(configured_server, token_endpoint: nil)
+
+    assert_redirected_to session_path(@session)
+    assert_match(/advertises no OAuth token endpoint/i, flash[:error])
+    assert_no_match(/unusable URL/, flash[:error].to_s)
     assert_nil McpOauthPendingFlow.for_session(@session).find_by(server_name: "slack-reframe")
   end
 

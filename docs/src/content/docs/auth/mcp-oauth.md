@@ -300,8 +300,13 @@ Where it is enforced:
   and `McpOauthCredentialInjector` never call `refresh!` on one. This is the anti-brick guarantee:
   `refresh!` POSTs *before* it saves, so a row that reached it would leak the secret, let the provider
   rotate the single-use refresh token, and only then fail validation on the way to persisting it.
-- **`McpOauthService#post_form`** — raises `InsecureTokenEndpoint` rather than opening a cleartext
+- **`McpOauthService#post_form`** — raises `InsecureEndpoint` rather than opening a cleartext
   connection, covering any caller holding a bare URI.
+- **`McpOauthService#post_json`** — the same rule on the *registration* endpoint. Dynamic Client
+  Registration is the same hole one request earlier: the endpoint comes from the same discovery
+  document, and the DCR *response* carries a freshly minted `client_id` and `client_secret`. It runs
+  inside `check_oauth_requirement`, i.e. before `initiate`'s check, so the guard has to be in the
+  transport. A refusal degrades to the existing "Dynamic Client Registration failed" message.
 
 `ClearNonHttpsMcpOauthTokenEndpoints` clears any row that predates the rule. It clears to `NULL`
 rather than to a default, because an MCP token endpoint has no default — re-authorizing the

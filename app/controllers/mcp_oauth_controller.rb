@@ -200,10 +200,20 @@ class McpOauthController < ApplicationController
     # not talk to. The endpoint is rendered scheme://host:port/path — it is
     # untrusted input, and it may carry userinfo (#892).
     unless HttpsTokenEndpoint.secure?(oauth_metadata[:token_endpoint])
-      Rails.logger.warn "[McpOauthController] Refusing OAuth for #{server_name}: non-https token endpoint #{HttpsTokenEndpoint.describe(oauth_metadata[:token_endpoint])}"
-      flash[:error] = "#{server_name} advertises an OAuth token endpoint that is not https " \
-                      "(#{HttpsTokenEndpoint.describe(oauth_metadata[:token_endpoint])}). " \
-                      "Zimmer will not send its client secret over an unencrypted connection."
+      # Two different refusals wear the same guard. A blank endpoint means the
+      # discovery document named none at all — reachable, because McpOauthService
+      # accepts metadata carrying only an authorization_endpoint — and saying
+      # "not https" about a value that does not exist would send someone looking
+      # for a scheme to fix. (That case used to be a RecordInvalid 500 from
+      # McpOauthPendingFlow's presence validation.)
+      described = HttpsTokenEndpoint.describe(oauth_metadata[:token_endpoint])
+      flash[:error] = if oauth_metadata[:token_endpoint].blank?
+        "#{server_name} advertises no OAuth token endpoint, so there is nothing to exchange the authorization code with."
+      else
+        "#{server_name} advertises an OAuth token endpoint Zimmer will not use (#{described}): " \
+        "it must be an https:// URL with a host, because Zimmer's client secret is sent to it."
+      end
+      Rails.logger.warn "[McpOauthController] Refusing OAuth for #{server_name}: unusable token endpoint #{described}"
       redirect_to oauth_return_path(@session)
       return
     end
