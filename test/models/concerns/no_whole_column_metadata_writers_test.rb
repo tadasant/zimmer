@@ -66,8 +66,12 @@ class NoWholeColumnMetadataWritersTest < ActiveSupport::TestCase
     ],
     # Not a session column at all: a TokenUsage row's own `metadata`, rendered.
     "controllers/api/v1/costs_controller.rb" => [ "metadata: record.metadata" ],
-    # Not a session column either: McpOauthService::OAuthRequirement's field.
-    "services/mcp_oauth_service.rb" => [ "OAuthRequirement.new(required: true, metadata: metadata" ]
+    # Not a session column either: McpOauthService::OAuthRequirement's own field,
+    # populated from a local of the same name. Matched on the assignment rather
+    # than on the constructor call, which is split across lines in places — a real
+    # session write in this file would name `session.metadata` or a `*_metadata`
+    # local and still be flagged.
+    "services/mcp_oauth_service.rb" => [ "metadata: metadata" ]
   }.freeze
 
   test "no whole-column session metadata writers remain in app/" do
