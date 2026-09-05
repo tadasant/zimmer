@@ -1671,15 +1671,26 @@ class HealthMonitorService
   # exactly #554. A `running` session is being driven by somebody else, and a
   # second agent process on one session is its own defect (#400).
   #
+  # The third refusal, `:superseded`, is the one an operator can be surprised by:
+  # the session is `failed` and looks like exactly what a retry is for, but
+  # another session was created to replace it and is carrying its work, so the
+  # retry would duplicate work already done (#801). It goes back in
+  # `results[:skipped]` like the others, naming the replacement, so the answer is
+  # in front of whoever pressed the button rather than swallowed.
+  #
   # @param session [Session] the session whose claim was refused; already
   #   reloaded by claim_system_recovery_turn!, so `status` is the row's
-  # @param outcome [Symbol] :archived or :not_resumable
+  # @param outcome [Symbol] :archived, :not_resumable or :superseded
   # @return [String] the reason, for results[:skipped]
   def refuse_retry(session, outcome)
     reason =
-      if outcome == :archived
+      case outcome
+      when :archived
         "Not retrying this session: it is in the trash. An archived session takes no turn, " \
         "so no agent was started."
+      when :superseded
+        "Not retrying this session: #{session.replacement_refusal_clause}. Retrying would " \
+        "re-do work another session has already taken over, so no agent was started."
       else
         "Not retrying this session: it is #{session.status} and cannot be resumed. " \
         "Something else is already driving it, so no second agent was started."

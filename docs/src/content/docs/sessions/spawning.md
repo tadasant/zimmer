@@ -43,15 +43,17 @@ So there is a **selection-time** half too: `Session#claim_system_recovery_turn!`
 row `FOR UPDATE` before deciding — inside the caller's transaction, so the lock is still held when
 the job is enqueued and no archive can land in between. It answers `:archived` (terminal),
 `:not_resumable` (the session is already `running`; somebody else is driving it, and a second agent
-process is its own defect) or `:claimed`, and the enqueuer starts a turn only on `:claimed`. Both
-refusals are decided *before* the caller's block runs, so a refused claim writes nothing at all —
-which is what lets a caller skip the enqueue without needing a rollback to be correct. The refusal
-is recorded on the session's own timeline, where "why did nothing happen to this session" is asked
-from.
+process is its own defect), `:superseded` (another session took this session's work over — below)
+or `:claimed`, and the enqueuer starts a turn only on `:claimed`. Every refusal is decided *before*
+the caller's block runs, so a refused claim writes nothing at all — which is what lets a caller skip
+the enqueue without needing a rollback to be correct. The refusal is recorded on the session's own
+timeline, where "why did nothing happen to this session" is asked from.
 
-A refused claim leaves `paused_by` in place on purpose. It is the marker both sweeps select on, and
-an archived session is already invisible to them — so there is no loop to bound, and dropping it
-would sabotage the recovery still owed to the session if a human restores it from the trash.
+An `:archived` or `:not_resumable` claim leaves `paused_by` in place on purpose. It is the marker
+both sweeps select on, and an archived session is already invisible to them — so there is no loop to
+bound, and dropping it would sabotage the recovery still owed to the session if a human restores it
+from the trash. `:superseded` is the exception, and [Refusing to resume a session whose work
+moved](#refusing-to-resume-a-session-whose-work-moved) says why.
 
 Every enqueuer in this family routes through it: `SessionContinuation#continue_recovered_session`
 (both sweeps and `RecoveryContinuationJob`), `SessionRecoveryService#auto_restart_session`,
@@ -69,6 +71,91 @@ The failed-session retry adds one thing the others do not need: it says why. A r
 back in the `skipped` list of `POST /health/retry_sessions`, `POST /api/v1/health/retry_sessions`
 and the `action_health` MCP tool, next to the reason, and in the health dashboard's flash — because
 an operator who clicked Retry on one session cannot tell a silent no-op from a bug.
+
+### Refusing to resume a session whose work moved
+
+A session that could not do its work is sometimes **replaced**: whoever dispatched it spawns a
+second session with the same task, and records the handoff on the replacement, in its own
+`custom_metadata["replaces_session"]` (with a free-text `replaces_reason` beside it). That is a
+convention the fleet's routers already follow — Zimmer never wrote those keys, and until
+[#801](https://github.com/tadasant/zimmer/issues/801) it never read them either.
+
+What that cost: session 11924 failed before its first turn on an infrastructure error, 11931 was
+created to replace it and merged the PR that closed the tracking issue at 03:58, and at 15:02 —
+eleven hours later, with 11931 long archived — the orphan sweep resumed 11924. It re-implemented the
+same seven files and opened a duplicate PR against a base that predated the merge, and caught it
+only because its `open-pr` flow happened to call `get_session` and notice the sibling. It happened
+again the same day to 11925/11933. The session was resumable by every check that existed: not
+archived, not stale, not a fork. The missing fact was that its work had moved.
+
+`claim_system_recovery_turn!` now asks. The relation is **derived, not stored**: `Session.replacing_session`
+queries `custom_metadata->>'replaces_session'` on the replacement side, served by
+`index_sessions_on_replaces_session`, exactly as `lineage_parent_id` derives the pre-`parent_session_id`
+spawn edge rather than backfilling it. The replacement is the row that records the fact about
+itself, so a derived reading cannot drift from what it recorded — where a column would need a
+normalizer on every surface that can write `custom_metadata` (including `merge_custom_metadata!`,
+which is a raw UPDATE that runs no callbacks), and every gap in that dual-write would be a session
+the guard silently fails to see.
+
+The refusal is deliberately narrow, because the symmetric failure is the quiet one: a guard that
+matches too broadly strands genuinely orphaned sessions with nobody the wiser. Three things bound
+it.
+
+- **It needs an explicit marker.** Only a session another session *names* is refused, which is a
+  handful of rows in the table. A session with no replacement resumes exactly as it did before.
+- **A `failed` replacement does not count.** That is the case where the original may still be the
+  best hope. The reading is also not transitive: one hop is what the convention records, and
+  guessing further is how a narrow refusal becomes a broad one.
+- **A human can always resume it by hand.** A follow-up, a restart and a queued message all reach
+  the session by routes that never come through this claim — `continue_recovered_session` prefers a
+  queued user message *before* it asks for one. One human-facing route *does* come through it:
+  `HealthMonitorService#retry_failed_sessions`, which is what `/health`'s Retry button and
+  `action_health` drive, so an operator retrying a superseded session by id is refused. That
+  refusal is reported in `skipped` on every surface that flow already answers on, rather than being
+  a silent no-op.
+
+And it is observable rather than silent: every caller writes the refusal to the session's own
+timeline naming the replacement.
+
+Unlike the other two refusals, this one **repeats**, and `paused_by` deliberately stays on the
+session. Two reasons, both load-bearing. The reading can still change — a replacement that is
+`running` or `waiting` today can fail tomorrow, and once it has, the session it replaced is
+resumable again — so the refusal is re-decided on every pass rather than settled once. And
+`paused_by` is a dormant marker in both `StrandedSleepRescue::DORMANT_MARKERS` and
+`StalledSessionStart::DORMANT_MARKERS`, so dropping it would hand the session to two sweeps that
+never ask this question at all.
+
+What *is* bounded is the noise. `recovery_refused_superseded_by` names the replacement the refusal
+was about, and the timeline line and the deferred `needs_input` announcement are written once per
+replacement rather than every five minutes — the 500-identical-log-lines pathology
+`MAX_CONTINUE_ATTEMPTS` exists to bound, arriving from a new direction. The key is in
+`Session::STALE_RETRY_METADATA_KEYS`, so a session that does get resumed starts saying it again.
+
+Two sweeps outside the claim family needed their own answer, both because they read sessions the
+claim never sees.
+
+- **`StrandedSleepRescue`** can reach a superseded session asleep in `waiting` with no dormant
+  marker. Its generic "could not claim" branch spends no budget and writes nothing, and its
+  candidates are ordered by `updated_at` — so such a session would sit at the head of that ordering
+  forever, consuming one of five action slots on every pass. It stamps `stranded_sleep_abandoned`
+  instead, which takes the session out of its own candidate relation, and says so on the timeline.
+  No alert: this is Zimmer working as intended, not a defect to investigate.
+- **`Sessions::ReturnToQueue`** gains an eighth condition. It moves a session that never ran back to
+  `waiting`, where `StalledSessionStart` starts it — so returning a superseded one would run the
+  replacement's task a second time. That is #801 arriving through the dispatch door rather than the
+  resume one, and it is the same population: 11924 failed before its first turn, so it had no
+  runtime session id, which is that service's second condition.
+
+Nothing here archives anything. A refused session is left exactly where it is.
+
+The other half of #801 is the **back-reference**. `replaces_session` was written on the replacement
+only, so 11924 carried nothing pointing at 11931 — not for the sweep, not for a human on its page,
+not for the agent resumed inside it. Zimmer now stamps the replaced session with
+`replaced_by_session`, `replaced_by_reason` and `replaced_at` the moment a replacement declares
+itself, and writes one line on its timeline. That stamp is a *notice*, not the deciding fact: the
+guard queries the replacement side directly, so a stamp that never landed costs visibility and
+nothing else. The post-deploy task `20260905181500_stamp_replaced_session_back_references` applies
+the same notice to handoffs recorded before this shipped.
 
 Neither half covers the window that opens *after* the turn is claimed, so there is a third check
 at **spawn time**. The delivery-time guard reads the row at the top of the job, and the claim's

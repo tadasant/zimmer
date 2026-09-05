@@ -682,6 +682,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_180000) do
     t.string "visibility", default: "visible", null: false
     t.index "((config ->> 'model'::text))", name: "index_sessions_on_config_model"
     t.index "((custom_metadata ->> 'github_pull_request_urls'::text))", name: "index_sessions_on_custom_metadata_pr_urls", where: "((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL)"
+    t.index "((custom_metadata ->> 'replaces_session'::text))", name: "index_sessions_on_replaces_session", where: "((custom_metadata ->> 'replaces_session'::text) IS NOT NULL)"
     t.index "((custom_metadata ->> 'router_session_id'::text))", name: "index_sessions_on_router_session_id"
     t.index "((metadata ->> 'agent_root_key'::text))", name: "index_sessions_on_agent_root_key"
     t.index "((metadata ->> 'trigger_id'::text))", name: "index_sessions_on_trigger_id", where: "((metadata ->> 'trigger_id'::text) IS NOT NULL)"

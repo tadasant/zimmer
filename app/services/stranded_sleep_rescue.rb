@@ -408,6 +408,8 @@ class StrandedSleepRescue
       unless outcome == :claimed
         logger.info("Could not claim a turn on a stranded session",
           session_id: session.id, outcome: outcome)
+        return abandon_superseded!(session, logger) if outcome == :superseded
+
         return :refused
       end
 
@@ -499,6 +501,37 @@ class StrandedSleepRescue
     # ABANDONED is in Session::STALE_RETRY_METADATA_KEYS, so any ordinary resume
     # or restart — including a human pressing the button this alert asks for —
     # clears it and puts the session back under the sweep's care.
+    # A session whose work moved to a replacement, found asleep with no wake left.
+    #
+    # `:refused` would be wrong here in a way that compounds. A refused claim
+    # spends no budget and writes nothing, so `updated_at` never moves — and
+    # #find_stranded orders by `(:updated_at, :id)`. The session would sit at the
+    # head of that ordering forever, consuming one of MAX_ACTIONS_PER_SWEEP slots
+    # on every pass, and five of them would blind the sweep completely while it
+    # went on logging that it had found work to do. Stamping ABANDONED takes it
+    # out of #candidates instead, permanently and visibly.
+    #
+    # No alert, unlike #give_up!. That one pages because a session whose wake-ups
+    # keep evaporating is a defect nobody has explained; this is Zimmer working
+    # as intended — the work is elsewhere, and there is nothing to investigate.
+    # ABANDONED is in Session::STALE_RETRY_METADATA_KEYS, so a session somebody
+    # later resumes by hand rejoins the sweep.
+    def abandon_superseded!(session, logger)
+      session.merge_metadata!(ABANDONED => Time.current.iso8601)
+      session.logs.create!(
+        level: "info",
+        content: "This session was asleep in `waiting` with no wake-up that could still fire, but " \
+                 "#{session.replacement_refusal_clause}. Zimmer did not resume it — that would re-do " \
+                 "work another session has already taken over. Send it a follow-up if that is wrong."
+      )
+      logger.info("Left a superseded session asleep rather than resuming it", session_id: session.id)
+      :abandoned
+    rescue StandardError => e
+      logger.warn("Could not abandon a superseded stranded session",
+        session_id: session.id, error: "#{e.class}: #{e.message}")
+      :refused
+    end
+
     def give_up!(session, logger, count)
       session.merge_metadata!(ABANDONED => Time.current.iso8601)
 
