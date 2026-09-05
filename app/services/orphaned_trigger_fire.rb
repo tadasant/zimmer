@@ -115,12 +115,9 @@ class OrphanedTriggerFire
   # dropped subject.
   CONTEXT_BLOCK_URL_PATTERN = /^- \*\*URL:\*\*\s*(#{SUBJECT_URL_PATTERN})/
 
-  # Upper bound on the rendered failure reason. `exit_status` is built from an
-  # arbitrary-length runtime error string (`AgentSessionJob` caps it at 20_000
-  # chars), and `AlertService` clamps the whole details block at 2_800 — so an
-  # unbounded reason would push the "View session" and "View trigger" links off
-  # the end of the very message whose job is to get somebody to them.
-  FAILURE_PHRASE_MAX_CHARS = 500
+  # Raw runtime text carried by a failure, in the order a reader wants it. It
+  # travels as `error:`, never in `details:` — see #raise_alert.
+  RUNTIME_FAILURE_KEYS = %w[exit_status exception_message].freeze
 
   class << self
     # Whether this session's failure leaves a trigger's work item dropped.
@@ -202,12 +199,32 @@ class OrphanedTriggerFire
       )
     end
 
+    # The raw runtime text goes through `error:`, not into `details:`, and that
+    # split is security-relevant rather than cosmetic.
+    #
+    # `AlertService` runs `error:` through `AlertSnippet`, which owns redaction
+    # (14 secret shapes), clamping, UTF-8 coercion and fencing; `details:` is
+    # passed to Slack untouched. `exit_status` and `exception_message` are
+    # arbitrary runtime output — `AgentSessionJob` documents `AirPrepareError` as
+    # embedding `air prepare`'s full stderr, and `air prepare` is the step that
+    # resolves `.mcp.json`'s `${VAR}` credential substitutions, so that text can
+    # plausibly carry a secret VALUE and not only a variable name. This is the
+    # first path by which either field leaves the box, and a secret posted to
+    # `#eng-alerts` cannot be un-posted.
+    #
+    # `UnclassifiedFailureReporter` makes the same call for the same reason, and
+    # `AlertService`'s own class comment states the convention: `details:` is for
+    # the prose a human needs on top of the snippet, not for a hand-copied
+    # `e.message`. What stays in `details:` is `Session#failure_summary`, a
+    # closed `case` over enumerated `failure_reason` values that never
+    # interpolates runtime output.
     def raise_alert(session, trigger)
       AlertService.raise_alert(
         "Trigger session failed with its work undone",
         details: alert_details(session, trigger),
         source: "OrphanedTriggerFire",
-        dedup_key: "orphaned_trigger_fire_session_#{session.id}"
+        dedup_key: "orphaned_trigger_fire_session_#{session.id}",
+        error: runtime_failure_text(session)
       )
     end
 
@@ -248,22 +265,28 @@ class OrphanedTriggerFire
       text[CONTEXT_BLOCK_URL_PATTERN, 1] || text[SUBJECT_URL_PATTERN]
     end
 
-    # The classified summary AND the raw runtime text, because they say different
-    # things: `failure_summary` renders `process_failed` as "Process failed",
-    # while the sentence a reader needs — "Runtime session id … is already in
-    # use" — is only in `exit_status`. `exception_message` is the third because a
-    # session that died on an exception records no `exit_status` at all, and the
-    # summary alone renders as the useless bare word "Exception"
-    # (SessionStatusSummaryHarvestJob#failure_reason reads the same three).
+    # The classified half, and only the classified half. `failure_summary` is a
+    # closed `case` over enumerated `failure_reason` values, so it is safe to
+    # render unredacted; the raw half rides on `error:` instead.
+    #
+    # It is not enough on its own, which is exactly why both are sent: it renders
+    # `process_failed` as "Process failed", while the sentence that identifies
+    # the 7844 failure — "Runtime session id … is already in use" — lives only in
+    # `exit_status`. The alert carries both, in the two places that treat them
+    # correctly.
     def failure_phrase(session)
-      parts = [
-        session.failure_summary.presence || session.metadata&.dig("failure_reason").presence,
-        session.metadata&.dig("exit_status").presence,
-        session.metadata&.dig("exception_message").presence
-      ].compact.uniq
-      return "no failure reason was recorded" if parts.empty?
+      session.failure_summary.presence ||
+        session.metadata&.dig("failure_reason").presence ||
+        "no failure reason was recorded"
+    end
 
-      parts.join(" — ").truncate(FAILURE_PHRASE_MAX_CHARS)
+    # The runtime's own words about the death, for `error:`. `exception_message`
+    # is read alongside `exit_status` because a session that died on an exception
+    # records no `exit_status` at all — the pair
+    # `SessionStatusSummaryHarvestJob#failure_reason` reads for the same reason.
+    def runtime_failure_text(session)
+      metadata = session.metadata || {}
+      RUNTIME_FAILURE_KEYS.filter_map { |key| metadata[key].presence }.uniq.join("\n\n").presence
     end
   end
 end
