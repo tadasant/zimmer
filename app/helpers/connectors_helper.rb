@@ -143,4 +143,21 @@ module ConnectorsHelper
   rescue ParameterStore::StoreError, ParameterStore::AuthError
     nil
   end
+
+  # The names the store holds and Zimmer refuses to serve — the one thing about
+  # a store-backed `${VAR}` that a red `Unresolved` badge cannot say on its own,
+  # because "held, in an encoding we do not implement" and "never seeded" look
+  # identical from the row.
+  #
+  # Swallows a store failure for the same reason {#connector_legacy_store_variables}
+  # does: this is a note on a banner, and the capability lines below it already
+  # say, better, that the store could not be read.
+  #
+  # @param store [SecretProviders::ParameterStoreProvider]
+  # @return [Array<String>, nil] nil when the store could not be consulted.
+  def connector_undecodable_store_variables(store)
+    store.undecodable_variables
+  rescue ParameterStore::StoreError, ParameterStore::AuthError
+    nil
+  end
 end

@@ -254,6 +254,62 @@ class SecretProvidersTest < ActiveSupport::TestCase
     assert_equal %w[BOTH STAYING], @fake.provider.legacy_variables
   end
 
+  # The whole chain, end to end, over a store seeded the way strad's Secrets
+  # Console seeds it — the recommended way to put a value in this store. The
+  # credential a session would be handed is the assertion.
+  test "a console-seeded secret reaches the chain as the credential, not as base64url" do
+    @fake.seed_console_secret("STRAD_API_KEY", "sk-live-??>>")
+    credentials("STRAD_API_KEY" => "from-the-credentials-file")
+
+    assert_equal "sk-live-??>>", chain_with_store.get("STRAD_API_KEY")
+  end
+
+  test "a name the store refuses to serve falls through rather than poisoning the chain" do
+    # A miss is not an error in this chain, and a refusal is a miss: the
+    # encrypted-credentials copy — the thing that is actually load-bearing today
+    # — still answers.
+    @fake.seed_secret("STRAD_API_KEY", "whatever", encoding: "rot13")
+    credentials("STRAD_API_KEY" => "from-the-credentials-file")
+
+    assert_equal "from-the-credentials-file", chain_with_store.get("STRAD_API_KEY")
+  end
+
+  test "undecodable_variables tells a held-back name apart from one never seeded" do
+    @fake.seed_console_secret("SERVED", "sk-live-value")
+    @fake.seed_secret("HELD_BACK", "whatever", encoding: "rot13")
+    provider = @fake.provider
+
+    assert_equal "sk-live-value", provider.get("SERVED")
+    assert_nil provider.get("HELD_BACK")
+    assert_equal [ "HELD_BACK" ], provider.undecodable_variables
+  end
+
+  test "undecodable_variables is empty when every envelope is honoured" do
+    @fake.seed_console_secret("SERVED", "sk-live-value")
+
+    assert_empty @fake.provider.undecodable_variables
+  end
+
+  # The ordinary mid-migration state: a stale pre-rename copy behind a good
+  # canonical one. Naming it would send an operator after a value that works.
+  test "a name refused at one path but served from another is not reported as held back" do
+    @fake.seed_secret("BOTH", "whatever", encoding: "rot13", path: legacy_path("BOTH"))
+    @fake.seed_console_secret("BOTH", "sk-live-value")
+    provider = @fake.provider
+
+    assert_equal "sk-live-value", provider.get("BOTH")
+    assert_empty provider.undecodable_variables
+  end
+
+  # And the converse: a refused parameter is still a parameter sitting at the old
+  # path, so "nothing remains in the pre-rename namespace" must not read empty
+  # while it is there — that sentence is the precondition for dropping the read.
+  test "legacy_variables counts a name the pre-rename path holds but the resolver refuses" do
+    @fake.seed_secret("STUCK", "whatever", encoding: "rot13", path: legacy_path("STUCK"))
+
+    assert_equal [ "STUCK" ], @fake.provider.legacy_variables
+  end
+
   test "an empty pre-rename namespace is what says the migration is finished" do
     @fake.seed_secret("MOVED", "1")
 

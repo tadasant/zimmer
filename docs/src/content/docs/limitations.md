@@ -3978,8 +3978,36 @@ therefore round-trips cleanly through the fake, for every possible value. The fa
 Google. Zimmer inherited both the envelope and the blind spot from strad, where the same defect
 surfaced as a real production failure on an 802-byte JSON array containing 88 double-quotes.
 
-This is not fixed here: it is a credential-path change, and it deserves its own diff and its own
-review.
+**The READ half of this is now closed; the WRITE half is not.** strad's Secrets Console solved it
+by storing a secret's bytes base64url — alphabet `[A-Za-z0-9_-]`, nothing a detector can have an
+opinion about — and declaring `"encoding":"base64url"` in the envelope. `GcpClient` honours that
+field ([#999](https://github.com/tadasant/zimmer/issues/999)), so a value seeded through the console
+resolves correctly whatever bytes it carries, and the fake now models a console-written parameter
+so the round trip is covered. Three things still are not:
+
+1. **`ParameterStore::WriteClient` writes literal bytes and declares no encoding**, so the Inference
+   page's Pi tab and `SecretsLocation#envelope_json` both still create the parameter this section
+   describes. A value carrying JSON structure written that way still 400s every `:render`, and
+   `ManagedSecret#write` reports the failed verify as *"the store refused the write"* — which is
+   false: the write landed, and nothing rolls it back.
+2. **`NamespaceMigration` refuses rather than mis-copying.** It reads decoded values and can only
+   write literal ones, so a variable whose pre-rename envelope declares an encoding is reported as
+   `:unsupported_encoding` and left in place; re-seed it at the canonical path through the console.
+   The migration therefore cannot finish on its own for console-written values.
+3. **The fake still does not model `:render`'s validation**, so the blind spot above is unchanged
+   for anything that reaches `:render` with structural bytes.
+
+## A store value that is not valid UTF-8 is refused
+
+`GcpClient` decodes a `base64url` envelope and then requires the result to be valid UTF-8, refusing
+it otherwise — the name reads as `Unresolved` and the Connectors banner lists it under *Held but not
+served*.
+
+This is a deliberate narrowing rather than an oversight: a `${VAR}` becomes an environment variable,
+and Zimmer handles those as UTF-8 strings throughout — `ParameterStore::Resolver.from_env` already
+switches the whole store off rather than serve bytes that are not. A genuinely binary credential
+(raw key material, a PKCS#12 blob) therefore cannot be carried by this store, and would need the
+chain to grow a bytes-shaped path first.
 
 ---
 

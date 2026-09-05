@@ -310,6 +310,37 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
     assert_select "[data-store-legacy-namespace]", count: 0
   end
 
+  # A name whose envelope declares an encoding Zimmer does not implement is
+  # refused rather than served, and from the connector row that refusal is
+  # indistinguishable from a name nobody ever seeded. This line is the only place
+  # the two are told apart.
+  test "secret_store names the variables it holds back rather than serving" do
+    fake = FakeParameterStore.new
+    fake.seed_console_secret("SERVED", "sk-live-value")
+    fake.seed_secret("HELD_BACK", "whatever", encoding: "rot13")
+    stub_chain_with(fake)
+
+    get secret_store_connectors_path
+
+    assert_response :success
+    assert_select "[data-store-undecodable=present]" do |elements|
+      copy = elements.first.text
+      assert_match "HELD_BACK", copy
+      assert_no_match(/SERVED/, copy)
+    end
+  end
+
+  test "secret_store says nothing about held-back names when there are none" do
+    fake = FakeParameterStore.new
+    fake.seed_console_secret("SERVED", "sk-live-value")
+    stub_chain_with(fake)
+
+    get secret_store_connectors_path
+
+    assert_response :success
+    assert_select "[data-store-undecodable]", count: 0
+  end
+
   # Issue #233. The resolver reads only through `parameterVersions.render`, so a
   # credential holding `versions.access` without it resolves nothing at all —
   # reporting it as the intended least-privilege shape is the green-banner,
