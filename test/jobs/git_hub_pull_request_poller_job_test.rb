@@ -583,10 +583,16 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
 
   # ---- PollBackoff integration ----
 
+  # The rate-limit relief PollBackoff exists to provide, and the case that must
+  # not regress: a session nobody has touched in over a day, with nothing left to
+  # wait for, is polled once a day and no more. The merged status is load-bearing
+  # — a session still holding an unresolved PR is capped at 30 minutes instead
+  # (#494), which is the case immediately below.
   test "perform skips a stale session when its last_polled_at is within the backoff window" do
     @session_with_pr.update!(
       metadata: (@session_with_pr.metadata || {}).merge("last_user_activity_at" => 2.days.ago.iso8601),
       custom_metadata: (@session_with_pr.custom_metadata || {}).merge(
+        "github_pull_request_statuses" => { "https://github.com/owner/repo/pull/123" => "merged" },
         "poller_last_polled_at" => { "github_pr_poller" => 1.hour.ago.iso8601 }
       )
     )
@@ -598,6 +604,139 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
     GitHubPullRequestPollerJob.any_instance.expects(:poll_pr_statuses).never
 
     GitHubPullRequestPollerJob.perform_now
+  end
+
+  # ---- the #494 defect: a session parked on an open PR slept through its merge ----
+  #
+  # Sessions 4419 and 4422 each held an open PR, carried no `last_user_activity_at`
+  # at all (so the curve counted from `created_at`), and were last polled at 23.7
+  # hours of activity age. Eighteen minutes later they crossed into the >24 hr
+  # bucket, whose floor is 24 hours measured from that last poll — so the next
+  # poll was not due until a full day later. Both PRs merged eight hours inside
+  # that gap and neither session was ever told.
+
+  test "perform polls a >24 hr idle session that is still holding an unresolved PR" do
+    @session_with_pr.update!(
+      metadata: (@session_with_pr.metadata || {}).merge("last_user_activity_at" => 2.days.ago.iso8601),
+      custom_metadata: (@session_with_pr.custom_metadata || {}).merge(
+        "github_pull_request_statuses" => { "https://github.com/owner/repo/pull/123" => "open" },
+        "poller_last_polled_at" => { "github_pr_poller" => 1.hour.ago.iso8601 }
+      )
+    )
+
+    Session.stubs(:with_github_prs).returns(Session.where(id: @session_with_pr.id))
+
+    GitHubPullRequestPollerJob.any_instance.expects(:poll_pr_statuses).once
+    PollBackoff.expects(:record_poll!).with(
+      instance_of(Session),
+      job_key: GitHubPullRequestPollerJob::POLL_BACKOFF_KEY
+    ).once
+
+    GitHubPullRequestPollerJob.perform_now
+  end
+
+  test "perform polls a >24 hr idle session whose PR has no recorded status yet" do
+    @session_with_pr.update!(
+      metadata: (@session_with_pr.metadata || {}).merge("last_user_activity_at" => 2.days.ago.iso8601),
+      custom_metadata: (@session_with_pr.custom_metadata || {}).merge(
+        "poller_last_polled_at" => { "github_pr_poller" => 1.hour.ago.iso8601 }
+      )
+    )
+
+    Session.stubs(:with_github_prs).returns(Session.where(id: @session_with_pr.id))
+
+    GitHubPullRequestPollerJob.any_instance.expects(:poll_pr_statuses).once
+
+    GitHubPullRequestPollerJob.perform_now
+  end
+
+  # The cap is a ceiling, not a target: inside 30 minutes the session still waits,
+  # so an idle session holding an open PR costs at most two polls an hour.
+  test "perform skips a session holding an unresolved PR that was polled inside the cap" do
+    @session_with_pr.update!(
+      metadata: (@session_with_pr.metadata || {}).merge("last_user_activity_at" => 2.days.ago.iso8601),
+      custom_metadata: (@session_with_pr.custom_metadata || {}).merge(
+        "github_pull_request_statuses" => { "https://github.com/owner/repo/pull/123" => "open" },
+        "poller_last_polled_at" => { "github_pr_poller" => 10.minutes.ago.iso8601 }
+      )
+    )
+
+    Session.stubs(:with_github_prs).returns(Session.where(id: @session_with_pr.id))
+
+    PollBackoff.expects(:record_poll!).never
+    GitHubPullRequestPollerJob.any_instance.expects(:poll_pr_statuses).never
+
+    GitHubPullRequestPollerJob.perform_now
+  end
+
+  # The cap has an expiry, and it has one because "unresolved" is a state a
+  # session can never leave: nothing removes an idle session from
+  # `with_github_prs`, and a deleted PR (or one in a repo the token cannot read)
+  # never gets a status recorded at all. Without the bound both pin a session at
+  # two polls an hour forever and the capped population only grows.
+  test "perform stops capping a session idle past AWAITING_PR_OUTCOME_MAX_IDLE" do
+    @session_with_pr.update!(
+      metadata: (@session_with_pr.metadata || {}).merge(
+        "last_user_activity_at" => (GitHubPullRequestPollerJob::AWAITING_PR_OUTCOME_MAX_IDLE + 1.day).ago.iso8601
+      ),
+      custom_metadata: (@session_with_pr.custom_metadata || {}).merge(
+        "github_pull_request_statuses" => { "https://github.com/owner/repo/pull/123" => "open" },
+        "poller_last_polled_at" => { "github_pr_poller" => 1.hour.ago.iso8601 }
+      )
+    )
+
+    Session.stubs(:with_github_prs).returns(Session.where(id: @session_with_pr.id))
+
+    PollBackoff.expects(:record_poll!).never
+    GitHubPullRequestPollerJob.any_instance.expects(:poll_pr_statuses).never
+
+    GitHubPullRequestPollerJob.perform_now
+  end
+
+  test "perform still caps a session holding an unresolved PR just inside the idle bound" do
+    @session_with_pr.update!(
+      metadata: (@session_with_pr.metadata || {}).merge(
+        "last_user_activity_at" => (GitHubPullRequestPollerJob::AWAITING_PR_OUTCOME_MAX_IDLE - 1.hour).ago.iso8601
+      ),
+      custom_metadata: (@session_with_pr.custom_metadata || {}).merge(
+        "github_pull_request_statuses" => { "https://github.com/owner/repo/pull/123" => "open" },
+        "poller_last_polled_at" => { "github_pr_poller" => 1.hour.ago.iso8601 }
+      )
+    )
+
+    Session.stubs(:with_github_prs).returns(Session.where(id: @session_with_pr.id))
+
+    GitHubPullRequestPollerJob.any_instance.expects(:poll_pr_statuses).once
+
+    GitHubPullRequestPollerJob.perform_now
+  end
+
+  # End to end over the defect: the same session state 4419 was in, and the merge
+  # message it never got.
+  test "a >24 hr idle session parked on an open PR is told when that PR merges" do
+    pr_url = "https://github.com/owner/repo/pull/123"
+    @session_with_pr.update!(
+      status: :running,
+      metadata: (@session_with_pr.metadata || {}).merge("last_user_activity_at" => 2.days.ago.iso8601),
+      custom_metadata: (@session_with_pr.custom_metadata || {}).merge(
+        "github_pull_request_statuses" => { pr_url => "open" },
+        "poller_last_polled_at" => { "github_pr_poller" => 1.hour.ago.iso8601 }
+      )
+    )
+
+    Session.stubs(:with_github_prs).returns(Session.where(id: @session_with_pr.id))
+
+    TestJobReturningMerged.perform_now
+
+    @session_with_pr.reload
+    assert_equal "merged", @session_with_pr.custom_metadata["github_pull_request_statuses"][pr_url]
+    assert @session_with_pr.custom_metadata.dig("github_pull_request_merged_notified", pr_url),
+      "the session must be recorded as having been told about the merge"
+
+    messages = @session_with_pr.enqueued_messages.pending.to_a
+    assert_equal 1, messages.size
+    assert_includes messages.first.content, pr_url
+    assert_includes messages.first.content, "has been merged"
   end
 
   test "perform polls and records the poll for a fresh session" do

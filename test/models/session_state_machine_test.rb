@@ -690,6 +690,40 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert session.reload.needs_input?, "a failed side effect must not block the transition"
   end
 
+  # The archive line reports these; GitHubPullRequestPollerJob reads the same
+  # answer to decide a session is waiting on a specific event rather than merely
+  # idle, so the "never polled" and "bad shape" cases matter to both (#494).
+  test "unresolved_pr_urls counts open and never-polled PRs and drops terminal ones" do
+    session = sessions(:waiting)
+    session.update!(custom_metadata: {
+      "github_pull_request_urls" => %w[
+        https://github.com/o/r/pull/1
+        https://github.com/o/r/pull/2
+        https://github.com/o/r/pull/3
+        https://github.com/o/r/pull/4
+      ],
+      "github_pull_request_statuses" => {
+        "https://github.com/o/r/pull/1" => "open",
+        "https://github.com/o/r/pull/3" => "merged",
+        "https://github.com/o/r/pull/4" => "closed"
+      }
+    })
+
+    assert_equal %w[https://github.com/o/r/pull/1 https://github.com/o/r/pull/2],
+      session.unresolved_pr_urls
+  end
+
+  test "unresolved_pr_urls is empty when nothing is tracked or the shape is wrong" do
+    session = sessions(:waiting)
+    assert_empty session.unresolved_pr_urls
+
+    # update_column, not update!: the session card partial assumes this key is an
+    # array, so broadcasting the card on a deliberately-malformed value raises in
+    # the view rather than in the method under test.
+    session.update_column(:custom_metadata, { "github_pull_request_urls" => "not-an-array" })
+    assert_empty session.reload.unresolved_pr_urls
+  end
+
   test "archive names pull requests it is leaving unresolved" do
     session = sessions(:waiting)
     session.update!(

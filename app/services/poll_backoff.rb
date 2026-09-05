@@ -16,6 +16,13 @@
 #   8 hr – 24 hr  -> max(30 min, base)
 #   > 24 hr       -> 24 hr (floor specified by the user request)
 #
+# The curve measures *engagement*, which is the wrong question for a session
+# that is idle because it is waiting on one specific external event. A caller
+# that knows a session is in that state passes `max_interval` to cap how far the
+# curve may stretch it — see GitHubPullRequestPollerJob, where a session holding
+# an unresolved PR is capped at the 8–24 hr bucket's own floor rather than
+# decaying to one poll a day (#494).
+#
 # Per-job last-poll timestamps are stored in
 # `session.custom_metadata['poller_last_polled_at'][job_key]` as ISO8601 strings.
 module PollBackoff
@@ -26,9 +33,11 @@ module PollBackoff
   # @param session [Session]
   # @param job_key [String] stable identifier per poller job
   # @param base_interval [Integer] the job's normal cadence in seconds
+  # @param max_interval [Integer, nil] ceiling in seconds on the backed-off
+  #   interval, for a session the caller knows is awaiting a specific event
   # @return [Boolean] true if the job should poll this session now
-  def should_poll?(session, job_key:, base_interval:)
-    interval = poll_interval(session, base_interval: base_interval)
+  def should_poll?(session, job_key:, base_interval:, max_interval: nil)
+    interval = poll_interval(session, base_interval: base_interval, max_interval: max_interval)
     return true if interval <= 0
 
     last_polled = parse_last_polled_at(session, job_key)
@@ -49,20 +58,29 @@ module PollBackoff
 
   # The minimum interval (seconds) between polls for this session, based on
   # how stale the user's last interaction is.
-  def poll_interval(session, base_interval:)
+  #
+  # `max_interval` caps the result. It never raises the interval — a base
+  # cadence longer than the cap still wins, because the cap is a promise about
+  # the worst case, not a demand to poll faster than the job runs.
+  def poll_interval(session, base_interval:, max_interval: nil)
     activity_age = Time.current - session.last_user_activity_at
 
-    if activity_age < 30.minutes
-      0
-    elsif activity_age < 2.hours
-      base_interval * 2
-    elsif activity_age < 8.hours
-      [ 5.minutes.to_i, base_interval ].max
-    elsif activity_age < 24.hours
-      [ 30.minutes.to_i, base_interval ].max
-    else
-      24.hours.to_i
-    end
+    interval =
+      if activity_age < 30.minutes
+        0
+      elsif activity_age < 2.hours
+        base_interval * 2
+      elsif activity_age < 8.hours
+        [ 5.minutes.to_i, base_interval ].max
+      elsif activity_age < 24.hours
+        [ 30.minutes.to_i, base_interval ].max
+      else
+        24.hours.to_i
+      end
+
+    return interval if max_interval.nil?
+
+    [ interval, [ max_interval, base_interval ].max ].min
   end
 
   def parse_last_polled_at(session, job_key)
