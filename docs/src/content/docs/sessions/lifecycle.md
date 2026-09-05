@@ -1556,6 +1556,15 @@ that is not on `PATH`, and that is a real failure on a clone that is still there
 disk that cannot be read stays `.error` and is held for the full window, because it is then the only
 copy of the session's work.
 
+A `git` that had to be **killed** for exceeding its deadline is held for the same reason, reached
+from the other direction. Every git command in this path runs under a wall-clock watchdog
+(`CloneArtifactService::GIT_TIMEOUT_SECONDS`, 120s) so that a wedged one cannot hold a thread of the
+two-thread `maintenance` lane forever — see
+[the sweeps' section](/operate/background-jobs/#the-scheduled-sweeps-yield-the-maintenance-thread).
+When it fires, the dirty check reports **dirty** rather than clean: clean is what authorizes the
+delete, and a timeout means the question was never answered. The job preserves instead, and a
+preservation that times out too holds the clone for the full window.
+
 If artifact extraction fails outright, the clone is kept — it is then the only copy of that
 session's unpushed work — and the job writes the same `4.days` deadline on the session and a
 `warning` log the session's owner can see. Unarchive inside that window finds the clone on disk and

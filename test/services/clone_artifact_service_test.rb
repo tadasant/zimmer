@@ -823,6 +823,134 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
     artifacts_dir
   end
 
+  # --- Bounded git subprocesses -------------------------------------------
+  #
+  # DeferredCloneCleanupJob runs this service on `maintenance`, a two-thread
+  # lane. Before these, every git command went through a bare Open3.capture3
+  # with no deadline, so a wedged git held one of those two threads forever and
+  # clone reclamation stopped fleet-wide.
+
+  # The end-to-end proof: a git that never returns is actually killed, the call
+  # raises rather than hanging, and the thread comes back. A fake `git` earlier
+  # on PATH stands in for the wedge, because a real one cannot be made to hang
+  # on demand.
+  test "run_git kills a wedged git at the deadline instead of holding the thread forever" do
+    create_test_repo
+    fake_bin = Dir.mktmpdir("fake-git-bin")
+    marker = File.join(fake_bin, "started")
+    File.write(File.join(fake_bin, "git"), <<~SH)
+      #!/bin/sh
+      echo $$ > #{marker}
+      sleep 300
+    SH
+    FileUtils.chmod(0o755, File.join(fake_bin, "git"))
+
+    service = CloneArtifactService.new(git_timeout: 0.5)
+    original_path = ENV["PATH"]
+    began = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    begin
+      ENV["PATH"] = "#{fake_bin}:#{original_path}"
+      assert_raises(CloneArtifactService::GitTimeoutError) do
+        service.send(:run_git, "status", "--porcelain", cwd: @repo_path)
+      end
+    ensure
+      ENV["PATH"] = original_path
+    end
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - began
+
+    assert_operator elapsed, :<, 30,
+      "the call must return at its deadline, not run to the fake git's 300s sleep"
+    assert File.exist?(marker), "the fake git should actually have run"
+
+    # And the child is gone, not merely abandoned: BoundedSubprocess SIGKILLs
+    # the whole process group, which is what actually frees the worker.
+    sleep 0.2
+    child_pid = Integer(File.read(marker).strip)
+    assert_raises(Errno::ESRCH, "the timed-out git must be killed, not orphaned") do
+      Process.kill(0, child_pid)
+    end
+  ensure
+    FileUtils.rm_rf(fake_bin) if fake_bin
+  end
+
+  # The safety property. "Clean" is what authorizes DeferredCloneCleanupJob to
+  # delete the clone, so a timeout must never be reported as clean: that would
+  # turn a hung git into the permanent loss of someone's unpushed work.
+  test "check_dirty_state reports a timed-out clone as dirty rather than clean" do
+    create_test_repo(dirty: true)
+    logger = RecordingLogger.new
+    service = CloneArtifactService.new(logger: logger)
+
+    result = BoundedSubprocess.stub(:run, ->(*, **) { raise BoundedSubprocess::TimeoutError, "command timed out after 120s" }) do
+      service.check_dirty_state(@repo_path)
+    end
+
+    assert result.dirty?,
+      "a clone we could not inspect must not be handed to the deleter as clean"
+    assert_match(/timed out/, result.details)
+    assert_equal :warn, logger.level_for("Dirty-state check timed out")
+    assert_nil logger.level_for("Failed to check dirty state"),
+      "the timeout has its own branch and must not fall through to the generic rescue"
+  end
+
+  # Having just spent the deadline discovering git is wedged on this clone,
+  # spending it a second time buys nothing and costs half the lane again.
+  test "create_artifacts declines without re-running git after a timeout on the same clone" do
+    create_test_repo(dirty: true)
+    logger = RecordingLogger.new
+    service = CloneArtifactService.new(logger: logger)
+
+    BoundedSubprocess.stub(:run, ->(*, **) { raise BoundedSubprocess::TimeoutError, "command timed out after 120s" }) do
+      service.check_dirty_state(@repo_path)
+    end
+
+    attempted = []
+    result = service.stub(:run_git, ->(*args, **kwargs) { attempted << args; [ "", "", nil ] }) do
+      service.create_artifacts(session_id: SESSION_ID, clone_path: @repo_path)
+    end
+
+    assert_not result.success?
+    assert_not result.clone_missing?,
+      "the clone is still on disk, so the caller must hold it rather than treat it as already gone"
+    assert_empty attempted, "no further git command should be attempted on a clone git is wedged on"
+    assert_equal :warn, logger.level_for("Declining artifact creation")
+  end
+
+  # A different clone is a different question, so the short-circuit must not
+  # latch on and starve every later session in the same run.
+  test "a timeout on one clone does not block artifact creation for another" do
+    create_test_repo(dirty: true)
+    timed_out_path = @repo_path
+    service = CloneArtifactService.new(logger: RecordingLogger.new)
+
+    BoundedSubprocess.stub(:run, ->(*, **) { raise BoundedSubprocess::TimeoutError, "command timed out after 120s" }) do
+      service.check_dirty_state(timed_out_path)
+    end
+
+    create_test_repo(dirty: true, unpushed_commits: true)
+    assert_not_equal timed_out_path, @repo_path
+
+    result = service.create_artifacts(session_id: SESSION_ID, clone_path: @repo_path)
+    assert result.success?, "a healthy clone must still be preserved normally"
+  end
+
+  # BoundedSubprocess replaced Open3.capture3(binmode: true) underneath run_git.
+  # The patch is written to disk from this output, so a byte that does not
+  # survive the swap is a corrupted restore.
+  test "run_git still returns binary git output byte-for-byte after the swap" do
+    create_test_repo
+    File.binwrite(File.join(@repo_path, "blob.bin"), (0..255).to_a.pack("C*"))
+    run_cmd_in_repo("git", "add", "-A")
+
+    service = CloneArtifactService.new
+    diff, _stderr, status = service.send(:run_git, "diff", "--binary", "--cached", "HEAD", cwd: @repo_path, binmode: true)
+    expected, _, _ = Open3.capture3("git", "diff", "--binary", "--cached", "HEAD", chdir: @repo_path, binmode: true)
+
+    assert SubprocessStatus.success?(status)
+    assert_equal Encoding::ASCII_8BIT, diff.encoding
+    assert_equal expected, diff, "the binary patch must round-trip byte-for-byte"
+  end
+
   def create_test_repo(dirty: false, unpushed_commits: false, tracked_files: 0)
     @bare_path = "/tmp/test-artifact-bare-#{SecureRandom.hex(4)}"
     @repo_path = "/tmp/test-artifact-repo-#{SecureRandom.hex(4)}"
@@ -859,6 +987,10 @@ class CloneArtifactServiceTest < ActiveSupport::TestCase
         File.write("dirty_file.rb", "# dirty content\n")
       end
     end
+  end
+
+  def run_cmd_in_repo(*args)
+    Dir.chdir(@repo_path) { run_cmd(*args) }
   end
 
   def create_fresh_clone
