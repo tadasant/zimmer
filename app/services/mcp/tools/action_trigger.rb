@@ -382,7 +382,7 @@ module Mcp
           max_sessions_per_minute: max_sessions_per_minute_for(args),
           scheduling_class: args["scheduling_class"].presence,
           precedence: trigger_precedence(args),
-          mcp_servers: args["mcp_servers"] || [],
+          mcp_servers: validated_mcp_servers!(args["mcp_servers"] || []),
           trigger_conditions_attributes: created_condition_attributes(args)
         }.merge(catalog_list_attributes(args))
 
@@ -458,7 +458,7 @@ module Mcp
         attributes[:precedence] = trigger_precedence(args) if args.key?("precedence")
         # Only assign artifact lists the caller actually sent: an omitted key means
         # "no opinion", never "clear the trigger's servers".
-        attributes[:mcp_servers] = args["mcp_servers"] if args["mcp_servers"].is_a?(Array)
+        attributes[:mcp_servers] = validated_mcp_servers!(args["mcp_servers"]) if args["mcp_servers"].is_a?(Array)
         attributes.merge!(catalog_list_attributes(args))
 
         reject_conflicting_condition_args!(args)
@@ -584,6 +584,23 @@ module Mcp
 
       def boolean(value)
         ActiveModel::Type::Boolean.new.cast(value)
+      end
+
+      # `mcp_servers` is not one of Mcp::Tool::CATALOG_LISTS — this tool has always
+      # assigned it directly — but a Trigger validates it at save now (zimmer#506),
+      # so an unknown name is a hard failure rather than something the fire-time
+      # heal quietly absorbs. Reject it here for the same reason the catalog lists
+      # are rejected here: an error naming the servers that DO exist is worth more
+      # to the caller than the model's bare "contains invalid server(s)".
+      def validated_mcp_servers!(servers)
+        raise ToolError, "The \"mcp_servers\" parameter must be an array." unless servers.is_a?(Array)
+
+        names = servers.reject(&:blank?).map { |name| name.to_s.strip.first(MAX_CATALOG_ITEM_ID_LENGTH) }
+        invalid = names.reject { |name| ServersConfig.exists?(name) }
+        return names if invalid.empty?
+
+        raise ToolError, "Invalid MCP server(s): #{invalid.join(', ')}. " \
+                         "Valid MCP servers: #{ServersConfig.all.map(&:name).sort.join(', ')}"
       end
 
       # The three AIR-catalog lists, validated exactly the way action_session's

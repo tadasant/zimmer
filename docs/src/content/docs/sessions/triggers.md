@@ -1111,6 +1111,50 @@ new attempt starts once a search has been running that long. Against a healthy A
 return in well under a second — neither bound is ever reached.
 :::
 
+## Stale catalog references
+
+A trigger is a template, and it outlives the catalog it names. Between one fire and the next a skill
+can be renamed, a plugin retired, an MCP server dropped — and the trigger goes on carrying the old
+name. So each of the four catalog-artifact columns is checked twice, and the two checks answer
+different questions:
+
+| Artifact | Column | Validated at save? | Healed at fire? |
+| --- | --- | --- | --- |
+| MCP servers | `mcp_servers` | ✅ | ✅ |
+| Skills | `catalog_skills` | ✅ | ✅ |
+| Hooks | `catalog_hooks` | ✅ | ✅ |
+| Plugins | `catalog_plugins` | ✅ | ✅ |
+| Agent root | `agent_root_name` | presence only | ✅ — [and differently](#the-agent-root-is-resolved-only-where-it-is-used) |
+
+**Validated at save** rejects a name the catalog does not know *now*, on the form, the REST payload
+and the `action_trigger` MCP tool alike. The check is scoped to the column that changed, so a row
+persisted before a name went stale still saves when the edit is to some other column — otherwise the
+catalog moving would lock an operator out of editing anything else about the trigger.
+
+**Healed at fire** is what cleans those up. `Trigger#heal_catalog_references!` runs at the top of
+`#create_session!`, on the reuse path as well as the spawn path — `#follow_up_session!` syncs all
+four columns onto the reused session, so a stale name is load-bearing either way. It drops the names
+the catalog no longer knows, `update_column`s the survivors so the next fire does not re-discover
+them, and raises one deduped alert per artifact kind naming what it removed and what remains.
+
+Healing **skips entirely when a catalog resolves empty**. A catalog that fails to load leaves the
+config facade an empty list ([#112](https://github.com/tadasant/zimmer/issues/112)), and against an
+empty catalog every reference looks stale — healing on that reading would strip all four columns on
+every trigger in the deployment. An empty catalog is never evidence that a reference is gone.
+
+That guard is narrower than it reads, and this is the limit of what it buys. A *degraded* resolve
+usually leaves the facade non-empty: `AirCatalogService` serves a last-known-good tree, which can
+predate a rename, so a name that is perfectly valid today can still look stale to a fire. The
+session-side scrub in `AirPrepareService#scrubbed_catalog_skills` refuses to persist a drop while
+`AirCatalogService.degraded?` for exactly that reason; the trigger heal has never made that second
+check, and a heal that drops a renamed reference does not repoint it —
+[#853](https://github.com/tadasant/zimmer/issues/853) covers both.
+
+The four columns are declared once each, on both `Trigger` and `Session`, by the
+`CatalogArtifactReferences` concern; the validators and the heal are generated from those
+declarations rather than written out per column. `agent_root_name` is deliberately not one of them —
+it is a single name rather than a list, and its heal looks up a successor root and can raise.
+
 ## Reusing a session
 
 `reuse_session` makes a trigger follow up into the session it last created instead of spawning a new
