@@ -1214,21 +1214,24 @@ class Api::V1::SessionsController < Api::BaseController
   # wake-up of its own, and still is.
   #
   # The caller-facing half of #898, and the twin of
-  # Mcp::Tools::ActionSession#pending_wake_lines. A follow-up no longer consumes
-  # the target's pending wake; saying so here is what stops the sender from
-  # assuming it has taken on responsibility for waking a session that will wake
-  # itself.
+  # Mcp::Tools::ActionSession#pending_wake_lines. A follow-up leaves the target's
+  # pending wake armed; saying so here is what stops the sender from assuming it
+  # has taken on responsibility for waking a session that will wake itself.
   #
   # Absent rather than null when there is no wake, so a client can test for the
   # key.
   #
+  # `armed_one_time_wake?` rather than `awaiting_scheduled_wake?`, because the two
+  # rescue in opposite directions and only one of them is safe to REPORT: an
+  # unreadable trigger table makes the looser predicate answer "asleep on purpose",
+  # which here would promise a wake that may not exist and talk the sender out of
+  # scheduling its own.
+  #
   # @return [Hash] `{}` or `{ pending_wake: { at:, preserved: true } }`
   def preserved_wake_json(session)
-    return {} unless session.awaiting_scheduled_wake?
+    return {} unless session.armed_one_time_wake?
 
     { pending_wake: { at: session.pending_wake_at&.utc&.iso8601, preserved: true } }
-  rescue ActiveRecord::ActiveRecordError
-    {}
   end
 
   # Refuse a restart while the session is paused until a time it has not reached.
@@ -1243,8 +1246,8 @@ class Api::V1::SessionsController < Api::BaseController
   # It sits ahead of `resume!`, which is the only place it can: on the takeover
   # branch `resume`'s cancel_pending_one_time_wake_triggers callback consumes the
   # pause, so anything further down would arrive after it was gone. `follow_up`
-  # needs no such guard — since #898 it takes the preserving branch and the pause
-  # survives the turn it delivers.
+  # needs no such guard — it takes the preserving branch, and the pause survives
+  # the turn it delivers.
   #
   # @return [Boolean] true when a response has been rendered and the caller must stop
   def refuse_restart_of_paused_session

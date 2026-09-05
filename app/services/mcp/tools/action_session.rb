@@ -329,8 +329,8 @@ module Mcp
           end
           # Not `resume!`: a follow-up adds to whatever this session was waiting
           # on, so its own pending wake-ups survive it (#898). This is the path
-          # the filed strand came down — a router redirecting a session that was
-          # asleep on its own `wake_me_up_later`.
+          # the filed strand came down — a router redirecting a session asleep on
+          # its own `wake_me_up_later`.
           session.resume_for_follow_up!
           # Before the enqueue, and in the same transaction: the job this line
           # creates builds the next prompt, and it must see the edge. Rolling
@@ -532,29 +532,6 @@ module Mcp
         summary("Session Restarted", session.reload, status_label: "New Status", message: "Session restarted from scratch")
       end
 
-      # A pause outranks every reason an agent has to start this session.
-      #
-      # `restart` is the start path in the awaken-waiting-sessions skill, which is
-      # how the fleet-maintenance session hands out compute after a quota recovery.
-      # It works the ranked queue in precedence order, and precedence says nothing
-      # about whether a session asked to be left alone — so without this, the wake
-      # starts a paused session the moment its rank comes up.
-      #
-      # Refusing rather than silently no-opping, and refusing HERE rather than
-      # further down: `restart` resumes the session before it enqueues anything,
-      # and `resume`'s cancel_pending_one_time_wake_triggers callback consumes the
-      # pause on the way past. By the time a job could decline, the pause is gone.
-      # The error names the next move, because the caller is an agent working a
-      # queue and "skip it and take the next one" is exactly what it should do.
-      #
-      # Deliberately not applied to the web UI's Restart button: a person driving
-      # one session is taking it over, and consuming the now-moot wake is the
-      # documented behaviour. This is about a selector working a list.
-      #
-      # Nor to `follow_up`, but for the opposite reason since #898: a follow-up
-      # no longer consumes the pause at all, so there is nothing there to refuse.
-      # It adds a turn to the session's wait and the wake fires afterwards. See
-      # SessionStateMachine#preserve_pending_wakes_across_follow_up.
       # "Start it now": take a waiting session's next turn immediately instead of
       # when the scheduler gets round to it — the tool half of the Ranked view's
       # ⋮ menu entry. This is what a fleet-maintenance agent working the queue
@@ -574,6 +551,30 @@ module Mcp
         summary("Session Starting Now", session.reload, message: result.message)
       end
 
+      # A pause outranks every reason an agent has to start this session.
+      #
+      # `restart` is the start path in the awaken-waiting-sessions skill, which is
+      # how the fleet-maintenance session hands out compute after a quota recovery.
+      # It works the ranked queue in precedence order, and precedence says nothing
+      # about whether a session asked to be left alone — so without this, the wake
+      # starts a paused session the moment its rank comes up.
+      #
+      # Refusing rather than silently no-opping, and refusing HERE rather than
+      # further down: `restart` is a takeover, so it resumes the session before it
+      # enqueues anything and `resume`'s cancel_pending_one_time_wake_triggers
+      # callback consumes the pause on the way past. By the time a job could
+      # decline, the pause is gone. The error names the next move, because the
+      # caller is an agent working a queue and "skip it and take the next one" is
+      # exactly what it should do.
+      #
+      # Deliberately not applied to the web UI's Restart button: a person driving
+      # one session is taking it over, and consuming the now-moot wake is the
+      # documented behaviour. This is about a selector working a list.
+      #
+      # Nor to `follow_up`, for the opposite reason: a follow-up preserves the
+      # pause rather than consuming it, so there is nothing there to refuse. It
+      # adds a turn to the session's wait and the wake fires afterwards. See
+      # SessionStateMachine#preserve_pending_wakes_across_follow_up.
       def refuse_if_paused!(session)
         return unless session.paused_until_scheduled_time?
 
@@ -1390,15 +1391,13 @@ module Mcp
       # legible to the sender, so a router does not go on to schedule a duplicate
       # wake of its own.
       def pending_wake_lines(session)
-        return [] unless session.awaiting_scheduled_wake?
+        return [] unless session.armed_one_time_wake?
 
         at = session.pending_wake_at
         when_phrase = at ? "for #{at.utc.iso8601}" : "for whenever the session it is watching transitions"
-        [ "- **Its own wake-up:** still armed #{when_phrase}. This follow-up did not cancel it, " \
-          "so the session resumes again then on its own." ]
-      rescue ActiveRecord::ActiveRecordError
-        # A line about a wake is not worth failing a delivered follow-up over.
-        []
+        [ "- **Its own wake-up:** still armed #{when_phrase}. This follow-up did not cancel it — " \
+          "the wake resumes the session on its own schedule, or is queued onto the turn if its " \
+          "moment lands mid-turn." ]
       end
 
       def summary(heading, session, status_label: "Status", message: nil)

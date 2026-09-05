@@ -156,13 +156,15 @@ class EnqueuedMessage < ApplicationRecord
   # tadasant/zimmer#835: the notice arrived roughly six minutes after the poll
   # that wrote it and five after the conflicts were gone.
   #
-  # Why it matters more than the wasted turn: a resume consumes a session's
-  # one-time wake triggers. The `open-pr` skill's terminal step has a session
-  # schedule a bounded self-wake and end its turn in `waiting` so it sleeps on
-  # its PR rather than sitting in the human's action queue. A stale notice
-  # destroys that wake, and a session that takes the notice at face value —
-  # finds nothing to resolve, ends its turn — is then left with no pending
-  # trigger and no running turn: invisible until a human types into it.
+  # Why it matters more than the wasted turn: the `open-pr` skill's terminal step
+  # has a session schedule a bounded self-wake and end its turn in `waiting` so it
+  # sleeps on its PR rather than sitting in the human's action queue. A stale
+  # notice spends one of the three wakes that bound is made of, on nothing — the
+  # session finds nothing to resolve, ends its turn, and reaches the end of its
+  # budget that much sooner. The delivery no longer *destroys* the wake, which it
+  # used to: a queued message draining is a follow-up resume and takes the
+  # preserving branch (SessionStateMachine#follow_up_resume). Dropping what is
+  # positively moot is still the point.
   #
   # Fails OPEN, on every path. An unreadable, timed-out or still-computing
   # mergeability read answers `false`, so the message is delivered. Suppressing

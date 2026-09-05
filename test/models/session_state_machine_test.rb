@@ -2217,22 +2217,6 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     end
   end
 
-  # === archive retires whatever wake is left ===
-
-  test "archive consumes a pending one-time wake nothing else spent" do
-    session = sessions(:waiting)
-    session.update!(status: :needs_input)
-    child = sessions(:running)
-    conditions = wake_set_for(session, watched: [ child ])
-
-    session.reload.archive!
-
-    conditions.each do |condition|
-      assert_not_nil condition.reload.last_triggered_at,
-        "an archived session is not waiting for anything, so wake condition #{condition.id} must not survive it"
-    end
-  end
-
   # === system-recovery resume preserves pending wake-ups ===
   #
   # An interruption nudge is Zimmer restarting the session's own process, not

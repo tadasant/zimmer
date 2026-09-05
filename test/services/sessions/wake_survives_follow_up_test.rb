@@ -132,6 +132,66 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
     assert_includes result, "did not cancel it"
   end
 
+  # `Session#deliver_follow_up!` is the one shared delivery path behind the web
+  # UI's follow-up form, the GitHub comment evaluator, `message_parent`, the
+  # heartbeat sweep and every non-wake trigger. Asserting on it here is what
+  # covers all of them at the seam they share.
+  test "the shared follow-up delivery path preserves the wake" do
+    session = sessions(:needs_input)
+    session.update!(session_id: "conversation-to-resume")
+    _trigger, condition = schedule_wake(session)
+
+    session.reload.deliver_follow_up!("A human typed this into the session page")
+
+    assert session.reload.running?
+    assert_nil condition.reload.last_triggered_at,
+      "a follow-up through the shared path must not consume the wake either"
+  end
+
+  # A trigger that is not a wake — a Slack feed, a recurring schedule, a GitHub
+  # poller — fires INTO a session rather than being the thing it was waiting for.
+  # That is a follow-up, and it takes the preserving branch rather than the
+  # wake-fire hold branch.
+  test "a non-wake trigger firing into a sleeping session preserves that session's own wake" do
+    session = sessions(:needs_input)
+    session.update!(session_id: "conversation-to-resume")
+    _wake, condition = schedule_wake(session)
+
+    poller = Trigger.create!(
+      name: "Slack feed",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Someone mentioned you",
+      reuse_session: true,
+      last_session_id: session.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule", configuration: { "cron" => "0 * * * *", "timezone" => "UTC" } }
+      ]
+    )
+    assert_not poller.one_time_reuse_trigger?, "this test is only meaningful for a non-wake trigger"
+
+    poller.send(:follow_up_session!, session.reload, prompt: "Someone mentioned you")
+
+    assert session.reload.running?
+    assert_nil condition.reload.last_triggered_at,
+      "a poller's prompt is a follow-up, not the wake this session was waiting for"
+  end
+
+  # The layer below the resume, and the one that used to drop the wake anyway. A
+  # follow-up delivered to a sleeping session resumes it and enqueues the job;
+  # the spot gate can defer that turn and return the session to `waiting` carrying
+  # the same prompt, and the re-check job re-resumes it here.
+  test "re-resuming to deliver a deferred follow-up preserves the wake" do
+    session = sessions(:needs_input)
+    _trigger, condition = schedule_wake(session)
+
+    AgentSessionJob.new.send(:resume_for_recovery_prompt, session.reload, "The deferred follow-up")
+
+    assert session.reload.running?
+    assert_nil condition.reload.last_triggered_at,
+      "the re-check must not consume the wake the resume above deliberately kept"
+  end
+
   # The line the change deliberately does NOT cross. A restart replaces the wait
   # rather than adding to it, so it still consumes — and the pause guard that
   # stands in front of it still stands.
@@ -151,19 +211,39 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
       "a restart is a takeover: the wait it replaces is over, so the wake is consumed"
   end
 
-  # The hazard preserving introduces, closed on the other side. A wake that
-  # outlives the session it belonged to fires into an archived row, which
-  # Trigger#follow_up_session! answers by resuscitating it.
-  test "archiving retires the wake a follow-up preserved" do
+  # The hazard preserving might have introduced, and why it does not. A wake that
+  # outlives its session cannot resuscitate it: resuscitation needs
+  # `resuscitate_archived`, which Sessions::ScheduleWakeUp never sets, so the fire
+  # skips silently — and CleanupStaleTriggersJob destroys the row on its own sweep,
+  # which is the one place that honours the `resuscitate_archived` opt-in.
+  test "a wake that outlives its archived session skips rather than resuscitating it" do
     session = sessions(:needs_input)
-    _trigger, condition = schedule_wake(session)
+    trigger, _condition = schedule_wake(session)
     follow_up_over_mcp(session)
     session.reload.pause!
-    assert_nil condition.reload.last_triggered_at
-
     session.reload.archive!
 
-    assert_not_nil condition.reload.last_triggered_at,
-      "an archived session is not waiting for anything, so its wake must not survive it"
+    assert_not trigger.reload.resuscitate_archived,
+      "a wake_me_up_later trigger must not opt into waking archived sessions"
+
+    trigger.send(:create_session!)
+
+    assert session.reload.archived?, "the fire must leave the archived session alone"
+  end
+
+  # And the sweep that does collect it excludes exactly the triggers that asked to
+  # wake an archived session, which is why the preserve branch does not retire
+  # anything itself.
+  test "the stale-trigger sweep collects a wake whose session archived" do
+    session = sessions(:needs_input)
+    trigger, _condition = schedule_wake(session)
+    follow_up_over_mcp(session)
+    session.reload.pause!
+    session.reload.archive!
+
+    CleanupStaleTriggersJob.new.perform
+
+    assert_not Trigger.exists?(trigger.id),
+      "a one-time wake whose target archived is the sweep's to destroy"
   end
 end

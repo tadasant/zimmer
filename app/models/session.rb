@@ -1414,8 +1414,13 @@ class Session < ApplicationRecord
   # Every automatic recovery path (deployment restart, orphaned process,
   # hung-process reap, health-monitor retry) resumes a session that may have been
   # asleep on wake-up triggers. Going through `resume!` directly consumes those
-  # triggers, which is right for a deliberate resume and wrong here — see
+  # triggers, which is right for a takeover and wrong here — see
   # SessionStateMachine#system_recovery_resume. Recovery paths call this instead.
+  #
+  # This branch also re-sleeps the session afterwards when a live one-time
+  # schedule backstops the re-sleep, which is what separates it from
+  # #resume_for_follow_up!: a recovered session never chose to be awake, while a
+  # followed-up one was asked a question and has to be able to answer it.
   #
   # The flag is cleared in an ensure block so it can never leak into a later,
   # genuinely deliberate resume of the same in-memory instance.

@@ -18,7 +18,7 @@ module Mcp
       WAKEABLE_STATUSES = %w[needs_input running waiting].freeze
 
       description <<~DESC
-        Schedule this session to be woken up when another session reaches `needs_input`, `failed`, or `archived`. The requester session is put to sleep (waiting status) and a one-time trigger fires when the watched session gets there. If the requester is manually resumed before the watched session transitions, the trigger is silently consumed and won't re-fire.
+        Schedule this session to be woken up when another session reaches `needs_input`, `failed`, or `archived`. The requester session is put to sleep (waiting status) and a one-time trigger fires when the watched session gets there. A follow-up does not cancel it: if somebody prompts the requester before the watched session transitions — a router's `follow_up`, a human's message, a queued message draining — the requester takes that turn and the watcher stays armed. Only a takeover ends it: `restart`, a restart from scratch, or archiving the requester.
 
         This is the **state-based analog of `wake_me_up_later`**. Use `wake_me_up_later` when you know *when* to wake up (a clock time). Use this tool when you know *what event* to wake up on but not when it will happen — e.g., a session you spawned will eventually finish (self-archive), pause for input, or crash, and you want to be the first to handle it without polling.
 
@@ -58,7 +58,7 @@ module Mcp
         1. Creates ONE one-time `ao_event` trigger bound to the requester (`reuse_session: true`, `last_session_id: session_id`), carrying one condition per requested event, each scoped to `watched_session_id`.
         2. As a side effect of creating the trigger, Zimmer transitions the requester to sleeping (waiting) status — immediately if currently `needs_input`, or after the current turn ends if currently `running`.
         3. When the watched session reaches a matching state, the trigger fires and resumes the requester with the provided prompt, then auto-deletes.
-        4. If the requester is manually resumed first, the pending trigger is consumed. If the watched session is archived without ever reaching a state you asked for, the trigger is cleaned up and your deadline backstop is what wakes you.
+        4. If somebody follows the requester up first, the pending trigger survives it — you do not need to re-register. A takeover (`restart`) consumes it. If the watched session is archived without ever reaching a state you asked for, the trigger is cleaned up and your deadline backstop is what wakes you.
 
         **End your conversation turn after scheduling.** Two mechanisms together make wake delivery durable:
         1. **Auto-sleep** — ending your turn transitions the requester from `running` to `waiting`, where the trigger resumes it directly when the watched event fires.

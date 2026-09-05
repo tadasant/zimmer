@@ -1006,11 +1006,13 @@ while the notice sat in the queue reports `mergeable: null`, so the read also as
 treats a non-`open` PR as suppressing — that is a positively known fact, not an unknown, and waking
 a session to resolve conflicts on a merged PR is exactly the harm being avoided.
 
-The wasted turn is not the reason this matters. **Any resume consumes a session's one-time wake
-triggers.** A session sleeping on its PR under the `open-pr` skill's self-wake, woken by a notice
-that turns out to be moot, finds nothing to resolve and ends its turn — with no pending trigger and
-no running turn left. That is the invisible-forever state the bounded self-wake exists to prevent,
-reached by a message that was wrong.
+The wasted turn is not quite the whole reason this matters. A session sleeping on its PR under the
+`open-pr` skill's self-wake is working a **bounded** budget — three wakes, then it comes to rest for
+a human — and a notice that turns out to be moot spends one of them on nothing. The delivery does
+not also destroy the wake: a queued message draining is a
+[follow-up resume](/sessions/lifecycle/#a-follow-up-does-not-cancel-a-wake) and preserves it. So the
+failure this guard prevents is a budget burned down by wrong messages rather than a session made
+invisible outright.
 
 Two properties keep the guard from becoming the worse bug:
 
