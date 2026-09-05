@@ -190,6 +190,24 @@ class McpOauthController < ApplicationController
       return
     end
 
+    # The token endpoint above came out of the server's own discovery metadata
+    # (or, on the pre-registered branch, the catalog), and the exchange that
+    # follows consent posts the client secret to it in a form body. Refuse the
+    # server here rather than after the user has consented: McpOauthPendingFlow
+    # refuses to store a cleartext endpoint, so without this the flow would raise
+    # RecordInvalid instead of saying anything useful, and refusing before the
+    # redirect means no authorization code is ever minted for an endpoint we will
+    # not talk to. The endpoint is rendered scheme://host:port/path — it is
+    # untrusted input, and it may carry userinfo (#892).
+    unless HttpsTokenEndpoint.secure?(oauth_metadata[:token_endpoint])
+      Rails.logger.warn "[McpOauthController] Refusing OAuth for #{server_name}: non-https token endpoint #{HttpsTokenEndpoint.describe(oauth_metadata[:token_endpoint])}"
+      flash[:error] = "#{server_name} advertises an OAuth token endpoint that is not https " \
+                      "(#{HttpsTokenEndpoint.describe(oauth_metadata[:token_endpoint])}). " \
+                      "Zimmer will not send its client secret over an unencrypted connection."
+      redirect_to oauth_return_path(@session)
+      return
+    end
+
     # Delete any existing pending flow for this session/server (user is re-initiating).
     # for_session(nil) scopes this to the session-less flows, so a Connectors-page
     # re-click replaces its own previous flow and leaves in-session ones alone.

@@ -23,6 +23,8 @@
 # and resumes nothing. The credential it stores is identical either way — it is
 # keyed on the server config, not on who started the flow.
 class McpOauthPendingFlow < ApplicationRecord
+  include HttpsTokenEndpoint
+
   # Pending flows expire after 24 hours
   EXPIRATION_DURATION = 24.hours
 
@@ -43,6 +45,15 @@ class McpOauthPendingFlow < ApplicationRecord
   validates :redirect_uri, presence: true
   validates :expires_at, presence: true
   validate :mcp_server_config_is_valid_hash
+  # The endpoint stored here is the one the *initial* exchange posts to
+  # (McpOauthService#exchange_code_for_tokens), carrying the client_secret and
+  # the authorization code — the same leak #892 describes on the refresh, one
+  # step earlier. It is also the value that ends up on the credential
+  # (McpOauthController#store_tokens_and_resume), so refusing it here is what
+  # stops a discovered cleartext endpoint from reaching a save that would fail.
+  # McpOauthController#initiate checks the same thing before calling .start!, so
+  # the user sees a flash rather than a RecordInvalid.
+  validate :token_endpoint_must_be_https
 
   # Flows that have not expired yet
   scope :active, -> { where("expires_at > ?", Time.current) }

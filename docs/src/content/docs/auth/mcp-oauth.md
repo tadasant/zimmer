@@ -230,6 +230,46 @@ posts its refresh grant through the same helper, so the unattended path carries 
 interactive one. An auth server that accepts the connection and then never answers fails the exchange
 rather than holding a request thread — or, on the cron path, a GoodJob thread.
 
+### The token endpoint must be https
+
+`token_endpoint` decides two things at once: where the grant goes, and whether it is encrypted —
+`McpOauthService#post_form` derives `use_ssl` from that same string. Both grants posted through it
+carry the `client_secret` as a form parameter, alongside the authorization code (initial exchange)
+or the refresh token (renewal). So an `http://` value publishes long-lived credentials in a
+cleartext POST body, and the endpoint answers `200`, so the refresh reports success and nothing
+surfaces.
+
+Zimmer refuses it, and the rule is exceptionless — **loopback included**. That matters more here
+than for the X credential, because this endpoint is *discovered*: it comes out of the MCP server's
+own RFC 8414 metadata. An exception would be triggerable by the one party outside Zimmer's control,
+and a remote server naming Zimmer's own loopback has no honest meaning — it would aim a POST
+carrying an operator-supplied client secret at whatever answers on this host's port. A local MCP
+server on `http://localhost` is refused too, with a message saying why, rather than quietly putting
+the secret on the wire.
+
+Where it is enforced:
+
+- **`McpOauthController#initiate`** — refuses before the consent redirect, with a flash naming the
+  endpoint, so no authorization code is minted for an endpoint Zimmer will not talk to.
+- **`McpOauthPendingFlow`** — refuses to store one, so the initial exchange cannot leak it.
+- **`McpOauthCredential`** — refuses to save one. Blank stays legal: it means "this credential
+  cannot be renewed, re-authorize it", which is what `#can_refresh?` and the Connectors page read.
+- **`McpOauthCredential#can_refresh?`** — false for a cleartext endpoint, so `RefreshMcpOauthTokensJob`
+  and `McpOauthCredentialInjector` never call `refresh!` on one. This is the anti-brick guarantee:
+  `refresh!` POSTs *before* it saves, so a row that reached it would leak the secret, let the provider
+  rotate the single-use refresh token, and only then fail validation on the way to persisting it.
+- **`McpOauthService#post_form`** — raises `InsecureTokenEndpoint` rather than opening a cleartext
+  connection, covering any caller holding a bare URI.
+
+`ClearNonHttpsMcpOauthTokenEndpoints` clears any row that predates the rule. It clears to `NULL`
+rather than to a default, because an MCP token endpoint has no default — re-authorizing the
+connector rediscovers it.
+
+Userinfo is deliberately *permitted* (`https://id:secret@host/token`): `post_form` reads it as basic
+auth on purpose, because some providers document `client_secret_basic` that way, and over TLS it is
+as confidential as any other header. That is where this rule differs from `XOauthCredential`'s,
+whose transport overwrites the `Authorization` header and would silently ignore it.
+
 ### Manual (paste-back) completion
 
 Some public clients only permit a redirect URI they already whitelisted — for the official Slack

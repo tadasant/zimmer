@@ -1857,6 +1857,26 @@ silent case. That is the deliberate direction to fail in — the alternative, ma
 `invalid_grant` anywhere in the error, retires a healthy credential whenever a server reports a
 *downstream* provider's grant error, which is an unresolvable re-auth loop rather than a slow one.
 
+### An MCP server that advertises an `http://` token endpoint cannot be authorized at all
+
+`token_endpoint` decides both where the OAuth grant goes and whether TLS is used, and the grant
+carries the `client_secret` in the form body — so Zimmer refuses any endpoint that is not `https`
+with a host, at initiate, on the pending flow, on the credential, and in `post_form`. The rule is
+exceptionless: there is **no loopback carve-out**, so a local MCP server on `http://localhost` that
+runs its own OAuth cannot be authorized through Zimmer.
+
+That is deliberate rather than an oversight. The endpoint is discovered from the MCP server's own
+RFC 8414 metadata, so a carve-out would be an exception the remote server gets to trigger, and a
+remote server naming this host's loopback would be aiming a POST carrying an operator-supplied
+client secret at whatever answers on Zimmer's own port. The cost is real and lands on local
+development only: the refusal is a flash message naming the endpoint, not a silent failure. A local
+server that terminates TLS, or one fronted by strad, works normally.
+
+Note also that `McpOauthCredential#can_refresh?` is false for such an endpoint, so a credential that
+somehow holds one reads as **Needs authorization** rather than being retried — which is the point,
+since `refresh!` POSTs before it saves and a retry would leak the secret *and* lose the rotated
+refresh token.
+
 ---
 
 ## AIR catalog

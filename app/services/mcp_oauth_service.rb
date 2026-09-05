@@ -13,6 +13,10 @@
 #     # ... initiate OAuth flow
 #   end
 class McpOauthService
+  # Raised by #post_form rather than putting an OAuth client secret on a
+  # cleartext connection. See HttpsTokenEndpoint.
+  class InsecureTokenEndpoint < StandardError; end
+
   # Request timeout in seconds
   REQUEST_TIMEOUT = 30
 
@@ -380,6 +384,18 @@ class McpOauthService
   # initial exchange, and it runs unattended from cron, so it must carry the same
   # bound.
   def post_form(uri, params)
+    # The last line of defence, and the only one that covers a caller holding a
+    # URI rather than a model. Both grants posted through here carry the OAuth
+    # client_secret as a form parameter, and `use_ssl` below is derived from this
+    # very URI — so without this check the method's own argument decides whether
+    # the secret is encrypted. Raising is the safe failure: the initial exchange
+    # already rescues into "token exchange error" and #refresh! is gated by
+    # McpOauthCredential#can_refresh?, so nothing reaches here in normal operation.
+    unless HttpsTokenEndpoint.secure?(uri)
+      raise InsecureTokenEndpoint,
+        "refusing to post OAuth credentials to #{HttpsTokenEndpoint.describe(uri)} — the token endpoint must be https"
+    end
+
     request = Net::HTTP::Post.new(uri.request_uri)
     request.set_form_data(params)
     request.basic_auth(uri.user, uri.password) if uri.user
