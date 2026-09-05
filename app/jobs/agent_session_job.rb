@@ -3308,8 +3308,7 @@ class AgentSessionJob < ApplicationJob
       # will dispatch this one again (#602).
       Sessions::ReturnToQueue.call(
         session,
-        reason: "the job starting it was interrupted before it issued a runtime session id",
-        working_directory: session.metadata&.dig("working_directory")
+        reason: "the job starting it was interrupted before it issued a runtime session id"
       )
       return
     end

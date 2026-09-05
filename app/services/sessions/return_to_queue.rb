@@ -71,7 +71,12 @@ module Sessions
   #      nothing back — no sweep would start it either.
   #   5. **Not in a frozen category.** A parked bucket every bulk flow leaves
   #      alone.
-  #   6. **Budget left.** See MAX_RETURNS.
+  #   6. **No wake of its own armed.** `StalledSessionStart` partitions a session
+  #      with a pending one-time wake out of its batch, and that disqualifier is
+  #      not a metadata marker, so the return cannot drop it — a session moved
+  #      with one armed would be read by neither owner. A session with its own
+  #      next event has a way back anyway; there is nothing here to correct.
+  #   7. **Budget left.** See MAX_RETURNS.
   class ReturnToQueue
     # How many times one session may be sent back to the queue before Zimmer
     # stops doing it and lets the session rest in `needs_input` after all.
@@ -114,21 +119,14 @@ module Sessions
 
     # @param session [Session]
     # @param reason [String] why Zimmer gave up, recorded on the session
-    # @param working_directory [String, nil] where the runtime would have been
-    #   spawned from, for the on-disk half of the conversation check
-    # @param file_system [FileSystemAdapter, nil] adapter for that lookup
-    # @param logger [#info, nil] the caller's logger, for the one-line outcome
     # @return [Result]
-    def self.call(session, reason:, **kwargs)
-      new(session, reason: reason, **kwargs).call
+    def self.call(session, reason:)
+      new(session, reason: reason).call
     end
 
-    def initialize(session, reason:, working_directory: nil, file_system: nil, logger: nil)
+    def initialize(session, reason:)
       @session = session
       @reason = reason
-      @working_directory = working_directory
-      @file_system = file_system
-      @logger = logger || Rails.logger
     end
 
     # @return [Result]
@@ -145,9 +143,22 @@ module Sessions
       # A repair that cannot run must not become the thing that breaks the
       # give-up path it is called from. Decline, so the caller comes to rest
       # exactly as it did before this service existed.
-      @logger.error(
+      #
+      # The reload is part of that promise, not tidying. #return_to_queue!'s
+      # transaction rolls the ROW back but leaves the in-memory copy carrying the
+      # writes it made, so a caller reading `session.metadata` next would see a
+      # `paused_by` that is still on the row as absent — and act on it.
+      Rails.logger.error(
         "[Sessions::ReturnToQueue] Could not return session #{@session&.id} to the queue: #{e.message}"
       )
+      begin
+        @session&.reload
+      rescue => reload_error
+        Rails.logger.error(
+          "[Sessions::ReturnToQueue] Could not re-read session #{@session&.id} after a failed return: " \
+          "#{reload_error.message}"
+        )
+      end
       declined(e.message)
     end
 
@@ -161,6 +172,7 @@ module Sessions
       return "the session has a runtime session id" if session.session_id.present?
       return "no prompt to run" if session.prompt.blank?
       return "category is frozen" if session.category&.is_frozen?
+      return "a wake of its own is armed" if session.awaiting_scheduled_wake?
       return "the runtime wrote a conversation" if conversation_persisted?
 
       nil
@@ -169,28 +181,41 @@ module Sessions
     def conversation_persisted?
       RuntimeConversationPresence.persisted?(
         session: session,
-        working_directory: @working_directory.presence || session.metadata&.dig("working_directory"),
-        file_system: @file_system
+        working_directory: session.metadata&.dig("working_directory")
       )
     end
 
     def return_to_queue!(count)
-      # `paused_by` goes with the move. It is the marker both recovery sweeps
-      # select on and one of StalledSessionStart's dormant markers, so leaving it
-      # behind would hand the session straight back to the sweeps that just gave
-      # up on it, and hide it from the sweep that can actually start it.
-      session.merge_metadata!(
-        { COUNT_KEY => count, REASON_KEY => reason },
-        [ "paused_by" ]
-      )
-      session.sleep!
+      # ONE transaction around the metadata write and the transition, because
+      # dropping `paused_by` is only safe if the move actually happens. The row
+      # can change under us between #refusal_reason and here — a human follow-up,
+      # a queued-message drain landing at its delay, an archive — so `sleep!` can
+      # raise, and #call answers that by declining and leaving the caller's own
+      # handling to run. A committed metadata write would make that decline a
+      # lie: the session would be `needs_input` with no `paused_by`, which neither
+      # recovery sweep selects (they match the marker) and no start path reads
+      # (they match `waiting`) — the exact dead end this service exists to remove,
+      # reintroduced on its own failure path.
+      #
+      # `paused_by` goes with the move because it is the marker both recovery
+      # sweeps select on AND one of StalledSessionStart's dormant markers, so
+      # leaving it behind would hand the session straight back to the sweeps that
+      # just gave up on it, and hide it from the sweep that can actually start it.
+      ActiveRecord::Base.transaction do
+        session.merge_metadata!(
+          { COUNT_KEY => count, REASON_KEY => reason },
+          [ "paused_by" ]
+        )
+        session.sleep!
+      end
+
       session.logs.create!(
         content: "This session never ran — #{reason}. Returning it to the queue (attempt #{count} of " \
                  "#{MAX_RETURNS}) instead of leaving it in the action queue with nothing to ask; it will " \
                  "be started again when compute is available.",
         level: "info"
       )
-      @logger.info(
+      Rails.logger.info(
         "[Sessions::ReturnToQueue] Session #{session.id} returned to waiting (attempt #{count}/#{MAX_RETURNS}): #{reason}"
       )
       Result.new(outcome: :returned, message: "returned to the queue (attempt #{count})")
@@ -204,7 +229,7 @@ module Sessions
                  "an empty transcript — restart it by hand to try once more.",
         level: "error"
       )
-      @logger.warn("[Sessions::ReturnToQueue] Session #{session.id} exhausted its returns: #{message}")
+      Rails.logger.warn("[Sessions::ReturnToQueue] Session #{session.id} exhausted its returns: #{message}")
       Result.new(outcome: :exhausted, message: message)
     end
 

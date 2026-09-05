@@ -242,8 +242,7 @@ module SessionContinuation
       # it (#602).
       Sessions::ReturnToQueue.call(
         session,
-        reason: "recovery could not continue it (#{error_message})",
-        working_directory: session.metadata&.dig("working_directory")
+        reason: "recovery could not continue it (#{error_message})"
       )
 
       # The missing-PR warning the recovery pause deferred (#558) comes due here,
