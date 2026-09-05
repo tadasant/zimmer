@@ -257,6 +257,104 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal "StandardError: boom", @trigger.last_error
   end
 
+  # --- Re-arming schedules on enable (#745) --------------------------------
+  #
+  # A schedule that was switched off when its slot came round did not miss it — it
+  # was not live for it. Before this, TriggerCondition#armed_before? measured from
+  # `created_at`, so a schedule created on Monday and enabled on Tuesday afternoon
+  # read as armed for Tuesday's 03:00 slot and fired at whatever hour the enable
+  # happened, consuming that day's run.
+
+  test "enabling a trigger re-arms its schedule conditions" do
+    trigger = triggers(:disabled_schedule_trigger)
+    condition = trigger_conditions(:disabled_schedule_condition)
+    condition.update!(armed_at: Time.utc(2026, 5, 11, 16, 0))
+
+    travel_to Time.utc(2026, 5, 12, 22, 0) do
+      trigger.enable!
+    end
+
+    assert_equal Time.utc(2026, 5, 12, 22, 0), condition.reload.armed_at
+  end
+
+  # `status` is a permitted param on the /triggers toggle, the edit form, PATCH
+  # /api/v1/triggers and action_trigger, so the re-arm is keyed on the transition
+  # rather than on #enable! — every one of those routes writes it through save.
+  test "every route into enabled re-arms the schedule conditions" do
+    trigger = triggers(:disabled_schedule_trigger)
+    condition = trigger_conditions(:disabled_schedule_condition)
+
+    [ -> { trigger.enable! }, -> { trigger.toggle! }, -> { trigger.update!(status: "enabled") } ].each_with_index do |enable, index|
+      trigger.update!(status: "disabled")
+      condition.update!(armed_at: Time.utc(2026, 5, 11, 16, 0))
+
+      travel_to Time.utc(2026, 5, 12, 22, 0) do
+        enable.call
+      end
+
+      assert_equal Time.utc(2026, 5, 12, 22, 0), condition.reload.armed_at,
+        "route #{index} did not re-arm the schedule"
+    end
+  end
+
+  # A trigger that was parked `failed` was not firing either, so recovering it is
+  # the same gesture as switching a disabled one back on.
+  test "moving a trigger off failed re-arms its schedule conditions" do
+    trigger = triggers(:enabled_schedule_trigger)
+    condition = trigger_conditions(:enabled_schedule_condition)
+    trigger.mark_failed(StandardError.new("boom"))
+    trigger.reload
+    condition.update!(armed_at: Time.utc(2026, 5, 11, 16, 0))
+
+    travel_to Time.utc(2026, 5, 12, 22, 0) do
+      trigger.enable!
+    end
+
+    assert_equal Time.utc(2026, 5, 12, 22, 0), condition.reload.armed_at
+  end
+
+  # The other half of the #745 predicate: too eager is as wrong as too lazy. An
+  # edit that leaves an already-enabled trigger enabled must not push a pending
+  # first fire out by a day.
+  test "a write that does not change the status does not re-arm" do
+    trigger = triggers(:enabled_schedule_trigger)
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(armed_at: Time.utc(2026, 5, 11, 16, 0))
+
+    travel_to Time.utc(2026, 5, 12, 22, 0) do
+      trigger.update!(name: "Renamed while running")
+      trigger.update!(status: "enabled")
+    end
+
+    assert_equal Time.utc(2026, 5, 11, 16, 0), condition.reload.armed_at
+  end
+
+  test "disabling a trigger does not re-arm its schedule conditions" do
+    trigger = triggers(:enabled_schedule_trigger)
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(armed_at: Time.utc(2026, 5, 11, 16, 0))
+
+    travel_to Time.utc(2026, 5, 12, 22, 0) do
+      trigger.disable!
+    end
+
+    assert_equal Time.utc(2026, 5, 11, 16, 0), condition.reload.armed_at
+  end
+
+  # Only schedule conditions carry a slot, and only #armed_before? reads `armed_at`.
+  # Enabling a Slack trigger has nothing to re-arm.
+  test "enabling a trigger leaves a non-schedule condition's arming alone" do
+    trigger = triggers(:disabled_slack_trigger)
+    condition = trigger_conditions(:disabled_slack_condition)
+    condition.update!(armed_at: Time.utc(2026, 5, 11, 16, 0))
+
+    travel_to Time.utc(2026, 5, 12, 22, 0) do
+      trigger.enable!
+    end
+
+    assert_equal Time.utc(2026, 5, 11, 16, 0), condition.reload.armed_at
+  end
+
   test "spent_one_shot_wake? is true only once the one-time schedule is consumed" do
     trigger = triggers(:one_time_schedule_trigger)
     condition = trigger.trigger_conditions.first

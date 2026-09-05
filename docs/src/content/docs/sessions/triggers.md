@@ -374,10 +374,10 @@ is measured from thereafter.
 
 `days` and `weeks` do have an anchor — `time`, plus `day_of_week` for weekly, both required by
 validation — and it governs the first fire exactly as it governs every later one. **A schedule
-first fires at the first configured slot that arrives after it was created.** Create "every day
+first fires at the first configured slot that arrives after it was armed.** Create "every day
 at 03:00 America/Los_Angeles" at 01:00 and it runs at 03:00 that same morning; create it at
 05:00 and its first run is 03:00 the *next* day. The 03:00 slot that passed before the schedule
-existed was not missed — there was nothing there to miss.
+was armed was not missed — there was nothing there to miss.
 
 That reading is deliberate, and the alternative is worse than it looks: treating "has never fired"
 as "is due" fires a daily schedule within a minute of being created, at whatever hour that happens
@@ -388,13 +388,28 @@ you actually asked for never happens
 The comparison is wall-clock in the condition's own `timezone`, never UTC, so a schedule keeps its
 local hour across a DST change rather than sliding by one.
 
-**Creation is the only arming instant, and two edits slip past it.** Re-enabling a schedule that
-was disabled when its slot passed, and changing the `time` on one that has never fired, both leave
-the original creation instant in place — so either can still fire once at an arbitrary hour, the
-same symptom in miniature. Closing that needs a stored arming timestamp rather than a derived one
-([#745](https://github.com/tadasant/zimmer/issues/745), and
-[Limitations](/limitations/#a-re-enabled-or-retimed-schedule-can-still-fire-off-slot-once)). A
-schedule that has fired at least once is unaffected either way.
+#### What arms a schedule
+
+Arming is the instant a `days`/`weeks` schedule starts counting towards its next slot. It is
+stored on the condition as `armed_at`, and it moves in exactly three cases:
+
+- **The condition is created.**
+- **The trigger is enabled** — through the toggle on `/triggers`, the edit form,
+  `PATCH /api/v1/triggers/:id`, or `action_trigger`. A schedule that was switched off when its
+  slot came round did not miss it; it was not live for it. The same applies to a trigger
+  recovering from the `failed` status, which was not firing either.
+- **The slot itself moves** — an edit to `unit`, `time`, `day_of_week` or `timezone`. Create
+  "every day at 23:00" at 08:00, retime it to 09:00 at 10:00, and its first run is 09:00
+  *tomorrow*: it never existed with a 09:00 slot at the moment 09:00 passed today.
+
+Nothing else re-arms. Saving the trigger form again with nothing changed does not, and neither
+does an edit to `interval` — which has no meaning before a first fire, since there is no previous
+run to count from. That restraint is the point: a re-arm defers a pending run by a day, so
+re-arming on every save would skip the slot you were waiting for just as surely as never re-arming
+at all ([#745](https://github.com/tadasant/zimmer/issues/745)).
+
+A schedule that has fired at least once is not governed by arming at all — `last_triggered_at`
+answers for it, and `armed_at` is never consulted.
 
 #### When a one-time fire fails
 
