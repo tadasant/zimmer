@@ -1328,10 +1328,15 @@ The selector is on the **trigger**, not on the condition, because a trigger carr
 conditions with OR semantics and one shared session template — a mixed trigger already collapses to
 one genesis via a precedence order, so a per-condition class would have to collapse the same way.
 
-It is read once, when the trigger fires, and stamped on the session it creates. **Changing it does
-not move sessions the trigger already spawned** — including ones still `waiting` behind the quota
-gate. To move one of those, move that session: the button on its hold banner, the selector on its
-detail page, or `action_session`'s `change_scheduling_class`.
+It is read once, when the trigger fires, and stamped on the session it creates. **Changing it also
+carries onto this trigger's own sessions that are still `waiting`** — the backlog a spot-to-priority
+flip is usually trying to release. It reaches only this trigger's sessions, only ones still in
+`waiting`, and only ones still carrying the class the trigger stamped, so a session an operator moved
+by hand stays where they put it. Every surface that changes the class reports how many sessions
+moved. To move a session it does not reach — one that has already started, say — move that session:
+the button on its hold banner, the selector on its detail page, or `action_session`'s
+`change_scheduling_class`. See
+[Spot and priority](/sessions/spot-and-priority/#where-the-class-comes-from) for the full rule.
 
 A trigger can also predefine the **precedence** its sessions get (`Trigger#precedence`, same three
 surfaces). Higher is worked first, on an absolute scale — 100000 comes before 50 — and it orders the

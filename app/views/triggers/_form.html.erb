@@ -306,7 +306,10 @@
         and starts on its own later — it is never cancelled. Leave this on the default and the class
         follows the trigger's condition type: Slack triggers are priority, because someone is waiting
         on the answer; GitHub, scheduled and session-state triggers are spot. Changing this applies to
-        sessions the trigger spawns from now on; ones it already spawned keep the class they started with.
+        sessions the trigger spawns from now on, and to its own already-spawned sessions still waiting
+        to start — so flipping a held backlog to priority releases it. Sessions that have already
+        started keep the class they ran with, and so does one you moved by hand on its own page.
+        Saving tells you how many moved.
       </p>
     </div>
 

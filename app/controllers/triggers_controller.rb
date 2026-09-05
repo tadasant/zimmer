@@ -44,7 +44,10 @@ class TriggersController < ApplicationController
 
   def update
     if @trigger.update(trigger_params)
-      redirect_to @trigger, notice: "Trigger updated successfully."
+      # A scheduling-class change carries onto this trigger's already-spawned
+      # waiting sessions, so the notice says how many it moved — the operator
+      # flipping a trigger during a backlog is asking about those sessions.
+      redirect_to @trigger, notice: [ "Trigger updated successfully.", @trigger.reclassification_summary ].compact.join(" ")
     else
       render :edit, status: :unprocessable_entity
     end

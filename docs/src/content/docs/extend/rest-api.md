@@ -645,7 +645,12 @@ to tell the two apart; this pair can. Both reset when a fire lands.
 priority](/sessions/spot-and-priority/) class of the sessions this trigger spawns; `null` — the
 default — derives it from the trigger's condition type. The payload reports both `scheduling_class`
 (what was chosen, usually `null`) and `effective_scheduling_class` (what its sessions actually get).
-Changing it applies to sessions the trigger spawns from then on.
+Changing it applies to sessions the trigger spawns from then on **and** to that trigger's own
+already-spawned sessions still in `waiting` — see [what a class change
+reaches](/sessions/spot-and-priority/#where-the-class-comes-from). A `PATCH` that changed the class
+carries `reclassified_waiting_sessions`: how many of those sessions actually moved between classes.
+The key is absent when the request did not touch the class, so its absence means "not asked" rather
+than "nothing moved".
 
 `precedence` (an integer, or `null`) predefines the rank the trigger's sessions land on in the spot
 queue. Same absolute scale, same "applies to sessions spawned from now on" rule as the class.
