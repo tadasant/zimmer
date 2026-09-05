@@ -112,8 +112,9 @@ Where that loud path comes to *rest* depends on whether an agent ever existed. A
 before any process was spawned, carrying a prompt nobody has seen, parks in `needs_input` with
 `failure_reason: "undelivered_turn"` instead of failing — `failed` is not in the homepage's action
 queue and nothing sweeps it, so a follow-up that dies in setup used to be dropped in silence
-([#439](https://github.com/tadasant/zimmer/issues/439)). Everything else about the loud path is
-unchanged, the re-raise included. See
+([#439](https://github.com/tadasant/zimmer/issues/439)). The three exception classes this job
+declares a `retry_on` for are excluded while an attempt is still queued, since the re-raise below is
+what schedules it. Everything else about the loud path is unchanged, the re-raise included. See
 [A turn that never started parks instead of failing](/sessions/lifecycle/#a-turn-that-never-started-parks-instead-of-failing).
 
 :::caution[Other resumers lock by hand, or not at all]
