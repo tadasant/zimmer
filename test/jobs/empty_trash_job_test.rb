@@ -30,6 +30,63 @@ class EmptyTrashJobTest < ActiveJob::TestCase
     FileUtils.rm_rf(@clone_path) if @clone_path && File.directory?(@clone_path)
   end
 
+  # This sweep walks every expired trashed session with `find_each` and no cap,
+  # and each one costs a Docker Compose teardown plus five recursive deletes — so
+  # a day's worth of expired trash is an unbounded hold on one of `maintenance`'s
+  # two threads, with the per-archive DeferredCloneCleanupJob stream queued behind
+  # it.
+  test "stops when the wall-clock budget runs out and leaves the rest for the next run" do
+    second = sessions(:waiting)
+    second_clone = "/tmp/test-clone-trash-second-#{SecureRandom.hex(4)}"
+    FileUtils.mkdir_p(second_clone)
+    second.update!(
+      status: :archived,
+      archived_at: 15.days.ago,
+      trash_after: 1.day.ago,
+      metadata: { "clone_path" => second_clone }
+    )
+
+    begin
+      job = EmptyTrashJob.new
+      # A monotonically advancing fake clock: each reading is 200s later, so the
+      # 5-minute budget is spent after the second one however many times the job
+      # reads it.
+      ticks = -1
+      job.define_singleton_method(:monotonic_now) do
+        ticks += 1
+        ticks * 200.0
+      end
+
+      job.perform
+
+      survived = [ @clone_path, second_clone ].count { |path| File.directory?(path) }
+      assert_equal 1, survived, "exactly one expired session is deferred to the next hourly run"
+    ensure
+      FileUtils.rm_rf(second_clone)
+    end
+  end
+
+  test "clears the whole expired set when the budget allows" do
+    second = sessions(:waiting)
+    second_clone = "/tmp/test-clone-trash-second-#{SecureRandom.hex(4)}"
+    FileUtils.mkdir_p(second_clone)
+    second.update!(
+      status: :archived,
+      archived_at: 15.days.ago,
+      trash_after: 1.day.ago,
+      metadata: { "clone_path" => second_clone }
+    )
+
+    begin
+      EmptyTrashJob.perform_now
+
+      assert_not File.directory?(@clone_path)
+      assert_not File.directory?(second_clone)
+    ensure
+      FileUtils.rm_rf(second_clone)
+    end
+  end
+
   test "cleans up clone for expired trashed session" do
     assert File.directory?(@clone_path), "Clone should exist before cleanup"
 

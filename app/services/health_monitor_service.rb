@@ -161,13 +161,13 @@ class HealthMonitorService
   #   pollers      One poll of an external API per tick.
   #   triggers     The same shape as `pollers`.
   #   maintenance  Sized from its worst designed case rather than from a typical
-  #                one: OrphanCloneFilesystemCleanupJob's scheduled path removes
-  #                up to BATCH_LIMIT (20) directories with no wall-clock budget,
-  #                and each removal tears down Docker Compose bounded at
-  #                DockerComposeCleanupService::COMPOSE_DOWN_TIMEOUT (120s) — 40
-  #                minutes of entirely correct work. StaleCloneCleanupJob's
-  #                ORPHAN_SWEEP_LIMIT (200 recursive deletes) and BundleInstallJob
-  #                are unbounded in the same direction.
+  #                one, and that case is BundleInstallJob: an install is bounded
+  #                by nothing but the network and the Gemfile, and it retries.
+  #                The scheduled sweeps are not the sizing case — each holds a
+  #                thread for at most its SWEEP_BUDGET_SECONDS plus one unit of
+  #                work and resumes on its next tick (see SweepBudget) — but the
+  #                ceiling clears them by a wide margin, which is what
+  #                health_monitor_service_test.rb asserts.
   #   auth         RuntimeLoginJob::MAX_DURATION is twelve minutes.
   #
   # `agents` is deliberately ABSENT, and the absence is the rule rather than an

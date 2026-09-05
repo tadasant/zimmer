@@ -31,6 +31,50 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
     FileUtils.rm_rf(@clones_base) if @clones_base
   end
 
+  # The maintenance lane has two threads and shares them with the per-archive
+  # DeferredCloneCleanupJob stream. Nothing used to bound how long this hourly
+  # sweep held one of them, and every unit of its work is a recursive delete.
+  test "stops when the wall-clock budget runs out and leaves the rest for the next run" do
+    second = sessions(:waiting)
+    second_clone = File.join(@clones_base, "test-stale-clone-second-#{SecureRandom.hex(4)}")
+    FileUtils.mkdir_p(second_clone)
+    second.update!(
+      status: :archived,
+      archived_at: @stale_archived_at,
+      trash_after: nil,
+      metadata: { "clone_path" => second_clone }
+    )
+
+    job = StaleCloneCleanupJob.new
+    # A monotonically advancing fake clock: each reading is 200s later, so the
+    # 5-minute budget is spent after the second one however many times the job
+    # reads it. Deliberately not a fixed `.returns(a, b, c)` sequence — that
+    # would silently change meaning if the number of clock reads ever moved.
+    advance_clock_on(job, by: 200.0)
+
+    job.perform
+
+    cleaned = [ @clone_path, second_clone ].count { |path| !File.directory?(path) }
+    survived = [ @clone_path, second_clone ].count { |path| File.directory?(path) }
+    assert_equal 1, cleaned, "the run should reclaim exactly the one clone it had budget for"
+    assert_equal 1, survived, "the other is left for the next tick, not lost"
+  end
+
+  test "a spent budget does not stop the sweep from being retried next tick" do
+    job = StaleCloneCleanupJob.new
+    # 400s a read, so the budget is already gone at the first candidate.
+    advance_clock_on(job, by: 400.0)
+
+    job.perform
+
+    assert File.directory?(@clone_path), "nothing is reclaimed once the budget is gone before the first candidate"
+
+    # The next tick has its own budget and finishes the job.
+    StaleCloneCleanupJob.perform_now
+
+    assert_not File.directory?(@clone_path), "the level-triggered next run picks up what the budget deferred"
+  end
+
   test "cleans up stale clones from archived sessions" do
     assert File.directory?(@clone_path), "Clone should exist before cleanup"
 
@@ -471,5 +515,17 @@ class StaleCloneCleanupJobTest < ActiveJob::TestCase
     assert StaleCloneCleanupJob.new.send(:cleanup_session_clone, @session)
 
     assert_not File.directory?(@clone_path)
+  end
+  private
+
+  # Replace a job's monotonic clock with one that advances `by` seconds on every
+  # read. The first read opens the budget, so a budget of B seconds is spent on
+  # read number (B / by) + 1 — independent of how many times the job checks it.
+  def advance_clock_on(job, by:)
+    ticks = -1
+    job.define_singleton_method(:monotonic_now) do
+      ticks += 1
+      ticks * by
+    end
   end
 end
