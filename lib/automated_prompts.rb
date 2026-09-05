@@ -149,6 +149,30 @@ module AutomatedPrompts
     If you are genuinely blocked and there is nothing you can do without human input, use your Zimmer tools to turn off this session's heartbeat (set heartbeat_enabled to false) so we don't keep beating over and over.
   PROMPT
 
+  # Whether `prompt` is a nudge — a message that names no task of its own and only
+  # means anything read against a conversation that already exists ("continue where
+  # you left off", "keep making progress toward the goal").
+  #
+  # The distinction matters wherever a turn may be delivered into a conversation that
+  # is NOT there: a nudge arriving in an empty context tells the agent to carry on
+  # with nothing, so it does nothing and the session comes to rest looking finished
+  # (zimmer#401). AgentSessionJob asks this both about the prompt it was handed and
+  # about the prompt it would replay instead, so a session whose `prompt` column has
+  # itself been overwritten with a nudge — HeartbeatSweepJob does exactly that — is
+  # not "recovered" by replaying one nudge in place of another.
+  #
+  # Deliberately narrow. The other automated prompts here carry their own instruction
+  # (a memory limit and what to do about it, a PR to fix, a merge that happened), so
+  # they are ordinary turns, not nudges.
+  #
+  # @param prompt [Object]
+  # @return [Boolean]
+  def self.nudge?(prompt)
+    return false unless prompt.is_a?(String)
+
+    system_recovery?(prompt) || prompt.start_with?(HEARTBEAT)
+  end
+
   # Reads the PR URL back out of a merge-conflict message.
   #
   # The pattern lives next to the template it parses on purpose. A conflict

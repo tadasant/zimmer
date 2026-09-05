@@ -4711,6 +4711,29 @@ branch whose whole predicate is that neither store holds one — and let the win
 house 60 seconds. That needs a reset that can ask a question about the filesystem, which
 `RetryBudget` deliberately cannot; it is a value object over `session.metadata`.
 
+## A heartbeat-beaten session cannot have its task replayed, because the beat overwrote it
+
+When a turn is about to be delivered into a conversation that does not exist, `AgentSessionJob`
+replays the work that never happened rather than the nudge it was handed
+([#401](https://github.com/tadasant/zimmer/issues/401)). It looks for that work in
+`metadata["sent_message"]`, then `session.prompt`, then `metadata["original_prompt"]`, and skips any
+candidate that is itself a nudge.
+
+For a session under heartbeat monitoring, the second of those is often gone.
+`HeartbeatSweepJob#nudge_needs_input` writes its beat **into the prompt column** —
+`session.update!(prompt: AutomatedPrompts::HEARTBEAT, …)` — so once a session has been beaten
+even once, the text it was created with is not recoverable from that column. A chat-bubble session
+still has `metadata["original_prompt"]` and is replayed from it; a session created any other way
+has nothing left to replay, and the fresh conversation is handed the beat, which names no task.
+That session wedges exactly as #401 describes: it starts over, finds nothing to do, and comes to
+rest looking finished.
+
+Replacing one nudge with another is refused rather than attempted, so the session log says the turn
+went out with no work behind it instead of claiming a recovery that did not happen. The real fix is
+for the heartbeat to stop overwriting the prompt column — a beat is a turn, not the session's task,
+and `deliver_follow_up!` already carries it — but that column is read as "the session's task" by
+titling, search and the UI, so changing it is a change to more than the sweep.
+
 ## An exception on an archived session's turn is no longer paged, whatever it was
 
 `AgentSessionJob#perform`'s catch-all rescue re-reads the session row, and when it says `archived`
