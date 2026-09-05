@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_05_190000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_05_193000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -641,6 +641,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_190000) do
     t.jsonb "catalog_skills", default: []
     t.bigint "category_id"
     t.json "config"
+    t.jsonb "config_jsonb"
     t.datetime "created_at", null: false
     t.jsonb "custom_metadata", default: {}
     t.string "execution_provider", default: "local_filesystem", null: false
@@ -657,9 +658,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_190000) do
     t.datetime "last_broadcast_to_index_at"
     t.datetime "last_timeline_entry_at"
     t.json "mcp_server_env"
+    t.jsonb "mcp_server_env_jsonb"
     t.json "mcp_server_headers"
+    t.jsonb "mcp_server_headers_jsonb"
     t.json "mcp_servers"
+    t.jsonb "mcp_servers_jsonb"
     t.json "metadata", default: {}
+    t.jsonb "metadata_jsonb"
     t.bigint "parent_session_id"
     t.integer "precedence", default: 0, null: false
     t.text "prompt"
