@@ -37,6 +37,11 @@ class ContextLengthRetryService
   # isn't helping and fail the session. Declared once in RetryBudget.
   BUDGET = RetryBudget::CONTEXT_LENGTH
 
+  # The runtime command this service resumes with. Named because
+  # `check_session_status` is told which prompt the respawn will carry, and a
+  # literal repeated in two places is the way those two drift apart.
+  COMPACT_PROMPT = "/compact"
+
   # Error patterns that indicate context length exceeded
   # These patterns match various Claude API error messages for context overflow
   CONTEXT_LENGTH_ERROR_PATTERNS = [
@@ -359,7 +364,7 @@ class ContextLengthRetryService
     # where user sends a follow-up prompt between attempt_recovery and here.
     # This is the last opportunity to abort before spawning a "/compact" process
     # that would race with the user's follow-up prompt.
-    abort_result = check_session_status
+    abort_result = check_session_status(resume_prompt: COMPACT_PROMPT)
     return :aborted if abort_result == :aborted
 
     # Send /compact command to reduce context
@@ -373,7 +378,7 @@ class ContextLengthRetryService
 
     spawn_result = cli_adapter.resume(
       session_id: session.session_id,
-      prompt: "/compact",
+      prompt: COMPACT_PROMPT,
       working_dir: working_directory,
       append_system_prompt: system_prompt,
       model: session.config&.dig("model"),

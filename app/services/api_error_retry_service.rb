@@ -513,7 +513,7 @@ class ApiErrorRetryService
   # @return [Symbol] :success, :exhausted, :aborted
   def spawn_and_verify_retry(working_directory, retry_attempt)
     # Final status check before spawning
-    abort_result = check_session_status
+    abort_result = check_session_status(resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY)
     return :aborted if abort_result == :aborted
 
     add_log("Resuming session after API error", level: "info")
@@ -649,7 +649,7 @@ class ApiErrorRetryService
     log_buffer.flush
 
     # Wait with periodic session status checks
-    abort_result = wait_with_status_checks(retry_delay)
+    abort_result = wait_with_status_checks(retry_delay, resume_prompt: AutomatedPrompts::SYSTEM_RECOVERY)
     return :aborted if abort_result == :aborted
 
     # Record retry attempt in metadata

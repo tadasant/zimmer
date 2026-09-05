@@ -1000,47 +1000,6 @@ class ProcessLifecycleManager
   # @param prompt [String] The continuation prompt to send
   # @param reason [String] Human-readable reason for logging (e.g., "compact")
   # @return [ExitDecision] Decision on what to do next
-  # Stop a status-summary fork instead of continuing it, and say so.
-  #
-  # THE SECOND DOOR (#724). `AgentSessionJob#refuse_non_summary_fork_turn` stops a
-  # summary fork being handed a fresh turn. It cannot see any of this: every
-  # respawn here happens INSIDE a turn that guard already admitted — a compaction,
-  # a signal death, an account rotation, a SIGTERM retry. Each carries a
-  # continuation instruction ("continue where you left off", "Continue with the
-  # previous task"), and a fork holds a copy of its SOURCE's conversation, so each
-  # reads as "resume your source's task". That is how router 4388's single
-  # `start_session` call, which carried an `idempotency_key`, became two sessions.
-  #
-  # Coming to rest is the repair, not a loss: `pause!` is the fork's own completion
-  # transition, so the state machine's pause hook harvests it — publishing the
-  # blurb if the fork wrote one before the process died, marking the record if it
-  # did not, and archiving the fork either way. `pause!` rather than `fail!`
-  # deliberately, matching the job-entry guard: one disposal rule for a summary
-  # fork that stops, wherever it is stopped from.
-  #
-  # `:aborted`, not `:failed`. Nothing failed — Zimmer declined — and `:failed` is
-  # rendered on the timeline as "<runtime> CLI failed: …" at ERROR level and
-  # stamped into `failure_reason`, which is what alerting reads; it would page for
-  # a refusal working exactly as designed. `:aborted` means "this exit is already
-  # owned", and the `pause!` is what makes that claim true. Returning it without
-  # transitioning anything would leave the fork `running` with a dead process —
-  # the state this guard exists to avoid, reached the long way round.
-  #
-  # @param reason [String] the respawn that was declined, for the log line
-  # @return [ExitDecision]
-  def refuse_summary_fork_continuation(reason)
-    add_log(
-      "Not continuing after #{reason}: this is a status-summary fork of session " \
-      "#{session.status_summary_source_id}, and the continuation prompt would tell it to resume that " \
-      "session's work rather than its own. Coming to rest so the summary is harvested instead.",
-      level: "warning"
-    )
-    @logger.warn("#{reason.capitalize} continuation refused — session is a status-summary fork")
-    with_db_retry { session.pause! if session.may_pause? }
-    @mutex.synchronize { @state = :idle }
-    ExitDecision.new(action: :aborted)
-  end
-
   def spawn_continuation(working_dir:, prompt:, reason:)
     # A status-summary fork is never continued: every prompt that reaches here is a
     # continuation instruction, and a fork reads all of them as "resume your
@@ -1109,6 +1068,65 @@ class ProcessLifecycleManager
     @logger.error("#{reason.capitalize} continuation failed", error: e.message)
     @mutex.synchronize { @state = :idle }
     ExitDecision.new(action: :failed, error_message: "Failed to continue after #{reason}: #{e.message}")
+  end
+
+  # Stop a status-summary fork instead of continuing it, and say so.
+  #
+  # THE SECOND DOOR (#724). `AgentSessionJob#refuse_non_summary_fork_turn` stops a
+  # summary fork being handed a fresh turn. It cannot see this one: every respawn
+  # routed through #spawn_continuation happens INSIDE a turn that guard already
+  # admitted — a compaction continuation, a signal-death or OOM resume, an account
+  # rotation after a quota exit, a session-id-conflict resume. Each carries a
+  # continuation instruction ("continue where you left off", "Continue with the
+  # previous task"), and a fork holds a copy of its SOURCE's conversation, so each
+  # reads as "resume your source's task". That is how router 4388's single
+  # `start_session` call, which carried an `idempotency_key`, became two sessions.
+  #
+  # (The four services that mix in `RespawnScaffold` respawn the runtime too, but
+  # not through here — they hold their own `cli_adapter.resume`. Their half of this
+  # guard is `RespawnScaffold#check_session_status`.)
+  #
+  # Coming to rest is the repair, not a loss: `pause!` is the fork's own completion
+  # transition, so the state machine's pause hook harvests it — publishing the
+  # blurb if the fork wrote one before the process died, marking the record if it
+  # did not, and archiving the fork either way. `pause!` rather than `fail!`
+  # deliberately, matching the job-entry guard: one disposal rule for a summary
+  # fork that stops, wherever it is stopped from. A `waiting` fork is the one
+  # resting state that harvests nothing, so it gets the harvest enqueued directly
+  # rather than being left asleep holding its clone — the same two arms, for the
+  # same reason, as the job-entry guard.
+  #
+  # `:aborted`, not `:failed`. Nothing failed — Zimmer declined — and `:failed` is
+  # rendered on the timeline as "<runtime> CLI failed: …" at ERROR level and
+  # stamped into `failure_reason`, which is what alerting reads; it would page for
+  # a refusal working exactly as designed. `:aborted` means "this exit is already
+  # owned", and the transition below is what makes that claim true. Returning it
+  # without transitioning anything would leave the fork `running` with a dead
+  # process, holding its clone until a sweep collected it.
+  #
+  # @param reason [String] the respawn that was declined, for the log line
+  # @return [ExitDecision]
+  def refuse_summary_fork_continuation(reason)
+    add_log(
+      "Not continuing after #{reason}: this is a status-summary fork of session " \
+      "#{session.status_summary_source_id}, and the continuation prompt would tell it to resume that " \
+      "session's work rather than its own. Coming to rest so the summary is harvested instead.",
+      level: "warning"
+    )
+    @logger.warn("#{reason.capitalize} continuation refused — session is a status-summary fork")
+    # Flushed before the transition, not after it. `pause!` writes its own line
+    # straight to the database while a buffered one is stamped at flush time, so
+    # without this the explanation lands after the event it explains.
+    @log_buffer&.flush
+    with_db_retry do
+      if session.may_pause?
+        session.pause!
+      elsif session.waiting?
+        SessionStatusSummaryHarvestJob.perform_later(session.id)
+      end
+    end
+    @mutex.synchronize { @state = :idle }
+    ExitDecision.new(action: :aborted)
   end
 
   # Handle recovery from a failed --resume attempt by starting fresh with --session-id.
@@ -2018,8 +2036,19 @@ class ProcessLifecycleManager
     # and recorded the identity. That is a fleet-wide, once-per-account move, spent
     # on a session that is about to stop, on the one resource the fleet is actually
     # short of.
+    #
+    # Returned from OUTSIDE this method's `rescue`, which is why it is not simply
+    # the first line of the body: that rescue logs `.error` — a page — and returns
+    # nil, whereupon the caller parks the fork for quota. Both are the outcomes the
+    # refusal exists to avoid, so it must not be able to fall into them.
     return refuse_summary_fork_continuation("account rotation") if @session&.status_summary_fork?
 
+    rotate_and_continue(working_dir)
+  end
+
+  # The rotation itself. Split out so the fork refusal above sits outside this
+  # method's rescue rather than inside it.
+  def rotate_and_continue(working_dir)
     provider = RuntimeAuthProvider.for(@session&.agent_runtime)
     result = provider.rotate_for_quota!(
       triggered_by: @session ? "session:#{@session.id}" : nil,
