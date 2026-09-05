@@ -149,6 +149,44 @@ A summary fork's working directory is therefore **empty, not a checkout** — se
 It is also why the trash is not a refusal for a forced generation — see
 [The trash is not a refusal for a forced generation](#the-trash-is-not-a-refusal-for-a-forced-generation).
 
+For an **automatic** generation, the generator re-checks that the session is still out of the trash
+**after** the fork exists, not just before it. Standing a fork up is not instantaneous — a record, a
+directory, an MCP config, a resume transcript — and a session that archived inside that window would
+otherwise get a fork about a session nobody asked about. Such a fork is archived immediately, the
+claim is released so the record does not sit in `pending` behind a fork that will never answer, and
+nothing is recorded against the summary.
+
+A **forced** generation does not take that exit — see
+[The trash is not a refusal for a forced generation](#the-trash-is-not-a-refusal-for-a-forced-generation).
+Somebody pressed the button, so this is not a session nobody is looking at.
+
+### The trash can win that race, and that is not an error
+
+The re-check above only runs on a fork that was *made*. When the cleanup reaches the source tree
+first, `ForkSessionService` refuses before there is a fork at all — an automatic generation still
+asks for a source clone it does not read, as the liveness proxy that refusal exists to be, so it can
+still lose this race. That used to page: the service logged `error`, the generator recorded a
+failure, and a human was woken about a summary nobody was going to read.
+
+`ForkSessionService` classifies it instead. A source clone that is gone, on a session which — re-read
+from the database — is **archived**, is reported as `Result#source_clone_discarded`: logged at `info`,
+not `error`. The generator reads that flag, releases its claim, and returns `skipped` — the same
+outcome the post-fork re-check produces, with no failure recorded against the panel. A **forced**
+generation never reaches it, because a missing tree is not a refusal for one.
+
+The question it asks is about the **session**, not about the clone, and that is deliberate. A clone
+being deleted is renamed aside before its bytes go
+([`AtomicCloneRemoval`](/operate/background-jobs/#both-clone-sweeps-reap-deletion-tombstones)), so
+"is the clone root gone" is a question whose answer flips for reasons that have nothing to do with
+whether this fork is in trouble. The session's status does not. The same classification covers a
+user-initiated fork whose copy dies partway through on a path that was there when the directory was
+enumerated and gone when it was stat'd: same benign condition, arriving as an `ENOENT` from inside
+the copy.
+
+The distinction is the point, and it is deliberately narrow. A clone that is missing while its
+session is **live** is a genuine fault — a stray delete, a volume gone, a cleanup that ran against
+the wrong path — and it still logs `error` and still pages.
+
 ### Copying a clone that is still being written to
 
 A **user-initiated** fork still gets the tree it forked; it is a working session and wants it. That
@@ -174,51 +212,6 @@ Three things keep that from failing a fork:
   the path, and a copy into a destination that still exists nests or merges rather than failing. The same
   holds for a fork that fails *after* the copy succeeded: if the session record does not save, or the
   transcript cannot be written, the copied clone is discarded on the way out rather than stranded.
-
-For an **automatic** generation, the generator also re-checks that the session is still out of the
-trash **after** the copy, not just before it. The copy takes real time, and a session that archived
-during it would otherwise get a fork of a clone `DeferredCloneCleanupJob` is about to delete, about a
-session nobody asked about. Such a fork is archived immediately, the claim below is released so the
-record does not sit in `pending` behind a fork that will never answer, and nothing is recorded against
-the summary.
-
-A **forced** generation does not take that exit — see
-[The trash is not a refusal for a forced generation](#the-trash-is-not-a-refusal-for-a-forced-generation).
-Somebody pressed the button, so this is not a session nobody is looking at, and by this point the fork
-owns its own copy of the clone anyway.
-
-### The trash can win that race, and that is not an error
-
-The re-check above only runs on a copy that *finished*. When the cleanup reaches the tree first, the
-copy dies partway through on a path that was there when the directory was enumerated and gone when it
-was stat'd — the same benign condition, arriving as an `ENOENT` instead of as an archived session.
-That used to page: `ForkSessionService` logged `error`, the generator recorded a failure, and a human
-was woken about a summary nobody was going to read.
-
-`ForkSessionService` classifies it instead. An `ENOENT` naming a path **inside the source clone**,
-raised while forking a session that — re-read from the database, because the archive lands during the
-copy — is **archived**, is reported as `Result#source_clone_discarded`: logged at `info`, not `error`.
-For an automatic generation the generator reads that flag, releases its claim, and returns `skipped` —
-the same outcome the post-copy re-check produces, with no failure recorded against the panel.
-
-For a **forced** one the same condition is not a loss at all: an operator is watching a panel that
-says "Generating", and the fork did not need the tree. The copy that died is discarded, an empty
-working directory is scaffolded in its place, and the generation carries on — see
-[The trash is not a refusal for a forced generation](#the-trash-is-not-a-refusal-for-a-forced-generation).
-That closes the narrow race the pre-flight check cannot: the clone was there when the button was
-pressed and gone by the time the job ran.
-
-The question it asks is about the **session**, not about the clone, and that is deliberate. A clone
-being deleted is renamed aside before its bytes go
-([`AtomicCloneRemoval`](/operate/background-jobs/#both-clone-sweeps-reap-deletion-tombstones)), and
-the copy walking that tree keeps resolving the paths it already opened — so "is the clone root gone"
-is a question whose answer flips mid-copy for reasons that have nothing to do with whether this fork
-is in trouble. The session's status does not. A copy in that window still looks retryable and still
-spends its retry budget before failing; it costs a background job ~2.5 seconds, and it wakes no one.
-
-The distinction is the point, and it is deliberately narrow. A clone that is missing while its
-session is **live** is a genuine fault — a stray delete, a volume gone, a cleanup that ran against
-the wrong path — and it still logs `error` and still pages.
 
 ### The fork's title has to fit the cap the source title already fills
 
@@ -591,11 +584,14 @@ tree at all, and a check for one would refuse exactly the sessions the panel exi
 What generation actually needs is the **conversation**, and that is in the database. The summarizer is
 told not to run tools and answers from the transcript it was forked with; what it needs from the
 filesystem is a directory to be spawned in and the resume transcript `ForkSessionService` writes under
-`~/.claude/projects`. So when the source clone is gone, the fork is given an **empty working
-directory** instead of a copy — `ForkSessionService`'s `scaffold_missing_clone`, which
-`SessionStatusSummaryGenerator` passes only on a forced run. The fork's clone is stamped
-`clone_scaffolded` in its metadata, so an empty tree reads as deliberate rather than as a copy that
-died halfway.
+`~/.claude/projects`. Every summary fork is therefore given an **empty working directory** rather than
+a copy, whether or not the source tree is still there — see [A summary fork gets no copy of the
+clone](#a-summary-fork-gets-no-copy-of-the-clone). The fork's clone is stamped `clone_scaffolded` in
+its metadata, so an empty tree reads as deliberate rather than as a copy that died halfway.
+
+What a **forced** run adds is only that a source clone which is *gone* must not fail the fork:
+`ForkSessionService`'s `scaffold_missing_clone`, which `SessionStatusSummaryGenerator` passes on a
+forced run and not on an automatic one.
 
 The scaffold is `git init`ed rather than left as a bare directory, because "a directory to be spawned
 in" is not quite the whole requirement: `codex exec` refuses to start outside a git repository unless
@@ -604,19 +600,17 @@ it has ever spawned into has been a real repository. An empty repository keeps t
 of one subprocess. It is best-effort: a `git init` that fails is logged and the fork carries on, since
 a Claude Code summary fork does not care either way.
 
-Scaffolding is not only for the trash, either. `StaleCloneCleanupJob` reclaims a **failed** session's
-clone after 24 hours, and a day-old failed session is exactly the kind someone opens to ask what
-happened. That case scaffolds too, logged at `warn` rather than `info` — the archived case is
-expected, and this one is worth noticing.
-
-Scaffolding also closes the race the pre-flight cannot: a clone that was there when the button was
-pressed and unlinked while the copy walked it. The copy fails with `ENOENT` inside the source tree,
-and a forced fork scaffolds rather than giving up — it did not need the tree in the first place.
+The trash is not the only way a clone goes missing, either. `StaleCloneCleanupJob` reclaims a
+**failed** session's clone after 24 hours, and a day-old failed session is exactly the kind someone
+opens to ask what happened. A forced run covers that the same way, and the race the pre-flight cannot
+close along with it: a clone that was there when the button was pressed and unlinked before the job
+ran.
 
 Nothing is resuscitated on the **automatic** path. `unavailable_reason` still stats the clone for a
-non-forced run, and an automatic generation for a session whose clone is gone is refused. Paying to
-stand a fork up for a session nobody is looking at is the waste the automatic refusals exist to
-prevent.
+non-forced run, and an automatic generation for a session whose clone is gone is refused — not
+because the fork wants the tree, but because a missing one is the cheapest evidence that this is a
+session nobody is looking at, and standing a fork up for one is the waste the automatic refusals
+exist to prevent.
 
 Two refusals remain, and they are the ones no amount of scaffolding can fix: a session that is itself
 a summary fork (it has nothing to say), and one with no transcript (nothing to say it about).
