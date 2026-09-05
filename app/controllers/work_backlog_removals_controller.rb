@@ -24,13 +24,16 @@
 #
 # ACTING ON THE WRONG ROW IS THE RISK WORTH NAMING. A mis-wired remove control
 # silently drops queued work, and unlike promote there is no new session to
-# notice. Three things answer it: the form carries the row id and nothing else
-# identifies the item, the confirmation names the key it is about to remove, and
-# the flash names the key that was actually removed.
+# notice. Four things answer it: the form carries the row id and nothing else
+# identifies the item, the confirmation names the key it is about to remove, the
+# flash names the key that was actually removed, and WorkBacklogQueuedWrite
+# re-reads that row under the ranking lock — so a pull that starts the item while
+# the reader is deciding is seen, rather than overwritten with `removed`.
 #
 # `issues/_remove` is the form that posts here, on /issues.
 class WorkBacklogRemovalsController < ApplicationController
   include IssuesPageReturn
+  include WorkBacklogQueuedWrite
 
   # Who the removal is attributed to. `remove!` records the same string the REST
   # action defaults to: this came in through the browser surface, which is the
@@ -39,22 +42,12 @@ class WorkBacklogRemovalsController < ApplicationController
 
   # POST /issues/backlog/:id/remove — body: reason (required, free text).
   def create
-    item = WorkBacklogItem.find_by(id: params[:id].to_s)
-    return back(alert: "That backlog item no longer exists.") unless item
-    return back(alert: "#{item.key} is #{item.status}, so it cannot be removed.") unless item.queued?
-    return back(alert: "Removing #{item.key} needs a reason.") if params[:reason].blank?
+    return back_to_issues(alert: "Removing that item needs a reason.") if params[:reason].blank?
 
-    WorkBacklog::Ranking.with_lock do
+    write_to_queued_item("removed") do |item|
       item.remove!(reason: params[:reason].to_s, by: REMOVED_BY)
       WorkBacklog::Ranking.rerank!
+      "Removed #{item.key} from the queue."
     end
-
-    back(notice: "Removed #{item.key} from the queue.")
-  end
-
-  private
-
-  def back(notice: nil, alert: nil)
-    back_to_issues(notice: notice, alert: alert)
   end
 end

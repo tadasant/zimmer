@@ -24,63 +24,50 @@
 # WorkBacklogPromotionsController; the page says the short version where the
 # controls are.
 #
-# NEITHER ACTION REIMPLEMENTS THE RANKING. Both take WorkBacklog::Ranking's
-# advisory lock and call the same `pin!` / `unpin!` + `rerank!` pair the REST
-# actions call, so a click that races an append or a pull serialises with it.
+# NEITHER ACTION REIMPLEMENTS THE RANKING. Both go through WorkBacklogQueuedWrite,
+# which re-reads the row under WorkBacklog::Ranking's advisory lock before it
+# decides anything, and both call the same `pin!` / `unpin!` + `rerank!` pair the
+# REST actions call.
 #
 # `issues/_pin` is the form that posts here, on /issues.
 class WorkBacklogPinsController < ApplicationController
   include IssuesPageReturn
-
-  before_action :set_item
+  include WorkBacklogQueuedWrite
 
   # POST /issues/backlog/:id/pin — pin the item at `precedence`.
   def create
-    return back(alert: "#{@item.key} is #{@item.status}, so it cannot be pinned.") unless @item.queued?
-    return back(alert: "Pinning #{@item.key} needs a precedence.") if params[:precedence].blank?
+    return back(alert: "Pinning that item needs a precedence.") if params[:precedence].blank?
 
-    WorkBacklog::Ranking.with_lock do
-      @item.pin!(precedence: params[:precedence])
+    write_to_queued_item("pinned") do |item|
+      item.pin!(precedence: params[:precedence])
       WorkBacklog::Ranking.rerank!
+      "Pinned #{item.key} at precedence #{item.reload.precedence}."
     end
-
-    back(notice: "Pinned #{@item.key} at precedence #{@item.reload.precedence}.")
   rescue ArgumentError, TypeError
     # `pin!` calls `Integer()`, which raises on anything that is not a whole
     # number. The field is a number input, so reaching this takes a hand-edited
-    # POST — and a flash is still a better answer than a 500.
+    # POST — and a flash is still a better answer than a 500. The raise leaves
+    # the lock's transaction rolled back, so nothing moved.
     back(alert: "#{params[:precedence].inspect} is not a whole number.")
   rescue ActiveRecord::RecordInvalid => e
     # Out of PRECEDENCE_RANGE: an integer Postgres would reject at the UPDATE.
-    # The model catches it first, and nothing has moved.
-    back(alert: "Could not pin #{@item.key}: #{e.record&.errors&.full_messages&.to_sentence.presence || e.message}")
+    # The model catches it first, and the transaction rolls back.
+    back(alert: "Could not pin that item: #{e.record&.errors&.full_messages&.to_sentence.presence || e.message}")
   end
 
   # DELETE /issues/backlog/:id/pin — release the pin and re-rank the item back
   # into its cost band.
   def destroy
-    return back(alert: "#{@item.key} is #{@item.status}, so it cannot be unpinned.") unless @item.queued?
-
-    WorkBacklog::Ranking.with_lock do
-      @item.unpin!
+    write_to_queued_item("unpinned") do |item|
+      item.unpin!
       WorkBacklog::Ranking.rerank!
+      # Re-read after the re-rank: unpinning is exactly the case where the
+      # precedence the reader ends up with is not the one the row had.
+      "Unpinned #{item.key}; it is back at precedence #{item.reload.precedence}."
     end
-
-    back(notice: "Unpinned #{@item.key}; it is back at precedence #{@item.reload.precedence}.")
   end
 
   private
-
-  # By row id only, unlike the REST member routes, which also accept an item's
-  # key. The forms on the page are rendered from rows the page already loaded, so
-  # the id is what they have — and a key resolves to "the queued row for that key,
-  # else the most recent one", which is a second thing that could be the wrong row
-  # for a control whose whole risk is acting on the wrong row.
-  def set_item
-    @item = WorkBacklogItem.find_by(id: params[:id].to_s)
-
-    back(alert: "That backlog item no longer exists.") unless @item
-  end
 
   def back(notice: nil, alert: nil)
     back_to_issues(notice: notice, alert: alert)

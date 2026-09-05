@@ -12,6 +12,25 @@ require "support/work_backlog_helpers"
 class WorkBacklogPinsControllerTest < ActionDispatch::IntegrationTest
   include WorkBacklogHelpers
 
+  # Runs `block` with WorkBacklog::Ranking.with_lock marking `item` started the
+  # instant before it yields — a pull that took the lock first and finished with
+  # it while this request was still holding a pre-lock read of the row.
+  def with_pull_winning_the_lock(item, session)
+    real = WorkBacklog::Ranking.method(:with_lock)
+    fired = false
+    stub = lambda do |&block|
+      real.call do
+        unless fired
+          fired = true
+          WorkBacklogItem.find(item.id).mark_started!(session: session, by: nil)
+        end
+        block.call
+      end
+    end
+
+    WorkBacklog::Ranking.stub(:with_lock, stub) { yield }
+  end
+
   test "pins exactly the item it names, at the precedence given" do
     item = backlog_item(key: "zimmer#498", precedence: 6000)
     other = backlog_item(key: "zimmer#499", precedence: 5990)
@@ -66,6 +85,39 @@ class WorkBacklogPinsControllerTest < ActionDispatch::IntegrationTest
     assert_not item.pinned?
     assert_equal 6000, item.precedence
     assert_match(/needs a precedence/, flash[:alert])
+  end
+
+  # THE RACE THE LOCK DISCIPLINE EXISTS FOR. `with_lock` is stubbed to start the
+  # item first and then run the block, which is exactly what a groomer's pull
+  # holding the advisory lock does to a click that arrived a moment earlier. A
+  # guard read before the lock passes here; the re-read inside it does not.
+  test "an item a pull starts while the click is in flight is not pinned over" do
+    item = backlog_item(key: "zimmer#498", precedence: 6000)
+    started_by_the_pull = sessions(:running)
+
+    with_pull_winning_the_lock(item, started_by_the_pull) do
+      post pin_work_backlog_item_path(item), params: { precedence: 6500 }
+    end
+
+    item.reload
+    assert item.started?, "the pull's start stands"
+    assert_not item.pinned?
+    assert_equal 6000, item.precedence, "the losing click did not renumber a started item"
+    assert_match(/is started, so it cannot be pinned/, flash[:alert])
+  end
+
+  test "an item a pull starts while an unpin click is in flight is not unpinned over" do
+    item = backlog_item(key: "zimmer#498", precedence: 900, pinned: true)
+
+    with_pull_winning_the_lock(item, sessions(:running)) do
+      delete unpin_work_backlog_item_path(item)
+    end
+
+    item.reload
+    assert item.started?
+    assert item.pinned?, "the losing click did not release a started item's pin"
+    assert_equal 900, item.precedence
+    assert_match(/is started, so it cannot be unpinned/, flash[:alert])
   end
 
   test "a precedence that is not a whole number is a message, not a 500" do
