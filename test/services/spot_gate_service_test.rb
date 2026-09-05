@@ -12,6 +12,7 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     ClaudeAccountQuotaSnapshot.delete_all
     ClaudeAccount.update_all(is_current: false)
     Session.where(status: :running).update_all(status: Session.statuses[:needs_input])
+    GoodJob::Job.where(job_class: "AgentSessionJob").delete_all
     @account = ClaudeAccount.create!(
       email: "gate-test@example.com", runtime: "claude_code",
       oauth_config: { "x" => 1 }, is_current: true
@@ -178,6 +179,25 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert decision.allowed?, "nothing is running, so the pacing curve is waived"
     refute decision.five_hour.within_pace, "…but the reading is still ahead of it"
     assert decision.five_hour.pace_waived
+  end
+
+  # The waiver asks whether anything is SPENDING, which is a different population
+  # from the one the cap counts. A turn queued behind the `agents` pool fills no
+  # slot, but it is already priced into the projected burn — so waiving on the
+  # cap's own count would skip the pace test against a burn rate those very
+  # sessions produced.
+  test "a fleet whose turns are all queued does not get the idle-fleet waiver" do
+    seed(current_5h: 0.40, current_7d: 0.05, reset_5h: 4.hours.from_now)
+    burn_rate(4.0)
+    3.times { |i| queued_for_a_worker!(running_session(i, on_a_worker: false)) }
+
+    decision = SpotGateService.evaluate
+
+    assert_equal 0, decision.active_sessions, "no slot is taken"
+    assert_equal 3, decision.awaiting_sessions
+    refute decision.five_hour.pace_waived, "three turns in flight are spending"
+    refute decision.allowed?, "so the pacing curve holds, as it did before the queue was dropped"
+    assert_equal SpotGateService::UTILIZATION_REASON, decision.reason
   end
 
   # The waiver is only ever of the PACE. The reserve is absolute: an idle fleet
@@ -603,45 +623,52 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_match(/3 of 3 session slots taken/, decision.detail)
   end
 
-  # tadasant/zimmer#957. The fleet cap read 15 of 10 while eight agent processes
-  # were alive: `running` is stamped when a turn is handed to a session, so the
-  # column also held turns queued for a worker and rows that had gone back to
-  # sleep on their own wake. The queued ones still count — they take the next
-  # free slot — but a session no start path will run before its wake cannot hold
-  # a slot against anything.
+  # tadasant/zimmer#957. `running` is stamped when a turn is handed to a session,
+  # so the column also holds rows that have gone back to sleep on their own wake.
+  # A session no start path will run before that wake cannot hold a slot against
+  # anything.
   test "a running row asleep on its own future wake does not hold the fleet at cap" do
     seed(current_5h: 0.02, current_7d: 0.10)
     @setting.update!(spot_max_concurrent_sessions: 2)
     2.times { |i| running_session(i) }
     assert SpotGateService.evaluate.held?, "two of two slots taken"
 
-    arm_wake!(Session.where(status: :running).last, at: 20.minutes.from_now)
+    # Its worker row goes with it — a sleeper is a row with NO job at all.
+    asleep = Session.where(status: :running).last
+    GoodJob::Job.where(job_class: "AgentSessionJob")
+                .where("serialized_params -> 'arguments' @> ?", [ asleep.id ].to_json).delete_all
+    arm_wake!(asleep, at: 20.minutes.from_now)
     decision = SpotGateService.evaluate
 
     assert decision.allowed?, "a session Zimmer refuses to start before its wake holds no slot"
     assert_equal 1, decision.active_sessions
   end
 
-  # The detail string is what /inference and `get_spot_policy` print, and the
-  # queue is the whole explanation for a slot count above the live agent-process
-  # count. Without it the number reads as a broken counter.
-  test "a fleet-cap hold names the worker pool when turns are queued behind it" do
+  # THE CEILING CHANGE. A turn queued behind the `agents` pool has taken no slot,
+  # so it does not fill the cap — it is named beside the count instead. This is
+  # the arithmetic that had the deployment holding every spot session at "25 of
+  # 10 slots taken (8 on a worker, 17 waiting for one)".
+  test "a turn queued for a worker does not fill a slot, and is named beside the count" do
     seed(current_5h: 0.02, current_7d: 0.10)
     @setting.update!(spot_max_concurrent_sessions: 2)
-    working = running_session(0)
-    GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
-                         job_class: "AgentSessionJob",
-                         serialized_params: { "arguments" => [ working.id ] },
-                         scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
-    running_session(1)
+    running_session(0)
+    3.times { |i| queued_for_a_worker!(running_session(i + 1, on_a_worker: false)) }
 
     decision = SpotGateService.evaluate
 
-    assert_equal "fleet_at_cap", decision.reason
-    assert_equal 2, decision.active_sessions
-    assert_equal 1, decision.awaiting_sessions
-    assert_match(/2 of 2 session slots taken/, decision.detail)
-    assert_match(/1 on a worker, 1 waiting for one/, decision.detail)
+    assert decision.allowed?, "one worker of two is busy; three queued turns do not close the gate"
+    assert_equal 1, decision.active_sessions
+    assert_equal 3, decision.awaiting_sessions
+
+    # And when the cap IS reached, the queue is still reported rather than counted.
+    running_session(4)
+    held = SpotGateService.evaluate
+
+    assert_equal "fleet_at_cap", held.reason
+    assert_equal 2, held.active_sessions
+    assert_match(/2 of 2 session slots taken/, held.detail)
+    assert_match(/3 more turns waiting for one of the #{RunningTurns.worker_slots} worker slots, not counted/,
+      held.detail)
   end
 
   test "the cap is the operator's, and raising it runs work immediately" do
@@ -1053,8 +1080,25 @@ class SpotGateServiceTest < ActiveSupport::TestCase
 
   private
 
-  def running_session(index, genesis: SessionGenesis::WEB_UI)
-    Session.create!(git_root: "https://github.com/t/r.git", prompt: "running #{index}",
+  # A session with a WORKER on its turn, since the cap counts nothing else. Pass
+  # `on_a_worker: false` for the rows the cap deliberately skips.
+  def running_session(index, genesis: SessionGenesis::WEB_UI, on_a_worker: true)
+    record = Session.create!(git_root: "https://github.com/t/r.git", prompt: "running #{index}",
                     genesis: genesis, status: :running, agent_runtime: "claude_code")
+    on_a_worker ? on_a_worker!(record) : record
   end
+
+  # The `agents` job row a worker leaves while it is performing: picked up
+  # (`performed_at`) and not finished. `performed_at: nil` is the same row still
+  # queued, which is the population the cap stopped counting.
+  def turn_row!(session, performed_at: nil)
+    GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
+                         job_class: "AgentSessionJob",
+                         serialized_params: { "arguments" => [ session.id ] },
+                         scheduled_at: 2.minutes.ago, performed_at: performed_at)
+    session
+  end
+
+  def on_a_worker!(session) = turn_row!(session, performed_at: 1.minute.ago)
+  def queued_for_a_worker!(session) = turn_row!(session)
 end

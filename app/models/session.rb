@@ -366,10 +366,12 @@ class Session < ApplicationRecord
   # idle at a prompt. Runtime-scoped because a Codex session spends nothing
   # against a Claude account.
   #
-  # Read through RunningTurns rather than counting the column, so a row that is
-  # asleep on its own future wake with no worker on it does not hold a slot in
-  # the fleet cap. See that concern for why the column holds more than the turns
-  # a worker is executing, and #running_claude_code_turns for the split.
+  # Read through RunningTurns rather than counting the column, and narrowed to
+  # the turns a worker is EXECUTING: `running` is stamped when a turn is handed
+  # to a session, so the column also holds turns queued behind the `agents` pool
+  # and rows asleep on their own wake, and neither of those occupies the fleet.
+  # See that concern for why, and #running_claude_code_turns for the split the
+  # gate reports beside this number.
   #
   # Any database trouble reads as zero rather than raising: the spot gate calls
   # this on the path that decides whether a session may start, and a monitoring
@@ -377,7 +379,7 @@ class Session < ApplicationRecord
   # AdapterError rather than StatementInvalid, so the rescue is deliberately the
   # whole ActiveRecordError family.
   def self.running_claude_code_count
-    running_claude_code_turns.total
+    running_claude_code_turns.on_a_worker
   rescue ActiveRecord::ActiveRecordError
     0
   end

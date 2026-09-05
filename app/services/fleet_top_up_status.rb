@@ -27,7 +27,7 @@ class FleetTopUpStatus
   def initialize(setting:, turns:, now: Time.current)
     @setting = setting
     @turns = turns
-    @running_sessions = turns.total
+    @running_sessions = turns.on_a_worker
     @now = now
     @max_sessions = FleetIdleMonitor.max_sessions(setting)
     @threshold = FleetIdleMonitor.idle_threshold(setting)
@@ -36,8 +36,8 @@ class FleetTopUpStatus
     @last_fired_at = setting.fleet_idle_event_fired_at
   end
 
-  # Whether the fleet is running few enough sessions to count as idle. Only the
-  # first of the monitor's three questions — a fleet under its ceiling can still
+  # Whether a worker is running few enough turns for the fleet to count as idle.
+  # Only the first of the monitor's three questions — a fleet under its ceiling can still
   # be held off by an auth-outage park or an empty account pool, both of which
   # the rest of this page already reports in their own words.
   def under_ceiling?
@@ -49,23 +49,35 @@ class FleetTopUpStatus
     [ max_sessions - running_sessions, 0 ].max
   end
 
-  # The two halves of #running_sessions. `running` is stamped when a turn is
-  # handed to a session and the `agents` queue sits between that and a worker
-  # picking it up, so the total is executing turns plus turns waiting for a
-  # worker — see RunningTurns. Reported because "the fleet is running 15
-  # sessions" is what an operator disbelieves when 8 processes are alive.
-  def executing_sessions = turns.on_a_worker
+  # The `running` rows #running_sessions leaves out, reported beside it rather
+  # than folded into it. `running` is stamped when a turn is handed to a session
+  # and the `agents` queue sits between that and a worker picking it up, so the
+  # column holds turns waiting for a slot as well as turns on one — see
+  # RunningTurns. Reported because a queue that is not in the ceiling is still
+  # the answer to "why is nothing of mine moving".
   def awaiting_sessions = turns.awaiting_a_worker
 
-  # `running` rows dropped from the total: asleep on their own future wake with
-  # no worker on them, so Zimmer will not start them before that wake.
+  # The other rows outside the count: asleep on their own future wake with no
+  # worker on them and nothing queued, so Zimmer will not start them before that
+  # wake and no turn is coming for them in the meantime.
   def asleep_sessions = turns.asleep
 
   # How many agent turns this deployment can execute at once — the worker pool
-  # behind the `agents` queue, and the real ceiling on #executing_sessions
-  # whatever either policy number is set to. An operator reading a queue that
-  # never drains needs this number next to the one they configured.
+  # behind the `agents` queue, and the hard ceiling on #running_sessions whatever
+  # the policy number is set to. An operator reading a queue that never drains
+  # needs this number next to the one they configured.
   def worker_slots = RunningTurns.worker_slots
+
+  # Whether the configured ceiling is above that pool, and so out of the fleet's
+  # reach: the count is turns on a worker, so it can never get there and the
+  # fleet always reads as having room. The card says this out loud — a ceiling
+  # that never binds looks like a working limit until you notice it has never
+  # fired.
+  def ceiling_out_of_reach? = RunningTurns.ceiling_out_of_reach?(max_sessions)
+
+  # The ceiling actually in force: the smaller of what was configured and what
+  # the pool can run.
+  def effective_ceiling = RunningTurns.effective_ceiling(max_sessions)
 
   def state
     return :at_ceiling unless under_ceiling?
@@ -136,10 +148,10 @@ class FleetTopUpStatus
   def sentence
     case state
     when :at_ceiling
-      "The fleet has #{sessions} in flight#{split_clause} — at or over its ceiling of #{max_sessions}, " \
+      "The fleet has #{sessions} on a worker#{split_clause} — at or over its ceiling of #{max_sessions}, " \
         "so no top-up is due. The clock starts again when it drops below #{max_sessions}."
     when :clock_not_started
-      "The fleet has #{sessions} in flight#{split_clause}, under its ceiling of #{max_sessions}. The idle " \
+      "The fleet has #{sessions} on a worker#{split_clause}, under its ceiling of #{max_sessions}. The idle " \
         "clock starts at the next check, and the event is due #{threshold.inspect} after that.#{cooldown_clause}"
     when :inside_threshold
       "The fleet has been under its ceiling of #{max_sessions} for " \
@@ -151,7 +163,7 @@ class FleetTopUpStatus
       "Past the threshold and waiting out the #{min_fire_interval.inspect} cooldown — " \
         "#{distance_words(last_fired_at + min_fire_interval - now)} left."
     when :due
-      "The fleet has #{sessions} in flight#{split_clause} and has been under its ceiling past the " \
+      "The fleet has #{sessions} on a worker#{split_clause} and has been under its ceiling past the " \
         "threshold: the event fires at the next check, unless something is parked on an auth outage or " \
         "the account pool is empty."
     end
@@ -173,20 +185,19 @@ class FleetTopUpStatus
     "#{running_sessions} #{"session".pluralize(running_sessions)}"
   end
 
-  # Says where the number came from, and only when there is something to say —
-  # on a fleet whose every turn has a worker and nothing is asleep, the split is
-  # the same number twice. Where it is not, the queue behind the worker pool is
-  # the whole explanation for a count that looks too high.
+  # What the number leaves out, and only when there is something to leave out —
+  # on a fleet with an empty queue and nobody asleep it is the whole story on its
+  # own. Where it is not, these are the `running` rows an operator can see and
+  # the ceiling deliberately does not count.
   def split_clause
     parts = []
     if awaiting_sessions.positive?
-      parts << "#{executing_sessions} on a worker, #{awaiting_sessions} waiting for one behind " \
-               "the #{worker_slots}-slot agents pool"
+      parts << "#{awaiting_sessions} more waiting for one of the #{worker_slots} worker slots"
     end
-    parts << "#{asleep_sessions} more asleep on a wake and not counted" if asleep_sessions.positive?
+    parts << "#{asleep_sessions} asleep on a wake" if asleep_sessions.positive?
     return "" if parts.empty?
 
-    " (#{parts.join('; ')})"
+    " (#{parts.join(', ')} — not counted)"
   end
 
   def distance_words(seconds)

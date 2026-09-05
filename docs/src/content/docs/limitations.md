@@ -1383,7 +1383,8 @@ whole spot wake into one event, and the sharp edges are all about that concentra
 ### The idle-fleet event is sampled, latched and floored, and each of the three has an edge
 
 🟡 [`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress) fires when the deployment
-has been running fewer sessions than its configured ceiling for the whole of its configured stretch.
+has been running fewer sessions on a worker than its configured ceiling for the whole of its
+configured stretch.
 Idleness is a level rather than an edge, so `FleetIdleMonitor` manufactures one — and the machinery
 that does it has known limits:
 
@@ -1393,7 +1394,7 @@ that does it has known limits:
   `SessionStateMachine` hook closes the opposite gap — a session that starts and finishes between two
   ticks still re-arms — but nothing narrows the start. It is also why the stretch cannot be set below
   a minute.
-- **A backed-up spot queue no longer holds it off at all.** Only sessions with a turn in flight count
+- **A backed-up spot queue no longer holds it off at all.** Only sessions a worker is running count
   toward the ceiling, so the event can fire — spawning a **priority**, ungated session — while any
   number of spot sessions sit held or paused behind the gate. That is deliberate: the spawned session
   fills an idle machine rather than joining the queue, and the gate is what paces spot work against
@@ -1401,16 +1402,29 @@ that does it has known limits:
   whose backlog is mostly spot sees priority sessions started ahead of it while the gate holds. There
   is no signal on either side: the top-up trigger cannot see how deep the spot queue is, and the gate
   does not know a top-up is coming.
-- **A turn queued behind the worker pool still reads as a running session, and it should.**
+- **Neither ceiling can be reached above `GOOD_JOB_AGENTS_THREADS`, and nothing stops you setting one
+  there.** Both count only the turns a worker is *executing*, and the `agents` GoodJob lane is only
+  `GOOD_JOB_AGENTS_THREADS` (default 8) deep, so a ceiling of 10 on a pool of 8 is a ceiling the fleet
+  can never touch: the spot gate never reports `fleet_at_cap`, and top-up always sees the fleet as
+  having room — while work keeps queueing behind the same eight workers. The setting is deliberately
+  not clamped (the operator's number is theirs, and growing the pool is a deploy away), so the
+  mitigation is disclosure: both `/inference` cards and `get_spot_policy` say the ceiling is out of
+  reach and print `min(configured, GOOD_JOB_AGENTS_THREADS)` beside it. What that leaves is a
+  deployment whose only real concurrency control is the size of the worker pool — the quota ceilings
+  still pace spot spend, but the slot ceiling does nothing until you lower it under the pool.
+  **The shipped default is one of the unreachable ones**: `spot_max_concurrent_sessions` defaults to
+  10 against a pool of 8, so a deployment nobody has retuned renders that note from its first boot
+  and never holds spot work on `fleet_at_cap`. The top-up ceiling's default of 3 is under the pool
+  and behaves normally.
+- **A turn queued behind the worker pool still reads as a running session on the dashboard.**
   `sessions.status = running` is stamped when a turn is *handed to* a session, not when a worker
-  starts it, and the `agents` GoodJob lane is only `GOOD_JOB_AGENTS_THREADS` (default 8) deep. So on
-  a busy deployment a real share of both ceilings' count is turns waiting for a slot. `RunningTurns`
-  reports that split and `/inference` prints it, because the total alone reads as a broken counter
-  when half as many agent processes are alive
-  ([#957](https://github.com/tadasant/zimmer/issues/957)) — but the *count* deliberately includes
-  them, since a queued turn takes the next free worker and topping up on top of it only deepens the
-  queue. The consequence to know about: setting **Max sessions at once** above
-  `GOOD_JOB_AGENTS_THREADS` does not buy concurrency, it buys queue, and nothing stops you doing it.
+  starts it, so on a busy deployment a real share of the `running` rows are turns waiting for a slot.
+  They are excluded from both ceilings, and `RunningTurns` reports them so `/inference` can print
+  "17 more waiting for one of the 8 worker slots · not counted" — but every other status query,
+  including the session list, still calls them `running`
+  ([#957](https://github.com/tadasant/zimmer/issues/957)). So the ceiling figure on `/inference` is
+  legitimately smaller than the number of `running` sessions elsewhere in the UI, and the split is
+  the only thing that explains the gap.
 - **A `running` row asleep on its own wake is dropped from both ceilings, and nothing puts it back
   into `waiting`.** When a turn ends with something already in flight for the session — a queued
   message the handoff path picks up, or a recovery job — the row stays `running` while the session

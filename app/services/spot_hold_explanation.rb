@@ -165,9 +165,9 @@ class SpotHoldExplanation
   end
 
   def fleet_cap_why
-    "Every session slot is taken — #{@decision.active_sessions} of #{@decision.fleet_cap}. No quota " \
-      "window is holding anything. Priority sessions occupy slots too, and are meant to crowd spot " \
-      "work out of them."
+    "Every session slot is taken — #{@decision.active_sessions} of #{@decision.fleet_cap} being run by " \
+      "a worker right now. No quota window is holding anything. Priority sessions occupy slots too, and " \
+      "are meant to crowd spot work out of them."
   end
 
   # Names only the windows whose budget is actually SPENT, not every window that

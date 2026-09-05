@@ -287,8 +287,9 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     session.update!(metadata: (session.metadata || {}).merge(
       SpotSessionHold::HELD_AT => 11.hours.ago.utc.iso8601,
       SpotSessionHold::HELD_REASON => "fleet_at_cap",
-      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken. Every " \
-                                      "running session counts, priority included — priority work is " \
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken (17 more turns " \
+                                      "waiting for one of the 8 worker slots, not counted). Every session " \
+                                      "a worker is running counts, priority included — priority work is " \
                                       "meant to crowd spot work out. Raise the limit on /inference to widen it.",
       SpotSessionHold::HELD_RETRY_AT => 10.hours.ago.utc.iso8601,
       SpotSessionHold::HELD_COUNT => 145,
@@ -751,10 +752,17 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # The backlog top-up card below the gate is measured on the same visit. Its clock
   # state is set to `cooling_down` deliberately: that branch renders the longest
   # sentence of the six, so the card is at its widest rather than at its emptiest.
+  #
+  # Both ceilings are set ABOVE the `agents` worker pool, which is the state that
+  # renders the two amber "this ceiling can never be reached" notes — a paragraph
+  # each, carrying two numbers and an inline `<code>`, and the widest prose either
+  # card's knob column holds.
   test "inference does not overflow horizontally on a phone" do
     AppSetting.editable.update!(spot_gating_enabled: true,
                                 spot_reserve_five_hour_pct: 20,
                                 spot_reserve_weekly_pct: 20,
+                                spot_max_concurrent_sessions: RunningTurns.worker_slots + 2,
+                                fleet_idle_max_sessions: RunningTurns.worker_slots + 3,
                                 fleet_idle_since: 10.minutes.ago,
                                 fleet_idle_event_fired_at: 20.minutes.ago)
     3.times do |i|
@@ -777,6 +785,9 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # blocks on it that have to collapse below `sm`.
     assert_selector "#fleet-top-up-status"
     assert_selector "#fleet-top-up-next-fire"
+    # The two notes, on screen while the geometry is measured.
+    assert_selector "#spot-cap-above-worker-pool"
+    assert_selector "#fleet-top-up-ceiling-above-worker-pool"
 
     assert_no_horizontal_overflow("inference")
 

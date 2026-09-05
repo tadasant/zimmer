@@ -43,10 +43,15 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     )
   end
 
+  # With a WORKER on its turn, since the fleet cap counts nothing else.
   def running_session(genesis: SessionGenesis::GITHUB_ISSUE, runtime: "claude_code", metadata: {})
-    Session.create!(git_root: "https://github.com/t/r.git", prompt: "work", genesis: genesis,
+    record = Session.create!(git_root: "https://github.com/t/r.git", prompt: "work", genesis: genesis,
                     status: :running, agent_runtime: runtime, session_id: "cli-#{SecureRandom.hex(4)}",
                     metadata: metadata)
+    GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
+      job_class: "AgentSessionJob", serialized_params: { "arguments" => [ record.id ] },
+      scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
+    record
   end
 
   def paused_session(paused_at: 1.hour.ago, genesis: SessionGenesis::GITHUB_ISSUE)
@@ -208,6 +213,30 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
 
     assert_equal 1, result.resumed, "one running session against a cap of 2 leaves one slot"
     assert_equal 2, result.held
+  end
+
+  # The budget counts every turn IN FLIGHT, not just the ones on a worker, because
+  # a session this sweep resumes joins the `agents` queue rather than a worker.
+  # Reading the cap's own count would leave the next sweep's headroom identical to
+  # this one's, and a fleet whose workers were all busy would drain the entire
+  # pause queue into the lane a batch at a time.
+  test "the resume budget counts turns queued for a worker, so a second sweep does not repeat it" do
+    seed(current_5h: 0.70)
+    @setting.update!(spot_max_concurrent_sessions: 2)
+    running_session(genesis: SessionGenesis::WEB_UI)
+    3.times { |i| paused_session(paused_at: (10 - i).hours.ago) }
+
+    first = SpotSessionPause.sweep!
+    assert_equal 1, first.resumed, "one worker busy against a cap of 2 leaves one slot"
+
+    # The session just resumed is `running` with its job enqueued — in flight, not
+    # on a worker. The fleet is at its cap even though only one turn is executing.
+    assert_equal 1, Session.running_claude_code_turns.on_a_worker
+    assert_equal 1, Session.running_claude_code_turns.awaiting_a_worker
+
+    second = SpotSessionPause.sweep!
+    assert_equal 0, second.resumed, "the slot the first sweep spent is not offered again"
+    assert_equal 2, second.held
   end
 
   test "a sweep resumes at most MAX_RESUMES_PER_SWEEP sessions" do
