@@ -1507,35 +1507,60 @@ module SessionStateMachine
     Rails.logger.info "[SessionStateMachine] Debug info preserved for session #{id}"
   end
 
-  # Clear stale MCP failure flags from custom_metadata when resuming a session.
-  # This allows MCP connections to be re-checked fresh on restart, even if
-  # the previous attempt failed. Without this, the new job would immediately
-  # see the old should_fail_session=true flag and fail again.
+  # The custom_metadata keys a resume drops outright. Each one is a verdict the
+  # PREVIOUS run reached, and the new one has to reach it for itself.
+  STALE_MCP_FAILURE_KEYS = %w[
+    should_fail_session
+    mcp_connection_checked
+    mcp_failed_servers
+    mcp_failure_reason
+  ].freeze
+
+  # Reset the MCP metadata a resuming session must not inherit from its last run.
   #
-  # Clears: should_fail_session, mcp_connection_checked, mcp_failed_servers,
-  #         mcp_failure_reason, mcp_servers_status
+  # The failure flags in STALE_MCP_FAILURE_KEYS are dropped. Without that, the new
+  # job would immediately see the old should_fail_session=true and fail again
+  # before its servers had any chance to connect.
+  #
+  # `mcp_servers_status` is RESET to the `pending` floor rather than dropped, and
+  # that difference is the fix for #465. Its entries do all have to go — a
+  # `connected` recorded by the process that just exited says nothing about the
+  # one about to start — but *deleting the key* is what left it missing entirely
+  # on a session that plainly had servers: every resume wiped it, and it came back
+  # only once the next run got far enough for TranscriptPollerService to reach
+  # McpStatusPersisting. A run that died before its transcript appeared, or that
+  # was still cloning and preparing when someone looked, had no key at all — and
+  # an absent key reads to the REST API and get_session as "no servers
+  # configured", or worse, as "the servers never came up". `pending` says what is
+  # actually true at a resume: these servers are configured, and this run has not
+  # connected them yet. The detector upgrades each entry as its evidence arrives.
+  #
+  # A session with no trackable servers keeps losing the key outright, which is
+  # the honest answer for it.
   def clear_stale_mcp_failure_metadata
     return unless custom_metadata.present?
 
-    mcp_keys = %w[
-      should_fail_session
-      mcp_connection_checked
-      mcp_failed_servers
-      mcp_failure_reason
-      mcp_servers_status
-    ]
+    keys_to_clear = STALE_MCP_FAILURE_KEYS & custom_metadata.keys
+    reset_status = all_mcp_servers.index_with { { "status" => "pending" } }
 
-    # Only update if there are MCP keys to clear
-    keys_to_clear = mcp_keys & custom_metadata.keys
-    return if keys_to_clear.empty?
+    # Nothing to drop and the floor is already what is stored: skip the UPDATE
+    # rather than re-issue an identical one on every resume.
+    return if keys_to_clear.empty? && (custom_metadata["mcp_servers_status"] || {}) == reset_status
 
     # Note: Using update_column bypasses optimistic locking, but this is acceptable
     # since resume only happens from non-monitoring states (needs_input, failed, waiting)
     # where MCP metadata isn't being actively written.
-    cleaned_metadata = custom_metadata.except(*mcp_keys)
+    cleaned_metadata = custom_metadata.except(*STALE_MCP_FAILURE_KEYS)
+    cleaned_metadata = if reset_status.empty?
+      cleaned_metadata.except("mcp_servers_status")
+    else
+      cleaned_metadata.merge("mcp_servers_status" => reset_status)
+    end
     update_column(:custom_metadata, cleaned_metadata)
 
-    Rails.logger.info "[SessionStateMachine] Cleared stale MCP failure metadata for session #{id}: #{keys_to_clear.join(', ')}"
+    Rails.logger.info "[SessionStateMachine] Reset MCP metadata for session #{id} on resume " \
+                      "(cleared: #{keys_to_clear.presence&.join(', ') || 'none'}; " \
+                      "mcp_servers_status floored to pending for: #{reset_status.keys.presence&.join(', ') || 'none'})"
   rescue => e
     # Alert: this is the callback whose whole purpose is to stop the *next* run
     # from re-failing on a stale should_fail_session flag. Swallowed, the resume

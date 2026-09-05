@@ -960,10 +960,92 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_nil session.custom_metadata["mcp_connection_checked"], "mcp_connection_checked should be cleared"
     assert_nil session.custom_metadata["mcp_failed_servers"], "mcp_failed_servers should be cleared"
     assert_nil session.custom_metadata["mcp_failure_reason"], "mcp_failure_reason should be cleared"
-    assert_nil session.custom_metadata["mcp_servers_status"], "mcp_servers_status should be cleared"
+
+    # mcp_servers_status is reset, not dropped: the previous run's `failed` verdict
+    # goes, but the configured server stays listed so the key never reads as
+    # "no servers configured" (#465). The fixture configures context7.
+    assert_equal({ "context7" => { "status" => "pending" } },
+      session.custom_metadata["mcp_servers_status"],
+      "mcp_servers_status should be floored to pending, not deleted")
 
     # Other keys should be preserved
     assert_equal "should_be_preserved", session.custom_metadata["other_key"], "other_key should be preserved"
+  end
+
+  # zimmer#465: resume used to DELETE mcp_servers_status outright. That is what
+  # made the key absent on sessions that plainly had MCP servers — every resume
+  # wiped it, and it only came back once the next run got far enough for
+  # TranscriptPollerService to reach McpStatusPersisting. Until then a
+  # get_session/REST reader saw no key at all, which is indistinguishable from
+  # "no servers configured".
+  test "resume leaves a pending entry for every configured server instead of dropping the key" do
+    session = sessions(:waiting)
+    session.update!(
+      status: :needs_input,
+      custom_metadata: {
+        "mcp_servers_status" => {
+          "context7" => { "status" => "connected", "connected_at" => "2026-09-04T10:00:00Z" }
+        }
+      }
+    )
+
+    session.resume!
+    session.reload
+
+    statuses = session.custom_metadata["mcp_servers_status"]
+    assert_not_nil statuses, "mcp_servers_status must survive a resume"
+    assert_equal [ "context7" ], statuses.keys
+    assert_equal "pending", statuses.dig("context7", "status"),
+      "the previous run's connected verdict must not be carried into the new one"
+    assert_nil statuses.dig("context7", "connected_at"),
+      "the previous run's connected_at must not survive either"
+  end
+
+  test "resume floors auto-injected servers too, not just user-selected ones" do
+    session = sessions(:needs_input) # mcp_servers: []
+    session.update!(custom_metadata: { "injected_mcp_servers" => [ "zimmer-self-session" ] })
+
+    session.resume!
+    session.reload
+
+    assert_equal({ "zimmer-self-session" => { "status" => "pending" } },
+      session.custom_metadata["mcp_servers_status"])
+    assert_equal [ "zimmer-self-session" ], session.custom_metadata["injected_mcp_servers"],
+      "unrelated custom_metadata keys must be preserved"
+  end
+
+  test "resume drops mcp_servers_status entirely when the session has no trackable servers" do
+    session = sessions(:needs_input) # mcp_servers: [], nothing injected
+    session.update!(
+      custom_metadata: { "mcp_servers_status" => { "gone" => { "status" => "connected" } } }
+    )
+
+    session.resume!
+    session.reload
+
+    assert_nil session.custom_metadata["mcp_servers_status"],
+      "a server-less session has no floor to stand on, so the key goes"
+  end
+
+  # The thrash guard: an unchanged floor must not re-issue the write. Without it,
+  # every resume of every session would touch custom_metadata and re-broadcast the
+  # session card for no change at all.
+  test "resume issues no custom_metadata UPDATE when the floor is already what is stored" do
+    session = sessions(:waiting)
+    session.update!(
+      status: :needs_input,
+      custom_metadata: { "mcp_servers_status" => { "context7" => { "status" => "pending" } } }
+    )
+
+    writes = 0
+    counter = ->(*, payload) { writes += 1 if payload[:sql].to_s.match?(/UPDATE.*custom_metadata/im) }
+    ActiveSupport::Notifications.subscribed(counter, "sql.active_record") do
+      session.resume!
+    end
+    session.reload
+
+    assert_equal 0, writes, "an unchanged floor must not re-issue the custom_metadata UPDATE"
+    assert_equal({ "context7" => { "status" => "pending" } }, session.custom_metadata["mcp_servers_status"])
   end
 
   test "resume does not fail when custom_metadata is empty" do

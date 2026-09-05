@@ -643,6 +643,23 @@ vanishes ([#196](https://github.com/tadasant/zimmer/issues/196)).
 One consumer treats it specially: `McpServerBackfill#detect_lost_mcp_servers` skips `pending` entries
 when it looks for servers a regenerated config dropped, since a placeholder is the absence of evidence
 rather than a server the session ever connected to.
+
+**The detector is not the only thing that applies that floor.** Seeding it per poll leaves the key
+absent for as long as no poll has reached `McpStatusPersisting` — the whole clone-and-prepare phase of
+every turn, and *forever* on a turn whose process died before it wrote a transcript, since
+`TranscriptPollerService` returns early when there is no transcript file to read. Worse, `resume` used
+to delete the key outright, so a session that had been reporting `connected` for days went back to
+having no key at all on its next turn ([#465](https://github.com/tadasant/zimmer/issues/465)).
+`Session#seed_mcp_servers_status_floor!` is the same floor with the same "only where no entry exists"
+safety property, applied by the paths that run before any detector can:
+
+| Where | When |
+| --- | --- |
+| `SessionStateMachine#clear_stale_mcp_failure_metadata` | on every `resume`, resetting each entry to `pending` instead of dropping the key |
+| `AgentSessionJob`, immediately before the spawn | once `air prepare` has run, so auto-injected servers are in `all_mcp_servers` and get an entry too |
+
+Both are no-ops when every trackable server already has an entry, so neither adds an `UPDATE` or a
+session-card broadcast to a steady-state turn.
 :::
 
 :::note[The runtime credential stores are host-global and shared across sessions]
