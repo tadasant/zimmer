@@ -136,7 +136,17 @@ module SessionStateMachine
         transitions from: :running, to: :needs_input
         after do
           log_state_change("Session paused, waiting for input")
-          warn_if_pr_goal_captured_no_url
+          # Deferred on exactly the pauses the announcement below is deferred on,
+          # and for the same reason: a recovery pause is Zimmer restarting its own
+          # interrupted process, so nothing about this session's PR work is
+          # settled and nobody is being told about the pause anyway. The budget is
+          # one warning per session, so spending it here spends it at the moment it
+          # carries the least information — every PR-goal session has no PR at
+          # minute six. Session 5679 spent its whole budget on a deploy interrupt
+          # six minutes in, ran for two more days, opened a PR through a route the
+          # hook did not recognise, and came to rest with nothing recorded and
+          # nothing said (#558).
+          warn_if_pr_goal_captured_no_url unless announcement_deferred_to_recovery_sweep?
           cleanup_running_job
           clear_auth_recovery_budget
           if status_summary_fork?
@@ -888,8 +898,15 @@ module SessionStateMachine
   #
   # Bumps its own marker rather than taking one, because it is not part of a
   # transition and has no other consumer to share with.
+  #
+  # The missing-PR warning rides along, because the `pause` callback deferred it
+  # on the same test and it has the same expiry: the session is now resting in the
+  # action queue with nobody coming for it, so this pause turned out to be the
+  # rest state after all, and the warning is due. Last, and after the
+  # announcement, because the announcement is the load-bearing half.
   def announce_deferred_needs_input!
     announce_needs_input(bump_needs_input_transition_counter)
+    warn_if_pr_goal_captured_no_url
   end
 
   # Whether a `needs_input` announcement for this session is being DEFERRED to a
@@ -1108,6 +1125,11 @@ module SessionStateMachine
   # sessions `pause` never sees. The hook deduplicates on the warning log
   # itself, so a session that pauses, warns and later archives is warned once,
   # not twice.
+  #
+  # `pause` skips the call on a recovery pause, which is not a rest state at all,
+  # and #announce_deferred_needs_input! makes it later if that recovery never
+  # arrives (#558). Since the budget is one warning per session, the call site
+  # that spends it decides where in the session's life the warning lands.
   #
   # The rescue is not redundant with the hook's own: the hook's guard cannot
   # cover the constant lookup that reaches it, and on `fail` and `archive` an
