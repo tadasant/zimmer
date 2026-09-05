@@ -50,6 +50,31 @@ class DashboardSchemaCoverageTest < ActiveSupport::TestCase
     MESSAGE
   end
 
+  # ATTRIBUTE_TYPES coverage alone does not make a column visible: an attribute that
+  # reaches none of the three page lists is declared and rendered nowhere, which is the
+  # same silence this file exists to end, one level down. The check is "at least one
+  # page", not "the show page", because hiding a field from the show page while keeping
+  # it on the form is a real decision the panel already makes — McpOauthCredential's
+  # `access_token` is editable but not displayed.
+  test "every declared attribute reaches at least one page" do
+    unrendered = {}
+
+    DASHBOARD_PATHS.each do |path|
+      dashboard = dashboard_class_for(path)
+      rendered = dashboard::COLLECTION_ATTRIBUTES + dashboard::SHOW_PAGE_ATTRIBUTES + dashboard::FORM_ATTRIBUTES
+      orphans = dashboard::ATTRIBUTE_TYPES.keys - rendered
+      unrendered[dashboard.name] = orphans if orphans.any?
+    end
+
+    assert_empty unrendered, <<~MESSAGE
+      These dashboards declare attributes that appear on no page — not the index, not the
+      show page, not the form. Add each one to whichever list it belongs on, or drop it
+      from ATTRIBUTE_TYPES and record it in DELIBERATELY_OMITTED instead.
+
+      #{unrendered.map { |name, attrs| "  #{name}: #{attrs.join(', ')}" }.join("\n")}
+    MESSAGE
+  end
+
   test "DELIBERATELY_OMITTED only names columns that exist" do
     stale = {}
 

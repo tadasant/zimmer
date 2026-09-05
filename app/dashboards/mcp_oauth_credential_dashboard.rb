@@ -19,7 +19,10 @@ class McpOauthCredentialDashboard < Administrate::BaseDashboard
     resource: Field::String,
     token_endpoint: Field::String,
     # Set when the server rejected a refresh grant, so Zimmer stops retrying one
-    # and re-runs the full authorization flow instead.
+    # and re-runs the full authorization flow instead. Readable but not on the
+    # form: McpOauthController and McpOauthRuntimeReconciler derive it from
+    # whether a token exchange actually returned a refresh token, so a hand
+    # edit here would desync the Connectors page until the next exchange.
     refresh_token_unsupported: Field::Boolean,
     created_at: Field::DateTime,
     updated_at: Field::DateTime
@@ -67,7 +70,6 @@ class McpOauthCredentialDashboard < Administrate::BaseDashboard
     scopes
     resource
     token_endpoint
-    refresh_token_unsupported
   ].freeze
 
   COLLECTION_FILTERS = {}.freeze
