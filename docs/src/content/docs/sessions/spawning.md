@@ -1202,7 +1202,7 @@ not deciding the same thing:
 
 Two residual gaps, in opposite directions — how long a heartbeat-only deployment takes to notice a
 killed worker, and how a live worker can be mistaken for a dead one — are in
-[Known limitations](/limitations/#a-killed-worker-reads-as-alive-for-up-to-5-minutes-and-a-follow-up-sent-in-that-window-is-dropped).
+[Known limitations](/limitations/#a-killed-worker-reads-as-alive-for-up-to-5-minutes-and-a-follow-up-sent-in-that-window-does-not-run).
 
 ### Standing down does not throw the prompt away
 
@@ -1232,7 +1232,15 @@ Four prompts are deliberately *not* queued, because for each of them queuing is 
 
 Every one of those is written to the session's own timeline rather than passed over silently — the
 silence is the defect being fixed, so a *recorded* drop is not this bug. A queue write that fails is
-logged at `error` for the same reason.
+logged at `error` for the same reason, carrying the whole prompt so it can be re-sent by hand.
+
+One interaction is worth naming, because it points back at the same subsystem. `Trigger#follow_up_session!`
+treats *any* pending queue row as already representing a fire — it coalesces a recurring fire onto one,
+and on its `running?` branch it answers `:skipped_pending_exists`, which counts as a success and lets the
+wake group be held. So for the one turn a parked prompt sits in the queue, a wake or scheduled fire
+landing in that window is coalesced into it rather than delivered on its own. The window is a single turn
+boundary, the same property already held for the two other writers of this queue, and `record_missed_fire!`
+counts and alerts on a run of them — but it is a widening, not a nil change.
 
 ## One live agent process per session
 

@@ -985,8 +985,10 @@ class SpotSessionHold
       log_buffer&.add(message, level: "warning")
       session.logs.create!(level: "warning", content: message) if log_buffer.nil?
     rescue StandardError => e
-      # Never lose the prompt to a queue failure: fall back to a job of its own,
-      # which the concurrency guard may drop but which at least still carries it.
+      # Never lose the prompt to a queue failure: fall back to a job of its own.
+      # That job may be refused by the concurrency guard — which parks the prompt
+      # back in this same queue (Sessions::RequeueSkippedPrompt) rather than
+      # dropping it, so the fallback ends where the write was trying to go.
       Rails.logger.warn(
         "[SpotSessionHold] Could not queue a deferred prompt for session #{session.id}: #{e.class}: #{e.message}"
       )

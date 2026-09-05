@@ -2485,7 +2485,7 @@ What that does not buy:
   no other writer to race and nothing to merge into. `Session#record_explicit_mcp_servers` is the
   in-memory form for those surfaces; `#record_explicit_mcp_servers!` is the persisted twin.
 
-### A killed worker reads as alive for up to 5 minutes, and a follow-up sent in that window is dropped
+### A killed worker reads as alive for up to 5 minutes, and a follow-up sent in that window does not run
 
 [Stale job supersession](/sessions/spawning/#stale-job-supersession) asks whether the worker holding a
 job's lock is still alive, rather than guessing from the job's age. GoodJob answers that from either an

@@ -58,22 +58,35 @@ module Sessions
   #    and a `caller` row stranded on an archived session is precisely what the
   #    archive-strand alert pages on. `#refuse_archived_session` would have refused
   #    this turn a few lines further down anyway.
-  # 3. **A status-summary fork's prompt.** A fork answers one question and refuses
-  #    every other turn (`#refuse_non_summary_fork_turn`), and it must never take a
-  #    slot in the action queue or page anyone — the same carve-out
-  #    `SessionStateMachine`'s `pause` callback makes.
+  # 3. **A status-summary fork's NON-summary prompt.** A fork answers one question
+  #    and refuses every other turn (`#refuse_non_summary_fork_turn`), and it must
+  #    never take a slot in the action queue or page anyone — the same carve-out
+  #    `SessionStateMachine`'s `pause` callback makes. The summary request itself is
+  #    exempted here just as that guard exempts it, so the one turn a fork may take
+  #    is queued rather than dropped.
   # 4. **A prompt already sitting in the queue verbatim.** Two jobs carrying one
   #    prompt is a real shape here — a trigger that queued a row and a delivery job
   #    that raced it — and a second copy costs the session a duplicate turn. The
   #    same coalesce `Trigger#follow_up_session!` makes on its own `running?` branch.
+  #    Best-effort rather than a guarantee: two skipped jobs carrying one prompt can
+  #    both read an empty queue before either writes, and a caller who deliberately
+  #    sends the same text twice has the second copy coalesced into the first. Both
+  #    outcomes are logged, so neither is silent.
   #
   # Every one of those is LOGGED on the session's own timeline rather than passed
   # over, because "why did nothing happen to this session" is asked from there.
   # Silence is the defect being fixed; a drop that is written down is not this bug.
   class RequeueSkippedPrompt
-    # Cap on the prompt echoed into the session's timeline. Matches the cap the
-    # job's other refusal paths use for the same reason.
+    # Cap on the prompt echoed into the session's timeline when the prompt IS
+    # queued. Short on purpose: the log line only has to identify which prompt was
+    # saved, and the queue row next to it holds the whole thing. Matches the cap the
+    # job's other refusal paths use.
     PROMPT_LOG_MAX_CHARS = AgentSessionJob::REFUSED_PROMPT_LOG_MAX_CHARS
+
+    # Cap used when the prompt was NOT queued. Generous, because in that case this
+    # log line is the only surviving copy and a human re-sends it by hand — the same
+    # reasoning, and the same number, as Sessions::ParkUndeliveredTurn.
+    UNDELIVERED_PROMPT_LOG_MAX_CHARS = 4_000
 
     # @param session [Session] the session whose turn was skipped
     # @param prompt [String, nil] the prompt the skipped job was carrying
@@ -106,13 +119,15 @@ module Sessions
       position = queue!
       add_log(
         "The prompt this job was carrying was NOT lost: it is queued at position #{position} and is " \
-        "delivered when job #{@holder_job_id || "the one holding this session"} ends its turn. #{quoted_prompt}",
+        "delivered when job #{@holder_job_id || "the one holding this session"} ends its turn. " \
+        "#{quoted_prompt(PROMPT_LOG_MAX_CHARS)}",
         level: "warning"
       )
       Rails.logger.warn(
         "[Sessions::RequeueSkippedPrompt] Session #{@session.id} queued a prompt at position #{position} " \
         "after its job was skipped by the concurrency guard (holder=#{@holder_job_id.inspect})"
       )
+      broadcast_queue
       :queued
     rescue => e
       # Never let the requeue become the thing that breaks the guard. The prompt is
@@ -141,7 +156,13 @@ module Sessions
       # has been carrying, and archive/fork are facts about the row now.
       @session.reload
       return :archived if @session.archived?
-      return :summary_fork if @session.status_summary_fork?
+      # Exempt the one prompt a fork IS allowed to take, exactly as
+      # AgentSessionJob#refuse_non_summary_fork_turn exempts it. Without this the
+      # carve-out would be wider than the guard it mirrors, and a re-delivered
+      # summary request would be dropped rather than queued.
+      if @session.status_summary_fork? && !SessionStatusSummaryGenerator.fork_prompt?(@prompt)
+        return :summary_fork
+      end
       return :already_queued if @session.enqueued_messages.pending.exists?(content: @prompt)
 
       nil
@@ -175,9 +196,31 @@ module Sessions
       end
     end
 
+    # How many times a lost position race is re-tried before the prompt is given up
+    # on. `max(position) + 1` is read outside any lock — the same shape the two other
+    # writers of this queue use — so two guard-skipped jobs landing together, or a
+    # race with the renumbering loop in EnqueuedMessageProcessorService, can both
+    # compute the same number and lose the deferred `(session_id, position)`
+    # constraint. That is exactly the concurrency this code lives in, and losing the
+    # prompt to it would reproduce the bug being fixed one layer down. Recomputing
+    # and retrying resolves it: the loser reads the winner's row and takes the next
+    # slot.
+    QUEUE_WRITE_ATTEMPTS = 3
+
     # Tail of the queue: the turn already running is ahead of this prompt, and so is
     # anything queued before it. Same shape SpotSessionHold writes.
     def queue!
+      attempts = 0
+      begin
+        attempts += 1
+        create_at_tail!
+      rescue ActiveRecord::RecordNotUnique
+        retry if attempts < QUEUE_WRITE_ATTEMPTS
+        raise
+      end
+    end
+
+    def create_at_tail!
       position = (@session.enqueued_messages.maximum(:position) || 0) + 1
       @session.enqueued_messages.create!(
         content: @prompt,
@@ -194,8 +237,23 @@ module Sessions
       position
     end
 
-    def quoted_prompt
-      "The prompt was: #{@prompt.to_s.truncate(PROMPT_LOG_MAX_CHARS)}"
+    # @param max_chars [Integer] PROMPT_LOG_MAX_CHARS when the prompt survives in the
+    #   queue, UNDELIVERED_PROMPT_LOG_MAX_CHARS when this line is the only copy left.
+    def quoted_prompt(max_chars = UNDELIVERED_PROMPT_LOG_MAX_CHARS)
+      "The prompt was: #{@prompt.to_s.truncate(max_chars)}"
+    end
+
+    # Push the new row to the session page's queue panel, the way every other
+    # writer of this queue does. Without it the parked prompt is there but invisible
+    # until something else redraws — and invisibility is the defect being fixed.
+    # Isolated from the answer: a broadcast that fails must not turn a prompt that
+    # was saved into one reported as lost.
+    def broadcast_queue
+      BroadcastService.new.enqueued_messages_list(@session)
+    rescue => e
+      Rails.logger.warn(
+        "[Sessions::RequeueSkippedPrompt] Could not broadcast the queue for session #{@session.id}: #{e.message}"
+      )
     end
 
     def add_log(content, level:)

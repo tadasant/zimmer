@@ -219,14 +219,16 @@ class EnqueuedMessageDrainJob < ApplicationJob
     # every other test here — it has a session id, it is not held, nothing is
     # parked.
     #
-    # Delivering into it loses the message outright rather than merely delivering
-    # it early. EnqueuedMessageProcessorService would take its `resume!` branch
-    # (the handoff branch, the only one that clears `running_job_id`, is selected
-    # by the session already being `running`), claim and destroy the row, and
-    # enqueue a fresh AgentSessionJob — which the concurrency guard at the top of
-    # #perform then refuses as a duplicate of the live first-start job. Queue
-    # empty, no turn behind it, and the drain counts it a success so nothing
-    # retries or alerts.
+    # Delivering into it buys nothing and costs the message its place in the queue.
+    # EnqueuedMessageProcessorService would take its `resume!` branch (the handoff
+    # branch, the only one that clears `running_job_id`, is selected by the session
+    # already being `running`), claim and destroy the row, and enqueue a fresh
+    # AgentSessionJob — which the concurrency guard at the top of #perform then
+    # refuses as a duplicate of the live first-start job. That guard now hands the
+    # prompt to Sessions::RequeueSkippedPrompt rather than dropping it (#983), so
+    # the message survives — but it comes back at the TAIL, behind anything queued
+    # since, with its origin re-derived from its body. No turn runs either way, and
+    # the drain counts it a success, so nothing retries or alerts.
     #
     # Costs nothing on the paths this job is for: `pause` clears the marker
     # through cleanup_running_job, and SpotSessionHold#return_to_queue! and

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # The decision in isolation: what gets queued, what deliberately does not, and the
 # fact that every path leaves a record. The job-level reproduction of #983 — a
@@ -98,6 +99,16 @@ class Sessions::RequeueSkippedPromptTest < ActiveSupport::TestCase
     assert_empty @session.enqueued_messages.pending
   end
 
+  test "queues the ONE prompt a status-summary fork is allowed to take" do
+    # The carve-out must not be wider than AgentSessionJob#refuse_non_summary_fork_turn,
+    # which exempts the summary request itself.
+    @session.merge_metadata!(SessionStatusSummaryGenerator::FORK_MARKER => 12345)
+    prompt = "#{SessionStatusSummaryGenerator::FORK_PROMPT_OPENING} please summarise"
+
+    assert_equal :queued, requeue(prompt)
+    assert_equal prompt, @session.enqueued_messages.pending.sole.content
+  end
+
   test "does not queue a second copy of a prompt already in the queue" do
     @session.enqueued_messages.create!(content: "The same wake", position: 1, status: "pending")
 
@@ -114,6 +125,29 @@ class Sessions::RequeueSkippedPromptTest < ActiveSupport::TestCase
     assert_empty @session.logs.reload
   end
 
+  test "a lost position race is retried rather than costing the prompt" do
+    # Two guard-skipped jobs computing max(position) + 1 at the same moment is the
+    # concurrency this service lives in. Losing the prompt to it would reproduce the
+    # bug one layer down, so the write recomputes and retries.
+    calls = 0
+    original = EnqueuedMessage.instance_method(:save!)
+    EnqueuedMessage.define_method(:save!) do |*args, **kwargs|
+      calls += 1
+      raise ActiveRecord::RecordNotUnique, "duplicate key" if calls == 1
+
+      original.bind(self).call(*args, **kwargs)
+    end
+
+    begin
+      assert_equal :queued, requeue("The prompt that lost a position race")
+    ensure
+      EnqueuedMessage.define_method(:save!, original)
+    end
+
+    assert_equal 2, calls, "the first write raised and the second recomputed its position"
+    assert_equal "The prompt that lost a position race", @session.enqueued_messages.pending.sole.content
+  end
+
   test "a queue write that fails is reported rather than swallowed" do
     EnqueuedMessage.any_instance.stubs(:save!).raises(ActiveRecord::StatementInvalid, "boom")
 
@@ -122,6 +156,8 @@ class Sessions::RequeueSkippedPromptTest < ActiveSupport::TestCase
     log = @session.logs.reload.find { |l| l.content.include?("could NOT be queued") }
     assert_not_nil log, "a prompt lost to a database error must not be lost silently too"
     assert_equal "error", log.level
+    assert_includes log.content, "A prompt that could not be saved",
+      "this line is the only surviving copy, so it has to carry the prompt"
   end
 
   test "decides from the row as it is now, not the stale object the job carried" do
