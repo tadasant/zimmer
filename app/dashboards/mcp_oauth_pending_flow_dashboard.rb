@@ -17,6 +17,11 @@ class McpOauthPendingFlowDashboard < Administrate::BaseDashboard
     client_secret: Field::String.with_options(searchable: false),
     redirect_uri: Field::String,
     scopes: Field::String,
+    # The RFC 8707 resource indicator to request, when the server advertises one.
+    resource: Field::String,
+    # True when a human is pasting the callback back in by hand rather than the
+    # browser redirect completing the flow.
+    manual: Field::Boolean,
     mcp_server_config: Field::String.with_options(searchable: false),
     expires_at: Field::DateTime,
     created_at: Field::DateTime,
@@ -46,6 +51,8 @@ class McpOauthPendingFlowDashboard < Administrate::BaseDashboard
     client_id
     redirect_uri
     scopes
+    resource
+    manual
     expires_at
     created_at
     updated_at
@@ -67,6 +74,8 @@ class McpOauthPendingFlowDashboard < Administrate::BaseDashboard
     client_secret
     redirect_uri
     scopes
+    resource
+    manual
     mcp_server_config
     expires_at
   ].freeze

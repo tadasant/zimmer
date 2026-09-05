@@ -115,6 +115,7 @@ same PR.** If it introduces a limitation, a hack, or a known-broken edge, add it
 | `docs/scripts/generate-icons.mjs`, `docs/scripts/zimmer-icon-source.jpg`, `public/icons/**`, `public/favicon.ico`, `docs/public/*.png`, `public/manifest.json` | `meta/contributing.md` |
 | `config.public_file_server.headers` | `operate/deploying.md` |
 | a migration that removes a column | `operate/deploying.md` (Dropping a column takes two deploys) |
+| a migration that adds a column | that model's `app/dashboards/*_dashboard.rb` — `/supervisor` renders only what `ATTRIBUTE_TYPES` names, silently, so `test/dashboards/dashboard_schema_coverage_test.rb` fails until the column is either on the dashboard or in its `DELIBERATELY_OMITTED` with a reason |
 
 Pages are `docs/src/content/docs/**`. A new page must also be added to the `sidebar`
 array in `docs/astro.config.mjs` — Starlight does not auto-discover it. `cd docs &&

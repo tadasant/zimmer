@@ -18,6 +18,17 @@ class UserDashboard < Administrate::BaseDashboard
     updated_at: Field::DateTime
   }.freeze
 
+  # DELIBERATELY_OMITTED
+  # columns that exist on the table and are intentionally not rendered here.
+  # test/dashboards/dashboard_schema_coverage_test.rb reads this, so an omission
+  # is a reviewed decision rather than a gap nobody noticed.
+  DELIBERATELY_OMITTED = [
+    # Rendered and edited through `slack_user_ids_list` above — Administrate has
+    # no array field, so the Postgres array is shown in its comma-separated view.
+    # The raw column would be a second, conflicting editor for the same data.
+    :slack_user_ids
+  ].freeze
+
   # COLLECTION_ATTRIBUTES
   # an array of attributes that will be displayed on the model's index page.
   COLLECTION_ATTRIBUTES = %i[
