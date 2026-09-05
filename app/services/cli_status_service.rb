@@ -385,7 +385,11 @@ class CliStatusService
       parts = cmd.strip.split
       stdout, _stderr, status = BoundedSubprocess.run(parts, timeout: VERSION_TIMEOUT)
       if SubprocessStatus.success?(status) && stdout.present?
-        output = stdout.strip
+        # BoundedSubprocess drains through readpartial, so stdout arrives tagged
+        # ASCII-8BIT. The `output.truncate(30)` fallback below is cached and
+        # rendered on /clis, and an arbitrary configured CLI is free to emit
+        # bytes that are not valid UTF-8.
+        output = AlertSnippet.utf8(stdout).strip
         break
       end
     end

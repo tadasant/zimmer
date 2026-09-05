@@ -19,6 +19,20 @@ class InertSubprocessTimeoutTest < ActiveSupport::TestCase
     assert_empty violations, InertSubprocessTimeoutGuard.report(violations)
   end
 
+  # The assertion above passes trivially over an empty file list, which is what a
+  # guard whose ROOT stopped resolving looks like from the outside.
+  test "the scan actually reaches the application tree" do
+    files = InertSubprocessTimeoutGuard.ruby_files
+
+    assert_operator files.length, :>, 300,
+      "only #{files.length} files scanned — ROOT or SCAN_DIRS no longer resolves"
+    assert_includes files, Rails.root.join("app/services/bounded_subprocess.rb").to_s
+    assert(files.any? { |path| path.end_with?(".rake") },
+      "lib/tasks/*.rake shells out too and is in scope")
+    assert(files.any? { |path| path.include?("/db/post_deploy/") },
+      "a post-deploy task runs unattended in production and is in scope")
+  end
+
   test "it catches the shape zimmer#908 was filed about" do
     findings = scan_source(<<~RUBY)
       def installed_cli_version
@@ -50,8 +64,11 @@ class InertSubprocessTimeoutTest < ActiveSupport::TestCase
   # capture3 is the site the issue happened to find. Every Open3 entry point
   # routes through `popen_run`, so they all inherit the ensure-then-join, and a
   # guard that knew only capture3 would wave the next one through.
+  # `pipeline*` goes through `pipeline_run`, whose ensure joins every stage's
+  # wait thread — the same defect, one method name away.
   test "it catches the rest of the Open3 family, not just capture3" do
-    %w[capture2 capture2e capture3 popen2 popen2e popen3].each do |method|
+    %w[capture2 capture2e capture3 popen2 popen2e popen3
+       pipeline pipeline_r pipeline_rw pipeline_start pipeline_w].each do |method|
       findings = scan_source("Timeout.timeout(1) { Open3.#{method}('true') }")
 
       assert_equal [ "Open3.#{method}" ], findings.map(&:subprocess_source),
@@ -103,6 +120,14 @@ class InertSubprocessTimeoutTest < ActiveSupport::TestCase
 
     # BoundedSubprocess itself: Open3.popen3, correctly, with no Timeout around it.
     assert_empty scan_source("Open3.popen3(env, *command_array, spawn_opts) { |i, o, e, t| t.value }")
+  end
+
+  # One site is one finding. Recursing past a match would report the same call
+  # once per enclosing Timeout.timeout.
+  test "a nested Timeout.timeout reports the inner call once, not twice" do
+    findings = scan_source("Timeout.timeout(10) { Timeout.timeout(5) { Open3.capture3(\"a\") } }")
+
+    assert_equal 1, findings.length
   end
 
   # Parsed, not grepped: a comment or a heredoc that spells the pattern out —

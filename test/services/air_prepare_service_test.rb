@@ -1571,6 +1571,11 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
 
       assert_not healthy, "a probe that never answers is not a healthy binary"
+      # Both ends. Without the lower bound this passes vacuously wherever the
+      # spawn fails instantly — a noexec tmpdir, a missing /bin/sh — with the
+      # watchdog never exercised and `rescue StandardError` supplying the false.
+      assert_operator elapsed, :>=, 1,
+        "the probe returned in #{elapsed.round(2)}s, so the child never ran and the bound was not tested"
       assert_operator elapsed, :<, 5,
         "the bound must fire at ~1s; #{elapsed.round(2)}s means the child ran to completion"
     end

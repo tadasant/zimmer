@@ -391,7 +391,7 @@ class CliStatusServiceTest < ActiveSupport::TestCase
     calls = []
     probe = ->(command, timeout:) {
       calls << [ command, timeout ]
-      [ "gh version 2.67.0 (2026-01-01)\n", "", exit_status(true) ]
+      [ "gh version 2.67.0 (2026-01-01)\n", "", fake_process_status(exitstatus: 0) ]
     }
 
     BoundedSubprocess.stub(:run, probe) do
@@ -405,7 +405,7 @@ class CliStatusServiceTest < ActiveSupport::TestCase
     calls = []
     probe = ->(command, timeout:) {
       calls << command
-      command.first == "fly" ? [ "", "no", exit_status(false) ] : [ "0.3.47 flyctl\n", "", exit_status(true) ]
+      command.first == "fly" ? [ "", "no", fake_process_status(exitstatus: 1) ] : [ "0.3.47 flyctl\n", "", fake_process_status(exitstatus: 0) ]
     }
 
     BoundedSubprocess.stub(:run, probe) do
@@ -432,13 +432,4 @@ class CliStatusServiceTest < ActiveSupport::TestCase
   end
 
   private
-
-  # A stand-in for Process::Status. BoundedSubprocess can also hand back nil here
-  # (zimmer#271), which is why get_version reads it through SubprocessStatus.
-  def exit_status(ok)
-    status = Object.new
-    status.define_singleton_method(:success?) { ok }
-    status.define_singleton_method(:exitstatus) { ok ? 0 : 1 }
-    status
-  end
 end

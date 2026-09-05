@@ -41,18 +41,25 @@ require "prism"
 class InertSubprocessTimeoutGuard
   ROOT = File.expand_path("../..", __dir__)
 
-  # Application code. Test code is out of scope: a test that deliberately builds
-  # the pattern — this guard's own fixtures, for one — is describing it, not
-  # shipping it.
-  SCAN_DIRS = %w[app lib].freeze
+  # Application code. `db/post_deploy` is in scope because a post-deploy task is
+  # exactly the unattended-in-production shape this bug is worst in, and `.rake`
+  # is scanned alongside `.rb` because lib/tasks already shells out. Test code is
+  # out of scope: a test that deliberately builds the pattern — this guard's own
+  # fixtures, for one — is describing it, not shipping it.
+  SCAN_DIRS = %w[app lib db/post_deploy].freeze
 
-  # Every Open3 entry point that goes through `popen_run`, not just `capture3`.
-  # They share the `ensure`-then-`join`, so they share the defect, and a guard
+  SCAN_EXTENSIONS = %w[rb rake].freeze
+
+  # Every Open3 entry point that joins its wait thread in an `ensure`, not just
+  # `capture3`. The `capture*`/`popen*` family goes through `popen_run`; the
+  # `pipeline*` family goes through `pipeline_run`, whose ensure does the same
+  # thing across every stage (`wait_thrs.each(&:join)`). Same defect, so a guard
   # that knew only the one site zimmer#908 happened to use would wave the next
   # one through.
   INERT_OPEN3_METHODS = %i[
     capture2 capture2e capture3
     popen2 popen2e popen3
+    pipeline pipeline_r pipeline_rw pipeline_start pipeline_w
   ].freeze
 
   TIMEOUT_METHOD = :timeout
@@ -113,7 +120,9 @@ class InertSubprocessTimeoutGuard
     # Entries are resolved against the repo root, so "app" and an absolute
     # fixture directory both work.
     def ruby_files(dirs = SCAN_DIRS)
-      dirs.flat_map { |dir| Dir[File.join(File.expand_path(dir, ROOT), "**", "*.rb")] }.sort
+      dirs.flat_map do |dir|
+        Dir[File.join(File.expand_path(dir, ROOT), "**", "*.{#{SCAN_EXTENSIONS.join(',')}}")]
+      end.sort
     end
   end
 
@@ -148,20 +157,22 @@ class InertSubprocessTimeoutGuard
     end
 
     def visit_call_node(node)
-      if timeout_call?(node)
-        nested = NestedOpen3Finder.new
-        node.accept(nested)
-        nested.calls.each do |call|
-          @findings << Finding.new(
-            path: @path,
-            line: node.location.start_line,
-            subprocess_line: call.location.start_line,
-            subprocess_source: "Open3.#{call.name}"
-          )
-        end
+      return super unless timeout_call?(node)
+
+      nested = NestedOpen3Finder.new
+      node.accept(nested)
+      nested.calls.each do |call|
+        @findings << Finding.new(
+          path: @path,
+          line: node.location.start_line,
+          subprocess_line: call.location.start_line,
+          subprocess_source: "Open3.#{call.name}"
+        )
       end
 
-      super
+      # Deliberately no `super`: NestedOpen3Finder already walked this whole
+      # subtree, so descending would report every call again for each enclosing
+      # `Timeout.timeout` — one site, N findings.
     end
 
     private

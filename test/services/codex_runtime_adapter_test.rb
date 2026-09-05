@@ -744,7 +744,7 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     calls = []
     probe = ->(command, timeout:) {
       calls << [ command, timeout ]
-      [ "codex-cli 0.146.0\n", "", exit_status(true) ]
+      [ "codex-cli 0.146.0\n", "", fake_process_status(exitstatus: 0) ]
     }
 
     BoundedSubprocess.stub(:run, probe) do
@@ -765,7 +765,7 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
   end
 
   test "installed_cli_version is nil when the probe exits non-zero or is missing" do
-    BoundedSubprocess.stub(:run, ->(*, **) { [ "", "boom", exit_status(false) ] }) do
+    BoundedSubprocess.stub(:run, ->(*, **) { [ "", "boom", fake_process_status(exitstatus: 1) ] }) do
       assert_nil @adapter.installed_cli_version
     end
 
@@ -775,15 +775,6 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
   end
 
   private
-
-  # A stand-in for Process::Status. BoundedSubprocess can also hand back nil here
-  # (zimmer#271), which is why the adapter reads it through SubprocessStatus.
-  def exit_status(ok)
-    status = Object.new
-    status.define_singleton_method(:success?) { ok }
-    status.define_singleton_method(:exitstatus) { ok ? 0 : 1 }
-    status
-  end
 
   # Assert that `subsequence` appears as consecutive elements within `array`.
   def assert_includes_subsequence(array, subsequence)
