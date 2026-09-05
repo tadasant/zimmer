@@ -2855,6 +2855,42 @@ than pinning a session at two polls an hour forever.
 
 ---
 
+### The merged message reports what the merge fired, and it cannot tell a deploy from any other push job
+
+For a PR whose merge triggers a deploy, merged is roughly the halfway point, so the merge
+notification carries the workflow runs GitHub created on the merge commit and tells the session to
+wait for them — see [What a merged PR tells the
+session](/operate/background-jobs/#and-what-the-merge-fired). Three edges come with that.
+
+**Every run on the merge commit counts, whatever it is.** The lookup asks "which runs exist because
+this merge landed", which is the only question with an unambiguous answer; "which of these is the
+deploy" would be a name-matching guess, and the deploy that motivated this
+(`tadasant/tadasant-internal#1969`) was not called `deploy`. So a repository that runs anything on
+pushes to its default branch keeps the merging session asleep for the few minutes it takes — and
+that is not the exotic case: Zimmer's own repo has two such workflows (`CI` and `Release image`), so
+most merges here take the wait rather than skipping it. Deliberate, on the view that a red `main` or
+a failed release build is the merging session's business too. The wait is bounded (~20 minutes, then
+the session archives naming the runs) and it is a sleep in `waiting` rather than a park in
+`needs_input`, so it costs a little session time and never a slot in the action queue. Only a
+repository with no default-branch push workflow at all gets the archive-immediately path on every
+merge.
+
+**A run created after the message is not in it.** A deploy chained off CI with `workflow_run` starts
+only when CI finishes, which is minutes after the notification was written. The session watches the
+runs it was told about; if all of those go green it archives, and a deploy that starts afterwards is
+watched by nobody. The message's own `gh run list --commit <sha>` line partly covers this, since a
+session that runs it later sees whatever exists by then, but nothing re-reads the list on the
+session's behalf.
+
+**"No runs" can mean "not yet".** The poller can catch a merge within a second or two of it
+happening, before GitHub has created the runs it fired. That branch of the message hands the session
+one `gh run list --commit <sha>` to settle it, and says explicitly that empty output — or a `gh` it
+cannot run — means archive. A session whose `gh` is unauthenticated therefore takes the old
+archive-immediately path, which is the deliberate fail-open: an unreadable lookup must not strand a
+session that finished its work.
+
+---
+
 ## Triggers
 
 ### Agent-posted comments are only recognized when a known command posted them

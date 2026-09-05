@@ -1632,7 +1632,9 @@ module SessionStateMachine
   # of the merge message the PR goals in config/goals.json promise: "the
   # pull-request poller sends this session a message when the PR merges, and
   # THAT MESSAGE IS YOUR SIGNAL TO ARCHIVE". A session archived first never
-  # gets it, and nothing else records that the promise died.
+  # gets it, and nothing else records that the promise died — including the
+  # reading that message carries of what the merge fired, which for a PR that
+  # deploys is the half of the work that happens after the merge.
   #
   # This rides on the archive line rather than raising a warning of its own,
   # deliberately. A merge gate archives the producing session within seconds of

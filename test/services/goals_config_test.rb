@@ -158,6 +158,12 @@ class GoalsConfigTest < ActiveSupport::TestCase
         "Goal '#{id}' must name the merge notification as the archive trigger"
       assert_includes description, "archive yourself immediately rather than waiting to be told twice",
         "Goal '#{id}' must not leave the session waiting for a human after its PR merged"
+      assert_includes description, "For most PRs it names no post-merge automation",
+        "Goal '#{id}' must keep archive-on-merge the default for a PR that fires no deploy"
+      assert_includes description, "then merged is roughly the halfway point",
+        "Goal '#{id}' must carve out the PR whose merge fires a deploy (tadasant-internal#1969)"
+      assert_includes description, "do NOT park in needs_input for it",
+        "Goal '#{id}' must keep the deploy wait a machine wait rather than a claim on the action queue"
       assert_includes description, "a merge gate holds the PR for human review",
         "Goal '#{id}' must say that a held PR is the sanctioned reason to stay put"
     end
