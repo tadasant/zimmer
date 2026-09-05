@@ -17,9 +17,9 @@
 # /supervisor/post_deploy_task_runs. **PR 2 must not be merged until this run
 # reads `succeeded` there.**
 #
-# Idempotent by construction: the predicate matches only a shadow that is still
-# NULL under a source that is not, so a copied row drops out of the relation and
-# a second run finds nothing.
+# Idempotent by construction: the predicate matches a row only while its shadow
+# disagrees with its source, so a copied row drops out of the relation and a
+# second run finds nothing.
 #
 # Sliced, because `sessions` is the largest table in the schema and the work is a
 # per-row JSON parse. `sweep` checks its budget between batches, so the last query
@@ -34,16 +34,37 @@ class BackfillSessionsJsonb < PostDeployTask
   # that concern — so this one names its own columns, the way a migration does.
   COLUMNS = %w[config mcp_servers mcp_server_env mcp_server_headers metadata].freeze
 
-  # `<name> IS NOT NULL` is not redundant with the shadow being NULL: a row whose
-  # source column is genuinely NULL has nothing to copy and its shadow stays NULL
-  # forever, so without this half those rows would be selected by every batch of
-  # every run and counted as work that never completes.
-  PENDING = COLUMNS.map { |name| "(#{name}_jsonb IS NULL AND #{name} IS NOT NULL)" }.join(" OR ").freeze
+  # DISAGREES, not "is still NULL". The narrower predicate would fill the shadows
+  # that `ADD COLUMN` left empty and nothing more, and it would miss the case a
+  # rolling deploy actually produces: kamal-proxy health-gates the cutover, so old
+  # containers keep serving while new ones come up, and `web` and `worker` do not
+  # cut over at the same instant. A session dual-written by a new container and
+  # then merged by a still-old worker — which writes `metadata` and knows nothing
+  # about `metadata_jsonb` — ends the window with a shadow that is stale and NOT
+  # null. `kamal rollback` produces the same thing wholesale. Those rows heal
+  # themselves on their next write through new code, but a session whose last
+  # write ever landed in that window does not, and PR 2's read cutover is where a
+  # silently stale shadow turns into the data loss this whole change exists to
+  # prevent.
+  #
+  # Still idempotent, and it still terminates: the UPDATE makes the predicate
+  # false for every row it touches, and `NULL IS DISTINCT FROM NULL` is false, so
+  # a row whose source is genuinely NULL has nothing to copy and is never
+  # selected. The cost over the narrower version is one cast per row scanned
+  # rather than per row copied.
+  #
+  # It is NOT a standing guarantee. This task runs once, so divergence introduced
+  # after it succeeds is invisible to it — **PR 2 must re-check this predicate
+  # against zero immediately before cutting the readers over, rather than
+  # trusting this run's `succeeded`.**
+  PENDING = COLUMNS
+    .map { |name| "(sessions.#{name}_jsonb IS DISTINCT FROM sessions.#{name}::jsonb)" }
+    .join(" OR ").freeze
 
   # Cast from the source rather than from anything this process read, so the copy
   # is atomic per row against a concurrent dual-write: whatever `metadata` holds
   # when this statement touches the row is what `metadata_jsonb` gets.
-  ASSIGNMENTS = COLUMNS.map { |name| "#{name}_jsonb = #{name}::jsonb" }.join(", ").freeze
+  ASSIGNMENTS = COLUMNS.map { |name| "#{name}_jsonb = sessions.#{name}::jsonb" }.join(", ").freeze
 
   def up
     checkpoint!(backfilled: stats.fetch("backfilled", 0))

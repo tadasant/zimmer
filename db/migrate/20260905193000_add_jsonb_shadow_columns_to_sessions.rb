@@ -17,10 +17,19 @@
 # `json` and `jsonb` are not binary-coercible, so an in-place type change rewrites
 # the ENTIRE table under `ACCESS EXCLUSIVE` — including `transcript`, which
 # `SessionContentSearch` puts at gigabytes. That lock is an outage. `ADD COLUMN`
-# with no default is a catalog-only change in PG 11+, so this migration takes no
-# meaningful lock at all. The values arrive afterwards, from the dual-write in
+# with no default is a catalog-only change in PG 11+, so this one is over the
+# instant it starts. The values arrive afterwards, from the dual-write in
 # `JsonbDualWrite` and the `BackfillSessionsJsonb` post-deploy task, and PR 2 cuts
 # reads over and drops the originals under the two-deploy rule in AGENTS.md.
+#
+# What is short here is how long the lock is HELD, not necessarily how long it
+# takes to get. `ADD COLUMN` still needs `ACCESS EXCLUSIVE`, and a migration
+# waiting on that lock queues every query behind it — so landing this while a
+# `SessionContentSearch` read is running (`MAX_TIMEOUT_MS` is 120_000) can stall
+# `sessions` for as long as that read has left. That hazard belongs to every
+# migration in this repo that touches `sessions`, not to this one in particular,
+# and none of them set a `lock_timeout`; introducing that pattern here would be a
+# change to how the whole repo migrates, made in a PR about column types.
 #
 # `transcript` IS DELIBERATELY NOT HERE — DO NOT "FINISH THE JOB"
 #

@@ -132,6 +132,27 @@ class BackfillSessionsJsonbTest < ActiveSupport::TestCase
     assert_equal({ "process_pid" => 99 }, Session.find(session.id).metadata_jsonb)
   end
 
+  # The case the narrower `<name>_jsonb IS NULL` predicate would miss, and the
+  # reason this one compares instead: a rolling deploy (or a rollback) can leave a
+  # shadow that is stale rather than absent, because an old container writes the
+  # source column and knows nothing about the shadow.
+  test "repairs a shadow that is stale rather than NULL" do
+    session = Session.create!(
+      prompt: "stale shadow #{SecureRandom.hex(4)}",
+      title: "stale shadow",
+      agent_runtime: "claude_code", status: :waiting,
+      git_root: "https://github.com/test/repo.git", branch: "main",
+      execution_provider: "local_filesystem",
+      metadata: { "process_pid" => 7 }
+    )
+    Session.where(id: session.id).update_all("metadata_jsonb = '{\"written_by\": \"an old container\"}'::jsonb")
+    assert_not_equal Session.find(session.id).metadata, Session.find(session.id).metadata_jsonb
+
+    run_task
+
+    assert_equal({ "process_pid" => 7 }, Session.find(session.id).metadata_jsonb)
+  end
+
   test "resumes from its cursor when the slice runs out of time" do
     3.times { |i| unshadowed_session(metadata: { "process_pid" => i }) }
 

@@ -4302,10 +4302,16 @@ the three write paths (ordinary saves, `update_column`/`update_columns`, and the
 `AtomicJsonMetadata`); `BackfillSessionsJsonb` copies the rows that existed before the shadows did.
 
 The sharp edge is what is **not** covered: `update_all` and hand-written SQL are relation- and
-connection-level and cannot be intercepted from a model concern. Nothing writes these five columns
-either way today, and a new writer that did would leave the shadow stale — silently, because
-nothing reads it, right up until the follow-up PR swaps the readers over. Until that lands, write
-these columns through the model.
+connection-level and cannot be intercepted from a model concern. Nothing writes these five
+columns either way today, and a new writer that did would leave the shadow stale — silently,
+because nothing reads it, right up until the follow-up PR swaps the readers over. Until that
+lands, write these columns through the model. `BackfillSessionsJsonb`'s predicate converges rather
+than merely filling NULLs, so it repairs a diverged row it happens to run after — but it runs once,
+so it is not a standing guarantee.
+
+The window is not free. Every atomic metadata merge now evaluates its jsonb expression twice in one
+statement (repeating it is what keeps the merge atomic — see the comment in `AtomicJsonMetadata`),
+and every row carries these five values twice on disk until the follow-up PR drops the originals.
 
 `transcript` is deliberately staying `json`: it is a single opaque blob, never queried by key,
 routinely multiple megabytes, and `jsonb` would cost more to write for a document that size. If it
