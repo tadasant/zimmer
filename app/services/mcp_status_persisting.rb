@@ -13,8 +13,22 @@
 # Including classes must provide:
 # - `@session`  — the Session being tracked
 # - `@logger`   — a StructuredLogger
-# - `with_db_retry` — from the DatabaseRetry concern
+#
+# `with_db_retry` is NOT one of them: this module includes DatabaseRetry itself,
+# so an includer gets it whether or not it remembers to ask. It used to be a
+# documented obligation on the includer, and the third includer did not read the
+# documentation — NullMcpStatusDetector (the Pi runtime's detector) included only
+# this module, so the very first Pi session in production raised
+# `NoMethodError: undefined method 'with_db_retry'` on every transcript poll that
+# reached here. TranscriptPollerService#poll_mcp_logs rescues and logs, so the
+# poll survived; what did not survive was the placeholder seeding below, which is
+# the ONLY reason a Pi session persists MCP status at all. A dependency a module
+# can satisfy for itself should not be a comment asking callers to satisfy it.
 module McpStatusPersisting
+  extend ActiveSupport::Concern
+
+  include DatabaseRetry
+
   # Update session's custom_metadata with MCP server statuses
   # @param server_statuses [Hash] Server name => { status:, error:, connected_at:, failed_at: }
   # @return [Boolean] true if any configured server changed to failed

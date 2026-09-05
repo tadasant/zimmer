@@ -36,10 +36,17 @@ class McpStatusPersistingTest < ActiveSupport::TestCase
     end
   end
 
-  # Minimal host mixing in the module with an injectable session + logger, the
-  # two collaborators the module requires (plus with_db_retry from DatabaseRetry).
+  # Minimal host mixing in the module with an injectable session + logger — the
+  # only two collaborators the module requires of an includer.
+  #
+  # It deliberately does NOT include DatabaseRetry. `with_db_retry` used to be a
+  # third obligation, documented in the module's header and satisfied by each
+  # detector separately, and NullMcpStatusDetector did not satisfy it: every Pi
+  # session's poll raised `NoMethodError: undefined method 'with_db_retry'`
+  # (GlitchTip issue 85). The module now includes DatabaseRetry itself, so this
+  # host is the unit-level proof that an includer needs nothing but @session and
+  # @logger to make the persistence path work.
   class Host
-    include DatabaseRetry
     include McpStatusPersisting
 
     def initialize(session, logger)
@@ -53,6 +60,15 @@ class McpStatusPersistingTest < ActiveSupport::TestCase
     @session.update!(mcp_servers: [ "context7" ])
     @logger = RecordingLogger.new
     @host = Host.new(@session, @logger)
+  end
+
+  test "an includer that supplies only @session and @logger can persist status" do
+    assert @host.respond_to?(:with_db_retry, true),
+      "McpStatusPersisting must supply with_db_retry to its includers rather than requiring it"
+
+    assert_nothing_raised { @host.update_session_mcp_status({}) }
+
+    assert_equal "pending", @session.reload.custom_metadata.dig("mcp_servers_status", "context7", "status")
   end
 
   test "a configured server failure is detected, escalated, but logged at .info (not .error)" do
