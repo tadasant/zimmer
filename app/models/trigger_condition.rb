@@ -327,7 +327,7 @@ class TriggerCondition < ApplicationRecord
   def scheduled_at_time
     return nil unless one_time_schedule?
 
-    ActiveSupport::TimeZone[schedule_timezone]&.parse(scheduled_at.to_s)
+    ActiveSupport::TimeZone[schedule_timezone]&.parse(scheduled_at)
   rescue ArgumentError, TypeError
     nil
   end

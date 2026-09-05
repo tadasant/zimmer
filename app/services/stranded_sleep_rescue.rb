@@ -59,7 +59,10 @@ require "automated_prompts"
 #   * an unreadable trigger table reads as "asleep on purpose" (that is
 #     #awaiting_scheduled_wake?'s own rescue) and costs a pass, not a wake;
 #   * a watched session whose row cannot be read reads as fireable;
-#   * GRACE is generous enough that no in-flight fire is mistaken for a lost one;
+#   * a fire that is in flight rather than lost — a schedule just come due, a
+#     watcher on a session that just archived — reads as armed for
+#     SessionStateMachine::SCHEDULE_FIRE_SETTLE. GRACE does NOT cover this and
+#     never did; see the constant below;
 #   * anything queued — a pending message, a pending AgentSessionJob — means
 #     something is already coming and this sweep stands down.
 #

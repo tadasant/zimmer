@@ -98,12 +98,16 @@ module SessionStateMachine
   # wake was about to land in, and the prompt it carried was lost in the churn.
   #
   # So the window is not a fudge factor on a race: before its moment the wake is
-  # armed, inside this window it is executing, and only past it has something
-  # actually gone wrong — the scheduler is down, or the fire is being skipped
-  # every tick (a burst suppression, a pending-session dedup) and the session
-  # really is waiting on something that is not coming. Ten minutes is an order of
-  # magnitude more than the one-minute tick it covers and still well inside
-  # StrandedSleepRescue::GRACE's tolerance for a stall.
+  # armed, inside this window it is executing, and only past it is the wake not
+  # arriving on any timescale a sleeping session should be left waiting for —
+  # the scheduler is down, or the fire is being skipped every tick (a burst
+  # suppression, a pending-session dedup). Those skipped fires do stay due and can
+  # still land eventually, so a rescue past the window may arrive before the wake
+  # does; that is the intended trade, and it is the same one the whole sweep makes
+  # — an unnecessary wake costs a turn, a missed one costs however long a human
+  # takes to notice. Ten minutes is an order of magnitude more than the one-minute
+  # tick it covers and still well inside StrandedSleepRescue::GRACE's tolerance
+  # for a stall.
   SCHEDULE_FIRE_SETTLE = 10.minutes
 
   # What #watched_session_states reports about one watched session: enough to
@@ -517,10 +521,11 @@ module SessionStateMachine
       return true unless condition.schedule_due?
 
       due_at = condition.scheduled_at_time
-      # Unreadable, but #schedule_due? just read it: something is racing this row.
-      # Pending is the fail-safe answer everywhere else in this file, for the same
-      # reason — a wrong "pending" costs a delayed rescue, a wrong "lost" spends a
-      # turn and barges a session.
+      # Belt and braces: #schedule_due? has just parsed the same value off the same
+      # loaded row, so this should be unreachable. Answer "pending" if it ever is
+      # reached, which is the fail-safe direction the whole file takes — a wrong
+      # "pending" costs a delayed rescue, a wrong "lost" spends a turn and barges a
+      # session.
       return true if due_at.nil?
 
       Time.current - due_at <= SCHEDULE_FIRE_SETTLE
@@ -590,7 +595,7 @@ module SessionStateMachine
           Session.where(id: watched_id).pick(:status, :archived_at)
                  &.then { |status, archived_at| WatchedState.new(status: status, archived_at: archived_at) }
         end
-      return false if watched.nil?
+      return false if watched.nil? || watched.status.nil?
 
       # Through Session.status_label rather than #to_s, for the reason that method
       # documents: Rails casts an enum column to its label on `pluck`, so this is
@@ -771,15 +776,19 @@ module SessionStateMachine
   # #awaiting_scheduled_wake? remains the predicate; this is only for the surfaces
   # that want to SAY when — a log line, the MCP queue listing, an operator banner.
   #
+  # Selected with the SAME predicate #awaiting_scheduled_wake? uses rather than
+  # with `!schedule_due?`. The two stopped agreeing when SCHEDULE_FIRE_SETTLE
+  # arrived, and a session inside that window would otherwise read as asleep on a
+  # wake while every surface here reported no time named — a stand-down log and a
+  # restart refusal saying "asleep with no time named" about a wake whose time is
+  # known and moments away.
+  #
   # @return [ActiveSupport::TimeWithZone, nil]
   def pending_wake_at
     pending_one_time_wake_conditions
       .where(condition_type: "schedule")
-      .select { |condition| condition.one_time_schedule? && !condition.schedule_due? }
-      .filter_map do |condition|
-        zone = ActiveSupport::TimeZone[condition.schedule_timezone]
-        zone&.parse(condition.scheduled_at.to_s) rescue nil
-      end
+      .select { |condition| self.class.one_time_wake_pending?(condition) }
+      .filter_map(&:scheduled_at_time)
       .min
   rescue ActiveRecord::ActiveRecordError => e
     Rails.logger.error(

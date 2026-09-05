@@ -104,6 +104,11 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
   # The case that defeated observation in #855: the row exists, reads `enabled`,
   # and has never fired — but its watched session is archived and will never
   # transition again. A sweep keyed on the ABSENCE of trigger rows walks past it.
+  #
+  # `other_session(status: :archived)` writes the row straight to `archived`
+  # without running the transition, so `archived_at` is nil — which is also the
+  # shape of every session archived before that column existed. Unfireable either
+  # way; the freshly-dated archival is a separate case with its own tests below.
   test "a session asleep on an ao_event wake whose watched session is archived is resumed" do
     session = sleeping_session
     watched = other_session(status: :archived)
@@ -262,6 +267,31 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     back_date(session)
 
     assert_equal 1, StrandedSleepRescue.sweep!.rescued
+  end
+
+  # The window is for the watcher that fires ON the archival and nothing else.
+  # Any other watcher on an archived session has missed its only chance — that is
+  # #855 — so the narrowing to `session_archived` is what stops the window
+  # re-opening #855 for ten minutes after every archival in the fleet. Delete that
+  # one line and the rest of the suite stays green, which is why this exists.
+  #
+  # The watcher is armed AFTER the archive on purpose:
+  # #cleanup_watched_session_ao_event_triggers destroys a non-archival watcher as
+  # the watched session archives, so the only way this shape exists in production
+  # is the way #855 made it — a row that outlived the cleanup, or was armed
+  # against an already-archived session. Arming it before the archive would leave
+  # the session with no trigger at all and the test would pass without ever
+  # reaching the predicate.
+  test "a non-archival watcher on a freshly-archived session is stranded immediately" do
+    session = sleeping_session
+    watched = other_session(status: :needs_input)
+    watched.archive!
+    arm_wake!(session, [ ao_event_condition(watched, event_name: "session_needs_input") ])
+    back_date(session)
+
+    assert_not_nil watched.reload.archived_at, "the archive must be freshly dated for this to mean anything"
+    assert_equal 1, StrandedSleepRescue.sweep!.rescued,
+      "only a session_archived watcher is in flight after an archival; this one missed its chance"
   end
 
   # One condition of a multi-event watcher still being fireable is enough: the
