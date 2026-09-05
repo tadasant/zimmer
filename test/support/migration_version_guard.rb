@@ -19,7 +19,7 @@
 # (GlitchTip #86).
 #
 # Nothing about that needs a database to detect: two filenames in a directory
-# start with the same 14 digits. Deliberately Rails-free for that reason — the
+# lead with the same digits. Deliberately Rails-free for that reason — the
 # failure it guards against IS a Rails boot failure, so a check that had to
 # boot Rails would be silent in the case that matters most. MigrationVersionTest
 # is its wiring into `bin/rails test`, the `lint` job runs it directly, and
@@ -31,38 +31,55 @@
 class MigrationVersionGuard
   MIGRATION_DIR = File.expand_path("../../db/migrate", __dir__)
 
-  # Rails' own shape for a migration filename: 14 digits, an underscore, then
-  # the snake_cased class name. `ActiveRecord::Migration.valid_version_format?`
-  # would say the same thing, and requiring it would defeat the point.
-  FILENAME = /\A(\d{14})_([_a-z0-9]*)\.rb\z/
+  # Copied from ActiveRecord::Migration::MigrationFilenameRegexp, because
+  # matching Rails exactly is the whole job — a stricter pattern would skip a
+  # file Rails does load and miss the collision. Note it is `[0-9]+`, not
+  # `\d{14}`: a hand-typed 13-digit version is still a migration to Rails. The
+  # optional third group is the adapter scope in `..._create_foo.postgresql.rb`,
+  # which is part of neither the version nor the name.
+  #
+  # Requiring the constant from Active Record would defeat the point, so the
+  # copy is deliberate; `migration_version_test.rb` asserts the two still agree.
+  FILENAME = /\A([0-9]+)_([_a-z0-9]*)\.?([_a-z0-9]*)?\.rb\z/
 
-  # One migration file on disk. `name` is the snake_cased class name, which is
-  # the second thing Rails refuses to see twice.
-  Migration = Struct.new(:basename, :version, :name, keyword_init: true)
+  # Also Rails': `Migrator#migration_files` globs `**/[0-9]*_*.rb`, so a
+  # migration in a subdirectory of db/migrate counts.
+  GLOB = "**/[0-9]*_*.rb"
+
+  # One migration file on disk. `version` is an Integer because Rails compares
+  # it as one — `0020260905180000_x.rb` and `20260905180000_x.rb` are the same
+  # version to it. `name` is the snake_cased class name, which is the *first*
+  # thing Rails refuses to see twice.
+  Migration = Struct.new(:relative_path, :version, :name, keyword_init: true)
 
   # A version or a name claimed by more than one file. `kind` is what Rails
   # would have called it.
-  Collision = Struct.new(:kind, :value, :basenames, keyword_init: true)
+  Collision = Struct.new(:kind, :value, :paths, keyword_init: true)
 
   class << self
-    # Every parseable migration in `dir`, oldest first. A file whose name does
-    # not match FILENAME is not a migration Rails would load, so it is skipped
-    # rather than reported — `.keep`, an editor's backup, a stray README.
+    # Every migration in `dir`, oldest first — exactly the set Rails would
+    # load. A file the glob or FILENAME rejects is not one, so it is skipped
+    # rather than reported: `.keep`, an editor's backup, a stray README.
     def migrations(dir = MIGRATION_DIR)
-      Dir.children(dir).sort.filter_map do |basename|
-        match = FILENAME.match(basename)
+      Dir[File.join(dir, GLOB)].sort.filter_map do |path|
+        match = FILENAME.match(File.basename(path))
         next unless match
 
-        Migration.new(basename: basename, version: match[1], name: match[2])
+        Migration.new(
+          relative_path: path.delete_prefix("#{dir}/"),
+          version: match[1].to_i,
+          name: match[2]
+        )
       end
     end
 
-    # Both collisions Rails raises on, versions first because that is the one
-    # that has actually shipped here.
+    # Both collisions Rails raises on. Names first, which is the order Rails
+    # itself validates in, so the first message here is the error it would have
+    # reported.
     def collisions(dir = MIGRATION_DIR)
       found = migrations(dir)
 
-      duplicates(found, :version) + duplicates(found, :name)
+      duplicates(found, :name) + duplicates(found, :version)
     end
 
     # What a contributor reads when the guard fails. Empty string when clean, so
@@ -77,22 +94,17 @@ class MigrationVersionGuard
       found.group_by(&attribute)
         .select { |_value, group| group.size > 1 }
         .map do |value, group|
-          Collision.new(kind: attribute, value: value, basenames: group.map(&:basename))
+          Collision.new(kind: attribute, value: value, paths: group.map(&:relative_path))
         end
     end
 
-    def collision_message(collision)
-      <<~MESSAGE
-        Two migrations share the #{collision.kind} #{collision.value}:
-        #{collision.basenames.map { |basename| "  db/migrate/#{basename}" }.join("\n")}
+    ERROR_CLASSES = {
+      version: "DuplicateMigrationVersionError",
+      name: "DuplicateMigrationNameError"
+    }.freeze
 
-        Rails builds its migration list at boot and raises
-        ActiveRecord::#{collision.kind == :version ? "DuplicateMigrationVersionError" : "DuplicateMigrationNameError"}
-        rather than picking one. `maintain_test_schema!` walks that list, so this
-        does not fail a test — it kills the whole suite before any test runs, and
-        it reaches production runtime the same way (zimmer#1005 / #1008, and
-        GlitchTip #86).
-
+    FIXES = {
+      version: <<~FIX,
         Renumber the newer migration to a timestamp nothing else has claimed, and
         re-dump db/schema.rb so its `version:` matches the newest migration:
 
@@ -102,6 +114,26 @@ class MigrationVersionGuard
         hand-writing the timestamp avoids this within a branch. It does not avoid
         it across branches: two branches that each pick a timestamp collide only
         once both have merged.
+      FIX
+      name: <<~FIX
+        Rename the newer migration — its file and its class — to something the
+        other one does not already call itself. The version is not part of the
+        name Rails compares, so two different timestamps do not make it unique.
+      FIX
+    }.freeze
+
+    def collision_message(collision)
+      <<~MESSAGE
+        #{collision.paths.size} migrations share the #{collision.kind} #{collision.value}:
+        #{collision.paths.map { |path| "  db/migrate/#{path}" }.join("\n")}
+
+        Rails builds its migration list at boot and raises
+        ActiveRecord::#{ERROR_CLASSES.fetch(collision.kind)} rather than picking
+        one. `maintain_test_schema!` walks that list, so this does not fail a
+        test — it kills the whole suite before any test runs, and it reaches
+        production runtime the same way (zimmer#1005 / #1008, and GlitchTip #86).
+
+        #{FIXES.fetch(collision.kind).strip}
       MESSAGE
     end
   end

@@ -360,7 +360,7 @@ suspicion by hand.
 ## Two migrations may not share a version
 
 Rails builds its migration list at boot, not at migrate time, and it raises rather than picking a
-winner: two files starting with the same 14 digits give `ActiveRecord::DuplicateMigrationVersionError`,
+winner: two files whose version prefixes are equal give `ActiveRecord::DuplicateMigrationVersionError`,
 two files declaring the same class name give `DuplicateMigrationNameError`. `maintain_test_schema!`
 walks that list on the way into every test run, so the failure is not one broken test — it is the
 whole suite dying before any test executes, and the same exception reaching production runtime.
@@ -373,14 +373,21 @@ second one merged, and from then on `test-unit` and `test-system` failed identic
 until the second migration was renumbered.
 
 `MigrationVersionGuard` (`test/support/migration_version_guard.rb`) reports both collisions, naming
-the version and both files. Like the two-phase guard it reads filenames and nothing else, so `lint`
-runs it with no Postgres, no Redis and no Rails — which is the point, since what it detects is a
-Rails boot failure. `test/migrations/migration_version_test.rb` runs it again inside `bin/rails test`,
-and by hand it is:
+the version and every file claiming it. Like the two-phase guard it reads filenames and nothing else,
+so `lint` runs it with no Postgres, no Redis and no Rails — which is the point, since what it detects
+is a Rails boot failure. `test/migrations/migration_version_test.rb` runs it again inside
+`bin/rails test`, and by hand it is:
 
 ```bash
 bundle exec ruby -r./test/support/migration_version_guard -e 'puts MigrationVersionGuard.report'
 ```
+
+It carries a copy of Active Record's own `MigrationFilenameRegexp` and glob rather than a stricter
+pattern of its own, because the set of files it checks has to be the set Rails loads — a guard that
+only recognised 14 digits in a flat directory would wave through a 13-digit version, a leading zero,
+an adapter-scoped `..._create_foo.postgresql.rb`, or a migration in a subdirectory, all of which
+Rails loads and trips on. A test asserts the copy still matches the constant, since the guard cannot
+ask Active Record at the moment it runs.
 
 Generating migrations with `bin/rails generate migration` rather than hand-writing the timestamp
 avoids the collision within a branch. Renumbering after the fact means re-dumping `db/schema.rb` too,
