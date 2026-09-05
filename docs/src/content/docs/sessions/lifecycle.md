@@ -780,6 +780,47 @@ event. A silent status flip would be worse than an unwanted push.
 A status-summary fork that fails is harvested (recording the failure on the source session's
 summary) instead of notifying, exactly as on `pause`.
 
+#### A turn that never started parks instead of failing
+
+`failed` is where a fault comes to rest, and that is the right home for a turn that broke *while
+the agent was working*. It is the wrong home for one that broke before the agent existed, because
+`failed` is not in the `needs_input` action queue the homepage presents as the user's to-do list,
+and nothing sweeps it — `CleanupOrphanedSessionsJob` and `DeploymentRecoveryJob` restart a failed
+session only when it died on `GoodJob::InterruptError`. A follow-up carrying a live user request
+that dies in setup is therefore dropped in silence: production session 3949 lost one for two days
+([#439](https://github.com/tadasant/zimmer/issues/439)).
+
+So `Sessions::ParkUndeliveredTurn` intercepts `AgentSessionJob`'s catch-all rescue and comes to
+rest in `needs_input` instead, on four conditions:
+
+1. **No agent process was spawned by this job** — asked of `ProcessLifecycleManager#current_pid`
+   and the job's own local pid. A turn that died after its process existed is a runtime fault with
+   a transcript to read, and still fails.
+2. **The turn was carrying a prompt.** An undelivered prompt is what makes this a person's
+   problem. A promptless turn has nothing anybody is waiting on.
+3. **The session is `running`** — `pause` transitions from `running` only, and that is exactly the
+   state a delivered follow-up is in. A session still `waiting` is having its *first* turn set up,
+   in front of the person who just created it, and still fails.
+4. **Not a status-summary fork**, which must never take a slot in the action queue.
+
+The park writes `failure_reason: "undelivered_turn"`, the exception class and message, and puts the
+prompt back in `pending_follow_up_prompt` — the follow-up arm of `#perform` consumes that marker on
+the way in, long before the setup that raised, so without this the user's raw text dies with the
+job. It deliberately writes **no** `paused_by: "recovery"` marker: that marker promises a sweep will
+continue the session, and a boot that is deterministically broken would just fail again on every one
+of those attempts and end in the same silence. Without it, `announcement_deferred_to_recovery_sweep?`
+is false and the `pause` callback makes the announcement itself — the settled `session_needs_input`
+wake fan-out and the debounced push.
+
+Nothing about the fault gets quieter: the two ERROR lines still land on the session's timeline, the
+exception is still stamped on the row, and `#perform` still re-raises into Sentry and the terminal
+ActiveJob ERROR the `zimmer_backend_log_errors` rule reads. Only the resting state changed. Because
+the session rests in `needs_input` rather than `failed`, the session page's failure block is gated on
+`Session#shows_failure_details?` rather than on `failed?`.
+
+The sibling case is `Sessions::RestartUnstartedTurn`, which parks the same way when a process is
+*gone* and wrote nothing; this one is for a process that never existed.
+
 It also runs `warn_if_pr_goal_captured_no_url`, last in the callback so nothing above it can be
 skipped. A session that dies mid-turn never reaches `pause`, so a PR it opened and never named
 would be recorded nowhere at all ([#313](https://github.com/tadasant/zimmer/issues/313)).

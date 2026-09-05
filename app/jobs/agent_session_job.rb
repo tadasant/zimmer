@@ -2378,19 +2378,46 @@ class AgentSessionJob < ApplicationJob
           level: "error"
         )
         log_buffer.flush
-        # Bypass validations — if the original error was a validation failure
-        # (e.g. stale MCP server catalog), update! would re-trigger the same
-        # validation and prevent the session from reaching a terminal state.
-        session.update_columns(
-          running_job_id: nil,
-          metadata: (session.metadata || {}).merge(
-            "failure_reason" => "exception",
-            "exception_class" => e.class.name,
-            "exception_message" => e.message.to_s.truncate(EXCEPTION_MESSAGE_MAX_CHARS)
-          )
+
+        # A turn that raised before an agent process ever existed, carrying a prompt
+        # nobody has seen, comes to rest in the action queue instead of in `failed`
+        # (#439). `failed` is not in the homepage's `needs_input` queue and nothing
+        # sweeps it, so a follow-up that dies in setup is dropped in silence — which
+        # is what happened to a live user request for two days. The pid is asked of
+        # the lifecycle manager first, exactly as the `ensure` below does: it is set
+        # by whichever code spawned last, while the local copy can lag a recovery
+        # spawn.
+        #
+        # The failure is still stamped, still logged, and still re-raised into the
+        # exception reporter — this changes where the session comes to rest, not how
+        # loudly the fault is reported.
+        parked = Sessions::ParkUndeliveredTurn.call(
+          session,
+          error: e,
+          prompt: follow_up_prompt,
+          spawned: (lifecycle_manager&.current_pid || process_pid).present?,
+          log_buffer: log_buffer
         )
-        session.reload
-        session.fail! if session.may_fail?
+
+        if parked
+          # Broadcast status immediately for snappy UI updates, as the other park
+          # paths do, rather than waiting for the transition's commit callback.
+          @broadcast_service.session_status(session)
+        else
+          # Bypass validations — if the original error was a validation failure
+          # (e.g. stale MCP server catalog), update! would re-trigger the same
+          # validation and prevent the session from reaching a terminal state.
+          session.update_columns(
+            running_job_id: nil,
+            metadata: (session.metadata || {}).merge(
+              "failure_reason" => "exception",
+              "exception_class" => e.class.name,
+              "exception_message" => e.message.to_s.truncate(EXCEPTION_MESSAGE_MAX_CHARS)
+            )
+          )
+          session.reload
+          session.fail! if session.may_fail?
+        end
       end
       raise e
     ensure
