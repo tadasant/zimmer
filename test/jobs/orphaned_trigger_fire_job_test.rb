@@ -17,11 +17,12 @@ class OrphanedTriggerFireJobTest < ActiveSupport::TestCase
     @trigger = triggers(:enabled_slack_trigger)
   end
 
-  def trigger_originated_session(status: :running, metadata: {})
+  def trigger_originated_session(status: :running, metadata: {},
+                                 genesis: SessionGenesis::GITHUB_LABEL)
     Session.create!(
       prompt: "Rate https://github.com/tadasant/zimmer/pull/623 for merge.",
       git_root: "https://github.com/tadasant/zimmer.git",
-      genesis: SessionGenesis::GITHUB_LABEL,
+      genesis: genesis,
       status: status,
       metadata: {
         "trigger_id" => @trigger.id,
@@ -59,7 +60,7 @@ class OrphanedTriggerFireJobTest < ActiveSupport::TestCase
     assert_equal "Trigger session failed with its work undone", alerted&.first
     assert_match(%r{https://github\.com/tadasant/zimmer/pull/623}, alerted.last)
     assert session.reload.metadata[OrphanedTriggerFire::REPORTED_AT_KEY].present?
-    assert session.logs.any? { |log| log.content.include?("failed before handing its work back") }
+    assert session.logs.any? { |log| log.content.include?("The fire that created it is spent") }
   end
 
   # ── What must not become noisy ────────────────────────────────────────────
@@ -91,6 +92,16 @@ class OrphanedTriggerFireJobTest < ActiveSupport::TestCase
 
     assert_no_enqueued_jobs(only: OrphanedTriggerFireJob) do
       fork.fail!
+    end
+  end
+
+  # A recurring schedule's next tick is its own retry, so its failure is not a
+  # dropped work item and must not enqueue a report.
+  test "a scheduled trigger's session failing enqueues nothing" do
+    session = trigger_originated_session(genesis: SessionGenesis::SCHEDULE)
+
+    assert_no_enqueued_jobs(only: OrphanedTriggerFireJob) do
+      session.fail!
     end
   end
 

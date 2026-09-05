@@ -9,8 +9,15 @@
 # transition's transaction, and AlertService posts synchronously (5s connect /
 # 10s read). Alerting inline would hold a transaction open on the session row for
 # a network round trip during exactly the incident where that hurts most.
+#
+# `default`, not `maintenance`. The alert's whole value is that a dropped work
+# item is seen in minutes rather than in hours, and `maintenance` is the lane
+# that exists to hold multi-minute filesystem sweeps — a job queued behind
+# `OrphanCloneFilesystemCleanupJob` can wait most of an hour. This does one
+# `find_by`, one UPDATE, one INSERT and one Slack post, which is the shape the
+# deterministic `SendPushNotificationJob` types keep on `default` too.
 class OrphanedTriggerFireJob < ApplicationJob
-  queue_as :maintenance
+  queue_as :default
 
   def perform(session_id)
     session = Session.find_by(id: session_id)

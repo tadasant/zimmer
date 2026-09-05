@@ -1036,13 +1036,20 @@ the PR sat with no gate on it for eleven hours. Every surface reported health: t
 history showed the fire, the PR showed a clean label and no comment, and no alert fired
 ([#632](https://github.com/tadasant/zimmer/issues/632)).
 
-The `fail` transition now reports it. Any session carrying `metadata.trigger_id` that fails gets an
-ERROR line on its own timeline and an `#eng-alerts` alert naming the trigger, the session, the
-reason it died and the GitHub subject it was fired for — so the drop is re-dispatched deliberately,
-in minutes rather than in hours. It is *surfaced rather than retried*, on purpose: re-dispatching
-automatically would put a second session on an event the fleet has already spent, on the same
-population that produced the double-merge race above. See
-[Lifecycle](/sessions/lifecycle/#a-triggers-session-that-fails-takes-the-work-item-with-it).
+The `fail` transition now reports it. A failing session whose fire was genuinely *consumed* — a
+`github_label`, `github_issue`, `slack` or `ao_event` genesis, carrying a `trigger_id`, and not a
+burst notice — gets an ERROR line on its own timeline and an `#eng-alerts` alert naming the trigger,
+the session, the reason it died and the GitHub subject it was fired for, so the drop is
+re-dispatched deliberately in minutes rather than in hours. A recurring `schedule` and a
+`system_event` are excluded because they fire again on their own, and a manual Invoke because
+somebody is already watching it.
+
+It is *surfaced rather than retried*, on purpose: re-dispatching automatically would put a second
+session on an event the fleet has already spent, on the same population that produced the
+double-merge race above. Two shapes of the same drop are knowingly not covered — a one-time
+`schedule` whose session dies, and a trigger's session that is **archived** rather than failed. See
+[Lifecycle](/sessions/lifecycle/#a-triggers-session-that-fails-takes-the-work-item-with-it) and
+[Limitations](/limitations/#a-dropped-trigger-work-item-is-surfaced-not-re-dispatched).
 
 ### Rate-limit budget
 
