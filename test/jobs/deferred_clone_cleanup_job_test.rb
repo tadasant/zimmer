@@ -510,29 +510,24 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
   # preserved bundle and patch — so clearing `trash_after` there hands the row to
   # StaleCloneCleanupJob, which deletes the only copy of the session's unpushed
   # work three days early.
+  # Stubbed rather than written to disk: the artifacts path is keyed by session id
+  # under the shared ~/.zimmer volume, and the fixture id is the same in every
+  # parallel test worker — a real directory here is visible to the other workers'
+  # copies of this test.
   test "a retry after artifacts were preserved does not clear the trash deadline" do
-    artifacts_dir = CloneArtifactService.new.artifacts_path_for(@session.id)
-    FileUtils.mkdir_p(artifacts_dir)
-    File.write(File.join(artifacts_dir, "working_tree.patch"), "the only copy of the work\n")
-    @session.update!(metadata: @session.metadata.merge("artifacts_path" => artifacts_dir))
+    CloneArtifactService.any_instance.stubs(:artifacts_exist?).returns(true)
     FileUtils.rm_rf(@clone_path) # the previous attempt already deleted it
 
-    begin
-      DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
 
-      @session.reload
-      assert_not_nil @session.trash_after,
-        "preserved artifacts must hold the trash deadline open, or StaleCloneCleanupJob reaps them within the hour"
-      assert_in_delta @archived_at + SessionStateMachine::TRASH_RETENTION_PERIOD, @session.trash_after, 5
-      assert File.exist?(File.join(artifacts_dir, "working_tree.patch")), "the artifacts themselves are untouched"
-    ensure
-      FileUtils.rm_rf(artifacts_dir)
-    end
+    @session.reload
+    assert_not_nil @session.trash_after,
+      "preserved artifacts must hold the trash deadline open, or StaleCloneCleanupJob reaps them within the hour"
+    assert_in_delta @archived_at + SessionStateMachine::TRASH_RETENTION_PERIOD, @session.trash_after, 5
   end
 
   test "a clean session with no artifacts and nothing durable still clears the trash deadline" do
-    assert_not File.directory?(CloneArtifactService.new.artifacts_path_for(@session.id)),
-      "guard: this session must have no artifacts for the negative case to mean anything"
+    CloneArtifactService.any_instance.stubs(:artifacts_exist?).returns(false)
 
     DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
 
@@ -571,14 +566,21 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
   # The retry loop must not turn a routine deploy into a page: the "any Zimmer
   # ERROR → critical" rule reads the log level, so an intermediate attempt has to
   # stay at or below WARN and only exhaustion may be loud.
+  #
+  # The expectation is set on `Rails.logger`, which `ActiveJob::Base.logger` is
+  # the same object as here — so it also covers `ActiveJob::LogSubscriber`, whose
+  # "Error performing …" / "Discarded …" lines are the class of ERROR the
+  # `rescue_from`-over-`retry_on` design exists to avoid.
   test "an intermediate attempt never logs at ERROR" do
     interrupt_the_next_execution
 
-    logged = capture_rails_log do
-      DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
-    end
+    Rails.logger.expects(:error).never
+    # Usually the same object, but expect on both rather than asserting that:
+    # a deployment that ever splits them would silently narrow this test instead
+    # of failing it.
+    ActiveJob::Base.logger.expects(:error).never unless ActiveJob::Base.logger.equal?(Rails.logger)
 
-    assert_no_match(/ERROR/, logged, "a deploy interrupt that will be retried must not reach the ERROR channel")
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
   end
 
   test "exhausting the retries logs at ERROR so it stays alertable" do
@@ -587,9 +589,15 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     job = DeferredCloneCleanupJob.new(@session.id, @archived_at.iso8601)
     job.executions = DeferredCloneCleanupJob::MAX_ATTEMPTS - 1
 
-    logged = capture_rails_log { job.perform_now }
+    logged = []
+    Rails.logger.stubs(:error).with { |*args| logged << args.join(" "); true }
 
-    assert_match(/ERROR.*gave up after/, logged)
+    job.perform_now
+
+    assert logged.any? { |message| message.include?("gave up after") },
+      "the last attempt must say so at ERROR; got: #{logged.inspect}"
+    assert logged.any? { |message| message.include?(@session.id.to_s) },
+      "and must name the session whose clone is left behind"
   end
 
   private
@@ -598,27 +606,6 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
   # assert on the LEVEL a line was written at. The level is the whole point here:
   # the "any Zimmer ERROR → critical" Grafana rule reads it, so "retried quietly"
   # and "gave up loudly" are the two behaviours under test.
-  def capture_rails_log
-    buffer = StringIO.new
-    capturing = ActiveSupport::TaggedLogging.new(ActiveSupport::Logger.new(buffer))
-    capturing.formatter = ->(severity, _time, _progname, message) { "#{severity} #{message}\n" }
-
-    original_rails = Rails.logger
-    # ActiveJob holds its own reference, assigned from Rails.logger at boot, so
-    # swapping Rails.logger alone would miss `ActiveJob::LogSubscriber` — which is
-    # exactly what emits the "Error performing …" / "Discarded …" ERROR lines the
-    # `rescue_from`-over-`retry_on` design exists to avoid.
-    original_active_job = ActiveJob::Base.logger
-
-    Rails.logger = capturing
-    ActiveJob::Base.logger = capturing
-    yield
-    buffer.string
-  ensure
-    Rails.logger = original_rails
-    ActiveJob::Base.logger = original_active_job
-  end
-
   # Put GoodJob's interrupt flag up for the next execution, the way a worker that
   # re-picks a row whose `performed_at` is already set does.
   def interrupt_the_next_execution

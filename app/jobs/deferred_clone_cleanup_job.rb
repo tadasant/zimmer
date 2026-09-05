@@ -97,9 +97,11 @@ class DeferredCloneCleanupJob < ApplicationJob
         Rails.logger.warn("[DeferredCloneCleanupJob] could not re-enqueue: #{e.class}: #{e.message}")
       end
     else
+      # `arguments.first`, not `session_id`: this block runs on the job instance,
+      # not inside `perform`, so `perform`'s parameters are not in scope here.
       Rails.logger.error(
         "[DeferredCloneCleanupJob] gave up after #{executions} attempts with " \
-        "#{error.class.name}: #{error.message}. Session #{session_id}'s clone is left on disk for a " \
+        "#{error.class.name}: #{error.message}. Session #{arguments.first}'s clone is left on disk for a " \
         "periodic reaper (EmptyTrashJob at its trash deadline, or StaleCloneCleanupJob within the " \
         "hour if that deadline was already cleared)."
       )
