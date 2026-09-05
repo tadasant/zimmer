@@ -137,13 +137,11 @@ class EnqueuedMessageProcessorService
 
         # Reset SIGTERM retry state for fresh execution
         if session.metadata&.dig("sigterm_retry_count").present?
-          session.update!(
-            metadata: (session.metadata || {}).except(
-              "sigterm_retry_count",
-              "sigterm_retry_timestamps",
-              "last_sigterm_at"
-            )
-          )
+          session.remove_metadata!(%w[
+            sigterm_retry_count
+            sigterm_retry_timestamps
+            last_sigterm_at
+          ])
         end
 
         # Transition session back to running (no-op when already running via handoff).

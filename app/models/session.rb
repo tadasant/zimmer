@@ -1923,11 +1923,26 @@ class Session < ApplicationRecord
   # that lets someone name the list: session creation (MCP start_session, the
   # REST API, the new-session form) and the mid-life change paths.
   #
+  # This form assigns in memory, for the creation surfaces that call it while the
+  # session is still being built. A persisted session goes through
+  # #record_explicit_mcp_servers!, which writes the same fact atomically.
+  #
   # @param servers [Array<String>, nil] the list the caller named
   def record_explicit_mcp_servers(servers)
     remaining = (metadata || {}).except(EXPLICIT_EMPTY_MCP_SERVERS_KEY)
     remaining[EXPLICIT_EMPTY_MCP_SERVERS_KEY] = true if Array(servers).empty?
     self.metadata = remaining
+  end
+
+  # The persisted-session form of #record_explicit_mcp_servers. One statement, so
+  # a mid-life list change cannot erase a key the session's own job wrote while
+  # the caller was holding the form open.
+  def record_explicit_mcp_servers!(servers)
+    if Array(servers).empty?
+      merge_metadata!(EXPLICIT_EMPTY_MCP_SERVERS_KEY => true)
+    else
+      remove_metadata!(EXPLICIT_EMPTY_MCP_SERVERS_KEY)
+    end
   end
 
   # True when an empty mcp_servers column is a deliberate choice rather than a

@@ -269,7 +269,7 @@ class EnqueuedMessageDrainJob < ApplicationJob
   def clear_attempts(session)
     return if session.metadata&.dig(ATTEMPTS_KEY).blank?
 
-    session.update_column(:metadata, (session.metadata || {}).except(ATTEMPTS_KEY))
+    session.remove_metadata!(ATTEMPTS_KEY)
   end
 
   # Record the attempt BEFORE trying, so an attempt that takes the worker down
@@ -277,7 +277,7 @@ class EnqueuedMessageDrainJob < ApplicationJob
   # not bound the case it exists to bound.
   def record_attempt(session)
     attempt = session.metadata&.dig(ATTEMPTS_KEY).to_i + 1
-    session.update_column(:metadata, (session.metadata || {}).merge(ATTEMPTS_KEY => attempt))
+    session.merge_metadata!(ATTEMPTS_KEY => attempt)
     attempt
   end
 

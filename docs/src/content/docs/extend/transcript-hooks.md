@@ -20,8 +20,10 @@ a name and nothing else.
 
 ```ruby
 class MyHook < TranscriptHooks::BaseHook
-  def call(session:, new_messages:)
-    # inspect new_messages, write to session.custom_metadata
+  # `session`, `transcript_content` and `new_messages` are readers on the base class;
+  # `#call` takes no arguments.
+  def call
+    # inspect new_messages, write to custom_metadata through the helper below
   end
 end
 ```
@@ -260,13 +262,12 @@ of segments would give up every recording in the call.
 # app/services/transcript_hooks/my_hook.rb
 module TranscriptHooks
   class MyHook < BaseHook
-    def call(session:, new_messages:)
+    def call
       new_messages.each do |msg|
         next unless msg["type"] == "tool_result"
         # ...
       end
-      session.update_column(:custom_metadata,
-        session.custom_metadata.merge("my_key" => value))
+      update_custom_metadata("my_key" => value)
     end
   end
 end

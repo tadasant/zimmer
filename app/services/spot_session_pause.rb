@@ -325,7 +325,7 @@ class SpotSessionPause
         # priority session is the one thing this service must never do.
         raise ActiveRecord::Rollback unless session.running? && session.may_pause? && session.spot?(overrides)
 
-        metadata = (session.metadata || {}).merge(
+        session.merge_metadata!(
           PAUSED_AT => Time.current.utc.iso8601,
           PAUSED_REASON => decision.reason,
           PAUSED_DETAIL => decision.detail,
@@ -335,8 +335,7 @@ class SpotSessionPause
           # this and sleeps it needs_input -> waiting.
           "pending_sleep" => true
         )
-
-        session.update!(running_job_id: nil, metadata: metadata)
+        session.update!(running_job_id: nil)
         session.pause!
         paused = true
       end
@@ -466,12 +465,8 @@ class SpotSessionPause
         # into the resume, so closing it here closes it for every caller.
         raise ActiveRecord::Rollback if session.paused_until_scheduled_time?
 
-        session.update!(
-          running_job_id: nil,
-          metadata: (session.metadata || {})
-            .except(*METADATA_KEYS, "paused_by")
-            .except(*Session::STALE_RETRY_METADATA_KEYS)
-        )
+        session.remove_metadata!(METADATA_KEYS, "paused_by", Session::STALE_RETRY_METADATA_KEYS)
+        session.update!(running_job_id: nil)
         resumed = session.resume_for_system_recovery!
       end
       return false unless resumed && session.reload.running?

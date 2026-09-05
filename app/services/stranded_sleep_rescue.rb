@@ -357,13 +357,13 @@ class StrandedSleepRescue
           # left a window where a crash — or a raise from the bookkeeping itself —
           # enqueued a turn without spending anything, which makes MAX_RESCUES a
           # suggestion rather than a bound. RESCUE_COUNT is itself in
-          # STALE_RETRY_METADATA_KEYS, so it has to be re-added after the except.
-          session.update!(
-            running_job_id: nil,
-            metadata: (session.metadata || {})
-              .except(*Session::STALE_RETRY_METADATA_KEYS)
-              .merge(RESCUE_COUNT => count + 1)
+          # STALE_RETRY_METADATA_KEYS, and the merge applies its removals first,
+          # so passing it as an update is what re-adds it.
+          session.merge_metadata!(
+            { RESCUE_COUNT => count + 1 },
+            Session::STALE_RETRY_METADATA_KEYS
           )
+          session.update!(running_job_id: nil)
         end
 
         next unless outcome == :claimed

@@ -624,7 +624,7 @@ module SessionStateMachine
       "summary" => elicitation&.summary
     }.compact
 
-    update_column(:metadata, (metadata || {}).merge("lost_elicitation" => marker))
+    merge_metadata!("lost_elicitation" => marker)
     log_state_change(
       reason == "expired" ?
         "Elicitation expired without a response — the agent was told the approval request timed out" :
@@ -643,7 +643,7 @@ module SessionStateMachine
   def clear_lost_elicitation_marker
     return unless metadata&.key?("lost_elicitation")
 
-    update_column(:metadata, metadata.except("lost_elicitation"))
+    remove_metadata!("lost_elicitation")
     broadcast_lost_elicitation_banner
   rescue => e
     Rails.logger.error "[SessionStateMachine] Failed to clear lost elicitation marker for session #{id}: #{e.message}"
@@ -1291,7 +1291,7 @@ module SessionStateMachine
   def clear_enqueued_drain_attempts
     return unless metadata&.key?(EnqueuedMessageDrainJob::ATTEMPTS_KEY)
 
-    update_column(:metadata, metadata.except(EnqueuedMessageDrainJob::ATTEMPTS_KEY))
+    remove_metadata!(EnqueuedMessageDrainJob::ATTEMPTS_KEY)
   rescue => e
     # Log-only: a stale counter costs a future drain its retries, and the
     # give-up path alerts loudly when that happens.
@@ -1712,7 +1712,7 @@ module SessionStateMachine
     keys = %w[auth_recovery_count last_auth_recovery_at auth_recovery_adoptions last_auth_adoption_at]
     return unless keys.any? { |key| metadata&.key?(key) }
 
-    update_column(:metadata, metadata.except(*keys))
+    remove_metadata!(keys)
   rescue => e
     # Alert: the budget is only ever cleared here. Swallowed, a long-running
     # session accumulates recovery attempts it has already earned back and is
@@ -1738,7 +1738,7 @@ module SessionStateMachine
     # the one this preserve branch exists to prevent. Drop the intent instead and
     # let the session come to rest in needs_input, where the operator can see it.
     if metadata[PENDING_SLEEP_REQUIRES_WAKE] && !armed_one_time_wake?
-      update_column(:metadata, metadata.except("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE))
+      remove_metadata!("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE)
       Rails.logger.info(
         "[SessionStateMachine] Dropped the preserved re-sleep for session #{id} — its wake-ups " \
         "fired or were destroyed during the recovery turn, so sleeping would strand it"
@@ -1747,7 +1747,7 @@ module SessionStateMachine
     end
 
     sleep!
-    update_column(:metadata, metadata.except("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE))
+    remove_metadata!("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE)
   rescue => e
     # Alert: the session asked to sleep and did not. It sits in needs_input on
     # the user's homepage as if it wanted attention, and the pending_sleep flag
@@ -1833,10 +1833,10 @@ module SessionStateMachine
       # while something is still armed to undo it. A deliberate sleep (the API's
       # sleep_session, which arms nothing) carries no such marker and is executed
       # unconditionally.
-      update_column(:metadata, (metadata || {}).merge(
+      merge_metadata!(
         "pending_sleep" => true,
         PENDING_SLEEP_REQUIRES_WAKE => true
-      ))
+      )
     end
 
     Rails.logger.info(
@@ -1994,7 +1994,7 @@ module SessionStateMachine
   def clear_pending_sleep
     return unless metadata&.dig("pending_sleep") == true
 
-    update_column(:metadata, metadata.except("pending_sleep"))
+    remove_metadata!("pending_sleep")
     Rails.logger.info "[SessionStateMachine] Cleared pending_sleep on resume for session #{id}"
   rescue => e
     # Alert: the user explicitly said "keep this active" and the stale auto-sleep
@@ -2004,10 +2004,10 @@ module SessionStateMachine
 
   # Mark that this session's needs_input state is caused by a pending MCP
   # elicitation. Mirrors the paused_by / pending_sleep metadata-marker pattern;
-  # uses update_column so it does not re-trigger save callbacks during the AASM
-  # transition that just persisted the status change.
+  # the atomic merge runs no validations or save callbacks, so it does not
+  # re-enter the AASM transition that just persisted the status change.
   def set_blocked_on_elicitation_marker
-    update_column(:metadata, (metadata || {}).merge("blocked_on_elicitation" => true))
+    merge_metadata!("blocked_on_elicitation" => true)
     Rails.logger.info "[SessionStateMachine] Set blocked_on_elicitation marker for session #{id}"
   rescue => e
     # Alert: without the marker the session is in needs_input with no record of
@@ -2020,7 +2020,7 @@ module SessionStateMachine
   def clear_blocked_on_elicitation_marker
     return unless metadata&.dig("blocked_on_elicitation")
 
-    update_column(:metadata, metadata.except("blocked_on_elicitation"))
+    remove_metadata!("blocked_on_elicitation")
     Rails.logger.info "[SessionStateMachine] Cleared blocked_on_elicitation marker for session #{id}"
   rescue => e
     # Log-only: a stranded marker is exactly what CleanupExpiredElicitationsJob
@@ -2045,8 +2045,7 @@ module SessionStateMachine
   def clear_paused_by_metadata
     return unless metadata&.dig("paused_by").present?
 
-    cleaned_metadata = metadata.except("paused_by")
-    update_column(:metadata, cleaned_metadata)
+    remove_metadata!("paused_by")
 
     Rails.logger.info "[SessionStateMachine] Cleared paused_by metadata for session #{id}"
   rescue => e
@@ -2315,9 +2314,8 @@ module SessionStateMachine
   # degrades both consumers to their un-markered behaviour — the wake still
   # settles on state, the push still gates on state — rather than losing them.
   def bump_needs_input_transition_counter
-    metadata_hash = custom_metadata.presence || {}
-    next_count = metadata_hash["needs_input_count"].to_i + 1
-    update_column(:custom_metadata, metadata_hash.merge("needs_input_count" => next_count))
+    next_count = (custom_metadata.presence || {})["needs_input_count"].to_i + 1
+    merge_custom_metadata!("needs_input_count" => next_count)
     next_count
   rescue => e
     # Log-only: the wake still settles on state, which is the check doing the real
