@@ -210,6 +210,19 @@ module ActiveSupport
     # test that measures cache behavior deserves a cold one.
     setup(prepend: true) { TranscriptRedactionCache.reset! }
 
+    # BroadcastService's circuit breaker is class-level state that outlives a
+    # test, and since #524 EVERY broadcast in the app can trip it — including the
+    # ones on Session/Log commit callbacks, which fire in tests that are about
+    # something else entirely. A breaker left open silently skips the next test's
+    # broadcasts and paints the "live updates paused" banner across unrelated
+    # system tests; closed #114 was a flake of exactly that shape. Reset it here
+    # so no test has to remember to.
+    setup(prepend: true) do
+      BroadcastService.circuit_breaker_failures = 0
+      BroadcastService.circuit_breaker_opened_at = nil
+      BroadcastService.clear_published_circuit_open
+    end
+
     # Include test support helpers
     include MockHelpers
     include ProcessStatusHelpers

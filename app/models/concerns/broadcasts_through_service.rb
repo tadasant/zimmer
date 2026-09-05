@@ -14,13 +14,20 @@
 #
 # Including models call `broadcaster.broadcast_partial` /
 # `broadcast_html` / `broadcast_removal` and do NOT rescue: the service
-# swallows, records to the breaker, and reports to ErrorReporter.
+# swallows every failure of the broadcast itself — the render, the cable write —
+# records it against the breaker, and reports it to ErrorReporter. (It still
+# raises ArgumentError on a malformed call, which is a programmer error and
+# should surface in tests rather than be absorbed.)
 module BroadcastsThroughService
   extend ActiveSupport::Concern
 
   private
 
   def broadcaster
-    @broadcaster ||= BroadcastService.new
+    # error_context keeps a failure report naming its subject. Every broadcast in
+    # the app now reports from one call site inside the service, so without it a
+    # report would identify the record only by whatever the stream name happens
+    # to encode.
+    @broadcaster ||= BroadcastService.new(error_context: { source: "#{self.class.name}##{id}" })
   end
 end

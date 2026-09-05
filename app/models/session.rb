@@ -2219,11 +2219,16 @@ class Session < ApplicationRecord
 
     # Replace the session's card in place (wherever it currently lives in the grid,
     # regardless of which category section it has been dragged into).
-    broadcast_individual_card_to_sessions_index(:replace)
+    delivered = broadcast_individual_card_to_sessions_index(:replace)
 
     # Record broadcast time for throttling (only for last_timeline_entry_at changes)
-    # Use update_column to avoid triggering callbacks
-    update_column(:last_broadcast_to_index_at, Time.current) if saved_change_to_last_timeline_entry_at?
+    # Use update_column to avoid triggering callbacks.
+    #
+    # Guarded on `delivered`, because the service swallows a failed broadcast and
+    # returns false rather than raising. Stamping regardless would have
+    # `should_broadcast_to_index?` suppress the next 30 seconds of card updates on
+    # the strength of one that never arrived.
+    update_column(:last_broadcast_to_index_at, Time.current) if delivered && saved_change_to_last_timeline_entry_at?
   end
 
   def broadcast_create_to_sessions_index
@@ -2360,9 +2365,10 @@ class Session < ApplicationRecord
   end
 
   def broadcast_follow_up_form
-    # Use SessionsController.render to ensure route helpers (follow_up_session_path) are available
-    # This is necessary because this callback can be triggered from background jobs
-    # Pre-fetch session skills to avoid cache hit in view
+    # Rendered through SessionsController so route helpers (follow_up_session_path)
+    # resolve — this callback can be triggered from background jobs. The skills
+    # lookup is inside the block with the render it feeds, so a failure in either
+    # is isolated the same way.
     broadcaster.broadcast_html(
       action: :replace,
       stream: "session_#{id}_status",
@@ -2414,14 +2420,13 @@ class Session < ApplicationRecord
   end
 
   def broadcast_metadata_change
-    # Broadcast metadata update to session detail page
-    # Use SessionsController.render to ensure route helpers are available
-    # Pass select data as locals so the partial renders edit affordances
-    # (without these, the edit buttons disappear because the partial checks for them)
     broadcast_metadata_partial
   end
 
-  # The metadata partial replacement, shared by the two callbacks that need it.
+  # Replace the metadata partial on the session detail page. Shared by the two
+  # callbacks that need it. Rendered through SessionsController so route helpers
+  # are available — this runs from background jobs — and the select data goes in
+  # as locals, without which the partial drops its edit affordances.
   def broadcast_metadata_partial
     broadcaster.broadcast_html(
       action: :replace,
@@ -2435,9 +2440,9 @@ class Session < ApplicationRecord
   # `mcp_status_changed` defaults to the dirty-tracking answer for the callback path;
   # AtomicJsonMetadata passes it explicitly because a raw UPDATE leaves no dirty state.
   def broadcast_custom_metadata_change(mcp_status_changed: custom_metadata_mcp_status_changed?)
-    # Broadcast header actions update to session detail page
-    # This includes the GitHub PR link button which depends on custom_metadata
-    # Use SessionsController.render to ensure route helpers are available
+    # The header actions include the GitHub PR link button, which depends on
+    # custom_metadata. Same stream, target and rendering as the status-change
+    # path, so it is the same method rather than a second copy of it.
     broadcast_header_actions
 
     # Also broadcast metadata partial if MCP status changed
@@ -2465,15 +2470,18 @@ class Session < ApplicationRecord
 
   def broadcast_provenance_change_to_hierarchy
     SessionHierarchy.new(self).session_ids.each do |viewer_id|
-      viewer = Session.find_by(id: viewer_id)
-      next unless viewer
-
       broadcaster.broadcast_html(
         action: :replace,
-        stream: "session_#{viewer.id}_status",
-        target: "session_#{viewer.id}_provenance"
+        stream: "session_#{viewer_id}_status",
+        target: "session_#{viewer_id}_provenance"
       ) do
-        SessionsController.render(partial: "sessions/session_hierarchy", locals: { agent_session: viewer })
+        # Inside the block, so the lookup is covered by the same guard as the
+        # render: this fans out over a whole lineage from a background job, and a
+        # database blip partway through used to be swallowed with the rest. nil
+        # means the session went away between the hierarchy read and here, and
+        # the block returning nil is how the service is told to send nothing.
+        viewer = Session.find_by(id: viewer_id)
+        viewer && SessionsController.render(partial: "sessions/session_hierarchy", locals: { agent_session: viewer })
       end
     end
   end

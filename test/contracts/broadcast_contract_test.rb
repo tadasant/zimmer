@@ -49,8 +49,7 @@ class BroadcastContractTest < ActiveSupport::TestCase
       "timestamp" => Time.current.iso8601
     }
 
-    # Should not raise any errors
-    assert_nothing_raised do
+    assert_broadcast_delivered do
       service.timeline_message(@running_session, message)
     end
   end
@@ -71,7 +70,7 @@ class BroadcastContractTest < ActiveSupport::TestCase
       "timestamp" => Time.current.iso8601
     }
 
-    assert_nothing_raised do
+    assert_broadcast_delivered do
       service.timeline_message(@running_session, message)
     end
   end
@@ -90,7 +89,7 @@ class BroadcastContractTest < ActiveSupport::TestCase
       "timestamp" => Time.current.iso8601
     }
 
-    assert_nothing_raised do
+    assert_broadcast_delivered do
       service.timeline_message(@running_session, message)
     end
   end
@@ -256,10 +255,13 @@ class BroadcastContractTest < ActiveSupport::TestCase
   # Contract: Log model broadcasts must work
   # =========================================================================
 
+  # assert_nothing_raised is NOT enough on its own here, and the reason is the
+  # whole point of this file. The broadcast goes through BroadcastService, which
+  # swallows a failed render — so a partial that blows up under the request-less
+  # render the channel performs would leave `create!` looking perfectly healthy.
+  # assert_broadcast_delivered checks the broadcast actually landed.
   test "Log.broadcast_append_to_timeline works after creation" do
-    # The Log model has an after_create_commit callback that broadcasts
-    # This verifies the partial renders correctly
-    assert_nothing_raised do
+    assert_broadcast_delivered do
       @running_session.logs.create!(
         content: "Test log entry",
         level: "info"
@@ -268,7 +270,7 @@ class BroadcastContractTest < ActiveSupport::TestCase
   end
 
   test "Log.broadcast_append_to_timeline works for error logs" do
-    assert_nothing_raised do
+    assert_broadcast_delivered do
       @running_session.logs.create!(
         content: "Error occurred: test error",
         level: "error"
@@ -369,5 +371,22 @@ class BroadcastContractTest < ActiveSupport::TestCase
     def exist?(path)
       @files.key?(path) || @directories.include?(path)
     end
+  end
+
+  private
+
+  # Run the block and assert every broadcast it caused actually reached the
+  # cable. BroadcastService swallows a failed render or publish and records it
+  # against the circuit breaker instead, so the failure count is the only thing
+  # that tells a rendering contract test apart from a passing one.
+  def assert_broadcast_delivered
+    before = BroadcastService.circuit_breaker_failures
+    result = nil
+    assert_nothing_raised { result = yield }
+
+    assert_equal before, BroadcastService.circuit_breaker_failures,
+                 "A broadcast failed (swallowed by BroadcastService) — the partial did not render, " \
+                 "or the publish did not land. Check the WARN log for 'Broadcast failed after retries'."
+    result
   end
 end

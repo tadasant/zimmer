@@ -81,54 +81,66 @@ module BroadcastHelpers
   # sees every broadcast in the process — including the ones BroadcastService
   # makes on a model's behalf — and nothing reaches ActionCable.
   #
+  # Two things it deliberately does NOT do. It does not nest — an inner capture
+  # would restore the real channel for the rest of an outer one, so it raises
+  # instead. And it cannot see through a Mocha stub of the same method: Mocha
+  # stubs a class method by PREPENDING a module to the singleton class, which
+  # sits in front of anything defined here, so a test that stubs
+  # Turbo::StreamsChannel directly must not also use this.
+  #
   # @param raises [Exception, nil] when given, every captured broadcast raises it
   #   afterwards, which is how the failure-isolation tests simulate a dead cable.
   # @yield [Array<CapturedBroadcast>] the (growing) list, also returned
-  CapturedBroadcast = Struct.new(:action, :stream, :target, :partial, :locals, :html) do
-    def to_h_for_diff
-      { action: action, stream: stream, target: target, partial: partial, locals: locals }.compact
-    end
-  end
+  CapturedBroadcast = Struct.new(:action, :stream, :target, :partial, :locals, :html)
 
   TURBO_BROADCAST_ACTIONS = %i[replace append prepend remove].freeze
 
   def capture_turbo_broadcasts(raises: nil)
+    raise "capture_turbo_broadcasts does not nest" if @capturing_turbo_broadcasts
+
+    # The restore below UNCOVERS the real implementations rather than putting
+    # them back, which is only correct while they arrive through
+    # `extend Turbo::Streams::Broadcasts`. Assert that here so a turbo-rails
+    # upgrade that defines them directly fails loudly instead of deleting them
+    # for the rest of the worker process.
+    TURBO_BROADCAST_ACTIONS.each do |action|
+      name = :"broadcast_#{action}_to"
+      next unless Turbo::StreamsChannel.singleton_class.instance_methods(false).include?(name)
+
+      raise "Turbo::StreamsChannel.#{name} is now defined directly; capture_turbo_broadcasts must save and restore it"
+    end
+
+    @capturing_turbo_broadcasts = true
     captured = []
 
-    TURBO_BROADCAST_ACTIONS.each do |action|
-      name = :"broadcast_#{action}_to"
-      Turbo::StreamsChannel.define_singleton_method(name) do |*streamables, **options|
-        captured << CapturedBroadcast.new(
-          action,
-          streamables.first,
-          options[:target],
-          options[:partial],
-          options[:locals],
-          options[:html]
-        )
-        raise raises if raises
+    begin
+      TURBO_BROADCAST_ACTIONS.each do |action|
+        name = :"broadcast_#{action}_to"
+        Turbo::StreamsChannel.define_singleton_method(name) do |*streamables, **options|
+          captured << CapturedBroadcast.new(
+            action,
+            streamables.first,
+            options[:target],
+            options[:partial],
+            options[:locals],
+            options[:html]
+          )
+          raise raises if raises
 
-        nil
+          nil
+        end
+      end
+
+      yield captured
+      captured
+    ensure
+      @capturing_turbo_broadcasts = false
+      TURBO_BROADCAST_ACTIONS.each do |action|
+        name = :"broadcast_#{action}_to"
+        Turbo::StreamsChannel.singleton_class.send(:remove_method, name) if
+          Turbo::StreamsChannel.singleton_class.instance_methods(false).include?(name)
       end
     end
-
-    yield captured
-    captured
-  ensure
-    # The real implementations arrive through `extend Turbo::Streams::Broadcasts`,
-    # so they are NOT singleton methods of the class — removing the definitions
-    # made above uncovers them again. Re-defining them would leave a permanent
-    # shadow in every later test in this worker.
-    TURBO_BROADCAST_ACTIONS.each do |action|
-      name = :"broadcast_#{action}_to"
-      Turbo::StreamsChannel.singleton_class.send(:remove_method, name) if
-        Turbo::StreamsChannel.singleton_class.instance_methods(false).include?(name)
-    end
-  end
-
-  # The subset of captures on a given stream, in order.
-  def broadcasts_on(captured, stream)
-    captured.select { |b| b.stream == stream }
   end
 
   private
