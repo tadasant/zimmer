@@ -16,6 +16,10 @@
 # the including class exposing `@file_system` (a FileSystemAdapter) and
 # `@logger`, which every adapter already provides.
 module CliSpawnEnv
+  # How many parallel test workers one session may fork, unless the session's own `.env`
+  # says otherwise. See #apply_test_parallelism for why this is Zimmer's business at all.
+  DEFAULT_TEST_PARALLELISM = 2
+
   private
 
   # Load environment variables from a .env file if present in working_dir.
@@ -238,6 +242,57 @@ module CliSpawnEnv
   rescue => e
     @logger.warn "Failed to set up session scratch dir: #{e.message}"
     env_vars
+  end
+
+  # Cap the parallel test workers a session forks.
+  #
+  # This is the demand side of tadasant/zimmer#981, and the only part of it that reduces
+  # what the box is asked for rather than deciding who dies when it runs out. On
+  # 2026-09-05 eight concurrent sessions each ran a parallel Rails suite: 41 `ruby`
+  # processes at 215-350 MB apiece, 8.7 GB of anonymous memory, against a worker whose
+  # whole container cap is 10 GiB. No session was doing anything wrong and none came near
+  # its own 4 GiB bound.
+  #
+  # Rails sizes `parallelize(workers: :number_of_processors)` from the processor count,
+  # which inside the container is the whole droplet's — so every session sizes itself as
+  # though it had the box to itself, and eight of them multiply. `PARALLEL_WORKERS` is the
+  # override Rails already reads (ActiveSupport::TestCase.parallelize), so this needs
+  # nothing from the repo the agent is working in.
+  #
+  # Honestly labelled: a MITIGATION, not a bound. It attacks the dominant term and it does
+  # not stop a session finding another way to fork a hundred processes — the pool's
+  # `memory.max` (SessionMemoryCgroup) is what bounds that.
+  #
+  # A `.env` value wins, because a repo whose suite genuinely needs more workers is the
+  # operator's call and the operator has a per-clone file to say so in.
+  # `ZIMMER_SESSION_PARALLEL_WORKERS=0` turns the cap off everywhere, which is the
+  # break-glass: a session then sizes itself off the processor count as it did before.
+  #
+  # @param env_vars [Hash] Environment variables to pass to the child process
+  # @return [Hash] env_vars, with PARALLEL_WORKERS set unless it was set already
+  def apply_test_parallelism(env_vars)
+    return env_vars if env_vars["PARALLEL_WORKERS"].present?
+
+    workers = configured_test_parallelism
+    return env_vars if workers.zero?
+
+    env_vars["PARALLEL_WORKERS"] = workers.to_s
+    @logger.info "Capped parallel test workers at #{workers} (PARALLEL_WORKERS)"
+    env_vars
+  end
+
+  # Configured in a deploy-time variable, like every other resource bound here, so
+  # changing it is a deploy rather than a shell on the box. An unparseable or negative
+  # value falls back to the default rather than turning the cap off, because the failure
+  # mode of "off" is a worker OOM and the failure mode of "2" is a slower test run.
+  def configured_test_parallelism
+    configured = ENV["ZIMMER_SESSION_PARALLEL_WORKERS"].presence
+    return DEFAULT_TEST_PARALLELISM if configured.nil?
+
+    value = Integer(configured, exception: false)
+    return DEFAULT_TEST_PARALLELISM if value.nil? || value.negative?
+
+    value
   end
 
   # Wrap the runtime's argv so the process — and every tool subprocess it goes on to

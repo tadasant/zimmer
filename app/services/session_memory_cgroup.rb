@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
-# A per-session memory bound, enforced by the kernel.
+# A per-session memory bound, and an aggregate bound over all of them, enforced by
+# the kernel.
 #
 # WHY THIS EXISTS
 # ---------------
@@ -22,13 +23,40 @@
 # bounds the blast radius to the session that caused it. The container cap protects
 # the host; this is the layer underneath it.
 #
+# THE FAILURE THAT NEEDED A SECOND BOUND
+# --------------------------------------
+# A per-session bound sums to nothing. On 2026-09-05 (tadasant/zimmer#981) eight
+# concurrent sessions, none of them anywhere near its 4 GiB, each ran a parallel Rails
+# suite: 41 `ruby` processes at 215-350 MB apiece, 8.7 GB of anonymous memory between
+# them. The container's own 10 GiB cap fired, and because THAT memcg holds the app as
+# well as the sessions, the kernel picked the biggest process in it -- `bundle exec
+# good_job start`, at 943 MB. The Rails worker died, and every in-flight session with
+# it. There was no runaway to catch: the largest process on the box was under 1 GB.
+#
+# The answer is a second `memory.max`, on a `sessions` POOL cgroup that holds every
+# session cgroup and nothing else. Then a pile-up declares its OOM in a memcg the
+# worker is not inside, and the kernel's victim can only be a session process.
+#
+# Where the cap sits is the entire point, and the obvious placement is wrong: a
+# `memory.max` on the delegated parent `zimmer.sessions` would also cover
+# `zimmer.sessions/app`, which is where bin/docker-entrypoint puts the Rails worker.
+# The kernel selects an OOM victim by size across the whole subtree of the memcg that
+# declared the OOM, so that placement puts the worker straight back in the victim pool
+# -- the failure, relocated one level down rather than fixed. Hence the extra level.
+#
+# What this does NOT do is stop sessions from being killed. Under the load that
+# produced #981 the pool would have been exhausted and a session process would have
+# died. That is the trade being made deliberately: one session dies with an
+# attributable cause and a recovery prompt, instead of the worker dying and taking
+# every session on the box with it.
+#
 # WHAT IT ALSO BUYS
 # -----------------
 # #815 could not establish which session issued the offending command: "on a
 # shared-cgroup worker there is no path from 'a process was OOM-killed' to 'this
 # session did it'". The cgroup is named `session-<id>`, so the kernel's own
-# `oom-kill:` line carries `oom_memcg=/zimmer.sessions/session-12398` and names it for
-# us — no extra plumbing, and it works for the kill nobody anticipated.
+# `oom-kill:` line carries `oom_memcg=/zimmer.sessions/sessions/session-12398` and names it
+# for us — no extra plumbing, and it works for the kill nobody anticipated.
 # `memory.peak` and `memory.events` give the same attribution while the session is
 # still alive.
 #
@@ -51,18 +79,28 @@
 # a failed bound must never be the thing that stops a session from running.
 #
 # `bin/docker-entrypoint` does the one part that needs root: it creates the delegated
-# parent, enables the memory controller on it, hands it to uid 1000, and moves the app
-# into a sibling cgroup so that uid 1000 can migrate processes within the delegated
-# subtree. See that file for why the sibling is load-bearing.
+# parent, enables the memory controller on it, hands it to uid 1000, moves the app into
+# a sibling cgroup so that uid 1000 can migrate processes within the delegated subtree,
+# and creates the `sessions` pool with the aggregate `memory.max` on it. See that file
+# for why both children are load-bearing.
+#
+# The pool's own `memory.max` is left root-owned there, so the aggregate bound cannot be
+# widened from inside the app. Everything else about the pool is delegated, because the
+# app has to create and remove session cgroups inside it.
 #
 # NOT A SANDBOX. An agent runs as the same uid that owns the delegated subtree, so it
 # could move itself out. This is a guardrail against a runaway command, not a boundary
 # against a hostile one — Zimmer has no such boundary anywhere and this does not
 # pretend to add one.
 class SessionMemoryCgroup
-  # The delegated parent, created by bin/docker-entrypoint. Overridable so tests can
-  # point at a tmpdir and so an operator can move it without a new image.
-  DEFAULT_PARENT = "/sys/fs/cgroup/zimmer.sessions"
+  # The delegated subtree root, created by bin/docker-entrypoint. Overridable so tests
+  # can point at a tmpdir and so an operator can move it without a new image.
+  DEFAULT_ROOT = "/sys/fs/cgroup/zimmer.sessions"
+
+  # The pool cgroup inside it that holds every session cgroup, and carries the aggregate
+  # `memory.max`. Session cgroups live HERE and not in the root, because the root also
+  # holds `app` — see the header for why that distinction is the whole of #981.
+  POOL_DIRNAME = "sessions"
 
   # 4 GiB per session.
   #
@@ -80,6 +118,12 @@ class SessionMemoryCgroup
   # killing sessions that work today. A conservative bound plus per-session visibility
   # is the right first cut, and `memory.peak` is recorded per session so the number can
   # be tightened on evidence rather than on guesswork.
+  #
+  # That reasoning survived tadasant/zimmer#981 unchanged, and the fix there is not to
+  # lower this. Squeezing per-session bounds until N of them fit under the container cap
+  # is the same trade rejected above — it kills sessions that work today, and it has to
+  # pick an N that no scheduler guarantees. The aggregate is bounded aggregately, by the
+  # pool's own `memory.max`.
   DEFAULT_LIMIT_BYTES = 4 * 1024 * 1024 * 1024
 
   # Where a session remembers what it has already been told about its own cgroup. The
@@ -108,12 +152,87 @@ class SessionMemoryCgroup
     end
   end
 
+  # The reads of a cgroup's memory interface files. Shared by the per-session cgroup and
+  # by the pool above it: both are ordinary cgroup v2 directories and only the path
+  # differs, so the "max means no limit", "a missing file is nil, not zero" and "an
+  # unreadable cgroup is nil" rules must not be written twice and drift.
+  module MemoryFiles
+    def read_integer_at(dir, file)
+      value = File.read(File.join(dir, file)).strip
+      return nil if value == "max"
+
+      Integer(value, exception: false)
+    rescue SystemCallError
+      nil
+    end
+
+    # `memory.events` is a flat "key value" table; oom_kill counts tasks the kernel
+    # killed in this cgroup and its descendants, and never decreases.
+    def read_event_at(dir, key)
+      File.foreach(File.join(dir, "memory.events")) do |line|
+        name, value = line.split
+        return Integer(value, exception: false) if name == key
+      end
+      nil
+    rescue SystemCallError
+      nil
+    end
+
+    def stats_at(dir)
+      Stats.new(
+        current_bytes: read_integer_at(dir, "memory.current"),
+        peak_bytes: read_integer_at(dir, "memory.peak"),
+        oom_kills: read_event_at(dir, "oom_kill"),
+        limit_bytes: read_integer_at(dir, "memory.max")
+      )
+    end
+  end
+
+  extend MemoryFiles
+  include MemoryFiles
+  private_class_method :read_integer_at, :read_event_at, :stats_at
+  private :read_integer_at, :read_event_at, :stats_at
+
   class << self
-    # The delegated parent cgroup's path. Resolved at call time, never memoized, so a
-    # test that stubs the env and an operator who sets it at deploy time both take
-    # effect without a process restart.
+    # The delegated subtree's root. Resolved at call time, never memoized, so a test
+    # that stubs the env and an operator who sets it at deploy time both take effect
+    # without a process restart.
+    #
+    # The app never creates anything directly in here: this is the cgroup whose
+    # `cgroup.procs` uid 1000 owns so that it can migrate a process from `app` into a
+    # session cgroup, and it is the parent of both.
+    def root_path
+      ENV["ZIMMER_SESSION_CGROUP_ROOT"].presence || DEFAULT_ROOT
+    end
+
+    # Where session cgroups live: the pool, one level below the delegated root, whose
+    # own `memory.max` bounds all of them together.
     def parent_path
-      ENV["ZIMMER_SESSION_CGROUP_ROOT"].presence || DEFAULT_PARENT
+      File.join(root_path, POOL_DIRNAME)
+    end
+
+    # The aggregate bound over every session, as the kernel currently holds it.
+    #
+    # Read from the pool's `memory.max` rather than from an environment variable,
+    # because the entrypoint is what writes it and it may have failed to: a container
+    # that could not write the cap runs with the pool present and unbounded, and the
+    # readers have to be able to tell that from a cap that is simply large.
+    #
+    # @return [Integer, nil] bytes, or nil when there is no cap or it could not be read
+    def pool_limit_bytes
+      read_integer_at(parent_path, "memory.max")
+    end
+
+    # Usage, high-water mark and OOM kills for the pool as a whole.
+    #
+    # `oom_kill` here counts kills anywhere in the subtree, so it moves for a kill in
+    # any session's cgroup as well as for one the pool's own cap caused. It is a
+    # pressure reading, not an attribution — attribution stays per session, where the
+    # cgroup is named after the session that owns it.
+    #
+    # @return [Stats]
+    def pool_stats
+      stats_at(parent_path)
     end
 
     # The per-session `memory.max`, in bytes.
@@ -187,10 +306,11 @@ class SessionMemoryCgroup
     def sweep!
       return 0 unless available?
 
-      # Both halves are the filter: the prefix keeps the sweep off the `app` cgroup the
-      # entrypoint created, and a parseable id keeps it off anything else that happens to
-      # be named like one. A directory this class did not create is not this class's to
-      # remove.
+      # Both halves are the filter: a `session-` prefix and a parseable id keep the sweep
+      # off anything this class did not create, which is not this class's to remove. The
+      # pool holds only session cgroups today — `app` is its sibling, not its child — but
+      # the filter is what makes that a fact about the sweep rather than about the
+      # entrypoint's current layout.
       candidates = Dir.children(parent_path).filter_map do |name|
         next unless name.start_with?("session-")
 
@@ -316,12 +436,7 @@ class SessionMemoryCgroup
   #
   # @return [Stats]
   def stats
-    Stats.new(
-      current_bytes: read_integer("memory.current"),
-      peak_bytes: read_integer("memory.peak"),
-      oom_kills: read_event("oom_kill"),
-      limit_bytes: read_integer("memory.max")
-    )
+    stats_at(path)
   end
 
   # @return [Integer, nil] processes the kernel has OOM-killed in this cgroup, or nil
@@ -427,24 +542,7 @@ class SessionMemoryCgroup
 
   private
 
-  def read_integer(file)
-    value = File.read(File.join(path, file)).strip
-    return nil if value == "max"
+  def read_integer(file) = read_integer_at(path, file)
 
-    Integer(value, exception: false)
-  rescue SystemCallError
-    nil
-  end
-
-  # `memory.events` is a flat "key value" table; oom_kill counts tasks the kernel killed
-  # in this cgroup, and never decreases.
-  def read_event(key)
-    File.foreach(File.join(path, "memory.events")) do |line|
-      name, value = line.split
-      return Integer(value, exception: false) if name == key
-    end
-    nil
-  rescue SystemCallError
-    nil
-  end
+  def read_event(key) = read_event_at(path, key)
 end

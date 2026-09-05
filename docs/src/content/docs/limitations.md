@@ -4405,9 +4405,20 @@ Three further gaps in what the bound covers, all by design:
 - **It is not a sandbox.** An agent runs as the same uid that owns the delegated subtree, so
   it can move itself out of its own cgroup. This is a guardrail against a runaway command, not
   a boundary against a hostile one — Zimmer has no such boundary anywhere.
-- **Inner Docker containers escape it.** A container an agent starts through the nested
-  `dockerd` is placed in a cgroup by that daemon, which lives outside `zimmer.sessions`. Its
-  memory is charged to the worker container, not to the session that asked for it.
+- **Inner Docker containers escape it**, and they escape the shared pool too. A container an
+  agent starts through the nested `dockerd` is placed in a cgroup by that daemon, which lives
+  outside `zimmer.sessions` entirely. Its memory is charged to the worker container, not to the
+  session that asked for it and not to the pool
+  ([#981](https://github.com/tadasant/zimmer/issues/981)) — which is why the pool is sized to
+  leave the dev stacks room under the container cap rather than to account for them.
+- **The pool decides who dies, not how much is asked for.** `ZIMMER_SESSIONS_MEMORY_MAX_MB`
+  keeps a pile-up of in-budget sessions from reaching the container cap and putting the Rails
+  worker in the victim pool. It does not keep the pile-up from happening: at the load that
+  produced #981 the pool is exhausted and a session is killed. Nothing holds an
+  `AgentSessionJob` claim back on observed memory headroom — admission control was considered
+  and not built, because today's telemetry says a headroom gate would be closed for much of
+  the day at current demand. `ZIMMER_SESSION_PARALLEL_WORKERS` reduces the demand instead, and
+  it is a mitigation rather than a bound.
 - **CI cannot test the enforcement**, only the plumbing — same reason as
   [CI cannot test the nested-Docker path](/limitations/#ci-cannot-test-the-nested-docker-path-only-the-shape-of-it).
   The kernel half is verified on staging.
@@ -4424,8 +4435,10 @@ Measured on staging: two contained kills left the worker container's `memory.cur
 *hierarchical* `memory.events` counted both and the kernel emitted a line for each.
 
 The distinction is in the line itself, which is why the cgroups are named after the session:
-`oom_memcg=/zimmer.sessions/session-12398` is contained, `oom_memcg=/system.slice/docker-….scope`
-is not. The filter belongs to the alert rule, which lives in the `obs` stack rather than in this
+`oom_memcg=/zimmer.sessions/sessions/session-12398` is contained,
+`oom_memcg=/system.slice/docker-….scope` is not. `oom_memcg=/zimmer.sessions/sessions` — the
+shared pool — is a third case: contained in the sense that the Rails worker survives it, and
+worth a human's attention in the sense that the box is over-subscribed. The filter belongs to the alert rule, which lives in the `obs` stack rather than in this
 repo, so it is not fixed here — tracked in a private repo. Until it is, expect a page the first
 time a production session hits its bound.
 

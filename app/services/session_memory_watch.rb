@@ -18,6 +18,11 @@
 #     `memory.high` watermark would have been the kernel-side way to get one, but the
 #     memory at issue is anonymous and the worker has no swap, so a watermark buys a
 #     long allocator stall and then the same kill. Polling costs two file reads.
+#   * crossing POOL_WARN_FRACTION of the SHARED pool's bound, once. A session can be
+#     killed while nowhere near its own limit, because every session on the box shares
+#     one aggregate `memory.max` (tadasant/zimmer#981). Without this the session log
+#     would say a session using 400 MB of its 4 GB was killed for memory, which reads
+#     like a bug rather than like a busy box.
 #   * a cgroup that exists but never took a process, once. That means the `sh` wrapper
 #     could not migrate and the session is running UNBOUNDED. The wrapper says so on
 #     the runtime's stderr log, but that log only reaches the session log when a turn
@@ -38,6 +43,18 @@ class SessionMemoryWatch
   # Fraction of the bound that earns a one-time warning.
   WARN_FRACTION = 0.75
 
+  # The same, for the pool every session shares. Higher than WARN_FRACTION because the
+  # pool is *expected* to run warm — it is sized to be used, and a box running eight
+  # sessions sits well above 75% of it in normal operation — so a warning at 0.75 would
+  # be on almost all the time and would say nothing.
+  POOL_WARN_FRACTION = 0.9
+
+  # How close a session's own peak has to get to its own bound for the kill to be read
+  # as "this session ran out" rather than "the box did". A kill is reported after the
+  # fact, so `memory.peak` has already been charged for the allocation that failed; the
+  # margin covers the difference between the peak the reader sees and the limit.
+  OWN_BOUND_FRACTION = 0.9
+
   # @param session [Session]
   # @param clock [#call] injectable for tests
   def initialize(session, clock: -> { Time.current })
@@ -47,6 +64,7 @@ class SessionMemoryWatch
     @last_checked_at = nil
     @warned_high = false
     @warned_unbounded = false
+    @warned_pool = false
   end
 
   # @return [Boolean] whether this container can bound and observe the session at all
@@ -65,10 +83,12 @@ class SessionMemoryWatch
 
     first_check = @last_checked_at.nil?
     @last_checked_at = @clock.call
+    @pool_stats = nil
 
     stats = @cgroup.stats
     report_oom_kills(stats, log_buffer)
     report_high_usage(stats, log_buffer)
+    report_pool_pressure(log_buffer)
     report_unbounded(log_buffer) unless first_check
   rescue StandardError => e
     # Never the reason a monitoring loop dies. A missing warning is a missing warning;
@@ -98,18 +118,61 @@ class SessionMemoryWatch
 
     with_db_retry { @cgroup.record_oom_kills!(@session, observed) }
 
-    log_buffer.add(
-      "The kernel killed #{killed} process(es) in this session because the session " \
-      "reached its memory limit of #{human_bytes(stats.limit_bytes)} " \
-      "(peak #{human_bytes(stats.peak_bytes)}). A command that ran out of memory exits " \
-      "with a bare \"Killed\" and status 137 — that is this, not a bug in the command. " \
-      "The limit is per session, so nothing outside this session was affected.",
-      level: "warning"
-    )
+    log_buffer.add(oom_kill_message(killed, stats), level: "warning")
     Rails.logger.warn(
       "[SessionMemoryWatch] session=#{@session.id} oom_kills=#{observed} " \
       "peak=#{stats.peak_bytes} limit=#{stats.limit_bytes}"
     )
+  end
+
+  # Which bound the session ran into, because they are two different pieces of advice.
+  #
+  # Its own bound means the session allocated too much and the fix is in the session:
+  # stream the output, split the build, stop holding the file in memory. The shared pool
+  # means the box was busy and this session was simply the one holding memory when it ran
+  # out — nothing the agent did is wrong, and telling it to allocate less would be advice
+  # for a problem it does not have.
+  #
+  # When `memory.peak` is unreadable (a kernel older than 5.19) there is nothing to
+  # compare, so this says the honest thing: the limit was reached, without claiming which.
+  def oom_kill_message(killed, stats)
+    opening = "The kernel killed #{killed} process(es) in this session. A command that ran " \
+      "out of memory exits with a bare \"Killed\" and status 137 — that is this, not a bug " \
+      "in the command."
+
+    if own_bound_reached?(stats)
+      "#{opening} The session reached its own memory limit of " \
+        "#{human_bytes(stats.limit_bytes)} (peak #{human_bytes(stats.peak_bytes)}), so " \
+        "nothing outside this session was affected."
+    elsif pool_exhausted?
+      "#{opening} This session was well inside its own limit of " \
+        "#{human_bytes(stats.limit_bytes)} (peak #{human_bytes(stats.peak_bytes)}) — what " \
+        "ran out is the memory ALL sessions on this worker share " \
+        "(#{human_bytes(pool_stats.current_bytes)} of #{human_bytes(pool_stats.limit_bytes)}). " \
+        "Retrying is reasonable once the box is quieter; running fewer things at once " \
+        "inside this session (parallel test workers, concurrent builds) makes it less likely."
+    else
+      "#{opening} The session reached a memory limit of " \
+        "#{human_bytes(stats.limit_bytes)} (peak #{human_bytes(stats.peak_bytes)})."
+    end
+  end
+
+  def own_bound_reached?(stats)
+    return false if stats.peak_bytes.nil? || stats.limit_bytes.nil?
+
+    stats.peak_bytes >= stats.limit_bytes * OWN_BOUND_FRACTION
+  end
+
+  def pool_exhausted?
+    return false if pool_stats.current_bytes.nil? || pool_stats.limit_bytes.nil?
+
+    pool_stats.current_bytes >= pool_stats.limit_bytes * POOL_WARN_FRACTION
+  end
+
+  # Read once per tick, not once per question: three of the branches above consult it and
+  # a fourth polls it, and they must all be looking at the same reading.
+  def pool_stats
+    @pool_stats ||= SessionMemoryCgroup.pool_stats
   end
 
   # Once per job, not once per tick: a session that sits at 80% for an hour has one
@@ -126,6 +189,31 @@ class SessionMemoryWatch
       "kernel kills the largest process in the session — most likely whatever is " \
       "allocating. Consider streaming large output instead of holding it in memory.",
       level: "warning"
+    )
+  end
+
+  # The shared pool is nearly full, so this session may be killed while comfortably
+  # inside its own bound. Once per job, like the bound warning above.
+  #
+  # This is the visibility half of tadasant/zimmer#981: the pile-up that killed the Rails
+  # worker on 2026-09-05 was invisible from inside any one session, because every session
+  # involved was doing something entirely reasonable.
+  def report_pool_pressure(log_buffer)
+    return if @warned_pool
+    return unless pool_exhausted?
+
+    @warned_pool = true
+    log_buffer.add(
+      "All agent sessions on this worker share " \
+      "#{human_bytes(pool_stats.limit_bytes)} of memory, and " \
+      "#{human_bytes(pool_stats.current_bytes)} of it is in use. A session can be " \
+      "OOM-killed here while well inside its own limit. If this session is running " \
+      "something parallel — a test suite, a build — consider narrowing it.",
+      level: "warning"
+    )
+    Rails.logger.warn(
+      "[SessionMemoryWatch] session=#{@session.id} pool_current=#{pool_stats.current_bytes} " \
+      "pool_limit=#{pool_stats.limit_bytes}"
     )
   end
 

@@ -89,6 +89,10 @@ module ClaudeSpawnEnv
     # agents persist cross-step state on the durable volume instead of ephemeral /tmp.
     apply_session_scratch_dir(env_vars)
 
+    # Cap the parallel test workers this session forks, so eight concurrent sessions
+    # cannot each size a Rails suite off the whole droplet's processor count.
+    apply_test_parallelism(env_vars)
+
     # Point the ssh-* MCP servers (and the plain ssh/git CLIs) at the operator SSH key.
     apply_operator_ssh_key(env_vars)
 

@@ -174,6 +174,34 @@ env:
     # Set it here rather than on the box: 0 disables the bound entirely, which is the
     # break-glass an incident might need, and it ships as a deploy like everything else.
     ZIMMER_SESSION_MEMORY_MAX_MB: "<%= ENV.fetch("ZIMMER_SESSION_MEMORY_MAX_MB", "4096") %>"
+    # The AGGREGATE bound over every session at once, in MB, on the `zimmer.sessions/sessions`
+    # pool cgroup that bin/docker-entrypoint creates. Per-session bounds do not sum to
+    # anything, and on 2026-09-05 that was the failure: eight sessions each far inside their
+    # 4 GiB reached 8.7 GB between them, the 10g cap above fired, and the kernel picked the
+    # biggest process in the cgroup -- `bundle exec good_job start`, the Rails worker running
+    # every session on the box. It died and took every in-flight session with it
+    # (tadasant/zimmer#981).
+    #
+    # 7168 is what is left of the 10g cap after the two things that must survive a pile-up:
+    # the Rails worker (measured at 943 MB anon at the kill, ~1.6 GiB with three sessions,
+    # and it lives in the `app` sibling, OUTSIDE this pool) and the inner dockerd with the
+    # dev stacks it runs (also outside the pool; ~1.5 GiB of node and postgres in the same
+    # task dump). Call it 3 GiB for both, and 7 GiB for sessions.
+    #
+    # What this does NOT claim is that sessions never want more than 7 GiB. Under the load
+    # that produced #981 they wanted ~9, so the pool would have OOM-killed a session. That is
+    # the point: a session dies with an attributable cause and a recovery prompt, instead of
+    # the worker dying and taking all of them. ZIMMER_SESSION_PARALLEL_WORKERS below is the
+    # half that reduces the demand rather than choosing the victim.
+    #
+    # 0 means no aggregate cap, with per-session bounds left in force -- the break-glass.
+    ZIMMER_SESSIONS_MEMORY_MAX_MB: "<%= ENV.fetch("ZIMMER_SESSIONS_MEMORY_MAX_MB", "7168") %>"
+    # PARALLEL_WORKERS for every agent session, capping the test workers a session's Rails
+    # suite forks. 41 `ruby` processes at 215-350 MB apiece were 8.7 of the 9.5 GB anon at
+    # #981's kill: each session sizes `parallelize(workers: :number_of_processors)` off the
+    # droplet's 8 vCPU as though it had the box to itself, and eight of them multiply. A
+    # mitigation, not a bound -- the pool above is the bound. 0 turns it off.
+    ZIMMER_SESSION_PARALLEL_WORKERS: "<%= ENV.fetch("ZIMMER_SESSION_PARALLEL_WORKERS", "2") %>"
     APP_HOST: zimmer.tadasant.com
     # Read the catalog from the mounted production catalog (delivered by
     # artifacts-sync-prod). production.rb falls back to the in-image catalog when this
