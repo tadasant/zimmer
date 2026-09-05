@@ -106,8 +106,15 @@ that touched it wraps it in, and a session that archives *itself* is still in th
 tail when the cleanup deletes the clone under it. So the full exception, message and backtrace go
 to the backend log at `warn`, where a genuine bug that coincided with an archive is greppable but
 no longer paged; that trade is recorded in [Limitations](/limitations/). A session that is **not**
-archived keeps the whole loud path: the `failure_reason: "exception"` stamp, the `error` logs, the
-`fail!` and the re-raise.
+archived keeps the whole loud path: the `failure_reason` stamp, the `error` logs, and the re-raise.
+
+Where that loud path comes to *rest* depends on whether an agent ever existed. A turn that raised
+before any process was spawned, carrying a prompt nobody has seen, parks in `needs_input` with
+`failure_reason: "undelivered_turn"` instead of failing — `failed` is not in the homepage's action
+queue and nothing sweeps it, so a follow-up that dies in setup used to be dropped in silence
+([#439](https://github.com/tadasant/zimmer/issues/439)). Everything else about the loud path is
+unchanged, the re-raise included. See
+[A turn that never started parks instead of failing](/sessions/lifecycle/#a-turn-that-never-started-parks-instead-of-failing).
 
 :::caution[Other resumers lock by hand, or not at all]
 `SpotSessionPause.resume!`, `AuthOutageParkService.resume_parked!` and `SpotSessionHold.rearm!` are

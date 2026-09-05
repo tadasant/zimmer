@@ -517,6 +517,7 @@ class Session < ApplicationRecord
     git_clone_failed
     clone_validation_failed
     unstarted_turn_not_recoverable
+    undelivered_turn
   ].freeze
 
   # Metadata keys that represent setup artifacts created during session initialization.
@@ -1331,6 +1332,23 @@ class Session < ApplicationRecord
   # OAuth is required, the git clone fails, or the CLI process fails to spawn.
   # In these cases, restarting should re-send the original prompt rather than
   # a generic system recovery message.
+  # Whether this session is parked in the action queue because a turn raised
+  # before the agent ever started and took an undelivered prompt with it.
+  #
+  # `Sessions::ParkUndeliveredTurn` writes that outcome as a `pause` rather than a
+  # `fail` — the point of #439 is that `failed` is somewhere nobody looks — so the
+  # surfaces that render a failure cannot key on `failed?` alone or the one failure
+  # a human is being asked to act on would be the one they cannot see.
+  def parked_undelivered_turn?
+    needs_input? && metadata&.dig("failure_reason") == Sessions::ParkUndeliveredTurn::FAILURE_REASON
+  end
+
+  # Whether the failure block belongs on this session's page: a session that failed,
+  # or one parked with a failure it is holding in the action queue.
+  def shows_failure_details?
+    failed? || parked_undelivered_turn?
+  end
+
   def failed_before_initial_prompt?
     failure_reason = metadata&.dig("failure_reason")
     failure_reason.present? && PRE_PROMPT_FAILURE_REASONS.include?(failure_reason)
@@ -1374,6 +1392,14 @@ class Session < ApplicationRecord
         "An MCP server requires a secret Zimmer does not carry — add it to Zimmer's mcp_secrets credentials, " \
           "or deselect the server that needs it"
       end
+    when Sessions::ParkUndeliveredTurn::FAILURE_REASON
+      # Named rather than left to `humanize`, which would render "Undelivered turn"
+      # — true, and no help at all to somebody deciding what to do about it. The two
+      # facts that decide that are that nothing ran and that the prompt is still here.
+      klass = metadata&.dig("exception_class").presence
+      detail = klass ? " (#{klass})" : ""
+      "This turn stopped before the agent started#{detail}, so its prompt was never delivered — " \
+        "continue the session to send it again"
     else
       reason.humanize
     end

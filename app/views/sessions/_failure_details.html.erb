@@ -1,4 +1,5 @@
-<%# Renders the full failure/exception details for a failed session.
+<%# Renders the full failure/exception details for a session holding a failure —
+    one that failed, or one parked in the action queue with an undelivered turn.
     Used in both the desktop session metadata header and the mobile session
     header so the failure is visible regardless of viewport.
 
@@ -15,8 +16,13 @@
     reads. The full output is always still rendered below, untruncated.
 
     OAuth-required failures are surfaced by a dedicated banner elsewhere, so this
-    partial renders nothing for them. %>
-<% if agent_session.failed? && agent_session.metadata&.dig("failure_reason").present? %>
+    partial renders nothing for them.
+
+    Gated on Session#shows_failure_details? rather than on `failed?`: a turn that
+    died before the agent started is parked in `needs_input` so a human actually
+    sees it (#439), and gating on `failed?` would hide the failure block from the
+    one case that is asking somebody to act. %>
+<% if agent_session.shows_failure_details? && agent_session.metadata&.dig("failure_reason").present? %>
   <% failure_reason = agent_session.metadata["failure_reason"] %>
   <% unless failure_reason == "oauth_required" %>
     <%
