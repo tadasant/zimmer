@@ -58,7 +58,13 @@ module Sessions
   #      stand-down guard has passed — `SpotSessionHold.hold_if_needed`, the pause
   #      guard, the archived guard, the concurrency guard all return *above* it — so
   #      a spot hold, a quota hold and a superseded turn each leave it unchanged, and
-  #      each is therefore invisible to this budget by construction.
+  #      each is therefore invisible to this budget by construction. Two turn shapes
+  #      DO stamp it and are exempted from those guards — `resume_monitoring` and
+  #      `clone_only` — and a `clone_only` turn writes no transcript by design. Neither
+  #      is what a recovery restart enqueues (both sites send a prompt), so reaching
+  #      this budget through one takes an unrelated turn of that shape landing between
+  #      two recovery restarts, and costs at most a single attempt before the next
+  #      restart produces output and hands the budget back.
   #   2. **The turn wrote nothing.** `session.transcript_line_count` is unchanged.
   #      That counts transcript events, and it is written by `TranscriptPollerService`
   #      alone, so unlike `last_timeline_entry_at` a state transition cannot advance
@@ -150,7 +156,14 @@ module Sessions
     rescue => e
       # A guard on the recovery path must never become the reason a recoverable
       # session is not recovered. Proceeding is the pre-existing behaviour.
-      Rails.logger.error(
+      #
+      # WARN rather than ERROR: any Zimmer ERROR pages a critical Grafana rule, and
+      # failing to JUDGE a restart is harmless by construction — the loop keeps
+      # running exactly as it did before this class existed. It is also re-reached
+      # every five minutes for a session whose watermark is somehow unreadable, so at
+      # ERROR one bad row would be an alert loop. Same call
+      # AgentSessionJob#reset_retry_budget makes about the same class of failure.
+      Rails.logger.warn(
         "[Sessions::SilentRecoveryGuard] Could not assess session #{@session&.id}: #{e.class}: #{e.message}"
       )
       Result.new(outcome: :proceed, message: "guard could not run: #{e.message}")
@@ -188,6 +201,13 @@ module Sessions
       return :not_started if job_started.blank? ||
         job_started.to_s == previous[WATERMARK_JOB_STARTED_AT].to_s
 
+      # ANY change, not growth. A shrink means the poller read a different transcript
+      # than the one the watermark was taken from, which is something moving rather
+      # than nothing — and reading it as progress errs toward not failing a live
+      # session, which is the direction this guard must err in. (Every writer of
+      # `session.transcript` guards against regression via `transcript_regression?`,
+      # so a shrink is not reachable today; `>` would be equivalent and strictly less
+      # forgiving if one ever became reachable.)
       return :progress if current[WATERMARK_TRANSCRIPT_LINES] != previous[WATERMARK_TRANSCRIPT_LINES].to_i
 
       :silent
@@ -195,6 +215,16 @@ module Sessions
 
     # The last restart started a turn and wrote nothing. Spend one attempt, or give
     # up if there are none left.
+    #
+    # The read-modify-write on the counter is deliberately unlocked. Three sweeps
+    # share `continue_recovered_session` and `SingletonSweep` only serialises a job
+    # against itself, so two passes can both read N and both write N+1 — a lost
+    # update. It costs one extra cycle before the give-up and can never cause one:
+    # a lost increment always UNDER-counts, and the give-up additionally requires a
+    # fresh silent restart, so two racing passes that both find the budget spent both
+    # reach the same verdict about the same session and `may_fail?` makes the second
+    # a no-op. A lock here would buy a tighter bound on the failure direction that
+    # does not matter.
     def spend(current)
       attempt = BUDGET.next_attempt(session)
       return give_up(attempt - 1) if BUDGET.exhausted?(session)
@@ -226,27 +256,69 @@ module Sessions
 
     # Stop restarting, and say so in the one state a human, a parent session's wake
     # trigger and the health surface all read: `failed`.
+    #
+    # `spent` is the number of restarts that were JUDGED silent, which is one fewer
+    # than the number of restarts that happened: the first one had no earlier restart
+    # to be judged against. The message says "the last N" rather than "N times" so
+    # the count is exactly true of the restarts it is talking about.
     def give_up(spent)
-      message =
-        "Zimmer's recovery restarted this session #{spent} times (#{source}) and not one of those " \
-        "turns produced a single transcript event. Failing it rather than restarting again: a " \
-        "session whose restarts produce nothing is not running, and reporting it as `running` " \
-        "hides it from everyone waiting on its work. Restart it to try once more."
-      add_log(message, level: "error")
+      add_log(
+        "The last #{spent} recovery restarts of this session (#{source}) each started a turn and " \
+        "produced not one transcript event. Failing it rather than restarting again: a session " \
+        "whose restarts produce nothing is not running, and reporting it as `running` hides it " \
+        "from everyone waiting on its work. Restart it to try once more.",
+        level: "error"
+      )
 
-      # `paused_by` goes, and dropping it is load-bearing. Both recovery sweeps
-      # select `paused_by = 'recovery'` — CleanupOrphanedSessionsJob's failed-session
-      # branch matches it on `failed` too — so leaving it behind would hand the
-      # session straight back to the loop this give-up exists to end.
-      session.merge_metadata!({ "failure_reason" => FAILURE_REASON }, [ "paused_by" ])
-      session.update!(running_job_id: nil)
-      session.fail! if session.may_fail?
+      apply_give_up!
 
       Rails.logger.warn(
         "[Sessions::SilentRecoveryGuard] Failed session #{session.id} after #{spent} silent " \
         "recovery restarts (#{source})"
       )
       Result.new(outcome: :gave_up, message: "#{spent} recovery restarts produced no output")
+    end
+
+    # The three writes that make the give-up real, ordered and rescued so a partial
+    # application cannot be worse than not having given up at all.
+    #
+    # `update_column` rather than `update!`, and the choice is the one
+    # SessionContinuation#abandon_or_retry_continue makes for the same reason: a
+    # read-modify-write through `update!` runs Session's validations, which include
+    # the agent-root/catalog check that fails GLOBALLY when the artifact catalog
+    # cannot resolve. A RecordInvalid raised there would leave this session carrying
+    # `failure_reason` with no `paused_by` and a status of `needs_input` — dropped by
+    # every sweep, never announced by anything, which is precisely the invisible
+    # stranding this class exists to end.
+    #
+    # The rescue is here rather than only at #call's boundary because the outer one
+    # returns `:proceed`, and a caller told to proceed after `paused_by` has already
+    # been dropped would restart a session nothing will ever sweep again. Whatever
+    # else fails, the verdict stands and is on the timeline.
+    def apply_give_up!
+      # `paused_by` goes, and dropping it is load-bearing. Both recovery sweeps
+      # select `paused_by = 'recovery'` — CleanupOrphanedSessionsJob's failed-session
+      # branch matches it on `failed` too — so leaving it behind would hand the
+      # session straight back to the loop this give-up exists to end.
+      session.merge_metadata!({ "failure_reason" => FAILURE_REASON }, [ "paused_by" ])
+      session.update_column(:running_job_id, nil)
+
+      # `may_fail?` is false for a session that is ALREADY `failed` — the route
+      # CleanupOrphanedSessionsJob's `interrupt_failed` branch arrives by. No second
+      # `session_failed` fires there, and none is owed: the session announced its
+      # failure when it failed, and what this give-up adds is that nothing will
+      # resume it again.
+      session.fail! if session.may_fail?
+    rescue => e
+      Rails.logger.error(
+        "[Sessions::SilentRecoveryGuard] Could not apply the give-up to session #{session.id}: " \
+        "#{e.class}: #{e.message}"
+      )
+      add_log(
+        "Could not finish failing this session after its recovery restarts produced nothing: " \
+        "#{e.message}. It is not being restarted again either way.",
+        level: "error"
+      )
     end
 
     def record_watermark(current)

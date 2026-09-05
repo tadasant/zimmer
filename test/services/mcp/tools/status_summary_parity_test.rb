@@ -63,7 +63,10 @@ class Mcp::Tools::StatusSummaryParityTest < ActiveSupport::TestCase
 
     output = Mcp::Tools::GetSession.new(context: @context).call("id" => @session.id)
 
-    assert_includes output, "no transcript event has landed in the 3 minutes since it was written"
+    # Asserting the SHAPE, not the number: `distance_of_time_in_words` flips from
+    # "3 minutes" to "4 minutes" once enough wall clock passes between setup and render.
+    assert_includes output, "no transcript event has landed in the"
+    assert_includes output, "since it was written"
     assert_not_includes output, "Zimmer's own orphan sweep",
       "a session at rest is not silent — it is finished, and must not be flagged"
   end

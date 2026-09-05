@@ -112,7 +112,7 @@ class SilentRecoveryLoopTest < ActiveJob::TestCase
     run_silent_loop!
 
     content = @session.reload.logs.order(created_at: :asc).map(&:content).join("\n")
-    assert_includes content, "not one of those turns produced a single transcript event"
+    assert_includes content, "each started a turn and produced not one transcript event"
     assert_includes content, "Restart it to try once more"
   end
 
