@@ -5,6 +5,40 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
 
   # Test associations
+  # --- .origin_for_prompt: the shared classifier both re-queue writers use ---
+  #
+  # SpotSessionHold (the gate refusing a turn) and Sessions::RequeueSkippedPrompt
+  # (the concurrency guard skipping a job) are the only two places a durable queue
+  # row is created from a prompt whose sender is long gone, so they have to agree
+  # about what the `origin` column means.
+
+  test "origin_for_prompt names a recovery nudge, with or without its reason suffix" do
+    assert_equal "automated_recovery_nudge", EnqueuedMessage.origin_for_prompt(AutomatedPrompts::SYSTEM_RECOVERY)
+    assert_equal "automated_recovery_nudge",
+      EnqueuedMessage.origin_for_prompt(AutomatedPrompts.system_recovery(reason: "deploy sweep"))
+  end
+
+  test "origin_for_prompt names a merge-conflict notice so the staleness re-read can find it" do
+    prompt = AutomatedPrompts.merge_conflict_message("https://github.com/tadasant/zimmer/pull/1")
+
+    assert_equal "automated_merge_conflict", EnqueuedMessage.origin_for_prompt(prompt)
+    assert_includes EnqueuedMessage::STALENESS_CHECKED_ORIGINS, EnqueuedMessage.origin_for_prompt(prompt),
+      "the stamp is only useful if the delivery-time re-read scope actually selects it"
+  end
+
+  test "origin_for_prompt falls back to caller, the wider bucket" do
+    assert_equal "caller", EnqueuedMessage.origin_for_prompt("Please continue where you left off")
+    assert_equal "caller", EnqueuedMessage.origin_for_prompt(AutomatedPrompts::HEARTBEAT)
+    assert_equal "caller", EnqueuedMessage.origin_for_prompt(nil)
+  end
+
+  test "origin_for_prompt only ever answers with a valid origin" do
+    [ AutomatedPrompts::SYSTEM_RECOVERY, "anything at all", nil, 42 ].each do |prompt|
+      assert_includes EnqueuedMessage::ORIGINS, EnqueuedMessage.origin_for_prompt(prompt),
+        "a value outside ORIGINS would fail the model's own validation at the create site"
+    end
+  end
+
   test "should belong to session" do
     session = sessions(:running)
     message = session.enqueued_messages.create!(

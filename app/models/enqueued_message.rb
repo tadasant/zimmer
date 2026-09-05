@@ -126,6 +126,18 @@ class EnqueuedMessage < ApplicationRecord
   # (EnqueuedMessage#stale?), and a re-queued notice takes the longest gap of all
   # before anybody reads it.
   #
+  # Only `SpotSessionHold` can actually produce `automated_recovery_nudge` here.
+  # `Sessions::RequeueSkippedPrompt` refuses a nudge outright before it ever asks
+  # this question — a live turn is the answer the nudge was after — so that branch
+  # is unreachable from its side. The classifier still owns both cases rather than
+  # being split per caller, because which origins a caller can reach is a fact about
+  # that caller, not about what the column means.
+  #
+  # `automated_pr_merged` is deliberately absent and stays absent: no caller of this
+  # method can distinguish a merge notice from an ordinary follow-up by body alone,
+  # and `caller` is the conservative miss — a stranded `caller` row still pages,
+  # where a self-addressed one would not.
+  #
   # Getting this wrong in either direction is bounded and neither is silent: a
   # nudge mis-stamped `caller` pages the way it did before, and a caller's message
   # could only be mis-stamped by opening with the nudge template verbatim. That

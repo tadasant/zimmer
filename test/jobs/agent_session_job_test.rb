@@ -3502,6 +3502,25 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_empty @session.reload.enqueued_messages.pending, "the parked row was delivered, not left behind"
   end
 
+  test "the parked prompt is drained by the ordinary pause transition" do
+    # The other delivery route, and the one that runs unattended: `pause` fires
+    # drain_enqueued_messages_after_pause, which schedules EnqueuedMessageDrainJob.
+    # Without this, the requeue would depend on a caller remembering to drain.
+    register_running_job(
+      @session,
+      created_at: 2.minutes.ago,
+      locked_by_id: live_good_job_process.id,
+      locked_at: 2.minutes.ago,
+      performed_at: 2.minutes.ago
+    )
+    perform_session_job(@session, "The prompt the holder will hand on")
+    @session.reload.update!(status: :running, running_job_id: nil)
+
+    assert_enqueued_with(job: EnqueuedMessageDrainJob, args: [ @session.id ]) do
+      @session.pause!
+    end
+  end
+
   test "a skipped job carrying no prompt queues nothing" do
     # A first start, a monitoring re-attach or a clone-only job has nothing to lose,
     # and must not manufacture a turn out of the skip.
