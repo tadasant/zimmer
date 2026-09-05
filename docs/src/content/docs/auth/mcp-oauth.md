@@ -75,7 +75,11 @@ the existing credential, so the Authorize button can only redirect straight back
 to the user as "the button does nothing". So the classifier (and the OAuth banner, and the
 initiate controller) all consult `McpOauthServerAuthorization.authorized?`, and a failure for
 an already-authorized server instead **clears the runtime needs-auth cache and retries**, so
-the next spawn reconnects with the token already on hand. Injecting a credential
+the next spawn reconnects with the token already on hand. That retry survives a *different*
+server in the same handshake failing definitively: the classifier degrades and retries per
+server, so a co-failing static-credential rejection no longer writes off the server whose cache
+was just cleared before the retry the clear exists to enable ever happens
+([#689](https://github.com/tadasant/zimmer/issues/689)). Injecting a credential
 (`McpOauthCredentialInjector#inject_credentials!`) always clears that cache entry for the same
 reason, and the OAuth banner filters `oauth_required_servers` through the same predicate so a
 stale entry (e.g. a recovery job cleared `failure_reason` but left the list behind) never

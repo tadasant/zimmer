@@ -201,6 +201,21 @@ classifies the failure and takes one of three routes:
 | Anything else, first three times | The retry ladder: `RetryBudget::MCP_CONNECTION` (3 attempts), backing off 30s / 60s / 120s. Most connect failures are transient — a server still starting after a deploy, an `npx` cache race — and self-heal here. |
 | Anything else, definitively | The server is **left out** and the session runs on. Also taken immediately, with no retries, for a static credential the provider rejected: a wrong API token does not become right in 30 seconds. |
 
+**The route is chosen per server, not per handshake.** One handshake can fail several servers for
+several different reasons, and the verdict belongs to the server. A session whose Slack token was
+rejected while a second server crashed on a corrupt `npx` cache degrades the first and retries the
+second *in the same pass*: the rejected one is recorded in `mcp_degraded_servers` with its own
+reason, the other rides the ladder, and the `_npx` heal below runs over both. Classifying the whole
+set by its worst member wrote off servers that would have connected on the second attempt, skipped
+the heal for them, and told the operator and the agent that a working server's credentials had been
+rejected ([#689](https://github.com/tadasant/zimmer/issues/689)). Each entry in
+`mcp_degraded_servers` carries its own `reason`, which is what the `<unavailable-mcp-servers>` block
+renders.
+
+The npx heal runs on **both** routes, not only before a retry. A degraded server stays in the
+runtime config precisely so it reconnects for free once whatever broke it is fixed — and a corrupt
+`_npx/<hash>` tree it left behind is exactly what makes the next spawn crash identically instead.
+
 "A static credential the provider rejected" is read from two places, because a server can name the
 rejection in words the transport's own error never carries. A stdio server that runs a credential
 health check at startup and exits when it fails hands the runtime nothing but `Connection closed`;
