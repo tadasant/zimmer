@@ -4822,6 +4822,13 @@ none of the local counters can see, the section's status is `unknown` rather tha
 `unknown` sub-check does not colour the overall status green *or* page anyone; `overall_status` says
 "N could not be evaluated" instead of "All systems operational".
 
+**Recorded counts `running` sessions only**, and that is a second limitation rather than an
+oversight. `process_pid` is a single metadata slot that nothing clears when a turn ends, so every
+parked `waiting` session still names a process that exited hours ago. Counting those would hold the
+whole report at `unknown` for ever on an instance with no agent process anywhere on it — and a
+permanent caveat reads as noise and gets ignored exactly like the false `healthy` it replaced. The
+cost is that a process orphaned by a session that has since parked is invisible to this count.
+
 What is still **not** fixed is orphan detection itself. On a production deployment, nothing counts
 or reaps orphaned agent processes from the web container, and the "Clean Up Orphaned Processes"
 button there acts on a set that is always empty. `AgentProcessLiveness.ensure_no_live_process!` is

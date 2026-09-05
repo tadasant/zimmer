@@ -988,8 +988,8 @@ rest ([#428](https://github.com/tadasant/zimmer/issues/428)). The condition that
 first minutes is not about depth at all, so it is checked ahead of everything else:
 
 - **Nothing is executing** — no job has **finished anywhere** in `EXECUTION_STALL_CRITICAL_AGE` (10
-  minutes) while ready work has been waiting at least that long. See
-  [When nothing is executing](#when-nothing-is-executing).
+  minutes), while either a fast lane has picked nothing up for that long or no worker is reporting a
+  heartbeat at all. See [When nothing is executing](#when-nothing-is-executing).
 
 Then the conjunction is evaluated per lane, in the shapes a stalled queue can actually take — two of
 them read off the ready side, and one off the claimed side. `critical` is also any of:
@@ -1068,16 +1068,36 @@ A deep queue that is still draining is a `warning`: visible on `/health`, silent
 Every branch above reads a *backlog*, and asks how much work has piled up and how old the pile is.
 `execution_stall` reads neither side of the queue. It reads the clock on the last **completion**:
 
-> No job has finished anywhere in the last 10 minutes, and work has been sitting ready for at least
-> that long.
+> No job has finished anywhere in the last 10 minutes, and either a lane that should turn work over
+> in milliseconds has picked nothing up for that long, or no worker is alive.
 
-Three conjuncts, each load-bearing:
+Two conjuncts, and the second is a disjunction because a stopped worker has two shapes that no
+single queue reading covers:
 
 | Conjunct | Why it is there |
 | --- | --- |
-| `ready_count > 0` | Nothing finishing on an idle instance is an idle instance |
-| `oldest_ready_age_seconds ≥ 10m` | Without it, an instance handed its first job of the hour reads as stalled for the seconds before a worker claims it — and so does a worker mid-restart during a deploy |
-| Nothing finished, **globally** | A lane whose pool is full of long work legitimately finishes nothing for a while, and that is `wedged_lane`'s job. The claim here is far stronger: *every* lane, including the ones that turn jobs over in milliseconds, has completed nothing |
+| Nothing finished, **globally** | Checked first. A lane whose pool is full of long work legitimately finishes nothing for a while, and that is `wedged_lane`'s job. The claim here is far stronger: *every* lane, including the ones that turn jobs over in milliseconds, has completed nothing |
+| …and a **fast lane** has picked nothing up for 10 minutes | The ordinary shape. Work a worker should have taken in milliseconds has sat for ten minutes. The age requirement is what keeps a worker mid-restart during a deploy — or an instance handed its first job of the hour — from reading as an outage |
+| …**or** no worker is reporting a heartbeat | The shape the queue cannot express — see below |
+
+"A fast lane" is deliberately not `oldest_ready_age_seconds`, which is the *maximum* head-of-line age
+across every lane. `QUEUE_LANE_CRITICAL_THRESHOLDS` exists precisely because Zimmer's lanes are sized
+apart, and it records that a ready `AgentSessionJob` waiting **hours** is admission control working
+as designed. So on any instance with a standing `agents` queue the global maximum is over ten minutes
+continuously, that conjunct would be satisfied all the time, and the gate would collapse to the
+single predicate "nothing finished in ten minutes" — which an eleven-minute migration or a short
+database failover satisfies with nothing wrong. The lanes *absent* from that table — `default`,
+`pollers`, `triggers`, and any queue nobody has sized — are the ones that turn jobs over in
+milliseconds and that Zimmer's own cron feeds every thirty seconds, so a ten-minute-old head on one
+of them is unambiguous.
+
+The heartbeat arm covers the case the queue is structurally unable to report. GoodJob runs cron **in
+the worker**, so a worker container that dies stops *enqueuing* too. A healthy instance clears its
+queue in milliseconds, which means `ready_count` at the moment of death is routinely zero — and then
+stays zero for ever. A gate that waits for a backlog is waiting for one that will never arrive, and
+`/health` would report "Queue processing normally" for an instance with no worker at all. Paired with
+"nothing finished in ten minutes", a zero heartbeat count cannot be a deploy cutover: that does not
+stop completions for ten minutes.
 
 Ten minutes, for the same reason `QUEUE_STALL_CRITICAL_AGE` is ten minutes. Zimmer's own cron
 schedule enqueues into the fast lanes every 30 seconds and every minute, so a live worker finishes
@@ -1097,10 +1117,14 @@ Two things deliberately do **not** fire it:
 - **A deployment that has never finished a job.** `last_finished_at` is then `nil`, which is a fresh
   database, not a worker that stopped. "Has never processed anything" and "has stopped processing"
   are different facts and only the second is an incident.
-- **A deliberate halt.** If any queue is paused — [queue recovery mode](#queue-recovery-mode), or a
-  lane an operator paused by hand from the GoodJob dashboard — the same observation is reported as a
-  `warning` naming the paused lanes instead of a `critical`. Paging an operator for the silence they
-  just asked for would put a lock on the escape hatch.
+- **A deliberate halt that explains the stall.** If *every* lane holding stalled ready work is
+  paused — by [queue recovery mode](#queue-recovery-mode), or by hand from the GoodJob dashboard —
+  the same observation is reported as a `warning` naming the paused lanes instead of a `critical`.
+  Paging an operator for the silence they just asked for would put a lock on the escape hatch. The
+  test is per lane, not "anything is paused": `QueueRecoveryMode.paused_queues` deliberately reports
+  a lane an operator paused and forgot, or one `exit!` failed to lift, and one such stray row must
+  not disarm the page for an outage on a lane nobody paused — permanently, since
+  `SystemHealthMonitorJob` deletes its streak key on every non-critical tick.
 
 `SystemHealthMonitorJob` titles this page **"Nothing is executing"** rather than "Queue backlog
 critical", and throttles it under its own `execution_stalled` code. In a *total* outage that job

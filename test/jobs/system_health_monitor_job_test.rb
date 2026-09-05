@@ -324,6 +324,35 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     assert_includes details, "SessionStatusSummaryJob"
   end
 
+  # "Queue backlog critical" over a page whose body says nothing is running at all
+  # sends the responder looking for what is deep, when the answer is that nothing is
+  # executing. Its own code also keeps it off the backlog shapes\' dedup keys, so one
+  # cannot silence the other for the rest of AlertService::DEDUP_WINDOW.
+  test "nothing executing pages under its own title and its own dedup key" do
+    GoodJob::Process.insert_all([ { id: SecureRandom.uuid, state: { "hostname" => "test-worker" },
+                                    created_at: Time.current, updated_at: Time.current } ])
+    finished = 3.hours.ago
+    GoodJob::Job.insert_all([ { queue_name: "default", job_class: "PlaceholderJob",
+                                created_at: finished - 1.second, updated_at: finished,
+                                scheduled_at: finished - 1.second, performed_at: finished - 1.second,
+                                finished_at: finished } ])
+    enqueue_lane_jobs("pollers", 3, waiting_for: 20.minutes)
+
+    SystemHealthMonitorJob.perform_now # streak -> 1
+
+    title = nil
+    dedup = nil
+    AlertService.expects(:raise_alert).once.with do |alert_title, opts|
+      title = alert_title
+      dedup = opts[:dedup_key]
+      true
+    end
+    SystemHealthMonitorJob.perform_now
+
+    assert_equal "Nothing is executing", title
+    assert_equal "#{SystemHealthMonitorJob::ALERT_DEDUP_KEY}:#{HealthMonitorService::EXECUTION_STALL_CODE}", dedup
+  end
+
   # The two lines that make the next firing self-diagnosing: what the worker holds
   # per lane, beside the pool each hold is filling, and how long the oldest of them
   # has been running.
