@@ -1,0 +1,51 @@
+<%# Hand-place this item, or release a hand-placement.
+
+    Posts to WorkBacklogPinsController — the browser surface, not the API-key
+    surface every agent session holds. Same boundary and the same honest limits
+    as Promote: this means "came in through a browser", not "a person did it".
+
+    A pinned row shows Unpin and nothing else: a precedence field there would be
+    offering to re-pin an already-pinned item, which is one more control on a row
+    that already has three. Move a pinned item by unpinning it and pinning it
+    again at the value you want.
+
+    The number field is seeded with the item's CURRENT precedence, so the reader
+    adjusts a value they can see rather than typing into a blank. The bands are in
+    the field's title rather than on the row — fifty rows would otherwise carry
+    fifty copies of the same sentence.
+
+    The field STACKS ABOVE the button below `sm:`. Side by side, the widest of
+    these three control groups sets the actions column's min-content width, and a
+    table cannot shrink below that — at 320px it pushed the queue into a sideways
+    scroll it did not have before these controls existed. Stacked, the column is
+    as wide as its widest single control instead of input-plus-button, which also
+    hands the issue title back the ~56px it was costing. See
+    `test/system/mobile_horizontal_overflow_test.rb`.
+
+    `turbo_confirm` goes on the FORM, not the submit button: Turbo reads it off
+    the submitter only in newer versions, and the form is where it is unambiguous.
+
+    Pin and unpin are POST and DELETE on the SAME path — one pin resource per
+    item, set and released — so the two branches below differ by verb, not by
+    action. Anything asserting which one a row rendered has to look at the method
+    or the fields. %>
+<% if row.item.pinned? %>
+  <%= button_to unpin_work_backlog_item_path(row.item, query_params),
+      method: :delete,
+      class: "text-xs px-2 py-1 border border-sky-300 text-sky-800 rounded hover:bg-sky-50 whitespace-nowrap",
+      form: { data: { turbo_confirm: "Unpin #{row.key}? It goes back into the #{row.item.estimated_cost} band at the next free slot." } } do %>
+    Unpin
+  <% end %>
+<% else %>
+  <%= form_with url: pin_work_backlog_item_path(row.item, query_params), method: :post,
+      data: { turbo_confirm: "Pin #{row.key} at the precedence entered? A pinned item is never re-ranked by an agent." },
+      class: "flex flex-col sm:flex-row items-end sm:items-center gap-1 sm:justify-end" do %>
+    <%= number_field_tag "precedence", row.item.precedence, id: "precedence_#{row.item.id}",
+        step: 1, min: WorkBacklogItem::PRECEDENCE_RANGE.first, max: WorkBacklogItem::PRECEDENCE_RANGE.last,
+        title: pin_precedence_hint(row.key),
+        "aria-label": "Precedence to pin #{row.key} at",
+        class: "w-16 sm:w-20 text-xs tabular-nums border border-gray-300 rounded px-1.5 py-1" %>
+    <%= submit_tag "Pin", name: nil,
+        class: "text-xs px-2 py-1 border border-sky-300 text-sky-800 rounded hover:bg-sky-50 whitespace-nowrap cursor-pointer" %>
+  <% end %>
+<% end %>

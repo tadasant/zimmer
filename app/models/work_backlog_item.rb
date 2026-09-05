@@ -63,7 +63,14 @@ class WorkBacklogItem < ApplicationRecord
   # the issue that the puller re-checked on GitHub, not a judgement about whether
   # the work is worth doing. Anything else is a human's call and goes through the
   # REST `remove` action with a free-text reason.
-  MECHANICAL_REMOVAL_REASONS = %w[issue_closed issue_has_open_pr session_already_working trust_failed].freeze
+  # Named because the Issues page pre-fills it: a queued row whose GitHub issue
+  # has since closed offers this as the removal reason, so a human's discretionary
+  # removal of a dead item records the same word the pull would eventually have
+  # used. Reading it off MECHANICAL_REMOVAL_REASONS by position would silently
+  # pre-fill the wrong reason the day that list is reordered.
+  ISSUE_CLOSED_REASON = "issue_closed"
+
+  MECHANICAL_REMOVAL_REASONS = [ ISSUE_CLOSED_REASON, "issue_has_open_pr", "session_already_working", "trust_failed" ].freeze
 
   # The keys in the file's item schema that have a column here. Everything else
   # in an item — ratings, prompt, notes, gate_session, and whatever the gate adds

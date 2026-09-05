@@ -865,6 +865,13 @@ A filter or an enum outside the vocabulary is a `422` rather than an empty resul
 must never be a typo. `pin`, `unpin`, `remove` and `start_now` are `422` on an item that is not
 queued.
 
+Those four are also on the **browser** surface, at `POST /issues/backlog/:id/promote`, `POST` and
+`DELETE /issues/backlog/:id/pin`, and `POST /issues/backlog/:id/remove` — session cookie and CSRF,
+not an API key, and `:id` is the row id only. That is not a convenience: the API key this namespace
+authenticates is shared by the whole agent fleet, so the endpoints above establish a caller but not
+a person, and the [Issues view](/operate/issues-view/#the-four-human-only-operations) is where a
+human reaches these levers without one.
+
 ```bash
 curl "$BASE_URL/work_backlog_items?estimated_cost=small&per_page=5" -H "X-API-Key: $API_KEY"
 
