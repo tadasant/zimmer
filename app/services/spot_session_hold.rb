@@ -976,7 +976,7 @@ class SpotSessionHold
         files: Array(Sessions::AttachmentDescriptors.for_the_record(
           files, keys: Sessions::AttachmentDescriptors::FILE_KEYS
         )),
-        origin: origin_for(prompt)
+        origin: EnqueuedMessage.origin_for_prompt(prompt)
       )
       message = "Spot session held before its next turn: a turn is already deferred to " \
                 "#{scheduled_at.iso8601}, so this prompt was queued behind it (position " \
@@ -994,56 +994,6 @@ class SpotSessionHold
         session.id, prompt, images: images, files: files,
         delay: SpotGateService::RETRY_DELAY
       )
-    end
-
-    # Who wrote the prompt this hold is parking in the queue.
-    #
-    # This method is the ONLY place a durable queue row is created from a prompt
-    # the gate refused, and it is a funnel rather than a caller: a trigger fire, a
-    # human follow-up and Zimmer's own recovery nudge all arrive here as the same
-    # opaque string. Most of what it sees is somebody else's message and is
-    # `caller`, which is the default and the wider bucket for exactly that reason.
-    #
-    # The one it can name is the recovery nudge. `AutomatedPrompts.system_recovery?`
-    # is the same predicate AgentSessionJob already keys `resume_for_system_recovery!`
-    # off, so this does not invent a second way to recognise the nudge — and reading
-    # the body is confined to this one write. Every reader afterwards asks the
-    # column.
-    #
-    # Getting this wrong in either direction is bounded and neither is silent: a
-    # nudge mis-stamped `caller` pages the way it did before, and a caller's message
-    # could only be mis-stamped by opening with the nudge template verbatim.
-    #
-    # That second direction is REACHABLE rather than impossible, and it is worth
-    # saying so plainly. A follow-up sent to a spot-class session travels
-    # deliver_follow_up! -> AgentSessionJob -> hold_if_needed -> here, so a caller
-    # who opened their message with the whole template would have it stamped as
-    # Zimmer's and would lose the page if that message were later stranded. Three
-    # things bound it: the column itself is settable by no request (every create
-    # site names its attributes literally, and no permit list mentions `origin`),
-    # so this is a content collision rather than field injection; the only thing
-    # the collision buys is silence about the collider's OWN discarded message;
-    # and AgentSessionJob already keys `resume_for_system_recovery!` off this same
-    # predicate, so recognising the nudge by its body is a mechanism this codebase
-    # already relies on rather than one introduced here. Threading an explicit
-    # origin down from each of the dozen senders would close it properly and is
-    # the right shape if this ever needs to be airtight.
-    def origin_for(prompt)
-      if AutomatedPrompts.system_recovery?(prompt)
-        "automated_recovery_nudge"
-      elsif AutomatedPrompts.merge_conflict_pr_url(prompt).present?
-        # Stamped so the delivery-time re-read can find it. A conflict notice
-        # that reached a spot-class session while it was parked in `needs_input`
-        # was SENT rather than queued, and lands back in the queue here when the
-        # gate refuses the turn carrying it — where it can wait hours at the
-        # quota wall rather than the minutes an ordinary turn boundary takes. It
-        # is therefore the longest-gap version of the staleness this origin
-        # exists to catch (EnqueuedMessage#stale?), and the one most likely to be
-        # false by the time anybody reads it.
-        "automated_merge_conflict"
-      else
-        "caller"
-      end
     end
 
     # Put a session whose turn was refused into the dormant `waiting` state a held

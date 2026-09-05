@@ -516,6 +516,23 @@ class AgentSessionJob < ApplicationJob
               "status=#{liveness}: #{JobLiveness.explain(liveness)})",
               level: "warning"
             )
+            # The guard is right and the turn does not run — but the prompt this job
+            # was carrying is not the guard's to throw away. By the time a job gets
+            # here the prompt exists ONLY as its argument: every delivery route has
+            # already let go of it, and EnqueuedMessageProcessorService has destroyed
+            # the queue row it came from inside the transaction that enqueued this
+            # job. A bare `return` here is what lost session 13229's wake (#983).
+            # Put it back in the queue, where the live turn this guard just deferred
+            # to drains it at its own end. See Sessions::RequeueSkippedPrompt for the
+            # prompts it deliberately does not queue, and why each is logged anyway.
+            Sessions::RequeueSkippedPrompt.call(
+              session,
+              prompt: follow_up_prompt,
+              holder_job_id: session.running_job_id,
+              images: images,
+              files: files,
+              log_buffer: log_buffer
+            )
             log_buffer.flush
             return
           end

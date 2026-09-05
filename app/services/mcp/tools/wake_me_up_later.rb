@@ -70,7 +70,7 @@ module Mcp
 
           **End your conversation turn after scheduling.** Two mechanisms together make wake delivery durable:
           1. **Auto-sleep** — ending your turn transitions the requester from `running` to `waiting`, where the trigger resumes it directly at the scheduled time.
-          2. **Cross-turn queuing** — if the scheduled time arrives while the requester is still in `running` (the turn hadn't ended yet), the wake-up prompt is durably queued onto the requester via `enqueued_messages` and picked up at the next turn boundary by Zimmer's pre-pause handoff. It is NOT silently dropped.
+          2. **Cross-turn queuing** — if the scheduled time arrives while the requester is still in `running` (the turn hadn't ended yet, or a different trigger woke it, or it is draining a queued message), the wake-up prompt is durably queued onto the requester via `enqueued_messages` and picked up at the next turn boundary by Zimmer's pre-pause handoff. It is NOT silently dropped, and a handoff job that loses Zimmer's one-turn-per-session race is not a loss either: the prompt goes back into the queue and is delivered on the turn after.
 
           You should still end your turn promptly — queuing is the safety net, not a substitute for ending the turn.
 
@@ -132,7 +132,7 @@ module Mcp
 
           **You must end your conversation turn now.** The session will be automatically transitioned to waiting (immediately if currently needs_input; after the current turn ends if currently running) and resumed at the scheduled time with the provided prompt.
 
-          ℹ️ **Cross-turn safety net:** If the scheduled wake-up fires before you end this turn, the wake-up prompt is durably queued onto the session via `enqueued_messages` and processed at the next turn boundary by Zimmer's pre-pause handoff — it is NOT silently dropped. Still end your turn promptly; queuing is the safety net, not a substitute for ending the turn.
+          ℹ️ **Cross-turn safety net:** If the wake-up fires while this session is still running — because you had not ended this turn yet, or for any other reason — the wake-up prompt is durably queued onto the session via `enqueued_messages` and processed at the next turn boundary by Zimmer's pre-pause handoff. It is NOT silently dropped. Still end your turn promptly; queuing is the safety net, not a substitute for ending the turn.
 
           **Sibling-destroy reminder:** if this trigger is paired with `wake_me_up_when_session_changes_state` triggers (the triple-wake + deadline pattern), whichever wake fires first destroys ALL the others belonging to this requester. If this deadline fires while the watched session is still progressing, the woken-up turn must re-register the state-change watchers AND a new deadline before going back to sleep — the originals are gone.
         TEXT
