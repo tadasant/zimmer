@@ -1017,18 +1017,22 @@ everything the floor does not do:
 
 - A **`github_label`** condition writes the fired key. The end-of-tick write still owns the whole
   seen-set: it is what maintains the grace counts and what drops keys whose grace has run out.
-- A **`github_issue`** condition writes the fired key *and* the cursor, together. Moving one without
-  the other would be no floor at all — a key with no cursor leaves the window re-queried forever,
-  and a cursor with no key re-fires everything sharing its second. The end-of-tick write still owns
-  the horizon-based pruning: dropping keys the next query's window can no longer reach, and expiring
-  spent repo baselines.
+- A **`github_issue`** condition writes the fired keys *and* the cursor, together. Moving the cursor
+  without the keys is the unsafe half: the window advances past issues nothing remembers firing, and
+  everything sharing the cursor's second fires again. It writes every key the tick has fired so far
+  rather than just the latest one, so a write that fails is healed by the next fire instead of
+  leaving that one issue inside the window with nothing to reject it. The end-of-tick write still
+  owns the horizon-based pruning: dropping keys the next query's window can no longer reach, and
+  expiring spent repo baselines.
 
-In both cases the per-fire write only ever *adds* a key, and on the issue path only ever advances the
+In both cases the per-fire write only ever *adds* keys, and on the issue path only ever advances the
 cursor forward. So it cannot resurrect a key the grace window was about to drop, and it cannot record
 an item that produced no session — an issue that never fired is never passed to it, and the loop stops
 at the first failure, so everything at or before the cursor has a session. That direction is the one
 that matters: over-persisting would leave an issue never fired and never gated, which is
-[#647](https://github.com/tadasant/zimmer/issues/647)'s failure and the worse of the two.
+[#647](https://github.com/tadasant/zimmer/issues/647)'s failure and the worse of the two. Never
+dropping is what the floor pays for it — a condition whose terminal write persistently fails
+accumulates keys until one lands.
 
 #### A session that dies holding the fire
 
