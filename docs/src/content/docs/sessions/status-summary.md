@@ -78,7 +78,7 @@ The blurb is written by an agent, and the agent is a **fork of the session itsel
 inherited goal, title and heartbeat, and sends it one follow-up prompt asking for the summary. The
 fork runs a single turn and pauses. `SessionStatusSummaryHarvestJob` lifts the assistant text the
 fork wrote *after* the fork point onto the source session's `SessionStatusSummary` record, then
-archives the fork so its copied clone is reclaimed on the normal trash path.
+archives the fork so its clone is reclaimed on the normal trash path.
 
 For runtimes with a deterministic resume transcript file, such as Claude Code, the fork resumes from
 the copied transcript file. Codex does not have that shape: its rollouts live in a date-partitioned
@@ -118,13 +118,42 @@ PR poller answers a merge by queueing "your PR merged, you may archive" onto a s
 and the harvest job archives moments later. The hook therefore records nothing at all for a summary
 fork — see [Transcript hooks](/extend/transcript-hooks/#githubprurlhook).
 
+### A summary fork gets no copy of the clone
+
+`ForkSessionService` normally hands a fork a copy of the source session's clone directory. A summary
+fork is the exception: it is given a scaffolded empty directory — `mkdir_p` plus `git init`, the same
+thing a forced regeneration has always been given for a session whose clone was reclaimed — and the
+source tree is neither copied nor walked.
+
+The reason is that it would never be read. The summarizer answers from the conversation it was forked
+with and is told not to run tools, so it opens no file in the tree. The copy it used to get was not
+free:
+
+- It is a **per-file recursive walk of a live working tree** — Zimmer's own clone is roughly ten
+  thousand files once `vendor/bundle` and `node_modules` are pruned out of it, and `FileUtils` copies
+  them one at a time.
+- It runs **inline on the calling thread, with no timeout**, and that thread is one of the two
+  `SessionStatusSummaryJob` gets on [the `inference`
+  lane](/operate/background-jobs/#queues).
+- So **two generations in flight were the entire lane.** On 2026-09-04 and again on 2026-09-05 both
+  threads sat inside that copy for over half an hour with tens of summary and title jobs queued behind
+  them, which paged as `Queue lane wedged`
+  ([#771](https://github.com/tadasant/zimmer/issues/771)).
+
+Copying a live tree was also the source of a whole class of races, because the session's own agent,
+its jobs (`BundleInstallJob` rewrites `vendor/bundle` wholesale) and the archive pipeline all keep
+writing to that tree while a copy walks it. Not making the copy removes all of them from this path.
+
+A summary fork's working directory is therefore **empty, not a checkout** — see
+[Limitations](/limitations/#a-status-summary-forks-working-directory-is-empty-and-does-not-know-it).
+It is also why the trash is not a refusal for a forced generation — see
+[The trash is not a refusal for a forced generation](#the-trash-is-not-a-refusal-for-a-forced-generation).
+
 ### Copying a clone that is still being written to
 
-The fork copies the source session's clone directory, and that clone is a **live working tree**. The
-session's own agent, its jobs (`BundleInstallJob` rewrites `vendor/bundle` wholesale) and the archive
-pipeline all keep writing to it while the copy walks it. A recursive copy enumerates a directory
-before it stats the entries it found, so a file that disappears in that window aborts the copy with
-`ENOENT`.
+A **user-initiated** fork still gets the tree it forked; it is a working session and wants it. That
+clone is a live working tree, and a recursive copy enumerates a directory before it stats the entries
+it found, so a file that disappears in that window aborts the copy with `ENOENT`.
 
 Three things keep that from failing a fork:
 
@@ -134,12 +163,7 @@ Three things keep that from failing a fork:
   will not fix itself (`EACCES`, `ENOSPC`, or an `ENOENT` because the *source* clone is gone) fails on
   the first hit instead of spending the budget. Retrying is for a tree being written to; it can do
   nothing for a tree being deleted, because the file never comes back.
-- **A summary fork does not copy installed dependencies.** The summarizer reads the conversation and
-  is told not to run tools; it never builds or boots anything. `ForkSessionService::DEPENDENCY_DIRECTORIES`
-  (`vendor/bundle`, `**/node_modules`) is excluded from its copy, which is most of the bytes and most
-  of the seconds — and every second the copy is not running is a second the source tree cannot change
-  underneath it. A **user-initiated** fork keeps its installed dependencies; it is a working session
-  and wants the tree it forked. What every fork sheds regardless is the set of directories that
+- **What no copy can relocate is shed.** Every copied clone leaves behind the directories that
   hard-code the source clone's own path — a Python virtualenv above all, whose console-script shebangs
   would send the fork's interpreter back to the source checkout. See
   [A copied clone sheds what it cannot relocate](/sessions/spawning/#a-copied-clone-sheds-what-it-cannot-relocate).
@@ -150,12 +174,6 @@ Three things keep that from failing a fork:
   the path, and a copy into a destination that still exists nests or merges rather than failing. The same
   holds for a fork that fails *after* the copy succeeded: if the session record does not save, or the
   transcript cannot be written, the copied clone is discarded on the way out rather than stranded.
-
-A summary fork's clone is therefore **not a runnable checkout** — `.bundle/config` still points at the
-`vendor/bundle` that is no longer there. See [Limitations](/limitations/#a-status-summary-forks-clone-is-missing-its-installed-dependencies-and-does-not-know-it).
-And when there is no source clone left to copy at all, a forced generation gives the fork an empty
-directory rather than failing — see
-[The trash is not a refusal for a forced generation](#the-trash-is-not-a-refusal-for-a-forced-generation).
 
 For an **automatic** generation, the generator also re-checks that the session is still out of the
 trash **after** the copy, not just before it. The copy takes real time, and a session that archived

@@ -1078,7 +1078,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
       source_session: @source_session,
       message_index: 1,
       file_system: @mock_fs,
-      copy_exclusions: ForkSessionService::DEPENDENCY_DIRECTORIES
+      copy_exclusions: [ "vendor/bundle", "**/node_modules" ]
     )
 
     assert result.success?
@@ -1157,9 +1157,8 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     assert @mock_fs.exists?(File.join(result.forked_session.metadata["clone_path"], "venv/README.md"))
   end
 
-  # The only caller that passes copy_exclusions is SessionStatusSummaryGenerator.
-  # Its patterns and the detected ones have to survive being unioned — and the
-  # excluded trees must not be walked looking for a marker either.
+  # A caller's own patterns and the detected ones have to survive being unioned —
+  # and the excluded trees must not be walked looking for a marker either.
   test "caller exclusions and a detected virtualenv are both applied" do
     @mock_fs.write(File.join(@clone_path, "Gemfile"), "source 'https://rubygems.org'")
     @mock_fs.write(File.join(@clone_path, "vendor/bundle/ruby/3.4.0/gems/rails-8.1.3/README.md"), "gem")
@@ -1170,7 +1169,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
       source_session: @source_session,
       message_index: 1,
       file_system: @mock_fs,
-      copy_exclusions: ForkSessionService::DEPENDENCY_DIRECTORIES
+      copy_exclusions: [ "vendor/bundle", "**/node_modules" ]
     )
 
     assert result.success?
@@ -1287,6 +1286,74 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
 
     assert_not result.success?
     assert_equal "Failed to create forked clone directory", result.error
+  end
+
+  # --- Forks that do not read the tree they run in (#771) ---------------------
+  #
+  # `scaffold_missing_clone` answers "the tree is gone"; `copy_source_tree: false`
+  # answers "nothing will open the tree". They are different questions, and the
+  # second one does not consult the source at all. The copy it skips is a
+  # per-file walk of thousands of files that runs inline with no timeout, which
+  # is how two status-summary generations held the whole two-thread `inference`
+  # lane for half an hour.
+  test "copy_source_tree: false scaffolds even when the source clone is right there" do
+    @mock_fs.write(File.join(@clone_path, "README.md"), "hello")
+    @mock_fs.write(File.join(@clone_path, "app/models/session.rb"), "class Session; end")
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs,
+      copy_source_tree: false
+    )
+
+    assert result.success?
+    fork = result.forked_session
+    assert_equal true, fork.metadata["clone_scaffolded"]
+    assert @mock_fs.directory?(fork.metadata["clone_path"]), "the fork still gets a directory to be spawned in"
+    assert_not @mock_fs.exists?(File.join(fork.metadata["clone_path"], "README.md")),
+      "a fork that reads no file is handed no file"
+    assert_not @mock_fs.exists?(File.join(fork.metadata["clone_path"], "app/models/session.rb"))
+  end
+
+  # The copy is the cost, so skipping it has to skip the walk too — not copy the
+  # tree and throw it away, and not enumerate it looking for a virtualenv either.
+  test "copy_source_tree: false neither copies nor walks the source tree" do
+    @mock_fs.write(File.join(@clone_path, "README.md"), "hello")
+    copied = false
+    @mock_fs.define_singleton_method(:cp_r) { |*, **| copied = true }
+    NonRelocatableClonePaths.expects(:detect).never
+
+    result = ForkSessionService.call(
+      source_session: @source_session,
+      message_index: 1,
+      file_system: @mock_fs,
+      copy_source_tree: false
+    )
+
+    assert result.success?
+    assert_not copied, "no copy is attempted"
+  end
+
+  # A scaffold that was ASKED for is the normal path, not the rarer substitute
+  # for a copy that `scaffold_missing_clone` falls through to. Logging it at
+  # `warn` would put a line in #alerts for every automatic summary generation.
+  test "copy_source_tree: false logs the scaffold at info, not warn" do
+    @mock_fs.write(File.join(@clone_path, "README.md"), "hello")
+
+    entries = capture_log_entries do
+      ForkSessionService.call(
+        source_session: @source_session,
+        message_index: 1,
+        file_system: @mock_fs,
+        copy_source_tree: false
+      )
+    end
+
+    scaffold_entries = entries.select { |_severity, message| message.include?("Scaffolding an empty clone") }
+    assert scaffold_entries.any?, "the scaffold is still recorded: #{entries.inspect}"
+    assert_empty scaffold_entries.select { |severity, _| severity == "WARN" },
+      "a deliberate scaffold over a live source is not worth warning about"
   end
 
   # A live tree is still copied. Scaffolding is the answer to a clone that is

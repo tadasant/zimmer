@@ -2222,20 +2222,19 @@ as it stands — it applies none of the mass-deletion validation the artifact pa
 that is itself mangled is restored mangled. Preservation failing at all is loud: it logs at `.error`
 and writes a `warning` to the session's own log.
 
-### A status-summary fork's clone is missing its installed dependencies, and does not know it
+### A status-summary fork's working directory is empty, and does not know it
 
-Summary forks exclude `vendor/bundle` and `**/node_modules` from the copy, because the summarizer
-reads a conversation and never builds or boots anything. Two edges come with that:
+A summary fork gets a scaffolded empty `git init` directory rather than a copy of the source
+session's clone, because the summarizer reads a conversation and never builds, boots or opens
+anything ([#771](https://github.com/tadasant/zimmer/issues/771)). One edge comes with that: the
+prompt tells the fork not to run tools, but that is an instruction, not a constraint, so a fork that
+ignores it finds no repository — not a stale one, and not a half-installed one, but no files at all.
+It fails immediately and visibly rather than reporting on the wrong tree, which is the better of the
+two failures, and it is the same directory a forced regeneration has always been given for a session
+whose clone was reclaimed long ago.
 
-- `.bundle/config` **is** copied, and it points `BUNDLE_PATH` at the `vendor/bundle` that is now
-  absent, so any `bundle exec` or `bin/rails` inside a summary fork fails with "Could not find gem".
-  The prompt tells the fork not to run tools, but that is an instruction, not a constraint.
-- For a repository that *tracks* either directory in git (Zimmer's own does not), the pruned clone
-  reads as dirty to `CloneArtifactService`, so `DeferredCloneCleanupJob` preserves artifacts and holds
-  the clone for `TRASH_RETENTION_PERIOD` instead of deleting it immediately.
-
-Neither affects a user-initiated fork, which copies the tree whole apart from the directories no copy
-can relocate — see below.
+None of this affects a user-initiated fork, which copies the tree whole apart from the directories no
+copy can relocate — see below.
 
 ### A copied clone drops the virtualenv, and only the virtualenv
 

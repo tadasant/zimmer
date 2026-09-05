@@ -27,19 +27,26 @@
 # summary was written — that refusal is the caching requirement, and it is why
 # a page view can never trigger work.
 #
-# A FORCED generation needs no clone at all. DeferredCloneCleanupJob deletes an
-# archived session's clone once the undo window (10 seconds) closes, so every
-# archived session an operator actually opens later has no tree left — and an
-# archived session is exactly the one someone opens later to ask what happened.
-# The fork does not read that tree: it answers from the conversation it was
-# forked with and is told not to run tools. So when the clone is gone, the fork
-# is given an empty working directory instead (ForkSessionService's
-# `scaffold_missing_clone`), and the summary is written anyway.
+# **The fork is given an empty working directory, never a copy of the source
+# tree.** It does not read that tree — it answers from the conversation it was
+# forked with and is told not to run tools — and the copy it used to get was the
+# most expensive thing on this path by an order of magnitude: a per-file
+# recursive walk of a live working tree, thousands of files, inline on the
+# calling thread with no timeout. SessionStatusSummaryJob runs on the two-thread
+# `inference` lane, so two of those copies held the entire lane for half an hour
+# while the backlog behind them grew, twice (zimmer#771). A fork that opens no
+# file needs no tree, so it is handed a scaffolded directory instead
+# (ForkSessionService's `copy_source_tree: false`).
 #
-# An AUTOMATIC generation still refuses on a missing clone, and still skips the
-# trash. Nothing enqueues one for an archived session on purpose, and paying to
-# stand a fork up for a session nobody is looking at is the waste those two
-# refusals exist to prevent.
+# What the source clone is still consulted for is liveness, and only on the
+# AUTOMATIC path: a generation nobody asked for refuses when the clone is gone,
+# and skips the trash. Nothing enqueues one for an archived session on purpose,
+# so a missing tree is the cheapest evidence that this is a session nobody is
+# looking at, and standing a fork up for one is the waste those two refusals
+# exist to prevent. A FORCED generation needs no clone at all and asks neither
+# question — DeferredCloneCleanupJob deletes an archived session's clone once the
+# undo window (10 seconds) closes, and an archived session is exactly the one
+# someone opens later to ask what happened.
 class SessionStatusSummaryGenerator
   # Marks a session as a summary fork. Read by SessionStateMachine (to route the
   # fork's pause into harvesting rather than into the user's action queue) and by
@@ -194,14 +201,25 @@ class SessionStatusSummaryGenerator
       message_index: ForkSessionService.parsed_messages(session.transcript).length - 1,
       extra_metadata: { FORK_MARKER => session.id },
       # The summarizer reads the conversation it was forked with and is told not
-      # to run tools — it never builds or boots anything, so copying the
-      # installed-dependency trees buys it nothing and costs it the tens of
-      # seconds that make a concurrent-mutation race likely in the first place.
-      # A user-initiated fork keeps them; it is a working session.
-      copy_exclusions: ForkSessionService::DEPENDENCY_DIRECTORIES,
-      # The whole reason Regenerate works on a session archived long ago: its
-      # clone is gone, and this fork does not need it. Forced only — restoring
-      # anything for a session nobody is looking at is the waste the automatic
+      # to run tools — it never builds or boots anything, so it opens no file in
+      # the tree and the copy buys it nothing at all. Pruning the dependency
+      # trees out of that copy was not enough (zimmer#771): what is left is still
+      # thousands of small files, and `cp_r` walks them one at a time, inline on
+      # the caller's thread, with no timeout. This runs on the two-thread
+      # `inference` lane, so two generations in flight ARE the lane — for as long
+      # as the copies take, nothing else on it gets a thread. A fork that reads
+      # no file gets no tree.
+      #
+      # A user-initiated fork still gets its copy; it is a working session and
+      # wants the tree it forked.
+      copy_source_tree: false,
+      # With no copy to make, this is down to one thing: whether a source clone
+      # that is GONE fails the fork. It must not for a forced run — that is the
+      # whole reason Regenerate works on a session archived long ago. It still
+      # does for an automatic one, and deliberately: nothing enqueues an
+      # automatic generation for an archived session on purpose, so a missing
+      # tree is the cheapest available evidence that this is a session nobody is
+      # looking at, and standing a fork up for one is the waste the automatic
       # path's refusals exist to prevent.
       scaffold_missing_clone: force
     }
