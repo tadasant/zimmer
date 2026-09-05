@@ -130,6 +130,11 @@
       "class": "CleanupRuntimeLoginAttemptsJob",
       "description": "Reap orphaned UI login attempts and prune old terminal rows"
     },
+    "log_retention": {
+      "cron": "*/10 * * * *",
+      "class": "LogRetentionJob",
+      "description": "Delete log rows past their retention window, so the logs table is bounded by time rather than by fleet activity"
+    },
     "empty_trash": {
       "cron": "0 * * * *",
       "class": "EmptyTrashJob",
@@ -372,6 +377,11 @@
       "class": "CleanupRuntimeLoginAttemptsJob",
       "description": "Reap orphaned UI login attempts and prune old terminal rows"
     },
+    "log_retention": {
+      "cron": "*/10 * * * *",
+      "class": "LogRetentionJob",
+      "description": "Delete log rows past their retention window, so the logs table is bounded by time rather than by fleet activity"
+    },
     "empty_trash": {
       "cron": "0 * * * *",
       "class": "EmptyTrashJob",
@@ -583,6 +593,11 @@
       "cron": "*/5 * * * *",
       "class": "CleanupExpiredElicitationsJob",
       "description": "Expire pending elicitations past their expiration time"
+    },
+    "log_retention": {
+      "cron": "*/10 * * * *",
+      "class": "LogRetentionJob",
+      "description": "Delete log rows past their retention window, so the logs table is bounded by time rather than by fleet activity"
     },
     "empty_trash": {
       "cron": "0 * * * *",

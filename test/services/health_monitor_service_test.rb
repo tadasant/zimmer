@@ -30,8 +30,111 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert report.key?(:egress_health)
     assert report.key?(:sigterm_retry_health)
     assert report.key?(:api_error_retry_health)
+    assert report.key?(:log_retention_health)
     assert report.key?(:overall_status)
     assert report.key?(:generated_at)
+  end
+
+  # === Log retention ===
+  #
+  # The `logs` table filled staging's Postgres volume and crash-looped the
+  # database (tadasant/zimmer#437), and until LogRetentionJob shipped its size
+  # could not be read at all on production: no shell on the managed cluster, no
+  # psql in a session container, and no managed-Postgres metrics. These assert the
+  # readings exist and mean what they say, because a health panel nobody can trust
+  # is worse than none.
+
+  def log_retention_session
+    Session.create!(prompt: "Log retention", agent_runtime: "claude_code", status: :running,
+                    git_root: "https://github.com/test/repo.git", branch: "main",
+                    execution_provider: "local_filesystem")
+  end
+
+  test "log_retention_health reports the size of the logs table and the policy in force" do
+    retention = @service.full_health_report[:log_retention_health]
+
+    assert_equal (Log::RETENTION / 1.day).to_i, retention[:retention_days]
+    assert_equal (Log::VERBOSE_RETENTION / 1.day).to_i, retention[:verbose_retention_days]
+    assert_operator retention[:total_bytes], :>, 0, "pg_total_relation_size should report a real size for logs"
+    assert_operator retention[:index_bytes], :>, 0, "logs carries indexes, so their size should be reported"
+    assert retention.key?(:estimated_rows)
+    assert retention.key?(:oldest_log_at)
+    assert retention.key?(:oldest_verbose_log_at)
+  end
+
+  test "log_retention_health reads healthy while the oldest row is inside the window" do
+    Log.delete_all
+    log = Log.create!(session: log_retention_session, content: "recent", level: "info")
+
+    retention = @service.full_health_report[:log_retention_health]
+
+    assert retention[:status].healthy?
+    assert_in_delta log.reload.created_at.to_f, retention[:oldest_log_at].to_f, 1.0
+  end
+
+  test "log_retention_health warns when the oldest row is far past the retention window" do
+    Log.delete_all
+    log = Log.create!(session: log_retention_session, content: "ancient", level: "info")
+    stale_at = (Log::RETENTION * 3).ago
+    log.update_columns(created_at: stale_at, updated_at: stale_at)
+
+    retention = @service.full_health_report[:log_retention_health]
+
+    assert retention[:status].warning?,
+           "an oldest row three retention windows old means retention is not running"
+    assert_match(/retention window/, retention[:status].message)
+  end
+
+  # An empty table is healthy, not "unknown" — a fresh deployment must not open
+  # /health on a warning it can do nothing about.
+  test "log_retention_health is healthy with no rows at all" do
+    Log.delete_all
+
+    retention = @service.full_health_report[:log_retention_health]
+
+    assert retention[:status].healthy?
+    assert_nil retention[:oldest_log_at]
+  end
+
+  # Deliberately excluded from the aggregate: the first deployment to run
+  # retention is overdue for as long as its initial drain takes, and a health
+  # report stuck on "warning" while a backlog drains on schedule is one people
+  # learn to ignore.
+  test "a log retention warning does not degrade overall_status" do
+    Log.delete_all
+    log = Log.create!(session: log_retention_session, content: "ancient", level: "info")
+
+    # Captured while retention still reads healthy, so the comparison below is
+    # between two genuinely different states rather than two reads of one.
+    baseline = @service.full_health_report
+    assert baseline[:log_retention_health][:status].healthy?
+
+    stale_at = (Log::RETENTION * 3).ago
+    log.update_columns(created_at: stale_at, updated_at: stale_at)
+    report = @service.full_health_report
+
+    assert report[:log_retention_health][:status].warning?
+    assert_equal baseline[:overall_status].status, report[:overall_status].status,
+                 "log retention is informational — it must not move the aggregate the alerting reads"
+  end
+
+  # The verbose tier is the bulk of the table and has the tighter window, so a
+  # verbose pass that stopped while the general one kept running would refill a
+  # disk with every surviving row still inside the 90-day window — healthy, by the
+  # only reading the panel had before this.
+  test "log_retention_health warns on a stalled verbose tier even while the general window is clean" do
+    Log.delete_all
+    stale_at = (Log::VERBOSE_RETENTION + HealthMonitorService::LOG_RETENTION_OVERDUE_GRACE + 1.day).ago
+    verbose = Log.create!(session: log_retention_session, content: "stdout", level: "verbose")
+    verbose.update_columns(created_at: stale_at, updated_at: stale_at)
+
+    retention = @service.full_health_report[:log_retention_health]
+
+    assert retention[:status].warning?
+    assert_match(/verbose log row/, retention[:status].message)
+    refute_match(/#{(Log::RETENTION / 1.day).to_i}-day/, retention[:status].message,
+                 "the general window is not what is breached here")
+    assert_in_delta stale_at.to_f, retention[:oldest_verbose_log_at].to_f, 1.0
   end
 
   test "egress_health reflects a degraded cache and drives overall status critical" do

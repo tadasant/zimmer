@@ -4906,6 +4906,85 @@ re-raise into Sentry and the terminal ActiveJob ERROR are all unaffected. It is 
 failure-reason histogram that has the blind spot, and widening its query to include parked sessions
 is the fix.
 
+---
+
+## Log retention frees space in Postgres, but not on the disk
+
+`LogRetentionJob` bounds the `logs` table by time
+([#437](https://github.com/tadasant/zimmer/issues/437)), and from the first tick the table stops
+growing. It does not give back the space already allocated: `DELETE` marks tuples dead, autovacuum
+returns them to the free space map, and the heap file stays the size it reached. A deployment that
+had already grown `logs` to 24 GB — staging's measured size — gets a table that stops growing and a
+volume that is still 24 GB fuller until somebody runs `VACUUM FULL logs` or `pg_repack`, both of
+which need free space equal to the table to run at all.
+
+That reclamation is deliberately not automated. `VACUUM FULL` takes an `ACCESS EXCLUSIVE` lock for
+its whole duration — on a 19 GB heap, long enough to be an outage — and a background job is the
+wrong thing to hold it. The per-environment steps are in
+[Background jobs](/operate/background-jobs/#deleting-does-not-shrink-the-files).
+
+The corollary on a deployment that has never had retention: the first drain is measured in hours,
+not one tick. `LogRetentionJob` deletes 5,000 rows at a time inside a 90-second slice, every 10
+minutes, so it converges on a 124M-row backlog over a day or so rather than immediately. That is the
+intended trade — the alternative is one statement holding a transaction over a hundred million rows
+on the database whose disk is the problem.
+
+## Log retention slows down, and can stall, on a table whose ids and timestamps disagree
+
+`LogRetentionJob` picks the id range one tick scans by binary-searching the primary key, which is
+exact only while ids and `created_at` ascend together — true to within a transaction's duration for a
+sequence-backed key stamped with `now()`, which is the only way Zimmer writes `logs`. When something
+else writes them out of order (a backfill, an import, a restore that renumbers the sequence), the
+search stops under the disagreement and the
+[head probe](/operate/background-jobs/#it-is-designed-to-meet-a-table-that-is-already-enormous)
+takes over: a ceiling just past the first 25,000 rows, so the table drains in 25,000-row steps per
+tick instead of in one sweep.
+
+**Correctness is never affected.** The cutoff is a predicate on the delete itself, so no row inside
+its retention window is ever deleted, whatever the ceiling says. The error is only ever in the
+direction of deleting too little.
+
+**The probe converges, up to one boundary, and that boundary is real.** As the rows in its window go
+the window slides forward, so an out-of-order table drains tick by tick. What it cannot reach is more
+than 25,000 *unexpired* rows sitting below *every* expired row: the ceiling never gets past them, the
+pass deletes nothing, and retention stalls for as long as that holds. Nothing in Zimmer produces it —
+`logs.created_at` has no writer other than the insert default — but a renumbered sequence or a
+partial restore would, and it fails silently apart from the `/health` panel's own blind spot below.
+`test "more unexpired rows than the probe window is wide is a documented stall"` pins the boundary
+where it is.
+
+The exact fix for all of this is an index on `logs.created_at`, and it is deliberately not here: it
+would be built during `db:prepare` at container boot, inside kamal-proxy's 120-second
+`deploy_timeout`, so on the table this issue is about it would fail the deploy rather than speed up
+the prune.
+
+## The log retention panel reports the lowest-id row, not the oldest
+
+`log_retention_health` reads `oldest_log_at` as the `created_at` of the row with the smallest id, not
+as `MIN(created_at)` — which, with no index on that column, would be a sequential scan of the very
+table the panel exists to say is too big. Under the ordering `LogRetentionJob` assumes the two are
+the same reading, and the panel inherits exactly the assumption's blind spot: on a table whose ids
+and timestamps disagree (above), a recent row with a low id makes the table look younger than it is,
+and the panel can read *Healthy* while expired rows above that row are never collected.
+
+The verbose half of the check is bounded for the same reason — it looks for the oldest `verbose` row
+only within the first 25,000 rows by id — so a verbose row stranded past that window is invisible to
+it too. Both readings are cheap by construction rather than exhaustive by construction; the intended
+signal is "retention is running", not "no expired row exists anywhere".
+
+## Log retention destroys timeline history nobody can regenerate
+
+The rows `LogRetentionJob` deletes are live-referenced: every archived session's timeline renders
+them. Past 7 days a session's `verbose` lines — the runtime CLI's raw stdout — are gone, and past 90
+days its whole `logs` half of the timeline is. The transcript is unaffected and it is what the
+timeline shows by default, so what is actually lost is the `[State Machine]` / process-lifecycle
+annotations beside it. There is no archive of them and no way to reconstruct them.
+
+This is the point of the change rather than a defect in it, but it is a real subtraction, and the
+windows are the only thing standing between "bounded table" and "history a person wanted". They are
+constants on `Log` (`RETENTION`, `VERBOSE_RETENTION`) with no runtime override — changing them is a
+deploy, not a setting.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

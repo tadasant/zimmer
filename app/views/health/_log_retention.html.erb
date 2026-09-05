@@ -1,0 +1,64 @@
+<%# Size of the `logs` table, and whether retention is keeping up. %>
+<%#
+  The table this reports on filled staging's Postgres volume and crash-looped the
+  database (tadasant/zimmer#437), and its size could not be read at all without a
+  shell on the database host — which production does not have. Same object as the
+  REST health report and `get_system_health`, so the number is reachable from a
+  phone.
+%>
+<% retention = health_report[:log_retention_health] %>
+<div class="mt-6 bg-white rounded-lg shadow">
+  <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="min-w-0">
+        <h3 class="text-lg font-medium text-gray-900">Log Retention</h3>
+        <p class="mt-1 text-sm text-gray-500">
+          <code class="font-mono text-xs">logs</code> rows are kept
+          <%= retention[:retention_days] %> days
+          (<%= retention[:verbose_retention_days] %> for verbose), pruned by
+          <code class="font-mono text-xs">LogRetentionJob</code>.
+        </p>
+      </div>
+      <div class="sm:flex-shrink-0">
+        <%= status_badge(retention[:status]) %>
+      </div>
+    </div>
+  </div>
+
+  <div class="px-4 py-5 sm:p-6">
+    <dl class="grid grid-cols-2 gap-4 sm:grid-cols-5">
+      <div class="text-center">
+        <dt class="text-sm font-medium text-gray-500">Rows (est.)</dt>
+        <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words">
+          <%= retention[:estimated_rows] ? number_to_human(retention[:estimated_rows], units: { thousand: "K", million: "M", billion: "B" }) : "—" %>
+        </dd>
+      </div>
+      <div class="text-center">
+        <dt class="text-sm font-medium text-gray-500">Total size</dt>
+        <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words">
+          <%= number_to_human_size(retention[:total_bytes]) %>
+        </dd>
+      </div>
+      <div class="text-center">
+        <dt class="text-sm font-medium text-gray-500">Indexes</dt>
+        <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words">
+          <%= number_to_human_size(retention[:index_bytes]) %>
+        </dd>
+      </div>
+      <div class="text-center">
+        <dt class="text-sm font-medium text-gray-500">Oldest row</dt>
+        <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words">
+          <%= retention[:oldest_log_at] ? "#{time_ago_in_words(retention[:oldest_log_at])} ago" : "—" %>
+        </dd>
+      </div>
+      <div class="text-center">
+        <dt class="text-sm font-medium text-gray-500">Oldest verbose</dt>
+        <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words">
+          <%= retention[:oldest_verbose_log_at] ? "#{time_ago_in_words(retention[:oldest_verbose_log_at])} ago" : "—" %>
+        </dd>
+      </div>
+    </dl>
+
+    <p class="mt-4 text-sm text-gray-500"><%= retention[:status].message %></p>
+  </div>
+</div>
