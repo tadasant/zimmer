@@ -6,6 +6,8 @@
 # When ANY of its conditions fire, the trigger creates or reuses a session
 # using its configured session template (agent_root, prompt, MCP servers, etc.).
 class Trigger < ApplicationRecord
+  include CatalogArtifactReferences
+
   # `failed` is Zimmer's to set: a fire raised and the trigger was parked rather
   # than deleted (see ScheduleTriggerJob). The MCP create/update surface does not
   # offer it, so an agent cannot fabricate a failure that never happened. It is a
@@ -137,12 +139,18 @@ class Trigger < ApplicationRecord
       less_than_or_equal_to: SessionPrecedence::MAX
     },
     allow_nil: true
-  validate :catalog_skills_must_be_array
-  validate :catalog_skills_must_exist_in_catalog, if: :catalog_skills_changed?
-  validate :catalog_hooks_must_be_array
-  validate :catalog_hooks_must_exist_in_catalog, if: :catalog_hooks_changed?
-  validate :catalog_plugins_must_be_array
-  validate :catalog_plugins_must_exist_in_catalog, if: :catalog_plugins_changed?
+  # The catalog-artifact columns, declared exactly as Session declares them —
+  # same validators, same heal, same words in the alert. `mcp_servers` is in the
+  # list: before it was, a trigger could be saved naming an MCP server that did
+  # not exist and the operator only found out on the next fire, when the name
+  # was silently rewritten. The change-scoping the concern applies is what keeps
+  # that from breaking rows saved under the old rule — an edit that leaves
+  # `mcp_servers` alone still saves, and #heal_catalog_references! cleans it up.
+  catalog_reference :mcp_servers,     config: ServersConfig, noun: "server", alert_noun: "MCP server",     dedup_noun: "mcp"
+  catalog_reference :catalog_skills,  config: SkillsConfig,  noun: "skill",  alert_noun: "catalog skill"
+  catalog_reference :catalog_hooks,   config: HooksConfig,   noun: "hook",   alert_noun: "catalog hook"
+  catalog_reference :catalog_plugins, config: PluginsConfig, noun: "plugin", alert_noun: "catalog plugin"
+  heals_catalog_references_in "Trigger#create_session!"
 
   # A form's "Use the default" option submits "", which means "derive it", not a
   # class named empty string or a precedence of zero.
@@ -435,17 +443,15 @@ class Trigger < ApplicationRecord
     @last_follow_up_status = nil
     @genesis_override = genesis
 
-    # Heal the artifact references that no longer exist before creating or
-    # reusing a session. Each heal method persists the fix so subsequent
-    # fires won't encounter the same issue.
+    # Heal the catalog-artifact references that no longer exist before creating
+    # or reusing a session. Each kind persists its fix so subsequent fires won't
+    # encounter the same issue. The list is the four `catalog_reference`
+    # declarations at the top of this class.
     #
-    # These four run on BOTH paths because #follow_up_session! syncs all four
+    # This runs on BOTH paths because #follow_up_session! syncs all four columns
     # onto the reused session (see its sync_* calls), so a stale reference is
     # load-bearing on a reuse just as much as on a spawn.
-    heal_stale_mcp_servers!
-    heal_stale_catalog_skills!
-    heal_stale_catalog_hooks!
-    heal_stale_catalog_plugins!
+    heal_catalog_references!
 
     # The agent root heals here too, but it does NOT raise here — the raising
     # call is on the spawn path below, and the difference is the whole of
@@ -1357,54 +1363,6 @@ class Trigger < ApplicationRecord
     session.reload
   end
 
-  def catalog_skills_must_be_array
-    return if catalog_skills.nil? || catalog_skills.is_a?(Array)
-
-    errors.add(:catalog_skills, "must be an array")
-  end
-
-  def catalog_skills_must_exist_in_catalog
-    return if catalog_skills.nil? || !catalog_skills.is_a?(Array)
-
-    non_blank_skills = catalog_skills.reject(&:blank?)
-    invalid_skills = non_blank_skills.reject { |name| SkillsConfig.exists?(name) }
-    return if invalid_skills.empty?
-
-    errors.add(:catalog_skills, "contains invalid skill(s): #{invalid_skills.join(', ')}")
-  end
-
-  def catalog_hooks_must_be_array
-    return if catalog_hooks.nil? || catalog_hooks.is_a?(Array)
-
-    errors.add(:catalog_hooks, "must be an array")
-  end
-
-  def catalog_hooks_must_exist_in_catalog
-    return if catalog_hooks.nil? || !catalog_hooks.is_a?(Array)
-
-    non_blank_hooks = catalog_hooks.reject(&:blank?)
-    invalid_hooks = non_blank_hooks.reject { |name| HooksConfig.exists?(name) }
-    return if invalid_hooks.empty?
-
-    errors.add(:catalog_hooks, "contains invalid hook(s): #{invalid_hooks.join(', ')}")
-  end
-
-  def catalog_plugins_must_be_array
-    return if catalog_plugins.nil? || catalog_plugins.is_a?(Array)
-
-    errors.add(:catalog_plugins, "must be an array")
-  end
-
-  def catalog_plugins_must_exist_in_catalog
-    return if catalog_plugins.nil? || !catalog_plugins.is_a?(Array)
-
-    non_blank_plugins = catalog_plugins.reject(&:blank?)
-    invalid_plugins = non_blank_plugins.reject { |id| PluginsConfig.exists?(id) }
-    return if invalid_plugins.empty?
-
-    errors.add(:catalog_plugins, "contains invalid plugin(s): #{invalid_plugins.join(', ')}")
-  end
-
   # The dedup gate, in front of the burst gate. Both sit on the SPAWN path only:
   # a fire that follows up into a reused session has already returned by now, and
   # rightly so — it adds no session to the pile.
@@ -1734,143 +1692,6 @@ class Trigger < ApplicationRecord
         "Agent root '#{old_name}' not found in catalog and no successor could be identified. " \
         "Update trigger '#{name}' (ID: #{id}) manually at #{AppUrl.base_url}/triggers/#{id}"
     end
-  end
-
-  # Detects and removes catalog skills that no longer exist in the catalog.
-  # Persists the cleaned list so the stale reference is only encountered once.
-  def heal_stale_catalog_skills!
-    return if catalog_skills.blank?
-    # Safety: if SkillsConfig is empty (catalog load failure → rescued to []),
-    # every ref would look stale. Skip healing to avoid destructive stripping.
-    return if SkillsConfig.all.empty?
-
-    non_blank = catalog_skills.reject(&:blank?)
-    stale = non_blank.reject { |name| SkillsConfig.exists?(name) }
-    return if stale.empty?
-
-    valid = non_blank - stale
-    update_column(:catalog_skills, valid)
-
-    Rails.logger.warn(
-      "[Trigger#heal_stale_catalog_skills!] Removed stale skill(s) #{stale.inspect} " \
-      "from trigger '#{name}' (ID: #{id}). Remaining skills: #{valid.inspect}"
-    )
-
-    AlertService.raise_alert(
-      "Trigger self-healed: stale catalog skill(s) removed",
-      details: "Trigger *#{name}* (ID: #{id}) referenced catalog skill(s) that no longer exist:\n" \
-               "• Removed: #{stale.join(', ')}\n" \
-               "• Remaining: #{valid.empty? ? '(none)' : valid.join(', ')}\n\n" \
-               "The stale reference(s) have been removed from the trigger. " \
-               "The session will proceed with the remaining skills.\n\n" \
-               "<#{AppUrl.base_url}/triggers/#{id}|View trigger in Zimmer>",
-      source: "Trigger#create_session!",
-      dedup_key: "trigger_stale_skills_#{id}"
-    )
-  end
-
-  # Detects and removes catalog hooks that no longer exist in the catalog.
-  # Persists the cleaned list so the stale reference is only encountered once.
-  def heal_stale_catalog_hooks!
-    return if catalog_hooks.blank?
-    # Safety: see heal_stale_catalog_skills! — skip if catalog is empty.
-    return if HooksConfig.all.empty?
-
-    non_blank = catalog_hooks.reject(&:blank?)
-    stale = non_blank.reject { |name| HooksConfig.exists?(name) }
-    return if stale.empty?
-
-    valid = non_blank - stale
-    update_column(:catalog_hooks, valid)
-
-    Rails.logger.warn(
-      "[Trigger#heal_stale_catalog_hooks!] Removed stale hook(s) #{stale.inspect} " \
-      "from trigger '#{name}' (ID: #{id}). Remaining hooks: #{valid.inspect}"
-    )
-
-    AlertService.raise_alert(
-      "Trigger self-healed: stale catalog hook(s) removed",
-      details: "Trigger *#{name}* (ID: #{id}) referenced catalog hook(s) that no longer exist:\n" \
-               "• Removed: #{stale.join(', ')}\n" \
-               "• Remaining: #{valid.empty? ? '(none)' : valid.join(', ')}\n\n" \
-               "The stale reference(s) have been removed from the trigger. " \
-               "The session will proceed with the remaining hooks.\n\n" \
-               "<#{AppUrl.base_url}/triggers/#{id}|View trigger in Zimmer>",
-      source: "Trigger#create_session!",
-      dedup_key: "trigger_stale_hooks_#{id}"
-    )
-  end
-
-  # Detects and removes catalog plugins that no longer exist in the catalog.
-  # Persists the cleaned list so the stale reference is only encountered once.
-  def heal_stale_catalog_plugins!
-    return if catalog_plugins.blank?
-    # Safety: see heal_stale_catalog_skills! — skip if catalog is empty.
-    return if PluginsConfig.all.empty?
-
-    non_blank = catalog_plugins.reject(&:blank?)
-    stale = non_blank.reject { |plugin_id| PluginsConfig.exists?(plugin_id) }
-    return if stale.empty?
-
-    valid = non_blank - stale
-    update_column(:catalog_plugins, valid)
-
-    Rails.logger.warn(
-      "[Trigger#heal_stale_catalog_plugins!] Removed stale plugin(s) #{stale.inspect} " \
-      "from trigger '#{name}' (ID: #{id}). Remaining plugins: #{valid.inspect}"
-    )
-
-    AlertService.raise_alert(
-      "Trigger self-healed: stale catalog plugin(s) removed",
-      details: "Trigger *#{name}* (ID: #{id}) referenced catalog plugin(s) that no longer exist:\n" \
-               "• Removed: #{stale.join(', ')}\n" \
-               "• Remaining: #{valid.empty? ? '(none)' : valid.join(', ')}\n\n" \
-               "The stale reference(s) have been removed from the trigger. " \
-               "The session will proceed with the remaining plugins.\n\n" \
-               "<#{AppUrl.base_url}/triggers/#{id}|View trigger in Zimmer>",
-      source: "Trigger#create_session!",
-      dedup_key: "trigger_stale_plugins_#{id}"
-    )
-  end
-
-  # Detects and removes MCP servers that no longer exist in the catalog.
-  # Persists the cleaned list to the database so the stale reference is
-  # only encountered (and alerted) once.
-  #
-  # @return [Array<String>] the validated mcp_servers list to use for session creation
-  def heal_stale_mcp_servers!
-    return mcp_servers if mcp_servers.blank?
-    # Safety: if ServersConfig is empty (catalog load failure → rescued to []),
-    # every ref would appear stale and we'd destructively strip the list.
-    return mcp_servers if ServersConfig.all.empty?
-
-    non_blank = mcp_servers.reject(&:blank?)
-    stale_servers = non_blank.reject { |name| ServersConfig.exists?(name) }
-    return mcp_servers if stale_servers.empty?
-
-    valid_servers = non_blank - stale_servers
-
-    # Persist the cleaned list so subsequent fires don't re-encounter the same stale refs
-    update_column(:mcp_servers, valid_servers)
-
-    Rails.logger.warn(
-      "[Trigger#heal_stale_mcp_servers!] Removed stale MCP server(s) #{stale_servers.inspect} " \
-      "from trigger '#{name}' (ID: #{id}). Remaining servers: #{valid_servers.inspect}"
-    )
-
-    AlertService.raise_alert(
-      "Trigger self-healed: stale MCP server(s) removed",
-      details: "Trigger *#{name}* (ID: #{id}) referenced MCP server(s) that no longer exist in the catalog:\n" \
-               "• Removed: #{stale_servers.join(', ')}\n" \
-               "• Remaining: #{valid_servers.empty? ? '(none)' : valid_servers.join(', ')}\n\n" \
-               "The stale reference(s) have been removed from the trigger. " \
-               "The session will proceed with the remaining servers.\n\n" \
-               "<#{AppUrl.base_url}/triggers/#{id}|View trigger in Zimmer>",
-      source: "Trigger#create_session!",
-      dedup_key: "trigger_stale_mcp_#{id}"
-    )
-
-    valid_servers
   end
 
   # Attempts to find a successor agent root by matching the last session's
