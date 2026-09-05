@@ -805,9 +805,12 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     logs_before = @session.logs.count
     CleanupOrphanedSessionsJob.perform_now
     @session.reload
-    assert_equal "needs_input", @session.status
     assert_equal logs_before, @session.logs.count,
       "an abandoned session must stop generating log lines entirely"
+
+    # This session never ran, so giving up rests it in `waiting` rather than on
+    # the human action queue — see the #602 tests below.
+    assert_equal "waiting", @session.status
   end
 
   # The counterpart to the recovery carve-out in SessionStateMachine's `pause`
@@ -817,11 +820,16 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
   # owed exactly once. Without this, suppressing the pause would fail silently in
   # the direction of less visibility: a session Zimmer cannot restart would sit in
   # the action queue with nothing having said so.
+  #
+  # The session here is one that HAS run — a runtime session id and a clone that
+  # has since gone — because that is the population this announcement is for.
+  # A session that never ran goes back to the queue instead and is deliberately
+  # NOT announced; the test below pins that half.
   test "giving up on auto-continue announces the pause the recovery carve-out suppressed" do
     @session.update!(
       status: :needs_input,
       running_job_id: nil,
-      session_id: nil,
+      session_id: SecureRandom.uuid,
       push_notifications_enabled: true,
       metadata: { "paused_by" => "recovery" }
     )
@@ -848,6 +856,122 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     CleanupOrphanedSessionsJob.perform_now
     assert_equal 2, announcement_jobs_for(@session).size,
       "an abandoned session must be announced exactly once"
+  end
+
+  # === Rest-state selection for a session that never ran (#602) ===
+  #
+  # `needs_input` is the homepage action list. Zimmer giving up on a session it
+  # paused for its own recovery used to leave it wherever the pause put it — and
+  # for a session that had never taken a turn, that is a slot in a human's queue
+  # for a session with nothing to ask, plus a dead end: every path that starts a
+  # session reads `waiting`, so the work never happened at all.
+
+  # Population 2 of the report: held by the spot gate at `at_utilization_limit`
+  # before it was ever dispatched, then moved into `needs_input` by a recovery
+  # pass that found nothing to continue. No runtime session id, no
+  # `job_started_at`, no transcript.
+  test "a spot-held session that was never dispatched is returned to the queue, not left in needs_input" do
+    @session.update!(
+      status: :needs_input,
+      running_job_id: nil,
+      session_id: nil,
+      metadata: {
+        "paused_by" => "recovery",
+        SpotSessionHold::HELD_AT => 3.hours.ago.utc.iso8601,
+        SpotSessionHold::HELD_REASON => "at_utilization_limit",
+        SpotSessionHold::HELD_RETRY_AT => 2.hours.ago.utc.iso8601,
+        SpotSessionHold::HELD_COUNT => 2
+      }
+    )
+
+    SessionContinuation::MAX_CONTINUE_ATTEMPTS.times { CleanupOrphanedSessionsJob.perform_now }
+
+    @session.reload
+    assert_equal "waiting", @session.status,
+      "a session the gate held before it ever ran is waiting for compute, not for a human"
+    assert_equal "no session_id found, working directory not found or invalid",
+      @session.metadata[SessionContinuation::CONTINUE_ABANDONED_KEY]
+    assert_nil @session.metadata["paused_by"]
+
+    # And it is back in the population its own sweep re-arms — the one
+    # `SpotSessionHold.held?` cannot see while the session sits in `needs_input`.
+    assert SpotSessionHold.held?(@session)
+    assert_includes SpotSessionHold.overdue_sessions.to_a, @session
+  end
+
+  # Population 1 of the report: interrupted while its first job was starting,
+  # carrying `interrupted_start_requeue_count` and a `job_started_at`, with a
+  # transcript holding only the spawn prompt.
+  test "a session interrupted at start is returned to the queue, not left in needs_input" do
+    @session.update!(
+      status: :needs_input,
+      running_job_id: nil,
+      session_id: nil,
+      metadata: {
+        "paused_by" => "recovery",
+        AgentSessionJob::INTERRUPTED_START_REQUEUE_COUNT => 1,
+        "job_started_at" => 40.minutes.ago.utc.iso8601
+      }
+    )
+
+    SessionContinuation::MAX_CONTINUE_ATTEMPTS.times { CleanupOrphanedSessionsJob.perform_now }
+
+    @session.reload
+    assert_equal "waiting", @session.status
+    assert_nil @session.metadata["paused_by"],
+      "the marker has to go with the move, or the sweeps keep chasing a session they gave up on"
+    assert_equal 1, @session.metadata[Sessions::ReturnToQueue::COUNT_KEY]
+
+    # Back in the population StalledSessionStart restarts.
+    @session.update_columns(created_at: 1.hour.ago, updated_at: 1.hour.ago)
+    assert_includes StalledSessionStart.stalled_sessions.to_a, @session.reload
+  end
+
+  # The guard on the other side. A session that HAS a conversation behind it may
+  # genuinely be asking a human something, so giving up on it still rests it in
+  # `needs_input` — and a never-ran session must not be announced as though it
+  # were, because it is going back to the queue instead.
+  test "returning a never-ran session to the queue announces nothing" do
+    @session.update!(
+      status: :needs_input,
+      running_job_id: nil,
+      session_id: nil,
+      push_notifications_enabled: true,
+      metadata: { "paused_by" => "recovery" }
+    )
+
+    ActiveRecord.stubs(:after_all_transactions_commit).yields
+
+    SessionContinuation::MAX_CONTINUE_ATTEMPTS.times { CleanupOrphanedSessionsJob.perform_now }
+
+    assert_equal "waiting", @session.reload.status
+    assert_empty announcement_jobs_for(@session),
+      "a session that never ran has nothing to announce — it is queued, not waiting on a person"
+  end
+
+  # The bound. A returned session that keeps coming back must stop being
+  # returned, exactly as MAX_INTERRUPTED_START_REQUEUES stops a start job
+  # re-queueing itself forever.
+  test "a session that keeps failing to start eventually rests in needs_input" do
+    # Its budget already spent by earlier rounds of exactly this loop.
+    @session.update!(
+      status: :needs_input,
+      running_job_id: nil,
+      session_id: nil,
+      metadata: {
+        "paused_by" => "recovery",
+        Sessions::ReturnToQueue::COUNT_KEY => Sessions::ReturnToQueue::MAX_RETURNS
+      }
+    )
+
+    SessionContinuation::MAX_CONTINUE_ATTEMPTS.times { CleanupOrphanedSessionsJob.perform_now }
+
+    @session.reload
+    assert_equal "needs_input", @session.status,
+      "the return has to run out, or a deployment that cannot start this session loops on it forever"
+    assert_equal Sessions::ReturnToQueue::MAX_RETURNS,
+      @session.metadata[Sessions::ReturnToQueue::COUNT_KEY]
+    assert @session.metadata[Sessions::ReturnToQueue::EXHAUSTED_KEY].present?
   end
 
   test "should not auto-continue session paused by user" do
