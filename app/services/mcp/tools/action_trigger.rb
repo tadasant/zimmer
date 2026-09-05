@@ -472,6 +472,9 @@ module Mcp
         trigger.update!(attributes)
         trigger.trigger_conditions.reload
 
+        # nil unless this call changed the class; see Trigger#reclassification_summary.
+        reclassified = trigger.reclassification_summary
+
         <<~TEXT.strip
           ## Trigger Updated
 
@@ -482,7 +485,7 @@ module Mcp
           - **Skills / Hooks / Plugins:** #{catalog_lists_summary(trigger)}
           - **Skip While Pending:** #{trigger.skip_if_pending_session ? 'yes' : 'no'}
           - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
-          - **Scheduling Class:** #{scheduling_class_summary(trigger)}#{" #{trigger.reclassification_summary}" if trigger.reclassification_summary}
+          - **Scheduling Class:** #{scheduling_class_summary(trigger)}#{" #{reclassified}" if reclassified}
           - **Precedence:** #{precedence_summary(trigger)}
 
           #{condition_detail(trigger)}
