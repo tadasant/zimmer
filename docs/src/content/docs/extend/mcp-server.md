@@ -202,6 +202,13 @@ ones that mentioned each word somewhere. An empty result that says "scan incompl
 "not found yet", not "not there". `get_transcript_archive` is a bulk export, not the search — it is
 hundreds of megabytes and up to ten minutes stale.
 
+The JSON columns are matched in Postgres's canonical spelling, so `"key":"value"` and `"key": "value"`
+find the same sessions and neither depends on which of Zimmer's two metadata writers last touched the
+row — the false negatives of [#930](https://github.com/tadasant/zimmer/issues/930). One caveat comes
+with that: canonical form orders an object's keys by length rather than by how they were written, so
+search a single key/value pair or a bare value rather than a fragment spanning two keys. The
+[REST API page](/extend/rest-api/) has the detail.
+
 Two defaults matter when the question is "does this work already have a session?". `show_archived`
 defaults to `false`, and a session that finished a piece of work has archived itself — so a
 duplicate check has to pass `show_archived: true` or name `archived` in `status`, or it misses

@@ -4681,6 +4681,34 @@ rather than going quiet.
 
 ---
 
+## A metadata search matches Postgres's key order, so a two-key fragment is unreliable
+
+`quick_search_sessions`, the REST search and the dashboard match the session JSON as text, and
+since [#930](https://github.com/tadasant/zimmer/issues/930) that text is rendered through `jsonb`
+so it is the same whichever of Zimmer's two metadata writers touched the row last. `jsonb` orders
+an object's keys by length, then bytewise — not in the order the writer wrote them. So a query
+fragment that spans the comma **between** two keys only matches if the caller happened to spell
+them in Postgres's order:
+
+```
+stored:  {"zebra": "1", "clone_path": "/tmp/x", "agent_root_key": "zimmer-router"}
+
+"clone_path": "/tmp/x", "agent_root_key": "zimmer-router"   -> matches
+"agent_root_key": "zimmer-router", "clone_path": "/tmp/x"   -> does not
+"agent_root_key": "zimmer-router"                           -> matches
+zimmer-router                                               -> matches
+```
+
+Search **one** key/value pair, or a bare value, which is what the tool's own description already
+tells you to do — those are unaffected by ordering, in either spelling. A two-key fragment was
+never dependable (before #930 it matched or not depending on the writer); it is now dependably one
+way, which is worth knowing rather than rediscovering.
+
+Fixing it properly would mean matching each pair independently, which is the per-word OR-ing that
+#405 rejected: it turns a precise answer into a shortlist the caller has to re-grep by hand.
+
+---
+
 ## Transcript content search is bounded, so an empty answer can mean "not yet"
 
 `sessions.transcript` is a `json` column and no index helps a leading-wildcard `ILIKE`, so searching
