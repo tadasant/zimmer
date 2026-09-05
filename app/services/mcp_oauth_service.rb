@@ -19,6 +19,12 @@ class McpOauthService
   # User agent for OAuth requests
   USER_AGENT = "Zimmer/1.0".freeze
 
+  # The content types an MCP endpoint answers in — JSON-RPC over HTTP, or the SSE
+  # stream a streamable-HTTP server opens. See #unauthenticated_determination:
+  # a 2xx in anything else is a page that happens to share the origin, not the
+  # MCP server telling us it needs no token.
+  MCP_CONTENT_TYPES = %w[application/json text/event-stream].freeze
+
   # Result of checking a server's OAuth requirements.
   #
   # `required` is the answer a caller acts on: true only when the server
@@ -26,11 +32,7 @@ class McpOauthService
   # distinguishes "the server said no" from "we could not tell" — two cases that
   # both leave `required` false and mean very different things. It is one of
   # McpServerOauthRequirement::DETERMINATIONS, and it is what gets recorded.
-  OAuthRequirement = Struct.new(:required, :metadata, :error, :determination, keyword_init: true) do
-    # Reads as "undetermined" for a requirement built before determinations
-    # existed, so a caller never has to nil-check the answer.
-    def determination = self[:determination].presence || McpServerOauthRequirement::UNDETERMINED
-  end
+  OAuthRequirement = Struct.new(:required, :metadata, :error, :determination, keyword_init: true)
 
   # OAuth metadata from a server
   OAuthMetadata = Struct.new(
@@ -433,22 +435,9 @@ class McpOauthService
       end
     end
 
-    # Only a 2xx is the server telling us it needs no token: it served an
-    # unauthenticated request. Every other answer — a 401 whose challenge is not
-    # Bearer, a 400 from a streamable-HTTP server that wants a session id before
-    # it looks at auth, a 404, a 5xx — says nothing about authorization, and
-    # recording it as "not required" is the one mistake that fails silently.
-    # `required` stays false throughout, exactly as before; what changes is
-    # whether we claim to know why.
-    determination = if response.code.to_s.start_with?("2")
-      McpServerOauthRequirement::ADVERTISED_NOT_REQUIRED
-    else
-      McpServerOauthRequirement::UNDETERMINED
-    end
-
     OAuthRequirement.new(
       required: false, metadata: nil, error: nil,
-      determination: determination
+      determination: unauthenticated_determination(response)
     )
   rescue => e
     Rails.logger.warn "[McpOauthService] Probe failed for #{server_url}: #{e.message}"
@@ -456,6 +445,35 @@ class McpOauthService
       required: false, metadata: nil, error: e.message,
       determination: McpServerOauthRequirement::UNDETERMINED
     )
+  end
+
+  # What an unauthenticated request that was NOT a Bearer challenge tells us
+  # about whether this server requires OAuth. `required` is false either way,
+  # exactly as before; the only question here is whether we claim to know why.
+  #
+  # Recording "not required" wrongly is the one mistake that fails silently — the
+  # server never gets credentials and dies at the point of use — so the bar is a
+  # server that demonstrably *served us*, not merely one that did not say no.
+  #
+  # A 2xx alone is not that bar. This probe sends a bare `GET` with
+  # `Accept: application/json`, which is not a well-formed MCP request (an MCP
+  # streamable-HTTP client also accepts `text/event-stream`), so a 2xx is at
+  # least as likely to be a CDN interstitial, an HTML landing page sharing the
+  # origin, or an API gateway's own reply as it is to be the MCP endpoint. Any of
+  # those would file a genuinely OAuth-protected server as needing no token.
+  # Requiring an MCP-shaped content type is what makes the 2xx evidence rather
+  # than coincidence; everything else — a 400 from a server that wants a session
+  # id before it looks at auth, a 404, a 5xx, a non-Bearer 401 — is undetermined.
+  #
+  # @param response [Net::HTTPResponse]
+  # @return [String] one of McpServerOauthRequirement::DETERMINATIONS
+  def unauthenticated_determination(response)
+    return McpServerOauthRequirement::UNDETERMINED unless response.code.to_s.start_with?("2")
+
+    content_type = response["Content-Type"].to_s
+    return McpServerOauthRequirement::UNDETERMINED unless MCP_CONTENT_TYPES.any? { |type| content_type.include?(type) }
+
+    McpServerOauthRequirement::ADVERTISED_NOT_REQUIRED
   end
 
   # Extracts resource_metadata URL from WWW-Authenticate header

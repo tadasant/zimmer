@@ -9,6 +9,11 @@ class McpServerOauthRequirementDashboard < Administrate::BaseDashboard
     credential_key: Field::String,
     server_url: Field::String,
     determination: Field::String,
+    # What the row still supports *today*, which is not always what it says: an
+    # `advertised_not_required` past its TTL has already degraded to
+    # `undetermined` in the code. Showing only the stored column would let this
+    # page disagree with the behaviour it exists to explain.
+    effective_determination: Field::String.with_options(searchable: false),
     detail: Field::String,
     determined_at: Field::DateTime,
     created_at: Field::DateTime,
@@ -17,10 +22,15 @@ class McpServerOauthRequirementDashboard < Administrate::BaseDashboard
 
   # COLLECTION_ATTRIBUTES
   # an array of attributes that will be displayed on the model's index page.
+  # Both determinations, side by side: the stored one is the column (and the
+  # sortable one), the effective one is what the code will actually act on
+  # today. They differ exactly when a row has gone stale, which is the case
+  # worth spotting from the index.
   COLLECTION_ATTRIBUTES = %i[
     id
     server_name
     determination
+    effective_determination
     determined_at
   ].freeze
 
@@ -32,6 +42,7 @@ class McpServerOauthRequirementDashboard < Administrate::BaseDashboard
     credential_key
     server_url
     determination
+    effective_determination
     detail
     determined_at
     created_at
@@ -51,6 +62,6 @@ class McpServerOauthRequirementDashboard < Administrate::BaseDashboard
   COLLECTION_FILTERS = {}.freeze
 
   def display_resource(requirement)
-    "#{requirement.server_name} — #{requirement.determination}"
+    "#{requirement.server_name} — #{requirement.effective_determination}"
   end
 end

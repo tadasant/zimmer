@@ -5347,10 +5347,10 @@ class AgentSessionJob < ApplicationJob
           configured_redirect_uri: catalog_server&.oauth_redirect_uri
         )
 
-        # Keep what the server just told us, so the surfaces that cannot probe —
-        # the Connectors page, `get_configs`, the injector's own accounting —
-        # read a recorded fact instead of assuming a remote server might need
-        # OAuth. Best-effort by contract: it never affects this gate's answer.
+        # Keep what the server just told us, so the Connectors page — which
+        # cannot make a network call — reads a recorded fact instead of assuming
+        # that a remote server with no credential might need OAuth.
+        # Best-effort by contract: it never affects this gate's answer.
         McpServerOauthRequirement.record!(
           server_name: server_name,
           credential_key: server_status[:credential_key],

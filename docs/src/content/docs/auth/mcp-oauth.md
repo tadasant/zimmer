@@ -115,9 +115,8 @@ through to the retry path.
 Two places actually ask a remote server whether it requires OAuth: the spawn gate above, and
 `McpOauthProbe`, which re-checks a session's servers whenever its MCP-server or plugin selection
 changes. Both run RFC 9728 / RFC 8414 discovery and an unauthenticated `GET` against the server
-URL. Every *other* surface — the Connectors page, `get_configs`, the injector's own accounting —
-cannot afford a network call, and used to fall back to a guess: a remote server with no static
-credential header and no stored token *might* need OAuth, so assume it does.
+URL. The Connectors page cannot afford a network call, and used to fall back to a guess: a remote
+server with no static credential header and no stored token *might* need OAuth, so assume it does.
 
 `McpServerOauthRequirement` is where the answer is kept, so the surfaces that cannot ask read a
 recorded fact instead. One row per server *config* — keyed on the same `{type, url, headers}`
@@ -127,7 +126,7 @@ determination with it — carrying one of three values:
 | Determination | What it means | Recorded when |
 | --- | --- | --- |
 | `advertised_required` | The server advertises OAuth | Discovery resolved an authorization server, or the unauthenticated `GET` came back `401` with a `Bearer` challenge |
-| `advertised_not_required` | The server served us without a token | The unauthenticated `GET` returned **2xx** |
+| `advertised_not_required` | The server served us without a token | The unauthenticated `GET` returned **2xx** *and* answered in `application/json` or `text/event-stream` |
 | `undetermined` | We asked and could not tell | A connection error, a timeout, a `401` whose challenge is not `Bearer`, or **any other status** |
 
 `undetermined` still means what the guess used to mean: assume OAuth might be required. That
@@ -136,9 +135,13 @@ need OAuth" and being wrong is the worse failure, because it is silent — the s
 credentials and fails at the point of use, where an over-eager assumption merely offers an
 Authorize button nobody needed. Two rules keep the quiet direction narrow:
 
-- **Only a 2xx records `advertised_not_required`.** A `400`, `404`, `405` or `5xx` is
-  `undetermined`. A streamable-HTTP server that answers a bare `GET` with `400 missing session id`
-  before it ever looks at a token has told us nothing about authorization.
+- **Only an MCP-shaped 2xx records `advertised_not_required`.** A `400`, `404`, `405` or `5xx` is
+  `undetermined` — a streamable-HTTP server that answers a bare `GET` with `400 missing session id`
+  before it ever looks at a token has told us nothing about authorization. Neither does a `200` in
+  `text/html`: the probe sends a bare `GET` with `Accept: application/json`, which is not a
+  well-formed MCP request, so a 2xx is at least as likely to be a CDN interstitial or a landing page
+  sharing the origin as it is to be the MCP endpoint. The content type is what makes the 2xx
+  evidence rather than coincidence.
 - **`advertised_not_required` expires** after seven days and degrades back to `undetermined`, so a
   server that starts requiring OAuth cannot be permanently believed not to. `advertised_required`
   does not expire; the failure it causes is a visible button, not a silent one.
