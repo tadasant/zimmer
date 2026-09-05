@@ -518,6 +518,7 @@ class Session < ApplicationRecord
     failure_reason
     exit_status
     exception_class
+    mcp_oauth_reconnect
   ].freeze
 
   # Failure reasons that indicate the session failed before the initial prompt
@@ -1531,15 +1532,22 @@ class Session < ApplicationRecord
   # has actually injected them.
   # @return [Array<String>]
   def mcp_oauth_reconnect_servers
-    Array(metadata&.dig(MCP_OAUTH_RECONNECT_KEY, "servers")).compact_blank
+    notice = metadata&.dig(MCP_OAUTH_RECONNECT_KEY)
+    return [] unless notice.is_a?(Hash)
+
+    Array(notice["servers"]).compact_blank
   end
 
   # Drops the reconnect notice. Called from the spawn gate, which runs on a
   # session that may be concurrently written, so it removes the one key rather
   # than rewriting the column.
+  #
+  # Unconditional: the caller holds a Session loaded minutes earlier (the gate
+  # runs after the clone and the AIR prepare), so an in-memory `metadata` that
+  # does not carry the key proves nothing about the row. `jsonb - <absent key>`
+  # is a no-op, and AtomicJsonMetadata skips its broadcast when the column comes
+  # back unchanged, so the cost of asking every time is one UPDATE.
   def clear_mcp_oauth_reconnect!
-    return unless metadata&.key?(MCP_OAUTH_RECONNECT_KEY)
-
     remove_metadata!(MCP_OAUTH_RECONNECT_KEY)
   end
 

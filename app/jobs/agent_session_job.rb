@@ -5257,16 +5257,17 @@ class AgentSessionJob < ApplicationJob
   #   #perform. false when there is nothing to gate or credentials were injected
   #   successfully and the spawn may proceed.
   def gate_and_inject_oauth!(session, working_directory, log_buffer, blocked_message:)
+    # A spawn is reached, so the agent process the "re-authorized — reconnects on
+    # the next turn" notice was about is gone and the notice is spent — whichever
+    # way the gate goes, and whether or not there is anything left to inject. It
+    # is cleared ahead of the early return below because a session whose servers
+    # were edited down to none since the notice was recorded would otherwise never
+    # reach the clear, and would carry the banner forever.
+    session.clear_mcp_oauth_reconnect!
+
     return false if oauth_mcp_servers(session).blank?
 
     oauth_result = check_and_inject_oauth_credentials(session, working_directory, log_buffer)
-
-    # This spawn has just injected every credential the session holds, so a
-    # "re-authorized, send a message to reconnect" notice from before it is
-    # answered — whichever way the gate goes. If the gate blocks, the banner the
-    # user needs is the OAuth-required one, not a stale reconnect hint.
-    session.clear_mcp_oauth_reconnect!
-
     return false unless oauth_result[:blocked]
 
     log_buffer.add(blocked_message, level: "warning")
