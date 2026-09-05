@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class Api::V1::McpServersControllerTest < ActionDispatch::IntegrationTest
   setup do
@@ -102,6 +103,68 @@ class Api::V1::McpServersControllerTest < ActionDispatch::IntegrationTest
     json = JSON.parse(response.body)
     json["mcp_servers"].each do |server|
       assert server["title"].is_a?(String), "Server title should be a string"
+    end
+  end
+
+  # --- availability ----------------------------------------------------------
+  #
+  # An API client picking from this list has the same stake the session form's
+  # picker does: a server whose required `${VAR}` does not resolve raises
+  # MissingVariableError at prepare time and fails the whole session, not just
+  # that server. The list said nothing about it until #538.
+
+  test "every server carries an availability flag" do
+    get api_v1_mcp_servers_path, headers: @headers
+    assert_response :success
+
+    JSON.parse(response.body)["mcp_servers"].each do |server|
+      assert server.key?("unavailable"), "Server should have unavailable field"
+      assert server.key?("unavailable_reason"), "Server should have unavailable_reason field"
+      assert [ true, false ].include?(server["unavailable"]), "unavailable should be a boolean"
+    end
+  end
+
+  test "a server that cannot start is flagged with a reason, and one that can is not" do
+    with_mixed_availability_catalog do
+      get api_v1_mcp_servers_path, headers: @headers
+    end
+    assert_response :success
+
+    servers = JSON.parse(response.body)["mcp_servers"]
+
+    healthy = option_for(servers, "context7")
+    assert_equal false, healthy["unavailable"]
+    assert_nil healthy["unavailable_reason"]
+
+    unseeded = option_for(servers, "strad-secrets-staging-rw")
+    assert_equal true, unseeded["unavailable"]
+    assert_equal "STRAD_STAGING_API_KEY unresolved", unseeded["unavailable_reason"]
+
+    declared = option_for(servers, "strad-secrets-oauth")
+    assert_equal true, declared["unavailable"]
+    assert_equal "The endpoint accepts only static bearer tokens and exposes no OAuth discovery.",
+      declared["unavailable_reason"]
+  end
+
+  test "an unavailable server is still listed — it exists, and should not be re-registered" do
+    with_mixed_availability_catalog do
+      get api_v1_mcp_servers_path, headers: @headers
+    end
+    assert_response :success
+
+    names = JSON.parse(response.body)["mcp_servers"].map { |s| s["name"] }
+    assert_includes names, "strad-secrets-staging-rw"
+    assert_equal 4, names.size
+  end
+
+  test "still exposes no sensitive field now that it serializes availability" do
+    with_mixed_availability_catalog do
+      get api_v1_mcp_servers_path, headers: @headers
+    end
+    assert_response :success
+
+    JSON.parse(response.body)["mcp_servers"].each do |server|
+      assert_equal %w[name title description unavailable unavailable_reason].sort, server.keys.sort
     end
   end
 end

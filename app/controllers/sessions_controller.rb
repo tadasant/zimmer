@@ -3003,10 +3003,9 @@ class SessionsController < ApplicationController
     # The oldest displayed item's timestamp is used as the cursor for loading earlier items.
     @oldest_displayed_timestamp = @timeline_items.first&.dig(:sort_time)&.iso8601(6)
 
-    # Load MCP servers for the editable MCP selector
-    @servers_for_select = ServersConfig.all.map do |server|
-      { name: server.name, title: server.title, description: server.description }
-    end
+    # Load MCP servers for the editable MCP selector, each carrying whether
+    # Zimmer can actually start it — see McpServerOptions.
+    @servers_for_select = McpServerOptions.all
 
     # Load catalog skills for the editable skills selector
     @catalog_skills_for_select = SkillsConfig.all.map do |skill|
@@ -3137,7 +3136,7 @@ class SessionsController < ApplicationController
   def mcp_partials_locals(session)
     {
       agent_session: session,
-      servers_for_select: ServersConfig.all.map { |s| { name: s.name, title: s.title, description: s.description } },
+      servers_for_select: McpServerOptions.all,
       catalog_skills_for_select: SkillsConfig.all.map { |s| { id: s.id, name: s.name, title: s.title, description: s.description, category: s.category } },
       catalog_hooks_for_select: HooksConfig.all.map { |h| { id: h.id, name: h.name, title: h.title, description: h.description } },
       plugins_for_select: PluginsConfig.all.map { |p| { id: p.id, title: p.title, description: p.description } },
@@ -3160,13 +3159,7 @@ class SessionsController < ApplicationController
   end
 
   def load_form_data
-    @servers_for_select = ServersConfig.all.map do |server|
-      {
-        name: server.name,
-        title: server.title,
-        description: server.description
-      }
-    end
+    @servers_for_select = McpServerOptions.all
     @agent_roots = AgentRootsConfig.user_invocable
     @goals = GoalsConfig.all.map do |goal|
       {

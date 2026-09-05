@@ -149,7 +149,19 @@ class ServersConfig
         title: title,
         description: description,
         type: type,
-        remote?: remote?
+        remote?: remote?,
+        # The catalog's own declaration, verbatim and normalized — nil when the
+        # catalog is silent. This is NOT the whole availability answer: an entry
+        # the catalog says nothing about can still be unstartable because a
+        # `${VAR}` does not resolve or its OAuth flow was never completed, and
+        # only ConnectorStatusProbe can tell you that. Anything serializing "can
+        # Zimmer use this?" wants McpServerOptions, not this field.
+        #
+        # Named for the accessor rather than for the catalog key (`unavailable`),
+        # because McpServerOptions already publishes an `unavailable` that is a
+        # boolean. Two hashes describing one server must not use one key for two
+        # types.
+        unavailable_reason: unavailable_reason
       }
 
       if stdio?

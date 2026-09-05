@@ -1235,4 +1235,25 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "#trigger-scheduling-class", text: /priority/
     assert_match(/set on this trigger/, response.body)
   end
+
+  # --- the picker's availability flag ----------------------------------------
+  #
+  # #538: the trigger form drives the same Stimulus picker the session form
+  # does, and a trigger that names a server which cannot start fails every
+  # session it fires — so it needs the same warning at pick time.
+  test "the trigger form's picker payload carries each server's availability" do
+    with_mixed_availability_catalog { get new_trigger_path }
+    assert_response :success
+
+    value = css_select("[data-mcp-server-select-servers-value]").first["data-mcp-server-select-servers-value"]
+    servers = JSON.parse(value)
+
+    assert_equal %w[context7 zimmer-self-session strad-secrets-staging-rw strad-secrets-oauth],
+      servers.map { |s| s["name"] }, "flagged, not hidden"
+
+    unseeded = servers.find { |s| s["name"] == "strad-secrets-staging-rw" }
+    assert_equal true, unseeded["unavailable"]
+    assert_equal "STRAD_STAGING_API_KEY unresolved", unseeded["unavailable_reason"]
+    assert_equal false, servers.find { |s| s["name"] == "context7" }["unavailable"]
+  end
 end
