@@ -47,6 +47,13 @@ Rails.application.routes.draw do
     resources :managed_secret_writes, only: [ :index, :show ]
     resources :mcp_oauth_credentials
     resources :mcp_oauth_pending_flows
+    # Read-only plus destroy: every row records what a remote MCP server answered
+    # when Zimmer last asked whether it requires OAuth, so there is nothing to
+    # hand-author and a typed-in `advertised_not_required` would forge an
+    # advertisement the server never made. Deleting one is the sanctioned
+    # correction — the next probe re-records it, and until then the determination
+    # falls back to "undetermined", which assumes OAuth might be required.
+    resources :mcp_server_oauth_requirements, only: [ :index, :show, :destroy ]
     # Read-only plus destroy: an analysis is a reading a specific analyzer took of
     # a specific transcript, so there is nothing to hand-author and editing one
     # would forge it. A row saved in error is superseded by saving another, or
