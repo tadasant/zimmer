@@ -680,8 +680,16 @@ evidence rather than either alone:
   `Session#deliver_follow_up!` before it returns, so either one present means the prompt *did* arrive.
   The anti-join is the one that carries the weight: `running_job_id` is written from *inside* the job,
   so a turn enqueued with a delay leaves it blank and reads as abandoned.
-- It is not dormant on purpose (`StalledSessionStart::DORMANT_MARKERS`, shared rather than
-  re-derived) and not asleep on an armed wake. **A spot hold is why this matters most.**
+- Nothing is queued for it in `enqueued_messages` either — a separate carrier from the two above,
+  and the one `SpotSessionHold`'s queue-behind-a-scheduled-turn path uses. Archiving over it strands
+  a `caller`-origin message, which pages.
+- It is quiet by `updated_at` as well as old by `created_at`, the way both sibling sweeps bound their
+  populations. Age says when the row was born; `updated_at` is what keeps a fork out of reach in the
+  window between a dormant marker being cleared and the next thing being written.
+- It is not dormant on purpose (`StrandedSleepRescue::DORMANT_MARKERS` — the longer of the two lists,
+  because its fifth marker `deliberate_sleep_at` covers the one route into `waiting` that arms
+  nothing and marks nothing else) and not asleep on an armed wake. **A spot hold is why this clause
+  matters most.**
   `SpotSessionHold#hold!` takes custody of the held turn — it *removes* `pending_follow_up_prompt`,
   and `return_to_queue!` clears `running_job_id` — leaving a fork in `waiting`, with no transcript of
   its own, that is legitimately waiting to run. Under sustained spot pressure that wait can outlast
