@@ -104,6 +104,11 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
   # The case that defeated observation in #855: the row exists, reads `enabled`,
   # and has never fired — but its watched session is archived and will never
   # transition again. A sweep keyed on the ABSENCE of trigger rows walks past it.
+  #
+  # `other_session(status: :archived)` writes the row straight to `archived`
+  # without running the transition, so `archived_at` is nil — which is also the
+  # shape of every session archived before that column existed. Unfireable either
+  # way; the freshly-dated archival is a separate case with its own tests below.
   test "a session asleep on an ao_event wake whose watched session is archived is resumed" do
     session = sleeping_session
     watched = other_session(status: :archived)
@@ -172,6 +177,121 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
 
     assert_equal 0, StrandedSleepRescue.sweep!.rescued
     assert_equal "waiting", session.reload.status
+  end
+
+  # === a wake in flight is not a wake that was lost ============================
+  #
+  # The false positive, reproduced to the second. On 2026-09-05 session 13229 —
+  # a router asleep on a verification wake it had scheduled for itself — was
+  # rescued eight seconds after that wake came due and fired for real ten seconds
+  # after that. Zimmer alerted `#alerts` that the session "was in `waiting` with
+  # no trigger that could ever fire" about a trigger that fired while the alert
+  # was being posted, resumed the session into the turn the wake was about to
+  # land in, and the prompt the wake carried never reached the agent.
+  #
+  # There is no scheduler latency low enough to avoid this. ScheduleTriggerJob is
+  # a one-minute cron and this sweep is a five-minute one, so a wake set for any
+  # multiple of five minutes — which is what an agent scheduling "11:20 UTC"
+  # writes — races it every single time.
+  test "a wake that has come due but has not been fired yet is left alone, and then delivers" do
+    session = sleeping_session
+    due_at = 1.minute.from_now.change(usec: 0)
+    trigger = arm_wake!(session, [ schedule_condition(due_at) ])
+    back_date(session)
+
+    # T+15s: the sweep runs while ScheduleTriggerJob's tick is still in flight.
+    travel_to(due_at + 15.seconds) do
+      result = StrandedSleepRescue.sweep!
+
+      assert_equal 0, result.found,
+        "a due-but-unfired wake is being delivered, not lost — the sweep must not touch it"
+      assert_equal "waiting", session.reload.status
+      assert_nil session.metadata[StrandedSleepRescue::RESCUE_COUNT]
+      assert_nil trigger.trigger_conditions.sole.reload.last_triggered_at
+    end
+
+    # T+18s: the scheduler reaches the row and the wake lands, into a session
+    # that is still asleep and can take it.
+    travel_to(due_at + 18.seconds) { ScheduleTriggerJob.perform_now }
+
+    session.reload
+    assert_equal "running", session.status
+    assert_equal "you were watching something", session.metadata["pending_follow_up_prompt"],
+      "the wake's own prompt must be what resumes the session, not a recovery nudge"
+  end
+
+  # The window is bounded, so the hole #855 closed stays closed: a wake the
+  # scheduler has had every chance to reach and still has not fired is a wake
+  # that is not coming.
+  test "a wake still unfired long after the scheduler should have reached it is stranded" do
+    session = sleeping_session
+    due_at = 1.minute.from_now.change(usec: 0)
+    arm_wake!(session, [ schedule_condition(due_at) ])
+    back_date(session)
+
+    travel_to(due_at + SessionStateMachine::SCHEDULE_FIRE_SETTLE + 1.minute) do
+      assert_equal 1, StrandedSleepRescue.sweep!.rescued
+      assert_equal "running", session.reload.status
+    end
+  end
+
+  # The same race through the other door. #cleanup_watched_session_ao_event_triggers
+  # deliberately spares a `session_archived` watcher when the session it watches
+  # archives — because AoEventTriggerJob is enqueued after that transaction
+  # commits and has not run yet. Between the two, the surviving row is a wake
+  # being delivered, and reading "watched session is archived" as "can never fire"
+  # would barge the sleeper in exactly the window the sparing exists to protect.
+  test "a session asleep on a watcher whose watched session archived a moment ago is left alone" do
+    session = sleeping_session
+    watched = other_session(status: :needs_input)
+    arm_wake!(session, [ ao_event_condition(watched) ])
+    watched.archive!
+    back_date(session)
+
+    assert_equal "archived", watched.reload.status
+    assert_not_nil watched.archived_at
+
+    assert_equal 0, StrandedSleepRescue.sweep!.rescued,
+      "the fire for this archival is still queued; the wake has not been missed"
+    assert_equal "waiting", session.reload.status
+  end
+
+  # ...and once the job has had every chance to run, the watcher really has
+  # missed its only chance, which is #855 itself.
+  test "a session asleep on a watcher whose watched session archived long ago is resumed" do
+    session = sleeping_session
+    watched = other_session(status: :needs_input)
+    arm_wake!(session, [ ao_event_condition(watched) ])
+    watched.archive!
+    watched.update_column(:archived_at, (SessionStateMachine::SCHEDULE_FIRE_SETTLE + 1.minute).ago)
+    back_date(session)
+
+    assert_equal 1, StrandedSleepRescue.sweep!.rescued
+  end
+
+  # The window is for the watcher that fires ON the archival and nothing else.
+  # Any other watcher on an archived session has missed its only chance — that is
+  # #855 — so the narrowing to `session_archived` is what stops the window
+  # re-opening #855 for ten minutes after every archival in the fleet. Delete that
+  # one line and the rest of the suite stays green, which is why this exists.
+  #
+  # The watcher is armed AFTER the archive on purpose:
+  # #cleanup_watched_session_ao_event_triggers destroys a non-archival watcher as
+  # the watched session archives, so the only way this shape exists in production
+  # is the way #855 made it — a row that outlived the cleanup, or was armed
+  # against an already-archived session. Arming it before the archive would leave
+  # the session with no trigger at all and the test would pass without ever
+  # reaching the predicate.
+  test "a non-archival watcher on a freshly-archived session is stranded immediately" do
+    session = sleeping_session
+    watched = other_session(status: :needs_input)
+    watched.archive!
+    arm_wake!(session, [ ao_event_condition(watched, event_name: "session_needs_input") ])
+    back_date(session)
+
+    assert_not_nil watched.reload.archived_at, "the archive must be freshly dated for this to mean anything"
+    assert_equal 1, StrandedSleepRescue.sweep!.rescued,
+      "only a session_archived watcher is in flight after an archival; this one missed its chance"
   end
 
   # One condition of a multi-event watcher still being fireable is enough: the

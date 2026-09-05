@@ -2224,6 +2224,25 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       "a schedule that already lapsed unfired guarantees nothing, so it must not back a re-sleep"
   end
 
+  # The other side of that line, and production found it before this test did. A
+  # backstop that came due seconds ago has NOT lapsed — ScheduleTriggerJob's next
+  # tick has simply not reached it. Session 13229's wake came due at 11:20:00 and
+  # this branch declared it lapsed at 11:20:08, so the session was told to rest in
+  # needs_input; the wake fired for real ten seconds later, into a session that
+  # was no longer asleep, and the prompt it carried was lost.
+  test "system-recovery resume re-sleeps on a backstop that has only just come due" do
+    session = sessions(:waiting)
+    session.update!(status: :needs_input)
+    child = sessions(:running)
+    wake_set_for(session, watched: [ child ], scheduled_at: 8.seconds.ago.utc.iso8601)
+
+    session.reload
+    session.resume_for_system_recovery!
+
+    assert_equal true, session.reload.metadata["pending_sleep"],
+      "a wake this fresh is being delivered, not lost — the session must go back to sleep for it"
+  end
+
   # Without a scheduled backstop there is nothing guaranteed to fire, and a
   # watched transition that happened during the outage is not replayed. Resting
   # in needs_input keeps the session visible rather than trading a long stall for

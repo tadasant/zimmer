@@ -906,6 +906,20 @@ counting once the session it watches is archived or deleted, because the firing 
 that merely `failed` still counts, deliberately: it can be restarted, and it can still be archived.
 See [A wake is only armed while it can still fire](/sessions/triggers/).
 
+**A wake in flight is not a wake that was lost**, and both halves of that predicate allow for it —
+`SessionStateMachine::SCHEDULE_FIRE_SETTLE`, ten minutes. "Due" and "fired" are never the same
+instant: `ScheduleTriggerJob` is a one-minute cron, so a one-time schedule reads due, enabled and
+unfired for as long as it takes the next tick to reach it, and a `session_archived` watcher on a
+session that has *just* archived is waiting on an `AoEventTriggerJob` that was enqueued after that
+transaction committed and has not run yet — which is exactly why the archive callback spares that
+watcher while destroying its siblings. Inside that window both count as armed; the siblings it
+spares nothing for — a `session_needs_input` watcher on the same archived session — read unfireable
+straight away, as they always did. Outside it, they do not: the scheduler has had every chance and the wake is not coming.
+Without the window, a wake scheduled for a round five-minute boundary raced
+`StrandedSleepSweepJob`'s own tick and lost — session 13229's wake came due at 11:20:00, the sweep
+announced to `#alerts` that it could never fire at 11:20:08, and it fired at 11:20:18 into a session
+the rescue had already resumed, losing the prompt it carried.
+
 A human's levers on a sleeping session are narrower than they look, and worth stating exactly. **Start now** (the Ranked view's ⋮) resumes a session parked in the **spot queue**, which arms nothing — but it *refuses* one asleep on a wall-clock wake, because `Sessions::StartNow` treats an armed wake as outranking the queue. For that session a human has two routes, both of which consume the pause because both mean *I am taking this session over*: send it a **follow-up** from its session page, or cancel the wake at **/triggers**, where it is listed as `Wake session #<id> at <time>`. The **Restart** button is not one of them — it refuses anything that is not `failed`.
 
 **The spot queue — the same sleep with no wake-up.** `action_session`'s `pause_into_spot_queue`
@@ -1723,7 +1737,9 @@ The state machine is not the only actor:
   and nothing distinguished them, because a legitimate sleep carries no marker either. The
   predicate is **no fireable wake**, not *no wake*: an `ao_event` watcher whose watched session
   is already archived is an `enabled` row that will never fire, so a sweep keyed on the absence
-  of trigger rows would walk straight past it. `StrandedSleepRescue` resumes the session with a
+  of trigger rows would walk straight past it — and, in the other direction, a wake that has come
+  due within `SCHEDULE_FIRE_SETTLE` is one the scheduler has not reached yet rather than one that
+  was lost. `StrandedSleepRescue` resumes the session with a
   `SYSTEM_RECOVERY` nudge through the same `claim_system_recovery_turn!` door orphan cleanup
   uses, and stops after three rescues rather than resuming forever. Production session 6412 sat
   in `waiting` for 38.7 hours before this existed

@@ -47,12 +47,13 @@
 #    Those are PARKED as `failed` instead: visible at /triggers, carrying the
 #    reason, re-armable by the user, and alerting once.
 #
-#    Parking does NOT change whether the requester reads as asleep — a lapsed
-#    unfired schedule already fails Session#awaiting_scheduled_wake?, because
-#    TriggerCondition#schedule_due? still answers true for it and
-#    .one_time_wake_pending? is its negation. StrandedSleepRescue is what gets
-#    that session moving again. What parking adds is the record: without it the
-#    only evidence that a wake was lost is deleted an hour after it is lost.
+#    Parking does NOT change whether the requester reads as asleep — a schedule
+#    this stale already fails Session#awaiting_scheduled_wake?, and
+#    StrandedSleepRescue is what gets that session moving again. STALE_SCHEDULE_THRESHOLD
+#    is an hour, well past SessionStateMachine::SCHEDULE_FIRE_SETTLE, so nothing
+#    this sweep touches is still inside the window where a due-but-unfired
+#    schedule counts as a wake in flight. What parking adds is the record: without
+#    it the only evidence that a wake was lost is deleted an hour after it is lost.
 #
 # Triggers in the `failed` status are exempt from ALL of the sweeps. A failed
 # trigger is a deliberate tombstone: ScheduleTriggerJob parked it there precisely
@@ -190,12 +191,13 @@ class CleanupStaleTriggersJob < ApplicationJob
   #   somebody may still be asleep on it. Park it `failed` so it stays on
   #   /triggers with the reason, re-armable, and alerting once.
   #
-  # Parking is about the RECORD, not about the requester's dormancy. A lapsed
-  # unfired schedule already fails Session#awaiting_scheduled_wake? — that
-  # predicate reads TriggerCondition#schedule_due?, which stays true for it — so
-  # the requester was always visible to StrandedSleepRescue whether or not this
-  # ran. What deleting the row destroyed was the only evidence that a wake had
-  # been owed at all, which is what made #855 unexplainable after the fact.
+  # Parking is about the RECORD, not about the requester's dormancy. A schedule
+  # lapsed by STALE_SCHEDULE_THRESHOLD is far outside
+  # SessionStateMachine::SCHEDULE_FIRE_SETTLE, so it already fails
+  # Session#awaiting_scheduled_wake? and the requester was always visible to
+  # StrandedSleepRescue whether or not this ran. What deleting the row destroyed
+  # was the only evidence that a wake had been owed at all, which is what made
+  # #855 unexplainable after the fact.
   #
   # @return [Lapsed]
   def collect_lapsed_one_time_schedules
