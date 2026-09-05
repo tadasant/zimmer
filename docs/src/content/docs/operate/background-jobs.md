@@ -666,7 +666,7 @@ Two properties keep the guard from becoming the worse bug:
 
 The re-read runs outside the claim transaction, because that transaction holds the session's row
 lock and every poller wanting to enqueue against the session takes the same one. It goes through
-`BoundedSubprocess`, so a wedged `gh` cannot hold up a session's turn boundary indefinitely, and the
+`GithubCli`, so a wedged `gh` cannot hold up a session's turn boundary indefinitely, and the
 sweep as a whole is bounded again by `STALENESS_SWEEP_BUDGET_SECONDS` — the per-call timeout bounds
 one child, not a loop over a session with several conflicting PRs. Notices past the budget are
 delivered unchecked, which is the same fail-open answer an unreadable PR gets.
@@ -675,6 +675,53 @@ delivered unchecked, which is the same fail-open answer an unreadable PR gets.
 specific row, promotes it to the front of the queue and reports success naming its content, so it
 passes `revalidate: false`. A sweep that retired that row under it would have it deliver the next
 message while logging the promoted one as sent.
+
+## Every `gh` call runs under a deadline
+
+Every shell-out to the `gh` CLI goes through **`GithubCli.run(command, timeout:)`**, which runs the
+child under `BoundedSubprocess` (process group SIGKILLed on deadline) and hands back a `Result`
+rather than raising on timeout.
+
+The failure being bounded is not a slow call — it is a call that never returns. During a GitHub REST
+incident a request can stall with the TCP connection half-open: no response, no reset. A bare
+`Open3.capture3` blocks the calling thread forever on that, and the three GitHub pollers are
+`queue_as :pollers` singletons with `total_limit: 1`, so one hung call holds the only slot and every
+later tick is a silent no-op enqueue. Unlike `GithubTriggerPollerJob`, which has
+`GithubTriggerHealthCheckJob` watching a heartbeat, **none of these three has a heartbeat or a
+watchdog** — a hang in them was unbounded in both duration and detection
+([#458](https://github.com/tadasant/zimmer/issues/458)).
+
+Returning a `Result` instead of raising is the load-bearing half. Each call site already had a "the
+call failed" branch that logs and retries next tick, so a timeout lands there and nowhere else:
+`Result#success?` is true only when the command demonstrably exited 0, which collapses the three ways
+a call fails to produce a trustworthy answer — non-zero exit, exit code lost to a reap, timeout —
+into one branch. Only the timeout is converted; `Errno::ENOENT` (no `gh` binary at all) still
+propagates, because that is local and permanent rather than a failed request.
+
+**A timeout means "ask again next tick", never a definite negative.** A hang that read as "the PR is
+gone", "checks are pending" or "this PR is conflicting" would turn a degraded API into a wrong answer
+about merge state — worse than the wedge it replaced. `Result#exit_code` is `nil` on timeout for the
+same reason, so `gh pr checks`'s exit-8 "pending" comparison cannot claim a hang.
+
+The bounds are per call shape, not global, and deliberately generous: one tight enough to fire on a
+merely-degraded API would trade a rare wedge for a spurious failure on every 30-second tick.
+
+| Call | Bound | Why |
+| --- | --- | --- |
+| `GithubSearchService::REQUEST_TIMEOUT` — `gh api search/issues` | 15s | Search round trip; the original bound the rest follow. |
+| `GithubSearchService::AUTH_STATUS_TIMEOUT` — `gh auth status` | 10s | Single cheap round trip on the poller's preflight. |
+| `GitHubPullRequestPollerJob::PR_STATUS_TIMEOUT` — `gh pr view` | 20s | One REST round trip. |
+| `GitHubPullRequestPollerJob::CI_STATUS_TIMEOUT` — `gh pr checks` | 30s | Resolves the head commit, then aggregates every check run on it. |
+| `GithubCommentPollerJob::COMMENT_PAGE_TIMEOUT` — `gh api …/comments` | 20s | **Per page.** The fetch is a pagination loop; a bound on the whole loop is either too tight for a long thread or bounds nothing. A page that times out ends the loop the way a non-zero exit already does — return the pages already read. |
+| `GithubCommentPollerJob::REACTION_TIMEOUT` — `gh api --method POST …/reactions` | 10s | Best-effort 👀; the follow-up prompt does not depend on it, so waiting on it only delays the prompt. |
+| `GitHubMergeConflictPollerJob::MERGEABLE_TIMEOUT` — `gh api …/pulls/N --jq .mergeable` | 20s | **Per attempt** — the null-retry loop calls it up to four times. GitHub computes mergeability on demand, so this is not the cheap call it looks. |
+| `GithubCommentPromptBuilder::VISIBILITY_TIMEOUT` — `gh api repos/{owner}/{repo}` | 10s | Cheap, and cached per builder. This is the one site whose failure branch is not free: it fails **closed**, so a timeout stays a *deferral* — `visibility_lookup_failed?` keeps the comment retryable until `VISIBILITY_RETRY_WINDOW_SECONDS` runs out, rather than dropping it. |
+| `GithubPullRequestMergeability::READ_TIMEOUT_SECONDS` | 20s | Same endpoint, on a session's delivery path rather than a poller tick. |
+| `GateDecisions::LedgerSource::Github::FETCH_TIMEOUT` and `WorkBacklog::Source::FETCH_TIMEOUT` | 60s | Whole-file reads on a post-deploy slice rather than a 30-second tick, so they can afford longer; both raise `Unavailable` on any failure, timeout included. |
+
+Bounding the hang stops the permanent wedge. It does not make a *repeatedly failing* poller visible:
+these three still have no heartbeat and no watchdog, so a poller failing every tick is only as loud
+as its WARN lines.
 
 ## Queues
 
@@ -888,12 +935,13 @@ forever, so nothing raises, nothing alerts, and label/issue triggers (including 
 merge gate) quietly stop firing. Two mechanisms close that:
 
 - **A bound on every `gh` call.** `GithubSearchService::REQUEST_TIMEOUT` (15s) and
-  `AUTH_STATUS_TIMEOUT` (10s) run each invocation under `BoundedSubprocess`, which kills the process
-  group on deadline. A hang becomes a `SearchError` — an ordinary, alerting failure the next tick
-  retries — instead of a wedge. Every non-success gh outcome is normalized the same way: a non-zero
-  exit, and a **nil `Process::Status`** (`BoundedSubprocess` returns Open3's `wait_thr.value`, which is
-  `nil` when the child was reaped elsewhere before its own `waitpid` — a race in the multi-threaded
-  worker) both raise `SearchError` rather than crashing the tick with `undefined method 'success?' for nil`.
+  `AUTH_STATUS_TIMEOUT` (10s) run each invocation through `GithubCli`, which kills the process group
+  on deadline — see [Every `gh` call runs under a deadline](#every-gh-call-runs-under-a-deadline). A
+  hang becomes a `SearchError` — an ordinary, alerting failure the next tick retries — instead of a
+  wedge. Every non-success gh outcome is normalized the same way: a non-zero exit, and a **nil
+  `Process::Status`** (`BoundedSubprocess` returns Open3's `wait_thr.value`, which is `nil` when the
+  child was reaped elsewhere before its own `waitpid` — a race in the multi-threaded worker) both
+  raise `SearchError` rather than crashing the tick with `undefined method 'success?' for nil`.
   A failure that reads as *GitHub's* rather than Zimmer's — a 5xx, a 401, a body that arrived cut
   short, an exit code we never got to read — is re-run twice first
   (`TRANSIENT_REQUEST_RETRY_DELAYS`, 1s then 3s, logged at INFO), so a blip that clears within the

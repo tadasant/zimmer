@@ -1,5 +1,3 @@
-require "open3"
-
 # Builds context-rich follow-up prompts from GitHub PR comments
 #
 # This service takes a GitHub comment and crafts an appropriate prompt for the agent.
@@ -243,6 +241,18 @@ class GithubCommentPromptBuilder
   # These are organizations/users that we control, so we trust agent actions on them.
   TRUSTED_OWNERS = %w[tadasant].freeze
 
+  # Wall-clock bound on the repo-visibility `gh` child, process group killed on
+  # deadline. This runs inside GithubCommentPollerJob's tick — a `total_limit: 1`
+  # singleton — so an unbounded hang here wedges comment polling entirely (#458).
+  #
+  # `gh api repos/{owner}/{repo}` is one cheap round trip and the answer is cached
+  # per builder, so this is short. It is also the one call here where the failure
+  # branch is not free: it fails CLOSED, deferring the comment. A timeout must
+  # therefore stay a *deferral* — #visibility_lookup_failed? is what keeps the
+  # comment retryable until VISIBILITY_RETRY_WINDOW_SECONDS runs out, rather than
+  # dropping it as "public, leave it alone".
+  VISIBILITY_TIMEOUT = 10
+
   # Check whether the repository is one the agent may not act on publicly
   # Uses the GitHub API to fetch repository visibility
   #
@@ -268,14 +278,14 @@ class GithubCommentPromptBuilder
     return @repo_visibility_cache[cache_key] if @repo_visibility_cache.key?(cache_key)
 
     command = [ "gh", "api", "repos/#{owner}/#{repo}", "--jq", ".private" ]
-    stdout, stderr, status = Open3.capture3(*command)
+    result = GithubCli.run(command, timeout: VISIBILITY_TIMEOUT)
 
-    if SubprocessStatus.success?(status)
-      is_private = stdout.strip == "true"
+    if result.success?
+      is_private = result.stdout.strip == "true"
       @repo_visibility_cache[cache_key] = !is_private
       !is_private
     else
-      Rails.logger.warn "[GithubCommentPromptBuilder] Failed to check repo visibility for #{owner}/#{repo}: #{stderr}"
+      Rails.logger.warn "[GithubCommentPromptBuilder] Failed to check repo visibility for #{owner}/#{repo}: #{result.failure_description}"
       # Default to true (treat as public) if API fails - better to skip a comment than to
       # act publicly on a repo we couldn't check. See #visibility_lookup_failed?
       @visibility_lookup_failed = true

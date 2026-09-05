@@ -1,5 +1,3 @@
-require "open3"
-
 # Job that polls GitHub PRs for merge conflicts on sessions with associated PRs
 # Runs every 2 minutes via GoodJob cron configuration
 #
@@ -187,6 +185,20 @@ class GitHubMergeConflictPollerJob < ApplicationJob
   NULL_RETRY_DELAY = 5 # seconds between retries when GitHub returns null
   NULL_MAX_RETRIES = 3 # max retries before giving up on null response
 
+  # Wall-clock bound on the `gh` child, process group killed on deadline. This job is a
+  # `total_limit: 1` singleton, so without it a half-open connection to GitHub holds the
+  # only slot and every later tick is a no-op enqueue — merge conflicts stop being
+  # detected with nothing raised and no watchdog to notice (#458).
+  #
+  # PER ATTEMPT. `fetch_merge_conflict_status` already calls this up to
+  # `NULL_MAX_RETRIES + 1` times while GitHub computes mergeability, and each of those
+  # is its own round trip that can hang on its own. A timeout is a nil reading, which
+  # this poller already treats as "no answer this tick" and never as "conflicting".
+  #
+  # 20s matches GithubPullRequestMergeability, which reads the same endpoint: GitHub
+  # computes mergeability on demand, so this call is not always the cheap one it looks.
+  MERGEABLE_TIMEOUT = 20
+
   # Check if a PR has merge conflicts via the GitHub REST API.
   # Retries when GitHub returns null (still computing mergeability).
   #
@@ -231,17 +243,18 @@ class GitHubMergeConflictPollerJob < ApplicationJob
       "--jq", ".mergeable"
     ]
 
-    stdout, stderr, status = Open3.capture3(*command)
+    result = GithubCli.run(command, timeout: MERGEABLE_TIMEOUT)
 
-    # A nil status (this `gh` child reaped by ZombieReaperJob before capture3's waiter
-    # got to it) is a failed call, not a successful one — see SubprocessStatus.
-    unless SubprocessStatus.success?(status)
+    # Anything short of a demonstrable exit 0 — a non-zero exit, a lost exit code, a
+    # timeout — means we took no reading. nil says that; it is never "conflicting".
+    # See GithubCli.
+    unless result.success?
       Rails.logger.warn "[GitHubMergeConflictPollerJob] gh api command failed for #{owner}/#{repo}##{pr_number}: " \
-        "#{SubprocessStatus.describe_failure(status, stderr)}"
+        "#{result.failure_description}"
       return nil
     end
 
-    stdout.strip
+    result.stdout.strip
   end
 
   # Delivery itself — immediate when the session is parked in needs_input, queued

@@ -353,7 +353,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
       data: { "id" => 12345, "author" => "tadasant" }
     }
 
-    # Mock Open3.capture3 to verify the correct command is called
+    # Pin the argv AND the bound: an unbounded reaction call is the regression (#458).
     expected_command = [
       "gh", "api",
       "--method", "POST",
@@ -363,7 +363,9 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     mock_status = mock
     mock_status.stubs(:success?).returns(true)
-    Open3.expects(:capture3).with(*expected_command).returns([ "{}", "", mock_status ])
+    BoundedSubprocess.expects(:run)
+      .with(expected_command, timeout: GithubCommentPollerJob::REACTION_TIMEOUT)
+      .returns([ "{}", "", mock_status ])
 
     job.send(:add_eyes_reaction, comment_info)
   end
@@ -379,7 +381,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
       data: { "id" => 67890, "author" => "macoughl" }
     }
 
-    # Mock Open3.capture3 to verify the correct command is called
+    # Pin the argv AND the bound: an unbounded reaction call is the regression (#458).
     expected_command = [
       "gh", "api",
       "--method", "POST",
@@ -389,7 +391,9 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     mock_status = mock
     mock_status.stubs(:success?).returns(true)
-    Open3.expects(:capture3).with(*expected_command).returns([ "{}", "", mock_status ])
+    BoundedSubprocess.expects(:run)
+      .with(expected_command, timeout: GithubCommentPollerJob::REACTION_TIMEOUT)
+      .returns([ "{}", "", mock_status ])
 
     job.send(:add_eyes_reaction, comment_info)
   end
@@ -405,7 +409,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
       data: { "id" => 11111, "author" => "tadasant" }
     }
 
-    Open3.stubs(:capture3).returns([ "", "API error", fake_process_status(exitstatus: 1) ])
+    BoundedSubprocess.stubs(:run).returns([ "", "API error", fake_process_status(exitstatus: 1) ])
 
     # Should not raise an exception
     assert_nothing_raised do
@@ -904,7 +908,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
     # No follow-up means no GitHub API traffic at all — in particular, no 👀 reaction
-    Open3.expects(:capture3).never
+    BoundedSubprocess.expects(:run).never
 
     job = TestJobWithMergeGateComment.new
     job.send(:poll_comments_for_session, @session_with_pr)
@@ -920,7 +924,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   test "poll_comments_for_session ignores a merge gate review comment" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
-    Open3.expects(:capture3).never
+    BoundedSubprocess.expects(:run).never
 
     job = TestJobWithMergeGateReviewComment.new
     job.send(:poll_comments_for_session, @session_with_pr)
@@ -935,8 +939,10 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   test "poll_comments_for_session neither reacts nor enqueues when the visibility lookup fails" do
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/otherowner/repo/pull/123" ] })
 
-    # A failed `gh api repos/...` is the only capture3 call we expect: no reaction follows
-    Open3.expects(:capture3).with("gh", "api", "repos/otherowner/repo", "--jq", ".private")
+    # A failed `gh api repos/...` is the only gh call we expect: no reaction follows
+    BoundedSubprocess.expects(:run)
+      .with([ "gh", "api", "repos/otherowner/repo", "--jq", ".private" ],
+            timeout: GithubCommentPromptBuilder::VISIBILITY_TIMEOUT)
       .returns([ "", "HTTP 502", fake_process_status(exitstatus: 1) ])
 
     job = TestJobWithWhitelistedComment.new
@@ -951,7 +957,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/otherowner/repo/pull/123" ] })
 
     GithubCommentPromptBuilder.any_instance.stubs(:public_repo?).returns(true)
-    Open3.expects(:capture3).never
+    BoundedSubprocess.expects(:run).never
 
     job = TestJobWithWhitelistedComment.new
     job.send(:poll_comments_for_session, @session_with_pr)
@@ -1020,7 +1026,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     mock_builder.stubs(:build).returns("Test prompt content")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
-    Open3.stubs(:capture3).returns([ "", "API error", fake_process_status(exitstatus: 1) ])
+    BoundedSubprocess.stubs(:run).returns([ "", "API error", fake_process_status(exitstatus: 1) ])
 
     job = GithubCommentPollerJob.new
 
@@ -1037,7 +1043,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     mock_builder.stubs(:build).returns("Test prompt content")
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
-    Open3.stubs(:capture3).raises(Errno::ENOENT, "gh")
+    BoundedSubprocess.stubs(:run).raises(Errno::ENOENT, "gh")
 
     job = GithubCommentPollerJob.new
 
@@ -1213,7 +1219,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     stub_actionable_builder
     # No 👀 either: reacting is a promise to reply, and there is nothing to reply to.
-    Open3.expects(:capture3).never
+    BoundedSubprocess.expects(:run).never
 
     TestJobWithAgentPostedComment.new.send(:poll_comments_for_session, session)
 
@@ -1236,7 +1242,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   test "poll_comments_for_session defers a comment younger than the attribution grace period" do
     session = trusted_pr_session
     stub_actionable_builder
-    Open3.expects(:capture3).never
+    BoundedSubprocess.expects(:run).never
 
     TestJobWithFreshComment.new.send(:poll_comments_for_session, session)
 
@@ -1273,7 +1279,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
 
     AgentPostedGithubComment.record!(session: sessions(:running), comment_type: "pr", comment_id: 5145406778)
 
-    Open3.expects(:capture3).never
+    BoundedSubprocess.expects(:run).never
     travel (GithubCommentPollerJob::ATTRIBUTION_GRACE_SECONDS + 1).seconds do
       job.send(:poll_comments_for_session, session)
     end
@@ -1437,7 +1443,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   # failure: warn, retry next tick, never raise, never ERROR.
 
   test "fetch_paginated_comments treats a nil status as a failed fetch instead of raising" do
-    Open3.stubs(:capture3).returns([ "", "gh: connection reset", nil ])
+    BoundedSubprocess.stubs(:run).returns([ "", "gh: connection reset", nil ])
 
     job = GithubCommentPollerJob.new
 
@@ -1452,7 +1458,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "fetch_paginated_comments logs the reaped child distinctly from a non-zero exit" do
-    Open3.stubs(:capture3).returns([ "", "gh: connection reset", nil ])
+    BoundedSubprocess.stubs(:run).returns([ "", "gh: connection reset", nil ])
 
     warnings = capture_warn_logs do
       GithubCommentPollerJob.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
@@ -1471,7 +1477,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     full_page = Array.new(GithubCommentPollerJob::MAX_COMMENTS_PER_PAGE) do |i|
       { "id" => i + 1, "user" => { "login" => "someone" }, "body" => "hi" }
     end
-    Open3.stubs(:capture3)
+    BoundedSubprocess.stubs(:run)
       .returns([ full_page.to_json, "", fake_process_status(exitstatus: 0) ])
       .then.returns([ "", "", nil ])
 
@@ -1482,7 +1488,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
   end
 
   test "add_eyes_reaction reports a nil status as a failed reaction, not as an exception" do
-    Open3.stubs(:capture3).returns([ "", "", nil ])
+    BoundedSubprocess.stubs(:run).returns([ "", "", nil ])
 
     comment_info = {
       type: "pr",
@@ -1515,7 +1521,7 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     # Every gh call this tick loses the race with the reaper. `at_least_once` keeps the
     # test honest: if PollBackoff gating or the fixture ever drifts so the poll never
     # shells out, this must fail rather than pass vacuously.
-    Open3.expects(:capture3).at_least_once.returns([ "", "gh: connection reset", nil ])
+    BoundedSubprocess.expects(:run).at_least_once.returns([ "", "gh: connection reset", nil ])
 
     # This is the regression: the crash surfaced as
     # "[GithubCommentPollerJob] Error polling comments for session N: undefined method
@@ -1525,6 +1531,105 @@ class GithubCommentPollerJobTest < ActiveSupport::TestCase
     end
 
     assert_empty errors, "a reaped gh child must not produce an ERROR record — that is what paged"
+  end
+
+  # ---- Hung gh call (#458) ----
+  #
+  # The comment fetch is a pagination loop, so a stall on page 3 of a long thread used
+  # to hang this `total_limit: 1` singleton with partial state and hold the only slot
+  # forever. Each page now runs under its own deadline and a timeout is an ordinary
+  # failed page: return what we already read, ask again next tick.
+
+  test "fetch_paginated_comments bounds each page and asks for the argv it means to run" do
+    BoundedSubprocess.expects(:run)
+      .with([ "gh", "api",
+              "repos/owner/repo/issues/1/comments?per_page=#{GithubCommentPollerJob::MAX_COMMENTS_PER_PAGE}&page=1",
+              "--jq", "." ],
+            timeout: GithubCommentPollerJob::COMMENT_PAGE_TIMEOUT)
+      .returns([ "[]", "", fake_process_status(exitstatus: 0) ])
+
+    assert_equal [], GithubCommentPollerJob.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
+  end
+
+  test "fetch_paginated_comments treats a timed-out page as a failed fetch instead of raising" do
+    BoundedSubprocess.stubs(:run).raises(
+      BoundedSubprocess::TimeoutError,
+      "command timed out after #{GithubCommentPollerJob::COMMENT_PAGE_TIMEOUT}s (process group killed): gh api"
+    )
+
+    result = nil
+    warnings = capture_warn_logs do
+      assert_nothing_raised do
+        result = GithubCommentPollerJob.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
+      end
+    end
+
+    # Same "nothing to act on" answer a non-zero exit already produces — retry next poll.
+    assert_nil result
+
+    warning = warnings.find { |line| line.include?("Failed to fetch comments") }
+    assert warning, "expected a warn line naming the failed fetch, got: #{warnings.inspect}"
+    assert_includes warning, "TimeoutError"
+  end
+
+  test "fetch_paginated_comments returns the pages it already read when a later page times out" do
+    # The bound is PER PAGE: a full first page makes the loop ask for page 2, and page 2
+    # is the one that hangs. The pages already read survive; the loop does not.
+    full_page = Array.new(GithubCommentPollerJob::MAX_COMMENTS_PER_PAGE) do |i|
+      { "id" => i + 1, "user" => { "login" => "someone" }, "body" => "hi" }
+    end
+    BoundedSubprocess.stubs(:run)
+      .returns([ full_page.to_json, "", fake_process_status(exitstatus: 0) ])
+      .then.raises(BoundedSubprocess::TimeoutError, "command timed out after 20s (process group killed): gh api")
+
+    result = GithubCommentPollerJob.new.send(:fetch_paginated_comments, "repos/owner/repo/issues/1/comments")
+
+    assert_equal GithubCommentPollerJob::MAX_COMMENTS_PER_PAGE, result.length
+    assert_equal 1, result.first["id"]
+  end
+
+  test "add_eyes_reaction swallows a timed-out reaction rather than letting it escape" do
+    BoundedSubprocess.stubs(:run).raises(
+      BoundedSubprocess::TimeoutError,
+      "command timed out after #{GithubCommentPollerJob::REACTION_TIMEOUT}s (process group killed): gh api"
+    )
+
+    comment_info = {
+      type: "pr",
+      owner: "testowner",
+      repo: "testrepo",
+      pr_number: "42",
+      data: { "id" => 11111, "author" => "tadasant" }
+    }
+
+    # The reaction is best-effort by design — a reaction problem must never block the
+    # follow-up prompt — so a hang has to land in the same swallow every other reaction
+    # failure does, and be logged as one.
+    warnings = capture_warn_logs do
+      assert_nothing_raised { GithubCommentPollerJob.new.send(:add_eyes_reaction, comment_info) }
+    end
+
+    warning = warnings.find { |line| line.include?("Failed to add eyes reaction") }
+    assert warning, "expected the reaction failure warn line, got: #{warnings.inspect}"
+    assert_includes warning, "TimeoutError"
+  end
+
+  test "perform emits no ERROR record when gh children hang mid-poll" do
+    @session_with_pr.update!(
+      metadata: (@session_with_pr.metadata || {}).merge("last_user_activity_at" => 5.minutes.ago.iso8601)
+    )
+    Session.stubs(:with_github_prs).returns(Session.where(id: @session_with_pr.id))
+
+    BoundedSubprocess.expects(:run).at_least_once.raises(
+      BoundedSubprocess::TimeoutError, "command timed out after 20s (process group killed): gh api"
+    )
+
+    errors = capture_error_logs do
+      assert_nothing_raised { GithubCommentPollerJob.perform_now }
+    end
+
+    assert_empty errors,
+      "a hung gh child must be an ordinary failed call, not an error escaping to the per-session rescue"
   end
 
   # Collects the strings passed to Rails.logger.warn during the block.

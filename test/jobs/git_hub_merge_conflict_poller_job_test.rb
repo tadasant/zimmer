@@ -219,7 +219,7 @@ class GitHubMergeConflictPollerJobTest < ActiveSupport::TestCase
     success_status = mock
     success_status.stubs(:success?).returns(true)
 
-    Open3.stubs(:capture3).returns([ "false\n", "", success_status ])
+    BoundedSubprocess.stubs(:run).returns([ "false\n", "", success_status ])
     assert_equal "false", job.send(:fetch_mergeable_field, "owner", "repo", "123")
   end
 
@@ -229,14 +229,14 @@ class GitHubMergeConflictPollerJobTest < ActiveSupport::TestCase
     success_status = mock
     success_status.stubs(:success?).returns(true)
 
-    Open3.stubs(:capture3).returns([ "true\n", "", success_status ])
+    BoundedSubprocess.stubs(:run).returns([ "true\n", "", success_status ])
     assert_equal "true", job.send(:fetch_mergeable_field, "owner", "repo", "123")
   end
 
   test "fetch_mergeable_field returns nil on command failure" do
     job = GitHubMergeConflictPollerJob.new
 
-    Open3.stubs(:capture3).returns([ "", "Error", fake_process_status(exitstatus: 1) ])
+    BoundedSubprocess.stubs(:run).returns([ "", "Error", fake_process_status(exitstatus: 1) ])
     assert_nil job.send(:fetch_mergeable_field, "owner", "repo", "123")
   end
 
@@ -411,7 +411,7 @@ class GitHubMergeConflictPollerJobTest < ActiveSupport::TestCase
   # `Process.waitpid(-1, WNOHANG)` reaps the gh child before capture3's waiter does.
   # A nil status is a failed API call, so the mergeable field is simply unknown.
   test "fetch_mergeable_field treats a nil status as a failure instead of raising" do
-    Open3.stubs(:capture3).returns([ "", "gh: connection reset", nil ])
+    BoundedSubprocess.stubs(:run).returns([ "", "gh: connection reset", nil ])
 
     job = GitHubMergeConflictPollerJob.new
 
@@ -421,6 +421,59 @@ class GitHubMergeConflictPollerJobTest < ActiveSupport::TestCase
     end
 
     assert_nil result, "an unverifiable gh call must not report a mergeable state"
+  end
+
+  # ---- Hung gh call (#458) ----
+  #
+  # This job is a `total_limit: 1` singleton on a 2-minute cron with no heartbeat and no
+  # watchdog, so an unbounded `gh` hang stopped merge-conflict detection outright. The
+  # call now runs under a per-attempt deadline and a timeout reads as "no answer" — the
+  # one thing it must never read as is "conflicting", which would nudge a session to
+  # resolve a conflict that does not exist.
+
+  test "fetch_mergeable_field bounds its gh call and asks for the argv it means to run" do
+    BoundedSubprocess.expects(:run)
+      .with([ "gh", "api", "repos/owner/repo/pulls/42", "--jq", ".mergeable" ],
+            timeout: GitHubMergeConflictPollerJob::MERGEABLE_TIMEOUT)
+      .returns([ "true\n", "", fake_process_status(exitstatus: 0) ])
+
+    assert_equal "true", GitHubMergeConflictPollerJob.new.send(:fetch_mergeable_field, "owner", "repo", "42")
+  end
+
+  test "fetch_mergeable_field treats a timed-out gh call as a failure instead of raising" do
+    BoundedSubprocess.stubs(:run).raises(
+      BoundedSubprocess::TimeoutError,
+      "command timed out after #{GitHubMergeConflictPollerJob::MERGEABLE_TIMEOUT}s (process group killed): gh api"
+    )
+
+    job = GitHubMergeConflictPollerJob.new
+
+    result = nil
+    assert_nothing_raised do
+      result = job.send(:fetch_mergeable_field, "owner", "repo", "42")
+    end
+
+    assert_nil result, "a hung gh call must not report a mergeable state"
+  end
+
+  test "a timed-out mergeability read records no conflict and enqueues no notice" do
+    @session_with_pr.update!(status: :running, custom_metadata: {
+      "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ],
+      "github_pull_request_statuses" => { "https://github.com/owner/repo/pull/123" => "open" }
+    })
+
+    # `at_least_once` keeps this honest: if the poll ever stopped shelling out, the
+    # assertions below would pass vacuously.
+    BoundedSubprocess.expects(:run).at_least_once
+      .raises(BoundedSubprocess::TimeoutError, "command timed out after 20s (process group killed): gh api")
+
+    job = GitHubMergeConflictPollerJob.new
+    assert_nothing_raised { job.send(:poll_merge_conflicts, @session_with_pr) }
+
+    @session_with_pr.reload
+    assert_nil @session_with_pr.custom_metadata["github_pull_request_merge_conflicts"]
+    assert_nil @session_with_pr.custom_metadata["github_pull_request_merge_conflicts_suspected"]
+    assert_equal 0, @session_with_pr.enqueued_messages.count
   end
 
   class TestJobNoConflict < GitHubMergeConflictPollerJob
