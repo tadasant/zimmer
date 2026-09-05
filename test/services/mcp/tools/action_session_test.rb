@@ -714,6 +714,153 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal "failed", session.reload.status
   end
 
+  # --- Archiving over a live turn (#400) --------------------------------------
+  #
+  # THE INCIDENT: a status-summary fork, resumed into a copy of another session's
+  # pre-archive conversation, concluded the work it was reading was finished and
+  # called this action with THAT session's id. The archive killed the other
+  # session's process mid-tool-call 45 seconds into a turn that had just been
+  # handed a new prompt, and deleted its clone. Nothing about the outcome said
+  # so — the caller saw `running`, then `archived`.
+
+  # A turn a live GoodJob capsule is actually executing — `JobLiveness`'s
+  # `:running`, and what an archive would kill. Read off the job rows, not
+  # `running_job_id`, which is written from inside `perform`.
+  def turn_on_a_worker!(session)
+    capsule = GoodJob::Process.create!(state: { "hostname" => "worker-1" })
+    GoodJob::Job.create!(
+      active_job_id: SecureRandom.uuid, queue_name: "agents", job_class: "AgentSessionJob",
+      serialized_params: { "arguments" => [ session.id ] },
+      scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago,
+      locked_at: 1.minute.ago, locked_by_id: capsule.id
+    )
+  end
+
+  # A connection stamped for a session, the way RuntimeConfigPostProcessor stamps
+  # the Zimmer server it injects into that session's own runtime config.
+  def tool_for_session(session_id)
+    Mcp::Tools::ActionSession.new(context: Mcp::Context.new(tool_groups: "sessions", session_id: session_id))
+  end
+
+  test "archive refuses another session's live turn" do
+    session = sessions(:running)
+    turn_on_a_worker!(session)
+
+    error = assert_raises(Mcp::ToolError) do
+      tool_for_session(sessions(:needs_input).id).call("action" => "archive", "session_id" => session.id)
+    end
+
+    assert_match(/Cannot archive session #{session.id}/, error.message)
+    assert_includes error.message, "an agent turn is in flight"
+    assert_equal "running", session.reload.status, "the refusal must not half-archive"
+  end
+
+  # The ordinary ending, and the one the refusal must never break: a session
+  # archiving ITSELF is the only caller that knows whether its own turn is done.
+  test "a session archiving itself over its own live turn goes through" do
+    session = sessions(:running)
+    turn_on_a_worker!(session)
+
+    result = tool_for_session(session.id).call("action" => "archive", "session_id" => session.id)
+
+    assert_includes result, "- **New Status:** archived"
+    assert_equal "archived", session.reload.status
+    assert_empty session.logs.where("content LIKE ?", "%uncommitted work discarded%"),
+      "a self-archive destroyed nobody else's turn and must not claim it did"
+  end
+
+  # A connection that names no session cannot be the session either, so it is
+  # refused rather than waved through — `force` is one call away, the turn is not.
+  test "an unidentified caller is refused a live turn too" do
+    session = sessions(:running)
+    turn_on_a_worker!(session)
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "archive", "session_id" => session.id) }
+
+    assert_includes error.message, "an agent turn is in flight"
+  end
+
+  # Forcing is allowed — and this is the half the issue asked for: the outcome
+  # has to be observable rather than silent.
+  test "a forced archive over a live turn records the loss and reports it back" do
+    session = sessions(:running)
+    turn_on_a_worker!(session)
+
+    result = tool_for_session(sessions(:needs_input).id)
+      .call("action" => "archive", "session_id" => session.id, "acting_session_id" => 5225, "force" => true)
+
+    assert_equal "archived", session.reload.status
+    assert_includes result, "terminated an agent turn that was in flight"
+
+    line = session.logs.where(level: "warning").where("content LIKE ?", "%in flight%").sole.content
+    assert_includes line, "session #5225 via the MCP API"
+    assert_includes line, "uncommitted work discarded"
+    assert_includes line, "This was not the session finishing."
+  end
+
+  # A turn merely QUEUED destroys nothing when it is archived — the turn is
+  # cancelled, which is what the caller asked for. Refusing there would block
+  # ordinary cleanup of sessions whose job is only late.
+  test "archive goes through when the turn is queued but not yet on a worker" do
+    session = sessions(:running)
+    GoodJob::Job.create!(
+      active_job_id: SecureRandom.uuid, queue_name: "agents", job_class: "AgentSessionJob",
+      serialized_params: { "arguments" => [ session.id ] }, scheduled_at: 2.minutes.ago
+    )
+
+    tool_for_session(sessions(:needs_input).id).call("action" => "archive", "session_id" => session.id)
+
+    assert_equal "archived", session.reload.status
+  end
+
+  # The correction that keeps the fleet-repair sweeps working. A session whose
+  # worker was SIGKILLed keeps `performed_at` set and `finished_at` null
+  # forever, so a `performed_at`-only reading would refuse to archive exactly
+  # the stuck sessions a sweep exists to clear — while nothing is executing and
+  # nothing would be destroyed.
+  test "archive goes through when the turn's worker is gone" do
+    session = sessions(:running)
+    dead = GoodJob::Process.create!(state: { "hostname" => "worker-1" })
+    dead.update_column(:updated_at, (GoodJob::Process::EXPIRED_INTERVAL.to_i + 60).seconds.ago)
+    GoodJob::Job.create!(
+      active_job_id: SecureRandom.uuid, queue_name: "agents", job_class: "AgentSessionJob",
+      serialized_params: { "arguments" => [ session.id ] },
+      scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago,
+      locked_at: 1.minute.ago, locked_by_id: dead.id
+    )
+
+    tool_for_session(sessions(:needs_input).id).call("action" => "archive", "session_id" => session.id)
+
+    assert_equal "archived", session.reload.status
+  end
+
+  test "bulk_archive reports a live turn per session and leaves that one alone" do
+    live = sessions(:running)
+    turn_on_a_worker!(live)
+    quiet = sessions(:needs_input)
+
+    result = tool_for_session(sessions(:waiting).id)
+      .call("action" => "bulk_archive", "session_ids" => [ live.id, quiet.id ])
+
+    assert_includes result, "- **Archived:** 1"
+    assert_includes result, "Session #{live.id}: "
+    assert_includes result, "an agent turn is in flight"
+    assert_equal "running", live.reload.status
+    assert_equal "archived", quiet.reload.status
+  end
+
+  test "a forced bulk_archive names the live turns it terminated" do
+    live = sessions(:running)
+    turn_on_a_worker!(live)
+
+    result = tool_for_session(sessions(:waiting).id)
+      .call("action" => "bulk_archive", "session_ids" => [ live.id ], "force" => true)
+
+    assert_includes result, "- **Live turns terminated:** 1 (session #{live.id})"
+    assert_equal "archived", live.reload.status
+    assert live.logs.where(level: "warning").where("content LIKE ?", "%uncommitted work discarded%").exists?
+  end
+
   # The un-archivable trap the refusal would otherwise be: nothing will ever
   # drain a needs_input queue, so force has to be the way out.
   test "archive with force clears a needs_input session nothing would ever drain" do

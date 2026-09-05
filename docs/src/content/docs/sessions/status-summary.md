@@ -350,7 +350,7 @@ What that mode does not need is the point of it:
 | Cost | an agent turn | one small-model completion |
 | Reach | the real conversation, its tools, its clone | the rendered transcript tail only |
 
-It is reached from the four places a fork is known not to be able to deliver:
+It is reached from four places a fork is known not to be able to deliver, and one where it could deliver and must not be stood up anyway:
 
 - **The repair sweep during an auth outage.** A runtime with no available account switches to this
   path rather than standing down, admitted by the
@@ -378,6 +378,42 @@ It is reached from the four places a fork is known not to be able to deliver:
   Haiku completion against the very window the gate is pacing. That is deliberate and it is the
   cheaper direction over the whole episode: the fork being deferred was going to spend a full agent
   turn eventually, and until it did, its source session sat on the homepage with no blurb.
+
+- **Any generation at all, forced included, on a conversation that is still moving.** See
+  [A live conversation gets no fork](#a-live-conversation-gets-no-fork) below.
+
+### A live conversation gets no fork
+
+A fork is a **second agent** on a session's conversation, and it is dispatched with `--resume`, so
+the runtime injects its own `"Continue from where you left off."` scaffolding on top of a transcript
+copied at a fixed message index. Nothing in what the summarizer reads says the session has moved on
+since that copy was taken.
+
+[#400](https://github.com/tadasant/zimmer/issues/400) is what that costs. A session was unarchived
+and handed a new prompt; one second earlier, a summary fork had been taken of its pre-archive
+conversation. The fork read 737 messages that all said the work was finished, concluded — correctly,
+from inside that context — that nothing was left, and called `action_session` `archive` with the
+source session's id. `AgentSessionJob`'s monitoring loop saw `archived?` and terminated the live
+process mid-tool-call, 45 seconds into the turn that had the new prompt, and its clone was deleted.
+
+So `Sessions::LiveTurn` is asked first, and a session whose conversation is **live** is summarized by
+the one-shot path instead of by a fork. Live means any of:
+
+| Signal | Read from |
+| --- | --- |
+| A turn a live worker is executing | an unfinished `AgentSessionJob` row that [`JobLiveness`](/sessions/lifecycle/) calls `:running` — locked by a capsule whose heartbeat is current |
+| A turn still going to run | the same rows, at any of `JobLiveness::LIVE_STATUSES` |
+| A prompt accepted and not yet delivered | a `pending` `EnqueuedMessage`, or `metadata["pending_follow_up_prompt"]`, on a session that can still take a turn |
+
+`JobLiveness` rather than `performed_at` is the load-bearing part. A worker that was SIGKILLed, OOMed or evicted leaves its row with `performed_at` set and `finished_at` null forever, so a `performed_at` reading would call a stuck session live — permanently downgrading its blurb, and, on the archive side, refusing to archive exactly the sessions a fleet-repair sweep exists to clear. The rows are read directly rather than through `PendingAgentTurns`, which draws its own line at `performed_at` because occupancy counting wants a different question answered.
+
+The question is asked twice: once before the fork, and again after it exists and before it is dispatched. The second is not belt-and-braces — the #400 fork was taken at `01:50:24Z` and the new prompt landed at `01:50:25Z`, inside that window, so a check asked only up front would have missed the incident by a second. A fork that loses the race is archived rather than dispatched, and the one-shot writes the blurb.
+
+The session still gets its blurb: the one-shot answers from the same transcript, spends no agent turn and boots no MCP server, so there is no second agent to act on anything. A busy session is also the one an operator most wants the panel for, so a refusal would take the blurb away at the worst moment.
+
+`force` does not override it, because `force` overrides the reasons that are about *waste*. Pressing **Regenerate** does not make a second agent on a live conversation safe.
+
+The read fails **closed**: an unreadable `good_jobs` counts as a live turn. [`RunningTurns`](/sessions/spot-and-priority/) fails the other way, toward counting, and the asymmetry is deliberate — a monitoring gap that downgrades one generation to a terser blurb costs nothing, while one that stands a second agent up on a live conversation cost a destroyed turn.
 
 Concurrency is bounded by the two-thread `inference` queue this job shares with `SessionTitleJob` and
 needs-input notification blurbs — see [Blocking inference waits in a lane](/operate/background-jobs/#blocking-inference-waits-in-a-lane-it-does-not-retry-for-admission).

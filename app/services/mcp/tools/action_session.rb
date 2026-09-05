@@ -22,7 +22,7 @@ module Mcp
 
       SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free, and then in precedence order). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares. Demoting to "spot" without also passing "precedence" or "place" leaves the session wherever its existing rank puts it, which is usually the bottom — pass one of them when you mean it to be worked on soon, and "place": "top_of_spot" when you mean it to be worked on first.'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
-      FORCE_DESC = 'Optional for the "archive" and "bulk_archive" actions. Archiving a session discards any message still queued for it — nothing delivers a queued message once the session is in the trash — so an archive over a non-empty queue is refused by default, and the error names what would be lost. Set this to true ONLY when you have read those messages and are deliberately throwing them away. It is not the recommended path: the usual reason a message is sitting in the queue is that it arrived while the session was working and the session has not seen it yet, in which case the right move is to NOT archive, let the turn end, and let the message be delivered as the next turn. On "bulk_archive" it applies to every session in the batch, not one of them.'
+      FORCE_DESC = 'Optional for the "archive" and "bulk_archive" actions. Archiving a session discards any message still queued for it — nothing delivers a queued message once the session is in the trash — so an archive over a non-empty queue is refused by default, and the error names what would be lost. Set this to true ONLY when you have read those messages and are deliberately throwing them away. It is not the recommended path: the usual reason a message is sitting in the queue is that it arrived while the session was working and the session has not seen it yet, in which case the right move is to NOT archive, let the turn end, and let the message be delivered as the next turn. On "bulk_archive" it applies to every session in the batch, not one of them. It also overrides the second archive refusal: archiving ANOTHER session that has an agent turn in flight terminates that process mid-turn and deletes its clone, so it is refused unless you set this — and when you do, the loss is recorded on that session\'s timeline and reported back to you, because nothing else afterwards tells it apart from a session that finished.'
       FORCE_IMMEDIATE_DESC = 'Optional for "follow_up" action. When true, interrupts a running session to deliver the prompt immediately instead of queuing it. Set it whenever the prompt would change what the agent should be doing — a correction, a new constraint, a "you are on the wrong track". A queued prompt is not seen until the current turn ends, which can be many minutes of work in a direction you already know is wrong. Interrupting ends the in-flight turn. The agent then resumes the same conversation with your prompt as its next turn, so it keeps the context it had. Leave it off when the prompt is additive and the current turn is worth finishing. Not used for other actions.'
       MCP_SERVERS_DESC = 'Required for "change_mcp_servers" action. Array of MCP server names to set for the session. REPLACES the existing set — this is not a merge, so whatever you pass is the complete final list and every server the session currently has but you did not name is dropped. To add or remove one, read the session\'s current mcp_servers with get_session, copy that list, and edit it — do not write a fresh list from what the change seems to need.'
       MODEL_DESC = 'Required for "change_model" action. The model identifier to use (e.g., "opus", "sonnet", "fable", "gpt-5.6-sol"). Must be valid for the session runtime.'
@@ -135,7 +135,7 @@ module Mcp
         - **pause_into_spot_queue**: Put this session to sleep in the spot queue instead of at a wall-clock time — the counterpart of `wake_me_up_later` when there is no time worth naming. The session goes dormant in "waiting" with NO wake-up trigger and no time attached, and resumes when the spot scheduler reaches it: a Claude Code account under both quota targets, a free session slot, highest precedence first. Any unfired one-time wake this session had is cancelled, since it was replaced by this. A session that resolves to "priority" is set to "spot" (a priority session cannot sit in the queue) — reverse it with `change_scheduling_class`, which resumes it on the next sweep. Optionally takes "prompt": what the session should be resumed with, in place of the default recovery nudge. A running session sleeps when its current turn ends, not mid-turn — pass "halt": true to stop the turn where it stands instead. Only use "halt" on a session that is NOT you: it terminates the agent process, so a session halting itself never gets a reply to this call. Any message still queued for the session waits with it, and unlike a timed pause nothing bounds how long — drain the queue first if that matters. Use this instead of a made-up wake time when the answer to "when should this come back" is "whenever there is quota headroom for it".
         - **restart**: Restart an idle or failed session without providing new input
         - **start_now**: Take a waiting session's next turn now instead of when the scheduler gets round to it — the tool half of the Ranked view's ⋮ menu entry. Reach for it when one session should not wait out the gate's deferred re-check, which can sit up to an hour out. It moves WHEN the turn is asked for and not WHETHER it is allowed: a spot session stays spot, so a window still over its target holds it again — `change_scheduling_class` to "priority" is what removes the gate. A session that has never run has its first turn enqueued, with the images and files it was created with. One that has run before with nothing queued is stranded rather than queued, and is refused with the error naming "follow_up" or "restart" instead; so is one asleep on a wake-up it has not reached, because a pause outranks the queue and it wakes on its own schedule.
-        - **archive**: Archive a session (marks as completed). Refused when messages are still queued for the session, since archiving discards them — the error names them, and "force" overrides it deliberately.
+        - **archive**: Archive a session (marks as completed). Refused when messages are still queued for the session, since archiving discards them — the error names them, and "force" overrides it deliberately. Also refused when you are archiving a session OTHER than your own and it has an agent turn in flight: that archive kills the running process mid-turn and deletes its clone. Archiving yourself is never refused for that reason — your own turn is the one in flight, and you are the only caller that knows whether it is finished.
         - **unarchive**: Restore an archived session to idle "needs_input" status
         - **change_mcp_servers**: Update the MCP servers for a session (requires "mcp_servers" parameter; replaces the set). Takes effect the next time the session's runtime config is prepared — its next turn, a restart, or an unarchive — never on an already-running process. If a newly selected server needs authorizing, the answer names it under "Needs authorization" and the session is moved to "failed" with failure_reason "oauth_required" so its page shows the Authorize buttons; a session that is currently running is left alone instead.
         - **change_model**: Update the model for a session (requires "model" parameter, e.g., "opus", "sonnet", "fable", "gpt-5.6-sol")
@@ -157,7 +157,7 @@ module Mcp
         - **update_title**: Update the title of a session (requires "title")
         - **toggle_favorite**: Toggle favorite status on a session
         - **set_visibility**: Set a session's BOARD VISIBILITY — whether its card is on the human's dashboard (requires "visibility": "visible", "hidden" or "snoozed"; "snoozed" also requires "snoozed_until", with an optional "timezone"). **This is a visual-organization device and nothing else.** It does not start, stop, pause, sleep, wake, reorder or reschedule anything, no scheduler reads it, and a snoozed session runs exactly when it would have run had nobody touched it. Use it when a human asks you to tidy their board; never use it to try to stop or defer work — `pause`, `pause_into_spot_queue` and `change_precedence` are the actions that do that. A snooze ends by itself: once "snoozed_until" passes the session is back on the board with nothing having been written to it.
-        - **bulk_archive**: Archive multiple sessions at once (requires "session_ids", no session_id needed). Sessions with queued messages are reported as errors and left alone unless "force" is set for the batch.
+        - **bulk_archive**: Archive multiple sessions at once (requires "session_ids", no session_id needed). Sessions with queued messages, or with an agent turn in flight, are reported as errors and left alone unless "force" is set for the batch.
 
         **Interrupting vs queuing a follow_up.** Interrupting is opt-in, and worth reaching for more often than the default suggests. Send with "force_immediate": true whenever the prompt would redirect the agent: a correction, a constraint it does not know about, information that makes its current approach wrong. An agent twenty minutes into the wrong approach cannot see a queued message until it finishes, so the message that would have saved the work arrives after the work is wasted. The cost of interrupting is bounded: the in-flight turn is terminated (an uncommitted tool call is lost, files already written stay written) and the agent picks up from the same conversation with your prompt as the next turn. Queue when the prompt only adds to what the agent is already doing.
 
@@ -581,20 +581,94 @@ module Mcp
         end
 
         refuse_archive_over_queued_messages(session, args)
+        destroyed_turn = refuse_archive_over_live_turn(session, args)
 
-        session.archive_actor = archive_actor_phrase(args)
+        actor = archive_actor_phrase(args)
+        session.archive_actor = actor
         session.archive_forced = boolean(args["force"])
         session.archive!
+        # After the transition, not before: a line claiming a turn was destroyed
+        # must not outlive an archive that then raised and left the session
+        # running.
+        note_archive_over_live_turn(session, actor) if destroyed_turn
         session.reload
 
-        [
+        lines = [
           "## Session Archived",
           "",
           "- **Session ID:** #{session.id}",
           "- **Title:** #{session.title}",
           "- **New Status:** #{session.status}",
           "- **Archived At:** #{session.archived_at&.iso8601}"
-        ].join("\n")
+        ]
+        if destroyed_turn
+          lines += [
+            "",
+            "**This terminated an agent turn that was in flight.** The process was killed mid-turn and its " \
+            "clone will be deleted; whatever it had not committed is lost. It is recorded on that session's " \
+            "timeline so the loss is not mistaken later for the session finishing."
+          ]
+        end
+        lines.join("\n")
+      end
+
+      # Refuse to archive a session that has an agent turn in flight, unless the
+      # caller IS that session or has explicitly forced it.
+      #
+      # THE DEFECT THIS EXISTS FOR (#400). A status-summary fork, resumed into a
+      # copy of another session's pre-archive conversation, concluded that the
+      # work it was reading was done and called this action with that session's
+      # id. The archive terminated the other session's live process mid-tool-call
+      # and deleted its clone, 45 seconds into a turn that had just been handed a
+      # new prompt. Nothing about the outcome said so: the caller saw `running`
+      # with a growing message count, then `archived`.
+      #
+      # A session archiving ITSELF is the ordinary ending and is never refused —
+      # its own turn is the one in flight, it is the only caller that knows
+      # whether that turn is finished, and refusing it would break the completion
+      # signal the whole lifecycle policy rests on. Identity comes from the
+      # connection, the same way SelfSessionActionSession#enforce_self_report!
+      # reads it: RuntimeConfigPostProcessor stamps `session_id` onto the URL of
+      # the Zimmer server it writes into a session's own runtime config, and
+      # nothing in the request body can forge it.
+      #
+      # A connection that carries NO session identity (a human MCP client) is
+      # refused rather than waved through. It is not the session, so it cannot
+      # know either — and `force` is one call away, whereas the destroyed turn is
+      # not recoverable.
+      #
+      # Deliberately NOT consulted by the system-initiated archives
+      # (HealthMonitorService's stale sweep, the status-summary fork cleanup,
+      # SessionStatusSummaryHarvestJob) for the same reason ArchiveGuard is not:
+      # a refusal none of them could reconsider would be a fleet-wide stuck state
+      # with no human in the loop to clear it.
+      #
+      # @return [Boolean] true when a live turn is being destroyed anyway because
+      #   the caller forced it, so the caller can record and report the loss
+      def refuse_archive_over_live_turn(session, args, batch: false)
+        return false unless Sessions::LiveTurn.in_flight?(session)
+        return false if archiving_own_session?(session)
+        return true if boolean(args["force"])
+
+        raise ToolError, Sessions::LiveTurn.refusal_message(session, batch: batch)
+      end
+
+      # Whether this connection belongs to the session it is acting on.
+      def archiving_own_session?(session)
+        context.self_session_id.present? && context.self_session_id == session.id
+      end
+
+      # Record a forced kill on the timeline of the session it happened to. The
+      # session cannot write this itself — it is the thing being terminated — and
+      # without it the archive line reads exactly like a session that finished.
+      #
+      # Best-effort: a timeline write must not fail an archive the caller has
+      # explicitly asked for.
+      def note_archive_over_live_turn(session, actor)
+        session.logs.create!(content: Sessions::LiveTurn.forced_over_live_turn_log(actor), level: "warning")
+      rescue StandardError => e
+        Rails.logger.error("[Mcp::Tools::ActionSession] Failed to record a forced archive over a live turn " \
+                           "on session #{session.id}: #{e.message}")
       end
 
       # Refuse to archive a session that still has messages queued for it,
@@ -1186,6 +1260,7 @@ module Mcp
 
         archived_count = 0
         errors = []
+        destroyed_turns = []
 
         # One bulk call is one caller action, so it owes the caller one page
         # rather than one per session, and every page in `#alerts` spawns a
@@ -1207,14 +1282,24 @@ module Mcp
                 # `force` applies to the whole batch because the argument is one
                 # flag.
                 refuse_archive_over_queued_messages(session, args, batch: true)
+                # Same refusal as the single-session action, for the same
+                # reason: a turn killed mid-flight is no less killed for being
+                # archived in a batch.
+                destroyed_turn = refuse_archive_over_live_turn(session, args, batch: true)
               rescue ToolError => e
                 errors << { id: session.id, error: e.message }
                 next
               end
 
-              session.archive_actor = "#{archive_actor_phrase(args)} (bulk)"
+              actor = "#{archive_actor_phrase(args)} (bulk)"
+              session.archive_actor = actor
               session.archive_forced = boolean(args["force"])
               session.archive!
+              # After the transition, for the same reason as the single-session action.
+              if destroyed_turn
+                note_archive_over_live_turn(session, actor)
+                destroyed_turns << session.id
+              end
               archived_count += 1
             else
               errors << { id: session.id, error: "Cannot archive from status: #{session.status}" }
@@ -1223,6 +1308,11 @@ module Mcp
         end
 
         lines = [ "## Bulk Archive Complete", "", "- **Archived:** #{archived_count}" ]
+        if destroyed_turns.any?
+          lines << "- **Live turns terminated:** #{destroyed_turns.size} (session#{'s' if destroyed_turns.many?} " \
+                   "#{destroyed_turns.join(', ')}) — each was killed mid-turn and its uncommitted work discarded, " \
+                   "and each says so on its own timeline."
+        end
         if errors.any?
           lines << "- **Errors:** #{errors.size}"
           errors.each { |err| lines << "  - Session #{err[:id]}: #{err[:error]}" }

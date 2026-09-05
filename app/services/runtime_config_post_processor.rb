@@ -392,11 +392,18 @@ class RuntimeConfigPostProcessor
   # there, so nothing else would ever add the parameter. The config file is written
   # per session, so stamping the session's own id is always correct.
   #
-  # It is a DEFAULT for "which session is asking", never a grant: Mcp::Context uses
-  # it only to fill in an omitted session_id argument, and `tool_groups` /
-  # `allowed_agent_roots` are untouched. An entry that already names a session is
-  # left alone rather than overwritten, so a deliberately hand-pointed entry keeps
-  # pointing where it was aimed.
+  # Mostly a DEFAULT for "which session is asking": Mcp::Context uses it to fill in
+  # an omitted session_id argument, and `tool_groups` / `allowed_agent_roots` are
+  # untouched, so it grants no tool and widens no scope. The one thing it decides
+  # beyond that is whether a caller counts as the session it is acting on, which
+  # exempts a self-archive from Sessions::LiveTurn's refusal (#400) — so a config
+  # stamped with the WRONG session's id hands over that session's exemption.
+  #
+  # An entry that already names a session is left alone rather than overwritten, so
+  # a deliberately hand-pointed entry keeps pointing where it was aimed. That is
+  # also why a config generated for the wrong session cannot be repaired by
+  # regenerating it, and why ForkSessionService prepares a fork's config for the
+  # fork rather than for its source.
   def stamp_session_id_on_zimmer_servers!(servers)
     servers.each do |name, entry|
       next unless entry.is_a?(Hash)

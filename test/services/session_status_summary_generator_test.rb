@@ -200,6 +200,137 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     [ result, inference ]
   end
 
+  # --- A live conversation gets no fork (#400) ---------------------------------
+  #
+  # THE INCIDENT: this service forked a session one second before that session
+  # was handed a new prompt. The fork was a SECOND agent, resumed into the
+  # runtime's own "Continue from where you left off." scaffolding on top of 737
+  # messages of pre-archive context, with no trace of the new prompt. It
+  # concluded — correctly, from inside that context — that the work was done and
+  # archived the session, killing the live turn mid-tool-call.
+  #
+  # A conversation that is moving gets the headless one-shot instead: it answers
+  # from the same transcript, spends no agent turn and boots no MCP server, so
+  # there is no second agent to act on anything.
+
+  # A turn a live GoodJob capsule is actually executing. Read off the job rows
+  # rather than `running_job_id`, which is written from inside `perform`.
+  def turn_on_a_worker!(session)
+    capsule = GoodJob::Process.create!(state: { "hostname" => "worker-1" })
+    GoodJob::Job.create!(
+      active_job_id: SecureRandom.uuid, queue_name: "agents", job_class: "AgentSessionJob",
+      serialized_params: { "arguments" => [ session.id ] },
+      scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago,
+      locked_at: 1.minute.ago, locked_by_id: capsule.id
+    )
+  end
+
+  def generate_with_inference(answer, **opts)
+    inference = FakeInference.new(answer)
+    result = SessionStatusSummaryGenerator.call(
+      session: @session, file_system: @fs, inference_service: inference, **opts
+    )
+    [ result, inference ]
+  end
+
+  test "a session with a turn in flight is summarized without a fork" do
+    @session.update!(status: :running)
+    turn_on_a_worker!(@session)
+
+    result = nil
+    assert_no_difference -> { Session.count } do
+      result, = generate_with_inference("Working on the migration.")
+    end
+
+    assert_equal :ready, result.outcome
+    assert_nil @session.reload.status_summary.fork_session_id,
+      "a fork is a second agent on a conversation that has already moved on"
+  end
+
+  test "a session with an undelivered enqueued message is summarized without a fork" do
+    @session.enqueued_messages.create!(content: "the new prompt", position: 1, status: "pending")
+
+    result = nil
+    assert_no_difference -> { Session.count } do
+      result, = generate_with_inference("Waiting on the new prompt.")
+    end
+
+    assert_equal :ready, result.outcome
+    assert_nil @session.reload.status_summary.fork_session_id
+  end
+
+  test "a session with a prompt stamped for a job it has not started is summarized without a fork" do
+    @session.merge_metadata!("pending_follow_up_prompt" => "the new prompt")
+
+    result = nil
+    assert_no_difference -> { Session.count } do
+      result, = generate_with_inference("Waiting on the new prompt.")
+    end
+
+    assert_equal :ready, result.outcome
+    assert_nil @session.reload.status_summary.fork_session_id
+  end
+
+  # `force` overrides the refusals that are about waste. This one is about a
+  # second agent on a live conversation, which pressing Regenerate does not make
+  # safe — so a forced run goes headless too rather than forking.
+  # Neither marker is cleaned up on the way into a terminal state, so without a
+  # status guard a `failed` session holding a stranded message would read as live
+  # forever and never be given a fork again.
+  test "a stranded prompt on a failed session is not a live conversation" do
+    @session.update!(status: :failed)
+    @session.enqueued_messages.create!(content: "nothing will ever deliver this", position: 1, status: "pending")
+
+    assert_not Sessions::LiveTurn.undelivered_prompt?(@session)
+  end
+
+  test "a forced regeneration of a live conversation still goes headless" do
+    @session.update!(status: :running)
+    turn_on_a_worker!(@session)
+
+    result = nil
+    assert_no_difference -> { Session.count } do
+      result, = generate_with_inference("Working on the migration.", force: true)
+    end
+
+    assert_equal :ready, result.outcome
+    assert_nil @session.reload.status_summary.fork_session_id
+  end
+
+  # The window the incident actually landed in: the fork was taken at 01:50:24 and
+  # the new prompt arrived at 01:50:25. A check asked only BEFORE the fork misses
+  # it by a second, so the same question is asked again after the fork exists —
+  # and the fork is thrown away rather than dispatched.
+  test "a conversation that comes alive while the fork is being made throws the fork away" do
+    inference = FakeInference.new("Working on the new prompt.")
+    dispatched = []
+    Session.any_instance.stubs(:deliver_follow_up!).with { |prompt, *| dispatched << prompt; true }
+
+    result = SessionStatusSummaryGenerator.call(
+      session: @session,
+      file_system: @fs,
+      inference_service: inference,
+      fork_service: fork_service_running { @session.enqueued_messages.create!(content: "the new prompt", position: 1, status: "pending") }
+    )
+
+    assert_equal :ready, result.outcome, "the blurb is still owed, so the headless path writes it"
+    assert_empty dispatched, "the fork must not be sent the summary prompt"
+    assert_nil @session.reload.status_summary.fork_session_id
+
+    fork = Session.where("metadata->>? = ?", SessionStatusSummaryGenerator::FORK_MARKER, @session.id.to_s).sole
+    assert_equal "archived", fork.status, "the fork is disposed of, not left holding a clone"
+  end
+
+  # The guard has to be narrow enough to leave the fork path alone, which is
+  # where the richer blurb comes from: a session at rest with nothing queued
+  # still forks.
+  test "a session at rest still gets a fork" do
+    result = generate
+
+    assert_equal :started, result.outcome
+    assert_equal summary_fork.id, @session.reload.status_summary.fork_session_id
+  end
+
   test "the headless path writes the blurb without forking anything" do
     result, inference = nil
 
