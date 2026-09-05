@@ -351,6 +351,30 @@
       </p>
     </div>
 
+    <!-- Burst coalescing -->
+    <div class="mb-4">
+      <%= f.label :coalesce_window_seconds, class: "block text-sm font-medium text-gray-700" do %>
+        Coalesce Slack messages within (seconds)
+      <% end %>
+      <%= f.number_field :coalesce_window_seconds,
+          min: 0,
+          step: 1,
+          placeholder: Trigger::DEFAULT_COALESCE_WINDOW_SECONDS.to_s,
+          class: "mt-1 shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-32 sm:text-sm border-gray-300 rounded-md" %>
+      <p class="mt-1 text-sm text-gray-500">
+        Slack messages that land in the same channel, thread or DM within this many seconds of each
+        other are treated as one event and spawn one session. Nothing is lost: the messages folded
+        away are listed, with their links, in that session's prompt. Leave blank for the default
+        (<%= Trigger::DEFAULT_COALESCE_WINDOW_SECONDS %>s); set 0 to give every message its own session.
+        Only Slack conditions coalesce.
+      </p>
+      <% if trigger.persisted? && trigger.coalesce_window_inert? %>
+        <p class="mt-1 text-sm text-amber-700">
+          This trigger has no Slack condition, so the window is not read on any of its fires.
+        </p>
+      <% end %>
+    </div>
+
     <!-- Pending-session dedup -->
     <div class="mb-4">
       <div class="flex items-start">

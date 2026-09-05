@@ -3014,6 +3014,25 @@ deferring, alerts, and lets the ordinary once-a-minute cron take over.
 Fixed in [#77](https://github.com/tadasant/zimmer/issues/77). The delay above is what that fix traded
 the dropped ticks for.
 
+### Coalescing groups a burst within one poll pass, so a burst can straddle a tick
+
+Slack messages that land close together are folded into [one
+session](/sessions/triggers/#coalescing-a-burst-of-slack-messages) rather than one each. The grouping
+happens inside a single poll pass: `SlackTriggerPollerJob` ticks once a minute, and each pass groups
+the messages *it* fetched. A burst whose messages fall either side of a tick boundary is two groups
+and two sessions — not the seven the defect produced, but not one either.
+
+Closing that would mean either holding a fire back until the channel has been quiet for the window
+(which adds up to a poll cycle of latency to every alert, including the lone ones) or folding into a
+session that already exists (which means queueing a message onto a session that may be about to
+archive — the stranded-queued-message alert is exactly what the original burst was made of). Both
+trade a worse failure for a smaller one, so the pass is the unit.
+
+One smaller edge follows from the same choice: a group's prompt names the messages folded into it,
+but nothing tells that session a sibling group was coalesced in the pass before it. The router prompt
+already asks a session to check the channel for an investigation already under way, which is what
+covers it.
+
 ### `thread_ts` is not supported for bot mentions
 
 You can watch a thread for new messages, but not for bot mentions, and not for passive listening

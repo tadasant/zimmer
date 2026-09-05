@@ -276,6 +276,7 @@ class TriggersController < ApplicationController
       :resuscitate_archived,
       :max_sessions_per_minute,
       :skip_if_pending_session,
+      :coalesce_window_seconds,
       :scheduling_class,
       :precedence,
       mcp_servers: [],
@@ -292,6 +293,12 @@ class TriggersController < ApplicationController
       # make any partial update that omits the field silently clear the cap.
       if p.key?(:max_sessions_per_minute) && p[:max_sessions_per_minute].blank?
         p[:max_sessions_per_minute] = nil
+      end
+      # Same rule, different meaning of nil: a blank coalescing window is "use the
+      # default", which is NOT the same as the 0 that turns coalescing off. "0"
+      # is not blank, so it survives this untouched.
+      if p.key?(:coalesce_window_seconds) && p[:coalesce_window_seconds].blank?
+        p[:coalesce_window_seconds] = nil
       end
       # Ensure mcp_servers is an array and strip blanks from form submission
       p[:mcp_servers] = (p[:mcp_servers] || []).reject(&:blank?)

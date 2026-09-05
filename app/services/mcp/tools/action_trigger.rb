@@ -138,6 +138,16 @@ module Mcp
           than more of it. This bounds the BACKLOG; max_sessions_per_minute bounds the RATE, and
           neither substitutes for the other.
 
+        **Burst coalescing (Slack):**
+        - **coalesce_window_seconds**: Slack messages that land in the same channel, thread or DM
+          within this many seconds of each other are ONE event and spawn ONE session; the messages
+          folded away are listed, with their links, in that session's prompt, so nothing is dropped.
+          Omit (or send null) to inherit the default of #{Trigger::DEFAULT_COALESCE_WINDOW_SECONDS}
+          seconds; send 0 to turn it off and give every message its own session. Only Slack
+          conditions coalesce. This is what stops one alert storm becoming one router session per
+          alert; it neither drops events (unlike max_sessions_per_minute past its cap) nor waits on
+          a predecessor (unlike skip_if_pending_session).
+
         **Burst control:**
         - **max_sessions_per_minute**: caps how many sessions the trigger may spawn per minute.
           Omit (or send null) for no limit — that is the default and how every trigger behaved
@@ -243,6 +253,14 @@ module Mcp
             description: "When true, the trigger spawns nothing while a session it already created is still " \
                          "waiting or running. Default false. Bounds the backlog of duplicate-intent sessions; " \
                          "needs_input/archived/failed predecessors never block a fire."
+          },
+          coalesce_window_seconds: {
+            type: [ "number", "null" ],
+            minimum: 0,
+            description: "Seconds within which Slack messages in one channel, thread or DM count as one " \
+                         "event and spawn one session, the rest folded into its prompt. Null (default) " \
+                         "inherits #{Trigger::DEFAULT_COALESCE_WINDOW_SECONDS}s; 0 turns coalescing off. " \
+                         "Only Slack conditions read it."
           },
           max_sessions_per_minute: {
             type: [ "number", "null" ],
@@ -379,6 +397,10 @@ module Mcp
           enqueue_messages: args.fetch("enqueue_messages", false) || false,
           resuscitate_archived: args.fetch("resuscitate_archived", false) || false,
           skip_if_pending_session: args.fetch("skip_if_pending_session", false),
+          # `.presence` would turn an explicit 0 — "never coalesce" — into nil,
+          # which means the opposite (inherit the default window). Only a key the
+          # caller did not send leaves the column null.
+          coalesce_window_seconds: args["coalesce_window_seconds"],
           max_sessions_per_minute: max_sessions_per_minute_for(args),
           scheduling_class: args["scheduling_class"].presence,
           precedence: trigger_precedence(args),
@@ -401,6 +423,7 @@ module Mcp
           - **Skills / Hooks / Plugins:** #{catalog_lists_summary(trigger)}
           - **Skip While Pending:** #{trigger.skip_if_pending_session ? 'yes' : 'no'}
           - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
+          - **Coalescing Window:** #{coalesce_window_summary(trigger)}
           - **Scheduling Class:** #{scheduling_class_summary(trigger)}
           - **Precedence:** #{precedence_summary(trigger)}
 
@@ -423,6 +446,18 @@ module Mcp
         end
 
         broadcast ? BROADCAST_SESSION_AO_EVENT_BURST_CAP : nil
+      end
+
+      # What a trigger's coalescing window is, and where the number came from —
+      # an inherited default and a value typed by an operator read the same on
+      # the wire, and only one of them is a decision anyone made.
+      def coalesce_window_summary(trigger)
+        return "off (every message spawns its own session)" unless trigger.coalesces_messages?
+
+        source = trigger.coalesce_window_seconds.nil? ? " (default)" : ""
+        inert = trigger.coalesce_window_inert? ? " — inert: no Slack condition on this trigger reads it" : ""
+
+        "#{trigger.effective_coalesce_window_seconds}s#{source}#{inert}"
       end
 
       def update(args)
@@ -451,6 +486,9 @@ module Mcp
         attributes[:skip_if_pending_session] = args["skip_if_pending_session"] if args.key?("skip_if_pending_session")
         # An explicit null clears the cap (back to unbounded); an omitted key means "no opinion".
         attributes[:max_sessions_per_minute] = args["max_sessions_per_minute"].presence if args.key?("max_sessions_per_minute")
+        # No `.presence` here: 0 is a value an operator means (never coalesce),
+        # and null is how they go back to the inherited default.
+        attributes[:coalesce_window_seconds] = args["coalesce_window_seconds"] if args.key?("coalesce_window_seconds")
         # Same omitted-vs-null rule: an explicit null returns the trigger to the
         # class its conditions derive, an omitted key leaves the choice alone.
         attributes[:scheduling_class] = args["scheduling_class"].presence if args.key?("scheduling_class")
@@ -485,6 +523,7 @@ module Mcp
           - **Skills / Hooks / Plugins:** #{catalog_lists_summary(trigger)}
           - **Skip While Pending:** #{trigger.skip_if_pending_session ? 'yes' : 'no'}
           - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
+          - **Coalescing Window:** #{coalesce_window_summary(trigger)}
           - **Scheduling Class:** #{scheduling_class_summary(trigger)}#{" #{reclassified}" if reclassified}
           - **Precedence:** #{precedence_summary(trigger)}
 
