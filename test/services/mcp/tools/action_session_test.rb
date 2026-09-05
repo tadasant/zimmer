@@ -844,7 +844,10 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
 
     error = assert_raises(Mcp::ToolError) { caller_tool.call("action" => "archive", "session_id" => session.id) }
     assert_includes error.message, "has not been delivered", "the queue refusal is asked first"
+    assert_not_includes error.message, "an agent turn is in flight",
+      "the live-turn check is never reached, which is what 'asked first' means"
     assert_equal "running", session.reload.status
+    assert_equal "pending", queued.reload.status, "a refusal must not half-strand the queue"
 
     result = caller_tool.call("action" => "archive", "session_id" => session.id, "force" => true)
 
@@ -855,16 +858,26 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
 
   # The timeline write is best-effort by design — the archive the caller asked for
   # has already landed by the time it runs, so it must not be able to undo it.
+  #
+  # The failure is injected at `forced_over_live_turn_log`, which is evaluated as
+  # the argument to the guarded `logs.create!` and has no other caller on this
+  # path. Stubbing the association instead would prove nothing: `find_session`
+  # loads its own Session instance, so a stub on the fixture's `logs` proxy is
+  # never the object the tool touches — the write would simply succeed and the
+  # test would pass with the rescue deleted.
   test "a timeline write that fails does not fail the archive it describes" do
     session = sessions(:running)
     turn_on_a_worker!(session)
-    session.logs.stubs(:create!).raises(ActiveRecord::StatementInvalid, "boom")
+    Sessions::LiveTurn.stubs(:forced_over_live_turn_log).raises(ActiveRecord::StatementInvalid, "boom")
 
     result = tool_for_session(sessions(:needs_input).id)
       .call("action" => "archive", "session_id" => session.id, "force" => true)
 
     assert_equal "archived", session.reload.status
-    assert_includes result, "## Session Archived"
+    assert_includes result, "terminated an agent turn that was in flight",
+      "pins the forced-over-a-live-turn branch, not merely a successful archive"
+    assert_empty session.logs.where("content LIKE ?", "%uncommitted work discarded%"),
+      "the write really did fail — otherwise this test is not exercising the rescue"
   end
 
   test "bulk_archive reports a live turn per session and leaves that one alone" do
