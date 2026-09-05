@@ -40,11 +40,12 @@
 #   * **Abort guards on list integrity.** A clones base that is missing or
 #     unreadable makes every clone-derived directory look orphaned at once, which
 #     is precisely the shape of a mass deletion. The run stops instead.
-#   * **An age bar.** AGE_THRESHOLD (24h) on the transcript directory's own
-#     mtime. Nothing in the design needs it — a directory whose clone is gone is
-#     orphaned the instant the clone goes — but it is the guard that costs
-#     nothing and covers the case nobody thought of, including a `/tmp` cwd a
-#     process is writing to right now.
+#   * **An age bar.** AGE_THRESHOLD (24h), against the newest mtime in the
+#     directory rather than the directory's own — see #newest_mtime for why those
+#     differ. For the clone-derived class the bar is redundant by design and kept
+#     anyway; for the `/tmp` class it is the ONLY liveness check there is, since
+#     nothing on the box can say whether a `/tmp` cwd still exists, so it has to
+#     be the real age of the transcript.
 #
 # Not scheduled in development, deliberately: outside a deployment
 # `~/.claude/projects` is a person's own Claude Code history.
@@ -53,14 +54,17 @@ class OrphanTranscriptDirectoryCleanupJob < ApplicationJob
   include SingletonSweep
 
   # Only reap a transcript directory nothing has written to in a day. See the
-  # class comment — this bar is redundant by design and kept anyway.
+  # class comment for what this bar does and does not carry.
   AGE_THRESHOLD = 24.hours
 
-  # Directories per run. Sized against the backlog it has to clear: production's
-  # ~6,564 orphans at four runs a day is under four days, and 500 small recursive
-  # deletes is seconds of work, not the tens of minutes
-  # OrphanCloneFilesystemCleanupJob's Compose teardowns can cost.
-  BATCH_LIMIT = 500
+  # Directories per run, at four runs a day. Deliberately far higher than
+  # OrphanCloneFilesystemCleanupJob::BATCH_LIMIT (20): there is no Docker Compose
+  # teardown here and no wall-clock hazard — a thousand small recursive deletes
+  # is seconds of work, not the tens of minutes that job's per-directory
+  # COMPOSE_DOWN_TIMEOUT can cost. Sized to work a backlog in the tens of
+  # thousands off over days rather than months; the arithmetic is deliberately
+  # not pinned to a measurement, which moves.
+  BATCH_LIMIT = 1_000
 
   # The deployments that own the durable volumes, and so are the only ones
   # allowed to reap inside them. Mirrors
@@ -70,7 +74,7 @@ class OrphanTranscriptDirectoryCleanupJob < ApplicationJob
 
   def perform
     clones_base = ClonesDirectory.base
-    return unless sweepable_root?(clones_base)
+    return unless sweepable_clones_base?(clones_base)
 
     live_names = live_clone_names(clones_base)
     return if live_names.nil?
@@ -86,6 +90,7 @@ class OrphanTranscriptDirectoryCleanupJob < ApplicationJob
   def sweep(source, clones_base:, live_names:)
     root = source.per_working_directory_transcript_root
     return if root.blank?
+    return unless sweepable_transcript_root?(root)
     return unless File.directory?(root)
 
     classifier = TranscriptDirectoryClassifier.new(
@@ -113,7 +118,7 @@ class OrphanTranscriptDirectoryCleanupJob < ApplicationJob
       counts[classification] += 1
       next unless classification == :orphaned
 
-      mtime = File.mtime(full_path)
+      mtime = newest_mtime(full_path)
       next if mtime > AGE_THRESHOLD.ago
 
       candidates << [ full_path, mtime ]
@@ -122,8 +127,8 @@ class OrphanTranscriptDirectoryCleanupJob < ApplicationJob
       next
     end
 
-    # Measured against the volume rather than summed per directory: `du` on 500
-    # directories is 500 subprocesses, and the number that matters is what the
+    # Measured against the volume rather than summed per directory: `du` on a
+    # thousand directories is a thousand subprocesses, and the number that matters is what the
     # disk gave back. Approximate by construction — anything else writing to the
     # same volume during the sweep moves it — which is exactly the caveat
     # OrphanCloneFilesystemCleanupJob#bytes_freed_since already lives with.
@@ -145,6 +150,31 @@ class OrphanTranscriptDirectoryCleanupJob < ApplicationJob
     end
   end
 
+  # The most recent mtime anything in `path` carries — the directory's own, and
+  # its direct children's.
+  #
+  # The directory's mtime alone is not the age of the transcript. POSIX bumps a
+  # directory's mtime when entries are created or removed in it, NOT when an
+  # existing file is appended to — and Claude Code appends to one
+  # `<session_id>.jsonl` for the life of a session, while `tool-results/` writes
+  # land in that child. So a directory's own mtime effectively freezes at session
+  # start, and reading it alone would call a transcript being written right now
+  # a day old.
+  #
+  # Direct children are enough to fix that: the `.jsonl` files are here, and
+  # `tool-results/`'s own mtime moves when files land in it. One readdir and a
+  # handful of stats per candidate.
+  def newest_mtime(path)
+    children = Dir.children(path).map { |entry| File.mtime(File.join(path, entry)) }
+    [ File.mtime(path), *children ].max
+  rescue Errno::ENOENT
+    raise
+  rescue SystemCallError
+    # Unreadable. Answer "now", which excludes it from the sweep — an age we
+    # cannot establish is not one to delete on.
+    Time.current
+  end
+
   # Bytes the volume gave back since `starting_free`. Zero when either probe
   # failed — the same shape as OrphanCloneFilesystemCleanupJob#bytes_freed_since.
   def bytes_freed_since(starting_free, root)
@@ -159,9 +189,14 @@ class OrphanTranscriptDirectoryCleanupJob < ApplicationJob
   #
   # A clone directory that exists is live for this purpose whatever its session's
   # status: the transcript hook fires when the clone is deleted, so a transcript
-  # whose clone is still on disk has simply not reached its turn yet. Tombstones
-  # are included rather than filtered, for the same reason — a clone mid-delete
-  # is a clone whose `CloneReaper.reap` is about to take the transcript with it.
+  # whose clone is still on disk has simply not reached its turn yet.
+  #
+  # Tombstones are not filtered out, but nothing rests on that. A tombstone is
+  # `<clone>.deleting-<hex>`, which derives to `…-<clone>-deleting-<hex>` — and
+  # `covers?` asks whether a live NAME prefixes an ENTRY, so a tombstone can
+  # never cover the `…-<clone>` entry it came from. It confers no protection, and
+  # none is wanted: a clone mid-delete is one whose `CloneReaper.reap` is taking
+  # the transcript with it anyway.
   #
   # @return [Set<String>, nil]
   def live_clone_names(clones_base)
@@ -198,17 +233,18 @@ class OrphanTranscriptDirectoryCleanupJob < ApplicationJob
     nil
   end
 
-  # Whether this deployment may reap at all.
+  # Whether the set difference this sweep computes describes the box it is
+  # looking at.
   #
-  # The hazard is a process whose database and clones base do not describe the
-  # box it is looking at: `bin/rails test` runs against `zimmer_test` and
-  # `bin/dev` against `zimmer_development`, but `~/.claude/projects` is whatever
-  # the host has — on a developer's machine, their own Claude Code history. Same
-  # fence, same reasoning, as OrphanCloneFilesystemCleanupJob#reclaimable_root?,
-  # and the cron entry backs it up by not scheduling this outside production and
-  # staging at all.
-  def sweepable_root?(clones_base)
-    return true if SWEEPS_DEFAULT_DURABLE_ROOT.include?(Rails.env)
+  # The hazard is a process whose database does not describe the volume it reads
+  # liveness from: `bin/rails test` runs against `zimmer_test` and `bin/dev`
+  # against `zimmer_development`, but both resolve the clones base to
+  # `~/.zimmer/clones` — which on a machine that also hosts a real Zimmer holds
+  # live sessions' working directories, so against the wrong database every live
+  # clone reads as dead. Same fence, same reasoning, as
+  # OrphanCloneFilesystemCleanupJob#reclaimable_root?.
+  def sweepable_clones_base?(clones_base)
+    return true if deployment_owns_its_volumes?
     return true unless inside_default_durable_root?(clones_base)
 
     Rails.logger.warn "[OrphanTranscriptDirectoryCleanupJob] Refusing to sweep transcript directories " \
@@ -217,13 +253,44 @@ class OrphanTranscriptDirectoryCleanupJob < ApplicationJob
     false
   end
 
+  # Whether the volume this sweep DELETES from belongs to the deployment.
+  #
+  # A separate question from the one above, and the reason it is asked separately
+  # is that the two volumes move independently: `AGENT_CLONES_DIR` relocates the
+  # clones base and nothing relocates `~/.claude/projects`. Fencing only on the
+  # clones base would therefore *permit* the sweep in exactly the configuration a
+  # developer runs — a relocated clones base — and let it delete out of a
+  # person's own Claude Code history, which is what lives at that path outside a
+  # deployment. The cron entry already declines to schedule this in development;
+  # this is the guard for a manual `perform`.
+  def sweepable_transcript_root?(root)
+    return true if deployment_owns_its_volumes?
+    return true unless inside_real_home?(root)
+
+    Rails.logger.warn "[OrphanTranscriptDirectoryCleanupJob] Refusing to sweep #{root}: it is inside " \
+      "this user's home directory and #{Rails.env} is not a deployment, so it is a person's own " \
+      "Claude Code history rather than a deployment's transcript volume"
+    false
+  end
+
+  def deployment_owns_its_volumes?
+    SWEEPS_DEFAULT_DURABLE_ROOT.include?(Rails.env)
+  end
+
   # Derived from the *default* location (`~/.zimmer`), not from
   # ClonesDirectory.base — deriving it from the configured base would make the
   # check degenerate, since a path is always inside its own parent.
   def inside_default_durable_root?(path)
-    durable_root = File.join(File.expand_path("~"), ClonesDirectory::DEFAULT_HOME_SUBDIR)
+    inside?(path, File.join(File.expand_path("~"), ClonesDirectory::DEFAULT_HOME_SUBDIR))
+  end
+
+  def inside_real_home?(path)
+    inside?(path, File.expand_path("~"))
+  end
+
+  def inside?(path, root)
     expanded = File.expand_path(path)
 
-    expanded == durable_root || expanded.start_with?("#{durable_root}#{File::SEPARATOR}")
+    expanded == root || expanded.start_with?("#{root}#{File::SEPARATOR}")
   end
 end

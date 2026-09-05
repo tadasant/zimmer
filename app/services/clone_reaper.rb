@@ -96,8 +96,13 @@ module CloneReaper
     # (zimmer#434). It has to go here, in the same breath as the clone, or it
     # never goes at all.
     #
-    # After the removal, not before: if the removal is refused above we must not
-    # have deleted the transcript of a session that still owns its clone.
+    # `:removed` only. `:refused` is the point of the guard above — a session that
+    # still owns its clone keeps its conversation. `:absent` is the ordinary
+    # second pass (EmptyTrashJob reaching a clone DeferredCloneCleanupJob already
+    # took, two reapers racing), where whoever actually removed the directory ran
+    # this; if nobody did, the transcript falls to
+    # OrphanTranscriptDirectoryCleanupJob rather than being deleted on the
+    # strength of a path that was not there.
     TranscriptDirectoryReaper.reap_for_clone(path) if outcome == :removed
 
     outcome

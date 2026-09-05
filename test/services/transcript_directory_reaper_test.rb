@@ -70,6 +70,17 @@ class TranscriptDirectoryReaperTest < ActiveSupport::TestCase
     assert File.directory?(dir)
   end
 
+  test "unlinks a symlinked entry without following it to the target" do
+    target = File.join(@projects_root, "-rails")
+    FileUtils.mkdir_p(target)
+    link = ClaudeTranscriptSource.new.transcript_directory(working_directory: @clone_path)
+    File.symlink(target, link)
+
+    assert_equal 1, TranscriptDirectoryReaper.reap_for_clone(@clone_path)
+    assert_not File.symlink?(link)
+    assert File.directory?(target), "rm_rf unlinks the link, never the tree it points at"
+  end
+
   test "is a no-op when the projects root does not exist" do
     FileUtils.rm_rf(@projects_root)
 
@@ -97,6 +108,18 @@ class TranscriptDirectoryReaperTest < ActiveSupport::TestCase
     assert_not File.directory?(@clone_path)
     assert_not File.directory?(own)
     assert_not File.directory?(sub)
+  end
+
+  test "an absent clone path leaves the transcript directory to the sweep" do
+    own = transcript_dir_for(@clone_path)
+    FileUtils.rm_rf(@clone_path)
+
+    # Nothing was removed here, so nothing is claimed to have been. The ordinary
+    # producer of this is a second reaper reaching a clone the first already
+    # took — whoever did remove it ran the hook — and if nobody did, the sweep
+    # reclaims it rather than this deleting on the strength of an absent path.
+    assert_equal :absent, CloneReaper.reap(@clone_path, reason: "test")
+    assert File.directory?(own)
   end
 
   test "a refused clone keeps its transcript directory" do

@@ -29,6 +29,15 @@
 # Every failure here is swallowed and logged. The clone is already gone by the
 # time this runs; raising would turn a leaked few hundred kilobytes — which the
 # sweeper reclaims on its own schedule — into a failed archive or a failed sweep.
+#
+# Real IO, not the caller's adapter
+# ---------------------------------
+# CloneReaper threads a `file_system:` adapter through to AtomicCloneRemoval and
+# this does not take it. That is deliberate rather than an oversight: the adapter
+# names the CLONES volume, and every path here is on a different one
+# (`claude_home`). A caller holding a mock adapter for its own clone tree has no
+# opinion about `~/.claude/projects`, and honoring one would mean the transcript
+# a real session wrote goes unreaped whenever the caller happened to inject.
 module TranscriptDirectoryReaper
   module_function
 

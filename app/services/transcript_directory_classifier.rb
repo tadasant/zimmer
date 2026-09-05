@@ -100,28 +100,14 @@ class TranscriptDirectoryClassifier
     File.basename(path)
   end
 
-  # Whether `entry` is a directory `clone_path` could have produced — the clone's
-  # own name, or one extending it by `-<subdirectory>`. Used by
-  # TranscriptDirectoryReaper on the clone-deletion path, where the same prefix
-  # rule that spares a live subdirectory cwd here has to *catch* it there.
-  #
-  # Derives the name on every call, so a caller scanning a whole transcript root
-  # against one clone should hoist `derived_name` out of its loop and call
-  # `covers?` directly — that root holds thousands of entries.
-  #
-  # @param clone_path [String] a clone directory
-  # @param entry [String] a directory name under the transcript root
-  # @return [Boolean]
-  def self.derived_from?(transcript_source:, clone_path:, entry:)
-    covers?(
-      derived_name(transcript_source: transcript_source,
-                   working_directory: File.expand_path(clone_path.to_s)),
-      entry
-    )
-  end
-
   # Whether `name` — a directory name derived from some working directory —
   # claims `entry`, either as itself or as an ancestor cwd of it.
+  #
+  # The two directions of the same rule: this is what spares a live session's
+  # subdirectory-cwd transcript here, and what makes TranscriptDirectoryReaper
+  # *catch* it when the clone is deleted. Composed with `derived_name` by both
+  # callers, which hoist the derivation out of their loop — the root it is
+  # matched against holds thousands of entries.
   def self.covers?(name, entry)
     return false if name.blank? || entry.blank?
 
@@ -138,6 +124,16 @@ class TranscriptDirectoryClassifier
   #
   # Strictly: `entry == @clones_base_name` is the clones base ITSELF as a cwd,
   # which belongs to no clone and is left to `:unknown`.
+  #
+  # This is the one place the forward-derivation discipline leaks, and it leaks
+  # because the derivation is lossy: `PathSanitizer` folds `/`, `.` and `_` all
+  # onto `-`, so a cwd under a SIBLING of the clones base — `<base>-old`,
+  # `<base>.bak`, `<base>_old`, the kind of thing a `clones:relocate` leaves
+  # behind — wears the same prefix and is answered `:orphaned`. Which is the
+  # right answer for the case that produces it (a relocated base's leftovers are
+  # exactly as dead as the clones they named), but it is an inference from a name
+  # rather than from a directory that exists, so it is written down rather than
+  # left to be rediscovered.
   def clone_derived?(entry)
     return false if @clones_base_name.blank?
 
