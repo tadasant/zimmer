@@ -270,7 +270,13 @@ and the atomic `merge_metadata!` UPDATE, which serialises `{"agent_root_key": "z
 or did not depending on which writer had touched the row last. The same query, seconds apart,
 returned different sets. Both columns are now read through `::jsonb::text`, which renders one
 canonical form whoever wrote the row, and the query is tried in both spellings: `"key":"value"` and
-`"key": "value"` find the same sessions. A zero result means zero.
+`"key": "value"` find the same sessions. A zero result is no longer a coin flip on which writer touched
+the row last.
+
+One thing canonical form costs you: `jsonb` orders an object's keys by length then bytewise, not in the
+order they were written, so a fragment spanning the comma **between** two keys only matches if you spelled
+them in Postgres's order. Search one key/value pair, or a value — both are unaffected. See
+[Limitations](/limitations/#a-metadata-search-matches-postgress-key-order-so-a-two-key-fragment-is-unreliable).
 
 `search_contents` matches `transcript::text` — the stored JSON, not the rendered conversation. A
 phrase broken across a line break is `\n` in that text and does not match, and a hit can land in a
