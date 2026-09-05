@@ -13,6 +13,12 @@ class EnqueuedMessageDashboard < Administrate::BaseDashboard
     goal: Field::Text,
     position: Field::Number,
     status: Field::String,
+    # Where the message came from — "caller" for an enqueue by whoever holds the
+    # session, and the other origins the queue distinguishes when it drains.
+    origin: Field::String,
+    # Attachments, as the JSONB arrays the queue stores them in.
+    images: Field::String.with_options(searchable: false),
+    files: Field::String.with_options(searchable: false),
     session: Field::BelongsTo,
     created_at: Field::DateTime,
     updated_at: Field::DateTime
@@ -33,16 +39,7 @@ class EnqueuedMessageDashboard < Administrate::BaseDashboard
 
   # SHOW_PAGE_ATTRIBUTES
   # an array of attributes that will be displayed on the model's show page.
-  SHOW_PAGE_ATTRIBUTES = %i[
-    id
-    session
-    content
-    goal
-    position
-    status
-    created_at
-    updated_at
-  ].freeze
+  SHOW_PAGE_ATTRIBUTES = ATTRIBUTE_TYPES.keys.freeze
 
   # FORM_ATTRIBUTES
   # an array of attributes that will be displayed
