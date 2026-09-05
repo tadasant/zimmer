@@ -485,14 +485,14 @@ class RuntimeConfigPostProcessor
   # budget twice in two places that could disagree.
   #
   # Codex has no such variable and a 30-second default, so it overrides this.
+  # Pi has no such variable either, and its MCP client is the `pi-mcp-adapter`
+  # extension rather than Pi itself, so PiMcpConfigPostProcessor overrides this
+  # too — writing the adapter's per-entry `requestTimeoutMs` over its 60-second
+  # SDK default ([#844](https://github.com/tadasant/zimmer/issues/844)).
   #
-  # The default is a no-op for two different reasons, and only one of them is
-  # benign. Claude does not need it — its spawn env already carries the budget to
-  # every server it spawns. Pi is not covered at all: `PiRuntimeAdapter` exports
-  # no timeout variable, and nothing Zimmer writes into the `.mcp.json` that
-  # PiMcpConfigPostProcessor seeds is read as one, so a Pi session on a cold
-  # clone runs on whatever its own client defaults to
-  # ([#844](https://github.com/tadasant/zimmer/issues/844)).
+  # So the default is a no-op for Claude alone, and benignly: its spawn env
+  # already carries the budget to every server it spawns, and writing the same
+  # budget in two places that could disagree is worse than writing it once.
   #
   # @param _servers [Hash] server name => entry
   def apply_startup_timeouts!(_servers)

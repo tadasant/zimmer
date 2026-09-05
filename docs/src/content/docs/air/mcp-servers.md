@@ -303,14 +303,17 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 
 ## Timeouts and caching
 
-- **Three minutes to start**, for every MCP server, on Claude and Codex. The budget is one number
-  — `McpStartupTimeout::SECONDS` — written in each runtime's own idiom, because they share no
-  mechanism. Claude reads `MCP_TIMEOUT=180000` off the agent process's environment
+- **Three minutes to start**, for every MCP server, on all three runtimes. The budget is one
+  number — `McpStartupTimeout::SECONDS` — written in each runtime's own idiom, because they share
+  no mechanism. Claude reads `MCP_TIMEOUT=180000` off the agent process's environment
   (`ClaudeSpawnEnv#configure_mcp_env`), which reaches every server it spawns. Codex has no such
   variable: it reads `startup_timeout_sec` out of each `[mcp_servers.*]` table, so
   `CodexConfigTomlPostProcessor` writes `startup_timeout_sec = 180` onto every **stdio** entry.
-  HTTP entries get none — they reach a server that is already running, and a longer budget there
-  would only delay reporting a URL that is simply unreachable.
+  Pi has no such variable either, and no MCP of its own — its client is the `pi-mcp-adapter`
+  extension, whose knob is per-entry `requestTimeoutMs`, so `PiMcpConfigPostProcessor` writes
+  `"requestTimeoutMs": 180000` onto every **stdio** entry of the `.mcp.json` it seeds.
+  On both of those two, HTTP entries get none — they reach a server that is already running, and a
+  longer budget there would only delay reporting a URL that is simply unreachable.
 - Codex's own default is 30 seconds, measured against the pinned `@openai/codex@0.146.0` binary:
   a stdio server that never answers delays the first model request by 29.9s over the
   no-server baseline, and `startup_timeout_sec = 5` moves the same measurement to 5.1s. That is
@@ -322,15 +325,23 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
   the handshake for three minutes instead of thirty seconds, on every launch, since Zimmer
   respawns stdio servers per run. A slow start is recoverable and a dropped server is not, so
   that is the trade taken deliberately.
-- **Pi gets neither.** `PiRuntimeAdapter` exports no timeout variable, and nothing Zimmer writes
-  into the `.mcp.json` that `PiMcpConfigPostProcessor` seeds is read as one — yet those seeded
-  entries are stdio `npx` servers on the same clone-scoped cold cache. Tracked in
-  [#844](https://github.com/tadasant/zimmer/issues/844).
+- Pi's own default is the MCP SDK's 60 seconds, measured against the pinned
+  `pi-mcp-adapter@2.32.1` the same way: an `eager` stdio server pointed at a process that accepts
+  the connection and never answers `initialize` is given up on at 63.4s with nothing set, at 33.6s
+  with `requestTimeoutMs: 30000`, at 93.6s with `90000`, and at 183.2s with the `180000` Zimmer
+  now writes — a flat ~3.4s of adapter startup on top of an exactly honored budget
+  ([#844](https://github.com/tadasant/zimmer/issues/844)).
+- **Pi's spelling covers more than a startup**, and that is deliberate rather than incidental.
+  `requestTimeoutMs` is the budget for *every* request on the connection, so a tool call on a Pi
+  MCP server gets three minutes rather than the SDK's sixty seconds too. The adapter has no
+  connect-only key to write instead — `buildRequestOptions` in its `server-manager.ts` builds one
+  `RequestOptions` and hands it to `client.connect` and to every call after it. The trade goes the
+  same way as the startup one: a slow tool is recoverable, a tool killed mid-flight is not.
 - A config entry that already carries `startup_timeout_sec` (or the deprecated
-  `startup_timeout_ms` Codex folds into the same field) keeps its own value. A `mcp.json` catalog
-  entry cannot express one — AIR's server schema has no such field — so what this preserves in
-  practice is a timeout a repo wrote into its own checked-in `.codex/config.toml`, which AIR
-  merges around rather than replaces.
+  `startup_timeout_ms` Codex folds into the same field), or `requestTimeoutMs` on Pi, keeps its own
+  value. A `mcp.json` catalog entry cannot express one — AIR's server schema has no such field —
+  so what this preserves in practice is a timeout a repo wrote into its own checked-in
+  `.codex/config.toml` or `.mcp.json`, which AIR merges around rather than replaces.
 - One flat number for every server is the coarse answer; per-server configurability is tracked in
   [#113](https://github.com/tadasant/zimmer/issues/113).
 - Every server whose `command` is `npx` gets `NPM_CONFIG_CACHE` written into **its own `env` table**

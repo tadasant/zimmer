@@ -35,6 +35,10 @@ class PiMcpConfigPostProcessor < RuntimeConfigPostProcessor
 
   MCP_CONFIG_FILENAME = McpJsonConfigFormat::MCP_CONFIG_FILENAME
 
+  # The one timeout `pi-mcp-adapter` reads out of an `.mcp.json` server entry.
+  # See #apply_startup_timeouts! for why this key and not a startup-specific one.
+  REQUEST_TIMEOUT_KEY = "requestTimeoutMs"
+
   private
 
   # Seed the catalog's servers into the config the moment it is read, so every
@@ -114,6 +118,65 @@ class PiMcpConfigPostProcessor < RuntimeConfigPostProcessor
       entry["env"] = server.env.dup if server.env.present?
       entry
     end
+  end
+
+  # Give every stdio server the shared MCP startup budget, in the one spelling
+  # Pi reads.
+  #
+  # Pi itself has no MCP: the client is the `pi-mcp-adapter` extension
+  # (PiExtensions pins 2.32.1), and its knob is per-entry `requestTimeoutMs` in
+  # the `.mcp.json` this class writes. Measured against the pinned extension by
+  # pointing an `eager` stdio server at a process that accepts the connection and
+  # never answers `initialize`, and timing when the adapter gives up:
+  #
+  #   no key set              63.4s   — the MCP SDK's own 60,000ms default
+  #   requestTimeoutMs 30000  33.6s
+  #   requestTimeoutMs 90000  93.6s
+  #   requestTimeoutMs 180000 183.2s  — with the exact entry shape written here
+  #
+  # A flat ~3.4s of adapter startup sits on top of each; the budget itself is
+  # honored exactly, and raising it above the SDK default works.
+  #
+  # Sixty seconds is more headroom than Codex's thirty, and still not obviously
+  # enough: #pin_npx_caches_to_clone! guarantees a fresh clone's first launch
+  # downloads every npx server from the registry, and the nine in `mcp.json`
+  # installing at once cost 18s for the slowest on an idle production droplet.
+  # Zimmer having no say in it at all was the actual gap
+  # ([#844](https://github.com/tadasant/zimmer/issues/844)).
+  #
+  # `requestTimeoutMs` is not startup-scoped, and that is a real consequence
+  # rather than a detail: the adapter applies one budget to every request on the
+  # connection, so a tool call on a Pi MCP server now has three minutes rather
+  # than the SDK's sixty seconds too. There is no connect-only key to write
+  # instead — `buildRequestOptions` in the adapter's `server-manager.ts` builds a
+  # single `RequestOptions` from this field and hands it to `client.connect` and
+  # to every call after it. Widening both is the trade, and it goes the same way
+  # as the startup one: a slow tool is recoverable, a tool killed mid-flight is
+  # not.
+  #
+  # Only stdio entries, exactly as on Codex: an HTTP entry reaches a server that
+  # is already running — for the auto-injected Zimmer entries, this very process
+  # — so it has no cold start to absorb, and a wider budget there would only
+  # delay reporting a URL that is simply unreachable.
+  #
+  # An entry that already names one keeps it. A `mcp.json` catalog entry cannot
+  # express one (AIR's server schema has no such field), so what this preserves
+  # is a value a repo wrote into its own checked-in `.mcp.json`, which seeding
+  # merges around rather than replaces.
+  def apply_startup_timeouts!(servers)
+    timed = servers.filter_map do |name, entry|
+      next unless entry.is_a?(Hash)
+      next if entry["command"].blank?
+      next if entry[REQUEST_TIMEOUT_KEY].present?
+
+      entry[REQUEST_TIMEOUT_KEY] = McpStartupTimeout::MILLISECONDS
+      name
+    end
+
+    return if timed.empty?
+
+    Rails.logger.info "[#{self.class.name}] Set #{REQUEST_TIMEOUT_KEY}=#{McpStartupTimeout::MILLISECONDS} " \
+      "on #{timed.size} stdio MCP server(s): #{timed.join(', ')}."
   end
 
   def warn_unusable(server, reason)
