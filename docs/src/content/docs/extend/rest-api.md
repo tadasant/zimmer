@@ -654,8 +654,13 @@ queue. Same absolute scale, same "applies to sessions spawned from now on" rule 
 hooks and plugins stamped onto every session this trigger spawns, and the payload reports all three
 so a caller can read a trigger's configuration and not only overwrite it. Every id is validated
 against the catalog: an unknown one fails the write with 422 rather than being persisted and
-breaking the next spawn. Unlike `mcp_servers`, an omitted key means "leave the list alone" — send
-`[]` to clear one.
+breaking the next spawn. Unlike `mcp_servers`, an omitted key means "leave the list alone".
+
+`[]` does **not** mean "no skills". A session spawned from a trigger resolves each list as
+`catalog_skills.presence || agent_root.default_skills`, and a fire into a *re-used* session leaves
+its artifacts alone when the trigger's list is empty. So an empty list means the trigger says
+nothing about that artifact and its sessions take the agent root's defaults — sending `[]` resets
+the trigger to that state rather than stripping anything.
 
 `enqueue_messages` and `resuscitate_archived` (booleans, both default `false`) only apply to a
 trigger with `reuse_session` on: the first queues a fire's prompt for a target session that is still

@@ -395,8 +395,17 @@ included), and a large configuration with no high-cardinality poller state is st
 `catalog_skills`, `catalog_hooks` and `catalog_plugins` are the AIR-catalog lists stamped onto every
 session it spawns, and each id is validated against the catalog exactly as `action_session`'s
 `change_skills` / `change_hooks` / `change_plugins` validate theirs — an unknown id is rejected with
-the valid ones listed, rather than persisted and left to break the next spawn. They follow
-`mcp_servers`' rule for omission: a key you do not send is left alone, and `[]` clears the list.
+the valid ones listed, rather than persisted and left to break the next spawn. A key you do not
+send is left alone.
+
+**An empty list is not "none".** `Session.create_from_agent_root!` resolves each list as
+`catalog_skills.presence || agent_root.default_skills`, and a fire onto a *re-used* session skips
+the sync entirely (`Trigger#sync_session_artifact!` refuses to let an empty trigger list strip a
+live session's artifacts — the session-9563 incident). So a trigger with `catalog_skills: []` spawns
+sessions carrying the agent root's default skills, not sessions carrying none. Sending `[]` resets
+the trigger to saying nothing about that artifact; there is no way to spell "spawn with no skills at
+all" from here. `search_triggers` and `action_trigger` both render an empty list as
+`(agent root defaults)` for that reason.
 
 `enqueue_messages` and `resuscitate_archived` both require `reuse_session`, and the tool **rejects**
 them without it rather than accepting a value the model then clears

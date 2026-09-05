@@ -71,7 +71,9 @@ class Api::V1::TriggersController < Api::BaseController
   #   - catalog_skills / catalog_hooks / catalog_plugins: Arrays of AIR catalog ids
   #     stamped onto the sessions this trigger spawns. Each id is validated against
   #     the catalog; an unknown one fails the write with 422. An omitted key leaves
-  #     the trigger's current list alone; [] clears it.
+  #     the trigger's current list alone. [] is not "none": an empty list means the
+  #     trigger says nothing about that artifact, so a spawned session falls back to
+  #     the agent root's defaults and a re-used session keeps what it already has.
   #   - enqueue_messages: Boolean (default false). Requires reuse_session — when the
   #     reused session is still running, queue the fire's prompt instead of dropping
   #     it. Sent without reuse_session it is cleared, and the response payload
@@ -239,10 +241,11 @@ class Api::V1::TriggersController < Api::BaseController
       ]
     )
     permitted[:mcp_servers] ||= []
-    # Unlike mcp_servers, an omitted catalog list means "no opinion" rather than
-    # "none": a PATCH that says nothing about a trigger's skills must not strip
-    # them. Blanks are dropped from the ones that ARE sent, so a caller echoing a
-    # form-shaped array does not persist an empty id the catalog will never match.
+    # Unlike mcp_servers, an omitted catalog list is left untouched rather than
+    # defaulted to []: a PATCH that says nothing about a trigger's skills must not
+    # rewrite them. Blanks are dropped from the ones that ARE sent, so a caller
+    # echoing a form-shaped array does not persist an empty id the catalog will
+    # never match.
     CATALOG_LIST_PARAMS.each do |key|
       permitted[key] = permitted[key].reject(&:blank?) if permitted.key?(key)
     end
@@ -283,10 +286,12 @@ class Api::V1::TriggersController < Api::BaseController
       precedence: trigger.precedence,
       mcp_servers: trigger.mcp_servers,
       # What the sessions this trigger spawns are configured with. Reported so a
-      # caller can read a trigger's artifact set, not only overwrite it.
-      catalog_skills: trigger.catalog_skills || [],
-      catalog_hooks: trigger.catalog_hooks || [],
-      catalog_plugins: trigger.catalog_plugins || [],
+      # caller can read a trigger's artifact set, not only overwrite it. An empty
+      # list means the trigger says nothing about that artifact, so its sessions
+      # take the agent root's defaults — it does not mean "none".
+      catalog_skills: trigger.catalog_skills,
+      catalog_hooks: trigger.catalog_hooks,
+      catalog_plugins: trigger.catalog_plugins,
       conditions: trigger.trigger_conditions.map { |c| condition_json(c) },
       last_session_id: trigger.last_session_id,
       last_triggered_at: trigger.last_triggered_at&.iso8601,
