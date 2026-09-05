@@ -147,6 +147,58 @@ class SlackTriggerPollerCoalescingTest < ActiveJob::TestCase
     end
   end
 
+  test "two different people posting seconds apart are two requests, not one burst" do
+    # The correlation key includes the author on purpose. Two people @mentioning
+    # Zimmer in the same minute are asking two things; folding the second into the
+    # first would render the prompt from the first person's words and leave the
+    # second as an excerpt in a note their trigger's template never anticipated.
+    deliver([
+      message_at(BURST_ANCHOR, "please look at the deploy", user: "U_ALICE"),
+      message_at(BURST_ANCHOR + 5, "unrelated: the docs build is red", user: "U_BOB")
+    ])
+
+    assert_difference("Session.count", 2) do
+      SlackTriggerPollerJob.new.send(:process_condition, @condition)
+    end
+  end
+
+  test "an app that posts without a user id still coalesces, keyed on its bot id" do
+    # An alerting app posting through a webhook carries `bot_id` and no `user`.
+    # That is the incident's own shape, so it has to be a correlation key.
+    deliver([
+      message_at(BURST_ANCHOR, "alert 1", user: nil, bot_id: "B_OBS"),
+      message_at(BURST_ANCHOR + 1, "alert 2", user: nil, bot_id: "B_OBS")
+    ])
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, @condition)
+    end
+  end
+
+  test "two apps alerting at the same moment are two events" do
+    deliver([
+      message_at(BURST_ANCHOR, "disk is full", user: nil, bot_id: "B_OBS"),
+      message_at(BURST_ANCHOR + 1, "build failed", user: nil, bot_id: "B_CI")
+    ])
+
+    assert_difference("Session.count", 2) do
+      SlackTriggerPollerJob.new.send(:process_condition, @condition)
+    end
+  end
+
+  test "a message Slack attributes to nobody is never folded into another" do
+    # No identity is no evidence that two messages share a producer, and the safe
+    # direction is a session too many rather than an alert nothing answers.
+    deliver([
+      message_at(BURST_ANCHOR, "legacy webhook one", user: nil),
+      message_at(BURST_ANCHOR + 1, "legacy webhook two", user: nil)
+    ])
+
+    assert_difference("Session.count", 2) do
+      SlackTriggerPollerJob.new.send(:process_condition, @condition)
+    end
+  end
+
   test "a window of 0 turns coalescing off and gives every message its own session" do
     @trigger.update!(coalesce_window_seconds: 0)
     deliver(burst(3, spacing: 0.5))
@@ -194,13 +246,14 @@ class SlackTriggerPollerCoalescingTest < ActiveJob::TestCase
     Array.new(count) { |i| message_at(BURST_ANCHOR + (i * spacing), "[production] alert #{i + 1}") }
   end
 
-  def message_at(epoch, text)
+  def message_at(epoch, text, user: "U_ALERTS", bot_id: nil)
     OpenStruct.new(
       ts: format("%.6f", epoch),
       text: text,
-      bot_id: nil,
+      bot_id: bot_id,
       thread_ts: nil,
-      user: "U_ALERTS"
+      user: user,
+      username: nil
     )
   end
 
