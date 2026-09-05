@@ -229,6 +229,34 @@ class TriggerConditionTest < ActiveSupport::TestCase
     assert_not @schedule_condition.one_time_schedule?
   end
 
+  # The instant itself, for readers that have to tell a wake still in flight from
+  # a wake that was lost — see SessionStateMachine::SCHEDULE_FIRE_SETTLE. It must
+  # agree with #schedule_due? about when the moment was, so it reads the same
+  # timezone through the same parser.
+  test "scheduled_at_time reads the schedule's instant in its own timezone" do
+    @one_time_condition.configuration = { "scheduled_at" => "2026-04-15T14:30:00", "timezone" => "America/New_York" }
+
+    assert_equal Time.utc(2026, 4, 15, 18, 30), @one_time_condition.scheduled_at_time.utc
+  end
+
+  test "scheduled_at_time agrees with schedule_due? about the moment" do
+    @one_time_condition.configuration = { "scheduled_at" => "2026-04-15T14:30:00", "timezone" => "UTC" }
+    due_at = @one_time_condition.scheduled_at_time
+
+    travel_to(due_at - 1.second) { assert_not @one_time_condition.schedule_due? }
+    travel_to(due_at) { assert @one_time_condition.schedule_due? }
+  end
+
+  test "scheduled_at_time is nil for a recurring schedule and for an unreadable value" do
+    assert_nil @schedule_condition.scheduled_at_time
+
+    @one_time_condition.configuration = { "scheduled_at" => "not-a-date", "timezone" => "UTC" }
+    assert_nil @one_time_condition.scheduled_at_time
+
+    @one_time_condition.configuration = { "scheduled_at" => "2026-04-15T14:30:00", "timezone" => "Invalid/Zone" }
+    assert_nil @one_time_condition.scheduled_at_time
+  end
+
   # Zimmer event validation tests
   test "ao_event condition requires event_name" do
     @ao_event_condition.configuration = {}

@@ -1779,6 +1779,17 @@ watched session that merely `failed` still counts (it can be restarted, and it c
 archived), and a watched row that cannot be read counts too. Before it, an `ao_event` condition that
 had missed its only chance kept reporting itself as an armed wake forever.
 
+**...but "its moment has passed" is not the same as "it is not coming."** For
+`SessionStateMachine::SCHEDULE_FIRE_SETTLE` (ten minutes) after a one-time schedule comes due, and
+for the same window after a watched session archives, a `session_archived` watcher on it still counts as armed — because
+`ScheduleTriggerJob` runs on a one-minute tick and `AoEventTriggerJob` is enqueued after the watched
+transition commits, so in both cases the row is a wake being *delivered*, not one that was missed. Only
+that watcher: a `session_needs_input` watcher on a session that archived a second ago really has missed
+its only chance, and reads unfireable immediately.
+Reading those as lost is how `StrandedSleepSweepJob` came to announce that a healthy session's wake
+"could never fire" eight seconds before it fired, resume the session, and lose the prompt the wake
+was carrying.
+
 **A deliberate resume consumes a pending wake, and the dead row is collected on sight.** A user
 follow-up, a restart, `force_immediate` — anything where somebody decided the session should be
 awake — runs `cancel_pending_one_time_wake_triggers`, which stamps `last_triggered_at` on every
