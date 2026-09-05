@@ -822,6 +822,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_190000) do
     t.integer "sessions_created_count", default: 0
     t.boolean "skip_if_pending_session", default: false, null: false
     t.string "status", default: "enabled", null: false
+    t.jsonb "unresolved_catalog_references", default: {}, null: false
     t.datetime "updated_at", null: false
     t.datetime "wake_held_at"
     t.index ["last_session_id"], name: "index_triggers_on_last_session_id"
