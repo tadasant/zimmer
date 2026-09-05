@@ -1549,6 +1549,56 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_equal [ "zimmer-self-session" ], service.injected_mcp_servers
   end
 
+  # zimmer#908, and the whole point of the change: this probe runs on the
+  # `waiting → running` launch path during AIR CLI install/verify. It used to sit
+  # under `Timeout.timeout { Open3.capture3 }`, which bounds nothing — Open3's
+  # `ensure` joins the wait thread, so the call took exactly as long as the child
+  # took and the session sat in `waiting` with nothing raised.
+  #
+  # Deliberately a REAL child, not a stub, and one that ignores SIGTERM, because
+  # the property under test is that the process GROUP is SIGKILLed on the deadline
+  # rather than politely asked to leave.
+  test "air_binary_healthy? kills a wedged probe at the deadline instead of waiting it out" do
+    Dir.mktmpdir do |dir|
+      binary = File.join(dir, "air")
+      File.write(binary, "#!/bin/sh\ntrap '' TERM\nsleep 30\n")
+      File.chmod(0o755, binary)
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      healthy = with_constant(AirPrepareService, :AIR_VERSION_PROBE_TIMEOUT_SECONDS, 1) do
+        AirPrepareService.air_binary_healthy?(binary)
+      end
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      assert_not healthy, "a probe that never answers is not a healthy binary"
+      # Both ends. Without the lower bound this passes vacuously wherever the
+      # spawn fails instantly — a noexec tmpdir, a missing /bin/sh — with the
+      # watchdog never exercised and `rescue StandardError` supplying the false.
+      assert_operator elapsed, :>=, 1,
+        "the probe returned in #{elapsed.round(2)}s, so the child never ran and the bound was not tested"
+      assert_operator elapsed, :<, 5,
+        "the bound must fire at ~1s; #{elapsed.round(2)}s means the child ran to completion"
+    end
+  end
+
+  test "air_binary_healthy? reads the probe's exit status, not just its output" do
+    Dir.mktmpdir do |dir|
+      binary = File.join(dir, "air")
+      File.write(binary, "#!/bin/sh\necho 0.13.0\n")
+      File.chmod(0o755, binary)
+
+      assert AirPrepareService.air_binary_healthy?(binary)
+
+      File.write(binary, "#!/bin/sh\nexit 3\n")
+
+      assert_not AirPrepareService.air_binary_healthy?(binary)
+    end
+  end
+
+  test "air_binary_healthy? is false for a binary that is not there at all" do
+    assert_not AirPrepareService.air_binary_healthy?("/nonexistent/air")
+  end
+
   private
 
   # Create a fake air binary that exits 0 — enough for air_binary_healthy? to pass.
@@ -1572,38 +1622,44 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     stringified[stringified.index("--prefix") + 1]
   end
 
-  # Check if a capture3 call is a health check (`air --version`).
+  # Check if a call is a health check (`air --version`).
   # Health check calls have the binary path as first arg and "--version" as second.
   def health_check_call?(args)
     args.length == 2 && args.last == "--version" && args.first.to_s.end_with?("air")
   end
 
-  # Wrap a stub lambda so health check calls pass through to the real Open3.capture3.
-  # All other calls go to the provided block.
-  def stub_capture3_with_passthrough(&block)
-    original = Open3.method(:capture3)
-    ->(*args, **opts) {
-      if health_check_call?(args)
-        original.call(*args, **opts)
-      else
-        block.call(*args, **opts)
-      end
-    }
-  end
-
   # Stub the two subprocess seams AirPrepareService uses:
-  #   - Open3.capture3 → npm install + `air --version` health check (health checks
-  #     pass through to the real fake binary).
-  #   - BoundedSubprocess.run → the watchdog-wrapped `air prepare` exec.
+  #   - Open3.capture3 → the npm install.
+  #   - BoundedSubprocess.run → the watchdog-wrapped `air prepare` exec AND the
+  #     `air --version` health probe (zimmer#908 moved the probe onto the
+  #     watchdog; health checks pass through to the real fake binary, so a swap
+  #     is still verified against a binary that really runs).
   # Both route to +response+, invoked as response.call(env, *cmd) returning
   # [stdout, stderr, status], so existing assertions on the captured (env, *cmd)
   # shape work regardless of which seam ran the command.
   def stub_air_subprocess(response, &test)
+    original_bounded = BoundedSubprocess.method(:run)
     bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
-      response.call(env, *command_array)
+      if health_check_call?(command_array)
+        original_bounded.call(command_array, timeout: timeout, env: env, cwd: cwd)
+      else
+        response.call(env, *command_array)
+      end
     }
-    Open3.stub(:capture3, stub_capture3_with_passthrough(&response)) do
+    Open3.stub(:capture3, response) do
       BoundedSubprocess.stub(:run, bounded, &test)
     end
+  end
+
+  # Rebind a constant for the duration of a block. Used to shrink the probe bound
+  # so a timeout test finishes in about a second instead of ten.
+  def with_constant(owner, name, value)
+    original = owner.const_get(name)
+    owner.send(:remove_const, name)
+    owner.const_set(name, value)
+    yield
+  ensure
+    owner.send(:remove_const, name)
+    owner.const_set(name, original)
   end
 end

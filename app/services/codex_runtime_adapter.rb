@@ -1,8 +1,5 @@
 # frozen_string_literal: true
 
-require "open3"
-require "timeout"
-
 # CodexRuntimeAdapter — the RuntimeCliAdapter implementation for OpenAI's Codex
 # CLI (`codex`). It is the Codex counterpart to ClaudeCliAdapter: it builds the
 # command, prepares the environment, and spawns the process, returning the pid
@@ -64,6 +61,9 @@ class CodexRuntimeAdapter
   include CliSpawnEnv
 
   class CodexCliError < StandardError; end
+
+  # Bound on the `codex --version` probe.
+  VERSION_TIMEOUT = 10
 
   GPT_5_6_MODEL_PREFIX = "gpt-5.6-"
   MINIMUM_GPT_5_6_CLI_VERSION = Gem::Version.new("0.146.0")
@@ -168,14 +168,13 @@ class CodexRuntimeAdapter
   end
 
   def installed_cli_version
-    stdout, _stderr, status = Timeout.timeout(10) do
-      Open3.capture3(binary_name, "--version")
-    end
+    stdout, _stderr, status =
+      BoundedSubprocess.run([ binary_name, "--version" ], timeout: VERSION_TIMEOUT)
     return nil unless SubprocessStatus.success?(status)
 
     match = stdout.to_s.match(/(\d+\.\d+\.\d+)/)
     match ? Gem::Version.new(match[1]) : nil
-  rescue Errno::ENOENT, Errno::EACCES, Timeout::Error, ArgumentError
+  rescue Errno::ENOENT, Errno::EACCES, BoundedSubprocess::TimeoutError, ArgumentError
     nil
   end
 

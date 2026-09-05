@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "open3"
-
 # Background job to keep Claude Code CLI up to date.
 #
 # Runs daily via cron to execute `claude update`, which checks for and installs
@@ -20,8 +18,20 @@ class ClaudeCodeUpdateJob < ApplicationJob
   # Singleton: only one update at a time.
   include SingletonSweep
 
-  # 2-minute timeout for the update command
-  UPDATE_TIMEOUT = 120
+  # Bound on `claude update`. Raised from 120s when the bound stopped being
+  # decorative (#908): what it used to do was let the installer finish and then
+  # relabel the result, and what it does now is SIGKILL the process group
+  # part-way through a download-and-extract into the volume-mounted
+  # ~/.local/share/claude/versions/. A killed installer is a worse outcome than
+  # a slow one — nobody can reach a shell on the box to repair a half-written
+  # binary — so the bound is set where it still catches a genuine wedge and
+  # cannot plausibly fire on a contended droplet. Overridable via ENV for ops
+  # tuning, like AirPrepareService's.
+  UPDATE_TIMEOUT = Integer(ENV.fetch("CLAUDE_UPDATE_TIMEOUT_SECONDS", "600"))
+
+  # Bound on the `claude --version` probe taken either side of the update. A
+  # working binary answers in milliseconds; this only has to outlast a loaded box.
+  VERSION_TIMEOUT = 30
 
   def perform
     before_version = current_version
@@ -48,27 +58,30 @@ class ClaudeCodeUpdateJob < ApplicationJob
   private
 
   def current_version
-    stdout, _stderr, status = Timeout.timeout(30) do
-      Open3.capture3("claude", "--version")
-    end
+    stdout, _stderr, status =
+      BoundedSubprocess.run([ "claude", "--version" ], timeout: VERSION_TIMEOUT)
     return nil unless SubprocessStatus.success?(status)
 
     # Extract semver from output like "2.1.87 (Claude Code)"
     match = stdout.strip.match(/(\d+\.\d+\.\d+)/)
     match ? match[1] : nil
-  rescue Errno::ENOENT, Timeout::Error
+  rescue Errno::ENOENT, BoundedSubprocess::TimeoutError
     nil
   end
 
+  # Returns the [stdout, stderr, status] triple `perform` destructures, including
+  # on every failure branch — SubprocessStatus.describe_failure reads the nil
+  # status as a failure rather than dereferencing it.
   def run_update
-    Timeout.timeout(UPDATE_TIMEOUT) do
-      Open3.capture3("claude", "update")
-    end
+    BoundedSubprocess.run([ "claude", "update" ], timeout: UPDATE_TIMEOUT)
   rescue Errno::ENOENT
     Rails.logger.error "[ClaudeCodeUpdateJob] claude binary not found in PATH"
     [ nil, "claude binary not found", nil ]
-  rescue Timeout::Error
-    Rails.logger.error "[ClaudeCodeUpdateJob] Update timed out after #{UPDATE_TIMEOUT}s"
-    [ nil, "timeout", nil ]
+  rescue BoundedSubprocess::TimeoutError
+    Rails.logger.error "[ClaudeCodeUpdateJob] Update timed out after #{UPDATE_TIMEOUT}s (process group killed)"
+    # The status is nil, so SubprocessStatus.describe_failure reaches for its
+    # generic "child reaped before its waiter" wording — true of the #271 race
+    # and not of this. The stderr slot is what corrects it in the same line.
+    [ nil, "timed out after #{UPDATE_TIMEOUT}s; process group SIGKILLed", nil ]
   end
 end

@@ -314,6 +314,44 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
     assert_nil @process_manager.spawned_processes.first[:env][ManagedSecret::OPENROUTER_API_KEY]
   end
 
+  # zimmer#908: this probe used to sit under `Timeout.timeout { Open3.capture3 }`,
+  # which bounds nothing — the call took as long as `pi --version` took. It runs
+  # under the watchdog now, which SIGKILLs the process group on the deadline.
+  test "installed_cli_version probes under BoundedSubprocess with the version bound" do
+    calls = []
+    probe = ->(command, timeout:) {
+      calls << [ command, timeout ]
+      [ "pi 0.146.0\n", "", fake_process_status(exitstatus: 0) ]
+    }
+
+    BoundedSubprocess.stub(:run, probe) do
+      assert_equal Gem::Version.new("0.146.0"), @adapter.installed_cli_version
+    end
+
+    assert_equal [ [ [ "pi", "--version" ], PiRuntimeAdapter::VERSION_TIMEOUT ] ], calls
+  end
+
+  test "installed_cli_version is nil when the probe is killed on the deadline" do
+    killed = ->(_command, timeout:) {
+      raise BoundedSubprocess::TimeoutError, "command timed out after #{timeout}s (process group killed)"
+    }
+
+    BoundedSubprocess.stub(:run, killed) do
+      assert_nil @adapter.installed_cli_version
+    end
+  end
+
+  test "installed_cli_version is nil when the probe exits non-zero or is missing" do
+    BoundedSubprocess.stub(:run, ->(*, **) { [ "", "boom", fake_process_status(exitstatus: 1) ] }) do
+      assert_nil @adapter.installed_cli_version
+    end
+
+    BoundedSubprocess.stub(:run, ->(*, **) { raise Errno::ENOENT, "pi" }) do
+      assert_nil @adapter.installed_cli_version
+    end
+  end
+
+
   def with_chain_holding(values)
     chain = Object.new
     chain.define_singleton_method(:get) { |variable| values[variable] }
