@@ -37,12 +37,6 @@ class DockerComposeCleanupService
 
       run_compose_down(compose_file)
       true
-    rescue GoodJob::InterruptError
-      # A deploy is not a Docker failure. Swallowing it would both hide the
-      # interrupt from the caller's retry handling and put an ERROR line on the
-      # wire on every deploy that lands mid-teardown, which is the trap
-      # ApplicationJob.discard_interrupt_quietly documents. Let it through.
-      raise
     rescue StandardError => e
       Rails.logger.error "[DockerComposeCleanupService] Error during Docker cleanup for #{clone_path}: #{e.class} - #{e.message}"
       # Don't re-raise — Docker cleanup failure should not prevent clone directory cleanup

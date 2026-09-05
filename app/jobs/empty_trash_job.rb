@@ -22,6 +22,16 @@ class EmptyTrashJob < ApplicationJob
   include DurableSessionStorage
   queue_as :maintenance
   include SingletonSweep
+  include SweepBudget
+
+  # Wall-clock ceiling on one run. This sweep walks every expired trashed session
+  # with `find_each` and no batch cap, and each one costs a Docker Compose
+  # teardown bounded at DockerComposeCleanupService::COMPOSE_DOWN_TIMEOUT plus a
+  # recursive delete of the clone, the scratch dir, the Claude config dir and both
+  # attachment trees — so a day's worth of expired trash is an unbounded hold on
+  # one of the `maintenance` lane's two threads. Same budget, and the same
+  # level-triggered argument, as the two clone sweeps: see SweepBudget.
+  SWEEP_BUDGET_SECONDS = 5.minutes
 
   def perform
     expired_sessions = Session.where(status: :archived)
@@ -29,13 +39,29 @@ class EmptyTrashJob < ApplicationJob
                               .where("trash_after <= ?", Time.current)
 
     cleaned_count = 0
+    deferred_count = 0
+
+    start_sweep_budget(SWEEP_BUDGET_SECONDS)
 
     expired_sessions.find_each do |session|
+      # Top of the iteration, so the true bound is the budget plus one session's
+      # teardown. Nothing is lost: the next hourly tick recomputes the expired set
+      # and takes whatever this run did not reach.
+      if sweep_budget_spent?
+        deferred_count += 1
+        next
+      end
+
       cleaned = cleanup_session(session)
       cleaned_count += 1 if cleaned
     rescue => e
       Rails.logger.error "[EmptyTrashJob] Failed to clean up session #{session.id}: #{e.class} - #{e.message}"
       # Continue with other sessions
+    end
+
+    if deferred_count > 0
+      Rails.logger.warn "[EmptyTrashJob] Sweep budget of #{SWEEP_BUDGET_SECONDS.to_i}s exhausted after " \
+        "#{cleaned_count} session(s); #{deferred_count} expired session(s) wait for the next run"
     end
 
     Rails.logger.info "[EmptyTrashJob] Cleaned up #{cleaned_count} expired trashed session(s)" if cleaned_count > 0

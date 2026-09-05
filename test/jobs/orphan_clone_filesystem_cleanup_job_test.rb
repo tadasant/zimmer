@@ -52,8 +52,11 @@ class OrphanCloneFilesystemCleanupJobTest < ActiveJob::TestCase
 
     job = OrphanCloneFilesystemCleanupJob.new
     job.stubs(:find_orphan_directories).returns([ @orphan_dir, second_orphan ])
-    # The reading that opens the budget, one inside the window, then past it.
-    job.stubs(:monotonic_now).returns(0.0, 0.0, 10_000.0)
+    # A monotonically advancing fake clock: each reading is 200s later, so the
+    # 5-minute budget is spent after the second one however many times the job
+    # reads it. Deliberately not a fixed `.returns(a, b, c)` sequence — that
+    # would silently change meaning if the number of clock reads ever moved.
+    advance_clock_on(job, by: 200.0)
 
     job.perform
 
@@ -416,5 +419,17 @@ class OrphanCloneFilesystemCleanupJobTest < ActiveJob::TestCase
   # volume so these tests do not depend on the host's actual disk.
   def stub_available_bytes(before:, after:)
     CloneDiskGuard.stubs(:available_bytes).returns(before).then.returns(after)
+  end
+  private
+
+  # Replace a job's monotonic clock with one that advances `by` seconds on every
+  # read. The first read opens the budget, so a budget of B seconds is spent on
+  # read number (B / by) + 1 — independent of how many times the job checks it.
+  def advance_clock_on(job, by:)
+    ticks = -1
+    job.define_singleton_method(:monotonic_now) do
+      ticks += 1
+      ticks * by
+    end
   end
 end

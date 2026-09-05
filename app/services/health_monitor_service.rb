@@ -161,17 +161,13 @@ class HealthMonitorService
   #   pollers      One poll of an external API per tick.
   #   triggers     The same shape as `pollers`.
   #   maintenance  Sized from its worst designed case rather than from a typical
-  #                one, which is now BundleInstallJob: an install is bounded by
-  #                nothing but the network and the Gemfile, and it retries. The
-  #                two clone sweeps used to be worse — OrphanCloneFilesystemCleanupJob's
-  #                scheduled path removed up to BATCH_LIMIT (20) directories with
-  #                no wall-clock budget, each tearing down Docker Compose bounded
-  #                at DockerComposeCleanupService::COMPOSE_DOWN_TIMEOUT (120s), so
-  #                40 minutes of entirely correct work, and StaleCloneCleanupJob's
-  #                ORPHAN_SWEEP_LIMIT (200 recursive deletes) had no bound at all.
-  #                Both now hold a thread for at most SWEEP_BUDGET_SECONDS and
-  #                resume on their next tick (see SweepBudget), so the ceiling no
-  #                longer has to cover them.
+  #                one, and that case is BundleInstallJob: an install is bounded
+  #                by nothing but the network and the Gemfile, and it retries.
+  #                The scheduled sweeps are not the sizing case — each holds a
+  #                thread for at most its SWEEP_BUDGET_SECONDS plus one unit of
+  #                work and resumes on its next tick (see SweepBudget) — but the
+  #                ceiling clears them by a wide margin, which is what
+  #                health_monitor_service_test.rb asserts.
   #   auth         RuntimeLoginJob::MAX_DURATION is twelve minutes.
   #
   # `agents` is deliberately ABSENT, and the absence is the rule rather than an

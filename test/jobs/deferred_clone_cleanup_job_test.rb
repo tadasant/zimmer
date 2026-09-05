@@ -27,6 +27,7 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
   end
 
   teardown do
+    GoodJob::CurrentThread.execution_interrupted = nil
     @scratch_env.nil? ? ENV.delete("AGENT_SCRATCH_DIR") : ENV["AGENT_SCRATCH_DIR"] = @scratch_env
     FileUtils.remove_entry(@scratch_base) if @scratch_base && Dir.exist?(@scratch_base)
     FileUtils.rm_rf(@clone_path) if @clone_path && File.directory?(@clone_path)
@@ -463,14 +464,20 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     assert_not File.directory?(@clone_path), "Clone should be deleted even if Docker cleanup raises"
   end
 
-  # A deploy interrupt used to end this job for good: ApplicationJob discards
+  # A deploy interrupt must not end this job: ApplicationJob discards
   # GoodJob::InterruptError with no retry, and nothing else reclaims the clone
   # inside the reversible window — StaleCloneCleanupJob's archived scopes require
   # `trash_after` to be nil and this session has one, and EmptyTrashJob waits for
-  # the deadline. So the tree, its Docker resources and its transcript directory
-  # sat on the durable volume for the full retention period.
+  # the deadline. Dropping the run leaves the tree, its Docker resources and its
+  # transcript directory on the durable volume for the full retention period.
+  #
+  # Driven through GoodJob's own mechanism rather than by injecting the exception:
+  # `GoodJob::ActiveJobExtensions::InterruptErrors` raises from an `around_perform`
+  # when `CurrentThread.execution_interrupted` is set, BEFORE the body runs. It is
+  # never raised from inside `perform`, so a test that stubbed a collaborator to
+  # raise it would pin a path production cannot take.
   test "a deploy interrupt re-enqueues the cleanup instead of dropping it" do
-    GitCloneService.stubs(:cleanup_clone).raises(GoodJob::InterruptError, "Interrupted")
+    interrupt_the_next_execution
 
     assert_enqueued_with(job: DeferredCloneCleanupJob) do
       DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
@@ -487,29 +494,49 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     end
   end
 
-  # The job wraps the Compose teardown in its own rescue so a broken Docker
-  # daemon cannot stop the clone being deleted. That rescue used to absorb a
-  # deploy interrupt too — and log it at ERROR, so every deploy landing there
-  # paged for something routine.
-  test "an interrupt during Docker teardown reaches the retry rather than the ERROR channel" do
-    DockerComposeCleanupService.stubs(:cleanup).raises(GoodJob::InterruptError, "Interrupted")
-
-    logged = capture_rails_log do
-      assert_enqueued_with(job: DeferredCloneCleanupJob) do
-        DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
-      end
-    end
-
-    assert_no_match(/ERROR/, logged)
-    assert File.directory?(@clone_path), "the clone must survive so the retry can reclaim it"
-  end
-
   test "the retry carries the same arguments, so it reclaims the same session" do
-    GitCloneService.stubs(:cleanup_clone).raises(GoodJob::InterruptError, "Interrupted")
+    interrupt_the_next_execution
 
     DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
 
     assert_enqueued_with(job: DeferredCloneCleanupJob, args: [ @session.id, @archived_at.iso8601 ])
+  end
+
+  # The retry makes this reachable, and it is the expensive way to get it wrong:
+  # a first run preserves artifacts and deletes the clone, then fails on the way
+  # out; the retry finds no clone on disk and takes the "nothing left to hold the
+  # deadline open for" branch. `durable_session_storage_exists?` knows about
+  # scratch, the Claude config dir and the attachment trees — not about the
+  # preserved bundle and patch — so clearing `trash_after` there hands the row to
+  # StaleCloneCleanupJob, which deletes the only copy of the session's unpushed
+  # work three days early.
+  test "a retry after artifacts were preserved does not clear the trash deadline" do
+    artifacts_dir = CloneArtifactService.new.artifacts_path_for(@session.id)
+    FileUtils.mkdir_p(artifacts_dir)
+    File.write(File.join(artifacts_dir, "working_tree.patch"), "the only copy of the work\n")
+    @session.update!(metadata: @session.metadata.merge("artifacts_path" => artifacts_dir))
+    FileUtils.rm_rf(@clone_path) # the previous attempt already deleted it
+
+    begin
+      DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+      @session.reload
+      assert_not_nil @session.trash_after,
+        "preserved artifacts must hold the trash deadline open, or StaleCloneCleanupJob reaps them within the hour"
+      assert_in_delta @archived_at + SessionStateMachine::TRASH_RETENTION_PERIOD, @session.trash_after, 5
+      assert File.exist?(File.join(artifacts_dir, "working_tree.patch")), "the artifacts themselves are untouched"
+    ensure
+      FileUtils.rm_rf(artifacts_dir)
+    end
+  end
+
+  test "a clean session with no artifacts and nothing durable still clears the trash deadline" do
+    assert_not File.directory?(CloneArtifactService.new.artifacts_path_for(@session.id)),
+      "guard: this session must have no artifacts for the negative case to mean anything"
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    assert_nil @session.reload.trash_after
   end
 
   # ActiveSupport resolves rescue handlers last-registered-wins, so the broad
@@ -529,7 +556,7 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
   end
 
   test "retries are bounded: the last attempt stops re-enqueueing" do
-    GitCloneService.stubs(:cleanup_clone).raises(GoodJob::InterruptError, "Interrupted")
+    interrupt_the_next_execution
 
     job = DeferredCloneCleanupJob.new(@session.id, @archived_at.iso8601)
     # `perform_now` increments `executions` before performing, so this run is the
@@ -545,7 +572,7 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
   # ERROR → critical" rule reads the log level, so an intermediate attempt has to
   # stay at or below WARN and only exhaustion may be loud.
   test "an intermediate attempt never logs at ERROR" do
-    GitCloneService.stubs(:cleanup_clone).raises(GoodJob::InterruptError, "Interrupted")
+    interrupt_the_next_execution
 
     logged = capture_rails_log do
       DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
@@ -555,7 +582,7 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
   end
 
   test "exhausting the retries logs at ERROR so it stays alertable" do
-    GitCloneService.stubs(:cleanup_clone).raises(GoodJob::InterruptError, "Interrupted")
+    interrupt_the_next_execution
 
     job = DeferredCloneCleanupJob.new(@session.id, @archived_at.iso8601)
     job.executions = DeferredCloneCleanupJob::MAX_ATTEMPTS - 1
@@ -573,13 +600,29 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
   # and "gave up loudly" are the two behaviours under test.
   def capture_rails_log
     buffer = StringIO.new
-    original = Rails.logger
-    Rails.logger = ActiveSupport::TaggedLogging.new(ActiveSupport::Logger.new(buffer))
-    Rails.logger.formatter = ->(severity, _time, _progname, message) { "#{severity} #{message}\n" }
+    capturing = ActiveSupport::TaggedLogging.new(ActiveSupport::Logger.new(buffer))
+    capturing.formatter = ->(severity, _time, _progname, message) { "#{severity} #{message}\n" }
+
+    original_rails = Rails.logger
+    # ActiveJob holds its own reference, assigned from Rails.logger at boot, so
+    # swapping Rails.logger alone would miss `ActiveJob::LogSubscriber` — which is
+    # exactly what emits the "Error performing …" / "Discarded …" ERROR lines the
+    # `rescue_from`-over-`retry_on` design exists to avoid.
+    original_active_job = ActiveJob::Base.logger
+
+    Rails.logger = capturing
+    ActiveJob::Base.logger = capturing
     yield
     buffer.string
   ensure
-    Rails.logger = original
+    Rails.logger = original_rails
+    ActiveJob::Base.logger = original_active_job
+  end
+
+  # Put GoodJob's interrupt flag up for the next execution, the way a worker that
+  # re-picks a row whose `performed_at` is already set does.
+  def interrupt_the_next_execution
+    GoodJob::CurrentThread.execution_interrupted = 1.minute.ago
   end
 
   # Drive the job down its "clone is dirty, artifact creation failed" branch.
