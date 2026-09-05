@@ -23,6 +23,23 @@ module ParameterStore
   #     The envelope holds a POINTER, not the secret.
   #   * A Secret Manager secret holding the bytes.
   #
+  # ## The envelope declares its own encoding
+  #
+  # A secret's bytes may be stored **base64url** rather than literally, and the
+  # envelope says so with `"encoding":"base64url"`. That is not decoration: a
+  # rendered payload is assembled by SUBSTITUTING the secret's bytes into the
+  # payload TEXT, so a value carrying a quote, a brace or a newline is rejected
+  # by Parameter Manager's injection detector with `400 injection detected`.
+  # Encoding to `[A-Za-z0-9_-]` is what makes an arbitrary credential storable
+  # at all, and it is what strad's Secrets Console — the sanctioned human write
+  # surface for this store — does to every secret it writes.
+  #
+  # The field's ABSENCE is a documented state, not an unknown one: it means the
+  # literal bytes, which is what every value seeded before the encoding existed
+  # carries and what {WriteClient} still writes. So the encoding is honoured
+  # only when declared, and an encoding this Zimmer does not implement is
+  # REFUSED rather than guessed at — see {#decoded_value}.
+  #
   # `GET .../versions/{v}:render` dereferences the `__REF__` server-side and hands
   # back the envelope with the real value in it. That single verb is the whole read
   # path: this client calls Parameter Manager (and Cloud Resource Manager, to probe
@@ -41,6 +58,11 @@ module ParameterStore
     # inherited from a folder or the org — is actually evaluated.
     CRM_API_BASE = "https://cloudresourcemanager.googleapis.com"
 
+    # The one value encoding this resolver implements: base64url of the real
+    # bytes, unpadded, alphabet `[A-Za-z0-9_-]`. Shared byte-for-byte with the
+    # writer that produces it (strad's `parameter-wire.ts`).
+    VALUE_ENCODING = "base64url"
+
     # Only parameters carrying this label are considered. It keeps a hand-created
     # or foreign parameter in the same project from being read as Zimmer config.
     MANAGED_BY = "zimmer"
@@ -49,6 +71,22 @@ module ParameterStore
     # namespace is one list plus a render per parameter, so an unbounded fan-out
     # against a large namespace is a self-inflicted rate limit.
     FANOUT = 8
+
+    # What {#resolve_all} answers: the `namespace => {VARIABLE => value}` map
+    # every caller already expects, plus the names it REFUSED to answer with.
+    #
+    # A Hash subclass rather than a wrapper because the map is the interface —
+    # `fetch`, `[]`, `keys` and equality against a plain Hash all keep working,
+    # so nothing downstream has to learn about a rejection to keep resolving.
+    # {#undecodable} is how the Connectors page tells "never seeded" apart from
+    # "seeded, and deliberately not served".
+    class Snapshot < Hash
+      # @return [Array<String>] variables the store HOLDS whose envelope
+      #   declared a value encoding this resolver does not implement, or
+      #   declared base64url over bytes that are not. They are absent from the
+      #   maps above: a value whose encoding is not understood is not a value.
+      def undecodable = @undecodable ||= []
+    end
 
     # `account` is exposed so the write path can reuse this credential when a
     # deployment has no separate writer key — see ParameterStore::Writer. It
@@ -95,21 +133,30 @@ module ParameterStore
     # (possible only if one is a prefix of another) appears under each.
     #
     # @param namespaces [Array<String>]
-    # @return [Hash{String => Hash{String => String}}] every namespace asked for
-    #   is a key, empty map and all.
+    # @return [Snapshot] a `Hash{String => Hash{String => String}}` in which every
+    #   namespace asked for is a key, empty map and all, and whose
+    #   {Snapshot#undecodable} names what was held back.
     # @raise [StoreError, AuthError] when the store could not be consulted.
     def resolve_all(namespaces)
       namespaces = Array(namespaces)
-      out = namespaces.index_with { {} }
+      out = Snapshot.new
+      namespaces.each { |namespace| out[namespace] = {} }
 
       rendered_envelopes(namespaces).each do |envelope|
         path = envelope["path"].to_s
         variable = Namespace.variable_of(path)
         next if variable.blank?
 
-        namespaces.each do |namespace|
-          out[namespace][variable] = envelope["value"].to_s if path.start_with?(namespace)
+        matching = namespaces.select { |namespace| path.start_with?(namespace) }
+        next if matching.empty?
+
+        value = decoded_value(envelope, variable)
+        if value.nil?
+          out.undecodable << variable unless out.undecodable.include?(variable)
+          next
         end
+
+        matching.each { |namespace| out[namespace][variable] = value }
       end
 
       out
@@ -201,6 +248,73 @@ module ParameterStore
         .reject { |version| version["disabled"] }
         .filter_map { |version| version["name"].to_s.split("/").last }
         .max_by { |name| name[/(\d+)\z/, 1].to_i }
+    end
+
+    # The envelope's `value`, with whatever encoding it DECLARES undone.
+    #
+    # Three outcomes, and the middle one is the whole point of this method:
+    #
+    #   * **No `encoding`** — the literal bytes, returned unchanged. This is not
+    #     a fallback for an unknown state; it is the documented spelling for "the
+    #     value is the value", and every parameter written before the encoding
+    #     existed (including every one {WriteClient} writes) is this.
+    #   * **`base64url`** — decoded, and only if the bytes really are base64url
+    #     of valid UTF-8.
+    #   * **Anything else** — REFUSED. Passing through an encoding we do not
+    #     implement would hand a session bytes we cannot vouch for and call it a
+    #     credential, which is exactly the failure this method exists to end;
+    #     the next format would land as silently as this one did.
+    #
+    # A refusal drops ONE name rather than failing the resolve: the alternative
+    # takes every other `${VAR}` in the project down with it (the hazard
+    # {WriteClient#upsert} refuses to create), and a dropped name is a miss, which
+    # the SecretProviders chain is built to survive by falling through. It is not
+    # silent — it is logged at error level naming the variable, and the Connectors
+    # page lists it as held-but-not-served.
+    #
+    # @return [String, nil] nil when the value was refused.
+    def decoded_value(envelope, variable)
+      encoding = envelope["encoding"]
+      value = envelope["value"].to_s
+      return value if encoding.nil?
+
+      unless encoding == VALUE_ENCODING
+        # The declared encoding is a LABEL, not the secret — but it is still
+        # attacker-controlled text out of a payload, so it is truncated and
+        # inspected rather than interpolated raw.
+        Rails.logger.error "[ParameterStore] #{variable} declares value encoding " \
+          "#{encoding.to_s.truncate(32).inspect}, which this Zimmer does not implement; " \
+          "refusing to serve it"
+        return nil
+      end
+
+      decoded = decode_base64url(value)
+      if decoded.nil?
+        Rails.logger.error "[ParameterStore] #{variable} is labelled #{VALUE_ENCODING} but its " \
+          "stored value is not; refusing to serve it"
+      end
+      decoded
+    end
+
+    # Invert {VALUE_ENCODING} for one value, or answer nil if it is not that.
+    #
+    # The round trip is not paranoia. `urlsafe_decode64` will happily accept
+    # trailing bits that no encoder would emit, and the result would go straight
+    # into a child process's environment as its credential — so the decode is
+    # only believed when re-encoding reproduces what was stored. The comparison
+    # canonicalises the stored spelling first: standard-alphabet base64, or a
+    # padded value, decodes correctly and must not be refused for how it is
+    # spelled.
+    def decode_base64url(value)
+      decoded = Base64.urlsafe_decode64(value).force_encoding(Encoding::UTF_8)
+      return nil unless decoded.valid_encoding?
+
+      canonical = value.tr("+/", "-_").sub(/=+\z/, "")
+      return nil unless Base64.urlsafe_encode64(decoded, padding: false) == canonical
+
+      decoded
+    rescue ArgumentError
+      nil
     end
 
     def decode_envelope(base64)

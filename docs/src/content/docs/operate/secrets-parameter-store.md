@@ -257,7 +257,18 @@ The Parameter Manager payload is an **envelope**:
 }
 ```
 
-Three things about it matter:
+A secret written through strad's Secrets Console carries one more field:
+
+```json
+{
+  "path": "/zimmer/production/secrets/static/STRAD_API_KEY",
+  "secret": true,
+  "value": "__REF__(\"//secretmanager.googleapis.com/...\")",
+  "encoding": "base64url"
+}
+```
+
+Four things about it matter:
 
 - **The parameter never holds the secret.** It holds a pointer. A test asserts
   the value appears in no Parameter Manager payload.
@@ -267,8 +278,44 @@ Three things about it matter:
   `a-b` collapse together. Every read compares the envelope's own `path` against
   the path it asked for, so a resolving id is never mistaken for the right
   parameter.
+- **`encoding`** says how the bytes behind the pointer are stored, and the
+  resolver honours it. See below.
 
 Only parameters labelled `managed-by=zimmer` are read.
+
+### The `encoding` field
+
+`:render` does not rebuild the JSON payload — it substitutes the secret's bytes
+into the payload **text** and then checks the result for structural damage. A
+value carrying a `"`, a `\`, a brace, a bracket or a newline breaks the string it
+lands in, and Parameter Manager answers `400 INVALID_ARGUMENT … injection
+detected`. A JSON array of token records fails every time.
+
+strad's Secrets Console — the recommended human write surface for this store —
+therefore stores every secret's bytes **base64url**, unpadded, and declares it
+with `"encoding": "base64url"`. The alphabet is exactly `[A-Za-z0-9_-]`, so
+nothing in a rendered payload can have structural meaning. The writer's copy of
+that rule is `servers/secrets/shared/src/parameter-wire.ts` in `tadasant/strad`.
+
+Zimmer's resolver reads the field, and the three cases are deliberate:
+
+| `encoding` | What the resolver does |
+| --- | --- |
+| absent | The literal bytes, unchanged. This is a **documented** state, not an unknown one: every value seeded before the encoding existed is this, and so is everything `ParameterStore::WriteClient` writes. |
+| `base64url` | Decoded — and only if the stored bytes really are base64url of valid UTF-8. Standard-alphabet or padded base64 decodes correctly too; a value is never refused for how it is *spelled*, only for not decoding. |
+| anything else | **Refused.** The name is dropped from the snapshot, an error naming the variable is logged, and the Connectors banner lists it as held-but-not-served. |
+
+Refusing is the point. Passing an unrecognised encoding through is how a session
+ends up with base64url text where a credential should be — a hit with the wrong
+bytes, which no probe catches, on a store where reveal is off so nobody can
+eyeball the value either. The refusal drops **one name**, not the resolve: the
+chain treats a miss as a miss and falls through to the encrypted credentials,
+rather than one bad parameter taking every other `${VAR}` in the project with it.
+
+`ParameterStore::WriteClient` does not yet write the field — it stores literal
+bytes, which the table's first row covers — so a value it writes and a value the
+console writes both resolve correctly. A value whose bytes carry JSON structure
+still cannot be written through the Pi tab; use the console for those.
 
 ## Provisioning — a human must do this
 
@@ -1087,6 +1134,8 @@ The rest live in `tadasant-internal`'s `zimmer/` root and need a human:
 | `403` on `:render`, lists succeed | The resolver holds `parameterViewer` but not `parameterAccessor`. The banner reports this as **cannot read secret values**, naming `parameterVersions.render` — holding `secretmanager.versions.access` without it resolves nothing. |
 | Banner says "could not confirm what this credential may do" | `cloudresourcemanager.googleapis.com` is not enabled on the project. |
 | Every variable reads `Unresolved`, no error | The namespace is empty, or the parameters lack the `managed-by=zimmer` label, or their envelope `path` falls outside the namespaces the resolver reads (`/zimmer/{env}/secrets/static/`, plus `/zimmer/{env}/mcp/static/` until the migration finishes). |
+| One variable reads `Unresolved`, and the banner lists it under **Held but not served** | Its envelope declares a value `encoding` this Zimmer does not implement, so the resolver refuses to serve bytes it cannot vouch for. Upgrade Zimmer, or re-seed the value through a writer that stores `base64url`. |
+| A session authenticates with what looks like a valid credential and the upstream rejects it | On a Zimmer at or after this page's `encoding` support, this is not the envelope. Before it, a console-seeded secret resolved as its base64url text — [zimmer#999](https://github.com/tadasant/zimmer/issues/999). |
 
 ## Testing without GCP
 
