@@ -150,8 +150,12 @@ module Mcp
           start only while a Claude Code account is under both quota targets and a session slot is
           free, and otherwise wait and start later — deferred, never cancelled). Omit (or send null) to take
           the default for the trigger's condition type: slack is priority, and github_issue,
-          github_label, schedule and ao_event are spot. Setting it applies to sessions the trigger
-          spawns from now on; ones it already spawned keep the class they started with.
+          github_label, schedule and ao_event are spot. Changing it applies to sessions the trigger
+          spawns from now on AND to its own already-spawned sessions still in `waiting` — the
+          backlog a spot-to-priority flip is usually trying to release. It reaches only this
+          trigger's sessions, and only ones still carrying the class it stamped: a session an
+          operator already moved by hand stays where they put it. The response says how many moved.
+          A released session starts on its own next re-check rather than instantly.
         - **precedence**: where the sessions this trigger spawns sit in the spot queue. Higher is
           handled sooner, on an ABSOLUTE scale — 100000 comes before 50 — not a 1..N rank, and
           nothing renumbers it. Omit (or send null) to predefine nothing. Like the class, it
@@ -250,7 +254,8 @@ module Mcp
             type: [ "string", "null" ],
             enum: SessionGenesis::CLASSES + [ nil ],
             description: "Spot/priority class for sessions this trigger spawns. Null (default) derives it " \
-                         "from the trigger's condition type."
+                         "from the trigger's condition type. Changing it also moves this trigger's " \
+                         "already-spawned sessions that are still waiting."
           },
           precedence: {
             type: [ "integer", "null" ],
@@ -477,7 +482,7 @@ module Mcp
           - **Skills / Hooks / Plugins:** #{catalog_lists_summary(trigger)}
           - **Skip While Pending:** #{trigger.skip_if_pending_session ? 'yes' : 'no'}
           - **Max Sessions/Minute:** #{trigger.max_sessions_per_minute || '(no limit)'}
-          - **Scheduling Class:** #{scheduling_class_summary(trigger)}
+          - **Scheduling Class:** #{scheduling_class_summary(trigger)}#{" #{trigger.reclassification_summary}" if trigger.reclassification_summary}
           - **Precedence:** #{precedence_summary(trigger)}
 
           #{condition_detail(trigger)}

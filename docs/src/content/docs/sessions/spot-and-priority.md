@@ -30,7 +30,7 @@ Three things can decide a session's class. The first one that speaks wins:
 | Order | Source | Set it | Scope |
 | --- | --- | --- | --- |
 | 1 | **The session itself** — `sessions.scheduling_class` | **Scheduling class** on the new-session form, **Run as spot** on any Quick Router surface, `scheduling_class` on `start_session` / `POST /api/v1/sessions`; afterwards `action_session` (`change_scheduling_class`), `PATCH /api/v1/sessions/:id`, or the button on the hold banner | That one session, and anything it spawns |
-| 2 | **The trigger that fired it** — `triggers.scheduling_class` | The trigger's edit form, or `action_trigger` | Every session that trigger spawns from now on |
+| 2 | **The trigger that fired it** — `triggers.scheduling_class` | The trigger's edit form, or `action_trigger` | Every session that trigger spawns from now on, plus its own already-spawned sessions still `waiting` |
 | 3 | **Its genesis** — the default for where the work came from | `/inference` (only for the origins no trigger produces) | Every deriving session of that genesis, past and future |
 
 Most sessions never touch 1 or 2: both columns are NULL, and the class is derived. That is what keeps
@@ -152,12 +152,38 @@ that genesis, including ones that already exist** — which is what changing a d
 class denormalized onto every row at creation would only ever apply to sessions created after the
 click, and would freeze today's defaults into all of history.
 
-The flip side, stated plainly: **changing a trigger's class does not move sessions it already
-spawned.** The trigger's selector is read once, when it fires, and stamped on the session. Sessions
-already created — including ones still `waiting` behind the gate — keep the class they started with.
-To move one of those, move that session: the **Make this session priority** button on its hold banner,
-the **Scheduling class** selector on its detail page, `action_session` with
-`change_scheduling_class`, or `PATCH /api/v1/sessions/:id`.
+A trigger's class is stamped rather than derived, because the selector is read once, when the
+trigger fires. So it needs a path of its own to reach sessions that already exist — and it has one:
+**changing a trigger's class also moves that trigger's own sessions that are still `waiting`.** That
+is the case the setting is usually changed *for*. An operator flipping a trigger to priority during a
+quota backlog is trying to release the work that is stuck right now; before this existed the change
+reached future sessions only, and the backlog sat exactly where it was with nothing to say why
+([#480](https://github.com/tadasant/zimmer/issues/480)).
+
+Three clauses bound it, and each one is there to stop a click promoting work nobody asked to promote:
+
+- **This trigger's sessions only** — matched on `metadata.trigger_id`, never the genesis. Five of the
+  eight kinds restate a condition type, so a genesis-wide sweep would drag in the work of every other
+  trigger that shares the kind. That is `promote_genesis`'s blast radius, and it is why
+  `promote_genesis` is the wrong lever for a trigger.
+- **Still `waiting` only.** A session that has already started is past the gate this setting governs.
+- **Still carrying the class the trigger stamped.** A session somebody moved by hand stays where they
+  put it — a per-session choice outranks a trigger-wide one.
+
+Clearing the selector back to "Default" moves them too, back to deriving from their genesis: the
+stamp follows the trigger's, so a session spawned before the change and one spawned after it are
+indistinguishable. The form's flash notice, `action_trigger`'s response and `PATCH
+/api/v1/triggers/:id`'s `reclassified_waiting_sessions` all report how many sessions actually moved
+between classes — a rewrite that resolves to the same class is not counted, because nothing moved.
+
+A released session starts on its own next re-check rather than instantly; the change lands the class,
+it does not pull the deferred re-check forward
+([#423](https://github.com/tadasant/zimmer/issues/423)).
+
+To move a session this does not reach — one that has started, or one from a different trigger — move
+that session: the **Make this session priority** button on its hold banner, the **Scheduling class**
+selector on its detail page, `action_session` with `change_scheduling_class`, or `PATCH
+/api/v1/sessions/:id`.
 
 ## The gate
 

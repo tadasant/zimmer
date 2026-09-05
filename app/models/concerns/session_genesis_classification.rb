@@ -45,10 +45,13 @@
 # storing only deliberate choices keeps both properties — an explicit request is
 # honored forever, and everything else still follows policy.
 #
-# A trigger's selector is read at fire time, not at start time, so changing it
-# reclassifies the trigger's FUTURE sessions only. Sessions it already spawned —
-# including ones still `waiting` behind the spot gate — keep the class they were
-# created with; move an individual one with action_session's `change_scheduling_class`.
+# A trigger's selector is read at fire time and stamped, so it decides the class
+# of the trigger's FUTURE sessions. Changing it also carries onto the sessions
+# that trigger already spawned and that are still `waiting` — see
+# Trigger#spawned_waiting_sessions, which scopes that to the trigger's own
+# sessions rather than the whole genesis, and leaves alone any session somebody
+# moved by hand. Sessions that have already started keep the class they ran with;
+# move an individual one with action_session's `change_scheduling_class`.
 module SessionGenesisClassification
   extend ActiveSupport::Concern
 
