@@ -146,6 +146,19 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
     assert_includes output, "session #{pending.id}"
   end
 
+  test "surfaces the coalescing window, and where the number came from" do
+    trigger = triggers(:enabled_slack_trigger)
+
+    default = @tool.call("id" => trigger.id)
+    assert_includes default, "- **Coalescing Window:** #{Trigger::DEFAULT_COALESCE_WINDOW_SECONDS}s (default)"
+
+    trigger.update!(coalesce_window_seconds: 300)
+    assert_includes @tool.call("id" => trigger.id), "300s (set on this trigger)"
+
+    trigger.update!(coalesce_window_seconds: 0)
+    assert_includes @tool.call("id" => trigger.id), "Off — every Slack message spawns its own session"
+  end
+
   test "surfaces the burst cap, and flags a trigger that is currently bursting" do
     trigger = triggers(:enabled_slack_trigger)
 

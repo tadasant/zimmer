@@ -63,6 +63,12 @@ class Api::V1::TriggersController < Api::BaseController
   #   - skip_if_pending_session: Boolean (default: false). When true, a fire creates
   #         nothing while a session this trigger already spawned is still `waiting` or
   #         `running`. Bounds the BACKLOG, where max_sessions_per_minute bounds the rate.
+  #   - coalesce_window_seconds: Integer, seconds. Slack messages that land in the same
+  #     channel, thread or DM within this many seconds of each other are ONE event and
+  #     spawn ONE session; the rest are folded into that session's prompt, with their
+  #     links, so nothing is dropped. Omit or send null to inherit the default
+  #     (Trigger::DEFAULT_COALESCE_WINDOW_SECONDS); send 0 to turn coalescing off and
+  #     give every message its own session. Only Slack conditions coalesce.
   #   - max_sessions_per_minute: Integer burst cap — the most NEW sessions this trigger
   #     may spawn in one minute. Omit or send null for no limit (the default). When the
   #     cap is exceeded the trigger spawns one burst-notice session and then suppresses
@@ -237,6 +243,7 @@ class Api::V1::TriggersController < Api::BaseController
       :name, :status, :agent_root_name, :goal,
       :prompt_template, :reuse_session, :enqueue_messages, :resuscitate_archived,
       :last_session_id, :max_sessions_per_minute, :skip_if_pending_session,
+      :coalesce_window_seconds,
       :scheduling_class, :precedence,
       mcp_servers: [],
       catalog_skills: [], catalog_hooks: [], catalog_plugins: [],
@@ -277,6 +284,13 @@ class Api::V1::TriggersController < Api::BaseController
       # is stored but does nothing. It applies again on a fire that has to spawn.
       # Reported rather than silently ignored.
       skip_if_pending_session_inert: trigger.skip_if_pending_session_inert?,
+      # The stored value (null when the trigger inherits the default) beside the
+      # one actually in force, so a caller can tell "inherits 60s" from "set to
+      # 60s" — and `_inert` reports a window stored on a trigger no Slack
+      # condition will ever read.
+      coalesce_window_seconds: trigger.coalesce_window_seconds,
+      effective_coalesce_window_seconds: trigger.effective_coalesce_window_seconds,
+      coalesce_window_inert: trigger.coalesce_window_inert?,
       bursting: trigger.bursting?,
       # Scheduled runs that did not happen because the re-used session had not
       # consumed the previous prompt. `last_triggered_at` advances on those

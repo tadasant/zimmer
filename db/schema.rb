@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_05_130000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_05_160000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -786,6 +786,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_130000) do
     t.jsonb "catalog_hooks", default: [], null: false
     t.jsonb "catalog_plugins", default: [], null: false
     t.jsonb "catalog_skills", default: [], null: false
+    t.integer "coalesce_window_seconds"
     t.datetime "created_at", null: false
     t.boolean "enqueue_messages", default: false, null: false
     t.datetime "failed_at"

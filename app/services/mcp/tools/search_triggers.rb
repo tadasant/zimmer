@@ -141,6 +141,7 @@ module Mcp
           "- **Reuse Session:** #{trigger.reuse_session ? 'Yes' : 'No'}",
           "- **Skip While Pending:** #{skip_if_pending_summary(trigger)}",
           "- **Max Sessions/Minute:** #{burst_limit_summary(trigger)}",
+          "- **Coalescing Window:** #{coalesce_window_summary(trigger)}",
           "- **MCP Servers:** #{mcp_servers_summary(trigger)}",
           "- **Skills / Hooks / Plugins:** #{catalog_lists_summary(trigger)}"
         ]
@@ -359,6 +360,21 @@ module Mcp
         return "Yes (nothing pending — the next fire spawns)" if pending.nil?
 
         "Yes ⚠️ SKIPPING — session #{pending.id} (#{pending.status}) is still pending"
+      end
+
+      # The window inside which several Slack messages in one conversation count
+      # as one event. Says where the number came from, because an inherited
+      # default and a value someone typed read identically otherwise — and a
+      # caller asking "why did one alert storm produce one session" needs to know
+      # whether anyone chose that.
+      def coalesce_window_summary(trigger)
+        return "Off — every Slack message spawns its own session" unless trigger.coalesces_messages?
+
+        source = trigger.coalesce_window_seconds.nil? ? "default" : "set on this trigger"
+        return "#{trigger.effective_coalesce_window_seconds}s (#{source}) — INERT: no Slack condition on this trigger reads it" if trigger.coalesce_window_inert?
+
+        "#{trigger.effective_coalesce_window_seconds}s (#{source}) — Slack messages in one channel this close " \
+          "together are one event: one session, the rest folded into its prompt"
       end
 
       # Scheduled runs that did not happen. A trigger whose fires are being

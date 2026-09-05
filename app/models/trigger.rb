@@ -88,6 +88,42 @@ class Trigger < ApplicationRecord
   # How much of the event that tipped the cap to quote in the notice prompt.
   BURST_NOTICE_PROMPT_EXCERPT = 500
 
+  # --- Burst coalescing ----------------------------------------------------
+  #
+  # `coalesce_window_seconds` says how close together two Slack messages have to
+  # land before they are one EVENT rather than two. Messages in the same channel
+  # within the window of each other spawn ONE session, and every message in the
+  # group is carried in that session's prompt (see
+  # SlackTriggerPollerJob#coalesced_groups).
+  #
+  # This is a third question again, and the other two do not answer it:
+  #
+  #   - `max_sessions_per_minute` bounds the RATE, and past the cap it stops
+  #     spawning the sessions the events asked for altogether — an operator gets
+  #     one notice to investigate a storm, which is right for a storm and much too
+  #     blunt for seven alerts from one `bulk_archive`.
+  #   - `skip_if_pending_session` bounds the BACKLOG, and it only ever sees the
+  #     second message: it drops it, so whatever that message said is gone.
+  #
+  # Coalescing drops nothing. The messages folded into a group are appended to the
+  # surviving session's prompt with their links, and each one's human author is
+  # still recorded against that session — the seven `#alerts` messages of
+  # 2026-08-29 would have produced one router session that knew about all seven,
+  # instead of seven sessions that each worked out they were duplicates.
+  #
+  # NULL means DEFAULT_COALESCE_WINDOW_SECONDS, not "off". Unlike
+  # `skip_if_pending_session`, which can silently stop a trigger spawning anything
+  # and so had to be opt-in, this setting cannot lose a message — and shipping it
+  # off by default would leave every existing trigger fanning out until somebody
+  # edited a row by hand. 0 turns it off explicitly, message for message, which is
+  # the behaviour before this setting existed.
+  #
+  # It applies to the Slack message paths, which are the only ones that fire per
+  # ITEM within a single poll pass. Its resolution lives here rather than in the
+  # poller because it is a session-spawn policy, like its two neighbours above,
+  # and every surface that renders those renders this one beside them.
+  DEFAULT_COALESCE_WINDOW_SECONDS = 60
+
   # --- Missed fires ---------------------------------------------------------
   #
   # A recurring trigger that reuses a session coalesces its fire when that
@@ -125,6 +161,12 @@ class Trigger < ApplicationRecord
   validates :trigger_conditions, presence: { message: "must have at least one condition" }
   validates :max_sessions_per_minute,
     numericality: { only_integer: true, greater_than: 0 },
+    allow_nil: true
+  # 0 is a meaningful value here and not a mistake to reject: it is how an
+  # operator says "every message spawns its own session". NULL is the default
+  # window, so there is no third way to say "off".
+  validates :coalesce_window_seconds,
+    numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than_or_equal_to: 1.hour.to_i },
     allow_nil: true
   validates :scheduling_class,
     inclusion: { in: -> { SessionGenesis::CLASSES }, message: "%{value} is not a known scheduling class" },
@@ -656,6 +698,38 @@ class Trigger < ApplicationRecord
   # backlog, and it needs no opt-in.
   def skip_if_pending_session_inert?
     skip_if_pending_session? && reuse_session?
+  end
+
+  # The coalescing window in force on this trigger, in seconds. 0 means messages
+  # are never coalesced. See DEFAULT_COALESCE_WINDOW_SECONDS for why NULL resolves
+  # to the default rather than to 0.
+  def effective_coalesce_window_seconds
+    return DEFAULT_COALESCE_WINDOW_SECONDS if coalesce_window_seconds.nil?
+
+    coalesce_window_seconds
+  end
+
+  # Whether this trigger coalesces at all.
+  def coalesces_messages?
+    effective_coalesce_window_seconds.positive?
+  end
+
+  # Whether a window the operator DELIBERATELY set is doing nothing, in the same
+  # sense as #skip_if_pending_session_inert? — a value is stored, and no firing
+  # path on this trigger reads it.
+  #
+  # Only the Slack poller coalesces: it is the one path that walks a LIST of
+  # items inside a single fire, which is what a window is measured across. A
+  # schedule or ao_event fire carries exactly one event and has nothing to group
+  # it with; the GitHub pollers walk a list but dedupe by item identity instead
+  # (GithubTriggerPollerJob#fire), and extending this there is
+  # https://github.com/tadasant/zimmer/issues/606's business, not this setting's.
+  #
+  # The INHERITED default is deliberately not "inert" on a schedule trigger: it
+  # is not a choice anyone made, so saying so on every non-Slack trigger would be
+  # a warning about nothing. Only a stored positive value earns the label.
+  def coalesce_window_inert?
+    coalesce_window_seconds.to_i.positive? && condition_types.exclude?("slack")
   end
 
   # The session the most recent #create_session! call on this in-memory instance

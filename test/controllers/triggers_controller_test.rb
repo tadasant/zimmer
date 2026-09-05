@@ -308,6 +308,46 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_nil trigger.reload.max_sessions_per_minute
   end
 
+  test "the form saves a coalescing window, and blanking it returns the trigger to the default" do
+    post triggers_path, params: {
+      trigger: {
+        name: "Coalescing Alerts Trigger",
+        status: "enabled",
+        agent_root_name: "zimmer",
+        prompt_template: "New alert: {{link}}",
+        coalesce_window_seconds: "120",
+        mcp_servers: [],
+        trigger_conditions_attributes: [
+          { condition_type: "slack", configuration: { channel_id: "C123456", channel_name: "alerts", event_type: "new_message" } }
+        ]
+      }
+    }
+
+    trigger = Trigger.find_by!(name: "Coalescing Alerts Trigger")
+    assert_equal 120, trigger.coalesce_window_seconds
+
+    get trigger_path(trigger)
+    assert_response :success
+    assert_select "#trigger-coalesce-window-seconds", text: /120s/
+
+    # 0 is a value an operator means — it must not be rewritten to "the default".
+    patch trigger_path(trigger), params: { trigger: { coalesce_window_seconds: "0" } }
+    assert_equal 0, trigger.reload.coalesce_window_seconds
+    get trigger_path(trigger)
+    assert_select "#trigger-coalesce-window-seconds", text: /Off/
+
+    # Clearing the field means "inherit the default", which is not the same thing.
+    patch trigger_path(trigger), params: { trigger: { coalesce_window_seconds: "" } }
+    assert_nil trigger.reload.coalesce_window_seconds
+    assert_equal Trigger::DEFAULT_COALESCE_WINDOW_SECONDS, trigger.effective_coalesce_window_seconds
+  end
+
+  test "the new trigger form renders the coalescing-window field" do
+    get new_trigger_path
+    assert_response :success
+    assert_select "input[type=number][name='trigger[coalesce_window_seconds]']"
+  end
+
   test "the form saves skip_if_pending_session, and the detail page reports what it is doing" do
     post triggers_path, params: {
       trigger: {
