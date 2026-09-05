@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 class AgentPostedGithubCommentTest < ActiveSupport::TestCase
   setup do
