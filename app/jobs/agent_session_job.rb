@@ -941,10 +941,25 @@ class AgentSessionJob < ApplicationJob
             level: "info"
           )
 
+          # Put the clone back where it was. The runtime names its transcript
+          # directory after the cwd it is spawned from, so a re-clone at a fresh
+          # path re-writes the whole conversation under a new slug and abandons
+          # the old copy at full size — 23 copies of one conversation in
+          # production (#576). See SessionClonePath for why the path is free.
+          reused_clone_path = SessionClonePath.for_recreate(session, file_system: @file_system)
+          if reused_clone_path
+            log_buffer.add(
+              "Recreating the clone at its previous path so the conversation keeps one " \
+              "transcript directory: #{reused_clone_path}",
+              level: "info"
+            )
+          end
+
           begin
             clone_result = GitCloneService.create_clone(
               session.git_root,
               branch: session.branch || "main",
+              clone_path: reused_clone_path,
               subdirectory: session.subdirectory,
               fallback_subdirectory: session.catalog_subdirectory
             )
@@ -987,11 +1002,20 @@ class AgentSessionJob < ApplicationJob
             )
           )
 
-          # Restore transcript so Claude Code can resume the conversation
-          if session.transcript.present? && session.session_id.present?
-            write_transcript_to_clone(session, working_directory, log_buffer)
-          end
-
+          # The transcript is NOT written here. `restore_regressed_transcript_if_needed`
+          # runs a few lines below on every path through this branch and writes
+          # exactly when it should — the on-disk copy is missing or shorter than
+          # the stored record — and then verifies the write landed, which an
+          # unconditional one never did.
+          #
+          # The difference used to be academic, because a re-clone always landed
+          # at a path with no transcript directory behind it. Now that it lands
+          # back at the session's own path (#576), a transcript directory can
+          # survive the clone that named it — the two live on different volumes,
+          # and CloneReaper is not the only way a clone goes. An unconditional
+          # write would overwrite that survivor with `session.transcript`, and if
+          # the poller had not caught up before the clone was reaped, that means
+          # resuming a conversation shorter than the one on disk.
           log_buffer.add("Clone recreated at #{clone_path}", level: "info")
         end
 

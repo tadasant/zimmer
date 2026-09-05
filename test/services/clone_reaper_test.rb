@@ -131,6 +131,35 @@ class CloneReaperTest < ActiveSupport::TestCase
     assert_equal :removed, CloneReaper.reap(@clone_path, reason: "test")
   end
 
+  # zimmer#576: a re-clone now lands back at the path the session was using, so a
+  # transcript directory named after a deleted clone can come back to life while
+  # the `rm -rf` of the old tree is still running.
+  test "reaps the transcript directories once the clone is gone and nobody has taken the path back" do
+    TranscriptDirectoryReaper.expects(:reap_for_clone).with(@clone_path).returns(1)
+
+    assert_equal :removed, CloneReaper.reap(@clone_path, reason: "test")
+  end
+
+  test "leaves the transcript directories alone when a session took the path back during the delete" do
+    session = sessions(:archived)
+    TranscriptDirectoryReaper.expects(:reap_for_clone).never
+
+    # The ownership question is answered "not live" before the delete and "live"
+    # after it — a session resumed into a re-clone at the same path.
+    AtomicCloneRemoval.stub(:remove, ->(*_args, **_kwargs) {
+      session.update_columns(status: Session.statuses["running"], metadata: { "clone_path" => @clone_path })
+      true
+    }) do
+      assert_equal :removed, CloneReaper.reap(@clone_path, reason: "test")
+    end
+  end
+
+  test "does not reap the transcript directories when the clone was already absent" do
+    TranscriptDirectoryReaper.expects(:reap_for_clone).never
+
+    assert_equal :absent, CloneReaper.reap(File.join(@clones_base, "gone"), reason: "test")
+  end
+
   test "a refusal survives a session log write that fails" do
     sessions(:running).update!(metadata: { "clone_path" => @clone_path })
     Session.any_instance.stubs(:logs).raises(ActiveRecord::StatementInvalid, "boom")
