@@ -50,11 +50,17 @@ class SessionMemoryWatchTest < ActiveSupport::TestCase
   # the directory's ctime that SessionMemoryCgroup#incarnation keys on — see
   # SessionMemoryCgroupHelpers. A test that reads an incarnation twice has to get all of
   # its writes in before the first read (#820).
-  def write_cgroup(current: nil, peak: nil, oom_kills: nil, limit: 4 * 1024 * 1024 * 1024)
+  # `oom_events:` is the session cgroup's own `oom` counter, which the kernel moves only
+  # when THIS cgroup's limit was the one exceeded. Defaults to matching the kill count,
+  # which is the session's-own-bound case; pass 0 for a kill the pool declared.
+  def write_cgroup(current: nil, peak: nil, oom_kills: nil, oom_events: nil, limit: 4 * 1024 * 1024 * 1024)
     File.write(File.join(@cgroup.path, "memory.max"), limit.to_s)
     File.write(File.join(@cgroup.path, "memory.current"), current.to_s) if current
     File.write(File.join(@cgroup.path, "memory.peak"), peak.to_s) if peak
-    File.write(File.join(@cgroup.path, "memory.events"), "oom_kill #{oom_kills}\n") if oom_kills
+    if oom_kills
+      events = oom_events.nil? ? oom_kills : oom_events
+      File.write(File.join(@cgroup.path, "memory.events"), "oom #{events}\noom_kill #{oom_kills}\n")
+    end
     # A process in the cgroup, so the "running unbounded" check stays quiet unless a
     # test is about it.
     File.write(@cgroup.procs_path, "4242\n")
@@ -67,7 +73,7 @@ class SessionMemoryWatchTest < ActiveSupport::TestCase
   end
 
   # The pool every session on the worker shares, which is `@parent` itself.
-  def write_pool(current:, limit: 7 * 1024 * 1024 * 1024)
+  def write_pool(current:, limit: 6 * 1024 * 1024 * 1024)
     File.write(File.join(@parent, "memory.current"), current.to_s)
     File.write(File.join(@parent, "memory.max"), limit.nil? ? "max" : limit.to_s)
   end
@@ -89,9 +95,12 @@ class SessionMemoryWatchTest < ActiveSupport::TestCase
   # killed while nowhere near its own bound. Told the wrong story, that reads like a bug
   # in whatever the agent just ran; told the right one, it reads like a busy box.
 
-  test "a kill while well inside the session's own bound is reported as the shared pool's" do
-    write_cgroup(peak: 300 * 1024 * 1024, oom_kills: 1)
-    write_pool(current: 7 * 1024 * 1024 * 1024)
+  # The discriminator is the kernel's own `oom` counter, not a usage fraction: a kill the
+  # pool declared moves this cgroup's `oom_kill` and leaves its `oom` alone, because
+  # cgroup v2 propagates events upward only.
+  test "a kill the pool declared is reported as the shared pool's, not the session's bound" do
+    write_cgroup(peak: 300 * 1024 * 1024, oom_kills: 1, oom_events: 0)
+    write_pool(current: 6 * 1024 * 1024 * 1024, limit: 6 * 1024 * 1024 * 1024)
 
     SessionMemoryWatch.new(@session).check(@buffer)
 
@@ -101,20 +110,46 @@ class SessionMemoryWatchTest < ActiveSupport::TestCase
     assert_no_match(/its own memory limit/, kill[:content],
       "the session used 300 MB of 4 GB — blaming its own bound is advice for a problem " \
       "it does not have")
+    assert_equal SessionMemoryCgroup::POOL_SCOPE,
+      @session.reload.metadata[SessionMemoryCgroup::LAST_KILL_SCOPE_KEY],
+      "the scope has to be recorded, or the agent-death path cannot read it back"
+  end
+
+  # The trap the fraction-based version fell into: `memory.peak` is a LIFETIME mark on a
+  # cgroup deliberately reused across every turn, so a session that once touched its bound
+  # would be blamed for it forever. The counter is per-event and does not.
+  test "a high lifetime peak does not make a pool kill read as the session's own bound" do
+    write_cgroup(peak: 4 * 1024 * 1024 * 1024, oom_kills: 1, oom_events: 0)
+    write_pool(current: 6 * 1024 * 1024 * 1024, limit: 6 * 1024 * 1024 * 1024)
+
+    SessionMemoryWatch.new(@session).check(@buffer)
+
+    assert_match(/ALL sessions on this worker share/, @buffer.contents)
+  end
+
+  # And the mirror: the pool reading low right after the kill (the victim's memory is
+  # already freed) must not turn a genuine own-bound kill into a vague one.
+  test "a pool that reads low after the kill does not hide the session's own bound" do
+    write_cgroup(peak: 4 * 1024 * 1024 * 1024, oom_kills: 1, oom_events: 1)
+    write_pool(current: 1024, limit: 6 * 1024 * 1024 * 1024)
+
+    SessionMemoryWatch.new(@session).check(@buffer)
+
+    assert_match(/its own memory limit/, @buffer.contents)
   end
 
   # The pool is sized to be used, so a warning has to mean something more than "the box
   # is doing work".
   test "warns once when the shared pool is nearly full, and not while it has room" do
     write_cgroup(current: 1024, peak: 1024)
-    write_pool(current: 3 * 1024 * 1024 * 1024)
+    write_pool(current: 2 * 1024 * 1024 * 1024)
     watch = SessionMemoryWatch.new(@session)
 
     watch.check(@buffer)
 
     assert_empty @buffer.entries, "half a pool is normal operation, not news"
 
-    write_pool(current: 7 * 1024 * 1024 * 1024)
+    write_pool(current: 6 * 1024 * 1024 * 1024)
     tick_again(watch)
     tick_again(watch)
 
@@ -126,7 +161,7 @@ class SessionMemoryWatchTest < ActiveSupport::TestCase
   # There is then no fraction to be above, and nothing to warn about.
   test "a pool with no aggregate cap is not pressure" do
     write_cgroup(current: 1024, peak: 1024)
-    write_pool(current: 9 * 1024 * 1024 * 1024, limit: nil)
+    write_pool(current: 8 * 1024 * 1024 * 1024, limit: nil)
 
     SessionMemoryWatch.new(@session).check(@buffer)
 

@@ -42,6 +42,16 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
     end
   end
 
+  # #981: same as Codex and Claude — a runtime this misses sizes its test parallelism off
+  # the whole droplet's processor count, and eight such sessions filled the worker's cgroup.
+  test "spawn_process caps Pi's parallel test workers" do
+    @file_system.mkdir_p(WORKING_DIR)
+    @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
+
+    assert_equal CliSpawnEnv::DEFAULT_TEST_PARALLELISM.to_s,
+      @process_manager.spawned_processes.first[:env]["PARALLEL_WORKERS"]
+  end
+
   test "binary_name and stderr log filename identify the Pi runtime" do
     assert_equal "pi", @adapter.binary_name
     assert_equal "pi_stderr.log", PiRuntimeAdapter.stderr_log_filename

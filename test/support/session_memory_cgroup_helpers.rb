@@ -156,13 +156,34 @@ module SessionMemoryCgroupHelpers
   # readers have to survive (an older kernel has no `memory.peak`).
   #
   # @return [String] the cgroup's path
-  def write_session_cgroup(session_id, oom_kills: nil, current: nil, peak: nil, limit: 4 * 1024 * 1024 * 1024)
+  # `oom_events` is the cgroup's own `oom` counter — the one the kernel moves only when
+  # THIS cgroup's limit was the one exceeded, and therefore what separates a kill the
+  # session's own bound caused from one the shared pool declared. It defaults to matching
+  # the kill count, which is the session's-own-bound case; pass 0 for a pool kill, or nil
+  # to leave the key out of the file entirely.
+  def write_session_cgroup(session_id, oom_kills: nil, oom_events: :match, current: nil, peak: nil,
+    limit: 4 * 1024 * 1024 * 1024)
     path = File.join(SessionMemoryCgroup.parent_path, "session-#{session_id}")
     FileUtils.mkdir_p(path)
     File.write(File.join(path, "memory.max"), limit.to_s) if limit
     File.write(File.join(path, "memory.current"), current.to_s) if current
     File.write(File.join(path, "memory.peak"), peak.to_s) if peak
-    File.write(File.join(path, "memory.events"), "oom_kill #{oom_kills}\n") if oom_kills
+    if oom_kills
+      events = oom_events == :match ? oom_kills : oom_events
+      body = events.nil? ? "" : "oom #{events}\n"
+      File.write(File.join(path, "memory.events"), "#{body}oom_kill #{oom_kills}\n")
+    end
+    path
+  end
+
+  # The pool's aggregate bound, which bin/docker-entrypoint writes as root.
+  #
+  # @return [String] the pool's path
+  def write_pool_cgroup(current: nil, limit: 6 * 1024 * 1024 * 1024)
+    path = SessionMemoryCgroup.parent_path
+    FileUtils.mkdir_p(path)
+    File.write(File.join(path, "memory.max"), limit.nil? ? "max" : limit.to_s)
+    File.write(File.join(path, "memory.current"), current.to_s) if current
     path
   end
 

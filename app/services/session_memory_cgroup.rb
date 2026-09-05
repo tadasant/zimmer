@@ -129,8 +129,20 @@ class SessionMemoryCgroup
   # Where a session remembers what it has already been told about its own cgroup. The
   # count alone is not enough — see #incarnation for why the inode travels with it.
   OOM_KILL_COUNT_KEY = "memory_cgroup_oom_kills"
+  # `memory.events`' `oom` counter, recorded alongside the kills for the same reason and
+  # read for a different one: it is what separates "this session's own bound" from "the
+  # pool's". See #kill_scope.
+  OOM_EVENT_COUNT_KEY = "memory_cgroup_oom_events"
+  # Which bound the last recorded kill came from — "session" or "pool", or absent when the
+  # kernel counters could not answer.
+  LAST_KILL_SCOPE_KEY = "memory_cgroup_oom_scope"
   INCARNATION_KEY = "memory_cgroup_incarnation"
   LAST_KILL_AT_KEY = "memory_cgroup_oom_killed_at"
+
+  # The two values #kill_scope answers with. A kill it cannot attribute is nil, which is
+  # not the same as either and is reported as such.
+  SESSION_SCOPE = "session"
+  POOL_SCOPE = "pool"
 
   # `sh -c SCRIPT $0 $1 $2...`: $1 is the cgroup.procs path, $2 onward are the real
   # argv. The shell writes its own pid — which `exec` then keeps — and gets out of the
@@ -211,24 +223,16 @@ class SessionMemoryCgroup
       File.join(root_path, POOL_DIRNAME)
     end
 
-    # The aggregate bound over every session, as the kernel currently holds it.
+    # Usage, high-water mark and the aggregate bound for the pool as a whole.
     #
-    # Read from the pool's `memory.max` rather than from an environment variable,
-    # because the entrypoint is what writes it and it may have failed to: a container
-    # that could not write the cap runs with the pool present and unbounded, and the
-    # readers have to be able to tell that from a cap that is simply large.
+    # `limit_bytes` is read from the pool's `memory.max` rather than from an environment
+    # variable, because the entrypoint is what writes it and it may have failed to: a
+    # container that could not write the cap runs with the pool present and unbounded,
+    # and the readers have to be able to tell that from a cap that is simply large.
     #
-    # @return [Integer, nil] bytes, or nil when there is no cap or it could not be read
-    def pool_limit_bytes
-      read_integer_at(parent_path, "memory.max")
-    end
-
-    # Usage, high-water mark and OOM kills for the pool as a whole.
-    #
-    # `oom_kill` here counts kills anywhere in the subtree, so it moves for a kill in
-    # any session's cgroup as well as for one the pool's own cap caused. It is a
-    # pressure reading, not an attribution — attribution stays per session, where the
-    # cgroup is named after the session that owns it.
+    # `oom_kills` counts kills anywhere in the subtree, so it moves for a kill in any
+    # session's cgroup as well as for one the pool's own cap caused. It is a pressure
+    # reading, not an attribution — attribution is #kill_scope's job.
     #
     # @return [Stats]
     def pool_stats
@@ -445,6 +449,21 @@ class SessionMemoryCgroup
     read_event("oom_kill")
   end
 
+  # How many times THIS cgroup's own `memory.max` was reached and an allocation was about
+  # to fail.
+  #
+  # The distinction from `oom_kill` is the whole of the attribution problem. `oom_kill`
+  # counts processes killed in this cgroup by any OOM killer, including one declared by an
+  # ancestor — so it moves whether the session ran out or the pool did. `oom` counts the
+  # cgroup whose own limit was exceeded, and cgroup v2 propagates events upward only, so
+  # a pool-declared OOM never touches this counter. `oom` moved means the session's own
+  # bound; `oom_kill` moved and `oom` did not means an ancestor's, which here is the pool.
+  #
+  # @return [Integer, nil]
+  def oom_event_count
+    read_event("oom")
+  end
+
   # An identifier for THIS instance of the cgroup directory, which changes when the
   # directory is recreated.
   #
@@ -499,17 +518,66 @@ class SessionMemoryCgroup
     [ observed - accounted_oom_kills(session), 0 ].max
   end
 
+  # Which bound a kill that has just been observed came from.
+  #
+  # Compared against the recorded baseline the same way the kill count is, and keyed to
+  # the same incarnation, so a counter that restarted under a live session does not read
+  # as "did not move".
+  #
+  # Deliberately NOT a comparison of usage against limits. `memory.peak` is a lifetime
+  # high-water mark on a cgroup that is reused across every turn of the session and never
+  # reset, so a session that touched its bound once on turn 1 would be blamed for its own
+  # bound forever after; and `memory.current` is read up to ten seconds after the kill,
+  # by which point the victim's memory has been freed and the pool reads low. The kernel's
+  # own counters have neither problem.
+  #
+  # @param session [Session]
+  # @param observed_events [Integer, nil] this cgroup's `oom` counter, as just read
+  # @return [String, nil] SESSION_SCOPE, POOL_SCOPE, or nil when it cannot be answered
+  def kill_scope(session, observed_events)
+    return nil if observed_events.nil?
+
+    metadata = session.metadata || {}
+    accounted = metadata[INCARNATION_KEY] == incarnation ? metadata[OOM_EVENT_COUNT_KEY].to_i : 0
+    observed_events > accounted ? SESSION_SCOPE : POOL_SCOPE
+  end
+
+  # The scope recorded for the most recent kill, when it belongs to this incarnation.
+  #
+  # ProcessLifecycleManager needs this for the race #recently_oom_killed? covers: the
+  # watch has already consumed the delta and moved the baseline, so re-deriving the scope
+  # would read "pool" for every kill. The answer is recorded at the moment it could still
+  # be computed.
+  #
+  # @param session [Session]
+  # @return [String, nil]
+  def last_kill_scope(session)
+    metadata = session.metadata || {}
+    return nil unless metadata[INCARNATION_KEY] == incarnation
+
+    metadata[LAST_KILL_SCOPE_KEY].presence
+  end
+
   # Record what we have reported, against the incarnation it was counted in.
+  #
+  # The scope is computed here rather than by the caller because it has to be computed
+  # BEFORE the baseline moves, and this is the method that moves it.
   #
   # @param session [Session]
   # @param observed [Integer]
-  # @return [void]
+  # @return [String, nil] the scope of the kill just recorded, for the caller's message
   def record_oom_kills!(session, observed)
+    observed_events = oom_event_count
+    scope = kill_scope(session, observed_events)
+
     session.merge_metadata!(
       OOM_KILL_COUNT_KEY => observed,
+      OOM_EVENT_COUNT_KEY => observed_events,
+      LAST_KILL_SCOPE_KEY => scope,
       INCARNATION_KEY => incarnation,
       LAST_KILL_AT_KEY => Time.current.iso8601
     )
+    scope
   end
 
   # Did the kernel kill something in here recently enough that a process dying now is
@@ -541,8 +609,6 @@ class SessionMemoryCgroup
   end
 
   private
-
-  def read_integer(file) = read_integer_at(path, file)
 
   def read_event(key) = read_event_at(path, key)
 end

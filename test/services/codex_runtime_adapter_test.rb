@@ -53,6 +53,16 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     end
   end
 
+  # #981: the cap has to reach every runtime, for the same reason the cgroup wrapper does.
+  # A runtime this misses sizes its test parallelism off the whole droplet's processor
+  # count, and eight such sessions are what filled the worker's cgroup.
+  test "spawn_process caps Codex's parallel test workers" do
+    @adapter.send(:spawn_process, [ "codex", "exec" ], working_dir: @test_dir)
+
+    assert_equal CliSpawnEnv::DEFAULT_TEST_PARALLELISM.to_s,
+      @mock_process_manager.spawned_processes.first[:env]["PARALLEL_WORKERS"]
+  end
+
   test "spawn_process refuses a nil working directory with an actionable error" do
     error = assert_raises(CodexRuntimeAdapter::CodexCliError) do
       @adapter.send(:spawn_process, [ "codex", "exec" ], working_dir: nil)

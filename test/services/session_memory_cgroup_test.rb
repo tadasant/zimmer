@@ -364,21 +364,93 @@ class SessionMemoryCgroupTest < ActiveSupport::TestCase
   end
 
   test "the aggregate bound is read from the pool the entrypoint wrote it on" do
-    File.write(File.join(@parent, "memory.max"), "7516192768\n")
+    File.write(File.join(@parent, "memory.max"), "6442450944\n")
 
-    assert_equal 7_516_192_768, SessionMemoryCgroup.pool_limit_bytes
-    assert_equal 7_516_192_768, SessionMemoryCgroup.pool_stats.limit_bytes
+    assert_equal 6_442_450_944, SessionMemoryCgroup.pool_stats.limit_bytes
   end
 
   # "The entrypoint could not write the cap" and "the cap is simply large" are different
   # states, and only the reader can tell them apart -- so an uncapped pool must read as
   # nil rather than as a number.
   test "an uncapped or unreadable pool reports no aggregate bound" do
-    assert_nil SessionMemoryCgroup.pool_limit_bytes, "no memory.max at all is not a bound"
+    assert_nil SessionMemoryCgroup.pool_stats.limit_bytes, "no memory.max at all is not a bound"
 
     File.write(File.join(@parent, "memory.max"), "max\n")
 
-    assert_nil SessionMemoryCgroup.pool_limit_bytes
+    assert_nil SessionMemoryCgroup.pool_stats.limit_bytes
+  end
+
+  # --- which bound killed it -----------------------------------------------
+  #
+  # `oom_kill` counts processes killed in this cgroup by ANY OOM killer, including one an
+  # ancestor declared, so on its own it cannot tell "this session ran out" from "the pool
+  # did". `oom` counts the cgroup whose OWN limit was exceeded, and cgroup v2 propagates
+  # events upward only — so it is the discriminator.
+
+  test "a kill that moved this cgroup's own oom counter is the session's own bound" do
+    cgroup = SessionMemoryCgroup.for(31)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom 1\noom_kill 1\n")
+    session = sessions(:active_session)
+
+    assert_equal SessionMemoryCgroup::SESSION_SCOPE, cgroup.record_oom_kills!(session, 1)
+    assert_equal SessionMemoryCgroup::SESSION_SCOPE, cgroup.last_kill_scope(session.reload)
+  end
+
+  test "a kill that left this cgroup's own oom counter alone came from the pool" do
+    cgroup = SessionMemoryCgroup.for(32)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom 0\noom_kill 1\n")
+    session = sessions(:active_session)
+
+    assert_equal SessionMemoryCgroup::POOL_SCOPE, cgroup.record_oom_kills!(session, 1)
+    assert_equal SessionMemoryCgroup::POOL_SCOPE, cgroup.last_kill_scope(session.reload)
+  end
+
+  # The baseline moves with the report, so a session that hits its own bound twice is
+  # attributed to itself both times rather than reading the second as the pool's.
+  test "the oom baseline moves with each report" do
+    cgroup = SessionMemoryCgroup.for(33)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom 1\noom_kill 1\n")
+    session = sessions(:active_session)
+    cgroup.record_oom_kills!(session, 1)
+
+    File.write(File.join(cgroup.path, "memory.events"), "oom 1\noom_kill 2\n")
+
+    assert_equal SessionMemoryCgroup::POOL_SCOPE, cgroup.record_oom_kills!(session.reload, 2),
+      "the same oom count means this kill was not this cgroup's own limit"
+
+    File.write(File.join(cgroup.path, "memory.events"), "oom 2\noom_kill 3\n")
+
+    assert_equal SessionMemoryCgroup::SESSION_SCOPE, cgroup.record_oom_kills!(session.reload, 3)
+  end
+
+  # Same reason #accounted_oom_kills is keyed to the incarnation: a recreated cgroup's
+  # counter restarts at zero while the recorded baseline lives in Postgres and does not.
+  test "a recreated cgroup does not read its first own-bound kill as the pool's" do
+    cgroup = SessionMemoryCgroup.for(34)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom 3\noom_kill 3\n")
+    session = sessions(:active_session)
+    cgroup.record_oom_kills!(session, 3)
+
+    FileUtils.remove_entry(cgroup.path)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom 1\noom_kill 1\n")
+
+    assert_equal SessionMemoryCgroup::SESSION_SCOPE, cgroup.record_oom_kills!(session.reload, 1)
+    assert_nil cgroup.last_kill_scope(Session.new), "a foreign incarnation answers nothing"
+  end
+
+  test "a kernel that cannot answer records no scope rather than guessing one" do
+    cgroup = SessionMemoryCgroup.for(35)
+    cgroup.prepare!
+    File.write(File.join(cgroup.path, "memory.events"), "oom_kill 1\n")
+    session = sessions(:active_session)
+
+    assert_nil cgroup.record_oom_kills!(session, 1)
+    assert_nil cgroup.last_kill_scope(session.reload)
   end
 
   test "pool stats report the shared usage and the kills anywhere beneath it" do
