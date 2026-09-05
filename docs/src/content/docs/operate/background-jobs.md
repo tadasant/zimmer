@@ -1501,6 +1501,19 @@ magnitude of headroom, read off the timeouts in the code rather than guessed:
 | `maintenance` | 90m | Its worst designed case, not a typical one: `OrphanCloneFilesystemCleanupJob`'s scheduled path removes up to `BATCH_LIMIT` (20) directories with no wall-clock budget, each tearing down Docker Compose bounded at `COMPOSE_DOWN_TIMEOUT` (120s) — 40 minutes of entirely correct work. `StaleCloneCleanupJob`'s `ORPHAN_SWEEP_LIMIT` (200 recursive deletes) and `BundleInstallJob` are unbounded in the same direction (`BundleInstallJob` retries up to three times, so its worst case is three installs) |
 | `auth` | 30m | `RuntimeLoginJob::MAX_DURATION` (12 minutes) |
 
+**A ceiling read off the timeouts only holds while the lane's jobs have timeouts.** `inference` is
+sized at 15m against two bounded calls of 30s and 90s, and it was breached twice —
+2026-09-04 and 2026-09-05 — because a third thing on that lane was bounded by nothing: an automatic
+status-summary generation copied the source session's whole clone directory, file by file, inline on
+its worker thread, before it had made an inference call at all. Two of those held both threads for
+over half an hour with tens of jobs queued behind them
+([#771](https://github.com/tadasant/zimmer/issues/771)). The alert was right and the ceiling was
+right; the code was violating a designed hold nobody had written down. The copy is gone — a summary
+fork is handed [an empty working
+directory](/sessions/status-summary/#a-summary-fork-gets-no-copy-of-the-clone) — so every job on the
+lane is now bounded by one of the two timeouts the ceiling was sized from. When a lane goes past its
+ceiling, that is the first question to ask of it: which operation in there has no budget?
+
 The capacity is scaled by live workers rather than taken per process because a Kamal cutover
 registers two workers at once: measuring one worker's full pool against a single process's thread
 count would call a healthy overlap a wedge. Scaling errs toward *missing* a wedge for the seconds
