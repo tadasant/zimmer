@@ -165,6 +165,71 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert Trigger.find(json["trigger"]["id"]).skip_if_pending_session
   end
 
+  test "should create a trigger with a coalescing window and report both the stored and effective value" do
+    post api_v1_triggers_path, params: {
+      name: "Coalescing Alerts Trigger",
+      agent_root_name: "zimmer",
+      prompt_template: "Check this: {{link}}",
+      coalesce_window_seconds: 120,
+      trigger_conditions_attributes: [
+        { condition_type: "slack", configuration: { channel_id: "C1", channel_name: "alerts", event_type: "new_message" } }
+      ]
+    }, headers: @headers
+
+    assert_response :created
+    json = JSON.parse(response.body)
+    assert_equal 120, json["trigger"]["coalesce_window_seconds"]
+    assert_equal 120, json["trigger"]["effective_coalesce_window_seconds"]
+    assert_equal false, json["trigger"]["coalesce_window_inert"]
+  end
+
+  test "a trigger that names no coalescing window reports the inherited default, not null behaviour" do
+    post api_v1_triggers_path, params: {
+      name: "Default Window Trigger",
+      agent_root_name: "zimmer",
+      prompt_template: "Check this: {{link}}",
+      trigger_conditions_attributes: [
+        { condition_type: "slack", configuration: { channel_id: "C1", channel_name: "alerts", event_type: "new_message" } }
+      ]
+    }, headers: @headers
+
+    assert_response :created
+    json = JSON.parse(response.body)
+    assert_nil json["trigger"]["coalesce_window_seconds"]
+    assert_equal Trigger::DEFAULT_COALESCE_WINDOW_SECONDS, json["trigger"]["effective_coalesce_window_seconds"]
+  end
+
+  test "0 turns coalescing off and survives the blank-means-default rewrite" do
+    post api_v1_triggers_path, params: {
+      name: "No Coalescing Trigger",
+      agent_root_name: "zimmer",
+      prompt_template: "Check this: {{link}}",
+      coalesce_window_seconds: 0,
+      trigger_conditions_attributes: [
+        { condition_type: "slack", configuration: { channel_id: "C1", channel_name: "alerts", event_type: "new_message" } }
+      ]
+    }, headers: @headers
+
+    assert_response :created
+    json = JSON.parse(response.body)
+    assert_equal 0, json["trigger"]["coalesce_window_seconds"]
+    assert_equal 0, json["trigger"]["effective_coalesce_window_seconds"]
+  end
+
+  test "should reject a negative coalescing window" do
+    post api_v1_triggers_path, params: {
+      name: "Bad Window",
+      agent_root_name: "zimmer",
+      prompt_template: "Check this: {{link}}",
+      coalesce_window_seconds: -5,
+      trigger_conditions_attributes: [
+        { condition_type: "slack", configuration: { channel_id: "C1", channel_name: "alerts", event_type: "new_message" } }
+      ]
+    }, headers: @headers
+
+    assert_response :unprocessable_entity
+  end
+
   test "should reject a non-positive burst cap" do
     post api_v1_triggers_path, params: {
       name: "Bad Cap",

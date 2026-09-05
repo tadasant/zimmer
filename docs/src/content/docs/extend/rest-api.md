@@ -661,6 +661,15 @@ reports `skip_if_pending_session_inert` (boolean), true while the trigger has a 
 rather than leaving a caller to infer that the flag it just set will not be read on those fires — it
 applies again on a fire that has to spawn.
 
+`coalesce_window_seconds` (integer, nullable) sets the trigger's [Slack coalescing
+window](/sessions/triggers/#coalescing-a-burst-of-slack-messages): messages that land in the same
+channel, thread or DM within that many seconds of each other are one event and spawn one session,
+with the rest folded into its prompt. `null` — the default — inherits 60 seconds; `0` turns
+coalescing off so every message spawns its own session. The payload reports the stored value beside
+`effective_coalesce_window_seconds` (the one actually in force), so a caller can tell "inherits 60s"
+from "set to 60s", and `coalesce_window_inert` (boolean), true when a window is stored on a trigger
+with no Slack condition to read it.
+
 `missed_fire_count` (integer) and `first_missed_fire_at` (ISO 8601, nullable) report consecutive
 scheduled runs that did **not** happen because the reused session had not consumed the previous
 prompt — see [coalescing a repeated fire](/sessions/triggers/#coalescing-a-repeated-fire).

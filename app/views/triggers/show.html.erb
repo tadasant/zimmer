@@ -46,6 +46,11 @@
                 Skips while pending
               </span>
             <% end %>
+            <% if @trigger.coalesce_window_seconds&.zero? %>
+              <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                No coalescing
+              </span>
+            <% end %>
             <% if @trigger.missing_fires? %>
               <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
                 <%= pluralize(@trigger.missed_fire_count, "missed fire") %>
@@ -292,6 +297,28 @@
                 <% else %>
                   <span class="text-xs text-gray-500">nothing pending — the next fire spawns</span>
                 <% end %>
+              <% end %>
+            </dd>
+          </div>
+          <div>
+            <dt class="text-sm font-medium text-gray-500">Coalescing Window</dt>
+            <dd class="mt-1 flex flex-wrap items-center gap-2">
+              <span class="text-sm text-gray-900" id="trigger-coalesce-window-seconds">
+                <%= @trigger.coalesces_messages? ? "#{@trigger.effective_coalesce_window_seconds}s" : "Off" %>
+              </span>
+              <% if @trigger.coalesce_window_seconds.nil? %>
+                <span class="text-xs text-gray-500">(default)</span>
+              <% end %>
+              <% if @trigger.coalesce_window_inert? %>
+                <span class="inline-flex flex-wrap items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
+                  Inert — only Slack conditions coalesce, and this trigger has none.
+                </span>
+              <% elsif @trigger.coalesces_messages? %>
+                <span class="text-xs text-gray-500">
+                  Slack messages in one channel within this window are one event and spawn one session; the rest are folded into its prompt.
+                </span>
+              <% else %>
+                <span class="text-xs text-gray-500">every message spawns its own session</span>
               <% end %>
             </dd>
           </div>
