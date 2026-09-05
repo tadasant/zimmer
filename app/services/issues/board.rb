@@ -2,7 +2,7 @@
 
 module Issues
   # The Issues page, assembled: the fleet's work backlog joined to what is going
-  # on in GitHub across the five repos.
+  # on in GitHub across the repos it watches.
   #
   # The join key is the issue URL. A backlog item carries one; a GitHub issue is
   # one. Everything the page shows is one of three things:
@@ -18,7 +18,7 @@ module Issues
   # calls would be worse than no page. The GitHub side reuses the same repo and
   # direction values so one filter bar drives both halves.
   class Board
-    # Loose GitHub issues are paginated: five repos carry ~500 open issues between
+    # Loose GitHub issues are paginated: the repos carry ~500 open issues between
     # them and a page that renders all of them is a page nobody scrolls.
     GITHUB_PER_PAGE = 50
 
@@ -128,7 +128,7 @@ module Issues
       @queued_by_direction ||= Direction::ALL.index_with { |d| all_queued_rows.count { |row| row.direction.direction == d } }
     end
 
-    # Every open GitHub issue by resolved direction, across all five repos.
+    # Every open GitHub issue by resolved direction, across every repo.
     def github_by_direction
       @github_by_direction ||= Direction::ALL.index_with do |d|
         open_issue_directions.count { |resolution| resolution.direction == d }
@@ -142,8 +142,8 @@ module Issues
     def repo_summaries
       @repo_summaries ||= begin
         queued_by_repo = WorkBacklogItem.queued.group(:repo).count
-        # Grouped once rather than re-scanned per repo: five `select`s over ~950
-        # issues is five sweeps to answer a question one sweep answers.
+        # Grouped once rather than re-scanned per repo: a `select` per repo over
+        # ~1,100 issues is one sweep each to answer what a single sweep answers.
         open_by_repo = snapshot.issues.select(&:open?).group_by(&:repo)
 
         GithubSnapshot::REPOS.map do |repo|

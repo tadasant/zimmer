@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # The Issues page: the fleet's work backlog joined to what is going on in GitHub
-# across the five repos the fleet works.
+# across the repos the fleet works.
 #
 # READ-ONLY, EXCEPT FOR ONE THING THAT IS NOT HERE. The page's single write —
 # promoting a queued item to a `priority` session — belongs to

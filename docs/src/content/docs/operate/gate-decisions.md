@@ -37,6 +37,13 @@ Only a handful of fields are columns:
 | `recorded_via` | `import`, `mcp` or `api` |
 | `payload` | **The entry, verbatim** |
 
+`surface` is a **free string**, not an enum or an allowlist — normalized on the way in
+(`GateDecision.normalize_surface` lowercases and turns hyphens and whitespace into underscores) so
+that "Strad-Production" and `strad_production` land in the same bucket rather than founding two. A
+gate rating a repo Zimmer has never seen before can record the decision immediately; nothing here
+has to be deployed first. The cost of that is spelling: use whatever the ledger already writes for
+that surface, because a typo founds a bucket rather than being rejected.
+
 The thinness is deliberate. The two gates do not share a schema and neither schema is finished: on
 300 PR-gate zimmer entries there are 34 distinct keys, of which 11 are universal, four arrived in
 the last few weeks and four are retired. Pinning those into columns would mean a migration every
