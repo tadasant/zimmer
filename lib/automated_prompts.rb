@@ -122,11 +122,20 @@ module AutomatedPrompts
   # unanswered human request outranks archiving, because the failure mode that
   # actually costs the human something is a session that archives itself on top
   # of a question they asked and never got an answer to.
+  #
+  # `%{post_merge_automation}` is where the poller's reading of what the merge
+  # actually SET IN MOTION goes — see post_merge_automation_section. For a PR whose
+  # merge fires a deploy, merged is roughly the halfway point: the deploy takes
+  # minutes and can fail for reasons that only exist on the deploy path, and the
+  # session archiving on this message is the one holding the context to diagnose it
+  # (tadasant/tadasant-internal#1969). Empty for a merge that fired nothing
+  # detectable, which is the common case and leaves this message byte-identical to
+  # what it has always been.
   PR_MERGED_TEMPLATE = <<~PROMPT.strip
     [AUTOMATED SYSTEM MESSAGE - NOT USER INPUT]
 
     PR %{pr_url}, associated with this session, has been merged. This is Zimmer reporting a state change on GitHub — no human is speaking to you right now.
-
+    %{post_merge_automation}
     Decide which of these two applies, and act on it:
 
     1. Nothing is left in this session's scope. The PR was the deliverable, and no human message in this conversation is still waiting on you. Archive this session with your Zimmer tools so it stops sitting in your human's queue.
@@ -202,11 +211,144 @@ module AutomatedPrompts
     prompt[MERGE_CONFLICT_PR_URL_PATTERN, 1]
   end
 
+  # What a session must do about post-merge automation, whichever branch it is on.
+  #
+  # One block, shared by every branch of post_merge_automation_section, so a
+  # session that finds runs for itself gets the same rules as one the poller
+  # listed them for. The wait is deliberately BOUNDED and deliberately a sleep:
+  # a deploy is a machine wait, so parking in `needs_input` for it would put a
+  # session in the human's action queue with nothing for a human to do — and an
+  # unbounded wait would leave a session sleeping on a workflow that never ends.
+  POST_MERGE_AUTOMATION_RULES = <<~RULES.strip
+    Wait for those runs before you archive. This is a machine wait, not a human handoff — sleep on it with `wake_me_up_later` (about 2 minutes at a time) and re-check on each wake with `gh run view <run id> --repo <owner>/<repo>`. Do NOT park in `needs_input` for it, and do NOT watch it with a foreground or background shell loop. Bound the wait: about 10 wakes, roughly 20 minutes in total.
+
+    - **Every run finished successfully** — the merge is complete. Option 1 below applies: archive.
+    - **A run failed** — you hold more context about this change than anyone else does, and archiving throws it away at the moment it is worth most. Read the failing job's log, then either fix it (a follow-up PR, through the `open-pr` skill) or say in your final message what failed and why it is not yours to fix. Never archive silently on a red run.
+    - **Still running when your budget is spent** — name the runs in your final message and archive anyway. Do not sleep indefinitely.
+  RULES
+
+  # The paragraph the merged-PR message carries about what the merge set in motion.
+  #
+  # Four shapes, and which one a session gets is a fact about its own merge rather
+  # than a guess it has to make — that is the whole point. A session cannot see
+  # whether its repository deploys on merge, so the message has to say:
+  #
+  #   - runs already failed      — the deploy is red now; do not archive on top of it
+  #   - runs still in flight     — wait for them under POST_MERGE_AUTOMATION_RULES
+  #   - runs all finished green  — nothing to wait for, said explicitly
+  #   - no runs seen             — one command to settle it, then the ordinary path
+  #
+  # The last one is the race guard. The poller can detect a merge within a second
+  # or two of it happening, before GitHub has created the workflow runs it fired,
+  # and a session told "nothing fired" in that window is exactly the session this
+  # whole change exists to stop from archiving into a failing deploy. One `gh run
+  # list` seconds later is authoritative where the poller's reading was early, and
+  # it costs a session that really did fire nothing a single command.
+  #
+  # Returns "" when `merge_commit_sha` is nil — the poller could not read the merge
+  # commit at all, so there is nothing true to say and the message stays exactly as
+  # it was before this branch existed. Failing open is deliberate: an unreadable
+  # lookup must not strand a session that has finished its work.
+  #
+  # @param runs [Array<Hash>] `{ "name" =>, "status" =>, "conclusion" =>, "url" => }`
+  # @param merge_commit_sha [String, nil]
+  # @param repo_slug [String, nil] "owner/repo", for the commands this text suggests
+  # @return [String]
+  def self.post_merge_automation_section(runs:, merge_commit_sha:, repo_slug: nil)
+    return "" if merge_commit_sha.blank?
+
+    runs = Array(runs)
+    repo_flag = repo_slug.present? ? " --repo #{repo_slug}" : ""
+
+    if runs.empty?
+      return <<~SECTION.strip
+        **Before you archive, settle one thing.** Zimmer saw no workflow runs on merge commit #{merge_commit_sha} when it wrote this message, but it may simply have looked before GitHub created them. If merging this PR deploys or releases anything, merged is the halfway point and not the end.
+
+        Run `gh run list --commit #{merge_commit_sha}#{repo_flag} --limit 10` once. **Empty output — or a command you cannot run — means this merge fired nothing, and option 1 below applies as written: archive.** If it does list runs, wait for them to finish before archiving, and treat a failure as yours to diagnose: you hold more context about this change than anyone else does.
+      SECTION
+    end
+
+    failed = runs.select { |run| failed_run?(run) }
+    unfinished = runs.reject { |run| finished_run?(run) }
+
+    if failed.any?
+      <<~SECTION.strip
+        **Merging fired automation that has already FAILED. Do not archive on top of it.**
+
+        #{render_runs(failed + unfinished)}
+
+        A merge that fires a deploy can fail for reasons your PR's own CI could not catch, and you hold more context about this change than anyone else does. Read the failing job's log before you do anything else, then either fix it (a follow-up PR, through the `open-pr` skill) or say in your final message what failed and why it is not yours to fix.#{unfinished.any? ? " Runs above that have not finished still need watching — see below." : ""}
+
+        #{POST_MERGE_AUTOMATION_RULES}
+      SECTION
+    elsif unfinished.any?
+      <<~SECTION.strip
+        **Merging fired automation that has not finished yet.** For a PR whose merge deploys, merged is roughly the halfway point:
+
+        #{render_runs(unfinished)}
+
+        #{POST_MERGE_AUTOMATION_RULES}
+      SECTION
+    else
+      <<~SECTION.strip
+        Merging fired #{runs.size == 1 ? "one workflow run" : "#{runs.size} workflow runs"} on commit #{merge_commit_sha}, and #{runs.size == 1 ? "it has" : "all of them have"} already finished successfully. Nothing is left to wait for on that account.
+      SECTION
+    end
+  end
+
+  # One bullet per run: what it was, where it got to, and where to read it.
+  def self.render_runs(runs)
+    runs.map do |run|
+      state = [ run["status"], run["conclusion"] ].compact_blank.join(" / ")
+      "- #{run['name'].presence || 'workflow run'} — #{state.presence || 'state unknown'} — #{run['url']}"
+    end.join("\n")
+  end
+
+  # A run GitHub has stopped working on, whatever it concluded.
+  def self.finished_run?(run)
+    run["status"].to_s == "completed"
+  end
+
+  # A finished run whose conclusion is one a human would call a failure.
+  #
+  # `skipped` and `neutral` are not failures, and `cancelled` is: a deploy someone
+  # cancelled did not deploy, which is the same fact about production as a red one.
+  def self.failed_run?(run)
+    finished_run?(run) && !%w[success skipped neutral].include?(run["conclusion"].to_s)
+  end
+
   # Build a PR-merged automated message for a specific PR URL
   #
   # @param pr_url [String] The full GitHub PR URL (e.g., "https://github.com/owner/repo/pull/123")
+  # @param post_merge_runs [Array<Hash>] workflow runs on the merge commit, as the
+  #   poller read them; empty is meaningful and nil is not distinguished from it
+  # @param merge_commit_sha [String, nil] nil when the poller could not read it, which
+  #   suppresses the post-merge paragraph entirely
   # @return [String] The formatted automated message
-  def self.pr_merged_message(pr_url)
-    format(PR_MERGED_TEMPLATE, pr_url: pr_url)
+  def self.pr_merged_message(pr_url, post_merge_runs: [], merge_commit_sha: nil)
+    section = post_merge_automation_section(
+      runs: post_merge_runs,
+      merge_commit_sha: merge_commit_sha,
+      repo_slug: repo_slug_from_pr_url(pr_url)
+    )
+
+    format(
+      PR_MERGED_TEMPLATE,
+      pr_url: pr_url,
+      # The template puts this placeholder on a line of its own between two
+      # paragraphs, so "" leaves the blank line that was always there and a
+      # section slots in with a blank line on either side.
+      post_merge_automation: section.empty? ? "" : "\n#{section}\n"
+    )
+  end
+
+  # "owner/repo" out of a GitHub PR URL, or nil if it is not one.
+  def self.repo_slug_from_pr_url(pr_url)
+    return nil unless pr_url.is_a?(String)
+
+    match = pr_url.match(%r{github\.com/([^/]+)/([^/]+)/pull/\d+})
+    return nil unless match
+
+    "#{match[1]}/#{match[2]}"
   end
 end

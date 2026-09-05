@@ -829,6 +829,45 @@ in which case the session archives itself and stops sitting in your queue. Or th
 It also says that an unanswered human message outranks archiving, because a session that closes
 itself on top of a question you asked is the expensive failure here.
 
+### …and what the merge fired
+
+For a PR whose merge triggers a deploy, **merged is roughly the halfway point rather than the end**.
+The notification arrives within seconds of the merge; the deploy runs for minutes afterwards and can
+fail on a path the PR's own CI never exercised — and the session about to archive on that
+notification is the only one holding the context to diagnose it. That happened three times in one
+chain on 2026-08-30 (`tadasant/tadasant-internal#1969`): each producing session archived on the
+merge message, each deploy went red minutes later, and each diagnosis was re-derived from scratch by
+a fresh alert-triggered session.
+
+A session cannot see its repository's workflow triggers from the inside, so the poller answers the
+question for it. On the `open` → `merged` transition — once per PR, never on an ordinary tick — it
+makes two more `gh` calls: the PR's merge commit, and one page of
+`repos/{owner}/{repo}/actions/runs?head_sha=<merge commit>`. The reading goes into the message:
+
+| What the poller saw | What the message says |
+| --- | --- |
+| No runs on the merge commit | Run `gh run list --commit <sha>` once; **empty means archive now**, as before |
+| Runs still queued or in progress | Names them, and sends the session to sleep on a bounded self-wake (~2 min × ~10) until they finish |
+| A run already concluded in anything but `success`/`skipped`/`neutral` | Names it as a failure and says not to archive on top of it |
+| Every run already finished successfully | Says so explicitly — nothing to wait for |
+
+Three properties are load-bearing:
+
+- **It fails open.** An unreadable merge commit — a timeout, a repo the token cannot see — produces
+  the merged message byte-for-byte as it was before this existed. A lookup GitHub would not answer
+  must never strand a session that has finished its work.
+- **It queries by head SHA, not by workflow name.** "Which runs exist because *this* merge landed"
+  has one right answer; "which workflows are deploys" is a guess, and the deploy that failed three
+  times on 2026-08-30 was not called `deploy`.
+- **The wait is a sleep, and it is bounded.** A deploy is a machine wait, so the message tells the
+  session to sleep on `wake_me_up_later` rather than park in `needs_input`, and to archive anyway —
+  naming the runs — once its budget is spent. Neither an unbounded wait nor a claim on the human's
+  action queue.
+
+The empty-list case is the race guard. The poller can catch a merge within a second or two of it
+happening, before GitHub has created the runs it fired, so "no runs" is not proof that nothing
+fired; one `gh run list` seconds later is authoritative where the poller's reading was early.
+
 Three rules keep it quiet:
 
 - **Only the `open` → `merged` transition.** A PR that was already merged the first time the poller
@@ -991,6 +1030,8 @@ merely-degraded API would trade a rare wedge for a spurious failure on every 30-
 | `GithubSearchService::AUTH_STATUS_TIMEOUT` — `gh auth status` | 10s | Single cheap round trip on the poller's preflight. |
 | `GitHubPullRequestPollerJob::PR_STATUS_TIMEOUT` — `gh pr view` | 20s | One REST round trip. |
 | `GitHubPullRequestPollerJob::CI_STATUS_TIMEOUT` — `gh pr checks` | 30s | Resolves the head commit, then aggregates every check run on it. |
+| `GitHubPullRequestPollerJob::MERGE_COMMIT_TIMEOUT` — `gh pr view --json mergeCommit` | 20s | Same round trip as `PR_STATUS_TIMEOUT`, and made only on the `open` → `merged` transition. |
+| `GitHubPullRequestPollerJob::POST_MERGE_RUNS_TIMEOUT` — `gh api …/actions/runs?head_sha=` | 30s | One page of workflow runs on the merge commit, also only on that transition. A failure here reports no runs, which is the "settle it yourself" branch of the merged message. |
 | `GithubCommentPollerJob::COMMENT_PAGE_TIMEOUT` — `gh api …/comments` | 20s | **Per page.** The fetch is a pagination loop; a bound on the whole loop is either too tight for a long thread or bounds nothing. A page that times out ends the loop the way a non-zero exit already does — return the pages already read. |
 | `GithubCommentPollerJob::REACTION_TIMEOUT` — `gh api --method POST …/reactions` | 10s | Best-effort 👀; the follow-up prompt does not depend on it, so waiting on it only delays the prompt. |
 | `GitHubMergeConflictPollerJob::MERGEABLE_TIMEOUT` — `gh api …/pulls/N --jq .mergeable` | 20s | **Per attempt** — the null-retry loop calls it up to four times while GitHub computes mergeability, which it does on demand, so this is not the cheap call it looks. A *timeout* is returned on immediately rather than retried, so a hang costs one attempt and not four. |

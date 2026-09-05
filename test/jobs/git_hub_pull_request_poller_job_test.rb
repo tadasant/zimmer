@@ -5,6 +5,14 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
   setup do
     @session_with_pr = sessions(:with_pr_url)
     @session_without_pr = sessions(:running)
+
+    # Announcing a merge now also asks GitHub what that merge fired, which is two
+    # `gh` calls. Neutralise them by default so no test shells out by accident;
+    # `{ merge_commit_sha: nil }` is the job's own "could not read it" answer and
+    # produces the merged message exactly as it was before that lookup existed.
+    # The tests that care about the lookup re-stub this, or stub the fetches under it.
+    GitHubPullRequestPollerJob.any_instance.stubs(:post_merge_automation)
+      .returns({ merge_commit_sha: nil, runs: [] })
   end
 
   test "Session.with_github_prs returns active sessions with PR URLs" do
@@ -1005,5 +1013,160 @@ class GitHubPullRequestPollerJobTest < ActiveSupport::TestCase
 
     message = @session_with_pr.enqueued_messages.sole
     assert_equal "automated_pr_merged", message.origin
+  end
+
+  # ---- What the merge fired (tadasant/tadasant-internal#1969) ----
+  #
+  # For a PR whose merge triggers a deploy, the merge notification arrives seconds
+  # after the merge and the deploy runs for minutes afterwards — so a session that
+  # reads "merged" as "done" archives at the moment its diagnostic context is worth
+  # most. It happened three times in one chain on 2026-08-30. The message now
+  # carries the poller's reading of the workflow runs the merge created.
+
+  test "the merged message names post-merge runs still in flight and tells the session to wait" do
+    @session_with_pr.update!(status: :running, custom_metadata: {
+      "github_pull_request_urls" => [ MERGED_PR_URL ],
+      "github_pull_request_statuses" => { MERGED_PR_URL => "open" }
+    })
+
+    GitHubPullRequestPollerJob.any_instance.stubs(:post_merge_automation).returns({
+      merge_commit_sha: "deadbee",
+      runs: [
+        { "name" => "Release image", "status" => "in_progress", "conclusion" => nil,
+          "url" => "https://github.com/owner/repo/actions/runs/1" }
+      ]
+    })
+
+    TestJobReturningMerged.new.send(:poll_pr_statuses, @session_with_pr)
+
+    content = @session_with_pr.reload.enqueued_messages.pending.sole.content
+    assert_includes content, "Release image"
+    assert_includes content, "https://github.com/owner/repo/actions/runs/1"
+    assert_includes content, "Wait for those runs before you archive"
+    assert_includes content, "wake_me_up_later"
+    assert_includes content, "Do NOT park in `needs_input` for it"
+  end
+
+  test "the merged message reports a post-merge run that already failed" do
+    @session_with_pr.update!(status: :running, custom_metadata: {
+      "github_pull_request_urls" => [ MERGED_PR_URL ],
+      "github_pull_request_statuses" => { MERGED_PR_URL => "open" }
+    })
+
+    GitHubPullRequestPollerJob.any_instance.stubs(:post_merge_automation).returns({
+      merge_commit_sha: "deadbee",
+      runs: [
+        { "name" => "Deploy production", "status" => "completed", "conclusion" => "failure",
+          "url" => "https://github.com/owner/repo/actions/runs/2" }
+      ]
+    })
+
+    TestJobReturningMerged.new.send(:poll_pr_statuses, @session_with_pr)
+
+    content = @session_with_pr.reload.enqueued_messages.pending.sole.content
+    assert_includes content, "already FAILED"
+    assert_includes content, "Deploy production"
+    assert_includes content, "https://github.com/owner/repo/actions/runs/2"
+  end
+
+  # The constraint that matters as much as the fix: a PR that fires nothing must
+  # still archive on the merge message, with no wait and nothing to sleep on.
+  test "an ordinary merge that fired nothing still says archive now" do
+    @session_with_pr.update!(status: :running, custom_metadata: {
+      "github_pull_request_urls" => [ MERGED_PR_URL ],
+      "github_pull_request_statuses" => { MERGED_PR_URL => "open" }
+    })
+
+    GitHubPullRequestPollerJob.any_instance.stubs(:post_merge_automation)
+      .returns({ merge_commit_sha: "deadbee", runs: [] })
+
+    TestJobReturningMerged.new.send(:poll_pr_statuses, @session_with_pr)
+
+    content = @session_with_pr.reload.enqueued_messages.pending.sole.content
+    assert_includes content, "option 1 below applies as written: archive"
+    assert_includes content, "gh run list --commit deadbee --repo owner/repo"
+    refute_includes content, "Wait for those runs before you archive",
+      "A merge that fired nothing must not put the session into a deploy wait"
+  end
+
+  # Failing open: a lookup GitHub would not answer must leave the session the message
+  # it has always had rather than a hedge it cannot act on.
+  test "a merge whose commit could not be read sends the message unchanged" do
+    @session_with_pr.update!(status: :running, custom_metadata: {
+      "github_pull_request_urls" => [ MERGED_PR_URL ],
+      "github_pull_request_statuses" => { MERGED_PR_URL => "open" }
+    })
+
+    TestJobReturningMerged.new.send(:poll_pr_statuses, @session_with_pr)
+
+    content = @session_with_pr.reload.enqueued_messages.pending.sole.content
+    assert_equal AutomatedPrompts.pr_merged_message(MERGED_PR_URL), content
+  end
+
+  # The lookup is two `gh` calls, and it must stay on the once-per-PR transition
+  # rather than joining the 30-second poll.
+  test "an open PR costs no post-merge lookup" do
+    @session_with_pr.update!(status: :running, custom_metadata: {
+      "github_pull_request_urls" => [ MERGED_PR_URL ],
+      "github_pull_request_statuses" => { MERGED_PR_URL => "open" }
+    })
+
+    job = TestJobWithCIStatusPass.new
+    job.expects(:post_merge_automation).never
+
+    job.send(:poll_pr_statuses, @session_with_pr)
+  end
+
+  test "fetch_merge_commit_sha reads the oid, and answers nil when gh fails" do
+    job = GitHubPullRequestPollerJob.new
+
+    BoundedSubprocess.stubs(:run).returns(
+      [ { "mergeCommit" => { "oid" => "abc1234" } }.to_json, "", fake_process_status ]
+    )
+    assert_equal "abc1234", job.send(:fetch_merge_commit_sha, "owner", "repo", "123")
+
+    # A PR merged with no merge commit recorded, and a call that did not complete,
+    # are both "nothing true to say" rather than a claim.
+    BoundedSubprocess.stubs(:run).returns([ { "mergeCommit" => nil }.to_json, "", fake_process_status ])
+    assert_nil job.send(:fetch_merge_commit_sha, "owner", "repo", "123")
+
+    BoundedSubprocess.stubs(:run).returns([ "", "boom", fake_process_status(exitstatus: 1) ])
+    assert_nil job.send(:fetch_merge_commit_sha, "owner", "repo", "123")
+  end
+
+  test "fetch_post_merge_runs returns the runs, and nil when the call did not complete" do
+    job = GitHubPullRequestPollerJob.new
+    runs = [ { "name" => "CI", "status" => "queued", "conclusion" => nil, "url" => "https://x/1" } ]
+
+    BoundedSubprocess.stubs(:run).returns([ runs.to_json, "", fake_process_status ])
+    assert_equal runs, job.send(:fetch_post_merge_runs, "owner", "repo", "abc1234")
+
+    # An empty list is an answer: this merge fired nothing GitHub has created yet.
+    BoundedSubprocess.stubs(:run).returns([ "[]", "", fake_process_status ])
+    assert_equal [], job.send(:fetch_post_merge_runs, "owner", "repo", "abc1234")
+
+    BoundedSubprocess.stubs(:run).returns([ "", "boom", fake_process_status(exitstatus: 1) ])
+    assert_nil job.send(:fetch_post_merge_runs, "owner", "repo", "abc1234")
+
+    BoundedSubprocess.stubs(:run).returns([ "not json", "", fake_process_status ])
+    assert_nil job.send(:fetch_post_merge_runs, "owner", "repo", "abc1234")
+  end
+
+  test "post_merge_automation asks GitHub about the merge commit, then about its runs" do
+    GitHubPullRequestPollerJob.any_instance.unstub(:post_merge_automation)
+
+    job = GitHubPullRequestPollerJob.new
+    job.stubs(:fetch_merge_commit_sha).with("owner", "repo", "123").returns("abc1234")
+    job.stubs(:fetch_post_merge_runs).with("owner", "repo", "abc1234").returns([ { "name" => "CI" } ])
+
+    assert_equal(
+      { merge_commit_sha: "abc1234", runs: [ { "name" => "CI" } ] },
+      job.send(:post_merge_automation, MERGED_PR_URL)
+    )
+
+    # An unreadable merge commit stops the second call from being worth making.
+    job.stubs(:fetch_merge_commit_sha).returns(nil)
+    job.expects(:fetch_post_merge_runs).never
+    assert_equal({ merge_commit_sha: nil, runs: [] }, job.send(:post_merge_automation, MERGED_PR_URL))
   end
 end
