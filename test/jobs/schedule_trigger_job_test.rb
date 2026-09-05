@@ -57,7 +57,8 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
       configuration: { "unit" => "days", "interval" => 1, "time" => "03:00",
                       "timezone" => "America/Los_Angeles" },
       last_triggered_at: nil,
-      created_at: Time.utc(2026, 5, 12, 11, 35) # 04:35 PT
+      created_at: Time.utc(2026, 5, 12, 11, 35), # 04:35 PT
+      armed_at: Time.utc(2026, 5, 12, 11, 35)
     )
 
     travel_to Time.utc(2026, 5, 12, 11, 49) do # 04:49 PT — the observed premature fire
@@ -68,6 +69,42 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
 
     assert_nil @condition.reload.last_triggered_at,
       "a fire that never happened must not consume the schedule's next slot"
+
+    travel_to Time.utc(2026, 5, 13, 10, 0) do # 03:00 PT the next day
+      assert_difference("Session.count", 1) do
+        ScheduleTriggerJob.perform_now
+      end
+    end
+  end
+
+  # #745, scenario 1, at the same altitude: a job tick, not a model predicate. A daily
+  # schedule created disabled on Monday and enabled on Tuesday afternoon used to fire
+  # on the next tick — created_at (Monday) was before Tuesday's 03:00 slot, so it read
+  # as armed for a slot it had been switched off for, and the fire consumed that day's
+  # run. Enabling re-arms it, so its first run is 03:00 on Wednesday.
+  test "a daily schedule enabled after its configured time does not fire on the next tick" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    @trigger.update!(status: "disabled")
+    @condition.update!(
+      configuration: { "unit" => "days", "interval" => 1, "time" => "03:00",
+                      "timezone" => "America/Los_Angeles" },
+      last_triggered_at: nil,
+      created_at: Time.utc(2026, 5, 11, 16, 0), # Monday 09:00 PT
+      armed_at: Time.utc(2026, 5, 11, 16, 0)
+    )
+
+    travel_to Time.utc(2026, 5, 12, 22, 0) do # Tuesday 15:00 PT — the operator enables it
+      @trigger.enable!
+
+      assert_no_difference("Session.count") do
+        ScheduleTriggerJob.perform_now
+      end
+    end
+
+    assert_nil @condition.reload.last_triggered_at,
+      "an enable is not a fire, and must not consume the schedule's next slot"
 
     travel_to Time.utc(2026, 5, 13, 10, 0) do # 03:00 PT the next day
       assert_difference("Session.count", 1) do
@@ -786,6 +823,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     condition.update!(
       last_triggered_at: nil,
       created_at: 2.days.ago,
+      armed_at: 2.days.ago,
       configuration: condition.configuration.merge(slot)
     )
     condition

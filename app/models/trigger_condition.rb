@@ -54,6 +54,22 @@ class TriggerCondition < ApplicationRecord
   ALL_CHANNEL_EVENT_TYPES = (%w[bot_mention dm_message] + PASSIVE_EVENT_TYPES).freeze
   SCHEDULE_UNITS = %w[minutes hours days weeks].freeze
   DAYS_OF_WEEK = %w[monday tuesday wednesday thursday friday saturday sunday].freeze
+
+  # What a `days`/`weeks` schedule's arming watches: the keys that decide WHICH
+  # wall-clock instant the next slot is. Change any of them and the slot moves,
+  # so the condition has to be re-armed against the new one — the same reasoning
+  # #github_watch_scope applies to a GitHub condition's seen-set.
+  #
+  # `interval` is deliberately absent. It has no meaning before the first fire —
+  # there is no previous run to count from, so #schedule_due? never consults it
+  # on the `last_triggered_at.nil?` path — and re-arming on an interval edit
+  # would push a pending first fire out for nothing.
+  #
+  # `scheduled_at` is absent for the same kind of reason: a one-time schedule
+  # never reaches #armed_before? at all (it is governed by `last.present?` and
+  # its own parsed instant), so arming has nothing to say about it.
+  SCHEDULE_ARMING_KEYS = %w[unit time day_of_week timezone].freeze
+
   # Zimmer's internal event vocabulary, split by what the event is ABOUT.
   #
   # The subject is not decoration. A session event carries a session id, may be
@@ -128,6 +144,12 @@ class TriggerCondition < ApplicationRecord
   before_validation :normalize_github_configuration, if: :github_condition?
   before_validation :preserve_github_poll_state, if: :github_condition?
   before_validation :preserve_slack_poll_state, if: -> { condition_type == "slack" }
+
+  # Arming is what a never-fired `days`/`weeks` schedule measures its first fire
+  # from (see #armed_before?). Stamped on create for every condition type, so the
+  # column means the same thing everywhere and no row is left with a null anchor;
+  # refreshed thereafter only for a schedule whose slot actually moved.
+  before_save :stamp_armed_at
 
   scope :slack, -> { where(condition_type: "slack") }
   scope :schedule, -> { where(condition_type: "schedule") }
@@ -691,7 +713,7 @@ class TriggerCondition < ApplicationRecord
   # for and the intended run never happens (#447).
   #
   # With no previous fire there is no elapsed interval to measure, so that term is
-  # replaced by #armed_before? rather than skipped: creation is the anchor the
+  # replaced by #armed_before? rather than skipped: `armed_at` is the anchor the
   # first fire is measured from, exactly as each fire is the anchor for the next.
   def schedule_due?
     return false unless condition_type == "schedule"
@@ -953,19 +975,64 @@ class TriggerCondition < ApplicationRecord
   # express that — it is satisfied at every hour after 03:00 on the creation day,
   # which is the shape #447 took in production (created 04:35 PT, fired 04:49 PT).
   #
-  # `created_at`, not `updated_at`: a schedule is armed when it is created, and a
-  # plain re-save of the trigger form must not push its first fire out a day. The
-  # cost is that creation is the *only* arming instant — re-enabling a disabled
-  # schedule, or editing a never-fired one's `time`, does not re-arm it, so it can
-  # still fire off-slot once. Closing that needs a persisted `armed_at`
-  # ([#745](https://github.com/tadasant/zimmer/issues/745)).
+  # `armed_at`, not `updated_at` and not `created_at`. `updated_at` moves on every
+  # write, so a plain re-save of the trigger form would push a pending first fire
+  # out by a day. `created_at` never moves, which made creation the *only* arming
+  # instant: re-enabling a schedule that was disabled when its slot passed, or
+  # editing a never-fired one's `time`, left it reading as armed for a slot it had
+  # not been live for, and it fired once at whatever hour the edit happened —
+  # consuming that day's configured run (#745).
   #
-  # An unpersisted condition has no creation instant to measure from and is
-  # treated as armed.
+  # `armed_at` is the middle term: it moves when, and only when, the condition
+  # starts counting towards a slot afresh — on create, when the trigger is enabled
+  # (Trigger#rearm_schedule_conditions_on_enable), and when the slot itself moves
+  # (#stamp_armed_at). See SCHEDULE_ARMING_KEYS for what "the slot moves" means.
+  #
+  # `created_at` is the fallback, for a row written before the column existed and
+  # somehow missed by the backfill: it is exactly what this read before `armed_at`,
+  # so it degrades to the old behaviour rather than to "armed". An unpersisted
+  # condition has neither and is treated as armed.
   def armed_before?(target)
-    return true if created_at.nil?
+    anchor = armed_at || created_at
+    return true if anchor.nil?
 
-    created_at.in_time_zone(schedule_timezone) < target
+    anchor.in_time_zone(schedule_timezone) < target
+  end
+
+  # Stamp the arming anchor on create, and again when the slot moves.
+  #
+  # An `armed_at` assigned explicitly in the same write wins — the migration's
+  # backfill and the tests both need to say when a condition was armed, and a
+  # callback that overwrote them would be describing the save rather than the
+  # arming.
+  #
+  # The no-op re-save is the case this exists to NOT catch. Saving the trigger
+  # form again with nothing changed leaves `configuration` undirtied, so
+  # #schedule_arming_scope_changed? is false and the pending first fire keeps its
+  # anchor. That is the whole reason this is keyed on a scope diff rather than on
+  # "the record was saved".
+  def stamp_armed_at
+    return if will_save_change_to_armed_at?
+    return unless new_record? || schedule_arming_scope_changed?
+
+    self.armed_at = Time.current
+  end
+
+  # Whether this write moves the wall-clock slot a `days`/`weeks` schedule is
+  # counting towards. Compared key by key against `configuration_was` — the value
+  # the condition genuinely watched before this save — so a write that reshuffles
+  # or re-submits the hash without changing any of them is not a re-arm.
+  #
+  # Only `schedule` conditions have a slot, so no other type ever re-arms after
+  # creation.
+  def schedule_arming_scope_changed?
+    return false unless condition_type == "schedule"
+    return false unless will_save_change_to_configuration?
+
+    before = configuration_was
+    return false unless before.is_a?(Hash) && configuration.is_a?(Hash)
+
+    SCHEDULE_ARMING_KEYS.any? { |key| before[key].to_s != configuration[key].to_s }
   end
 
   def parse_schedule_time(reference_time)
