@@ -19,7 +19,10 @@
   <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 items-end">
     <div>
       <label for="repo" class="block text-[11px] font-medium text-gray-500 uppercase tracking-wide">Repo</label>
-      <%= select_tag :repo, options_for_select([ [ "All repos", "" ] ] + repo_options.map { |r| [ issue_repo_short(r), r ] }, filters.repo),
+      <%# The owner rides along as the option's title rather than in its label:
+          repo names are unique across the set, but "air" alone does not say
+          `pulsemcp/air`, and a label carrying the owner would wrap the select. %>
+      <%= select_tag :repo, options_for_select([ [ "All repos", "" ] ] + repo_options.map { |r| [ issue_repo_short(r), r, { title: r } ] }, filters.repo),
           class: "mt-1 w-full text-sm border-gray-300 rounded-md" %>
     </div>
     <div>

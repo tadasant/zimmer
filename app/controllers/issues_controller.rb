@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # The Issues page: the fleet's work backlog joined to what is going on in GitHub
-# across the five repos the fleet works.
+# across the repos the fleet works.
 #
 # READ-ONLY, EXCEPT FOR ONE THING THAT IS NOT HERE. The page's single write —
 # promoting a queued item to a `priority` session — belongs to
@@ -54,8 +54,8 @@ class IssuesController < ApplicationController
 
   # POST /issues/refresh — drop the cached GitHub read and load it again.
   #
-  # A POST rather than a link because it costs ten `gh` calls; a GET would be
-  # re-run by every prefetch and every back button.
+  # A POST rather than a link because it costs two `gh` calls per watched repo; a
+  # GET would be re-run by every prefetch and every back button.
   def refresh
     Issues::GithubSnapshot.fetch(force: true)
     redirect_to issues_path(view_params), notice: "Reloaded GitHub."

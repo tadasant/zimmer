@@ -1,6 +1,6 @@
 ---
 title: The Issues view
-description: The fleet's work backlog joined to live GitHub issue state across five repos — the queue in rank order, a promote button, and a trend chart reconstructed without a snapshot table.
+description: The fleet's work backlog joined to live GitHub issue state across six repos — the queue in rank order, a promote button, and a trend chart reconstructed without a snapshot table.
 ---
 
 The [work backlog](/operate/work-backlog/) is what the fleet works from. GitHub is where the work
@@ -24,16 +24,42 @@ links to the gate session that did if the gate recorded one.
 session. It is deliberately *not* narrowed by the filter bar: "what is the fleet working on" is a
 fixed question, and a repo filter that emptied the list would read as "nothing is running".
 
-**In GitHub, not on the queue** is every open issue across the five repos with no live backlog row —
+**In GitHub, not on the queue** is every open issue across the six repos with no live backlog row —
 held by the gate, unrated, or simply not picked up yet. This is the half that makes the page "what
 is going on in GitHub" rather than only "what is queued", and it is where the honest number lives:
-at the time of writing the queue holds ~140 items against ~500 open issues.
+at the time of writing the queue holds ~140 items against ~490 open issues.
 
 The filter bar is [`WorkBacklog::Filters`](/operate/work-backlog/#how-an-item-becomes-a-session) — the same
 object the REST index and the `get_work_backlog` MCP tool use, so a question asked on this page and
 the same question asked by the groomer cannot come back with different answers. Repo and direction
 narrow both halves of the page; the queue-only filters (kind, cost, hand-placed) narrow the queue
 and leave the GitHub list alone rather than silently emptying it.
+
+## Which repos
+
+`Issues::GithubSnapshot::REPOS` is the list, and it is deliberately a constant rather than a
+setting: the page is a view of one specific fleet's work, and a repo list in the database would be
+a setting nobody sets.
+
+| Repo | What it is |
+| --- | --- |
+| `tadasant/zimmer` | Zimmer itself — this app |
+| `tadasant/strad` | The MCP gateway every Zimmer connector is served through |
+| `tadasant/tadasant-internal` | The AIR catalog, the gate postures, the fleet's own prose |
+| `tadasant/pi-extensions` | The Raspberry Pi extension set baked into the base image |
+| `tadasant/motet` | Motet |
+| `pulsemcp/air` | The AIR framework the whole agent-harness layer resolves its catalog through |
+
+The owner is **not** uniform — `pulsemcp/air` is the odd one out — so nothing downstream may assume
+it. The page still prints the short name (`air`, not `pulsemcp/air`) because repo names are unique
+across the list; the per-repo cards link to the full `github.com/<owner>/<repo>/issues` path and the
+repo filter carries the full name as each option's title.
+
+Adding a seventh repo is one line in that constant. Everything that counts repos reads
+`REPOS.length`, `FETCH_TIMEOUT` bounds the whole concurrent load rather than any one repo, and the
+trend chart's palette has one slot per repo up to `Issues::Trend::MAX_SERIES` — which is 6, so a
+seventh repo would fold the smallest series into the grey `other` bucket unless the palette grows
+with it. A test pins that coupling rather than leaving it to be discovered on the page.
 
 ## Promote
 
@@ -68,7 +94,7 @@ answered:
 
 1. **The GitHub label**, `convergent` or `divergent`. GitHub is the source of truth, and this is
    where the answer is moving to: the issue gate is being changed to apply the label on every
-   rating, and the back-fill across the five repos is in flight. It is not yet where the answer
+   rating, and the back-fill across the six repos is in flight. It is not yet where the answer
    lives for most issues — while this page was being built, `tadasant/zimmer` carried the labels on
    none of its 208 open issues and `tadasant/strad` carried them on 53 of 55.
 2. **The backlog row's `scope_direction`**, for an issue the gate queued.
@@ -102,7 +128,7 @@ log of its labels, and doing better would mean a timeline request per issue.
 
 `Issues::GithubSnapshot` shells out to the `gh` CLI through `GithubSearchService` — the same client
 and the same host credential the [PR poller and comment poller](/operate/background-jobs/) use, so
-there is no second token to rotate. Two searches per repo — ten in all — with the five repos read
+there is no second token to rotate. Two searches per repo — twelve in all — with the six repos read
 concurrently and each repo's pair run in sequence on its own thread:
 
 ```
@@ -128,7 +154,7 @@ bound on a fleet's own repo, so it is the one that reaches `GithubSearchService`
 ceiling first — and losing it must not blank a repo whose open issues were read successfully a
 moment earlier. Whichever half answered is kept, and the error names which half was lost.
 
-A repo whose search fails is **named on the page with the reason**, and the other four still render.
+A repo whose search fails is **named on the page with the reason**, and the others still render.
 A repo silently showing zero open issues reads as good news, which is the one thing a failure must
 never look like.
 
