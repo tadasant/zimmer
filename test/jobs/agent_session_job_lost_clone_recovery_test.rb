@@ -184,6 +184,35 @@ class AgentSessionJobLostCloneRecoveryTest < ActiveJob::TestCase
     assert_equal 0, RetryBudget::LOST_CLONE.count_for(@session)
   end
 
+  # `refuse_archived_session` is skipped for resume_monitoring jobs and `resume`
+  # transitions out of `failed`, so a status check is the recovery's own job.
+  test "an archived session is not handed a turn it cannot take" do
+    @session.archive!
+
+    run_resume_with_missing_clone
+
+    @session.reload
+    assert_equal "archived", @session.status
+    assert_nil @session.metadata["pending_follow_up_prompt"],
+               "a stamped prompt would survive to whatever delivers the next turn if this session " \
+               "is ever unarchived"
+    assert_equal 0, RetryBudget::LOST_CLONE.count_for(@session)
+    assert_includes all_log_content, "the session is archived"
+  end
+
+  test "a session that already reached failed is not resurrected into a real turn" do
+    @session.fail!
+
+    run_resume_with_missing_clone
+
+    @session.reload
+    assert_equal "failed", @session.status,
+                 "`resume` accepts `failed`, so nothing but this check stops a terminal session " \
+                 "taking an agent turn with side effects"
+    assert_nil @session.metadata["pending_follow_up_prompt"]
+    assert_equal 0, RetryBudget::LOST_CLONE.count_for(@session)
+  end
+
   test "a validation failure that is not about the clone is untouched" do
     @session.update_column(:session_id, "not-a-uuid")
 
@@ -235,15 +264,57 @@ class AgentSessionJobLostCloneRecoveryTest < ActiveJob::TestCase
     assert_equal 1, RetryBudget::EMPTY_TURN.count_for(@session)
   end
 
-  test "a session that never wrote a conversation still fails once its own budget is spent" do
+  # The give-up is `needs_input`, which is what RetryBudget::EMPTY_TURN declares as its
+  # terminal status and what the dead-pid branch does with the same exhaustion. It is
+  # also the only one of the two resting states that accepts the follow-up that would
+  # rebuild the clone, so `failed` here would be the very trap #817 is about.
+  test "a session that never wrote a conversation comes to rest once its own budget is spent" do
     @session.update!(transcript: nil)
     @session.merge_metadata!(RetryBudget::EMPTY_TURN.key => RetryBudget::EMPTY_TURN.max)
 
     run_resume_with_missing_clone
 
     @session.reload
-    assert_equal "failed", @session.status
-    assert_equal "clone directory not found at #{LOST_PATH}", @session.metadata["failure_reason"]
+    assert_equal "needs_input", @session.status
+    assert_equal "unstarted_turn_not_recoverable", @session.metadata["failure_reason"]
+    assert_includes @session.metadata[Sessions::RestartUnstartedTurn::ABANDONED_KEY].to_s,
+                    "never wrote a conversation"
+    assert_nil @session.metadata["paused_by"],
+               "no recovery marker: no sweep can do anything a third restart would not"
+    assert_nil @session.running_job_id
+  end
+
+  # The hole a stored-transcript-only check would leave, and the case that most
+  # deserves the rebuild: the poller was lagging, so Zimmer's copy is blank — but the
+  # runtime wrote a full conversation, to a file that lives outside the clone and
+  # therefore outlived it.
+  test "a lagging poller over a real runtime transcript is still recovered" do
+    @session.update!(transcript: nil)
+
+    file_system = MockFileSystemAdapter.new
+    runtime_path = TranscriptRuntime.source_for(@session, file_system: file_system)
+      .resume_transcript_path(session: @session, working_directory: LOST_PATH)
+    file_system.mkdir_p(File.dirname(runtime_path))
+    file_system.write(runtime_path, conversation)
+
+    run_resume_with_missing_clone(file_system: file_system)
+
+    @session.reload
+    assert_equal "running", @session.status
+    assert_includes @session.metadata["pending_follow_up_prompt"].to_s, LOST_CLONE_NOTICE,
+                    "the conversation is real, so it is resumed rather than replayed from the prompt"
+    assert_equal 1, RetryBudget::LOST_CLONE.count_for(@session)
+    assert_equal 0, RetryBudget::EMPTY_TURN.count_for(@session)
+  end
+
+  test "the timeline says the clone was missing even when the unstarted-turn path takes it" do
+    @session.update!(transcript: nil)
+
+    run_resume_with_missing_clone
+
+    assert_includes all_log_content, "The clone at #{LOST_PATH} is not on disk",
+                    "the missing clone is the diagnostic #817 is about; the restart's own log line " \
+                    "never mentions it"
   end
 
   private
