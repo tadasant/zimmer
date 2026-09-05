@@ -1,8 +1,5 @@
 # frozen_string_literal: true
 
-require "open3"
-require "timeout"
-
 # PiRuntimeAdapter — the RuntimeCliAdapter implementation for the Pi coding
 # agent (`pi`). It builds the command, prepares the environment, and spawns the
 # process, returning the pid plus the stderr log path the monitoring loop tails.
@@ -69,6 +66,9 @@ class PiRuntimeAdapter
   include CliSpawnEnv
 
   class PiCliError < StandardError; end
+
+  # Bound on the `pi --version` probe.
+  VERSION_TIMEOUT = 10
 
   # The stderr log the Pi process writes inside its working directory. Part of
   # the RuntimeCliAdapter contract — every caller that rebuilds a stderr path
@@ -176,14 +176,13 @@ class PiRuntimeAdapter
 
   # The installed `pi --version`, or nil when the binary is missing or unreadable.
   def installed_cli_version
-    stdout, _stderr, status = Timeout.timeout(10) do
-      Open3.capture3(binary_name, "--version")
-    end
+    stdout, _stderr, status =
+      BoundedSubprocess.run([ binary_name, "--version" ], timeout: VERSION_TIMEOUT)
     return nil unless SubprocessStatus.success?(status)
 
     match = stdout.to_s.match(/(\d+\.\d+\.\d+)/)
     match ? Gem::Version.new(match[1]) : nil
-  rescue Errno::ENOENT, Errno::EACCES, Timeout::Error, ArgumentError
+  rescue Errno::ENOENT, Errno::EACCES, BoundedSubprocess::TimeoutError, ArgumentError
     nil
   end
 

@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "open3"
-
 # Service to check the installation and authentication status of CLI tools
 #
 # Checks for: gh (GitHub CLI), claude (Claude Code), codex (OpenAI Codex), fly (Fly.io CLI)
@@ -43,6 +41,11 @@ class CliStatusService
 
   # Cache TTL - slightly longer than cron interval to handle missed runs
   CACHE_TTL = 5.minutes
+
+  # Bound on each configured `check_version` command. These are arbitrary CLIs
+  # from the table below, run on the refresh job's thread, so the bound is what
+  # stops one wedged binary from holding the whole report hostage.
+  VERSION_TIMEOUT = 10
 
   CLI_TOOLS = {
     gh: {
@@ -374,17 +377,19 @@ class CliStatusService
   # Extract version string from CLI tool output
   # Handles common formats like "2.1.87 (Claude Code)", "gh version 2.67.0", "0.3.47 fly"
   def get_version(command)
-    # Split command into args for safe execution via Open3 (no shell interpolation)
+    # Split command into args for safe execution as argv (no shell interpolation)
     args = command.split(/\s*\|\|\s*/) # Handle "fly version || flyctl version" fallback patterns
     output = nil
 
     args.each do |cmd|
       parts = cmd.strip.split
-      stdout, _stderr, status = Timeout.timeout(10) do
-        Open3.capture3(*parts)
-      end
+      stdout, _stderr, status = BoundedSubprocess.run(parts, timeout: VERSION_TIMEOUT)
       if SubprocessStatus.success?(status) && stdout.present?
-        output = stdout.strip
+        # BoundedSubprocess drains through readpartial, so stdout arrives tagged
+        # ASCII-8BIT. The `output.truncate(30)` fallback below is cached and
+        # rendered on /clis, and an arbitrary configured CLI is free to emit
+        # bytes that are not valid UTF-8.
+        output = AlertSnippet.utf8(stdout).strip
         break
       end
     end
@@ -394,7 +399,7 @@ class CliStatusService
     # Extract first version-like pattern (e.g., "2.1.87", "0.3.47")
     match = output.match(/(\d+\.\d+\.\d+)/)
     match ? match[1] : output.truncate(30)
-  rescue Errno::ENOENT, Errno::EACCES, Timeout::Error
+  rescue Errno::ENOENT, Errno::EACCES, BoundedSubprocess::TimeoutError
     nil
   end
 end
