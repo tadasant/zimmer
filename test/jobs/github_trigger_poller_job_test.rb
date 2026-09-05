@@ -1119,13 +1119,12 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
   end
 
   test "an issue whose fire fails before spawning does not inherit the previous issue's session" do
-    # Where the stale-marker guard is load-bearing. This loop calls #fire over its
-    # batch with nothing in between, so `condition.trigger` stays the SAME memoized
-    # instance across items — unlike the label path, where #record_fired_key's reload
-    # happens to drop the association cache. Without the guard, #51 raising before it
+    # Where the stale-marker guard is load-bearing. Without it, #51 raising before it
     # reaches #create_session! would read the marker #50 left, count as fired, and drag
     # `last_issue_at` past an issue that never got a session. That is #647's direction:
-    # an event silently dropped, permanently, with nothing to say why.
+    # an event silently dropped, permanently, with nothing to say why. #record_fired_issue's
+    # reload happens to drop that marker with the association cache — but that is an
+    # accident of an unrelated call, which is why the guard is asserted rather than assumed.
     a = item(number: 50, pr: false, created_at: "2026-07-12T09:00:00Z")
     b = item(number: 51, pr: false, created_at: "2026-07-12T09:00:05Z")
 
@@ -1149,6 +1148,88 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     end
     assert_equal [ "tadasant/zimmer#50", "tadasant/zimmer#51" ],
                  @issue_condition.reload.github_seen_issue_keys.sort
+  end
+
+  test "a fired issue survives a lost end-of-tick state write and is not spawned for twice" do
+    # #748. The fires succeeded outright and the single write that was supposed to
+    # remember them never landed — it raised, or the worker went away between the last
+    # #fire and the write. Both halves of this condition's dedupe state used to be
+    # untouched by that, so the next tick re-queried the same window, saw the same
+    # issues as un-fired, and spawned a second gate session for each of them.
+    a = item(number: 50, pr: false, created_at: "2026-07-12T09:00:00Z")
+    b = item(number: 51, pr: false, created_at: "2026-07-12T09:00:05Z")
+
+    AlertService.stubs(:raise_alert)
+    GithubTriggerPollerJob.any_instance.stubs(:write_new_issue_state)
+      .raises(RuntimeError, "the state write was lost")
+    stub_search(issue: [ a, b ]) do
+      assert_difference("Session.count", 2) { GithubTriggerPollerJob.perform_now }
+    end
+    GithubTriggerPollerJob.any_instance.unstub(:write_new_issue_state)
+
+    @issue_condition.reload
+    assert_equal [ "tadasant/zimmer#50", "tadasant/zimmer#51" ], @issue_condition.github_seen_issue_keys,
+                 "each key is recorded the instant its session exists, not only at the end of the tick"
+    assert_equal "2026-07-12T09:00:05Z", @issue_condition.github_last_issue_at,
+                 "the cursor moves with the keys — a key set without a cursor is not a floor"
+    assert_not_nil @issue_condition.last_triggered_at,
+                   "last_triggered_at rides along with the state it belongs to"
+
+    # The next tick, sixty seconds later. This is where the duplicate pair was born.
+    stub_search(issue: [ a, b ]) do
+      assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
+    end
+  end
+
+  test "a lost end-of-tick write floors only the issues that fired, and the rest still retry" do
+    # The other direction, and the dangerous one: over-persistence. A floor that recorded
+    # the whole batch rather than the part of it that reached a session would leave #51
+    # never fired and never gated — silent, and invisible until someone noticed an issue
+    # had been skipped. #50 fires, #51's spawn falls over, and the terminal write is lost
+    # on top of both.
+    a = item(number: 50, pr: false, created_at: "2026-07-12T09:00:00Z")
+    b = item(number: 51, pr: false, created_at: "2026-07-12T09:00:05Z")
+
+    AlertService.stubs(:raise_alert)
+    Trigger.any_instance.stubs(:interpolate_prompt)
+      .returns("triage this issue").then.raises(RuntimeError, "the prompt template blew up")
+    GithubTriggerPollerJob.any_instance.stubs(:write_new_issue_state)
+      .raises(RuntimeError, "the state write was lost")
+    stub_search(issue: [ a, b ]) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+    Trigger.any_instance.unstub(:interpolate_prompt)
+    GithubTriggerPollerJob.any_instance.unstub(:write_new_issue_state)
+
+    @issue_condition.reload
+    assert_equal [ "tadasant/zimmer#50" ], @issue_condition.github_seen_issue_keys,
+                 "#51 never got a session, so the floor must not have remembered it"
+    assert_equal "2026-07-12T09:00:00Z", @issue_condition.github_last_issue_at,
+                 "and the cursor must stop at the last issue that actually produced one"
+
+    stub_search(issue: [ a, b ]) do
+      assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
+    end
+    assert_equal [ "tadasant/zimmer#50", "tadasant/zimmer#51" ],
+                 @issue_condition.reload.github_seen_issue_keys.sort
+  end
+
+  test "the per-fire write leaves horizon pruning to the end-of-tick write" do
+    # The floor only ever adds; the terminal write is still what bounds the key set to
+    # the window the next query can reach. #40 is fired more than INDEX_LAG_GRACE before
+    # #41, so once #41 carries the cursor the older key can never reject anything again
+    # and must be dropped — a property the per-fire append must not quietly undo.
+    old = item(number: 40, pr: false, created_at: "2026-07-12T09:00:00Z")
+    recent = item(number: 41, pr: false, created_at: "2026-07-12T10:00:00Z")
+
+    stub_search(issue: [ old, recent ]) do
+      assert_difference("Session.count", 2) { GithubTriggerPollerJob.perform_now }
+    end
+
+    @issue_condition.reload
+    assert_equal "2026-07-12T10:00:00Z", @issue_condition.github_last_issue_at
+    assert_equal [ "tadasant/zimmer#41" ], @issue_condition.github_seen_issue_keys,
+                 "#40 is behind the next window's start, so the terminal write prunes its key"
   end
 
   test "two issues created in the same second both fire and are both remembered" do
