@@ -218,6 +218,172 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
     assert_nil @session.metadata["oauth_required_servers"]
   end
 
+
+  # --- which prompt the resume delivers (#887) -----------------------------
+  #
+  # `oauth_required` is not exclusively a first-turn failure, so "resume" is not
+  # exclusively "replay the stored prompt". A session blocked while it was
+  # carrying a follow-up is owed that follow-up: AgentSessionJob's gate hands the
+  # prompt back as `pending_follow_up_prompt` before it fails the session, and
+  # the **Edit MCP servers** / **Edit plugins** escalations fail an idle session
+  # without touching a marker it may already be holding.
+
+  # A session mid-conversation whose follow-up turn hit the OAuth gate.
+  def blocked_mid_follow_up(prompt: "Now check the deploy logs")
+    @session.update!(
+      session_id: SecureRandom.uuid,
+      transcript: { "type" => "user", "message" => { "content" => "Do the original work" } }.to_json,
+      metadata: @session.metadata.merge(
+        "pending_follow_up_prompt" => prompt,
+        "pending_follow_up_sent_at" => 2.minutes.ago.utc.iso8601
+      )
+    )
+    @session
+  end
+
+  test "a follow-up blocked on OAuth is what the resume delivers, not the original prompt" do
+    blocked_mid_follow_up
+    authorize_everything
+
+    assert_equal :resumed, McpOauthResumeService.new(@session).call
+
+    assert_equal [ @session.id, "Now check the deploy logs" ], enqueued_agent_session_args,
+      "the resume must deliver the follow-up the session was blocked on"
+
+    @session.reload
+    assert @session.running?, "delivering a follow-up resumes the session to running"
+    assert_equal "Do the original work", @session.prompt, "the stored prompt is untouched, just not replayed"
+    assert_equal true, @session.metadata["oauth_complete"]
+    assert_nil @session.metadata["failure_reason"]
+    assert_nil @session.metadata["oauth_required_servers"]
+    assert_equal "Now check the deploy logs", @session.metadata["pending_follow_up_prompt"],
+      "the marker is re-stamped for the job that has not picked it up yet"
+    assert @session.running_job_id.present?, "the delivery records the job it enqueued"
+    assert @session.logs.any? { |log| log.content.include?("sending the message that was blocked") },
+      "the session's own timeline says which prompt the resume delivered"
+  end
+
+  test "a first-turn block with no pending follow-up still replays the original prompt" do
+    authorize_everything
+
+    assert_equal :resumed, McpOauthResumeService.new(@session).call
+
+    assert_equal [ @session.id ], enqueued_agent_session_args,
+      "a session owed nothing resumes exactly as it did before"
+    assert @session.reload.waiting?
+  end
+
+  test "a pending follow-up with no runtime conversation is reported, not silently substituted" do
+    @session.update!(
+      session_id: nil,
+      metadata: @session.metadata.merge("pending_follow_up_prompt" => "Now check the deploy logs")
+    )
+    authorize_everything
+
+    assert_equal :resumed, McpOauthResumeService.new(@session).call
+
+    assert_equal [ @session.id ], enqueued_agent_session_args,
+      "with no conversation to continue the first turn is what runs"
+
+    @session.reload
+    assert @session.waiting?
+    assert_equal "Now check the deploy logs", @session.metadata["pending_follow_up_prompt"],
+      "the message is kept rather than destroyed"
+    undelivered = @session.logs.find { |log| log.content.include?("has NOT been delivered") }
+    refute_nil undelivered, "a resume that cannot honour the follow-up must say so"
+    assert_equal "warning", undelivered.level
+    assert_includes undelivered.content, "Now check the deploy logs"
+  end
+
+  test "the follow-up the resume delivers does not carry the first turn's attachments" do
+    stored = store_image_for(@session)
+    blocked_mid_follow_up
+    @session.update!(transcript: nil)
+    authorize_everything
+
+    assert_equal :resumed, McpOauthResumeService.new(@session).call
+
+    args = enqueued_agent_session_args
+    assert_equal [ @session.id, "Now check the deploy logs" ], args.first(2)
+    assert_nil args[2], "first-turn attachments belong to the first turn, not to this follow-up"
+    assert @session.reload.logs.any? { |log| log.content.include?("are not carried on that message") },
+      "the session is told its first-turn attachments were left behind"
+    assert stored[:path].present?
+  end
+
+  # --- the other two doors into failed + oauth_required --------------------
+
+  test "the Edit MCP servers escalation leaves a held follow-up the resume can deliver" do
+    Dir.mktmpdir do |dir|
+      session = Session.create!(
+        prompt: "Do the original work",
+        agent_runtime: "claude_code",
+        status: :needs_input,
+        git_root: "https://github.com/test/repo.git",
+        branch: "main",
+        execution_provider: "local_filesystem",
+        session_id: SecureRandom.uuid,
+        transcript: { "type" => "user", "message" => { "content" => "Do the original work" } }.to_json,
+        metadata: {
+          "working_directory" => dir,
+          "pending_follow_up_prompt" => "Now check the deploy logs"
+        }
+      )
+      needing = [ { server_name: "server-a", server_url: "https://a.example.com/mcp", credential_key: KEY_A } ]
+      McpOauthProbe.any_instance.stubs(:servers_needing_oauth).returns(needing)
+
+      Sessions::UpdateCatalogSelection.call(
+        session: session, attribute: :mcp_servers, values: [ "linear" ], actor: :web
+      )
+
+      session.reload
+      assert session.failed?, "the escalation parks the session so the Authorize UI shows"
+      assert_equal "oauth_required", session.metadata["failure_reason"]
+      assert_equal "Now check the deploy logs", session.metadata["pending_follow_up_prompt"],
+        "the escalation does not consume the turn the session is owed"
+
+      authorize(KEY_A, server_name: "server-a")
+
+      assert_equal :resumed, McpOauthResumeService.new(session).call
+      assert_equal [ session.id, "Now check the deploy logs" ], enqueued_agent_session_args
+      assert session.reload.running?
+    end
+  end
+
+  test "the Edit plugins escalation resumes the same way" do
+    Dir.mktmpdir do |dir|
+      session = Session.create!(
+        prompt: "Do the original work",
+        agent_runtime: "claude_code",
+        status: :needs_input,
+        git_root: "https://github.com/test/repo.git",
+        branch: "main",
+        execution_provider: "local_filesystem",
+        session_id: SecureRandom.uuid,
+        transcript: { "type" => "user", "message" => { "content" => "Do the original work" } }.to_json,
+        metadata: {
+          "working_directory" => dir,
+          "pending_follow_up_prompt" => "Now check the deploy logs"
+        }
+      )
+      needing = [ { server_name: "server-a", server_url: "https://a.example.com/mcp", credential_key: KEY_A } ]
+      McpOauthProbe.any_instance.stubs(:servers_needing_oauth).returns(needing)
+
+      Sessions::UpdateCatalogSelection.call(
+        session: session, attribute: :catalog_plugins, values: [ "figma-design-workflow" ], actor: :web
+      )
+
+      session.reload
+      assert session.failed?
+      assert_equal "oauth_required", session.metadata["failure_reason"]
+
+      authorize(KEY_A, server_name: "server-a")
+
+      assert_equal :resumed, McpOauthResumeService.new(session).call
+      assert_equal [ session.id, "Now check the deploy logs" ], enqueued_agent_session_args
+    end
+  end
+
   # --- credential_key fallback (entries recorded without a key) ------------
 
   test "resolves credential via catalog when the recorded entry has no credential_key" do

@@ -937,6 +937,86 @@ class AgentSessionJobTest < ActiveJob::TestCase
       "Must NOT spawn the CLI when OAuth credentials are missing on the reused-clone path"
   end
 
+  # #887: a follow-up blocked by the OAuth gate existed only as this job's
+  # argument. The job returns, nothing re-queues it, and the resume that follows
+  # the human's authorization builds its own job — so the gate has to hand the
+  # prompt back to the session, and McpOauthResumeService has to deliver THAT
+  # rather than replaying the session's original prompt.
+  test "a follow-up blocked on OAuth is held on the session and is what the resume delivers" do
+    server_name = "figma"
+    server_url = "https://mcp.figma.com/mcp"
+    credential_key = McpOauthCredential.compute_credential_key(
+      server_name, { type: "streamable-http", url: server_url }
+    )
+
+    # Expired and unrefreshable: the gate blocks without any network probe.
+    dead_grant = McpOauthCredential.create!(
+      server_name: server_name,
+      server_url: server_url,
+      credential_key: credential_key,
+      client_id: "test-client",
+      access_token: "stale-access-token",
+      refresh_token: nil,
+      token_endpoint: "https://www.figma.com/api/oauth/token",
+      expires_at: 1.hour.ago
+    )
+
+    clone_path = File.join(@test_tmpdir, "clone-follow-up-oauth")
+    @session.update!(
+      prompt: "Investigate the bug",
+      session_id: SecureRandom.uuid,
+      status: :running,
+      mcp_servers: [ server_name ],
+      metadata: {
+        "clone_path" => clone_path,
+        "working_directory" => clone_path,
+        "runtime_started" => true,
+        # What Session#deliver_follow_up! stamped when the human sent the message.
+        "pending_follow_up_prompt" => "Now check the deploy logs",
+        "pending_follow_up_sent_at" => 30.seconds.ago.utc.iso8601
+      }
+    )
+
+    # The follow-up turn re-syncs the clone's runtime config before the gate runs;
+    # that shell-out is not what this test is about.
+    AirPrepareService.any_instance.stubs(:prepare!)
+    AirPrepareService.any_instance.stubs(:injected_mcp_servers).returns([ server_name ])
+
+    job = AgentSessionJob.new
+    mock_process_manager = MockProcessManager.new
+    mock_fs = MockFileSystemAdapter.new
+    mock_cli_adapter = MockClaudeCliAdapter.new
+    job.process_manager = mock_process_manager
+    job.file_system = mock_fs
+    job.cli_adapter = mock_cli_adapter
+
+    mock_fs.mkdir_p(clone_path)
+    mock_fs.write("#{clone_path}/claude_stderr.log", "")
+
+    job.perform(@session.id, "Now check the deploy logs")
+
+    @session.reload
+    assert_equal "failed", @session.status
+    assert_equal "oauth_required", @session.metadata["failure_reason"]
+    assert_empty mock_cli_adapter.executed_commands, "the follow-up must not be spawned into a dead grant"
+    assert_equal "Now check the deploy logs", @session.metadata["pending_follow_up_prompt"],
+      "the gate must hand the undelivered follow-up back to the session"
+    assert @session.logs.any? { |log| log.content.include?("has NOT been delivered") },
+      "the session's timeline must say the message was not delivered"
+
+    # The human authorizes, and the resume delivers the follow-up — not "Investigate the bug".
+    dead_grant.update!(refresh_token: nil, expires_at: 1.hour.from_now, access_token: "fresh-token")
+
+    assert_equal :resumed, McpOauthResumeService.new(@session.reload).call
+
+    enqueued = enqueued_jobs.select { |queued| queued["job_class"] == "AgentSessionJob" }
+    assert_equal 1, enqueued.length
+    assert_equal [ @session.id, "Now check the deploy logs" ],
+      ActiveJob::Arguments.deserialize(enqueued.first["arguments"]),
+      "the resume delivers the follow-up, not the session's original prompt"
+    assert @session.reload.running?
+  end
+
   # Regression test for the spawn guard: a non-resume (initial) spawn with a blank
   # prompt must fail loudly with spawn_failed and never reach the CLI adapter, rather
   # than silently passing a nil positional argument into the spawn (prod session 8698).

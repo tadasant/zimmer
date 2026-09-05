@@ -9,12 +9,31 @@
 # whether the session can now continue.
 #
 # The session's original intent — its prompt — is already durably stored on the
-# Session record, so resuming is a matter of re-queuing the initial run via
-# AgentSessionJob.enqueue_new_session, which replays that prompt. Its
-# attachments are durable too, but on the volume rather than in the job, so they
-# are read back and put on the replay explicitly; see #replayable_attachments
-# for why that read is gated and the restart doors' equivalent is not. This
-# service owns the "should we resume yet, and resume exactly once" decision.
+# Session record, so resuming a session whose FIRST turn was blocked is a matter
+# of re-queuing the initial run via AgentSessionJob.enqueue_new_session, which
+# replays that prompt. Its attachments are durable too, but on the volume rather
+# than in the job, so they are read back and put on the replay explicitly; see
+# #replayable_attachments for why that read is gated and the restart doors'
+# equivalent is not. This service owns the "should we resume yet, and resume
+# exactly once" decision.
+#
+# == Which prompt the resume delivers ==
+#
+# The original prompt is the right answer only when the turn that was blocked is
+# the first one. `oauth_required` is also reachable for a session that is owed a
+# message a human already sent — AgentSessionJob's follow-up gate blocks that
+# exact turn, and the **Edit MCP servers** / **Edit plugins** escalations fail an
+# idle session that may be holding an undelivered one. Replaying the stored
+# prompt there answers a question nobody asked and drops the message with nothing
+# saying so (#887).
+#
+# So the resume asks first whether the session is owed a turn —
+# `pending_follow_up_prompt`, the marker every recovery path already reads as
+# "handed to a job, not yet delivered" — and delivers THAT through
+# Session#deliver_follow_up! when it is. The one case it cannot honour is a
+# session with no runtime `session_id` for a follow-up to continue, and that case
+# is stated in the session's own timeline rather than quietly answered with a
+# different prompt: a silent substitution is the defect itself.
 #
 # A session is considered OAuth-blocked when it is either:
 #   - failed with metadata["failure_reason"] == "oauth_required", or
@@ -22,8 +41,9 @@
 #
 # Behavior:
 #   - All required servers authorized AND no active pending flows remain
-#       -> atomically transition back to waiting, clear the OAuth metadata, and
-#          enqueue the original run. Returns :resumed.
+#       -> atomically clear the OAuth metadata and re-queue the session: the turn
+#          it is owed if one is standing (running, with that follow-up), and
+#          otherwise the original run (waiting). Returns :resumed.
 #   - Some servers still need authorization (or a pending flow is still active)
 #       -> trim oauth_required_servers to those still outstanding so the UI
 #          reflects progress, leaving the session blocked. Returns :partial.
@@ -57,6 +77,11 @@
 # transaction, so a concurrent or retried callback re-reads the post-resume
 # state, sees the session is no longer blocked, and does nothing.
 class McpOauthResumeService
+  # Cap on the undelivered prompt echoed into the session's timeline when the
+  # resume cannot deliver it. Generous, because this copy is the one a human
+  # reads and re-sends by hand — but bounded, because the timeline is a UI.
+  UNDELIVERED_PROMPT_LOG_MAX_CHARS = 4_000
+
   # @param session [Session] the session to evaluate for resumption
   # @param authorized_server [String, nil] the name of the server whose flow just
   #   completed. Only the live-session branch needs it — a resume is decided from
@@ -234,6 +259,11 @@ class McpOauthResumeService
     # transcript in between is no longer replaying a first turn.
     images, files = session.transcript.present? ? [ [], [] ] : attachments
 
+    # A turn the session is still owed outranks the stored prompt: replaying the
+    # first turn on top of it is how the human's message got dropped (#887).
+    held = deliverable_follow_up
+    return resume_with_follow_up!(held, images, files) if held
+
     session.merge_metadata!(
       "oauth_complete" => true,
       "failure_reason" => nil,
@@ -259,6 +289,89 @@ class McpOauthResumeService
     session.logs.create!(
       level: "info",
       content: "OAuth authorization complete: replaying this session's first turn#{carrying}."
+    )
+  end
+
+  # The turn this session is still owed, when there is one and it can actually be
+  # delivered as a continuation.
+  #
+  # `pending_follow_up_prompt` means "a prompt was handed to a job and the job has
+  # not delivered it". Three routes reach `failed` + `oauth_required` with one
+  # standing: AgentSessionJob's follow-up gate, which hands this turn's prompt
+  # back rather than letting it die with the job argument that held it, and the
+  # **Edit MCP servers** / **Edit plugins** escalations, which fail an idle
+  # session whose stamped-but-undelivered prompt they never touch. In all three
+  # the session is owed a message a human sent, and `enqueue_new_session` would
+  # answer a different question instead.
+  #
+  # @return [String, nil] the raw prompt to deliver, or nil to resume the stored
+  #   prompt exactly as before
+  def deliverable_follow_up
+    prompt = session.metadata&.dig("pending_follow_up_prompt").presence
+    return nil if prompt.blank?
+    return prompt if session.session_id.present?
+
+    # No runtime conversation to continue: AgentSessionJob reclassifies a
+    # follow-up for a session with no `session_id` as a fresh start and runs the
+    # stored prompt, so delivering it here would substitute one prompt for
+    # another without saying so — the defect, in the other direction. Resume the
+    # first turn, keep the message where it can be read and re-sent, and say
+    # plainly that it was not delivered.
+    Rails.logger.warn(
+      "[McpOauthResumeService] Session #{session.id} has a pending follow-up but no runtime session id; " \
+      "resuming its original prompt and leaving the follow-up undelivered"
+    )
+    session.logs.create!(
+      level: "warning",
+      content: "OAuth authorization complete, but this session never started a conversation for a " \
+        "follow-up to continue — it is resuming its original prompt instead. The message that was " \
+        "blocked has NOT been delivered; it is kept on the session and can be sent again:\n\n" \
+        "#{prompt.to_s.truncate(UNDELIVERED_PROMPT_LOG_MAX_CHARS)}"
+    )
+    nil
+  end
+
+  # Resume by delivering the turn the session was blocked on, through the one
+  # shared delivery path — which resumes the session to `running`, re-stamps the
+  # prompt as pending so the recovery paths can still find it, enqueues the job
+  # and records `running_job_id`.
+  #
+  # Raw text, deliberately: `deliver_follow_up!`'s job wraps the goal block around
+  # whatever it is given, so replaying `active_follow_up_prompt` — the expanded
+  # form — would hand the agent its goal twice (the reasoning
+  # Sessions::RestartUnstartedTurn spells out for the same three keys).
+  def resume_with_follow_up!(prompt, images, files)
+    session.merge_metadata!(
+      "oauth_complete" => true,
+      "failure_reason" => nil,
+      "oauth_required_servers" => nil
+    )
+
+    session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
+
+    Rails.logger.info(
+      "[McpOauthResumeService] All OAuth flows complete for session #{session.id}, " \
+      "delivering the follow-up that was blocked on it rather than replaying the original prompt"
+    )
+
+    session.logs.create!(
+      level: "info",
+      content: "OAuth authorization complete: sending the message that was blocked on it. " \
+        "This session's original prompt is not replayed — it has already had its turn."
+    )
+
+    # The attachments read off the volume are the FIRST turn's, and this turn is
+    # not the first one, so they are not put on it — the same "somebody else's
+    # attachment is worse than none" rule Sessions::FirstTurnAttachments states.
+    # Reachable only for a session with a runtime id and an empty transcript, so
+    # it is rare enough to be worth saying out loud when it happens.
+    stranded = Sessions::FirstTurnAttachments.carrying_clause(images, files)
+    return if stranded.blank?
+
+    session.logs.create!(
+      level: "info",
+      content: "This session's first-turn attachments#{stranded.sub(/\A, carrying /, ' — ')} — are not " \
+        "carried on that message: they belong to the first turn, not to this one."
     )
   end
 

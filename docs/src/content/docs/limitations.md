@@ -4234,9 +4234,16 @@ Its population is the intersection of four unlikely things, and reading the volu
 mis-attach on every other session that has run — the trade
 [#789](https://github.com/tadasant/zimmer/issues/789) already made.
 
-One gap is left open rather than papered over: a follow-up blocked on OAuth is dropped entirely —
-the resume re-queues the session's *original* prompt, not the follow-up that was blocked
-([#887](https://github.com/tadasant/zimmer/issues/887)).
+The prompt half of that gap is closed: a follow-up blocked on OAuth used to be dropped entirely,
+because it existed only as its job's argument and the resume re-queued the session's *original*
+prompt instead. The gate now hands the undelivered prompt back to the session as
+`pending_follow_up_prompt` and the resume delivers that turn rather than replaying the first one
+([#887](https://github.com/tadasant/zimmer/issues/887), and
+[which prompt the resume delivers](/auth/mcp-oauth/#which-prompt-the-resume-delivers)). What it
+still does not carry is that follow-up's *own* attachments — they were job arguments too, and
+nothing records which of the files on the volume belonged to which turn, so putting the first
+turn's screenshot on a later message is the mis-attachment the paragraph above refuses to make.
+The session's timeline says when attachments were left behind.
 
 Two things are **failed** rather than restarted, and both are the same trade — a `failed` row is on
 the dashboard with a reason on it, a `waiting` one is on nobody's list. A session past
