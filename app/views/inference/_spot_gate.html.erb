@@ -59,11 +59,24 @@
                  min="1" max="100" step="1"
                  class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
           <p class="mt-1 text-xs text-gray-500">
-            Every session with a turn in flight counts, priority included — priority work is meant to
-            crowd spot work out of the slots. Only spot sessions wait for one. A turn queued for a
-            worker counts too: it takes the next free slot, so admitting more on top of it would only
-            deepen the queue.
+            Every session a worker is <strong>running</strong> counts, priority included — priority work
+            is meant to crowd spot work out of the slots. Only spot sessions wait for one. A turn that is
+            merely queued for a worker does <em>not</em> count: it has taken nothing yet, and counting the
+            queue would make this a limit on how much work is waiting rather than on how much is running.
           </p>
+          <% if RunningTurns.ceiling_out_of_reach?(@app_setting.spot_max_concurrent_sessions) %>
+            <%# A cap above the worker pool can never be reached, because the count is
+                the turns those workers are running. Said here rather than left for an
+                operator to infer from a hold that never happens. %>
+            <p class="mt-1 text-xs text-amber-700" id="spot-cap-above-worker-pool">
+              The <code class="bg-gray-100 px-1 rounded">agents</code> pool runs
+              <strong><%= RunningTurns.worker_slots %></strong> turns at once, so this cap of
+              <%= @app_setting.spot_max_concurrent_sessions %> can never be reached and spot work is never
+              held for <code class="bg-gray-100 px-1 rounded">fleet_at_cap</code>. The effective cap is
+              <strong><%= RunningTurns.effective_ceiling(@app_setting.spot_max_concurrent_sessions) %></strong>
+              until that pool grows; the quota ceilings still hold spot work as before.
+            </p>
+          <% end %>
         </div>
         <div>
           <label for="app_setting_spot_reserve_five_hour_pct" class="block text-sm font-medium text-gray-700 mb-2">
@@ -171,13 +184,14 @@
       </p>
 
       <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4 text-sm">
-        <%# "In flight", not "running": the column this counts is stamped when a
+        <%# "On a worker", not "running": the column this reads is stamped when a
             turn is HANDED to a session, and the agents worker pool sits between
-            that and a worker starting it. The split below is the difference —
-            without it, a number well above the live agent-process count reads as
-            a broken counter (tadasant/zimmer#957). %>
+            that and a worker starting it. Only the executing half is counted; the
+            queue is printed under it so a number well below the session count on
+            the home page is explained rather than read as broken
+            (tadasant/zimmer#957). %>
         <div>
-          <dt class="text-gray-500">Sessions with a turn in flight</dt>
+          <dt class="text-gray-500">Sessions on a worker</dt>
           <dd class="font-medium text-gray-900" id="spot-active-sessions">
             <%= @spot_decision.active_sessions %>
             <% if @spot_decision.fleet_cap %>
@@ -185,9 +199,8 @@
             <% end %>
             <% if @spot_decision.awaiting_sessions.to_i.positive? %>
               <div class="text-xs text-gray-500 font-normal mt-0.5" id="spot-active-sessions-split">
-                <%= @spot_decision.active_sessions.to_i - @spot_decision.awaiting_sessions.to_i %> on a worker ·
-                <%= @spot_decision.awaiting_sessions %> waiting for one
-                (the pool runs <%= RunningTurns.worker_slots %> at once)
+                <%= @spot_decision.awaiting_sessions %> more waiting for one of the
+                <%= RunningTurns.worker_slots %> worker slots · not counted
               </div>
             <% end %>
           </dd>

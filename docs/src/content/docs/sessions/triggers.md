@@ -610,13 +610,14 @@ even though nothing would have held that work.
 
 #### `no_sessions_in_progress`
 
-Fires when the deployment has been **running fewer sessions than its configured ceiling** for the
-whole of a configured stretch — three and five minutes by default. It is the "the fleet has room for
+Fires when the deployment has been **running fewer sessions on a worker than its configured ceiling**
+for the whole of a configured stretch — three and five minutes by default. It is the "the fleet has room for
 more work" signal, so a job that hands work out has a second way to be started besides its daily
 schedule.
 
-Only sessions with a **turn in flight** count. Sessions in `waiting` do not, of any class, and neither
-does a `running` row asleep on its own future wake — see [What counts as idle](#what-counts-as-idle).
+Only sessions a **worker is running** count. Sessions in `waiting` do not, of any class, and neither
+does a turn queued behind the `agents` pool waiting for a worker, nor a `running` row asleep on its
+own future wake — see [What counts as idle](#what-counts-as-idle).
 
 The name is a wire name: it is stored as a condition on live trigger rows, so it kept its original
 spelling when the boolean behind it became a number. Read it as *few enough* sessions in progress.
@@ -629,7 +630,7 @@ change takes effect within the minute and needs no deploy.
 
 | Column | Default | Means |
 | --- | --- | --- |
-| `fleet_idle_max_sessions` | 3 | the fleet counts as idle enough while **fewer than** this many sessions have a **turn in flight** |
+| `fleet_idle_max_sessions` | 3 | the fleet counts as idle enough while **fewer than** this many sessions are **running on a worker**. A value above `GOOD_JOB_AGENTS_THREADS` (default 8) can never be reached, so the fleet always reads as having room — `/inference` says so on the card |
 | `fleet_idle_threshold_minutes` | 5 | how long it must stay under that ceiling first |
 | `fleet_idle_min_fire_interval_minutes` | 60 | the floor between two fires |
 
@@ -647,7 +648,7 @@ has least room for it — so three questions all have to answer no:
 
 | Question | Why it counts |
 | --- | --- |
-| Does the fleet have `fleet_idle_max_sessions` or more **turns in flight**? | One population and one number, every runtime and every scheduling class — a running Codex session occupies the deployment as much as a Claude one. Sessions in `waiting` do not count, of any class, and neither does a `running` row asleep on its own future wake with nothing queued for it. A turn merely waiting for a worker does — see [What "in flight" counts](/sessions/spot-and-priority/#what-in-flight-counts-and-what-it-does-not) |
+| Is a worker running `fleet_idle_max_sessions` or more **turns**? | One population and one number, every runtime and every scheduling class — a running Codex session occupies the deployment as much as a Claude one. Sessions in `waiting` do not count, of any class, and neither does a turn merely waiting for a worker, nor a `running` row asleep on its own future wake with nothing queued for it — see [What the ceiling counts](/sessions/spot-and-priority/#what-the-ceiling-counts-and-what-it-does-not) |
 | Any session parked on an auth outage, **either class**? | A park is the clearest statement Zimmer makes that work exists and cannot run. Deliberately **not** a threshold and not scoped to spot: an outage parks priority sessions too, `QuotaResetCheckerJob` resumes those on its own schedule, and one parked session is evidence about the *pool* rather than about how busy the fleet is |
 | Can the account pool serve anything? | Asked of the pool directly, via `QuotaAvailabilityMonitor.pool_available?`. An empty pool makes a quiet fleet a symptom rather than an opportunity. Deliberately **not** `AppSetting#quota_pool_available`: that column is an *announcement latch*, held at `false` through a recovery whose event has not fired yet, and a recovery deferred at the spot gate says nothing about whether the pool can serve |
 
@@ -655,15 +656,19 @@ has least room for it — so three questions all have to answer no:
 
 `running` is stamped when a turn is **handed to** a session, not when a worker starts executing it,
 and the `agents` queue (default 8 threads) sits between the two. So the column holds turns being
-executed and turns waiting for a worker at once — both count, because a waiting turn takes the next
-free slot — plus a third population that does not: a row asleep on its own future wake with no
-`AgentSessionJob` at all, running or queued. Nothing will happen to those until the wake fires, so
-they can consume nothing in the meantime.
+executed and turns waiting for a worker at once, plus a third population asleep on its own future
+wake with no `AgentSessionJob` at all, running or queued.
+
+**Only the first counts.** A queued turn is occupying nothing — what it is waiting for is a worker —
+so a ceiling that counted it would measure the depth of the queue rather than the size of the fleet,
+and a sleeper is not even waiting. Both uncounted populations are printed beside the number on
+`/inference` rather than folded into it.
 
 [#957](https://github.com/tadasant/zimmer/issues/957) is what named this. A fleet reporting 15
 sessions at a ceiling of 7 had 8 agent processes alive; the rest were turns queued behind the pool,
-and three of them were routers that had already gone back to sleep. Both `/inference` cards now print
-the split, and `RunningTurns` is the one place the rule lives.
+and three of them were routers that had already gone back to sleep. Counting the queue was what then
+pinned the spot gate at "25 of 10 session slots taken (8 on a worker, 17 waiting for one)" with every
+spot session held and eight workers busy. `RunningTurns` is the one place the rule lives.
 
 ##### Why `waiting` sessions do not count
 

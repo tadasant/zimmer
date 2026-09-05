@@ -32,42 +32,41 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
     )
   end
 
-  # tadasant/zimmer#957: "The fleet is running 15 sessions" was read as a broken
-  # counter because 8 agent processes were alive. The number was right about the
-  # column and wrong about the word — the rest were turns queued behind the
-  # `agents` worker pool — so the sentence has to name the queue.
-  test "the sentence names the queue when turns are waiting for a worker" do
+  # THE CEILING CHANGE. A fleet of two on workers with five turns queued behind
+  # them is a fleet of TWO: the queue is reported beside the number, never folded
+  # into it, or the ceiling would bound how much work is waiting rather than how
+  # much is running.
+  test "turns waiting for a worker are named beside the count, not counted" do
     s = split_status(on_a_worker: 2, awaiting: 5)
 
-    assert_equal 7, s.running_sessions
-    assert_equal 2, s.executing_sessions
+    assert_equal 2, s.running_sessions
     assert_equal 5, s.awaiting_sessions
-    assert_equal :at_ceiling, s.state
-    assert_match(/7 sessions in flight/, s.sentence)
-    assert_match(/2 on a worker, 5 waiting for one/, s.sentence)
-    assert_match(/#{s.worker_slots}-slot agents pool/, s.sentence)
+    assert s.under_ceiling?, "five queued turns must not push a fleet of two to its ceiling of three"
+    assert_match(/2 sessions on a worker/, s.sentence)
+    assert_match(/5 more waiting for one of the #{s.worker_slots} worker slots/, s.sentence)
+    assert_match(/not counted/, s.sentence)
   end
 
-  # When every turn has a worker the split is the same number twice, and saying
-  # so twice is noise.
+  # With an empty queue and nobody asleep the count is the whole story, and a
+  # clause saying what it leaves out is noise.
   test "the sentence stays plain when every turn has a worker and nobody is asleep" do
     s = split_status(on_a_worker: 3)
 
     assert_equal 3, s.running_sessions
     assert_equal 0, s.awaiting_sessions
-    assert_match(/3 sessions in flight/, s.sentence)
-    assert_no_match(/on a worker/, s.sentence)
+    assert_match(/3 sessions on a worker/, s.sentence)
+    assert_no_match(/not counted/, s.sentence)
   end
 
-  # Sleepers are reported but not counted: the ceiling comparison is made
-  # against the turns the fleet can actually be working on.
-  test "sessions asleep on a wake are reported beside the total, not inside it" do
+  # Sleepers are reported but not counted, and they are told apart from the
+  # queue: a sleeper has no turn coming at all.
+  test "sessions asleep on a wake are reported beside the count, not inside it" do
     s = split_status(on_a_worker: 1, awaiting: 1, asleep: 4)
 
-    assert_equal 2, s.running_sessions
+    assert_equal 1, s.running_sessions
     assert_equal 4, s.asleep_sessions
-    assert s.under_ceiling?, "four sleepers must not push a fleet of two to its ceiling of three"
-    assert_match(/4 more asleep on a wake and not counted/, s.sentence)
+    assert s.under_ceiling?, "four sleepers must not push a fleet of one to its ceiling of three"
+    assert_match(/1 more waiting for one of the #{s.worker_slots} worker slots, 4 asleep on a wake/, s.sentence)
   end
 
   # The sleepers are worth saying even on a fleet whose every turn has a worker:
@@ -77,19 +76,34 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
     s = split_status(on_a_worker: 2, asleep: 3)
 
     assert_equal 2, s.running_sessions
-    assert_match(/3 more asleep on a wake and not counted/, s.sentence)
-    assert_no_match(/on a worker,/, s.sentence)
+    assert_match(/3 asleep on a wake — not counted/, s.sentence)
+    assert_no_match(/waiting for one of/, s.sentence)
   end
 
   test "the worker pool ceiling is the agents lane's own thread count" do
     assert_equal ConnectionBudget.good_job_queue_threads[:agents], split_status(on_a_worker: 0).worker_slots
   end
 
-  test "a reading with everything on a worker reports no split" do
+  # The consequence of counting worker occupancy alone, which the card renders:
+  # a ceiling above the pool is one the fleet can never reach.
+  test "a ceiling above the worker pool is reported as out of reach" do
+    slots = split_status(on_a_worker: 0).worker_slots
+
+    @setting.update!(fleet_idle_max_sessions: slots + 2)
+    over = split_status(on_a_worker: 0)
+    assert over.ceiling_out_of_reach?
+    assert_equal slots, over.effective_ceiling
+
+    @setting.update!(fleet_idle_max_sessions: slots)
+    at = split_status(on_a_worker: 0)
+    assert_not at.ceiling_out_of_reach?
+    assert_equal slots, at.effective_ceiling
+  end
+
+  test "a reading with everything on a worker reports nothing left out" do
     s = status(running: 2)
 
     assert_equal 2, s.running_sessions
-    assert_equal 2, s.executing_sessions
     assert_equal 0, s.awaiting_sessions
     assert_equal 0, s.asleep_sessions
   end
