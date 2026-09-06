@@ -1412,41 +1412,51 @@ that does it has known limits:
   does not know a top-up is coming.
 - **Neither ceiling can be reached above `GOOD_JOB_AGENTS_THREADS`, and nothing stops you setting one
   there.** Both count only the turns a worker is *executing*, and the `agents` GoodJob lane is only
-  `GOOD_JOB_AGENTS_THREADS` (default 8) deep, so a ceiling of 10 on a pool of 8 is a ceiling the fleet
-  can never touch: the spot gate never reports `fleet_at_cap`, and top-up always sees the fleet as
-  having room — while work keeps queueing behind the same eight workers. The setting is deliberately
-  not clamped (the operator's number is theirs, and growing the pool is a deploy away), so the
-  mitigation is disclosure: both `/inference` cards and `get_spot_policy` say the ceiling is out of
-  reach and print `min(configured, GOOD_JOB_AGENTS_THREADS)` beside it. What that leaves is a
+  `GOOD_JOB_AGENTS_THREADS` (default 12) deep, so a ceiling of 15 on a pool of 12 is a ceiling the
+  fleet can never touch: the spot gate never reports `fleet_at_cap`, and top-up always sees the fleet
+  as having room — while work keeps queueing behind the same twelve workers. The setting is
+  deliberately not clamped (the operator's number is theirs, and growing the pool is a deploy away),
+  so the mitigation is disclosure: both `/inference` cards and `get_spot_policy` say the ceiling is
+  out of reach and print `min(configured, GOOD_JOB_AGENTS_THREADS)` beside it. What that leaves is a
   deployment whose only real concurrency control is the size of the worker pool — the quota ceilings
   still pace spot spend, but the slot ceiling does nothing until you lower it under the pool.
-  **The shipped default is one of the unreachable ones**: `spot_max_concurrent_sessions` defaults to
-  10 against a pool of 8, so a deployment nobody has retuned renders that note from its first boot
-  and never holds spot work on `fleet_at_cap`. The top-up ceiling's default of 3 is under the pool
-  and behaves normally.
-- **"Growing the pool is a deploy away" is true of the config and, on Tadasant production, false of
-  the machine.** `GOOD_JOB_AGENTS_THREADS` is bounded by the worker's **memory cgroup**, not by the
-  database — each thread runs a whole agent session — and on that deployment 8 already reaches it.
-  Over the 24 hours to 2026-09-05T14:16Z the worker cgroup's **`anon`** — unreclaimable, so this is
-  the number that decides whether N sessions fit — peaked at **9.07 GiB against a 10 GiB
-  `memory.max`**, and `memory.events` recorded `oom_kill`s. (`memory.current` touched the cap to
-  within 94 KB and forced-reclaim events ran to 133,791, but both include reclaimable page cache —
-  `file` peaked at 7.28 GB — so they corroborate rather than prove.)
-  [#981](https://github.com/tadasant/zimmer/issues/981) is the incident: eight *in-budget* sessions
-  — no runaway, largest process 943 MB — summed over the cap and the kernel OOM-killed the GoodJob
-  worker itself, taking every in-flight `AgentSessionJob` with it. The per-session bound cannot
-  cover this and is not meant to: cgroup v2 is hierarchical, so
-  `zimmer.sessions/sessions/session-<id>` sits inside the container's cgroup and charges the same
-  10 GiB; `ZIMMER_SESSION_MEMORY_MAX_MB` bounds one runaway. `ZIMMER_SESSIONS_MEMORY_MAX_MB` now
-  bounds the sum — but only the *blast radius* of it: the pool holds every session cgroup and not
-  the Rails worker, so a pile-up kills a session instead of the worker that runs all of them. **It
-  does not reduce the demand, so it does not raise this ceiling.** The honest shape of the limit
-  **on that deployment** is still that the effective concurrency ceiling is 8, and the measurements
-  above predate the fix — so raising it means a re-measurement of `anon` under the pool and the
-  `PARALLEL_WORKERS` cap, then a matching `app_required_backends` bump. A self-hosted deployment
-  with a different worker cap has a different number, arrived at the same way. Connections are not
-  what binds first, but they are not roomy either: 15 threads derive 97 required backends, which is
-  the *entire* capacity of a `db-s-2vcpu-4gb` cluster — zero margin.
+  **Both shipped defaults are now reachable**, which was not true while the pool was 8:
+  `spot_max_concurrent_sessions` defaults to 10 and the top-up ceiling to 3, both under a pool of 12,
+  so an un-retuned deployment gets ceilings that actually bind. A deployment that had *raised* its
+  ceilings to work around the old 8 — Tadasant production ran 15 — should bring them back under the
+  pool, or it keeps the unreachable-ceiling behaviour this bullet describes for no reason.
+- **The pool is bounded by memory, and raising it does not buy the memory back.**
+  `GOOD_JOB_AGENTS_THREADS` is sized by what the `sessions` cgroup pool can hold, not by the
+  database — each thread runs a whole agent session. The history is worth keeping because the
+  intuition it corrects is a common one. Over the 24 hours to 2026-09-05T14:16Z, at 8 threads and
+  *before* [#981](https://github.com/tadasant/zimmer/issues/981)'s fix, the worker cgroup's **`anon`**
+  — unreclaimable, so it is what decides whether N sessions fit — peaked at **9.07 GiB against a
+  10 GiB `memory.max`**, with real `oom_kill`s. Eight *in-budget* sessions, no runaway, largest
+  process 943 MB, summed over the container cap and the kernel killed the GoodJob worker itself,
+  taking every in-flight `AgentSessionJob` with it.
+- **What that fix changed is the victim, not the demand — and that is what made 12 shippable.**
+  Session cgroups now sit in a `sessions` pool carrying its own `memory.max`
+  (`ZIMMER_SESSIONS_MEMORY_MAX_MB`, 6144), and the Rails worker sits in an `app` sibling *outside*
+  it. A pile-up therefore declares its OOM in a cgroup the worker is not in: one session dies with
+  an attributable cause and a retry, rather than all of them plus the worker. Because that pool cap
+  is absolute, **admitting more sessions cannot endanger the worker** — it spends pool headroom
+  instead. That is why the thread count could go 8 → 12 without the container-level risk returning.
+- **The counter-intuitive part: do not raise the pool to match the threads.** The pool is sized from
+  what must survive a pile-up, not from how many sessions are admitted. Two tenants live outside it
+  and both must fit in the residual — the Rails worker (~1.6 GiB measured) and the inner dockerd
+  with the dev stacks it runs (~1.5 GiB), about 3.1 GiB together. At 6144 the residual is 4096 MB
+  and covers that; at 7168 it would be 3072 MB, *under* the measured need, so the **container** cap
+  would fire first — and that OOM selects across the whole container and takes the worker, which is
+  #981 recurring with the new mechanism working exactly as designed. The pool must fire first.
+- **So what 12 actually costs is concurrent-heavy-work headroom.** Measured on the live worker at 12
+  session cgroups: pool `anon` 3154 MB of the 6144 cap, ~263 MB per session, leaving ~3.0 GB —
+  roughly five concurrent capped test suites at ~560 MB each. The conservative per-session figure
+  from #981's peak task dump (~382 MB) would leave ~1.6 GB, or two to three. The real tolerance is
+  somewhere in that band and has not been pinned down; past it the pool kills one session. Connections
+  are not what binds first, but they are not roomy either: 12 threads derive 91 required backends
+  against the 97 a `db-s-2vcpu-4gb` cluster serves, and 15 would derive exactly 97 — the entire plan,
+  zero margin. A self-hosted deployment with a different worker cap has a different number, arrived
+  at the same way.
 - **A turn is queued for a worker for as long as the `agents` lane is deep, and only the session
   page says so.** Since [#1040](https://github.com/tadasant/zimmer/pull/1040) that turn reads
   `waiting` rather than `running`, so the dashboard count and `/inference`'s ceiling agree — but

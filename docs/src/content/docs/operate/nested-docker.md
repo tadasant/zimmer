@@ -330,18 +330,23 @@ What production still needs:
 3. **A bound on how many sessions may hold a dev stack at once.** This is load-bearing
    because the droplet is not being resized. Measured on staging: one `.agent-containers`
    stack sits around 700 MB anon and fits; a *second* concurrent stack produced a cgroup
-   OOM kill at `anon-rss:1244540kB`. Production therefore runs eight `agents` scheduler
-   threads (`GOOD_JOB_AGENTS_THREADS`), rather than the sixteen it once admitted. More
-   sessions remain durable queued jobs and start as one of those eight slots becomes free.
+   OOM kill at `anon-rss:1244540kB`. Production runs twelve `agents` scheduler threads
+   (`GOOD_JOB_AGENTS_THREADS`). More sessions remain durable queued jobs and start as one
+   of those twelve slots becomes free.
 
-   Read eight as *the number that has been measured*, not as a number shown to fit. On
-   production at eight, the worker cgroup's unreclaimable `anon` peaks at 9.07 GiB against
-   its 10 GiB `memory.max`, and eight in-budget sessions have already summed over the cap
-   and had the kernel OOM-kill the GoodJob worker
-   ([#981](https://github.com/tadasant/zimmer/issues/981)). Neither cgroup bound changes
-   that arithmetic — cgroup v2 is hierarchical, so both the per-session cgroups and the
-   `sessions` pool above them charge the same 10 GiB. The pool decides *who* the kernel
-   kills when the sum is reached, not whether it is reached.
+   That number was 8 while a pile-up could kill the worker. Since
+   [#981](https://github.com/tadasant/zimmer/issues/981) the session cgroups sit in a
+   `sessions` pool with its own `memory.max` and the Rails worker sits in an `app` sibling
+   *outside* it, so the pool decides *who* the kernel kills when the sum is reached — one
+   session, not the worker that runs all of them. That is what let the number move.
+
+   **The dev stacks in this document are the reason the pool was not raised with it.**
+   dockerd starts before the cgroup delegation, so it and the `.agent-containers` stacks it
+   runs stay in the container cgroup, *outside* the sessions pool — about 1.5 GiB alongside
+   the worker's ~1.6 GiB. The pool's residual has to cover both, which is why
+   `ZIMMER_SESSIONS_MEMORY_MAX_MB` stayed at 6144 (residual 4096 MB) when the threads went
+   to 12: at 7168 the residual would be 3072 MB, under that measured need, and the
+   *container* cap would fire instead — taking the worker, exactly as before the fix.
 
 Do it as its own change, after staging has run on it. The blast radius is not comparable:
 production is where agent sessions actually execute, and the failure mode of arming the

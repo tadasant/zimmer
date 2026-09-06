@@ -204,6 +204,24 @@ env:
     # the worker dying and taking all of them. ZIMMER_SESSION_PARALLEL_WORKERS below is the
     # half that reduces the demand rather than choosing the victim.
     #
+    # RE-EXAMINED when GOOD_JOB_AGENTS_THREADS went 8 -> 12, and deliberately NOT raised.
+    # Raising it to 7168 to "make room" for the extra sessions is the intuitive move and it
+    # is backwards: the residual would drop to 3072 MB, under the ~3.1 GiB the two
+    # outside-pool tenants were measured at, so the CONTAINER cap would be the one to fire
+    # and it selects across the whole container -- taking the worker. That is #981 again.
+    # Sizing this from the sessions admitted is the wrong direction entirely; it is sized
+    # from what must survive them.
+    #
+    # More sessions in a HARD-capped pool does not endanger the worker, which is the
+    # property that made 12 shippable: the pool still fires first, and the extra pressure
+    # is spent inside it. What 12 costs is headroom for concurrent heavy work. Measured on
+    # the live worker at 12 session cgroups: pool `anon` 3154 MB of the 6144 cap, ~263 MB
+    # per session, leaving ~3.0 GB for test runs and the like -- roughly five concurrent
+    # capped suites at ~560 MB each. The conservative figure from #981's peak task dump
+    # (~382 MB per session) would leave ~1.6 GB, or two or three. Somewhere in that band is
+    # the real tolerance, and past it the pool OOM-kills ONE session with an attributable
+    # cause and a retry, which is the designed degradation rather than a fault.
+    #
     # 0 means no aggregate cap, with per-session bounds left in force -- the break-glass.
     ZIMMER_SESSIONS_MEMORY_MAX_MB: "<%= ENV.fetch("ZIMMER_SESSIONS_MEMORY_MAX_MB", "6144") %>"
     # PARALLEL_WORKERS for every agent session, capping the test workers a session's Rails
