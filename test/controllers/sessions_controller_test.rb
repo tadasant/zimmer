@@ -2062,6 +2062,48 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_empty goal_logs
   end
 
+  # The wording lives in Sessions::FollowUpGoal::LOG_PHRASES now, shared with the
+  # REST API, the MCP tool and the queue. Pinned exactly so the web's own phrasing
+  # — "for this follow-up", not "from follow-up" — survives that move.
+  test "follow_up logs the goal change in the web's own wording" do
+    session = sessions(:waiting)
+    session.update!(goal: "Original condition")
+
+    post follow_up_session_url(session), params: {
+      follow_up_prompt: "Continue",
+      goal: "New goal"
+    }
+
+    assert_equal 1, session.logs.where(content: "Goal updated for this follow-up").count
+
+    session.update!(status: :needs_input)
+    post follow_up_session_url(session), params: {
+      follow_up_prompt: "Continue",
+      goal: ""
+    }
+
+    assert_equal 1, session.logs.where(content: "Goal removed for this follow-up").count
+  end
+
+  # The web form always submits the goal field, so a whitespace-only value is the
+  # human emptying the box — a clear. This is the ONE surface where a blank goal
+  # clears; the REST API, the MCP tool and the queue preserve on blank, and those
+  # tests live beside their own call sites. Sessions::FollowUpGoal spells the
+  # divergence as `clear_when_blank:` rather than leaving it implicit in four
+  # hand-written conditionals.
+  test "follow_up treats a whitespace-only goal as a clear" do
+    session = sessions(:waiting)
+    session.update!(goal: "Existing condition")
+
+    post follow_up_session_url(session), params: {
+      follow_up_prompt: "Continue",
+      goal: "   "
+    }
+
+    assert_nil session.reload.goal
+    assert_equal 1, session.logs.where(content: "Goal removed for this follow-up").count
+  end
+
   test "should reject goal exceeding maximum length" do
     session = sessions(:waiting)
     long_condition = "x" * (Session::GOAL_MAX_LENGTH + 1)
