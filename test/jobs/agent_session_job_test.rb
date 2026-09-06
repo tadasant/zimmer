@@ -7406,7 +7406,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # Record termination invocations without actually signalling (the real
     # SIGTERM->SIGKILL escalation is covered in ProcessTerminationService tests).
     terminate_calls = []
-    job.stub(:terminate_process, ->(_session, process_pid, _clone_path, _log_buffer) { terminate_calls << process_pid }) do
+    job.stub(:terminate_process, ->(_session, process_pid, _log_buffer) { terminate_calls << process_pid }) do
       GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
         TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
           mock_poller = Object.new
@@ -7478,7 +7478,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     end
 
     interrupt_terminations = []
-    job.stub(:terminate_process, ->(_session, process_pid, _clone_path, _log_buffer) { interrupt_terminations << process_pid }) do
+    job.stub(:terminate_process, ->(_session, process_pid, _log_buffer) { interrupt_terminations << process_pid }) do
       GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
         TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
           mock_poller = Object.new
@@ -7550,7 +7550,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     end
 
     terminate_calls = []
-    job.stub(:terminate_process, ->(_session, process_pid, _clone_path, _log_buffer) { terminate_calls << process_pid }) do
+    job.stub(:terminate_process, ->(_session, process_pid, _log_buffer) { terminate_calls << process_pid }) do
       GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
         TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
           mock_poller = Object.new
@@ -7622,7 +7622,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     end
 
     terminate_calls = []
-    job.stub(:terminate_process, ->(_session, process_pid, _clone_path, _log_buffer) { terminate_calls << process_pid }) do
+    job.stub(:terminate_process, ->(_session, process_pid, _log_buffer) { terminate_calls << process_pid }) do
       GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
         TranscriptPollerService.stub(:new, ->(session, file_system: nil, broadcast_service: nil) {
           mock_poller = Object.new
@@ -7778,7 +7778,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     end
 
     terminate_calls = []
-    job.stub(:terminate_process, ->(_session, process_pid, _clone_path, _log_buffer) { terminate_calls << process_pid }) do
+    job.stub(:terminate_process, ->(_session, process_pid, _log_buffer) { terminate_calls << process_pid }) do
       job.stub(:poll_and_broadcast_transcript, parking_poll) do
         GitCloneService.stub(:create_clone, { clone_path: "/tmp/test-clone", working_directory: "/tmp/test-clone" }) do
           Thread.stub(:new, ->(&block) {

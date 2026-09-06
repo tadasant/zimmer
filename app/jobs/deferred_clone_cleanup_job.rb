@@ -163,7 +163,7 @@ class DeferredCloneCleanupJob < ApplicationJob
     # deadline instead — see DurableSessionStorage.
 
     # Perform the actual cleanup
-    clone_path = session.metadata&.dig("clone_path")
+    clone_path = session.clone_root
 
     unless clone_path && File.directory?(clone_path)
       Rails.logger.info "[DeferredCloneCleanupJob] Session #{session_id} has no clone to clean up"

@@ -223,7 +223,7 @@ class ClaudeRetryStrategy
   # Delegates to ContextLengthRetryService for the actual transcript parsing
   # since it has the same logic and we want to avoid duplication.
   def context_length_error_in_transcript?
-    working_directory = @session.metadata&.dig("working_directory")
+    working_directory = @session.working_directory
     return false unless working_directory
 
     # Create a temporary service instance just for the transcript check.

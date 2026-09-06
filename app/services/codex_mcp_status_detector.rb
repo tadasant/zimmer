@@ -302,7 +302,7 @@ class CodexMcpStatusDetector
   end
 
   def stderr_log_path
-    working_directory = @session.metadata&.dig("working_directory")
+    working_directory = @session.working_directory
     return nil unless working_directory
 
     CodexRuntimeAdapter.stderr_log_path(working_directory)

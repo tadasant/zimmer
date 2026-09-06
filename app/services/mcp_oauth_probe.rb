@@ -46,7 +46,7 @@ class McpOauthProbe
   def servers_needing_oauth
     return [] if @session.user_selected_mcp_servers.blank?
 
-    working_directory = @session.metadata&.dig("working_directory")
+    working_directory = @session.working_directory
     return [] if working_directory.blank?
 
     # The same check AgentSessionJob runs before it spawns, so the page and the

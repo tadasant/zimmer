@@ -66,7 +66,7 @@ class ViewContractTest < ActionView::TestCase
     @waiting_session.update!(
       metadata: {
         "clone_path" => "/tmp/test-clone",
-        "full_clone_path" => "/tmp/test-clone/subdir",
+        "working_directory" => "/tmp/test-clone/subdir",
         "agent_root_key" => "agent-orchestrator"
       },
       subdirectory: "subdir"

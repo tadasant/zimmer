@@ -79,10 +79,10 @@ class McpLogPollerService
 
   private
 
-  # Get the MCP log directory path based on session's working_directory.
+  # Get the MCP log directory path based on the session's working directory.
   # Delegates the path computation to the runtime transcript source.
   def get_mcp_log_directory
-    working_directory = @session.metadata&.dig("working_directory")
+    working_directory = @session.working_directory
     return nil unless working_directory
 
     TranscriptRuntime.source_for(@session).mcp_log_paths(working_directory: working_directory).first

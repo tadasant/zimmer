@@ -567,7 +567,7 @@ class SessionStatusSummaryGenerator
   # false. This runs on the panel's render path and inside the panel broadcast,
   # neither of which may raise over a malformed row.
   def source_clone_available?
-    clone_path = session.metadata&.dig("clone_path").to_s
+    clone_path = session.clone_root.to_s
     return false if clone_path.blank?
 
     file_system.directory?(clone_path)
@@ -896,7 +896,7 @@ class SessionStatusSummaryGenerator
   def resumable_fork?(fork)
     return false unless fork.metadata&.dig("runtime_started") == true
 
-    working_directory = fork.metadata&.dig("working_directory")
+    working_directory = fork.working_directory
     TranscriptRuntime.source_for(fork, file_system: @file_system)
       .resume_transcript_path(session: fork, working_directory: working_directory)
       .present?

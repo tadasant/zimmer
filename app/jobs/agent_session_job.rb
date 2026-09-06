@@ -823,13 +823,12 @@ class AgentSessionJob < ApplicationJob
       # When resume_monitoring is true, we don't spawn a new process or send new prompts
       # We only reconnect to the existing Claude CLI process to continue monitoring
       if resume_monitoring
-        # Retrieve existing process info from metadata. working_directory is
-        # rehydrated the same way the follow-up path does it (below): the recorded
-        # working directory, falling back to the clone root for rows that carry no
-        # working_directory key.
+        # Retrieve existing process info from metadata. The working directory
+        # comes from Session#working_directory, which falls back to the clone root
+        # for rows that carry no working_directory key.
         process_pid = session.metadata&.dig("process_pid")
-        clone_path = session.metadata&.dig("clone_path")
-        working_directory = session.metadata&.dig("working_directory") || clone_path
+        clone_path = session.clone_root
+        working_directory = session.working_directory
         stderr_log_path = session.stderr_log_path
 
         unless process_pid && clone_path
@@ -983,8 +982,8 @@ class AgentSessionJob < ApplicationJob
           raise "Cannot send follow-up prompt: session_id is missing"
         end
 
-        clone_path = session.metadata&.dig("clone_path")
-        working_directory = session.metadata&.dig("working_directory") || clone_path
+        clone_path = session.clone_root
+        working_directory = session.working_directory
 
         # If clone directory is missing (e.g., session was trashed and clone deleted,
         # then restored by a reuse_session trigger), recreate it before proceeding.
@@ -1051,7 +1050,6 @@ class AgentSessionJob < ApplicationJob
           session.merge_metadata!(
             "clone_path" => clone_path,
             "working_directory" => working_directory,
-            "full_clone_path" => working_directory,
             "clone_recreated" => true
           )
 
@@ -1171,13 +1169,12 @@ class AgentSessionJob < ApplicationJob
         )
       else
         # Check if we already have a clone from a previous attempt (e.g., job retry)
-        existing_clone = session.metadata&.dig("clone_path")
-        existing_working_dir = session.metadata&.dig("working_directory")
+        existing_clone = session.clone_root
 
         if existing_clone && @file_system.exists?(existing_clone)
           # RESUME: Reuse existing clone on retry
           clone_path = existing_clone
-          working_directory = existing_working_dir || existing_clone
+          working_directory = session.working_directory
           reusing_existing_clone = true
 
           log_buffer.add(
@@ -1332,13 +1329,11 @@ class AgentSessionJob < ApplicationJob
           # Store clone paths in session metadata
           # clone_path: base clone directory (e.g., ~/.zimmer/clones/agents-main-123-abc)
           # working_directory: actual working directory (may be subdirectory)
-          # full_clone_path: full path including subdirectory if present (for copy button)
           # Clear any transient-clone-retry counter now that the clone succeeded.
           session.merge_metadata!(
             {
               "clone_path" => clone_path,
-              "working_directory" => working_directory,
-              "full_clone_path" => working_directory
+              "working_directory" => working_directory
             },
             [ "clone_retry_count" ]
           )
@@ -1666,7 +1661,7 @@ class AgentSessionJob < ApplicationJob
         # Build the orchestrator system prompt to provide context to Claude
         orchestrator_system_prompt = OrchestratorSystemPromptBuilder.build(
           session: session,
-          clone_path: clone_path
+          working_directory: working_directory
         )
 
         # Wait out the container's background boot tasks before touching the runtime.
@@ -1869,7 +1864,7 @@ class AgentSessionJob < ApplicationJob
             level: "info"
           )
           log_buffer.flush
-          terminate_process(session, process_pid, clone_path, log_buffer)
+          terminate_process(session, process_pid, log_buffer)
           # Final transcript poll, mirroring branches 1a/1b/1c and section 2 —
           # and this branch is the one that needs it MOST. The ordinary way a
           # session reaches it is the agent archiving ITSELF, so the closing
@@ -1947,7 +1942,7 @@ class AgentSessionJob < ApplicationJob
           # SIGTERM -> SIGKILL within a bounded window, so a turn that ignores
           # SIGTERM is still reliably killed. We do NOT clean the clone: the
           # interrupting turn reuses it.
-          terminate_process(session, process_pid, clone_path, log_buffer)
+          terminate_process(session, process_pid, log_buffer)
           return
         end
 
@@ -2084,7 +2079,7 @@ class AgentSessionJob < ApplicationJob
           # Final poll before terminating, mirroring branches 1a/1b.
           poll_and_broadcast_transcript(session)
           # Do NOT clean the clone — the superseding turn reuses it.
-          terminate_process(session, process_pid, clone_path, log_buffer)
+          terminate_process(session, process_pid, log_buffer)
           return
         end
 
@@ -2531,11 +2526,11 @@ class AgentSessionJob < ApplicationJob
           # later, and StaleCloneCleanupJob (archived with no trash deadline,
           # one hour) and EmptyTrashJob (at the trash deadline) are the
           # backstops if it never runs.
-          terminate_process(session, process_pid, clone_path, log_buffer) if process_pid
+          terminate_process(session, process_pid, log_buffer) if process_pid
         elsif session.failed?
           # Preserve clone on failure for debugging and recovery
           # Only terminate the process if it's still running
-          terminate_process(session, process_pid, clone_path, log_buffer) if process_pid && process_running?(process_pid)
+          terminate_process(session, process_pid, log_buffer) if process_pid && process_running?(process_pid)
           # Say what is on disk, rather than what metadata says was once cloned.
           #
           # `metadata["clone_path"]` records where a clone was made; it is not evidence
@@ -2586,7 +2581,7 @@ class AgentSessionJob < ApplicationJob
           # we leave the process alive: recovery will re-attach a monitoring job,
           # preserving the elicitation round-trip across the blip.
           if process_pid && process_running?(process_pid) && !session.blocked_on_elicitation?
-            terminate_process(session, process_pid, clone_path, log_buffer)
+            terminate_process(session, process_pid, log_buffer)
           end
         end
       end
@@ -3560,7 +3555,7 @@ class AgentSessionJob < ApplicationJob
       return
     end
 
-    working_directory = session.metadata&.dig("working_directory")
+    working_directory = session.working_directory
     unless working_directory.present? && Dir.exist?(working_directory)
       Rails.logger.warn "[AgentSessionJob] Cannot auto-continue session #{session.id}: working directory not found"
       return
@@ -3689,7 +3684,7 @@ class AgentSessionJob < ApplicationJob
     # We already have most history in session.transcript from polling (every ~5 seconds)
     # At most ~5 seconds of messages could be missing if cache was cleared
     # Claude CLI will create new transcript files when it resumes
-    working_directory = session.metadata&.dig("working_directory") || clone_path
+    working_directory = session.working_directory
     transcript_path = transcript_file_path(session, working_directory)
     warning = nil
 
@@ -4146,7 +4141,7 @@ class AgentSessionJob < ApplicationJob
     log_buffer.flush
 
     # Terminate the Claude CLI process
-    terminate_process(session, process_pid, clone_path, log_buffer)
+    terminate_process(session, process_pid, log_buffer)
 
     # Split the auth-type failures by whether the server can actually BE authorized
     # via OAuth. An auth error alone does NOT imply OAuth: a server that authenticates
@@ -4249,7 +4244,6 @@ class AgentSessionJob < ApplicationJob
 
     if oauth_failures.any?
       # This is an OAuth issue - convert failed servers to oauth_required format
-      working_directory = session.metadata&.dig("working_directory")
       oauth_required_servers = oauth_failures.map do |server|
         server_name = server["name"]
         server_config = ServersConfig.find(server_name)
@@ -4567,7 +4561,7 @@ class AgentSessionJob < ApplicationJob
   # @param session [Session]
   # @param server_names [Array<String>]
   def delete_runtime_credentials(session, server_names)
-    working_directory = session.metadata&.dig("working_directory")
+    working_directory = session.working_directory
     McpOauthCredentialInjector.new(session, working_directory: working_directory)
       .delete_runtime_credentials(server_names)
   rescue => e
@@ -4588,7 +4582,7 @@ class AgentSessionJob < ApplicationJob
   # @param failed_servers [Array<Hash>] entries shaped { "name" =>, "error" => }
   # @param log_buffer [LogBuffer] Buffer for logging
   def heal_partial_npx_cache(session, failed_servers, log_buffer)
-    working_directory = session.metadata&.dig("working_directory")
+    working_directory = session.working_directory
     result = NpxCacheHealService.heal_from_failures(
       failed_servers: failed_servers,
       working_directory: working_directory
@@ -4613,7 +4607,7 @@ class AgentSessionJob < ApplicationJob
   # @param session [Session]
   # @param server_names [Array<String>]
   def clear_runtime_needs_auth_cache(session, server_names)
-    working_directory = session.metadata&.dig("working_directory")
+    working_directory = session.working_directory
     McpOauthCredentialInjector.new(session, working_directory: working_directory)
       .clear_runtime_needs_auth_cache(server_names)
   rescue => e
@@ -4906,7 +4900,7 @@ class AgentSessionJob < ApplicationJob
     end
 
     # Terminate the hung process - wait_nonblock will detect the exit on the next iteration
-    terminate_process(session, process_pid, session.metadata&.dig("clone_path"), log_buffer)
+    terminate_process(session, process_pid, log_buffer)
 
     true
   rescue => e
@@ -4964,7 +4958,7 @@ class AgentSessionJob < ApplicationJob
   end
 
   # Terminate a running process
-  def terminate_process(session, process_pid, clone_path, log_buffer)
+  def terminate_process(session, process_pid, log_buffer)
     return unless process_pid
 
     termination_service = ProcessTerminationService.new(

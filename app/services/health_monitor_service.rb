@@ -1648,9 +1648,9 @@ class HealthMonitorService
 
   # Check if a session can be retried
   def can_retry_session?(session)
-    session.session_id.present? &&
-      session.metadata&.dig("working_directory").present? &&
-      Dir.exist?(session.metadata["working_directory"])
+    working_directory = session.working_directory
+
+    session.session_id.present? && working_directory.present? && Dir.exist?(working_directory)
   end
 
   # Say why a retry did not happen — loudly enough that an operator who asked for

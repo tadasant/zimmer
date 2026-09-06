@@ -866,8 +866,15 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "recreates clone when clone_path exists but working_directory is missing from metadata" do
-    # Edge case: clone_path exists on disk but working_directory is nil in metadata
+  # A session with a clone on disk and no recorded working_directory: it has a
+  # clone it was never spawned in, so the clone root IS where its agent will run.
+  #
+  # This used to re-clone from the remote, because the quick-unarchive check read
+  # `metadata["working_directory"]` raw, got nil, and concluded the tree was
+  # incomplete — throwing away a perfectly good clone sitting right there, and
+  # paying a network fetch to replace it with an identical one. Session#working_directory
+  # answers the clone root for this session, so the quick path takes it (#790).
+  test "quick unarchive when clone_path exists but working_directory is missing from metadata" do
     @session.update!(
       metadata: {
         "clone_path" => @clone_path
@@ -877,26 +884,17 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
 
     @mock_fs.mkdir_p(@clone_path)
 
-    new_clone_path = "/home/test/.zimmer/clones/test-repo-main-99999-ijkl"
-
-    mock_create_clone = lambda do |_git_root, **kwargs|
-      { clone_path: new_clone_path, working_directory: new_clone_path }
-    end
-
-    GitCloneService.stub :create_clone, mock_create_clone do
-      @mock_fs.mkdir_p(new_clone_path)
-
+    GitCloneService.stub :create_clone, ->(*, **) { flunk("must not re-clone a tree that is already on disk") } do
       result = UnarchiveSessionService.call(
         session: @session,
         file_system: @mock_fs
       )
 
       assert result.success?
-      assert_equal true, result.clone_restored
+      assert_equal false, result.clone_restored, "the existing clone is reused, not recreated"
 
       @session.reload
-      assert_equal new_clone_path, @session.metadata["clone_path"]
-      assert_equal new_clone_path, @session.metadata["working_directory"]
+      assert_equal @clone_path, @session.metadata["clone_path"]
       assert_equal "needs_input", @session.status
     end
   end
