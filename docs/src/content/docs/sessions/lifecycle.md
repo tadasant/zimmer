@@ -152,26 +152,27 @@ refusing them would strand the wake this guard exists to protect. See
 [A pause outranks precedence](/sessions/spot-and-priority/#a-pause-outranks-precedence) for the other
 three callers that decline, and why the guard lives here rather than in a prompt.
 
-#### Entering `running` re-arms the fleet-idle event
+#### Entering `running` is reported to the fleet-idle monitor
 
 An `after_commit` on the status column — not a hook on `start` and `resume` — calls
-`FleetIdleMonitor.record_busy!` whenever a commit lands a session in `running`. The fact
-[`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress) needs is "a session is
-running", and every path that produces it has to count: both AASM events, an elicitation unblocking,
-a session created directly in `running`. Missing one would leave that event's latch spent against a
-fleet that had gone back to work, because a session that starts and finishes inside one cron tick is
-invisible to the sweep that samples for it.
+`FleetIdleMonitor.record_session_started!` whenever a commit lands a session in `running`. The fact
+[`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress) needs is "a session entered
+`running`", and every path that produces it has to count: both AASM events, an elicitation
+unblocking, a session created directly in `running`. Missing one would let an idle stretch run
+straight through a moment the fleet was full, because a fleet that fills up and empties again inside
+one cron tick is invisible to the sweep that samples for it.
 
 It does not cover `update_column` / `update_all`, which skip callbacks — no caller writes `status`
-that way, and the sweep re-arms on its next tick regardless, so this is the fast path rather than
-the only one.
+that way, and the sweep takes its own reading on its next tick regardless, so this is the fast path
+rather than the only one.
 
-The re-arm is **unconditional**: it does not ask whether the fleet is now over the event's ceiling.
-Since that ceiling defaults to 3, a fleet is routinely still "idle enough" while a session runs — but
-a ceiling-aware re-arm would leave the clock frozen behind the last fire on a fleet that never climbs
-above the ceiling, and the event would fire exactly once in the deployment's life. Ending the stretch
-is what hands the cadence to the cooldown. See
-[The latch is not enough on its own](/sessions/triggers/#the-latch-is-not-enough-on-its-own).
+The hook reports the start; **the monitor decides what it means.** It asks the ceiling before
+clearing anything, so a session starting on a fleet that stays *under* its ceiling leaves the idle
+clock exactly where it was. `fleet_idle_since` is the moment the fleet crossed *below* its ceiling,
+and only crossing back over it ends the stretch — a clear on any start at all is what used to make
+the column mean "when a session last started" and the `/inference` card claim a stretch far shorter
+than the real one. What re-arms the event between fires is the cooldown, not the fleet. See
+[Why the cadence is the cooldown alone](/sessions/triggers/#why-the-cadence-is-the-cooldown-alone).
 
 After the commit, and best-effort: a transition is never slowed or rolled back by this bookkeeping.
 

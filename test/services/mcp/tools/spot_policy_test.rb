@@ -624,8 +624,38 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
 
     AppSetting.editable.update!(fleet_idle_since: 30.minutes.ago, fleet_idle_event_fired_at: 25.minutes.ago)
     policy = get_policy
-    assert_match(/State:\*\* `latched`/, policy)
-    assert_match(/no clock running toward one/, policy)
+    assert_match(/State:\*\* `cooling_down`/, policy)
+    assert_match(/under its ceiling of 100 for 30 minutes/, policy)
+
+    AppSetting.editable.update!(fleet_idle_since: 2.minutes.ago, fleet_idle_event_fired_at: nil)
+    assert_match(/State:\*\* `inside_threshold`/, get_policy)
+  end
+
+  # UI/MCP parity on the clock the card renders, and on what it means: the moment
+  # the fleet crossed BELOW its ceiling, not the last time a session started.
+  test "get_spot_policy reports the same idle clock the /inference card does" do
+    AppSetting.editable.update!(fleet_idle_max_sessions: 100, fleet_idle_event_fired_at: nil,
+                                fleet_idle_since: 2.minutes.ago)
+
+    policy = get_policy
+    assert_match(/Under its ceiling since:\*\* .*2 minutes ago/, policy)
+    assert_match(/the crossing below 100, not the last session start/, policy)
+
+    AppSetting.editable.update!(fleet_idle_since: nil)
+    assert_match(/Under its ceiling since:\*\* — \(the fleet is at or over its ceiling/, get_policy)
+
+    # A clock the sweep has not caught up with yet is a stretch that is already
+    # over, so neither surface reports it.
+    AppSetting.editable.update!(fleet_idle_max_sessions: 1, fleet_idle_since: 2.minutes.ago)
+    running = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+                              genesis: SessionGenesis::GITHUB_ISSUE, status: :running,
+                              session_id: "cli-#{SecureRandom.hex(4)}")
+    # On a worker, which is the only population the ceiling counts.
+    GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
+                         job_class: "AgentSessionJob",
+                         serialized_params: { "arguments" => [ running.id ] },
+                         scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
+    assert_match(/Under its ceiling since:\*\* — \(the fleet is at or over its ceiling/, get_policy)
   end
 
   test "promote_genesis reclassifies existing sessions" do

@@ -497,30 +497,34 @@ module SessionStateMachine
       end
     end
 
-    # Re-arm the `no_sessions_in_progress` system event: the fleet is demonstrably
-    # not idle.
+    # Tell FleetIdleMonitor a session started, so it can end the fleet's idle
+    # stretch if this is the start that took it back to its ceiling.
     #
     # An after_commit on the status column rather than a hook on `start`, because
-    # the fact FleetIdleMonitor needs is "a session is running", and every path
-    # that produces it has to count — `start`, an elicitation unblocking, a
-    # session created directly in `running`. Missing one would leave the latch
-    # spent against a fleet that had gone back to work. (`resume` used to be one
-    # of those paths; since #1040 it lands in `waiting` and the worker's `start`
-    # is what re-arms.)
+    # the fact FleetIdleMonitor needs is "a session entered `running`", and every
+    # path that produces it has to count — `start`, an elicitation unblocking, a
+    # session created directly in `running`. Missing one would leave a stretch
+    # running through a moment the fleet was full. (`resume` used to be one of
+    # those paths; since #1040 it lands in `waiting` and the worker's `start` is
+    # what reports.)
+    #
+    # The monitor, not this hook, decides what the start MEANS: it asks the
+    # ceiling before clearing anything, so a session starting on a fleet that
+    # stays under its ceiling leaves the clock exactly where it was.
     #
     # It does NOT cover `update_column`/`update_all`, which skip callbacks; no
-    # caller writes `status` that way, and the sweep re-arms on its next tick
-    # regardless, so the hook is the fast path rather than the only one.
+    # caller writes `status` that way, and the sweep takes its own reading on its
+    # next tick regardless, so the hook is the fast path rather than the only one.
     #
     # After the commit, so a transition is never slowed or rolled back by this
-    # bookkeeping; FleetIdleMonitor.record_busy! swallows its own failures for the
-    # same reason.
-    after_commit :rearm_fleet_idle_event, if: -> { saved_change_to_status? && running? }
+    # bookkeeping; FleetIdleMonitor.record_session_started! swallows its own
+    # failures for the same reason.
+    after_commit :report_start_to_fleet_idle_monitor, if: -> { saved_change_to_status? && running? }
   end
 
   # See the after_commit above.
-  def rearm_fleet_idle_event
-    FleetIdleMonitor.record_busy!
+  def report_start_to_fleet_idle_monitor
+    FleetIdleMonitor.record_session_started!
   end
 
   class_methods do

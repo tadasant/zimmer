@@ -88,9 +88,10 @@ class TriggerCondition < ApplicationRecord
   # sessions than its configured ceiling for the whole of its configured
   # stretch. Sessions merely `waiting` do not count, of any class — most of them
   # are asleep on their own wake rather than queueing for a slot. Idleness is a LEVEL rather than a transition, so that
-  # monitor latches the fire, re-arms only when the fleet reaches the ceiling
-  # again, and holds a cooldown under both — the event means "the fleet has room
-  # for more work", not "the fleet is quiet". See FleetIdleMonitor.
+  # monitor measures the stretch since the fleet crossed BELOW the ceiling —
+  # only reaching the ceiling again starts a new one — and paces repeat fires on
+  # a cooldown the fleet cannot touch. The event means "the fleet has room for
+  # more work", not "the fleet is quiet". See FleetIdleMonitor.
   SYSTEM_EVENT_NAMES = %w[quota_available no_sessions_in_progress].freeze
 
   GITHUB_CONDITION_TYPES = %w[github_label github_issue].freeze

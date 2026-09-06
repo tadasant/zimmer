@@ -83,10 +83,13 @@
 #      the moment between one session ending and the next starting from reading
 #      as an idle fleet. `fleet_idle_threshold_minutes` buys that directly and
 #      more honestly — the fleet has to stay under the ceiling CONTINUOUSLY for
-#      the whole stretch, and `record_busy!` restarts that clock unconditionally
-#      the moment any session enters `running`. A fleet that flaps therefore
-#      never accumulates a stretch, at any ceiling, and the dwell is what makes a
-#      count of running sessions alone safe to fire on.
+#      the whole stretch, and both the sweep and `record_session_started!` end
+#      the stretch the moment it is at or over the ceiling again. A fleet that
+#      flaps ACROSS ITS CEILING therefore never accumulates a stretch, and the
+#      dwell is what makes a count of running sessions alone safe to fire on.
+#      Churn well under the ceiling is not flapping and does not reset anything:
+#      a fleet of 4 with a ceiling of 12 has not stopped being quiet because a
+#      fifth session started.
 #
 #   2. Is any session parked on an auth outage, of EITHER class? A park is the
 #      clearest statement Zimmer makes that work exists and cannot run. This one
@@ -99,8 +102,8 @@
 #      QuotaAvailabilityMonitor persists. A pool with nothing to serve makes a
 #      quiet fleet a symptom rather than an opportunity, and the session this
 #      would spawn is PRIORITY — ungated, so it would start, find the empty pool
-#      and park, having re-armed the latch on its way through `running`. That is
-#      one wasted session per idle stretch for as long as the outage lasts.
+#      and park, having spent the cooldown on its way there. That is one wasted
+#      session per cooldown for as long as the outage lasts.
 #
 # Question 2 is the one that still reads `waiting`, and it is not a count of
 # queued work: a park is a specific mark AuthOutageParkService writes on a
@@ -108,7 +111,7 @@
 # is empty" are different facts, and only the second of them is a reason to keep
 # quiet.
 #
-# == Why a latch and not just a level
+# == Why a dwell and a cooldown, not just a level
 #
 # "The pool recovered" is naturally a transition, so QuotaAvailabilityMonitor can
 # read the level on each sweep and fire on false → true. "The fleet is under the
@@ -118,54 +121,70 @@
 # this class is built around, and it takes two columns rather than one:
 #
 #   fleet_idle_since          when the fleet was first OBSERVED under the
-#                             ceiling. The clock the threshold is measured
-#                             against. NULL means the fleet was at or over it at
-#                             the last observation.
+#                             ceiling — the CROSSING, not the last time anything
+#                             happened on it. The clock the threshold is measured
+#                             against. NULL means the fleet was at or over the
+#                             ceiling at the last observation.
 #   fleet_idle_event_fired_at when the event last fired, for as long as the row
-#                             lives. Two jobs: within one idle stretch it is the
-#                             LATCH (set means this stretch has fired), and
-#                             across stretches it is the COOLDOWN clock.
+#                             lives. The COOLDOWN clock, and nothing else.
 #
-# == Why a cooldown as well as a latch
+# The two answer different questions and neither substitutes for the other.
+# `fleet_idle_since` is the DWELL — has the fleet been quiet long enough to be
+# worth topping up, rather than merely between two sessions. `fired_at` is the
+# CADENCE — how often top-up may hand work out at all. A fire needs both.
 #
-# The latch alone is not enough, and the reason is circular in a way that is easy
-# to miss: the fire spawns a session, that session enters `running`, and running
-# is exactly what re-arms the latch. So on a deployment that is quiet for other
+# == Why the cadence is the cooldown alone
+#
+# The dwell cannot pace a fleet that stays quiet. Once a stretch is past the
+# threshold it STAYS past it, for hours, so the threshold answers "may this
+# stretch fire at all" and never "may it fire again". The cooldown is what
+# answers the second question and it is the only thing that does: on a fleet
+# permanently under its ceiling the cadence is exactly
+# `fleet_idle_min_fire_interval_minutes`. 60 minutes means at most 24 top-ups a
+# day whatever the ceiling is set to, so it is the interval an operator retunes
+# to change how often work gets started, not the ceiling.
+#
+# It has to be a clock the fleet cannot touch, for a reason that is circular and
+# easy to miss: the fire spawns a session, and that session is itself work on the
+# fleet. Anything that read the fleet's own response as evidence of a new stretch
+# would let the event re-qualify itself, and on a deployment quiet for other
 # reasons — an empty backlog, a gate that declines — the steady state would be
-# one spawned session every threshold plus however long it takes to finish,
-# indefinitely. The event's own answer would keep re-qualifying it.
+# one spawned session every threshold, indefinitely. The cooldown never consults
+# the fleet, so the fleet cannot talk it round. `fleet_idle_event_fired_at` is
+# therefore NOT cleared when the fleet gets work — only `fleet_idle_since` is —
+# and it survives as the last-fire timestamp across any number of stretches.
 #
-# `fleet_idle_min_fire_interval_minutes` is the floor under that.
-# `fleet_idle_event_fired_at` is therefore NOT cleared when the fleet gets work —
-# only `fleet_idle_since` is — so it survives as the last-fire timestamp. "Has
-# this stretch already fired" is then the comparison `fired_at >= idle_since`
-# rather than mere presence.
+# There was a third term here once, a LATCH: `fired_at >= idle_since`, meaning
+# "this stretch has already had its fire". It worked only because the state
+# machine hook reset `fleet_idle_since` on ANY session entering `running`, which
+# quietly made the column mean "when a session last started" rather than the
+# ceiling crossing it is named for. That cost two things. /inference told an
+# operator the fleet had "been under its ceiling of 12 for 1 minute" when it had
+# been under 12 for hours; and top-up's real cadence became the gaps between
+# session starts, so a deployment with any steady trickle of them struggled to
+# accumulate a threshold at all. The clock now means what it says, and the latch
+# went with it — the cooldown was already the load-bearing half at any ceiling
+# above 1, and it is now the whole of it.
 #
-# **A ceiling above 1 makes the cooldown the load-bearing half of that pair.** At
-# a ceiling of 1 the fire's own session takes the fleet from zero running to one,
-# which ends the stretch outright and leaves the cooldown to matter only on the
-# next one. Above 1 the fleet is routinely still under the ceiling while that
-# session runs, so the stretch does not end on its own and the cooldown is the
-# only thing between the deployment and a fire per threshold. It is therefore the
-# real cap on top-up frequency: 60 minutes means at most 24 fires a day whatever
-# the ceiling is set to.
+# == Why the sweep is not the only observation
 #
-# == Why the sweep is not the only re-arm
+# Sampling alone would miss a fleet that reached its ceiling and came back down
+# inside one cron tick: the sweep would see under, under, under, and let a
+# stretch run straight through a moment the fleet was full. The state machine
+# hook is the positive evidence — the same role AuthOutageParkService plays for
+# the quota edge, where the park is the moment Zimmer KNOWS the pool is empty
+# rather than the moment it next happens to look.
 #
-# Sampling alone would miss a session that started and finished inside one cron
-# tick: the sweep would see idle, idle, idle and never re-arm, and the fleet
-# would look dead when it was working. The state machine hook is the positive
-# evidence — the same role AuthOutageParkService plays for the quota edge, where
-# the park is the moment Zimmer KNOWS the pool is empty rather than the moment it
-# next happens to look.
+# `record_session_started!` therefore asks the ceiling before it clears anything.
+# Entering `running` is not the same fact as the fleet being full, and treating
+# it as one is what made the clock mean the wrong thing.
 #
-# `record_busy!` clears the clock on ANY session entering `running`, without
-# consulting the ceiling, and that is deliberate. It is not a claim that the
-# fleet is too busy — it is what ends the current stretch so the cooldown gets to
-# run the cadence. A ceiling-aware version would leave
-# `fleet_idle_since` frozen behind `fleet_idle_event_fired_at` on a fleet that
-# never climbs above the ceiling, the latch would hold forever, and the event
-# would fire exactly once in the deployment's life.
+# The hook fails toward LEAVING THE CLOCK ALONE, which is the opposite direction
+# from `check!`'s fail-quiet and deliberately so: it can only ever start a
+# stretch too early, never fire anything. `check!` takes its own reading and
+# refuses to fire on a fleet at its ceiling, so a missed clear costs at most one
+# stretch that skipped part of its dwell — and the cooldown bounds that either
+# way.
 #
 # == Why this does not re-arm on an undelivered fire
 #
@@ -173,7 +192,7 @@
 # the sessions that edge exists to wake are still parked and waiting. Nothing is
 # waiting on this one: an idle fleet with no trigger listening is a deployment
 # that has not asked for idle-time work. Re-arming would turn that into one fire
-# per sweep for as long as the quiet lasts, which is the exact loop the latch
+# per sweep for as long as the quiet lasts, which is the exact loop the cooldown
 # exists to prevent. See SystemEventTriggerJob#rearm.
 #
 # == Fail quiet
@@ -206,9 +225,8 @@ class FleetIdleMonitor
       setting.fleet_idle_min_fire_interval_minutes.minutes
     end
 
-    # Observe the fleet now, advance the idle clock, and fire the event if this
-    # is the moment the clock crosses the threshold with the latch armed and the
-    # cooldown spent.
+    # Observe the fleet now, advance the idle clock, and fire the event if the
+    # stretch is past the threshold and the cooldown is spent.
     #
     # @return [Boolean] true when the event was fired
     def check!(logger: nil)
@@ -255,19 +273,20 @@ class FleetIdleMonitor
       idle_for = now - idle_since
       return false if idle_for < threshold
 
+      # The cooldown, and the only thing pacing a fleet that stays quiet: the
+      # stretch above is past its threshold and will stay past it for as long as
+      # the quiet lasts. See "Why the cadence is the cooldown alone".
       last_fired = setting.fleet_idle_event_fired_at
-      if last_fired.present?
-        # Already fired for THIS stretch — the latch. Only the fleet reaching its
-        # ceiling moves `fleet_idle_since` past it.
-        return false if last_fired >= idle_since
-        # A previous stretch fired too recently — the cooldown.
-        return false if now - last_fired < min_fire_interval(setting)
-      end
+      return false if last_fired.present? && now - last_fired < min_fire_interval(setting)
 
-      # A guarded write, so a `record_busy!` that lands between the read above
-      # and this line cannot be overwritten from a stale record. Losing the race
-      # means the fleet got work while we were deciding, which is precisely when
-      # the event must not fire.
+      # A guarded write, so a `record_session_started!` that lands between the
+      # read above and this line cannot be overwritten from a stale record.
+      # Losing the race means the fleet reached its ceiling while we were
+      # deciding, which is precisely when the event must not fire.
+      #
+      # `fleet_idle_since` is deliberately left where it is: the stretch did not
+      # end because the event fired, and moving it would put the lie the latch
+      # used to depend on straight back into the column.
       claimed = AppSetting
         .where(id: setting.id, fleet_idle_since: idle_since, fleet_idle_event_fired_at: last_fired)
         .update_all(fleet_idle_event_fired_at: now, updated_at: now)
@@ -287,26 +306,40 @@ class FleetIdleMonitor
       false
     end
 
-    # Re-arm on positive evidence: a session just entered `running`.
+    # End the idle stretch on positive evidence: a session just entered
+    # `running` and may have taken the fleet to its ceiling.
     #
     # Called from SessionStateMachine on every commit that lands a session in
     # `running`, which is both the earliest and the most certain moment to know
-    # the fleet has work. Without it a session that started and finished between
-    # two sweeps is invisible, and the event would stay latched against a fleet
-    # that has been working.
+    # the fleet has taken on more. Without it a fleet that filled up and emptied
+    # again between two sweeps would carry its stretch straight through the
+    # moment it was full.
     #
-    # Deliberately unconditional rather than ceiling-aware — see "Why the sweep
-    # is not the only re-arm". Ending the stretch is what hands the cadence to
-    # the cooldown.
+    # Ceiling-aware: `fleet_idle_since` is the moment the fleet crossed BELOW its
+    # ceiling, so only crossing back over it ends the stretch. A start that
+    # leaves the fleet under the ceiling is not a ceiling crossing and changes
+    # nothing. See "Why the sweep is not the only observation".
     #
     # Best-effort: a session that runs is still a session that runs, whatever
     # this bookkeeping does.
     #
     # @return [Boolean] true when the idle clock was actually cleared
-    def record_busy!
-      clear_idle_clock!(AppSetting.current)
+    def record_session_started!
+      setting = AppSetting.current
+      # Two free answers before the expensive one, because reading the fleet
+      # costs three queries and this runs on every session start. There is
+      # nothing to end when no stretch is running; and a ceiling the `agents`
+      # pool cannot reach is one `on_a_worker` can never meet, so the read below
+      # would ask a question whose answer is already known. The second guard is
+      # not a corner case — it is the shape of the deployment that reported this,
+      # where the clock runs for weeks at a time.
+      return false if setting.fleet_idle_since.nil?
+      return false if RunningTurns.ceiling_out_of_reach?(max_sessions(setting))
+      return false if running_turns.on_a_worker < max_sessions(setting)
+
+      clear_idle_clock!(setting)
     rescue => e
-      Rails.logger.info "[FleetIdleMonitor] Could not record the fleet as busy: #{e.message}"
+      Rails.logger.info "[FleetIdleMonitor] Could not record the session start: #{e.message}"
       false
     end
 
@@ -403,12 +436,12 @@ class FleetIdleMonitor
       QuotaAvailabilityMonitor.pool_available?(ClaudeAuthProvider::RUNTIME) != false
     end
 
-    # Put the idle clock back to "the fleet has work", writing only when there is
-    # something to clear — this runs on every session start.
+    # Put the idle clock back to "the fleet is at its ceiling", writing only when
+    # there is something to clear.
     #
     # `fleet_idle_event_fired_at` is deliberately left alone: it is the cooldown
-    # clock as well as the latch, and clearing it here is what would let the
-    # event's own session re-qualify it. See "Why a cooldown as well as a latch".
+    # clock, and clearing it here is what would let the event's own session
+    # re-qualify it. See "Why the cadence is the cooldown alone".
     def clear_idle_clock!(setting)
       return false if setting.fleet_idle_since.nil?
 

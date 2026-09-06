@@ -251,14 +251,18 @@ module Mcp
           "any class, and neither does a turn QUEUED for a worker or a session asleep on its own future " \
           "wake; 1 would mean nothing running. A different count from the Claude-Code-only one the " \
           "concurrency limit above uses)#{worker_pool_note(status.max_sessions)}",
-          "- **For at least:** #{status.threshold.inspect}",
+          "- **For at least:** #{status.threshold.inspect} (measured from the moment the fleet dropped " \
+          "BELOW the ceiling; only reaching the ceiling again restarts it, so sessions starting and " \
+          "finishing underneath it change nothing)",
           "- **At most once every:** #{status.min_fire_interval.inspect} " \
-          "(#{status.cadence_phrase} — with a ceiling above 1 this, not the ceiling, is what caps how " \
-          "often work gets started)",
+          "(#{status.cadence_phrase} — on a fleet that stays under its ceiling this, not the ceiling, is " \
+          "the whole of the cadence: the stretch runs on through a fire, so only the cooldown decides " \
+          "when the next one is allowed)",
           "- **Turns on a worker (any runtime):** #{status.running_sessions} of #{status.max_sessions} " \
           "(#{turns_split(status)}#{status.headroom} #{"place".pluralize(status.headroom)} of headroom; " \
           "one fire hands out one session, so filling it takes that many cooldowns)",
           "- **State:** `#{status.state}` — #{status.sentence}",
+          "- **Under its ceiling since:** #{under_ceiling_since_phrase(status)}",
           "- **Next fire, at the earliest:** #{next_fire_phrase(status)}",
           "- **Last fired:** #{status.last_fired_at ? "#{status.last_fired_at.utc.iso8601} (#{ago(status.last_fired_at)})" : "never"}"
         ]
@@ -291,6 +295,19 @@ module Mcp
 
         " — NOTE: the `agents` pool runs #{RunningTurns.worker_slots} turns at once, so this number " \
           "cannot be reached and #{RunningTurns.effective_ceiling(configured)} is the effective ceiling"
+      end
+
+      # The clock the threshold is measured against, and the one the card renders
+      # beside the same sentence. It is the moment the fleet crossed BELOW its
+      # ceiling — not the last time a session started, which is what it used to
+      # be and what made both surfaces claim a stretch far shorter than the real
+      # one.
+      def under_ceiling_since_phrase(status)
+        since = status.under_ceiling_since
+        return "— (the fleet is at or over its ceiling, so no stretch is running)" if since.nil?
+
+        "#{since.utc.iso8601} (#{ago(since)}) — the crossing below #{status.max_sessions}, not the " \
+          "last session start"
       end
 
       def next_fire_phrase(status)

@@ -3,8 +3,8 @@
 require "test_helper"
 
 # The reading /inference and `get_spot_policy` both render. What it exists to
-# pin is that the four ways "it has not fired" can be true are told apart, since
-# they look identical from outside and clear four different ways.
+# pin is that the ways "it has not fired" can be true are told apart, since they
+# look identical from outside and clear differently.
 class FleetTopUpStatusTest < ActiveSupport::TestCase
   include ActiveSupport::Testing::TimeHelpers
 
@@ -127,10 +127,10 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
     assert_equal (now + 5.minutes).to_i, s.next_fire_at.to_i
   end
 
-  # The state the fleet spends most of an hour in after every fire: `record_busy!`
-  # clears `fleet_idle_since` when the spawned session runs, but deliberately
-  # leaves the cooldown clock alone. Answering "the threshold" here would
-  # under-report the next fire by up to 55 minutes.
+  # `clock_not_started` is the tick between the fleet dropping below its ceiling
+  # and the sweep noticing, so it can carry an unspent cooldown from an earlier
+  # stretch. Answering "the threshold" there would under-report the next fire by
+  # up to 55 minutes.
   test "with no clock started but an unspent cooldown, the cooldown is the answer" do
     now = Time.current
     @setting.update!(fleet_idle_since: nil, fleet_idle_event_fired_at: now - 5.minutes)
@@ -161,21 +161,25 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
     assert_equal (now + 3.minutes).to_i, s.next_fire_at.to_i
   end
 
-  # The latch: this stretch has had its fire, and only the fleet reaching its
-  # ceiling again starts another.
-  test "a stretch that already fired is latched, with no clock running" do
+  # THE BUG THE CARD REPORTED. A stretch that fired 25 minutes ago is still the
+  # SAME stretch — the fire does not end it and neither does a session starting
+  # under the ceiling — so the card names its real length and the cooldown, not a
+  # latch that would have claimed no clock was running at all.
+  test "a stretch that already fired keeps its own clock and waits out the cooldown" do
     now = Time.current
     @setting.update!(fleet_idle_since: now - 30.minutes, fleet_idle_event_fired_at: now - 25.minutes)
     s = status(running: 0, now: now)
 
-    assert_equal :latched, s.state
-    assert_nil s.next_fire_at
+    assert_equal :cooling_down, s.state
+    assert_equal (now + 35.minutes).to_i, s.next_fire_at.to_i
+    assert_match(/under its ceiling of 3 for 30 minutes/, s.sentence)
+    assert_match(/35 minutes left/, s.sentence)
   end
 
-  # The cooldown: a NEW stretch, past its threshold, held only by the floor
-  # between two fires. This is the state a fleet under a ceiling above 1 spends
-  # most of its time in.
-  test "a new stretch past the threshold waits out the cooldown" do
+  # The cooldown on a stretch that has not fired inside it: past its threshold,
+  # held only by the floor between two fires. This is the state a fleet under a
+  # ceiling above 1 spends most of its time in.
+  test "a stretch past the threshold waits out the cooldown" do
     now = Time.current
     @setting.update!(fleet_idle_since: now - 10.minutes, fleet_idle_event_fired_at: now - 20.minutes)
     s = status(running: 1, now: now)
@@ -215,6 +219,23 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
     assert_equal "at most once every 2 days", s.cadence_phrase
   end
 
+  # The window between the fleet reaching its ceiling and the sweep observing it.
+  # The stored clock is a stretch that is already over, and both surfaces would
+  # otherwise print "under its ceiling since 3 hours ago" beside a badge reading
+  # "at its work ceiling".
+  test "the clock is not reported while the fleet is at its ceiling" do
+    now = Time.current
+    @setting.update!(fleet_idle_since: now - 3.hours, fleet_idle_event_fired_at: nil)
+
+    over = status(running: 3, now: now)
+    assert_equal :at_ceiling, over.state
+    assert_nil over.under_ceiling_since, "the stored value is a stretch that has ended"
+    assert_equal (now - 3.hours).to_i, over.idle_since.to_i, "the raw column is still readable"
+
+    under = status(running: 2, now: now)
+    assert_equal (now - 3.hours).to_i, under.under_ceiling_since.to_i
+  end
+
   test "headroom is the room left under the ceiling, floored at zero" do
     assert_equal 3, status(running: 0).headroom
     assert_equal 1, status(running: 2).headroom
@@ -235,9 +256,6 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
         [ state, status(running: 0, now: now) ]
       when :inside_threshold
         @setting.update!(fleet_idle_since: now - 1.minute, fleet_idle_event_fired_at: nil)
-        [ state, status(running: 0, now: now) ]
-      when :latched
-        @setting.update!(fleet_idle_since: now - 30.minutes, fleet_idle_event_fired_at: now - 25.minutes)
         [ state, status(running: 0, now: now) ]
       when :cooling_down
         @setting.update!(fleet_idle_since: now - 10.minutes, fleet_idle_event_fired_at: now - 20.minutes)

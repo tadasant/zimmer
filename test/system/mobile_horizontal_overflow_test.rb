@@ -915,6 +915,9 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # blocks on it that have to collapse below `sm`.
     assert_selector "#fleet-top-up-status"
     assert_selector "#fleet-top-up-next-fire"
+    # The clock cell, which carries a two-line explanation under its value — the
+    # tallest and narrowest cell in the four-up reading row.
+    assert_selector "#fleet-top-up-idle-since"
     # The two notes, on screen while the geometry is measured.
     assert_selector "#spot-cap-above-worker-pool"
     assert_selector "#fleet-top-up-ceiling-above-worker-pool"
