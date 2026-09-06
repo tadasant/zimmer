@@ -597,7 +597,9 @@ session, not by path.
 ## Giving a clone its gems
 
 `BundleInstallJob` runs on `maintenance` right after a clone is created, so an agent can start
-reading and editing while the gems land. Two properties of it are load-bearing, and both come from
+reading and editing while the gems land — but only for a clone that actually needs an install. The
+case where it does not is settled inline, before the agent process exists; see **Most clones never
+install anything** below. Two properties of the job itself are load-bearing, and both come from
 [#410](https://github.com/tadasant/zimmer/issues/410).
 
 **The clone is never pinned to a bundle that is not there.** Bundler reads `<clone>/.bundle/config`,
@@ -629,6 +631,18 @@ if the lockfile differs, if the configured path is relative or missing, or if `b
 — the proof is not optional, because a clone pointed at a bundle that does not satisfy it would
 reproduce the exact failure above. The one cost is in
 [Limitations](/limitations/#a-clone-sharing-the-images-bundle-cannot-install-a-gem-into-it).
+
+Because that path does no work, it does not wait for a queue either. `AgentSessionJob` calls
+`BundleInstallJob.adopt_image_bundle_now` while it is setting the clone up, and enqueues the job only
+when the answer is "this clone needs gems of its own". The queue was the whole of
+[#592](https://github.com/tadasant/zimmer/issues/592): `CliSpawnEnv` strips every `BUNDLE_*` and
+`GEM_*` from the agent's environment on purpose, so `.bundle/config` is the *only* thing telling a
+clone where its gems are — and a clone waiting its turn on `maintenance` does not have one yet. For
+the length of that wait every `bin/rails` in it died with `Bundler::GemNotFound` listing gems that
+were sitting in the image, over exactly the opening turns where an agent would run a test. Inline,
+the decision costs a byte comparison of two `Gemfile`s and one `bundle check` — about 0.7s on the
+production droplet — and a clone of a repo that is not this one fails the byte comparison without
+spawning anything. The method never raises: a spawn is not worth failing over a bundle.
 
 ## Noticing when a live session has lost its working tree
 

@@ -34,6 +34,12 @@
 # Zimmer's own repo at a commit that has not touched the Gemfile resolves straight out of
 # the image's `/usr/local/bundle`, which already holds every gem in the lockfile including
 # the development/test groups. No download, no `vendor/bundle`, no window.
+#
+# Which is why that path does not go through the queue at all. `AgentSessionJob` calls
+# `.adopt_image_bundle_now` inline while it is setting the clone up, and only enqueues this
+# job when the answer is "this clone needs gems of its own" — because the queue *is* the
+# window (zimmer#592): a clone waiting its turn on `:maintenance` has no `.bundle/config`,
+# and a clone with no `.bundle/config` cannot run `bin/rails` at all.
 class BundleInstallJob < ApplicationJob
   include DatabaseRetry
 
@@ -123,14 +129,72 @@ class BundleInstallJob < ApplicationJob
     @working_directory = working_directory
     return unless File.exist?(gemfile_path)
 
-    # A config left behind by an earlier attempt (or by this job before #410) can name a
-    # bundle that is not there, and it would win over every BUNDLE_PATH set below. Clear
-    # that first, so the rest of the job is deciding rather than arguing with a stale file.
-    discard_unusable_bundle_config
-
-    return if adopt_image_bundle
+    if (bundle_path = adopt_image_bundle_for(working_directory))
+      log_to_session(
+        "Bundle ready: this clone's Gemfile.lock matches the image, so it resolves gems " \
+        "from #{bundle_path} instead of installing its own copy",
+        level: "info"
+      )
+      return
+    end
 
     install_into_vendor_bundle
+  end
+
+  # The fast path on its own, without the install behind it.
+  #
+  # Public because session spawn calls it directly, through `.adopt_image_bundle_now`; the
+  # queued `perform` above takes the same route so there is only one of it.
+  #
+  # @param working_directory [String] the clone (or subdirectory) holding the Gemfile
+  # @return [String, nil] the bundle path written into `.bundle/config`, or nil when the
+  #   clone needs a bundle of its own
+  def adopt_image_bundle_for(working_directory)
+    @working_directory = working_directory
+    return nil unless File.file?(gemfile_path)
+
+    # A config left behind by an earlier attempt (or by this job before #410) can name a
+    # bundle that is not there, and it would win over every BUNDLE_PATH set below. Clear
+    # that first, so the rest of the decision is made against a clone that is not arguing
+    # with a stale file.
+    discard_unusable_bundle_config
+
+    adopt_image_bundle
+  end
+
+  # Take the fast path now, in the caller's thread, rather than on the maintenance queue.
+  #
+  # `perform_later` is the right home for an *install* and the wrong one for this. Until
+  # the queue picks the job up, a fresh clone has no `.bundle/config` at all — and with
+  # `CliSpawnEnv` stripping `BUNDLE_*` and `GEM_*` from the agent's environment (which it
+  # does deliberately, so a clone resolves its own gems rather than Zimmer's), that config
+  # is the only thing telling the clone where its gems are. For the whole of that window
+  # every `bin/rails` in the clone dies with `Bundler::GemNotFound` listing gems that are
+  # sitting in the image, which is the whole of zimmer#592: the agent's first turns are
+  # exactly when it would run a test, and exactly when it cannot.
+  #
+  # Nothing about the fast path wants a queue. It is a byte comparison of two Gemfiles and
+  # one `bundle check` — no download, no writes outside `.bundle/` — so session spawn takes
+  # it inline, before the agent process exists, and a clone of this repo at a commit that
+  # has not touched the Gemfile is ready on the agent's very first turn. A clone of any
+  # other repo fails the byte comparison and never reaches the subprocess.
+  #
+  # Only ever the fast path: an install is unbounded and stays in the background. This
+  # returns nil for that case and the caller enqueues the job as before.
+  #
+  # Never raises. It runs inside session spawn, where a clone that has to wait for its gems
+  # is a slow session and an exception is a failed one.
+  #
+  # @param working_directory [String] the clone (or subdirectory) holding the Gemfile
+  # @return [String, nil] the bundle path the clone was pinned to, or nil if it needs an install
+  def self.adopt_image_bundle_now(working_directory)
+    new.adopt_image_bundle_for(working_directory)
+  rescue StandardError => e
+    Rails.logger.warn(
+      "[BundleInstallJob] inline fast path unavailable for #{working_directory}: " \
+      "#{e.class}: #{e.message}"
+    )
+    nil
   end
 
   private
@@ -154,14 +218,14 @@ class BundleInstallJob < ApplicationJob
   # clone's config at a bundle that does not in fact satisfy it reproduces the exact
   # symptom being fixed. So it is never taken on the strength of the lockfile comparison
   # alone: `bundle check` has to pass against that bundle first, and only then is the
-  # config written. Every reason to bail returns false and falls through to a normal
+  # config written. Every reason to bail returns nil and falls through to a normal
   # install.
   #
-  # @return [Boolean] true if the clone was pointed at the image bundle
+  # @return [String, nil] the bundle path the clone was pointed at, or nil
   def adopt_image_bundle
     bundle_path = image_bundle_path
-    return false if bundle_path.blank?
-    return false unless lockfile_matches_image?
+    return nil if bundle_path.blank?
+    return nil unless lockfile_matches_image?
 
     # Reaching here means the clone is byte-identical to the image and the shared bundle
     # still ought to satisfy it. If it does not — a Gemfile group the image was built
@@ -173,16 +237,11 @@ class BundleInstallJob < ApplicationJob
         "[BundleInstallJob] #{bundle_path} no longer satisfies an identical Gemfile; " \
         "falling back to a per-clone vendor/bundle"
       )
-      return false
+      return nil
     end
 
     write_bundle_config(bundle_path)
-    log_to_session(
-      "Bundle ready: this clone's Gemfile.lock matches the image, so it resolves gems " \
-      "from #{bundle_path} instead of installing its own copy",
-      level: "info"
-    )
-    true
+    bundle_path
   end
 
   # Where the running app's own gems live, as a value that can be *assigned to*
