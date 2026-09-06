@@ -13,8 +13,13 @@
 # into hashes and REPLACES arrays. Rendering it here rather than reimplementing it
 # means these tests track the installed Kamal rather than an assumption about it.
 #
-# Test files that use this must `require "kamal"` themselves -- a require in a support
-# file is loaded for every run in the whole suite, and hides its own absence elsewhere.
+# The Kamal gem is `require: false` in the Gemfile and is NOT required at the top of this
+# file: every file under test/support is loaded on every run, so a require here would be a
+# suite-wide one that hides its own absence in the test files that actually depend on it
+# (zimmer#874). Consuming test files declare `require "kamal"` themselves. The lazy require
+# below is what makes a file that forgets to behave the same run on its own as it does in
+# the full suite -- which is the property that rule protects -- without loading the gem for
+# the runs that never touch a deploy config.
 module KamalConfigHelpers
   # Discovered rather than listed, so a new destination is covered the moment its file
   # exists. `config/deploy.yml` is the shared base and has no `.<dest>.` segment, so the
@@ -35,6 +40,8 @@ module KamalConfigHelpers
   # `nested_docker` is passed through to ZIMMER_NESTED_DOCKER; nil leaves it unset, so
   # each destination's own default applies.
   def kamal_config(destination, nested_docker: nil)
+    require "kamal"
+
     with_kamal_render_env("ZIMMER_NESTED_DOCKER" => nested_docker) do
       Kamal::Configuration.create_from(
         config_file: Rails.root.join("config/deploy.yml"),

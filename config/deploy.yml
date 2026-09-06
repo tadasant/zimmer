@@ -77,7 +77,7 @@ servers:
       init: true
       # Durable named volumes shared by web + worker so both see the same clones,
       # runtime credentials, and gh auth. They survive Kamal container swaps (the
-      # whole point of a persistent host) -- state is no longer lost on every deploy.
+      # whole point of a persistent host), so a deploy does not cost the state on them.
       #
       # Every runtime home is here: ~/.claude for Claude Code, CODEX_HOME (~/.codex)
       # for Codex rollouts, auth.json, and the thread store. A runtime home left on
