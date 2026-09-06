@@ -637,9 +637,9 @@ class SessionTest < ActiveSupport::TestCase
   # Test agent_root_key method
   test "agent_root_key returns the key stored in metadata" do
     session = sessions(:running)
-    session.update!(metadata: (session.metadata || {}).merge("agent_root_key" => "agent-orchestrator"))
+    session.update!(metadata: (session.metadata || {}).merge("agent_root_key" => "general-agent"))
 
-    assert_equal "agent-orchestrator", session.agent_root_key
+    assert_equal "general-agent", session.agent_root_key
   end
 
   test "agent_root_key returns nil when session cannot be resolved to a catalog entry" do

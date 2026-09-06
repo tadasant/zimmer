@@ -3651,7 +3651,7 @@ class TriggerTest < ActiveSupport::TestCase
     Trigger.create!(
       name: "Wake me when session #{session.id} needs input",
       status: "enabled",
-      agent_root_name: "agent-orchestrator",
+      agent_root_name: "zimmer",
       prompt_template: "The watched session transitioned.",
       reuse_session: true,
       last_session_id: session.id,
@@ -3757,7 +3757,7 @@ class TriggerTest < ActiveSupport::TestCase
     trigger = Trigger.create!(
       name: "One-time reuse trigger with servers",
       status: "enabled",
-      agent_root_name: "agent-orchestrator",
+      agent_root_name: "zimmer",
       prompt_template: "go",
       reuse_session: true,
       last_session_id: session.id,

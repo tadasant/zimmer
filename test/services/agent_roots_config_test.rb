@@ -3,6 +3,11 @@
 require "test_helper"
 
 class AgentRootsConfigTest < ActiveSupport::TestCase
+  # The repositories a shipped root is allowed to point at. See the reachability
+  # test near the bottom of this file for why the list is an allowlist rather
+  # than a live check.
+  CLONABLE_ROOT_URLS = [ "https://github.com/tadasant/zimmer.git" ].freeze
+
   test "loads agent roots from config file" do
     agent_roots = AgentRootsConfig.all
 
@@ -12,10 +17,10 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
   end
 
   test "finds agent root by name" do
-    agent_root = AgentRootsConfig.find("agent-orchestrator")
+    agent_root = AgentRootsConfig.find("zimmer")
 
     assert_not_nil agent_root
-    assert_equal "agent-orchestrator", agent_root.name
+    assert_equal "zimmer", agent_root.name
     assert_equal "Zimmer", agent_root.display_name
   end
 
@@ -26,10 +31,10 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
   end
 
   test "finds agent root by name with bang" do
-    agent_root = AgentRootsConfig.find!("agent-orchestrator")
+    agent_root = AgentRootsConfig.find!("zimmer")
 
     assert_not_nil agent_root
-    assert_equal "agent-orchestrator", agent_root.name
+    assert_equal "zimmer", agent_root.name
   end
 
   test "raises error for non-existent agent root with bang" do
@@ -65,6 +70,41 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
       "the router root's names must share url/branch/subdirectory, or the alias is a different root"
     assert roots.none?(&:user_invocable?),
       "the router root is dispatched by the quick router, not picked from the new-session form"
+  end
+
+  # Two roots carrying the same display_name are one row in the new-session
+  # picker, twice: the form shows display_name, so the human picking one has no
+  # way to tell which they got. `agent-orchestrator` shipped as a second root
+  # named "Zimmer" for months on exactly that basis
+  # ([#67](https://github.com/tadasant/zimmer/issues/67)).
+  test "no two shipped roots share a display_name" do
+    by_display_name = AgentRootsConfig.all.group_by(&:display_name)
+    collisions = by_display_name.select { |_display_name, roots| roots.size > 1 }
+
+    assert_empty collisions.keys,
+      "these display names are carried by more than one root, which makes them indistinguishable " \
+      "in the new-session picker:\n  " +
+      collisions.map { |display_name, roots| "#{display_name.inspect} <- #{roots.map(&:name).join(', ')}" }.join("\n  ")
+  end
+
+  # A root whose `url` names a repository the session cannot clone fails at
+  # GitCloneService.create_clone and nowhere earlier -- nothing validates the URL
+  # at resolve time, so a dead entry sits in the picker looking exactly like a
+  # live one. Seven did ([#67](https://github.com/tadasant/zimmer/issues/67)),
+  # all pointing at `tadasant/zimmer-catalog`, which does not exist.
+  #
+  # CI has no network to prove reachability with, so this pins the weaker
+  # property that would have caught it: Zimmer's catalog is self-contained, so
+  # every root it ships is a root on Zimmer's own repo. A root somewhere else is
+  # not forbidden -- it just has to be named here deliberately, by someone who
+  # has checked it clones.
+  test "every shipped root points at a repository this catalog vouches for" do
+    stray = AgentRootsConfig.all.reject { |root| CLONABLE_ROOT_URLS.include?(root.url) }
+
+    assert_empty stray.map(&:name),
+      "these roots point outside #{CLONABLE_ROOT_URLS.join(', ')}:\n  " +
+      stray.map { |root| "#{root.name} -> #{root.url}" }.join("\n  ") +
+      "\nA session picking one clones that URL. Confirm it resolves, then add it to CLONABLE_ROOT_URLS."
   end
 
   # The Rails change and the catalog change are independent PRs against
@@ -112,44 +152,57 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
     assert names.is_a?(Array)
     assert names.size > 0
     assert names.all? { |name| name.is_a?(String) }
-    assert_includes names, "agents"
+    assert_includes names, "zimmer"
   end
 
   test "checks if agent root exists" do
-    assert AgentRootsConfig.exists?("agents")
+    assert AgentRootsConfig.exists?("zimmer")
     refute AgentRootsConfig.exists?("non-existent")
   end
 
   test "agent root has correct attributes" do
-    agent_root = AgentRootsConfig.find("agent-orchestrator")
+    agent_root = AgentRootsConfig.find("zimmer")
 
-    assert_equal "agent-orchestrator", agent_root.name
+    assert_equal "zimmer", agent_root.name
     assert_equal "Zimmer", agent_root.display_name
     assert agent_root.description.present?
-    assert_equal "https://github.com/tadasant/zimmer-catalog.git", agent_root.url
+    assert_equal "https://github.com/tadasant/zimmer.git", agent_root.url
     assert_equal "main", agent_root.default_branch
-    assert_equal "agents/agent-orchestrator", agent_root.subdirectory
+    assert_nil agent_root.subdirectory
+  end
+
+  # Every root the catalog ships today lives at its repo root, so `subdirectory`
+  # has no live example to read it off. It is still a supported field — sessions
+  # clone into it and AgentRootsConfig#find_for_session matches on it — so it is
+  # covered by direct construction rather than left unread.
+  test "subdirectory is read from the catalog entry when present" do
+    agent_root = AgentRootsConfig::AgentRoot.new(
+      "scoped", { "url" => "https://github.com/example/monorepo.git", "subdirectory" => "packages/web" }
+    )
+
+    assert_equal "packages/web", agent_root.subdirectory
+    assert_equal "packages/web", agent_root.to_h[:subdirectory]
   end
 
   test "agent root converts to hash" do
-    agent_root = AgentRootsConfig.find("agent-orchestrator")
+    agent_root = AgentRootsConfig.find("zimmer")
     hash = agent_root.to_h
 
-    assert_equal "agent-orchestrator", hash[:name]
+    assert_equal "zimmer", hash[:name]
     assert_equal "Zimmer", hash[:display_name]
     assert hash[:description].present?
-    assert_equal "https://github.com/tadasant/zimmer-catalog.git", hash[:url]
+    assert_equal "https://github.com/tadasant/zimmer.git", hash[:url]
     assert_equal "main", hash[:default_branch]
-    assert_equal "agents/agent-orchestrator", hash[:subdirectory]
+    assert_nil hash[:subdirectory]
     assert_equal false, hash[:custom]
     assert_equal false, hash[:default]
   end
 
   test "agent root converts to json" do
-    agent_root = AgentRootsConfig.find("agent-orchestrator")
+    agent_root = AgentRootsConfig.find("zimmer")
     json = JSON.parse(agent_root.to_json)
 
-    assert_equal "agent-orchestrator", json["name"]
+    assert_equal "zimmer", json["name"]
     assert_equal "Zimmer", json["display_name"]
   end
 
@@ -202,8 +255,10 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
     refute user_invocable_roots.any? { |r| r.name == "catalog-mgmt-proctor" }, "subagent should not be included"
   end
 
+  # Every catalog root states `user_invocable` explicitly, so the absent-key
+  # default has no live example. Construct directly to pin the `fetch(..., true)`.
   test "user_invocable defaults to true" do
-    agent_root = AgentRootsConfig.find("agent-orchestrator")
+    agent_root = AgentRootsConfig::AgentRoot.new("unstated", { "url" => "https://github.com/example/repo.git" })
 
     assert agent_root.user_invocable?
   end
@@ -216,7 +271,7 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
   end
 
   test "user_invocable is included in to_h" do
-    agent_root = AgentRootsConfig.find("agent-orchestrator")
+    agent_root = AgentRootsConfig.find("zimmer")
     hash = agent_root.to_h
 
     assert_includes hash.keys, :user_invocable
@@ -244,7 +299,7 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
   end
 
   test "default_model defaults to opus when not specified" do
-    agent_root = AgentRootsConfig.find("agent-orchestrator")
+    agent_root = AgentRootsConfig.find("zimmer")
 
     assert_equal "opus", agent_root.default_model
   end
@@ -390,26 +445,30 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
 
   test "find_for_session matches by agent_root_key in metadata" do
     session = sessions(:active_session)
-    session.update!(metadata: (session.metadata || {}).merge("agent_root_key" => "agent-orchestrator"))
+    session.update!(metadata: (session.metadata || {}).merge("agent_root_key" => "catalog-management"))
 
     result = AgentRootsConfig.find_for_session(session)
 
     assert_not_nil result
-    assert_equal "agent-orchestrator", result.name
+    assert_equal "catalog-management", result.name
   end
 
   test "find_for_session falls back to url and subdirectory match" do
     session = sessions(:active_session)
     session.update!(
-      git_root: "https://github.com/tadasant/zimmer-catalog.git",
-      subdirectory: "agents/agent-orchestrator",
+      git_root: "https://github.com/tadasant/zimmer.git",
+      subdirectory: nil,
       metadata: {}
     )
 
     result = AgentRootsConfig.find_for_session(session)
 
     assert_not_nil result
-    assert_equal "agent-orchestrator", result.name
+    # Several roots share that URL with no subdirectory, and the fallback is a
+    # first-match: it recovers *a* root for a legacy row that never stored an
+    # agent_root_key, which is all it promises. Rows created through
+    # `create_from_agent_root!` carry the key and never reach here.
+    assert_equal "zimmer", result.name
   end
 
   test "find_for_session returns nil when no match" do
@@ -453,19 +512,19 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
   end
 
   test "default_subagent_roots is empty for roots without subagents" do
-    agent_root = AgentRootsConfig.find("agent-orchestrator")
+    agent_root = AgentRootsConfig.find("zimmer")
 
     assert_equal [], agent_root.default_subagent_roots
   end
 
   test "default_plugins defaults to empty array when not specified" do
-    agent_root = AgentRootsConfig.find("agents")
+    agent_root = AgentRootsConfig.find("general-agent")
 
     assert_equal [], agent_root.default_plugins
   end
 
   test "default_plugins reflects the catalog when specified" do
-    agent_root = AgentRootsConfig.find("agent-orchestrator")
+    agent_root = AgentRootsConfig.find("zimmer")
 
     # Resolved membership is an unordered set — AgentRootsConfig loads it straight
     # into an attribute with no order logic, and `air resolve` derives ordering from
@@ -474,7 +533,7 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
   end
 
   test "default_plugins is included in to_h" do
-    agent_root = AgentRootsConfig.find("agent-orchestrator")
+    agent_root = AgentRootsConfig.find("zimmer")
     hash = agent_root.to_h
 
     assert_includes hash.keys, :default_plugins

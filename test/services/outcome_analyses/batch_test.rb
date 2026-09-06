@@ -62,7 +62,7 @@ class OutcomeAnalyses::BatchTest < ActiveSupport::TestCase
 
   test "refuses to start when nothing matches" do
     assert_raises(OutcomeAnalyses::StartBatch::NothingToAnalyze) do
-      OutcomeAnalyses::StartBatch.call(filters: filters(agent_root: "agent-orchestrator"), concurrency: 1)
+      OutcomeAnalyses::StartBatch.call(filters: filters(agent_root: "fleet-maintenance"), concurrency: 1)
     end
   end
 

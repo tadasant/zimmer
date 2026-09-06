@@ -738,12 +738,12 @@ class SessionsTest < ApplicationSystemTestCase
     visit new_session_url
 
     # Find agent roots that share the same URL (monorepo)
-    # e.g., agent-orchestrator and general-agent both use https://github.com/tadasant/zimmer-catalog.git
-    agents_url = "https://github.com/tadasant/zimmer-catalog.git"
+    # e.g., zimmer and general-agent both use https://github.com/tadasant/zimmer.git
+    agents_url = "https://github.com/tadasant/zimmer.git"
     roots_sharing_url = AgentRootsConfig.user_invocable.select { |r| r.url == agents_url }
 
     if roots_sharing_url.size >= 2
-      # Example: agent-orchestrator has goal, general-agent doesn't
+      # Example: zimmer has a default_goal, general-agent doesn't
       root_with = roots_sharing_url.find { |r| r.default_goal.present? }
       root_without = roots_sharing_url.find { |r| r.default_goal.blank? }
 

@@ -10,8 +10,8 @@ class OutcomeAnalyses::StatsTest < ActiveSupport::TestCase
     # overall but carries failed segments; codex has an abandoned transcript.
     analyze(runtime: "claude_code", model: "opus", root: "zimmer", outcome: "Success", failures: 2, successes: 3)
     analyze(runtime: "claude_code", model: "opus", root: "zimmer", outcome: "Success", failures: 1, successes: 4)
-    analyze(runtime: "codex", model: "gpt-5.6-terra", root: "agents", outcome: "Failure", failures: 6, successes: 1)
-    analyze(runtime: "codex", model: "gpt-5.6-terra", root: "agents", outcome: "Success", failures: 0, successes: 2)
+    analyze(runtime: "codex", model: "gpt-5.6-terra", root: "catalog-management", outcome: "Failure", failures: 6, successes: 1)
+    analyze(runtime: "codex", model: "gpt-5.6-terra", root: "catalog-management", outcome: "Success", failures: 0, successes: 2)
   end
 
   def analyze(runtime:, model:, root:, outcome:, failures:, successes:, created_at: 2.days.ago)
@@ -67,7 +67,7 @@ class OutcomeAnalyses::StatsTest < ActiveSupport::TestCase
 
   test "groups by model and by agent root" do
     assert_equal %w[gpt-5.6-terra opus], stats({}, grouping: "model").rows.map(&:key).sort
-    assert_equal %w[agents zimmer], stats({}, grouping: "agent_root").rows.map(&:key).sort
+    assert_equal %w[catalog-management zimmer], stats({}, grouping: "agent_root").rows.map(&:key).sort
   end
 
   test "an unknown grouping falls back to the default rather than erroring" do
@@ -75,7 +75,7 @@ class OutcomeAnalyses::StatsTest < ActiveSupport::TestCase
   end
 
   test "windows on the analyzed session's created_at, not on when it was analyzed" do
-    analyze(runtime: "codex", model: "gpt-5.6-terra", root: "agents", outcome: "Success",
+    analyze(runtime: "codex", model: "gpt-5.6-terra", root: "catalog-management", outcome: "Success",
             failures: 0, successes: 1, created_at: 200.days.ago)
 
     assert_equal 5, stats.totals.transcripts
@@ -85,7 +85,7 @@ class OutcomeAnalyses::StatsTest < ActiveSupport::TestCase
   test "filters narrow the population the same way the ledger's do" do
     assert_equal 2, stats({ agent_runtime: "codex" }).totals.transcripts
     assert_equal 2, stats({ model: "opus" }).totals.transcripts
-    assert_equal 2, stats({ agent_root: "agents" }).totals.transcripts
+    assert_equal 2, stats({ agent_root: "catalog-management" }).totals.transcripts
     assert_equal 1, stats({ outcome: "Failure" }).totals.transcripts
   end
 

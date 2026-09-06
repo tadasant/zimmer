@@ -967,10 +967,10 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       catalog_skills: [],
       catalog_hooks: [],
       catalog_plugins: [],
-      metadata: (session.metadata || {}).merge("agent_root_key" => "agent-orchestrator")
+      metadata: (session.metadata || {}).merge("agent_root_key" => "general-agent")
     )
     mock_root = OpenStruct.new(
-      name: "agent-orchestrator",
+      name: "general-agent",
       default_mcp_servers: [ "inherited-server" ],
       default_skills: [ "inherited-skill" ],
       default_hooks: [ "inherited-hook" ],
@@ -1007,10 +1007,10 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     session = sessions(:running)
     session.update!(
       catalog_skills: [ captured_skill ],
-      metadata: (session.metadata || {}).merge("agent_root_key" => "agent-orchestrator")
+      metadata: (session.metadata || {}).merge("agent_root_key" => "general-agent")
     )
     mock_root = OpenStruct.new(
-      name: "agent-orchestrator",
+      name: "general-agent",
       default_mcp_servers: [],
       default_skills: [ "inherited-skill" ],
       default_hooks: [],
@@ -1071,7 +1071,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     session.update!(
       subdirectory: "agent-orchestrator",
       metadata: {
-        "agent_root_key" => "agent-orchestrator",
+        "agent_root_key" => "general-agent",
         "clone_path" => "#{clone_base}/agents-main-123-abc",
         "working_directory" => "#{clone_base}/agents-main-123-abc/agent-orchestrator"
       }
@@ -1083,7 +1083,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Root row displays the agent root key (not the filesystem path).
     # Match the visible text immediately after the "Root:" label up to the
     # closing </span> — the directory name must not appear in there.
-    assert_match(%r{<strong>Root:</strong>\s*agent-orchestrator\s*</span>}, response.body)
+    assert_match(%r{<strong>Root:</strong>\s*general-agent\s*</span>}, response.body)
     refute_match(%r{<strong>Root:</strong>[^<]*agents-main-123-abc}, response.body,
       "Root row's visible text should not leak the clone directory name")
 
@@ -1099,7 +1099,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     session.update!(
       subdirectory: nil,
       metadata: {
-        "agent_root_key" => "agents",
+        "agent_root_key" => "general-agent",
         "clone_path" => "#{clone_base}/agents-main-123-abc"
       }
     )
@@ -1108,7 +1108,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     # Root row displays the agent root key (not the filesystem path).
-    assert_match(%r{<strong>Root:</strong>\s*agents\s*</span>}, response.body)
+    assert_match(%r{<strong>Root:</strong>\s*general-agent\s*</span>}, response.body)
     refute_match(%r{<strong>Root:</strong>[^<]*agents-main-123-abc}, response.body,
       "Root row's visible text should not leak the clone directory name")
 

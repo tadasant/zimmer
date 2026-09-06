@@ -67,7 +67,7 @@ class ViewContractTest < ActionView::TestCase
       metadata: {
         "clone_path" => "/tmp/test-clone",
         "working_directory" => "/tmp/test-clone/subdir",
-        "agent_root_key" => "agent-orchestrator"
+        "agent_root_key" => "general-agent"
       },
       subdirectory: "subdir"
     )
@@ -289,7 +289,7 @@ class ViewContractTest < ActionView::TestCase
 
     assert html.present?, "SessionsController.render should return non-empty HTML"
     assert_includes html, "Root:"
-    assert_includes html, "agent-orchestrator",
+    assert_includes html, "general-agent",
       "Root row should display the agent root key from roots.json"
     refute_includes html, "Agent:",
       "Agent row should no longer be rendered"

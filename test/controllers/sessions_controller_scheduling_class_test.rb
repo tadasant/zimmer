@@ -43,11 +43,11 @@ class SessionsControllerSchedulingClassTest < ActionDispatch::IntegrationTest
     post sessions_url, params: {
       session: {
         prompt: "Long unattended batch",
-        git_root: "https://github.com/tadasant/zimmer-catalog.git",
+        git_root: "https://github.com/tadasant/zimmer.git",
         scheduling_class: SessionGenesis::SPOT,
         mcp_servers: []
       },
-      agent_root_name: "agent-orchestrator",
+      agent_root_name: "zimmer",
       agent_runtime: "claude_code"
     }
 
@@ -61,11 +61,11 @@ class SessionsControllerSchedulingClassTest < ActionDispatch::IntegrationTest
     post sessions_url, params: {
       session: {
         prompt: "Ordinary request",
-        git_root: "https://github.com/tadasant/zimmer-catalog.git",
+        git_root: "https://github.com/tadasant/zimmer.git",
         scheduling_class: "",
         mcp_servers: []
       },
-      agent_root_name: "agent-orchestrator",
+      agent_root_name: "zimmer",
       agent_runtime: "claude_code"
     }
 

@@ -11,7 +11,7 @@ class OutcomesControllerTest < ActionDispatch::IntegrationTest
 
     @archived = archived_fixture(title: "Fix the login redirect loop", status: :archived, root: "zimmer",
                                runtime: "claude_code", model: "opus")
-    @codex = archived_fixture(title: "Backfill the agent root keys", status: :archived, root: "agents",
+    @codex = archived_fixture(title: "Backfill the agent root keys", status: :archived, root: "general-agent",
                             runtime: "codex", model: "gpt-5.6-terra")
     @live = archived_fixture(title: "Still running", status: :running, root: "zimmer",
                            runtime: "claude_code", model: "opus")

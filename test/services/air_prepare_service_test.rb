@@ -16,7 +16,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     @session.update!(
       mcp_servers: [ "playwright-custom" ],
       catalog_skills: [ "zimmer-run-tests" ],
-      metadata: { "agent_root_key" => "agent-orchestrator" }
+      metadata: { "agent_root_key" => "general-agent" }
     )
     @working_dir = Dir.mktmpdir
     @mock_fs = MockFileSystemAdapter.new
@@ -382,7 +382,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_includes cmd_args, "--target"
     assert_includes cmd_args, @working_dir
     assert_includes cmd_args, "--root"
-    assert_includes cmd_args, "agent-orchestrator"
+    assert_includes cmd_args, "general-agent"
     assert_includes cmd_args, "--skill"
     assert_includes cmd_args, "zimmer-run-tests"
     assert_includes cmd_args, "--mcp-server"
@@ -1247,8 +1247,8 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
   test "find_root_name falls back to find_for_session" do
     @session.update!(
-      git_root: "https://github.com/tadasant/zimmer-catalog.git",
-      subdirectory: "agents/agent-orchestrator",
+      git_root: "https://github.com/tadasant/zimmer.git",
+      subdirectory: nil,
       metadata: {}
     )
 
@@ -1258,7 +1258,10 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       file_system: @mock_fs
     )
 
-    assert_equal "agent-orchestrator", service.send(:find_root_name)
+    # find_for_session's (url, subdirectory) fallback is a first match, and every
+    # shipped root sits at the root of this repo, so it lands on `zimmer`. What is
+    # under test is that the fallback runs at all when metadata carries no key.
+    assert_equal "zimmer", service.send(:find_root_name)
   end
 
   test "omits --root when no root name available" do

@@ -4,7 +4,7 @@
     "description": "ci-workflow plugin.",
     "path": "./ci-workflow",
     "default_in_roots": [
-      "agent-orchestrator"
+      "zimmer"
     ]
   },
   "figma-design-workflow": {
@@ -15,7 +15,7 @@
     "description": "screenshots-videos plugin.",
     "path": "./screenshots-videos",
     "default_in_roots": [
-      "agent-orchestrator"
+      "zimmer"
     ]
   },
   "meeting-wrangling": {
