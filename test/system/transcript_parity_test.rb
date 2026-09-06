@@ -151,9 +151,17 @@ class TranscriptParityTest < ApplicationSystemTestCase
 
   private
 
+  # The rendered batch, which is what parity is a claim about.
+  #
+  # Read from the panel's own container rather than the page's append target:
+  # the detail page renders no rows at all — the transcript arrives in a
+  # <turbo-frame loading="lazy"> that Turbo fetches once the disclosure has
+  # layout — so opening the panel is part of reading it. open_transcript_panel
+  # waits for that frame.
   def extract_normalized_timeline_html
-    # Get the timeline container HTML
-    timeline_element = find("#session_#{Session.last.id}_timeline")
+    open_transcript_panel
+
+    timeline_element = find("[data-live-append-into='session_#{Session.last.id}_timeline']")
     html = timeline_element["innerHTML"]
 
     # Normalize the HTML by removing dynamic timestamp text

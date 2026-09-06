@@ -768,6 +768,24 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # `transcript=open` and the deferred frame have to compose, and the composition
+  # is what makes the round trip work at all: rendering the disclosure open is
+  # what gives the frame layout, which is what makes Turbo fetch it. So the page
+  # still ships no rows — it ships a frame that will go and get them, at the level
+  # the reader just picked.
+  test "an open disclosure still defers its rows, and the frame carries the new filter" do
+    session = sessions(:with_transcript)
+
+    get session_url(session, transcript: "open", filter: "condensed")
+    assert_response :success
+
+    assert_select "details[data-controller~='transcript-panel'][open]"
+    assert_select "turbo-frame#session_#{session.id}_transcript[loading='lazy']" \
+                  "[src='#{transcript_panel_session_path(session, filter: 'condensed')}']"
+    assert_select "[data-timeline-item]", false,
+      "an open disclosure must still defer its rows — the frame fetches them"
+  end
+
   test "the drawer variant honours the transcript param too" do
     session = sessions(:running)
 
@@ -996,13 +1014,13 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match /Model:/, response.body
   end
 
-  test "should display logs in show action" do
+  test "should display logs in the transcript panel" do
     session = sessions(:running)
     # Use verbose filter to ensure logs are visible (default is minimal which filters out logs)
-    get session_url(session, filter: "verbose")
+    get transcript_panel_session_url(session, filter: "verbose")
 
     assert_response :success
-    # Logs should be visible on the page
+    # Logs should be visible in the panel the detail page defers them into
     session.logs.each do |log|
       assert_match log.content, response.body
     end
@@ -6346,11 +6364,16 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   # Links rendered INSIDE the drawer (the hierarchy tree) navigate the drawer
   # frame if left alone, and that frame would fetch the frameless /sessions/:id.
   # They target _top and hand the drawer its own path instead.
-  test "in-drawer hierarchy links target _top and carry the drawer url" do
+  #
+  # Asserted against #provenance_panel, which is where the hierarchy is rendered
+  # for both the page and the drawer. The rule is if anything stricter there: the
+  # panel sits in a nested frame, so a link that failed to escape would navigate
+  # THAT frame to a body with no session_<id>_provenance_panel in it.
+  test "hierarchy links target _top and carry the drawer url" do
     parent = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Parent")
     child = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Child", parent_session_id: parent.id)
 
-    get drawer_session_url(child)
+    get provenance_panel_session_url(child)
     assert_response :success
 
     assert_select "a[href=?][data-turbo-frame='_top'][data-session-drawer-url=?]",
@@ -6373,6 +6396,11 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   #
   # Asserted over the rendered body rather than per-link, so a link added later is
   # caught without anyone remembering this rule.
+  #
+  # The two deferred panels are held to the same rule and for a sharper reason:
+  # their bodies land in a frame NESTED inside session_detail, so a link that
+  # failed to escape would navigate the innermost frame — and land on a body with
+  # no such frame in it at all.
   test "every same-origin link inside the drawer escapes the frame" do
     parent = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Parent")
     child = Session.create!(
@@ -6380,23 +6408,156 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       parent_session_id: parent.id, scheduling_class: "spot"
     )
 
-    get drawer_session_url(child)
+    [ drawer_session_url(child),
+      provenance_panel_session_url(child),
+      transcript_panel_session_url(child) ].each do |url|
+      get url
+      assert_response :success
+
+      offenders = css_select("a[href]").reject do |link|
+        href = link["href"].to_s
+        # Only a same-origin path is a frame navigation. An absolute URL, a bare
+        # fragment, a mailto:, an explicit target, or data-turbo="false" is not.
+        !href.start_with?("/") ||
+          link["target"].present? ||
+          link["data-turbo"] == "false" ||
+          link["data-turbo-frame"] == "_top"
+      end.map { |link| "#{link["href"]} (#{link.text.strip[0, 30]})" }
+
+      assert_empty offenders,
+        "these links in #{url} would navigate their Turbo Frame to a body with no matching " \
+        "frame, rendering \"Content missing\". Give each data-turbo-frame=\"_top\": " \
+        "#{offenders.join(", ")}"
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Deferred detail panels (#transcript_panel, #provenance_panel)
+  # ---------------------------------------------------------------------------
+
+  # The point of the split, asserted directly: the page carries the identity of
+  # the session and two frame stubs, and none of the work behind those stubs.
+  test "the detail page defers the transcript and provenance panels" do
+    session = sessions(:with_transcript)
+
+    get session_url(session)
     assert_response :success
 
-    offenders = css_select("a[href]").reject do |link|
-      href = link["href"].to_s
-      # Only a same-origin path is a frame navigation. An absolute URL, a bare
-      # fragment, a mailto:, an explicit target, or data-turbo="false" is not.
-      !href.start_with?("/") ||
-        link["target"].present? ||
-        link["data-turbo"] == "false" ||
-        link["data-turbo-frame"] == "_top"
-    end.map { |link| "#{link["href"]} (#{link.text.strip[0, 30]})" }
+    assert_select "turbo-frame#session_#{session.id}_transcript[loading='lazy']" \
+                  "[src='#{transcript_panel_session_path(session, filter: 'minimal')}']"
+    assert_select "turbo-frame#session_#{session.id}_provenance_panel[loading='lazy']" \
+                  "[src='#{provenance_panel_session_path(session)}']"
 
-    assert_empty offenders,
-      "these links inside the drawer would navigate its Turbo Frame to a page with no " \
-      "session_detail frame, rendering \"Content missing\". Give each data-turbo-frame=\"_top\": " \
-      "#{offenders.join(", ")}"
+    # None of the deferred content is on the page.
+    assert_select "[data-timeline-item]", false,
+      "timeline items on the page mean the transcript was rendered eagerly after all"
+    assert_select "#session_#{session.id}_provenance", false,
+      "the hierarchy on the page means the provenance panel was rendered eagerly after all"
+  end
+
+  # The drawer is the same body and gets the same deferral. It is the surface the
+  # slowness was reported on, so it is asserted separately rather than assumed.
+  test "the drawer defers the transcript and provenance panels" do
+    session = sessions(:with_transcript)
+
+    get drawer_session_url(session)
+    assert_response :success
+
+    assert_select "turbo-frame#session_#{session.id}_transcript[loading='lazy']"
+    assert_select "turbo-frame#session_#{session.id}_provenance_panel[loading='lazy']"
+    assert_select "[data-timeline-item]", false
+  end
+
+  # A broadcast that arrives before (or instead of) the transcript frame loading
+  # still has to land somewhere. The append target is rendered on the page,
+  # outside the frame, and is empty until a broadcast fills it.
+  test "the timeline append target is on the page even though the transcript is not" do
+    session = sessions(:with_transcript)
+
+    get session_url(session)
+    assert_response :success
+
+    assert_select "##{"session_#{session.id}_timeline"}[data-live-region='append']" do |elements|
+      assert_empty elements.first.element_children,
+        "the append target must start empty — the frame brings the batch"
+    end
+  end
+
+  # The skeletons stand in for live regions and must not answer to their ids.
+  # backfillLiveRegions reconciles by id against a freshly fetched copy of the
+  # page, whose frames are unloaded: a skeleton carrying #session_<id>_provenance
+  # would let that backfill replace the reader's real hierarchy with grey bars.
+  test "the deferred panel skeletons carry no live-region ids" do
+    session = sessions(:with_transcript)
+
+    get session_url(session)
+    assert_response :success
+
+    assert_select "turbo-frame#session_#{session.id}_provenance_panel [data-live-region]", false
+    assert_select "turbo-frame#session_#{session.id}_transcript [data-live-region]", false
+    assert_select "turbo-frame#session_#{session.id}_transcript [id]", false
+  end
+
+  # Each panel answers with the frame the page is waiting for. A body without it
+  # is what "Content missing" looks like.
+  test "the panel actions render the frame their stub asks for" do
+    session = sessions(:with_transcript)
+
+    get transcript_panel_session_url(session)
+    assert_response :success
+    assert_select "turbo-frame#session_#{session.id}_transcript"
+    assert_select "[data-timeline-item]"
+
+    get provenance_panel_session_url(session)
+    assert_response :success
+    assert_select "turbo-frame#session_#{session.id}_provenance_panel"
+    assert_select "#session_#{session.id}_provenance[data-live-region='replace']"
+  end
+
+  # The frame's src carries the active filter, so opening the panel on a page
+  # loaded at ?filter=verbose does not silently drop back to minimal.
+  test "the transcript frame src carries the requested filter" do
+    session = sessions(:with_transcript)
+
+    get session_url(session, filter: "verbose")
+    assert_response :success
+
+    assert_select "turbo-frame#session_#{session.id}_transcript" \
+                  "[src='#{transcript_panel_session_path(session, filter: 'verbose')}']"
+  end
+
+  # An unknown filter is normalized the same way on the panel as on the page,
+  # rather than reaching compute_filtered_count as an unrecognized level.
+  test "the transcript panel normalizes an invalid filter" do
+    session = sessions(:with_transcript)
+
+    get transcript_panel_session_url(session, filter: "nonsense")
+    assert_response :success
+
+    assert_select "[data-infinite-scroll-filter-level-value='minimal']"
+  end
+
+  # A frame whose src 404s gets a body with no matching frame in it, which Turbo
+  # reports as turbo:frame-missing and lib/frame_missing_recovery.js turns into a
+  # top-level visit. The thing that must not happen is a 500.
+  test "the panel actions 404 for a session that does not exist" do
+    get transcript_panel_session_url(id: "no-such-session")
+    assert_response :not_found
+
+    get provenance_panel_session_url(id: "no-such-session")
+    assert_response :not_found
+  end
+
+  # A panel is fetched by a frame, so it must not drag the application layout
+  # (nav, banners, another copy of the drawer) in behind it.
+  test "the panel actions render without the application layout" do
+    session = sessions(:with_transcript)
+
+    [ transcript_panel_session_url(session), provenance_panel_session_url(session) ].each do |url|
+      get url
+      assert_response :success
+      assert_no_match(/<html/, response.body, "#{url} rendered the application layout into a frame")
+    end
   end
 
   # ---------------------------------------------------------------------------

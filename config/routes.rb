@@ -513,6 +513,11 @@ Rails.application.routes.draw do
       # that the framed and frameless bodies never share a cache key — see the
       # comment on SessionsController#drawer.
       get :drawer
+      # The two heavy panels of the detail body, each served on its own path so
+      # a <turbo-frame loading="lazy"> can fetch it after the first paint rather
+      # than the first paint waiting on it. See SessionsController#show.
+      get :transcript_panel
+      get :provenance_panel
       get :transcript
       post :fork
       post :regenerate_status_summary

@@ -1,5 +1,10 @@
 require "test_helper"
 
+# How much of a long session's timeline the first render carries.
+#
+# Asserted against #transcript_panel, which is where the detail page defers the
+# timeline to — the page itself renders none of it until the reader opens the
+# Transcript disclosure.
 class SessionTimelineLimitingTest < ActionDispatch::IntegrationTest
   def create_session_with_many_messages(count:)
     transcript_entries = count.times.map do |i|
@@ -22,10 +27,10 @@ class SessionTimelineLimitingTest < ActionDispatch::IntegrationTest
     )
   end
 
-  test "show page renders limited timeline items for session with many messages" do
+  test "transcript panel renders limited timeline items for session with many messages" do
     session = create_session_with_many_messages(count: 150)
 
-    get session_path(session)
+    get transcript_panel_session_path(session)
     assert_response :success
 
     # Count data-timeline-item in the response body
@@ -36,20 +41,20 @@ class SessionTimelineLimitingTest < ActionDispatch::IntegrationTest
     assert timeline_items_count >= 90, "Should have at least 90 items, got #{timeline_items_count}"
   end
 
-  test "show page shows infinite scroll trigger when more items available" do
+  test "transcript panel shows infinite scroll trigger when more items available" do
     session = create_session_with_many_messages(count: 150)
 
-    get session_path(session)
+    get transcript_panel_session_path(session)
     assert_response :success
 
     # Should have the "Load more" button since there are more items
     assert_includes response.body, "Load earlier messages"
   end
 
-  test "show page does not show infinite scroll trigger for small sessions" do
+  test "transcript panel does not show infinite scroll trigger for small sessions" do
     session = create_session_with_many_messages(count: 50)
 
-    get session_path(session)
+    get transcript_panel_session_path(session)
     assert_response :success
 
     # Should NOT have the "Load more" button since all items fit

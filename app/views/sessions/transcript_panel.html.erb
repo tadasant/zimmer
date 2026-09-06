@@ -1,0 +1,7 @@
+<%# The Transcript disclosure's body, on its own path so the panel can be a lazy
+    frame. Both the full page and the dashboard drawer point at this one URL: the
+    body is self-contained and identical either way, so unlike #show / #drawer
+    there are not two shapes for a URL-keyed cache to confuse. %>
+<%= turbo_frame_tag "session_#{@session.id}_transcript" do %>
+  <%= render "sessions/transcript_body" %>
+<% end %>

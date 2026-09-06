@@ -1,0 +1,111 @@
+<%# The loaded contents of the Transcript disclosure: the tail of the timeline,
+    the infinite-scroll machinery that pages backwards from it, and the count of
+    what it is a tail of.
+
+    Rendered into <turbo-frame id="session_<id>_transcript"> by
+    SessionsController#transcript_panel, never inline by the detail page. The
+    frame it lands in sits inside a <details> that starts closed, so on a page
+    load this markup — the bulk of a session detail response, and the only part
+    whose size grows with the session — is not built at all until a reader opens
+    the panel. See _detail.html.erb.
+
+    Turbo Stream appends do not land here. They target #session_<id>_timeline,
+    which _detail.html.erb keeps in the first paint just after this frame, so a
+    message broadcast before (or instead of) this frame loading always has
+    somewhere to go, and appears below this batch — where the newest items
+    belong. A row that landed there while the panel was closed is in this batch
+    too, and transcript-panel#dropStreamedDuplicates drops the other copy. %>
+<div data-controller="infinite-scroll"
+     data-infinite-scroll-url-value="<%= timeline_items_session_path(@session) %>"
+     data-infinite-scroll-before-index-value="<%= @oldest_displayed_index %>"
+     data-infinite-scroll-before-timestamp-value="<%= @oldest_displayed_timestamp %>"
+     data-infinite-scroll-has-more-value="<%= @has_more_items %>"
+     data-infinite-scroll-total-count-value="<%= @total_timeline_items_count %>"
+     data-infinite-scroll-displayed-count-value="<%= @timeline_items.count %>"
+     data-infinite-scroll-filter-level-value="<%= @filter_level %>">
+
+  <%# The count the closed summary cannot afford to show. Producing it is linear
+      in transcript size (every entry has to be normalized to know which events
+      it fans out into), so it is stated here, once the reader has asked for the
+      panel, rather than on every page load and drawer open. %>
+  <div class="px-4 sm:px-6 py-2 text-xs text-gray-500 border-b border-gray-100 flex items-center justify-between gap-3">
+    <span data-infinite-scroll-target="itemsCount">
+      <% if @has_more_items %>
+        Showing <%= @timeline_items.count %> of <%= @total_timeline_items_count %> items
+      <% else %>
+        <%= pluralize(@total_timeline_items_count, "item") %>
+      <% end %>
+    </span>
+    <%# Spelled the way the four log-level selects spell it. `humanize` would
+        render "show-logs" as "Show-logs", which is a fifth spelling of a value
+        the reader has just picked from a menu. %>
+    <span class="text-gray-400"><%= @filter_level.tr("-", " ").split.map(&:capitalize).join(" ") %> view</span>
+  </div>
+
+  <div data-infinite-scroll-target="timelineContent">
+    <%# Load more indicator at the top - shown when there are more items to load %>
+    <% if @has_more_items %>
+      <div data-infinite-scroll-target="loadMoreTrigger" class="px-6 py-3 text-center border-b border-gray-100">
+        <button type="button"
+                data-action="click->infinite-scroll#loadMoreClicked"
+                data-infinite-scroll-target="loadMoreButton"
+                class="inline-flex items-center px-3 py-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">
+          <svg class="mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd" />
+          </svg>
+          Load earlier messages (<%= @oldest_displayed_index %> more)
+        </button>
+      </div>
+      <div data-infinite-scroll-target="loadingIndicator"
+           class="hidden px-6 py-3 text-center border-b border-gray-100"
+           role="status"
+           aria-live="polite">
+        <svg class="animate-spin inline-block h-5 w-5 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <span class="ml-2 text-sm text-gray-600">Loading earlier messages...</span>
+      </div>
+    <% end %>
+
+    <%# data-live-append-into names the live region on the PAGE that this batch is
+        the server's current answer for. It is not itself a live region and does
+        not carry that id: #session_<id>_timeline already exists on the page, just
+        after this frame, and two elements cannot share it.
+
+        The reconnect backfill reads the attribute. Fetching the page recovers
+        no timeline items — the page's copy of this frame is unloaded and holds
+        only a skeleton — so the recovery fetches this panel instead and grafts
+        this container onto that id before reconciling, which
+        puts recovered rows in the same container, and therefore the same order,
+        as rows that arrived over the socket. See
+        stream_visibility_recovery_controller#backfillDeferredPanels. %>
+    <div class="divide-y divide-gray-200"
+         data-live-append-into="session_<%= @session.id %>_timeline">
+      <% if @timeline_items.empty? %>
+        <%# Empty state. A broadcast removes it by id the moment the first item
+            lands, so it does not sit above the items that arrive after it. %>
+        <div id="empty-timeline-message" class="px-6 py-12 text-center" data-live-transient>
+          <% if @session.running? %>
+            <svg class="animate-spin mx-auto h-12 w-12 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <h3 class="mt-4 text-sm font-medium text-gray-900">Agent is running...</h3>
+            <p class="mt-1 text-sm text-gray-500">The conversation and activity will appear here as the agent progresses.</p>
+          <% else %>
+            <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+            <h3 class="mt-2 text-sm font-medium text-gray-900">No activity yet</h3>
+            <p class="mt-1 text-sm text-gray-500">The conversation and activity logs will appear here as the agent session progresses.</p>
+          <% end %>
+        </div>
+      <% end %>
+
+      <% @timeline_items.each do |item| %>
+        <%= render "timeline_items/item", item: item, session: @session %>
+      <% end %>
+    </div>
+  </div>
+</div>

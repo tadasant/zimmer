@@ -458,6 +458,60 @@ the following turn cannot resume. Both homes are mounted as durable named volume
 registered runtime and every role, because the symptom of getting it wrong is not an error — it is
 an agent with amnesia and a timeline that still looks fine.
 
+## Opening the transcript is what loads it
+
+The Transcript disclosure on the session detail screen starts collapsed, and until a reader opens it
+the server does not build it at all. Its body is a `<turbo-frame loading="lazy">` pointing at
+`GET /sessions/:id/transcript_panel?filter=<level>`, and a lazy frame inside a closed `<details>` has
+no layout — so Turbo never fetches it. Opening the disclosure gives it layout, which is what starts
+the request; a skeleton shaped like the rows stands in until the answer lands.
+
+The panel is where the whole cost of the transcript lives, and on a long session it is most of the
+cost of the screen. Three things moved behind the frame:
+
+- **The rows.** A hundred timeline items, and on a 2.4 MB transcript that is 594 KB of the 867 KB the
+  page used to weigh — markup that was rendered, transferred and parsed for a panel nobody had opened.
+- **The tail build and merge**, `build_timeline_items_tail`, which reads the last events of the
+  transcript and (at `show-logs`/`verbose`) the last logs.
+- **The total.** `compute_filtered_count` is the one part that cannot be a tail: an exact count of
+  what the active filter would show means normalizing *every* transcript entry, so it is linear in
+  transcript size — about 295 ms on 4,000 entries, and it ran on every page load and every drawer
+  open to label a closed panel. The count now states itself inside the panel, once the reader has
+  asked for it.
+
+Together that is a detail response of 235 KB in ~150 ms over 20 queries, against 867 KB in ~750 ms
+over 67 before; the drawer is 207 KB in ~140 ms over 19.
+
+Three things are deliberately *not* behind the frame, and each is load-bearing:
+
+- **The append target.** `#session_<id>_timeline` is rendered on the page, just after the frame, and
+  starts empty. Turbo Stream appends target it by id (see [Broadcast
+  bookkeeping](#broadcast-bookkeeping)), so a message broadcast while the panel is closed — or while
+  its frame is in flight — still has somewhere to land, and lands below the batch the frame brings,
+  which is where the newest items belong.
+- **The log-level select**, which lives in the sticky header and has to be there to be usable.
+- **The disclosure itself**, so the reader can see there is a transcript to open.
+
+**Both containers are live at once, so one of them has to give a row up.** A message broadcast while
+the panel is closed lands in the append target; opening the panel then renders the server's current
+tail, which contains that same message, into the frame just above it. Nothing dedupes across the two
+by itself — Turbo's `append` only compares direct children of its target, and a frame swap does no id
+reconciliation at all — so `transcript-panel#dropStreamedDuplicates` runs on every `turbo:frame-load`
+and removes any row from the append target whose id the frame has just brought its own copy of. It is
+keyed on presence *inside the frame*, which is what makes the in-flight case safe: a row broadcast
+after the server rendered its response is not in the batch, is not a duplicate, and stays where it
+landed. Both copies carry the id `SessionsHelper#timeline_item_dom_id` derives, which is deliberately
+identical across the broadcast and render paths — that shared id is what makes the check possible at
+all.
+
+The reconnect backfill needs the same treatment from the other side: a fetched copy of the page has an
+unloaded frame and so cannot carry the rows. The recovery fetches the panel's own URL for any deferred
+frame the reader had opened, grafts its batch onto the append target's id before reconciling — which
+keeps a recovered row in the same container, and therefore the same order, as one that arrived over
+the socket — and sweeps the panel's empty-state placeholder if the server has stopped rendering it,
+which the region reconcile cannot see because it sits beside the append target rather than inside it.
+See [The reopen backfill](/sessions/lifecycle/#the-reopen-backfill).
+
 ## Broadcast bookkeeping
 
 The poller only broadcasts `new_messages[broadcast_count..]`, where `broadcast_count` comes from
