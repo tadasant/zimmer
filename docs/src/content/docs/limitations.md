@@ -4311,14 +4311,28 @@ whose newest reading has aged past an hour — so a spare's contribution is at m
 against a serving account's 15. Between samples the gate is deciding on numbers that may already have
 moved, in either direction.
 
-Two accounts are outside that bound, and both are inherent rather than a cadence choice. An account in
-`needs_reauth` is never probed at all: Zimmer cannot authenticate as it, so its last reading stands
-until a human re-authenticates — and it is still averaged into the pool, because its window is really
-draining while it waits. And a pool larger than nine accounts cannot fit its stale spares under the
-two-per-tick cap, so past that size the guarantee degrades gracefully toward round-robin: staleness
-grows with the pool instead of probes bursting in one tick. Both bounds are knobs —
-`CLAUDE_SPARE_SAMPLE_MAX_STALENESS_MINUTES` and `CLAUDE_SPARE_SAMPLE_MAX_PROBES_PER_TICK` — traded
-against a probe rate of at most `96 + 24(N-1)` a day for a pool of N.
+That 75 minutes is a steady-state bound, and three things sit outside it.
+
+An account in **`needs_reauth`** is never probed at all: Zimmer cannot authenticate as it, so its last
+reading stands until a human re-authenticates — and it is still averaged into the pool, because its
+window is really draining while it waits. The same goes for an account whose token has expired with no
+refresh token.
+
+A **pool larger than eleven accounts** — the serving one plus ten spares — cannot keep every spare
+inside the bound, because a spare re-probed every five ticks at two probes a tick is ten spares' worth
+of budget. Past that size the guarantee degrades toward round-robin: staleness grows with the pool
+instead of probes bursting in one tick. **The tick after a gap** behaves the same way: a deploy, a
+queue backlog or several accounts added at once leaves every spare stale simultaneously, and the sweep
+drains them a budget at a time rather than all at once.
+
+And a spare whose probe keeps **failing** writes no reading, so it stays eligible and is retried each
+tick — that is deliberate, since an account whose token starts working again has no other way back
+into the average. It means the honest per-day ceiling on this job is the per-tick budget (one serving
+probe plus at most four spare attempts, so 480/day) rather than the `96 + 24(N-1)` a pool of N costs
+while its probes answer.
+
+Both bounds are knobs, set as deploy environment rather than on the box:
+`CLAUDE_SPARE_SAMPLE_MAX_STALENESS_MINUTES` and `CLAUDE_SPARE_SAMPLE_MAX_PROBES_PER_TICK`.
 
 Two consequences worth knowing:
 
