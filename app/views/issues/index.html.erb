@@ -70,9 +70,29 @@
 
     <h2 class="text-sm font-semibold text-gray-900 mb-2">
       In flight
-      <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.counts[:in_flight]) %> with a live session</span>
+      <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.counts[:in_flight]) %> an agent is still advancing</span>
     </h2>
-    <%= render "in_flight", rows: @board.in_flight_rows %>
+    <%= render "started_rows", rows: @board.in_flight_rows,
+        empty_message: "Nothing from the backlog is being worked right now." %>
+
+    <%# The section the old page had no room for, which is why it showed work that
+        had finished a day ago under "In flight". A parked session has stopped and
+        is waiting on a person — most often holding a PR the merge gate held — so
+        it is neither running nor done, and it is the number that explains a queue
+        that has stopped draining. %>
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">
+      Parked on a person
+      <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.counts[:parked]) %> stopped in <code class="text-xs">needs_input</code>, waiting on you</span>
+    </h2>
+    <%= render "started_rows", rows: @board.parked_rows,
+        empty_message: "Nothing from the backlog is waiting on a person." %>
+
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">
+      Finished recently
+      <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.recently_ended_rows.length) %> whose session ended in the last <%= pluralize(Issues::Board::RECENTLY_ENDED_WINDOW.in_hours.to_i, "hour") %></span>
+    </h2>
+    <%= render "started_rows", rows: @board.recently_ended_rows,
+        empty_message: "No session the backlog started has ended in the last #{pluralize(Issues::Board::RECENTLY_ENDED_WINDOW.in_hours.to_i, 'hour')}." %>
 
     <h2 class="text-sm font-semibold text-gray-900 mb-2">In GitHub, not on the queue</h2>
     <%= render "repo_summaries", summaries: @board.repo_summaries %>

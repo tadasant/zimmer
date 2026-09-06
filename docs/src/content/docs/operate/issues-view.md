@@ -12,7 +12,7 @@ It is a *view*. It stores nothing. Every number on it comes from `work_backlog_i
 `gate_decisions`, or a live read of GitHub — there is no Issues table, no sync job, and nothing to
 reconcile.
 
-## The three lists
+## The five lists
 
 **The spot queue** is every `queued` backlog item in rank order — precedence descending, oldest
 first within a tie, which is the order [`WorkBacklog::Ranking`](/operate/work-backlog/#ranking)
@@ -20,9 +20,22 @@ defines and the groomer's pull follows. Position 1 is what gets pulled next. Eac
 GitHub issue, carries its direction, kind, cost and precedence, says when the gate cleared it, and
 links to the gate session that did if the gate recorded one.
 
-**In flight** is every `started` item whose session has not archived or failed, with a link to that
-session. It is deliberately *not* narrowed by the filter bar: "what is the fleet working on" is a
-fixed question, and a repo filter that emptied the list would read as "nothing is running".
+**In flight** is every `started` item an agent is still advancing — its session is `running` (a turn
+is on a worker) or `waiting` (queued for a worker, or asleep on a wake it armed for itself). It is
+deliberately *not* narrowed by the filter bar: "what is the fleet working on" is a fixed question,
+and a repo filter that emptied the list would read as "nothing is running".
+
+**Parked on a person** is every `started` item whose session has stopped in `needs_input`. Nothing
+is advancing these; a human is what they are waiting on, and the usual reason is a finished PR the
+[merge gate](/operate/gate-decisions/) has held. They are **not** in flight, and the distinction is
+not cosmetic — see [what "in flight" counts](/operate/work-backlog/#what-in_flight-counts).
+
+**Finished recently** is every `started` item whose session *ended* — archived or failed — inside
+the last 24 hours. It exists because the alternative is a page that shows no trace of a night's work
+an hour after that work finished, and therefore reads as a fleet that did nothing. The window is
+measured from the end and not from the start, because an item started on Monday that only finishes
+on Wednesday — its session parked on a PR in between — is exactly the one this list must not drop
+at the moment it lands.
 
 **In GitHub, not on the queue** is every open issue across the six repos with no live backlog row —
 held by the gate, unrated, or simply not picked up yet. This is the half that makes the page "what

@@ -5,12 +5,20 @@ module Issues
   # on in GitHub across the repos it watches.
   #
   # The join key is the issue URL. A backlog item carries one; a GitHub issue is
-  # one. Everything the page shows is one of three things:
+  # one. Everything the page shows is one of five things:
   #
   #   queued    an item the issue gate cleared, waiting its turn, in rank order
-  #   in flight an item a pull or a promote started, whose session is still alive
-  #   loose     an open GitHub issue with no queued or in-flight backlog row —
+  #   in flight a started item an agent is still advancing — its session is
+  #             `running` or `waiting`
+  #   parked    a started item whose session has stopped in `needs_input`: a
+  #             person is what it is waiting on, usually over an open PR
+  #   ended     a started item whose session archived or failed recently
+  #   loose     an open GitHub issue with no queued or CLAIMED backlog row —
   #             held, unrated, or simply not picked up yet
+  #
+  # In flight and parked are two readings of what used to be one list, and the
+  # split is the point rather than a presentation choice: see
+  # WorkBacklogItem.in_flight for why a parked item must not hold a WIP slot.
   #
   # THE FILTERS ARE WorkBacklog::Filters, not a second filtering path. The queue
   # is the same queue `get_work_backlog` and the REST index read, and a page that
@@ -21,6 +29,10 @@ module Issues
     # Loose GitHub issues are paginated: the repos carry ~500 open issues between
     # them and a page that renders all of them is a page nobody scrolls.
     GITHUB_PER_PAGE = 50
+
+    # How far back the "finished recently" list reaches, measured from when each
+    # session ENDED rather than from when its item started.
+    RECENTLY_ENDED_WINDOW = 24.hours
 
     Row = Data.define(:item, :github, :direction, :position) do
       def key = item.key
@@ -64,22 +76,41 @@ module Issues
       end
     end
 
-    # Started items whose session is still alive, newest start first. Not filtered
+    # Started items an agent is still advancing, newest start first. Not filtered
     # by the queue filters: "what is the fleet working on right now" is a fixed
     # question, and a repo filter that emptied it would read as "nothing running".
     def in_flight_rows
-      @in_flight_rows ||= WorkBacklogItem.in_flight
-                                         .includes(:started_session)
-                                         .order(started_at: :desc)
-                                         .map { |item| build_row(item, nil) }
+      @in_flight_rows ||= started_rows(WorkBacklogItem.in_flight)
+    end
+
+    # Started items whose session has parked in `needs_input`. Nothing is
+    # advancing these; a person is. They used to be counted and rendered as "in
+    # flight", which is how the page came to show work that finished a day ago
+    # under the heading that answers "what is running".
+    def parked_rows
+      @parked_rows ||= started_rows(WorkBacklogItem.parked)
+    end
+
+    # Started items whose session ended inside RECENTLY_ENDED_WINDOW. The other
+    # half of the same honesty: without it, seven items that ran and archived
+    # overnight leave no trace on the page and the fleet reads as idle.
+    #
+    # Ordered by start, like the two lists above, because the column the table
+    # actually renders is `started_at` — a list ordered by an end date it does
+    # not show would read as unsorted.
+    def recently_ended_rows
+      @recently_ended_rows ||= started_rows(WorkBacklogItem.ended_since(RECENTLY_ENDED_WINDOW.ago))
     end
 
     # Open GitHub issues with no live backlog row, filtered by the repo and
     # direction the filter bar is set to. This is the half of the page that is
     # "what is going on in GitHub" rather than "what is on the queue".
     #
-    # "Live" is exactly what the two lists above show — `queued`, plus `started`
-    # with a session that is still alive. NOT every `started` row: an item whose
+    # "Live" is `queued`, plus every `started` row whose session has not ended —
+    # WorkBacklogItem.claimed, which is the in-flight rows AND the parked ones.
+    # The wider scope is deliberate: the question here is "has anything claimed
+    # this issue", not "is an agent mid-turn on it", and an issue whose session
+    # is parked on an open PR is claimed. NOT every `started` row: an item whose
     # session failed or was archived is not queued, is not in flight, and if it
     # were excluded here as well its open issue would disappear from the page
     # entirely. That is the ordinary "a pull or a promote started it and the
@@ -88,7 +119,7 @@ module Issues
     def loose_rows
       @loose_rows ||= begin
         live = (WorkBacklogItem.queued.where.not(issue_url: nil).pluck(:issue_url) +
-                WorkBacklogItem.in_flight.where.not(issue_url: nil).pluck(:issue_url)).to_set
+                WorkBacklogItem.claimed.where.not(issue_url: nil).pluck(:issue_url)).to_set
 
         snapshot.issues
                 .select { |issue| issue.open? && !live.include?(issue.url) }
@@ -117,6 +148,7 @@ module Issues
       @counts ||= {
         queued: WorkBacklogItem.queued.count,
         in_flight: WorkBacklogItem.in_flight.count,
+        parked: WorkBacklogItem.parked.count,
         github_open: snapshot.issues.count(&:open?)
       }
     end
@@ -198,6 +230,12 @@ module Issues
 
     def all_queued_rows
       @all_queued_rows ||= WorkBacklogItem.queued.in_rank_order.map { |item| build_row(item, nil) }
+    end
+
+    # The three started-item lists, newest start first. One shape, so a reader
+    # comparing "running" against "parked" is comparing the same rows.
+    def started_rows(scope)
+      scope.includes(:started_session).order(started_at: :desc).map { |item| build_row(item, nil) }
     end
 
     def open_issue_directions
