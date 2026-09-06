@@ -338,9 +338,15 @@ bounds the sum, on a pool the Rails worker is not inside — so the pile-up now 
 than the worker that runs all of them.
 
 **That changes the victim, not the demand — and the victim is the part that mattered.** Because the
-pool's `memory.max` is absolute, admitting more sessions can no longer endanger the worker; it spends
-pool headroom instead. That is what let the thread count go **8 → 12**: overshoot now costs one
-session, which GoodJob retries, where it used to cost every session on the box plus the worker.
+pool's `memory.max` is absolute, admitting more sessions no longer endangers the worker *through
+session memory*; it spends pool headroom instead. That is what let the thread count go **8 → 12**:
+overshoot costs one session, which GoodJob retries, where it once cost every session plus the worker.
+
+One path stays outside the pool, and the qualifier above is doing real work. `bin/docker-entrypoint`
+runs the cgroup delegation *after* starting the inner dockerd, deliberately — so the daemon and the
+`.agent-containers` dev stacks it manages are charged to the container cgroup, alongside the worker.
+`GOOD_JOB_AGENTS_THREADS` is the only thing bounding that path, which is the residual risk in raising
+it. See [nested Docker](/operate/nested-docker/) for the accounting.
 
 **The counter-intuitive corollary: do not raise the pool to match the threads.** The pool is sized
 from what must survive a pile-up, not from how many sessions are admitted. Two tenants live outside

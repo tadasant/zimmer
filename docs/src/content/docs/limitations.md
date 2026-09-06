@@ -483,7 +483,7 @@ the breaker, not the pool, so diagnosing *why* still means reading the logs.
 
 The pool is sized at 3 because `solid_cable` leases per `INSERT` and returns the connection, and only
 ~2% of broadcasts also run an autotrim transaction (`SolidCable::TrimJob`, a SKIP-LOCKED delete of ≤100
-rows) — so saturating it would take thousands of broadcasts per second, and eight agent sessions
+rows) — so saturating it would take thousands of broadcasts per second, and twelve agent sessions
 produce single or double digits. If that estimate is ever wrong, the failure will be quiet. Raise
 `CABLE_DB_POOL` and `app_required_backends` together.
 
@@ -1420,7 +1420,7 @@ that does it has known limits:
   out of reach and print `min(configured, GOOD_JOB_AGENTS_THREADS)` beside it. What that leaves is a
   deployment whose only real concurrency control is the size of the worker pool — the quota ceilings
   still pace spot spend, but the slot ceiling does nothing until you lower it under the pool.
-  **Both shipped defaults are now reachable**, which was not true while the pool was 8:
+  **Both shipped defaults sit under the pool and therefore bind:**
   `spot_max_concurrent_sessions` defaults to 10 and the top-up ceiling to 3, both under a pool of 12,
   so an un-retuned deployment gets ceilings that actually bind. A deployment that had *raised* its
   ceilings to work around the old 8 — Tadasant production ran 15 — should bring them back under the
@@ -1439,8 +1439,18 @@ that does it has known limits:
   (`ZIMMER_SESSIONS_MEMORY_MAX_MB`, 6144), and the Rails worker sits in an `app` sibling *outside*
   it. A pile-up therefore declares its OOM in a cgroup the worker is not in: one session dies with
   an attributable cause and a retry, rather than all of them plus the worker. Because that pool cap
-  is absolute, **admitting more sessions cannot endanger the worker** — it spends pool headroom
-  instead. That is why the thread count could go 8 → 12 without the container-level risk returning.
+  is absolute, **admitting more sessions cannot endanger the worker through session memory** — it
+  spends pool headroom instead. That is why the thread count could go 8 → 12.
+- **Read that narrowly, because one path is outside the pool.** It covers the session process and
+  its descendants, which `SessionMemoryCgroup`'s `sh` wrapper puts inside the pool. It does **not**
+  cover what a session starts through the **inner dockerd**: `bin/docker-entrypoint` runs the cgroup
+  delegation *after* the dockerd block on purpose, so the daemon and the `.agent-containers` dev
+  stacks it manages stay in the container cgroup — alongside the worker, in the victim set the
+  container cap selects from. That path is bounded by `GOOD_JOB_AGENTS_THREADS` and nothing else,
+  and raising the thread count raises the number of sessions that can hold a stack at once. It is
+  the residual risk in this ceiling. Measured live, dockerd plus its stacks was 63 MB against a
+  4096 MB residual, so there is real room — but the term is not capped, and a fleet that leans on
+  nested Docker should re-derive it rather than assume this measurement.
 - **The counter-intuitive part: do not raise the pool to match the threads.** The pool is sized from
   what must survive a pile-up, not from how many sessions are admitted. Two tenants live outside it
   and both must fit in the residual — the Rails worker (~1.6 GiB measured) and the inner dockerd

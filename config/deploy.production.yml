@@ -129,13 +129,18 @@ servers:
       # worker, so the OOM is now declared in a cgroup the worker is outside of. Carved out
       # of this 10g, not added to it.
       #
-      # Which is worth stating the right way round, because this cap still does not protect
-      # the worker from a pile-up -- the pool does, and only by choosing a different victim.
-      # What THIS cap protects is the DROPLET. Nothing above reduces the demand, so the only
-      # thing limiting how often the pool is exhausted is the `agents` lane's own width:
-      # GOOD_JOB_AGENTS_THREADS is the admission control, and it is held at 8 for this
-      # reason. See config/connection_budget.rb, which carries the measurements -- taken
-      # before #981's fix, so re-measure under it before moving that number.
+      # Which is worth stating the right way round, because this cap does not protect the
+      # worker from a pile-up -- the pool does, and only by choosing a different victim.
+      # What THIS cap protects is the DROPLET. Nothing above reduces the demand, so the
+      # only thing limiting how often the pool is exhausted is the `agents` lane's own
+      # width: GOOD_JOB_AGENTS_THREADS (12) is the admission control.
+      #
+      # It is also the ONLY bound on the one path the pool does not cover. The inner
+      # dockerd starts before the cgroup delegation, so it and the `.agent-containers` dev
+      # stacks it runs are charged to THIS cgroup rather than to the pool -- alongside the
+      # worker, in the victim set this cap selects from. See
+      # config/connection_budget.rb for the measurements and
+      # docs/operate/nested-docker.md for the dev-stack accounting.
       memory: 10g
       volume:
         - zimmer_data:/home/rails/.zimmer
@@ -204,23 +209,25 @@ env:
     # the worker dying and taking all of them. ZIMMER_SESSION_PARALLEL_WORKERS below is the
     # half that reduces the demand rather than choosing the victim.
     #
-    # RE-EXAMINED when GOOD_JOB_AGENTS_THREADS went 8 -> 12, and deliberately NOT raised.
-    # Raising it to 7168 to "make room" for the extra sessions is the intuitive move and it
-    # is backwards: the residual would drop to 3072 MB, under the ~3.1 GiB the two
-    # outside-pool tenants were measured at, so the CONTAINER cap would be the one to fire
-    # and it selects across the whole container -- taking the worker. That is #981 again.
-    # Sizing this from the sessions admitted is the wrong direction entirely; it is sized
-    # from what must survive them.
+    # DO NOT RAISE THIS TO MATCH GOOD_JOB_AGENTS_THREADS. That is the intuitive move and it
+    # is backwards. At 7168 the residual drops to 3072 MB, under the ~3.1 GiB the two
+    # outside-pool tenants are measured at, so the CONTAINER cap fires first -- and it
+    # selects across the whole container, taking the worker. That is #981 again, with this
+    # mechanism working exactly as designed. This number is sized from what must SURVIVE a
+    # pile-up, never from how many sessions are admitted into one.
     #
-    # More sessions in a HARD-capped pool does not endanger the worker, which is the
-    # property that made 12 shippable: the pool still fires first, and the extra pressure
-    # is spent inside it. What 12 costs is headroom for concurrent heavy work. Measured on
-    # the live worker at 12 session cgroups: pool `anon` 3154 MB of the 6144 cap, ~263 MB
-    # per session, leaving ~3.0 GB for test runs and the like -- roughly five concurrent
-    # capped suites at ~560 MB each. The conservative figure from #981's peak task dump
-    # (~382 MB per session) would leave ~1.6 GB, or two or three. Somewhere in that band is
-    # the real tolerance, and past it the pool OOM-kills ONE session with an attributable
-    # cause and a retry, which is the designed degradation rather than a fault.
+    # More sessions in a hard-capped pool cannot push the worker out of memory through the
+    # pool: the pool fires first and the extra pressure is spent inside it. What it costs is
+    # headroom for concurrent heavy work. Measured on the live worker at 12 session cgroups:
+    # pool `anon` 3154 MB of the 6144 cap, ~263 MB per session, leaving ~3.0 GB -- roughly
+    # five concurrent capped suites at ~560 MB each. The conservative figure from #981's
+    # peak task dump (~382 MB per session) leaves ~1.5 GB, or two to three. The real
+    # tolerance is somewhere in that band and is not pinned down; past it the pool OOM-kills
+    # ONE session with an attributable cause and a retry, which is the designed degradation
+    # rather than a fault.
+    #
+    # The dev stacks are the exception and they are NOT in this pool -- see the `memory:`
+    # comment above. Nothing here bounds them.
     #
     # 0 means no aggregate cap, with per-session bounds left in force -- the break-glass.
     ZIMMER_SESSIONS_MEMORY_MAX_MB: "<%= ENV.fetch("ZIMMER_SESSIONS_MEMORY_MAX_MB", "6144") %>"

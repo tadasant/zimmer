@@ -724,7 +724,7 @@ beside the number on `/inference` rather than folded into it.
 sessions at a ceiling of 7 had 8 agent processes alive; the rest were turns queued behind the pool,
 and three of them were routers that had already gone back to sleep. Counting the queue was what then
 pinned the spot gate at "25 of 10 session slots taken (8 on a worker, 17 waiting for one)" with every
-spot session held and twelve workers busy. #1040 then moved the queue out of `running` so the session
+spot session held and eight workers busy. #1040 then moved the queue out of `running` so the session
 list stops calling it running work either. `RunningTurns` is the one place the rule lives.
 
 ##### Why `waiting` sessions do not count
