@@ -27,6 +27,12 @@
 #   3. RE-CREATED — the URL appears in a *failed* create next to an "already
 #      exists" message, i.e. the PR for the branch we just tried to push.
 #      Weaker (the failure text is not ours), so it is held to the same-repo guard.
+#
+#      Whether a create *failed* is itself read per command, not per tool call. A
+#      result carries one error flag for a whole shell script, and in a shell that
+#      flag is the status of whatever ran last — so a `gh pr create ... | tail -1;
+#      gh pr view ...` reports the `gh pr view`, and a successful create in front
+#      of it is not a failed one. See #create_exit_status_observed? (#620).
 #   4. CLAIMED — the agent's own prose says it opened the PR ("Opened PR: <url>").
 #      This is what catches creation paths none of the above see — a wrapper
 #      script, an MCP tool whose name is not the one above, the web UI. Weakest of
@@ -45,6 +51,10 @@
 #     the repo's open PRs, which is the #214 shape again. Nor does a POST
 #     somewhere else on the line make one: creates are read per command segment,
 #     never across the whole script.
+#   - Anything much out of a create whose success was only *inferred* — a line
+#     that exited non-zero somewhere after the create. One URL only, on this
+#     session's own repo unless the create named another, and nothing at all when
+#     a PR listing shared the line. See #urls_from_successful_create.
 #   - The result of an MCP tool that writes *about* a pull request rather than
 #     opening one. `create_pull_request_review` and
 #     `create_pull_request_review_comment` sit next to `create_pull_request` in
@@ -190,6 +200,15 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # `repo` or `repository`. Anything else names no repo that can be read.
   MCP_INPUT_OWNER_KEY = "owner"
   MCP_INPUT_REPO_KEYS = %w[repo repository].freeze
+
+  # `gh pr list` as a command being run. Read against the segment's #unquoted view
+  # for the same reason a create is: the three words in a `grep` pattern are data.
+  #
+  # A listing is the #214 shape in its purest form — every open PR on the repo,
+  # printed into the same blob as a create — and #urls_from_successful_create
+  # declines outright when one shares a line with a create whose success it had to
+  # infer. See there.
+  GH_PR_LIST_PATTERN = /\bgh\s+pr\s+list\b/
 
   # `gh pr create` exits non-zero when the branch already has a PR, printing
   # "a pull request for branch \"x\" into branch \"main\" already exists: <url>".
@@ -404,6 +423,8 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   #
   # For Claude the failure flag is the result's own is_error; for Codex it is
   # derived from the shell's exit code (see TranscriptHooks::CodexToolCallParser).
+  # Either way it is ONE flag for the whole script, which is why
+  # #create_exit_status_observed? decides whether it is about the create at all.
   def urls_from_pr_create_results
     return [] if pr_create_commands.empty?
 
@@ -411,15 +432,110 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
       command = pr_create_commands[result[:id]]
       next [] if command.nil? || result[:text].blank?
 
-      target_repos = unbounded_create?(command) ? nil : create_repos(command)
-
-      pr_urls_with_context(result[:text]).filter_map do |url, preceding|
-        if result[:is_error]
-          url if preceding.match?(PR_ALREADY_EXISTS_PATTERN) && same_repo?(url)
-        elsif target_repos.nil? || same_repo?(url) || target_repos.include?(url_owner_repo(url))
-          url
-        end
+      if result[:is_error] && create_exit_status_observed?(command)
+        urls_from_failed_create(result)
+      else
+        urls_from_successful_create(result, command, capped: result[:is_error])
       end
+    end
+  end
+
+  # The URLs a create's output vouches for when the create ran.
+  #
+  # +capped+ says this is a create whose success is *inferred* — the script exited
+  # non-zero, but not on the create's account (see #create_exit_status_observed?).
+  # That is weaker evidence than a create the flag never contradicted, because the
+  # line really did fail somewhere and nothing says the create was not part of it.
+  # So it is held to three bounds the ordinary reading is not:
+  #
+  #   - **One URL.** One create opens one pull request. The same cap the MCP tier
+  #     takes, and for the same reason: a line that ended in a failure can have
+  #     printed anything into this blob.
+  #   - **This session's repo, when the create named none.** `unbounded_create?`
+  #     lets a `gh pr create` with no `--repo` vouch for any repo, because a create
+  #     in a fork clone lands on a parent the command never mentions. Combined with
+  #     the cap that would be a bound of nothing at all — `gh pr create --fill |
+  #     tail -1; false` would record the first PR URL in the output whatever repo
+  #     it belonged to, enrolling the session in another repository's comment and
+  #     merge-conflict polling (#214). The unbounded licence is a *strong*-evidence
+  #     licence; an inferred success does not get it.
+  #   - **No listing on the line.** A `gh pr list` or a non-POST `gh api …/pulls`
+  #     sharing a line with the create prints every open PR on the repo into this
+  #     same blob, and on a failed line there is no telling which of them the cap
+  #     will land on. Rather than record one arbitrarily, record nothing.
+  #
+  # Which URL the cap keeps is "the first this bound allows", and that is the
+  # create's own only when nothing before it on the line printed one. Since a
+  # listing is the shape that would, and it is excluded outright, what is left is
+  # narrow enough for first-wins to be the right guess rather than a claim.
+  #
+  # A create the flag never contradicted keeps vouching for everything its own
+  # repo bound allows, exactly as before — none of the three applies to it.
+  def urls_from_successful_create(result, command, capped: false)
+    return [] if capped && segments_of(command).any? { |segment| lists_pull_requests?(segment) }
+
+    target_repos = unbounded_create?(command) ? nil : create_repos(command)
+    unbounded = target_repos.nil? && !capped
+
+    urls = pr_urls_with_context(result[:text]).map(&:first).select do |url|
+      unbounded || same_repo?(url) || target_repos.to_a.include?(url_owner_repo(url))
+    end
+
+    capped ? urls.first(1) : urls
+  end
+
+  # Whether one command segment READS a repo's pull requests as a list: `gh pr
+  # list`, or the `gh api repos/o/r/pulls` that is a GET rather than a create.
+  # Not a single-PR read — `gh pr view <n>` prints the one PR it was asked for,
+  # which is routinely the one the create beside it just opened (#620's own
+  # shape), and excluding that would put the bug back.
+  def lists_pull_requests?(segment)
+    return true if unquoted(segment).match?(GH_PR_LIST_PATTERN)
+
+    segment.match?(GH_API_PATTERN) && segment.match?(GH_API_PULLS_ENDPOINT_PATTERN) && !rest_pr_create?(segment)
+  end
+
+  # Evidence 3: the one URL a create that really did fail can still vouch for —
+  # the PR that already exists for the branch we just pushed, which is ours.
+  def urls_from_failed_create(result)
+    pr_urls_with_context(result[:text]).filter_map do |url, preceding|
+      url if preceding.match?(PR_ALREADY_EXISTS_PATTERN) && same_repo?(url)
+    end
+  end
+
+  # Whether the script's exit status is a statement about its create at all.
+  #
+  # A tool result carries one error flag for the whole command, and a command is a
+  # whole shell script. In a shell that flag is the status of whatever ran LAST:
+  # `gh pr create ... | tail -1` reports tail's status, and `gh pr create ...; B`
+  # reports B's. In both, the create's own status — success included — is thrown
+  # away before Zimmer can see it. Only `&&` and `||` propagate a failure, and only
+  # a create with nothing after it sets the status itself.
+  #
+  # Reading the flag across that boundary is the same mistake as reading a create
+  # across one, which this hook has refused to do since #562: a POST in one segment
+  # cannot vouch for a list in another. #620's second sighting is the failure
+  # direction of it — an ordinary
+  #
+  #   gh pr create --repo owner/repo ... 2>&1 | tail -1; gh pr view --repo owner/repo ...
+  #
+  # where the create succeeded and printed its URL, the `gh pr view` after it was
+  # missing its argument and exited 1, and the whole result was read as a failed
+  # create. The PR was recorded nowhere, so no merge notification could reach the
+  # session that opened it.
+  #
+  # Answered TRUE when it cannot be decided — a separator the split could not
+  # recover reads as `nil`, which is "nothing follows". The question is only ever
+  # asked to DISCOUNT a failure, so an unreadable command keeps the flag it was
+  # given and records less rather than more.
+  #
+  # `any?`, so a command running two creates keeps the veto if either of them
+  # could be what failed.
+  def create_exit_status_observed?(command)
+    segments_with_separators_of(command).any? do |segment, separator|
+      next false if exit_status_discarded_after?(separator)
+
+      gh_pr_create?(segment) || rest_pr_create?(segment)
     end
   end
 
@@ -709,8 +825,15 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # every broadcast, and each of `creates_pr?`, `unbounded_create?` and
   # `create_repos` asks for the same split.
   def segments_of(command)
-    @segments_of ||= {}
-    @segments_of[command] ||= shell_segments(command)
+    segments_with_separators_of(command).map(&:first)
+  end
+
+  # The same split, with each command's trailing separator — which is what
+  # #create_exit_status_observed? reads. Memoized here rather than in
+  # #segments_of, so the two views share one split of each command.
+  def segments_with_separators_of(command)
+    @segments_with_separators_of ||= {}
+    @segments_with_separators_of[command] ||= shell_segments_with_separators(command)
   end
 
   def normalize_repo(repo)

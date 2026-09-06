@@ -90,6 +90,53 @@ a retry loop, `out=$(...)`, Codex's `bash -lc` wrapper). Reading them together w
 borrow the POST beside it and adopt every PR it printed. `TranscriptHooks::ShellSegments` does the
 split, and `GithubCommentAuthorshipHook` classifies its own `gh api` writes through the same seam.
 
+**Whether a create *failed* is read per segment too.** A tool result carries one error flag for the
+whole script — Claude Code's `is_error`, Codex's `exec_command_end` exit code — and in a shell that
+flag is the status of whatever ran **last**. `gh pr create ... | tail -1` reports tail's status and
+`gh pr create ...; B` reports B's; only `&&` and `||` propagate a failure, and only a create with
+nothing after it sets the status itself. So the separator that follows a create decides whether the
+flag is about the create at all, and `ShellSegments#shell_segments_with_separators` is what says
+which one it was.
+
+Reading the flag across a segment boundary is the same mistake as reading a create across one, in the
+other direction, and it is [#620](https://github.com/tadasant/zimmer/issues/620): session 11907 ran
+
+```
+gh pr create --repo tadasant/zimmer … --body-file … 2>&1 | tail -1; gh pr view --repo tadasant/zimmer --json …
+```
+
+The create succeeded and printed `https://github.com/tadasant/zimmer/pull/804`. The `gh pr view`
+after it was missing its positional argument and exited 1, so the whole call was flagged, so the
+create read as failed, so the PR was recorded nowhere — no merge notification, no comment or
+merge-conflict polling, and the merge gate's conflict hand-back path with no session to hand back to.
+
+A create whose success is only **inferred** this way is weaker evidence than one the flag never
+contradicted — the line really did fail somewhere, and nothing says the create was not part of it —
+so it is held to three bounds the ordinary reading is not:
+
+- **One URL**, because one create opens one pull request. The same cap the MCP-created tier takes.
+- **This session's own repo, when the create named none.** A `gh pr create` with no `--repo` normally
+  vouches for any repo, since a create in a fork clone lands on a parent the command never mentions.
+  Combined with the cap that would be a bound of nothing at all, and `gh pr create --fill | tail -1;
+  false` would record the first PR URL in the output whatever repo it belonged to. The unbounded
+  licence is a *strong*-evidence licence; an inferred success does not get it.
+- **Nothing at all when a PR listing shared the line.** A `gh pr list`, or a `gh api repos/o/r/pulls`
+  that is a GET, prints every open PR on the repo into the same blob, and on a failed line there is
+  no telling which of them the cap would land on. A single-PR read is *not* a listing — `gh pr view
+  <n>` prints the one PR it was asked for, which is #620's own shape, and excluding it would put the
+  bug back.
+
+Which URL the cap keeps is "the first the bound allows", and that is the create's own only when
+nothing before it on the line printed one. A listing is the shape that would, and it is excluded
+outright, so what is left is narrow enough for first-wins to be the right guess rather than a claim.
+
+When the split cannot say which separator went where — a line whose quoting never resolves falls back
+to a crude split — the flag is read as written. The question is only ever asked in order to
+*discount* a failure, so an unreadable command records less rather than more. That is also why
+`ShellSegments` reports `nil` for the **last surviving** command whatever the text said: separators
+are assigned by position and empty segments are dropped afterwards, so a trailing `;` would otherwise
+leave a create looking like it had something after it when it ran last.
+
 A create is also read out of what a command **runs**, never out of what it **quotes**. `gh pr create`
 inside a `grep` pattern, an `rg` argument, an `echo` or a `sed` script is data, and session 11898 ran
 exactly that — `grep -n "def \|gh pr create\|pull/" hook.rb` over this hook's own source — and

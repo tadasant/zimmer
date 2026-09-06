@@ -17,6 +17,8 @@ class TranscriptHooks::ShellSegmentsTest < ActiveSupport::TestCase
 
   def segments(command) = @splitter.shell_segments(command)
 
+  def separators(command) = @splitter.shell_segments_with_separators(command)
+
   # --- Separators -------------------------------------------------------------
 
   test "splits on the separators that end a command" do
@@ -378,5 +380,73 @@ class TranscriptHooks::ShellSegmentsTest < ActiveSupport::TestCase
 
   test "still blanks an ordinary pair of quotes" do
     assert_equal "gh pr create --title    --body   ", @splitter.unquoted(%q(gh pr create --title "" --body ''))
+  end
+
+  # --- The separator after each command ---------------------------------------
+  #
+  # A tool result carries one error flag for the whole script, and in a shell that
+  # flag is the status of whatever ran last. Which separator followed a command is
+  # therefore what says whether that command's own status survived into it — the
+  # question GithubPrUrlHook asks before letting a non-zero exit veto a create
+  # that was not what exited (#620).
+
+  test "reports the separator that ended each command" do
+    assert_equal [ [ "gh pr view 1", "&&" ], [ "gh pr list", "||" ], [ "gh pr diff", ";" ],
+                   [ "gh pr checks", "|" ], [ "cat", nil ] ],
+                 separators("gh pr view 1 && gh pr list || gh pr diff; gh pr checks | cat")
+  end
+
+  test "reports a newline as the separator between two lines" do
+    assert_equal [ [ "cd /repo", "\n" ], [ "gh pr create --fill", nil ] ],
+                 separators("cd /repo\ngh pr create --fill")
+  end
+
+  test "gives the last command of a wrapped script the wrapper's own separator" do
+    # `bash -lc "a; b" && c` is c running after b, so b is the command whose
+    # failure the `&&` would propagate.
+    assert_equal [ [ "cd /repo", ";" ], [ "gh pr create --fill", "&&" ], [ "echo done", nil ] ],
+                 separators(%q(bash -lc "cd /repo; gh pr create --fill" && echo done))
+  end
+
+  test "reports no separator for a command that is the whole script" do
+    assert_equal [ [ "gh pr create --fill", nil ] ], separators("gh pr create --fill")
+  end
+
+  test "reports no separator for the last surviving command, whatever the text said" do
+    # Separators are assigned by position and empty segments are dropped after, so
+    # a trailing `;` or newline would otherwise leave the last real command
+    # reporting a separator it is not in front of anything across.
+    assert_equal [ [ "gh pr create --fill", nil ] ], separators("gh pr create --fill;")
+    assert_equal [ [ "gh pr create --fill", nil ] ], separators("gh pr create --fill\n   ")
+    assert_equal [ [ "gh pr list", ";" ], [ "gh pr create --fill", nil ] ],
+                 separators("gh pr list; gh pr create --fill; ")
+  end
+
+  test "reports nothing for a script with no commands in it" do
+    [ "", "   ", ";;;", "\n\n", %q(bash -lc ""), %q(bash -lc "  ") ].each do |script|
+      assert_equal [], separators(script), script.inspect
+      assert_equal [], segments(script), script.inspect
+    end
+  end
+
+  test "reports no separator at all when the line's quoting does not resolve" do
+    # The crude fallback split cannot say what separated what. Reported as nil,
+    # which every caller reads as "nothing follows" — the answer that discounts
+    # nothing.
+    assert_equal [ nil, nil ], separators(%q(gh pr create --title "unclosed | tail -1)).map(&:last)
+  end
+
+  test "the separator view and the plain view agree on the commands" do
+    scripts = [
+      "gh pr view 1 && gh pr list || gh pr diff; gh pr checks | cat",
+      "cd /repo\ngh pr create --fill",
+      %q(bash -lc "cd /repo; gh pr create --fill" && echo done),
+      %q(grep -n "def \\|gh pr create\\|pull/" hook.rb),
+      %Q(python3 - <<'PY'\ngh pr create\nPY\ngh pr create --fill)
+    ]
+
+    scripts.each do |script|
+      assert_equal segments(script), separators(script).map(&:first), script
+    end
   end
 end
