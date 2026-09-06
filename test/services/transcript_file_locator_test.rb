@@ -188,6 +188,129 @@ class TranscriptFileLocatorTest < ActiveSupport::TestCase
     assert_equal session_file, result
   end
 
+  # === Following a re-keyed transcript branch (#1047) ===
+  #
+  # The runtime can copy a live conversation forward into a file named by a NEW
+  # session uuid and carry on appending to the copy. Preferring the recorded name
+  # there polls a conversation that stopped.
+
+  test "find_main_transcript follows a branch the runtime re-keyed to a new uuid" do
+    dirs = build_rekeyed_branch
+
+    result = TranscriptFileLocator.find_main_transcript(@session, dirs[:dir], file_system: @mock_file_system)
+
+    assert_equal dirs[:branch], result,
+      "the branch carrying this conversation forward is the one being written"
+  end
+
+  test "find_main_transcript keeps the recorded file when nothing re-keyed" do
+    transcript_dir = "/transcript/dir"
+    @session.update!(session_id: "recorded-uuid")
+    recorded = "#{transcript_dir}/recorded-uuid.jsonl"
+
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(recorded, transcript_line("recorded-uuid", "only file"))
+    @mock_file_system.set_mtime(recorded, Time.current)
+
+    result = TranscriptFileLocator.find_main_transcript(@session, transcript_dir, file_system: @mock_file_system)
+
+    assert_equal recorded, result
+  end
+
+  test "find_main_transcript ignores a newer sibling that carries someone else's conversation" do
+    dirs = build_rekeyed_branch(branch_head_session_id: "a-previous-occupant")
+
+    result = TranscriptFileLocator.find_main_transcript(@session, dirs[:dir], file_system: @mock_file_system)
+
+    assert_equal dirs[:recorded], result,
+      "identity comes from the head sessionId, never from mtime alone"
+  end
+
+  test "find_main_transcript never follows a fork's transcript" do
+    # A fork's transcript is copied verbatim from its source, so its head carries
+    # the SOURCE session's id — the same shape a re-key has. The uuid belonging to
+    # another Session row is what tells the two apart.
+    fork = sessions(:needs_input)
+    fork.update!(session_id: "the-fork-uuid")
+
+    dirs = build_rekeyed_branch(branch_id: "the-fork-uuid")
+
+    result = TranscriptFileLocator.find_main_transcript(@session, dirs[:dir], file_system: @mock_file_system)
+
+    assert_equal dirs[:recorded], result,
+      "a fork that ran in this working directory is a different conversation"
+  end
+
+  test "find_main_transcript keeps the recorded file when the branch is the older one" do
+    dirs = build_rekeyed_branch
+    @mock_file_system.set_mtime(dirs[:branch], 2.hours.ago)
+    @mock_file_system.set_mtime(dirs[:recorded], Time.current)
+
+    result = TranscriptFileLocator.find_main_transcript(@session, dirs[:dir], file_system: @mock_file_system)
+
+    assert_equal dirs[:recorded], result,
+      "a branch has to be more recently written to displace the recorded name"
+  end
+
+  test "find_main_transcript breaks an mtime tie in favour of the recorded file" do
+    dirs = build_rekeyed_branch
+    tie = Time.current
+    @mock_file_system.set_mtime(dirs[:branch], tie)
+    @mock_file_system.set_mtime(dirs[:recorded], tie)
+
+    result = TranscriptFileLocator.find_main_transcript(@session, dirs[:dir], file_system: @mock_file_system)
+
+    assert_equal dirs[:recorded], result
+  end
+
+  test "find_main_transcript ignores an agent transcript that quotes this session's id" do
+    dirs = build_rekeyed_branch(branch_id: "agent-abc123")
+
+    result = TranscriptFileLocator.find_main_transcript(@session, dirs[:dir], file_system: @mock_file_system)
+
+    assert_equal dirs[:recorded], result
+  end
+
+  test "find_main_transcript follows the branch when the recorded file is gone" do
+    dirs = build_rekeyed_branch
+    @mock_file_system.rm_rf(dirs[:recorded])
+
+    result = TranscriptFileLocator.find_main_transcript(@session, dirs[:dir], file_system: @mock_file_system)
+
+    assert_equal dirs[:branch], result
+  end
+
+  # === rekeyed_branch_id ===
+
+  test "rekeyed_branch_id names the branch a located transcript belongs to" do
+    dirs = build_rekeyed_branch
+
+    assert_equal "branch-uuid",
+      TranscriptFileLocator.rekeyed_branch_id(@session, dirs[:branch], file_system: @mock_file_system)
+  end
+
+  test "rekeyed_branch_id is nil for the recorded transcript" do
+    dirs = build_rekeyed_branch
+
+    assert_nil TranscriptFileLocator.rekeyed_branch_id(@session, dirs[:recorded], file_system: @mock_file_system)
+  end
+
+  test "rekeyed_branch_id is nil for a file whose head is not this conversation" do
+    # The pre-session_id fallback can hand back a file this locator never
+    # established an identity for. Calling that a branch would let the poller
+    # splice a foreign conversation onto the stored transcript.
+    dirs = build_rekeyed_branch(branch_head_session_id: "someone-else")
+
+    assert_nil TranscriptFileLocator.rekeyed_branch_id(@session, dirs[:branch], file_system: @mock_file_system)
+  end
+
+  test "rekeyed_branch_id is nil when the session has no recorded id yet" do
+    dirs = build_rekeyed_branch
+    @session.update!(session_id: nil)
+
+    assert_nil TranscriptFileLocator.rekeyed_branch_id(@session, dirs[:branch], file_system: @mock_file_system)
+  end
+
   test "DefaultFileSystem works with real filesystem" do
     # Test that the default file system adapter uses real File operations
     fs = TranscriptFileLocator::DefaultFileSystem.new
@@ -206,5 +329,39 @@ class TranscriptFileLocatorTest < ActiveSupport::TestCase
     # Test mtime returns Time
     mtime = fs.mtime(__FILE__)
     assert mtime.is_a?(Time)
+
+    # Test each_line yields the file's lines
+    first = nil
+    fs.each_line(__FILE__) { |line| first = line; break }
+    assert_equal "# frozen_string_literal: true\n", first
+  end
+
+  private
+
+  def transcript_line(session_id, text)
+    { "type" => "user", "sessionId" => session_id, "message" => { "role" => "user", "content" => text } }.to_json + "\n"
+  end
+
+  # The issue's shape: an abandoned <session_id>.jsonl, and alongside it a file
+  # named by a new uuid whose head duplicates the recorded transcript and whose
+  # tail is written under that new uuid.
+  def build_rekeyed_branch(branch_id: "branch-uuid", branch_head_session_id: "recorded-uuid")
+    @session.update!(session_id: "recorded-uuid")
+
+    dir = "/transcript/dir"
+    recorded = "#{dir}/recorded-uuid.jsonl"
+    branch = "#{dir}/#{branch_id}.jsonl"
+
+    head = (1..3).map { |i| transcript_line("recorded-uuid", "shared #{i}") }.join
+    branch_head = (1..3).map { |i| transcript_line(branch_head_session_id, "shared #{i}") }.join
+    branch_tail = (1..2).map { |i| transcript_line(branch_id, "after the re-key #{i}") }.join
+
+    @mock_file_system.mkdir_p(dir)
+    @mock_file_system.write(recorded, head)
+    @mock_file_system.write(branch, branch_head + branch_tail)
+    @mock_file_system.set_mtime(recorded, 1.hour.ago)
+    @mock_file_system.set_mtime(branch, Time.current)
+
+    { dir: dir, recorded: recorded, branch: branch }
   end
 end

@@ -210,6 +210,18 @@ class TranscriptPollerService
       history_carried_over: carryover.present?
     )
 
+    # Keep the history the runtime left behind when it re-keyed this conversation
+    # to a new transcript uuid. The locate above already switched to the branch;
+    # this is what makes the switch non-destructive. A no-op — not even a read —
+    # for every session whose runtime did not re-key.
+    transcript_content, new_messages = splice_rekeyed_branch(
+      main_transcript_file,
+      live_content,
+      transcript_content,
+      new_messages,
+      metadata_updates
+    )
+
     # Track how many messages we've already broadcast.
     # When broadcast_message_count is nil (cleared during session recovery/restart),
     # recalculate from the stored transcript to avoid re-broadcasting the entire
@@ -405,6 +417,136 @@ class TranscriptPollerService
 
     separator = prefix.end_with?("\n") ? "" : "\n"
     "#{prefix}#{separator}#{suffix}"
+  end
+
+  # Metadata keys describing the re-keyed branch this session is being polled on.
+  # Written together and cleared together, so a session is never left claiming a
+  # branch with no counts or counts with no branch.
+  REKEYED_BRANCH_KEYS = %w[
+    transcript_branch_session_id
+    transcript_branch_base_event_count
+    transcript_branch_shared_event_count
+  ].freeze
+
+  # Splice the stored history onto a transcript that was re-keyed mid-flight.
+  #
+  # A re-keyed branch opens with a copy of <session_id>.jsonl and carries on under
+  # a different uuid (#1047). TranscriptFileLocator follows it, so
+  # `main_transcript_file` is already the conversation the agent is having. What
+  # the branch is *not* is a superset of what Zimmer stored: the copy was taken at
+  # a point in the conversation, and whatever the abandoned file recorded after
+  # that point exists nowhere but `session.transcript`.
+  #
+  # That gap is what makes following the branch safe rather than a second silent
+  # freeze. A branch shorter than the stored transcript is a regression to the
+  # guard below, so without this the switch would read a live file and store
+  # nothing from it — forever, and least visibly for a session already frozen when
+  # this shipped, whose stored transcript is the abandoned file in full.
+  #
+  # So the stored transcript stays the immutable prefix and the branch contributes
+  # only what lies past the copy point. Two counts, recorded the first time a given
+  # branch is followed, make that idempotent across polls:
+  #
+  #   transcript_branch_session_id         which branch these counts describe
+  #   transcript_branch_base_event_count   N — stored lines kept as the prefix
+  #   transcript_branch_shared_event_count K — branch lines that prefix already holds
+  #
+  # Every later poll rebuilds `stored.first(N) + branch.drop(K)`, which is what
+  # stops a growing branch from re-appending the tail it contributed last time.
+  # Re-deriving K per poll would do exactly that, because after the first splice
+  # the stored transcript and the branch diverge at the copy point rather than at
+  # the branch's tip.
+  #
+  # In the ordinary re-key — a branch seeded with the WHOLE recorded file — N and
+  # K are equal, the result is the branch verbatim, and this costs one string
+  # comparison.
+  def splice_rekeyed_branch(main_transcript_file, live_content, transcript_content, new_messages, metadata_updates)
+    branch_id = @source.rekeyed_branch_id(session: @session, transcript_path: main_transcript_file)
+
+    if branch_id.blank?
+      clear_rekeyed_branch(metadata_updates)
+      return [ transcript_content, new_messages ]
+    end
+
+    # Same reason #carryover_prefix bails on one: the legacy Array transcript
+    # format is not JSONL text, and slicing `.to_s` of an Array would splice
+    # Ruby's inspect output into the stored transcript.
+    return [ transcript_content, new_messages ] if @session.transcript.is_a?(Array)
+
+    stored = ensure_trailing_newline(@session.transcript.to_s)
+    # Nothing stored yet is not a re-key worth repairing — the branch IS the whole
+    # conversation Zimmer has. Recording counts here would pin an empty prefix.
+    return [ transcript_content, new_messages ] if stored.blank?
+
+    base_count, shared_count = rekeyed_branch_counts(branch_id, main_transcript_file, stored, live_content, metadata_updates)
+
+    spliced = join_transcripts(
+      stored.lines.first(base_count).join,
+      live_content.to_s.lines.drop(shared_count).join
+    )
+    return [ transcript_content, new_messages ] if spliced == transcript_content
+
+    [ spliced, parse_transcript_lines(spliced) ]
+  end
+
+  # The (N, K) pair for `branch_id`, recorded on the poll that first follows it.
+  #
+  # Recomputed when the branch uuid changes, which covers a second re-key: N is
+  # taken against whatever is stored at that moment, so the previous branch's
+  # contribution is already inside the new prefix.
+  def rekeyed_branch_counts(branch_id, main_transcript_file, stored, live_content, metadata_updates)
+    if @session.metadata&.dig("transcript_branch_session_id") == branch_id
+      return [
+        @session.metadata["transcript_branch_base_event_count"].to_i,
+        @session.metadata["transcript_branch_shared_event_count"].to_i
+      ]
+    end
+
+    base_count = stored.lines.length
+    shared_count = common_line_prefix_count(stored, live_content.to_s)
+
+    metadata_updates["transcript_branch_session_id"] = branch_id
+    metadata_updates["transcript_branch_base_event_count"] = base_count
+    metadata_updates["transcript_branch_shared_event_count"] = shared_count
+
+    @logger.warn(
+      "Runtime re-keyed the transcript to a new session uuid; following the branch",
+      branch_session_id: branch_id,
+      recorded_session_id: @session.session_id,
+      stored_events: base_count,
+      shared_events: shared_count,
+      branch_events: Session.transcript_line_count(live_content),
+      transcript_file: main_transcript_file
+    )
+
+    # The stored transcript is about to grow past the branch, so the marker that
+    # said the on-disk copy had regressed must not outlive the repair.
+    if @session.metadata&.dig("transcript_regression_detected")
+      with_db_retry { @session.remove_metadata!([ "transcript_regression_detected" ]) }
+    end
+
+    [ base_count, shared_count ]
+  end
+
+  # How many leading lines two transcripts share verbatim.
+  def common_line_prefix_count(stored, live_content)
+    stored_lines = stored.lines
+    live_lines = live_content.lines
+    limit = [ stored_lines.length, live_lines.length ].min
+
+    count = 0
+    count += 1 while count < limit && stored_lines[count] == live_lines[count]
+    count
+  end
+
+  # Retire the branch bookkeeping once the recorded <session_id>.jsonl is the file
+  # being polled again — which is what a resume produces, since
+  # AgentSessionJob#restore_regressed_transcript_if_needed re-materializes the
+  # stored transcript there before the runtime reads it.
+  def clear_rekeyed_branch(metadata_updates)
+    return if @session.metadata&.dig("transcript_branch_session_id").blank?
+
+    REKEYED_BRANCH_KEYS.each { |key| metadata_updates[key] = nil }
   end
 
   # Persist the runtime's own session id once it appears in the transcript.
