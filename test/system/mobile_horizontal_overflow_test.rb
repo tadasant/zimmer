@@ -303,6 +303,33 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/proof-stalled-spot-hold-375.png")
   end
 
+  # The banner's fourth headline: a hold record the session's own class has
+  # overtaken. It carries the longest prose the box can hold — the frozen gate
+  # sentence, then the sentence that settles it — and it drops the button that
+  # used to be the row's widest child, so its geometry is not the geometry the
+  # case above measures (#423).
+  test "a spot-hold banner a promotion has overtaken does not overflow horizontally on a phone" do
+    session = create_session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY)
+    session.update!(metadata: (session.metadata || {}).merge(
+      SpotSessionHold::HELD_AT => 8.minutes.ago.utc.iso8601,
+      SpotSessionHold::HELD_REASON => "at_utilization_limit",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: the weekly window is at 91% of the 80% spot " \
+                                      "budget, averaged across all 4 accounts. Spot work resumes as the " \
+                                      "window's pacing curve catches up. Priority sessions are unaffected.",
+      SpotSessionHold::HELD_RETRY_AT => 53.minutes.from_now.utc.iso8601,
+      SpotSessionHold::HELD_COUNT => 52,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    ))
+
+    visit session_path(session)
+    assert_text "Spot hold no longer applies"
+    assert_text "the spot gate does not hold priority sessions"
+    assert_no_text "Make this session priority"
+
+    assert_no_horizontal_overflow("session detail with a promotion-superseded spot-hold banner")
+    page.save_screenshot("tmp/screenshots/proof-promoted-spot-hold-375.png")
+  end
+
   # An injected SKILL.md reaches the transcript as an `isMeta` line, and the
   # timeline draws it collapsed: a muted digest row carrying the skill's name, an
   # approximate token count and a disclosure. The name is a long hyphenated token

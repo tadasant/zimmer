@@ -185,6 +185,21 @@ class SpotSessionHold
   METADATA_KEYS = ([ HELD_AT, HELD_REASON, HELD_DETAIL, HELD_RETRY_AT, HELD_COUNT,
                      HELD_TURN ] + HELD_TURN_KEYS).freeze
 
+  # What a surface says about a hold record carried by a session that is no
+  # longer spot. ONE sentence, here, because the session page and `get_session`
+  # both have to say it and a hold that reads two different ways on two surfaces
+  # is the defect wearing a second face.
+  #
+  # It exists because `spot_hold_detail` is FROZEN at `spot_hold_at` and the
+  # gate's utilization sentence ends "Priority sessions are unaffected." Replayed
+  # unqualified on a session that has since become priority, the record and the
+  # class contradict each other in the same box — which is exactly how session
+  # 6934 read: `Scheduling class: priority (set on this session)` above `Held by
+  # the spot gate (at_utilization_limit)`, `Holds so far: 52` (#423).
+  PROMOTED_SENTENCE =
+    "This session is priority now, and the spot gate does not hold priority sessions — so this " \
+    "record is how it got here, not why it is still waiting. The gate is not asked again for it."
+
   # Spread over which held sessions re-check, so a backlog does not re-evaluate
   # in lockstep.
   RETRY_JITTER = 2.minutes
@@ -344,7 +359,25 @@ class SpotSessionHold
     # @param images [Array<Hash>, nil] carried through to the retry unchanged
     # @param files [Array<Hash>, nil]
     def hold_if_needed(session, follow_up_prompt: nil, log_buffer: nil, images: nil, files: nil)
-      return false unless session.spot?
+      # A priority session is not gated — and a hold record left on one is a
+      # FOSSIL, not state. It is cleared here rather than merely stepped over,
+      # because every surface that reads the record reads it as live: session
+      # 6934 simultaneously said `Scheduling class: priority (set on this
+      # session)` and `Held by the spot gate (at_utilization_limit)` with `Holds
+      # so far: 52`, under a frozen gate sentence ending "Priority sessions are
+      # unaffected" (#423). Both halves cannot be true, and the class is the one
+      # that is.
+      #
+      # This is the LAST of the doors a promoted session comes through, not the
+      # first: every promotion path releases the hold itself (see
+      # Sessions::StartNow), so reaching here with a record means something moved
+      # the class without going through one of them — a demote-then-promote, a
+      # class change made directly on the row, a genesis-wide policy flip. The
+      # record would otherwise outlive the session's whole run.
+      unless session.spot?
+        clear(session)
+        return false
+      end
 
       # The one seam. SpotGateService.allow_start? reads the same method, so the
       # readable predicate and the production path cannot drift apart.
@@ -425,6 +458,21 @@ class SpotSessionHold
     # recovery) or reported as absent (`get_spot_policy`).
     def held?(session)
       session.waiting? && (session.metadata || {})[HELD_REASON].present?
+    end
+
+    # Whether the hold this session carries has been overtaken by its class.
+    #
+    # Deliberately NOT folded into #held?. That predicate is what the sweep's
+    # population and every "is this session asleep on purpose?" caller key on,
+    # and a promoted session whose ladder has stalled still needs the sweep to
+    # put a turn back on it — narrowing #held? would make exactly that session
+    # invisible to the one thing that can rescue it. This is a question about the
+    # RECORD's honesty, asked only by the surfaces that replay it.
+    #
+    # Read off the row rather than through #held?, so it answers for an archived
+    # session too — those keep their hold record deliberately.
+    def superseded_by_promotion?(session)
+      (session.metadata || {})[HELD_REASON].present? && !session.spot?
     end
 
     # Every session dormant on a hold, oldest hold first.

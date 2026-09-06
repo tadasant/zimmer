@@ -1575,7 +1575,9 @@ carries onto this trigger's own sessions that are still `waiting`** — the back
 flip is usually trying to release. It reaches only this trigger's sessions, only ones still in
 `waiting`, and only ones still carrying the class the trigger stamped, so a session an operator moved
 by hand stays where they put it. Every surface that changes the class reports how many sessions
-moved. To move a session it does not reach — one that has already started, say — move that session:
+moved. A session the change **promotes** is then started rather than left to wait out a spot-gate
+re-check up to an hour away — its already-queued turn is pulled forward, never duplicated. To move a
+session it does not reach — one that has already started, say — move that session:
 the button on its hold banner, the selector on its detail page, or `action_session`'s
 `change_scheduling_class`. See
 [Spot and priority](/sessions/spot-and-priority/#stored-only-when-someone-chose-it) for the full rule.
