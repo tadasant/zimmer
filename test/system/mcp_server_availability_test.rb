@@ -116,14 +116,16 @@ class McpServerAvailabilityTest < ApplicationSystemTestCase
 
     with_mixed_availability_catalog do
       visit session_path(session)
-      find("[data-action~='click->editable-mcp-servers#edit']", match: :first).click
-      input = find("[data-editable-mcp-servers-target='input']")
+      find("[data-catalog-multiselect-accent-value='indigo'] [data-action~='click->catalog-multiselect#edit']",
+        match: :first).click
+      input = find("[data-catalog-multiselect-accent-value='indigo'] [data-catalog-multiselect-target='input']",
+        match: :first)
       input.click
       input.fill_in with: "strad"
-      assert_selector ".server-item", minimum: 1
+      assert_selector ".catalog-multiselect-item", minimum: 1
 
       assert_text "STRAD_STAGING_API_KEY unresolved"
-      assert_selector ".server-item", text: "Unavailable", minimum: 1
+      assert_selector ".catalog-multiselect-item", text: "Unavailable", minimum: 1
     end
   end
 

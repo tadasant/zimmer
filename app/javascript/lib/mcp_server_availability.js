@@ -1,7 +1,7 @@
 // Shared rendering for the availability flag both MCP-server pickers carry.
 //
 // The server options handed to `mcp-server-select` (new session / trigger forms)
-// and `editable-mcp-servers` (session detail) come from the same Ruby builder,
+// and `catalog-multiselect` (session detail) come from the same Ruby builder,
 // `McpServerOptions`, so each option may carry `unavailable` and
 // `unavailable_reason`. Zimmer knows in advance that such a server cannot start
 // — an unresolved `${VAR}` raises at prepare time and fails the whole session,
