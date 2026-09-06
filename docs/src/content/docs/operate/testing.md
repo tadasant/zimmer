@@ -54,8 +54,9 @@ assumed pre-provisioned on the runner; the CI branch of that file points Seleniu
 and `.agent-containers/`. The scripts in the first two are not conveniences: they run as root on
 the droplets, over SSH, out of the deploy path. `clear-root-password-expiry.sh` rewrites root's
 password ageing, `tailnet-reap-node.sh` removes tailnet nodes, `worker-watchdog.sh` sends `kill
--9` to container shims and `rm -rf`s containerd task directories, and `install-worker-watchdog.sh`
-writes systemd units. `bash -n` proves those parse and nothing more.
+-9` to container shims and `rm -rf`s containerd task directories, `install-worker-watchdog.sh`
+writes systemd units, and `install-needrestart-sysbox-dropin.sh` writes into
+`/etc/needrestart/conf.d`. `bash -n` proves those parse and nothing more.
 
 **The floor is `--severity=info`, and that is the load-bearing part.** SC2086 — an unquoted
 expansion, so `rm -rf $dir/foo` becomes `rm -rf /foo` when `$dir` is empty — is an *info*-level
