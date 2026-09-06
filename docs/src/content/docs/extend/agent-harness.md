@@ -355,9 +355,9 @@ backwards and a session's real history is thrown away; leave it unimplemented an
 
 ## Pi is the runtime that supplies nothing
 
-Claude Code and Codex both arrive with MCP, hooks and plugins built in, so
-Zimmer's job for them is to write config files into a shape the runtime already
-understands. Pi ships a skills mechanism and nothing else. Three consequences are
+Claude Code and Codex both arrive with an MCP client built in (Claude Code with
+hooks and plugins too), so Zimmer's job for them is to write config files into a
+shape the runtime already understands. Pi ships a skills mechanism and nothing else. Three consequences are
 worth knowing before you read `PiRuntimeAdapter`.
 
 **`air prepare pi` writes no MCP config.** `@pulsemcp/air-adapter-pi` is

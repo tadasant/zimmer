@@ -111,8 +111,9 @@ must exist before boot.
 `~/.zimmer/clones/`. Agent credentials live in `~/.claude/.credentials.json` and
 `~/.codex/auth.json`, and are read by the CLI, written by Zimmer, and *also* rewritten by the
 CLI behind Zimmer's back. See [Agent harness credentials](/auth/harness/). Pi holds no
-Zimmer-written credential file at all — it reads a provider key out of its process
-environment, and `~/.pi/agent` (a named volume) carries only its own settings.
+Zimmer-written *harness* credential — it reads a provider key out of its process environment — so
+`~/.pi/agent` (a named volume) carries its own settings plus the MCP OAuth tokens Zimmer stages
+there for it.
 
 ## From prompt to running agent
 

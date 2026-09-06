@@ -116,14 +116,16 @@ Consumed as `${VAR}` placeholders in `mcp.json`, resolved by `SecretsLoader` at 
 - **Extension toggles** — the `extension_states` JSONB map. See [Extensions](/extend/extensions/).
 - Catalog refresh controls.
 
-:::caution[The global default runtime is ignored by the API unless you pass an `agent_root`]
-`Api::V1::SessionsController#create` only consults `AppSetting.default_runtime` through
-`AgentRootsConfig`. With no `agent_root` param, it returns early and the runtime is the database
-column default — `claude_code`.
+:::caution[The MCP `start_session` tool skips the global default when you name no agent root]
+The REST API honors the whole chain: `Api::V1::SessionsController#resolve_agent_root_defaults!`
+runs whether or not `agent_root` was given, so a rootless `POST /api/v1/sessions` picks up both
+values set here (pinned by `sessions_controller_contract_test.rb`, "create without agent_root
+honors the global default runtime and model").
 
-Set the global default to `codex` or `pi`, create a session via the API without an `agent_root`,
-and you get Claude Code. The old `docs/REST_API.md` documented the intended chain; the behavior
-above is the actual one.
+The MCP `start_session` tool does not. It reaches `apply_agent_root_defaults!` only
+`if agent_root_name`, so a rootless MCP spawn falls through to the database column default —
+`claude_code`. Set the global default to `codex` or `pi`, start a session over MCP with no
+`agent_root`, and you get Claude Code.
 :::
 
 ## Hard-coded limits

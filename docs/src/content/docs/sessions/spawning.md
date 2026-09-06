@@ -786,12 +786,13 @@ runtime. An enabled extension can still override the variable through the spawn-
 extension contributions are merged last.
 
 :::caution[A spawn-env asymmetry]
-`Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` —
-`CodexRuntimeAdapter#spawn_process` never consults it, so extension env contributions are
-unreachable for Codex, despite the hook receiving a `runtime` context that implies otherwise.
+`Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` — neither
+`CodexRuntimeAdapter#spawn_process` nor `PiRuntimeAdapter#spawn_process` consults it, so extension
+env contributions are unreachable for both, despite the hook receiving a `runtime` context that
+implies otherwise.
 
 The elicitation variables used to be the other half of this pair. They now come from `CliSpawnEnv`,
-which both runtimes include.
+which all three runtimes include.
 :::
 
 ## The boot-tasks readiness gate

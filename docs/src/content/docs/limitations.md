@@ -1763,7 +1763,7 @@ marking the discontinuity in the timeline, is unbuilt.
 
 ### The approval gate can only be verified as far as Zimmer's own doorstep
 
-`ELICITATION_REQUEST_URL` and `ELICITATION_SESSION_ID` reach a stdio MCP server on both runtimes —
+`ELICITATION_REQUEST_URL` and `ELICITATION_SESSION_ID` reach a stdio MCP server on all three runtimes —
 `CliSpawnEnv#apply_elicitation_env` puts them on the agent process, and
 `RuntimeConfigPostProcessor#inject_elicitation_env!` writes them into the server's own `env` table in
 the generated config, which is the only channel Codex honors. `ElicitationEndpointHealthCheckJob` proves
