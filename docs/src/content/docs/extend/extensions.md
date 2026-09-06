@@ -59,18 +59,24 @@ are unreachable for Codex sessions.
 The other two mount points are Claude-specific by name (`ClaudePrintRunner`, `ClaudeSpawnEnv`).
 :::
 
-## What ships: nothing
+## What ships: the seam, and no extensions
 
 `BUILTIN_EXTENSION_CLASSES` is empty. The seam is live — the registry, the base class, the three
 mount points, and the Settings → Experimental rendering all work — but no extension is registered.
 
 The one that used to ship was `McpToolSearchExtension` (id `mcp_tool_search`), whose only hook
-returned `{"ENABLE_TOOL_SEARCH" => "true"}` for Claude Code. It is gone, because it could never do
-its job: `.dockerignore` excludes `/app/extensions/*/`, so the class did not exist in any built
-image, the registry skipped it, and the `ENABLE_TOOL_SEARCH=false` baseline always stood in
+returned `{"ENABLE_TOOL_SEARCH" => "true"}` for Claude Code. It is gone, because at the time it could
+never do its job: `.dockerignore` then excluded `/app/extensions/*/`, so the class did not exist in
+any built image, the registry skipped it, and the `ENABLE_TOOL_SEARCH=false` baseline always stood in
 production. MCP tool search is now a first-class `AppSetting` column, on by default — see
 [Spawning a session](/sessions/spawning/#mcp-tool-search). The `mcp_tool_search` key
 is dropped from `extension_states` by the same migration, so there is only ever one control.
+
+That exclusion is gone ([#91](https://github.com/tadasant/zimmer/issues/91)). An extension
+directory added to `app/extensions/` now reaches every built image, and the build fails if it does
+not — see [Extensions do ship in the image](/operate/deploying/#extensions-do-ship-in-the-image).
+So the choice between an extension and an `AppSetting` column is back to being about what the thing
+*is*: an extension changes how Zimmer drives a runtime, a column is a value the app reads.
 
 :::danger[The old docs described a second extension that does not exist]
 `docs/AO_EXTENSIONS.md` described "the two built-in extensions" and documented `pty_transport` /
@@ -94,22 +100,35 @@ AppSetting.first_or_create!.tap { |s| s.set_extension_enabled("my_thing", true) 
 With no extension registered, that section of the page renders only the first-class experimental
 settings.
 
-**Install** — here's the wrinkle: the core Docker image ships with no extensions at all.
-`.dockerignore` excludes `/app/extensions/*/`, so an extension added to `app/extensions/` is absent
-from a built image and cannot govern anything in production. Tracked in
-[#91](https://github.com/tadasant/zimmer/issues/91). Until that is fixed, a setting an operator has
-to be able to change on the deployed app belongs on `AppSetting`, not behind an extension.
+**Install** — there is nothing to install. `Dockerfile` blanket-copies the repository into `/rails`
+and nothing in `.dockerignore` takes `app/extensions/` back out, so an extension merged to `main` is
+in the next image and in every container that image starts. The only operating step is the toggle
+above.
 
-```bash
-scripts/install-extension.sh <id> --container <name>   # docker cp + restart
-scripts/install-extension.sh <id> --path <checkout>    # for the next build
-scripts/install-extension.sh --list                    # enumerate app/extensions/*
-```
+There used to be a `scripts/install-extension.sh`, which `docker cp`'d a directory into a running
+container and restarted it. It is deleted. It needed a shell on the production host — which
+[the invariants](/operate/deploying/#ops-actions-ship-with-the-deploy) say is a defect to design out,
+not a procedure to document — and whatever it installed was gone at the next deploy.
 
 **Remove** — `rm -rf app/extensions/<id>/`. `ExtensionRegistry` resolves builtins with
 `safe_constantize` and skips anything that returns `nil`, so every seam falls back to native behavior.
 Leaving the dead name in `BUILTIN_EXTENSION_CLASSES` is harmless. *That* is the removability
 mechanism, and it's a good one.
+
+:::note[Removability is a property of the source tree, not of the image]
+The two got conflated once, and it cost the seam its only extension. Deleting the directory from the
+repository is what drops a feature; the `safe_constantize` skip is what makes that safe with no core
+edit. Stripping the directory at *image-build* time is a different thing wearing the same clothes —
+it does not demonstrate removability, it just guarantees that the one build meant to carry an
+internal-only feature never does.
+:::
+
+:::caution[`app/extensions/image_canary/` is not an extension]
+It holds no Ruby and registers nothing. `scripts/assert-extensions-shipped.sh` looks for the marker
+file inside it to prove a *subdirectory* of `app/extensions/` survived into the image — the old rule
+excluded subdirectories while leaving `app/extensions/CLAUDE.md` in place, so a marker at the top of
+the tree would have passed throughout the outage. Don't delete it, and don't put a `.rb` file in it.
+:::
 
 ## Writing one
 

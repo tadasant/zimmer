@@ -25,10 +25,12 @@ module Zimmer
     # removed extension directory is skipped rather than raising. Order is the
     # resolution order for first-wins hooks (cli_adapter_override, print backend).
     #
-    # No built-in extensions are registered. `.dockerignore` excludes
-    # /app/extensions/*/, so an extension cannot govern anything in a deployed
-    # image; a setting an operator must be able to change on the deployed app
-    # belongs on AppSetting instead. Add a class name here to register one.
+    # No built-in extensions are registered today, and this list is the whole of
+    # registration -- an app/extensions/<id>/ directory that is not named here
+    # does nothing, however present it is. Directories ship in the image (see
+    # .dockerignore and scripts/assert-extensions-shipped.sh), so a class named
+    # here resolves in a deployed container and an operator turns it on from
+    # Settings -> Experimental, default off.
     BUILTIN_EXTENSION_CLASSES = [].freeze
 
     @mutex = Mutex.new
