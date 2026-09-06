@@ -151,6 +151,7 @@ Claude-dialect body loaded, matched, spawned and exited 0 having silently done n
 One asymmetry survives, in the right-hand column: Pi's `content` **replaces** the tool result
 rather than appending to it, so a Pi-dialect body has to echo the command's own output back before
 its own text or the model never sees what the command actually did.
+
 `@tadasant/pi-hooks` sets `PI_HOOK=1` on every hook process, which is the signal to answer in its
 dialect; `git-push-ci-reminder.mjs` normalizes either payload and renders either response, and it
 is worth copying that shape even though a single-dialect body now works.

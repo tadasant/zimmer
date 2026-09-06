@@ -5,18 +5,20 @@
 // pushing is not finishing: CI has to be confirmed green before the work is
 // handed back. Anything else is a no-op.
 //
-// AIR is vendor-neutral, and this body is too. Two runtimes execute it today and
-// they disagree about both halves of the contract:
+// AIR is vendor-neutral, and this body is too. Two runtimes execute it, and they
+// name the same things differently:
 //
 //   | Runtime                        | stdin payload                          | how context reaches the model |
 //   | ------------------------------ | -------------------------------------- | ----------------------------- |
 //   | Claude Code (PostToolUse)      | `{tool_name, tool_input, tool_response}` | `hookSpecificOutput.additionalContext` |
 //   | Pi via `@tadasant/pi-hooks`    | `{event, toolName, input, content}`      | `{"content": ...}`, which REPLACES the tool result |
 //
-// So the script reads either shape and answers in the matching dialect. Pi's
-// `content` replaces rather than appends, which is why the Pi branch echoes the
-// original tool output back with the reminder after it — dropping it would hide
-// the command's real result from the model.
+// `@tadasant/pi-hooks` 0.2.0 and up sends both namings and honors both replies, so
+// a body speaking either dialect runs on either runtime. One asymmetry survives
+// translation and is why this script still branches: Pi's `content` REPLACES the
+// tool result where `additionalContext` adds to it, so the Pi branch has to echo
+// the original output back ahead of the reminder or the model never sees what the
+// command actually did.
 //
 // Contract, on both runtimes:
 //   - stdin  : one JSON object describing the tool call that just completed
@@ -40,20 +42,23 @@ const REMINDER = [
 // Matches a push subcommand with any leading git options — `git push`,
 // `git -C /repo push`, `git --no-pager push`. Deliberately does not try to parse
 // compound shell lines beyond finding the invocation, and it does not track
-// quoting: a quote counts as a boundary like any other separator, so both
-// `echo "git push"` and `bash -c "git push"` match. That is acceptable, because
-// the worst a false positive costs is one extra paragraph of context — while a
-// false negative is a missed reminder that reads exactly like a hook that never
-// fired at all. It read like one once: zimmer#1073 probed the Pi runtime with
-// `echo "git push origin main"`, got the command back verbatim, and concluded
-// AIR hooks did not fire on Pi. The hooks fired; this pattern declined the quote.
-const GIT_PUSH = /(^|[;&|(\s"'])git\s+(?:-{1,2}[^\s]+(?:\s+[^\s-][^\s]*)?\s+)*push(\s|$|;|&|\||\))/;
+// quoting: a quote counts as a boundary like any other separator, on BOTH sides of
+// the invocation, so `echo "git push"` and `bash -c "git push"` both match. That is
+// acceptable, because the worst a false positive costs is one extra paragraph of
+// context — while a false negative is a missed reminder that reads exactly like a
+// hook that never fired at all. It read like one once: zimmer#1073 probed the Pi
+// runtime with `echo "git push origin main"`, got the command back verbatim, and
+// concluded AIR hooks did not fire on Pi. The hooks fired; this pattern declined
+// the quote.
+const GIT_PUSH = /(^|[;&|(\s"'])git\s+(?:-{1,2}[^\s]+(?:\s+[^\s-][^\s]*)?\s+)*push([\s;&|)"']|$)/;
 
 // A dry run pushes nothing, so there is no CI to wait for. Tested against the
 // push invocation's own arguments rather than the whole command line, so an
 // unrelated `--dry-run` later in a compound command cannot suppress the reminder
-// for a push that really happened.
-const DRY_RUN = /(^|\s)(--dry-run|-n)(\s|$)/;
+// for a push that really happened. A closing quote terminates the flag the same
+// way whitespace does, so a quoted `bash -c "git push --dry-run"` stays quiet
+// rather than reminding on the quote the arguments end with.
+const DRY_RUN = /(^|\s)(--dry-run|-n)(\s|$|["'])/;
 
 // Everything from the matched `push` to the end of that command — i.e. up to the
 // next shell separator.

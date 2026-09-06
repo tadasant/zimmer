@@ -1073,7 +1073,8 @@ From 0.2.0 the extension sends **both** namings on every event and honors **both
 either body works unmodified. Zimmer therefore pins 0.2.0 as a floor rather than a
 current-version, and `PiExtensions::REGISTRY` says so; the floor is held by a live test
 (`test/integration/pi_hooks_and_plugins_live_test.rb`) that drives a real `pi` with a hook body
-speaking only Claude's dialect, and which fails against 0.1.0.
+speaking only Claude's dialect, and which fails against 0.1.0. Run it by hand with `PI_E2E=1` —
+CI has no `pi` binary and skips it, so the floor is documented and reproducible rather than gated.
 
 Two differences survive the fix and are worth knowing when writing a body:
 
