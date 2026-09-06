@@ -1363,9 +1363,11 @@ rest in `needs_input` instead, on five conditions:
    [Limitations](/limitations/#a-transient-boot-failure-that-exhausts-its-retries-still-fails-invisibly).
 3. **The turn was carrying a prompt.** An undelivered prompt is what makes this a person's
    problem. A promptless turn has nothing anybody is waiting on.
-4. **The session is `running`** — `pause` transitions from `running` only, and that is exactly the
-   state a delivered follow-up is in. A session still `waiting` is having its *first* turn set up,
-   in front of the person who just created it, and still fails.
+4. **The session is `running` or `waiting`.** `pause` transitions from `running` only, so a turn
+   that died during *setup* — which since [#1040](https://github.com/tadasant/zimmer/pull/1040)
+   leaves the session `waiting` rather than `running` — takes the `start!` it had earned first, and
+   then parks. Without that the park is refused and the caller fails the session into exactly the
+   state this class exists to keep it out of.
 5. **Not a status-summary fork**, which must never take a slot in the action queue.
 
 The park writes `failure_reason: "undelivered_turn"`, the exception class and message, and the
@@ -1379,6 +1381,108 @@ without stamping the marker — the REST `follow_up` endpoint, MCP `action_sessi
 and `EnqueuedMessageProcessorService` — so all three would send the dead turn's prompt in place of
 the one a human just wrote. The third is reachable from this park's own `pause!`, which drains the
 queued-message backlog.
+
+#### A failure before the first agent turn is retried, not failed
+
+The park above owns the turn that was carrying somebody's prompt. The turn that was carrying
+nothing — a session's *first* one, still being set up — has a different right answer, because
+nobody is waiting on it and nothing has been done yet: **run it again**.
+
+On 2026-09-02 an OverlayFS `EXDEV` came out of the AIR CLI's install swap on the production host —
+`Invalid cross-device link @ rb_file_s_rename - (/opt/air-cli/node_modules,
+/opt/air-cli/.retired/node_modules)` — and did so for 45 minutes.
+`AirPrepareService.ensure_air_installed!` rescues `SystemCallError` and re-raises it as
+`AirPrepareError`; that class is in neither of `AgentSessionJob`'s two prepare-specific rescues, so
+it reached the catch-all, which stamped `failure_reason: "exception"` and called `fail!`. 14+
+sessions went terminal in that window, every one of them killed before it had taken a single turn.
+Three were the only live shepherd for an open PR; one was the session spawned to fix the underlying
+bug. Nothing retries `failed` and `Sessions::StartNow` refuses it, so they sat there for about seven
+hours until a human-run sweep restarted them
+([#785](https://github.com/tadasant/zimmer/issues/785)).
+
+`AirPrepareService`'s own 5s/10s/20s ladder could not have caught it and was never going to: that
+ladder wraps the `air prepare` **subprocess**, and this was a Ruby-side raise in the install that
+runs before it.
+
+So `AgentSessionJob#retry_bootstrap_failure` runs first in the same catch-all, and **the gate is
+*when* the failure happened, not what it was**. `Session#before_first_agent_turn?` is the whole
+classification — `metadata["runtime_started"]` blank *and* the transcript blank, both, the same
+caution `never_ran?` takes. A turn that raised before an agent ever spoke destroyed nothing: no
+conversation, no half-applied edit, no pushed branch. There is no allowlist of retryable exception
+classes here on purpose, because an allowlist only ever knows about the outages that already
+happened, and the next fault will be a shape nobody enumerated either.
+
+Note what is deliberately *not* one of the signals: `session_id`. `AgentSessionJob` stamps the
+runtime session id right after the clone and **before** `air prepare`, so every failure this
+predicate exists to catch already has one — which is why `Session#never_ran?`, whose first clause is
+`session_id.blank?`, is the wrong question here.
+
+Five conditions, and the session is left `waiting` with its configuration intact so the ordinary
+start path picks it up again:
+
+1. **No agent process was spawned by this job** — the same question the park asks, of the same two
+   pids.
+2. **The turn carried no prompt.** That is the park's case and must stay there — this retry clears
+   the runtime session id, which routes the replacement down `#perform`'s fresh-start
+   reclassification, and that arm *drops* the follow-up text when the session already has a prompt
+   of its own. The two paths are disjoint by this line.
+3. **The session is `waiting`** — what a turn still in setup reads as since #1040. This is also what
+   keeps a `clone_only` turn out (created `needs_input`) and a `resume_monitoring` one (it takes
+   `start!` before any of its setup can raise).
+4. **Before the first agent turn**, as above.
+5. **Budget left.**
+
+Note what is *not* a condition, where the park has one. The park declines while a `retry_on`
+attempt is queued, because parking **announces an ending** in the action queue and a human acting
+on that announcement would race the retry into delivering one prompt twice. This path announces
+nothing — and because taking it suppresses the catch-all's `raise`, no `retry_on` attempt is ever
+scheduled behind it, so exactly one replacement exists either way. Declining here would leave the
+three classes most likely to be a transient outage (`Timeout::Error`, `Errno::ECONNRESET`,
+`Errno::ETIMEDOUT`) going terminal, which is the failure this exists to end — and would let *what*
+raised decide after all. There is no status-summary-fork carve-out either: a fork must never take a
+slot in the action queue, and staying `waiting` takes none.
+
+The ladder is 30s / 2m / 5m / 15m / 30m plus up to 30s of jitter — about 52 minutes in total,
+chosen to outlast the 45-minute window that produced the outage, with the jitter there so a
+fleet-wide fault does not re-land in lockstep the way it arrived. It is **bounded** because the
+opposite error is exactly as silent: a genuinely broken configuration retrying forever would never
+reach anybody either.
+
+Each retry discards what the failed attempt built — `Session::SETUP_ARTIFACT_KEYS`, the runtime
+session id, and the clone tree itself. That is not tidiness: `#perform` reuses an existing clone
+when it finds one, and **that arm does not run `air prepare` at all**, because it assumes the clone
+was prepared by whatever made it. For a bootstrap failure that assumption is false, so a retry which
+kept the clone would skip the very step that failed. The tree is deleted through
+`AtomicCloneRemoval` rather than left for a reaper, because the youngest bar any clone reaper
+applies is `OrphanCloneFilesystemCleanupJob::PRESSURE_AGE_THRESHOLD` at two hours and the whole
+ladder fits inside it — five abandoned clones per failing session, none of them reclaimable for an
+hour, is how a fleet-wide bootstrap fault fills the volume, and a full volume is itself a bootstrap
+failure. That is the one feedback loop the retry budget does not bound.
+
+The **give-up** path keeps the clone and clears only the runtime session id. `setup_complete?` is
+`session_id.present? && clone_root.present?`, so nulling the id alone already leaves the terminal
+session `needs_restart_from_scratch?`; dropping `clone_path` as well would make two things false at
+once, since the teardown line tells the human the clone is preserved for debugging and
+`DeferredCloneCleanupJob` finds a failed session's clone through `clone_root`.
+
+What is kept on both paths is everything that *is* the session — prompt, agent root, MCP servers,
+catalog selections, goal, attachments — and the replacement job carries the original job's own
+arguments, so the retry is the same turn rather than an approximation of it.
+
+The retry is quiet in one specific sense, and it is worth being precise about which. The
+catch-all's own `Error in agent execution` line and backtrace still land on the session's timeline
+on every attempt, followed by a `warning` explaining the re-queue — nothing about the fault is
+hidden from anybody reading the session. What the retry does not take is the `raise e`, and that is
+the *paging* path: Sentry's ActiveJob integration and the terminal ERROR the
+`zimmer_backend_log_errors` Grafana rule reads. A fault about to fix itself should not page five
+times. Giving up is where the volume goes. When the budget is spent the session takes the ordinary loud path — an
+ERROR line, `fail!`, and the re-raise into Sentry and the terminal ActiveJob ERROR the
+`zimmer_backend_log_errors` Grafana rule reads — under `failure_reason:
+"bootstrap_retries_exhausted"` rather than the generic `"exception"`, so the failure that outlived
+five automatic attempts does not read like the first one. That reason is a member of
+`Session::PRE_PROMPT_FAILURE_REASONS`; combined with the discarded setup artifacts it leaves the
+session `needs_restart_from_scratch?`, so the Restart button on the page a human lands on re-runs
+the whole pipeline instead of trying to `--resume` a conversation that was never written.
 
 It writes **no** `paused_by: "recovery"` marker either: that marker promises a sweep will continue
 the session, and a boot that is deterministically broken would just fail again on every one of those
