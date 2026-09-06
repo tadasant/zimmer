@@ -1,5 +1,12 @@
 require "test_helper"
 
+# The transcript panel's initial batch and the infinite scroll that pages back
+# from it.
+#
+# The batch is fetched from #transcript_panel, not #show: the detail page defers
+# the whole panel into a <turbo-frame loading="lazy"> that only loads when the
+# reader opens the Transcript disclosure, so this URL is where the items and the
+# infinite-scroll data attributes live.
 class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
   setup do
     @session = sessions(:running)
@@ -7,9 +14,9 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     create_session_with_many_items
   end
 
-  # Test show page pagination
-  test "should show only last 100 items on initial page load when session has more items" do
-    get session_url(@large_session)
+  # Test transcript panel pagination
+  test "should show only last 100 items on initial panel load when session has more items" do
+    get transcript_panel_session_url(@large_session)
 
     assert_response :success
     # Should show that there are more items to load
@@ -19,7 +26,7 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
 
   test "should show all items when session has fewer than 100 items" do
     # Session with just 3 messages
-    get session_url(sessions(:with_transcript))
+    get transcript_panel_session_url(sessions(:with_transcript))
 
     assert_response :success
     # Should not show the "load more" button
@@ -29,7 +36,7 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
   end
 
   test "should include infinite scroll data attributes" do
-    get session_url(@large_session)
+    get transcript_panel_session_url(@large_session)
 
     assert_response :success
     assert_select "[data-controller='infinite-scroll']"
@@ -83,8 +90,8 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     assert_select "#timeline-pagination-state[data-has-more='false']"
   end
 
-  test "show page sets correct before_index value when items are truncated" do
-    get session_url(@large_session)
+  test "transcript panel sets correct before_index value when items are truncated" do
+    get transcript_panel_session_url(@large_session)
 
     assert_response :success
     # With 150 items and showing last 100, before_index should be 50
@@ -103,7 +110,7 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
   # Note: These tests use filter=verbose to see all item types since the default
   # filter is "minimal" which only shows messages (not logs or tool messages)
   test "timeline items have data-filter-category attribute for messages" do
-    get session_url(sessions(:with_transcript), filter: "verbose")
+    get transcript_panel_session_url(sessions(:with_transcript), filter: "verbose")
 
     assert_response :success
     # Messages should have filter-category="message"
@@ -120,7 +127,7 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     )
 
     # Use verbose filter to see logs
-    get session_url(session, filter: "verbose")
+    get transcript_panel_session_url(session, filter: "verbose")
 
     assert_response :success
     # Regular logs should have filter-category="regular-log"
@@ -137,7 +144,7 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     )
 
     # Use verbose filter to see verbose logs
-    get session_url(session, filter: "verbose")
+    get transcript_panel_session_url(session, filter: "verbose")
 
     assert_response :success
     # Verbose logs should have filter-category="verbose-log"
@@ -148,7 +155,7 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     session = create_session_with_mixed_items
 
     # Use verbose filter to see all item types
-    get session_url(session, filter: "verbose")
+    get transcript_panel_session_url(session, filter: "verbose")
 
     assert_response :success
     # Should have all three categories
@@ -161,7 +168,7 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     session = create_session_with_tool_use_messages
 
     # Use condensed filter (or higher) to see tool messages
-    get session_url(session, filter: "condensed")
+    get transcript_panel_session_url(session, filter: "condensed")
 
     assert_response :success
     # Tool use messages should have filter-category="tool-message"
@@ -174,7 +181,7 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     session = create_session_with_tool_result_messages
 
     # Use condensed filter (or higher) to see tool messages
-    get session_url(session, filter: "condensed")
+    get transcript_panel_session_url(session, filter: "condensed")
 
     assert_response :success
     # Tool result messages should have filter-category="tool-message"
@@ -192,11 +199,11 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
   end
 
   # Test server-side filtering for pagination
-  test "show page with filter param shows 100 filtered items" do
+  test "transcript panel with filter param shows 100 filtered items" do
     session = create_session_with_many_logs_few_messages
 
     # With minimal filter, should only get messages (not logs)
-    get session_url(session, filter: "minimal")
+    get transcript_panel_session_url(session, filter: "minimal")
 
     assert_response :success
     # Should show the messages only (25 messages available, all should be shown)
@@ -206,13 +213,13 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     assert_select "[data-timeline-item][data-filter-category='verbose-log']", 0
   end
 
-  test "show page with verbose filter shows all item types" do
+  test "transcript panel with verbose filter shows all item types" do
     session = create_session_with_many_logs_few_messages
 
     # With verbose filter, should get everything (limited to 100)
     # Total: 25 messages + 100 regular logs + 100 verbose logs = 225 items
     # Last 100 should be mostly logs given the timestamps
-    get session_url(session, filter: "verbose")
+    get transcript_panel_session_url(session, filter: "verbose")
 
     assert_response :success
     # Should show that there are more items and have a mix of types
@@ -222,15 +229,15 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     assert_select "[data-timeline-item][data-filter-category='verbose-log']"
   end
 
-  test "show page includes filter level data attribute" do
-    get session_url(@large_session, filter: "condensed")
+  test "transcript panel includes filter level data attribute" do
+    get transcript_panel_session_url(@large_session, filter: "condensed")
 
     assert_response :success
     assert_select "[data-infinite-scroll-filter-level-value='condensed']"
   end
 
-  test "show page with invalid filter defaults to minimal" do
-    get session_url(@large_session, filter: "invalid_filter")
+  test "transcript panel with invalid filter defaults to minimal" do
+    get transcript_panel_session_url(@large_session, filter: "invalid_filter")
 
     assert_response :success
     assert_select "[data-infinite-scroll-filter-level-value='minimal']"
@@ -277,7 +284,7 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     session = create_session_with_many_logs_few_messages
 
     # With minimal filter (25 messages only), all should be shown
-    get session_url(session, filter: "minimal")
+    get transcript_panel_session_url(session, filter: "minimal")
 
     assert_response :success
     # Should show all 25 messages (no pagination needed)
@@ -290,19 +297,23 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
     session = create_session_with_150_messages
 
     # With minimal filter (150 messages), should show 100 and have 50 more
-    get session_url(session, filter: "minimal")
+    get transcript_panel_session_url(session, filter: "minimal")
 
     assert_response :success
     assert_match /Showing 100 of 150/, response.body
     assert_match /Load earlier messages \(50 more\)/, response.body
   end
 
-  test "show page select element reflects server filter value" do
+  # The log-level select lives in the page's sticky header, not in the deferred
+  # panel, so it is the page that has to reflect the filter — and the page that
+  # has to hand the same filter on to the frame it defers the transcript into.
+  test "detail page select element reflects server filter value" do
     get session_url(@large_session, filter: "show-logs")
 
     assert_response :success
     # The show-logs option should be selected
     assert_select "select#log-level-filter option[value='show-logs'][selected]"
+    assert_select "turbo-frame#session_#{@large_session.id}_transcript[src*='filter=show-logs']"
   end
 
   private

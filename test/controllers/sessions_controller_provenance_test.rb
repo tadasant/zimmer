@@ -4,6 +4,10 @@ require "test_helper"
 require "mocha/minitest"
 
 # The session hierarchy and human-message panels on the session detail screen.
+#
+# Fetched from #provenance_panel rather than #show: the detail page renders these
+# panels as a <turbo-frame loading="lazy"> pointing here, so this URL — not the
+# page — is where their markup lives. See SessionsController#provenance_panel.
 class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
   setup do
     Log.any_instance.stubs(:broadcast_append_to_timeline)
@@ -38,7 +42,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
   end
 
   test "the panels render with explicit empty states" do
-    get session_url(@session)
+    get provenance_panel_session_url(@session)
 
     assert_response :success
     assert_select "#session_#{@session.id}_provenance"
@@ -53,9 +57,11 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
   test "the hierarchy renders clickable nodes with title and agent root" do
     router = spawn_session(title: "Route it", agent_root: "zimmer-router")
     worker = spawn_session(parent: router, title: "Do it", agent_root: "zimmer")
-    helper = spawn_session(parent: worker, title: "Help out", agent_root: "artifacts")
+    # A root the catalog actually has: agent_root_key resolves through the
+    # catalog, so a made-up name reads back as nil and the node would show "—".
+    helper = spawn_session(parent: worker, title: "Help out", agent_root: "general-agent")
 
-    get session_url(worker)
+    get provenance_panel_session_url(worker)
 
     assert_response :success
     # Every other node in the tree links through to its own detail page.
@@ -66,14 +72,14 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     assert_select "a[href=?]", session_path(worker), false
     # Agent roots are shown on the nodes.
     assert_match "zimmer-router", response.body
-    assert_match "artifacts", response.body
+    assert_match "general-agent", response.body
   end
 
   test "a descendant appears in an ancestor's hierarchy view" do
     router = spawn_session(title: "Route it", agent_root: "zimmer-router")
     worker = spawn_session(parent: router, title: "Do it", agent_root: "zimmer")
 
-    get session_url(router)
+    get provenance_panel_session_url(router)
 
     assert_response :success
     assert_select "a[href=?]", session_path(worker), text: "Do it"
@@ -82,7 +88,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
   test "a human message said to this session shows author, channel and timestamp" do
     add_message(@session, content: "Refactor the billing service", at: Time.utc(2026, 8, 2, 4, 5, 6))
 
-    get session_url(@session)
+    get provenance_panel_session_url(@session)
 
     assert_response :success
     assert_match "Refactor the billing service", response.body
@@ -98,7 +104,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     worker = spawn_session(parent: router)
     add_message(router, content: "original intent", at: 1.hour.ago)
 
-    get session_url(worker)
+    get provenance_panel_session_url(worker)
 
     assert_response :success
     assert_match "original intent", response.body
@@ -114,7 +120,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     worker = spawn_session(parent: router, title: "Do it", agent_root: "zimmer")
     add_message(worker, content: "said to the worker, not the router", at: 1.hour.ago)
 
-    get session_url(router)
+    get provenance_panel_session_url(router)
 
     assert_response :success
     assert_match "said to the worker, not the router", response.body
@@ -128,7 +134,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
   test "the human-messages header states both counts even when nothing was said elsewhere" do
     add_message(@session, content: "only message in the tree")
 
-    get session_url(@session)
+    get provenance_panel_session_url(@session)
 
     assert_response :success
     assert_match "1 message in this session · 0 elsewhere in the hierarchy", response.body
@@ -140,7 +146,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     add_message(router, content: "original intent", at: 2.hours.ago)
     add_message(worker, content: "and one said here", at: 1.hour.ago)
 
-    get session_url(worker)
+    get provenance_panel_session_url(worker)
 
     assert_response :success
     assert_match "1 message in this session · 1 elsewhere in the hierarchy", response.body
@@ -153,7 +159,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     worker = spawn_session(parent: router)
     add_message(router, content: "original intent", at: 1.hour.ago)
 
-    get session_url(worker)
+    get provenance_panel_session_url(worker)
 
     assert_response :success
     assert_match "0 messages in this session · 1 elsewhere in the hierarchy", response.body
@@ -167,7 +173,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     (SessionHierarchy::MAX_DEPTH + 2).times { node = spawn_session(parent: node) }
     add_message(root, content: "original intent", at: 1.hour.ago)
 
-    get session_url(root)
+    get provenance_panel_session_url(root)
 
     assert_response :success
     assert_match "truncated tree — not every session was searched", response.body
@@ -178,7 +184,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     worker = spawn_session(parent: router)
     add_message(router, content: "original intent", at: 1.hour.ago)
 
-    get session_url(worker)
+    get provenance_panel_session_url(worker)
 
     assert_response :success
     refute_match "truncated tree", response.body
@@ -189,7 +195,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     add_message(@session, content: "first", at: 2.hours.ago)
     add_message(@session, content: "second", at: 1.hour.ago)
 
-    get session_url(@session)
+    get provenance_panel_session_url(@session)
 
     assert_response :success
     assert_match "2 messages in this session · 0 elsewhere in the hierarchy", response.body
@@ -203,7 +209,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
       "slack_permalink" => "https://slack.example/archives/C1/p1"
     })
 
-    get session_url(@session)
+    get provenance_panel_session_url(@session)
 
     assert_response :success
     assert_match "Julie", response.body
@@ -215,7 +221,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
   test "message content is escaped" do
     add_message(@session, content: "<script>alert('x')</script>")
 
-    get session_url(@session)
+    get provenance_panel_session_url(@session)
 
     assert_response :success
     refute_match "<script>alert('x')</script>", response.body

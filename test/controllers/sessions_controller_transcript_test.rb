@@ -1,6 +1,10 @@
 require "test_helper"
 
-# Integration coverage for transcript rendering on the session show page.
+# Integration coverage for transcript rendering in the session's transcript panel.
+#
+# Fetched from #transcript_panel rather than #show: the detail page defers the
+# whole panel into a <turbo-frame loading="lazy"> that loads when the reader
+# opens the Transcript disclosure, so this URL is where the rendered events are.
 #
 # Both runtimes normalize their native JSONL into OpenTranscripts v0.1 events
 # (see OpenTranscript / https://docs.zimmer.tadasant.com/sessions/transcripts/). Every event renders through
@@ -14,18 +18,24 @@ require "test_helper"
 # Tool calls/results are hidden at the default "minimal" level, so tests that
 # assert on tool rows request ?filter=condensed.
 class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
-  test "should render the timeline section on show page" do
+  # The two halves of the split: the page owns the container and the log-level
+  # control, the panel owns the items inside it.
+  test "should render the timeline section across the page and its panel" do
     session = sessions(:running)
-    get session_url(session)
 
+    get session_url(session)
     assert_response :success
     assert_match(/Log Level:/, response.body)
     assert_select "#timeline-container"
+
+    get transcript_panel_session_url(session)
+    assert_response :success
+    assert_select "[data-controller='infinite-scroll']"
   end
 
   test "should display running empty state when transcript is empty" do
     session = sessions(:running)
-    get session_url(session)
+    get transcript_panel_session_url(session)
 
     assert_response :success
     assert_match(/Agent is running/, response.body)
@@ -34,7 +44,7 @@ class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
 
   test "should display non-running empty state when transcript is empty" do
     session = sessions(:needs_input)
-    get session_url(session)
+    get transcript_panel_session_url(session)
 
     assert_response :success
     assert_match(/No activity yet/, response.body)
@@ -43,7 +53,7 @@ class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
 
   test "should display transcript messages when transcript exists" do
     session = sessions(:with_transcript)
-    get session_url(session)
+    get transcript_panel_session_url(session)
 
     assert_response :success
     assert_match(/Hello, can you help me\?/, response.body)
@@ -54,7 +64,7 @@ class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
 
   test "should show item count when transcript exists" do
     session = sessions(:with_transcript)
-    get session_url(session)
+    get transcript_panel_session_url(session)
 
     assert_response :success
     # Three message events, all visible at the default minimal filter level.
@@ -63,7 +73,7 @@ class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
 
   test "should display role indicators in transcript" do
     session = sessions(:with_transcript)
-    get session_url(session)
+    get transcript_panel_session_url(session)
 
     assert_response :success
     assert_match(/User/, response.body)
@@ -80,7 +90,7 @@ class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
       }
     ])
 
-    get session_url(session)
+    get transcript_panel_session_url(session)
 
     assert_response :success
     # The raw, executable <script> tag must not survive into the rendered page.
@@ -101,7 +111,7 @@ class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
       }
     ])
 
-    get session_url(session)
+    get transcript_panel_session_url(session)
 
     # An unparseable ts falls back to the session's created_at (events never
     # carry a null ts), so the message still renders.
@@ -118,7 +128,7 @@ class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
       }
     ])
 
-    get session_url(session)
+    get transcript_panel_session_url(session)
 
     assert_response :success
     assert_match(/Hello without timestamp/, response.body)
@@ -150,7 +160,7 @@ class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
       }
     ])
 
-    get session_url(session, filter: "condensed")
+    get transcript_panel_session_url(session, filter: "condensed")
 
     assert_response :success
     # Assistant text is a "message" event; the tool row is a "tool-message".
@@ -181,7 +191,7 @@ class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
       }
     ])
 
-    get session_url(session, filter: "condensed")
+    get transcript_panel_session_url(session, filter: "condensed")
 
     assert_response :success
     assert_match(/Tool Result/, response.body)
@@ -211,7 +221,7 @@ class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
       }
     ])
 
-    get session_url(session, filter: "condensed")
+    get transcript_panel_session_url(session, filter: "condensed")
 
     assert_response :success
     # Apostrophes are HTML-escaped, so match substrings without one.
@@ -241,7 +251,7 @@ class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
       }
     ])
 
-    get session_url(session, filter: "condensed")
+    get transcript_panel_session_url(session, filter: "condensed")
 
     assert_response :success
     assert_match(/Using tool: WebSearch/, response.body)
@@ -274,7 +284,7 @@ class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
       }
     ])
 
-    get session_url(session, filter: "condensed")
+    get transcript_panel_session_url(session, filter: "condensed")
 
     assert_response :success
     # The Thinking and ToolCall rows still render...
@@ -308,7 +318,7 @@ class SessionsControllerTranscriptTest < ActionDispatch::IntegrationTest
       }
     ])
 
-    get session_url(session, filter: "condensed")
+    get transcript_panel_session_url(session, filter: "condensed")
 
     assert_response :success
     assert_select "p.text-sm.font-medium.text-gray-900", text: "Assistant", count: 1
