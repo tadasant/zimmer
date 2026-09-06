@@ -1492,7 +1492,7 @@ class SessionsController < ApplicationController
     # sending immediately. This prevents race conditions where the form action was set
     # incorrectly (e.g., before JS loaded) or where the user double-submitted. Messages
     # should be queued when the agent is running — or when its turn is sitting in the
-    # `agents` queue, which since #1036 reads `waiting` rather than `running`.
+    # `agents` queue, which since #1040 reads `waiting` rather than `running`.
     if Sessions::LiveTurn.underway?(@session)
       # Create enqueued message instead of interrupting
       max_position = @session.enqueued_messages.maximum(:position) || 0

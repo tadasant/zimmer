@@ -263,7 +263,7 @@ class SessionRecoveryServiceTest < ActiveJob::TestCase
     @session.reload
 
     # Resumed to process the message: the turn is queued for a worker, which is
-    # what `waiting` means for a session that has just been handed one (#1036).
+    # what `waiting` means for a session that has just been handed one (#1040).
     assert_equal "waiting", @session.status
 
     # First message should be deleted (processed)
@@ -851,7 +851,7 @@ class SessionRecoveryServiceTest < ActiveJob::TestCase
 
     @session.reload
     # Resumed to process the message: the turn is queued for a worker, which is
-    # what `waiting` means for a session that has just been handed one (#1036).
+    # what `waiting` means for a session that has just been handed one (#1040).
     assert_equal "waiting", @session.status
 
     # Pending message should be consumed

@@ -1,7 +1,7 @@
 <%# A session whose turn has been handed over and is sitting in GoodJob's `agents`
     lane waiting for one of its worker threads.
 
-    Before #1036 this session read `running` and needed no banner, because the
+    Before #1040 this session read `running` and needed no banner, because the
     status itself was the (false) explanation. Now it reads `waiting` — which is
     the truth, and which is also what a spot hold, a ceiling pause, an auth-outage
     park and an ordinary sleep read. Without a line saying which of those it is, a

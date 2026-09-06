@@ -56,7 +56,7 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
 
   # The `good_jobs` row a real enqueue writes, which the test adapter does not.
   # `RunningTurns` and `Sessions::LiveTurn` read that row rather than the status
-  # column (since #1036 a handed-over turn reads `waiting`, so the column cannot
+  # column (since #1040 a handed-over turn reads `waiting`, so the column cannot
   # answer "is a turn coming"), so a test asserting on the split has to put it
   # there. Ready, not deferred: `scheduled_at` in the past is what an ordinary
   # `perform_later` writes.
@@ -194,7 +194,7 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     assert_equal 1, result.resumed
     session.reload
     # `waiting`, and no longer paused: the resume hands the turn to the `agents`
-    # queue and a worker's `start` is what makes it `running` (#1036). The pause
+    # queue and a worker's `start` is what makes it `running` (#1040). The pause
     # record going away is what tells the two `waiting`s apart.
     assert session.waiting?
     assert_not SpotSessionPause.paused?(session)

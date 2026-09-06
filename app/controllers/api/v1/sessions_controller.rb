@@ -417,7 +417,7 @@ class Api::V1::SessionsController < Api::BaseController
     # This prevents message loss when the caller doesn't know the exact session state
     # (e.g., race condition between session completing a turn and the API call arriving).
     #
-    # `Sessions::LiveTurn.underway?` and not `@session.running?`: since #1036 a turn
+    # `Sessions::LiveTurn.underway?` and not `@session.running?`: since #1040 a turn
     # handed over but still queued for a worker reads `waiting`, and delivering into
     # that would start a second turn against one clone.
     if Sessions::LiveTurn.underway?(@session)

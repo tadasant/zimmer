@@ -772,7 +772,7 @@ class AgentSessionJob < ApplicationJob
 
         # Verify session is in the correct state for follow-up.
         #
-        # `waiting` is the ORDINARY state here since #1036: whoever handed this
+        # `waiting` is the ORDINARY state here since #1040: whoever handed this
         # turn over fired `resume`, which lands in `waiting`, and this job is what
         # takes it out of the queue. The transition into `running` happens below,
         # once the process has been spawned, exactly as it does for a first start.
@@ -1797,7 +1797,7 @@ class AgentSessionJob < ApplicationJob
         # THIS IS THE ONLY PLACE `running` IS STAMPED for a turn this job runs, and
         # it is stamped here — on the worker thread, with a process spawned — so
         # that `running` means what the /inference page has always meant by it:
-        # one of the `agents` lane's worker threads is executing this turn (#1036).
+        # one of the `agents` lane's worker threads is executing this turn (#1040).
         # Every route that merely HANDS a turn over leaves the session `waiting`.
         #
         # `start!` is the normal waiting->running path for every turn now, a first
@@ -3728,7 +3728,7 @@ class AgentSessionJob < ApplicationJob
     # claim_system_recovery_turn! below.
     # `waiting` as well as `needs_input`. A turn interrupted BEFORE its process
     # spawned leaves the session in `waiting` — `pause` transitions from `running`
-    # only, so the recovery pause above is a no-op for it — and since #1036 that is
+    # only, so the recovery pause above is a no-op for it — and since #1040 that is
     # the ordinary shape of every interrupted follow-up, not just a first start.
     # Refusing it here would hand the whole population to the five-minute recovery
     # cron, which is exactly the dead air this immediate continue exists to close.

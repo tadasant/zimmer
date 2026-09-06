@@ -24,7 +24,7 @@
 # == The fourth mechanism: queued for a worker
 #
 # The three above are dormancies — a session parked until something changes.
-# Since #1036 `waiting` also holds the session whose turn has been HANDED OVER
+# Since #1040 `waiting` also holds the session whose turn has been HANDED OVER
 # and is sitting in the `agents` GoodJob lane waiting for one of its
 # `RunningTurns.worker_slots` threads. That is not a dormancy at all: nothing is
 # wrong, nobody has to act, and the resume owner is GoodJob's own poller rather

@@ -4174,7 +4174,7 @@ class TriggerTest < ActiveSupport::TestCase
   # unfixed.
   #
   # `last_follow_up_status` is what marks a delivery, NOT a status flip: since
-  # #1036 a delivered turn leaves the session in `waiting` — queued for a worker —
+  # #1040 a delivered turn leaves the session in `waiting` — queued for a worker —
   # which is the same status a coalesced fire leaves it in. The trigger's own
   # answer is the only thing that still tells the two apart.
   def fire_one_night!(trigger, session, prompt)

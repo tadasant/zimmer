@@ -7,7 +7,7 @@
 #
 # `running` used to be stamped when a turn was HANDED to a session rather than
 # when a worker started executing it, so the column held both populations at
-# once and this concern existed to tell them apart. Since #1036 the hand-over
+# once and this concern existed to tell them apart. Since #1040 the hand-over
 # lands in `waiting` and `AgentSessionJob#perform` is the only thing that stamps
 # `running`, so a `running` row IS a turn on one of the
 # `ConnectionBudget.good_job_queue_threads[:agents]` worker threads.
@@ -20,7 +20,7 @@
 # And a `running` row can still briefly hold no worker: a job whose worker was
 # SIGKILLed leaves the row `running` until a recovery sweep reaches it.
 #
-# The counted population is therefore unchanged by #1036, deliberately. It was
+# The counted population is therefore unchanged by #1040, deliberately. It was
 # `running` rows whose job had a `performed_at`, and it still is — a `waiting`
 # row whose worker is making its clone is reported as awaiting a worker, exactly
 # as a first start was before the change. Every ceiling's denominator kept its
@@ -43,7 +43,7 @@
 # a broken counter in
 # [#957](https://github.com/tadasant/zimmer/issues/957), and that the session
 # list now shows as `waiting` rather than folding into `running`
-# ([#1036](https://github.com/tadasant/zimmer/issues/1036)).
+# ([#1040](https://github.com/tadasant/zimmer/pull/1040)).
 #
 # **This bounds every ceiling at .worker_slots**, and deliberately so: the
 # counted population is turns a worker is executing, and the pool runs
@@ -142,7 +142,7 @@ module RunningTurns
   Reading = Data.define(:on_a_worker, :awaiting_a_worker, :asleep) do
     # Every row this reading looked at that has a turn or is between jobs. It is
     # no longer `COUNT(*) WHERE status = 'running'` — the queue moved into
-    # `waiting` in #1036 — so it is kept as the reference point the three buckets
+    # `waiting` in #1040 — so it is kept as the reference point the three buckets
     # add up to, not as a claim about any one status.
     def rows = on_a_worker + awaiting_a_worker + asleep
   end
@@ -184,7 +184,7 @@ module RunningTurns
       # also has an `id`, and a bare `pluck(:id)` is ambiguous under it.
       #
       # Both statuses, because the turn a worker is executing and the turn queued
-      # behind it now live in different ones (#1036). `waiting` also holds every
+      # behind it now live in different ones (#1040). `waiting` also holds every
       # dormant session in the deployment, which is why only its rows with a READY
       # `agents` job survive the split below.
       ids = where(status: [ :running, :waiting ]).pluck("sessions.id")
@@ -200,7 +200,7 @@ module RunningTurns
       # job while it makes the clone and starts the CLI — and no agent is
       # executing there yet, which is why they are reported as still awaiting a
       # worker rather than occupying one. That is also exactly the population the
-      # `running`-only count excluded before #1036, so the ceilings' denominator
+      # `running`-only count excluded before #1040, so the ceilings' denominator
       # is unchanged.
       on_a_worker = turns.on_a_worker & running_ids
       being_set_up = turns.on_a_worker - running_ids

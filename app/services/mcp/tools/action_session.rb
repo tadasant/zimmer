@@ -298,7 +298,7 @@ module Mcp
             record_uncle_edge(session, args, FOLLOW_UP_EDGE_SOURCE)
           end
         elsif Sessions::LiveTurn.underway?(session)
-          # `underway?` and not `session.running?`: since #1036 a turn that has been
+          # `underway?` and not `session.running?`: since #1040 a turn that has been
           # handed over but is still queued for one of the `agents` lane's worker
           # threads reads `waiting`, and sending it down the direct branch would
           # enqueue a rival job against one clone (#400).

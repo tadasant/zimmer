@@ -3,7 +3,7 @@
       This happens when a follow-up was sent but the session transitioned to paused/failed
       before the message appeared in the transcript. We preload it so the user doesn't lose their message. %>
   <%# Whether the composer queues rather than sends. `Sessions::LiveTurn.underway?`
-      and not `agent_session.running?`: since #1036 a turn that has been handed
+      and not `agent_session.running?`: since #1040 a turn that has been handed
       over but is still waiting for one of the `agents` lane's worker threads reads
       `waiting`, and sending into it would start a second turn against one clone.
       The controller actions branch the same way, so the form's action and the

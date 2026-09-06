@@ -5,7 +5,7 @@ require "test_helper"
 # How busy the fleet is, split into what is executing and what is stacked up
 # behind it.
 #
-# Since #1036 a turn handed to a session lands in `waiting` and only
+# Since #1040 a turn handed to a session lands in `waiting` and only
 # `AgentSessionJob#perform` stamps `running`, so the two populations live in two
 # statuses — but neither one is a `COUNT(*)`: `waiting` also holds every dormant
 # session in the deployment, and a `running` row can be between jobs or asleep on
@@ -52,7 +52,7 @@ class RunningTurnsTest < ActiveSupport::TestCase
 
   # `needs_input` and `failed` are rest states: a job row against one is a corpse
   # or a race, and neither is fleet capacity. `waiting` is NOT in that list any
-  # more — since #1036 it is where a turn queued for a worker sits, and reading it
+  # more — since #1040 it is where a turn queued for a worker sits, and reading it
   # is the whole point of the split.
   test "rest states are not read, whatever job rows they carry" do
     [ :needs_input, :failed ].each { |status| enqueue_turn!(session(status: status)) }
@@ -60,7 +60,7 @@ class RunningTurnsTest < ActiveSupport::TestCase
     assert_equal 0, Session.running_turns.rows
   end
 
-  # THE #1036 CHANGE, at the level the ceilings see it. A turn handed over and
+  # THE #1040 CHANGE, at the level the ceilings see it. A turn handed over and
   # sitting in the `agents` lane reads `waiting`, and it has to appear in the
   # queue figure — otherwise /inference would report an empty deployment while
   # dozens of turns were stacked up behind the pool.
@@ -76,7 +76,7 @@ class RunningTurnsTest < ActiveSupport::TestCase
   # The pre-spawn window: a worker holds the job while it makes the clone and
   # starts the CLI, and the session does not read `running` until the process
   # exists. No agent is executing there, so the ceilings must not count it —
-  # which is also exactly how a first start behaved before #1036, so no
+  # which is also exactly how a first start behaved before #1040, so no
   # denominator moved.
   test "a waiting session whose worker is still setting it up does not occupy a slot" do
     on_a_worker!(session(status: :waiting))

@@ -141,7 +141,7 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
           action_session_tool.call({ "action" => "restart", "session_id" => session.id })
         end
       end
-      # The enqueue above IS the start: since #1036 a handed-over turn queues for a
+      # The enqueue above IS the start: since #1040 a handed-over turn queues for a
       # worker and the session stays `waiting` until one picks it up, so the status
       # column cannot tell a started session from a dormant one here.
       assert session.reload.waiting?, "expected an expired pause to let a restart through"
@@ -198,7 +198,7 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
       ScheduleTriggerJob.perform_now
     end
 
-    # The wake delivered its prompt rather than being stood down on. Since #1036
+    # The wake delivered its prompt rather than being stood down on. Since #1040
     # the session stays `waiting` while its turn queues for a worker, so the
     # delivered prompt — not the status — is what says the guard yielded.
     assert_equal "Resume after the pause", session.reload.metadata["pending_follow_up_prompt"],

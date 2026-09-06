@@ -380,7 +380,7 @@ class Session < ApplicationRecord
   # against a Claude account.
   #
   # Read through RunningTurns rather than counting the column, and narrowed to
-  # the turns a worker is EXECUTING. Since #1036 the queue behind the `agents`
+  # the turns a worker is EXECUTING. Since #1040 the queue behind the `agents`
   # pool reads `waiting` rather than `running`, so the column is much closer to
   # the truth than it was — but it still holds rows asleep on their own wake and
   # rows between jobs, and neither of those occupies the fleet. See that concern
@@ -416,7 +416,7 @@ class Session < ApplicationRecord
   # pool will spend as soon as a thread frees up, and pricing the fleet as if it
   # would not is the direction a quota gate must never be wrong in.
   #
-  # Before #1036 that population was simply `status = running`, because a handed
+  # Before #1040 that population was simply `status = running`, because a handed
   # turn was stamped `running` by its deliverer. Now the hand-over lands in
   # `waiting`, so the queue has to be read off the job rows to keep this number
   # meaning what it meant.
@@ -1709,7 +1709,7 @@ class Session < ApplicationRecord
       next :archived if archived?
       next :not_resumable unless may_resume?
       # `may_resume?` alone stopped being the "nobody else is driving this"
-      # answer when a queued turn started reading `waiting` (#1036). Before that,
+      # answer when a queued turn started reading `waiting` (#1040). Before that,
       # a session with a turn in flight was `running` and the check above refused
       # it; now that session is `waiting`, `may_resume?` says yes, and a sweep
       # that acted on it would enqueue a SECOND turn against one clone — the #400
@@ -1761,7 +1761,7 @@ class Session < ApplicationRecord
   # Callers keep what is genuinely theirs (validation, logging, broadcasting) and pass
   # only what differs. The prompt is stamped AFTER the state transition, so a reader who
   # sees `pending_follow_up_prompt` is guaranteed to also see the state the resume left
-  # behind — `waiting`, since #1036: the turn is queued for one of the `agents` lane's
+  # behind — `waiting`, since #1040: the turn is queued for one of the `agents` lane's
   # worker threads and the session reads `running` only once one has it.
   #
   # The sequence is not atomic end to end: `resume!` runs state-machine callbacks that

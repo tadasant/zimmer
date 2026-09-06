@@ -1355,7 +1355,7 @@ class Trigger < ApplicationRecord
         # next turn boundary.
         #
         # `Sessions::LiveTurn.underway?` and NOT `session.running?`, which is what
-        # this branch tested until #1036. A turn that has been handed over but is
+        # this branch tested until #1040. A turn that has been handed over but is
         # still queued reads `waiting` now, so `running?` would send it down the
         # delivery branch below and enqueue a rival job — the #400 defect. The
         # branches are also in the opposite order for the same reason: "is a turn

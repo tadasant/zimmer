@@ -37,7 +37,7 @@ module Sessions
   #
   # == This module is now the "a turn is already in flight" guard
   #
-  # It used to be enough to ask `session.running?`. Since #1036 a turn that has
+  # It used to be enough to ask `session.running?`. Since #1040 a turn that has
   # been handed over and is queued for one of the `agents` lane's worker threads
   # reads `waiting` — so `running?` answers "no turn" for a session that has one
   # coming, and every caller that used it to decide "do not start a second turn"
@@ -96,7 +96,7 @@ module Sessions
     # second one" asks this: the follow-up routes (web, REST, MCP), the wake and
     # poller deliveries in Trigger, EnqueuedMessageProcessorService's hand-off
     # branch, and Sessions::MessageParent. Reading `session.running?` for that
-    # became wrong the moment a queued turn started reading `waiting` (#1036).
+    # became wrong the moment a queued turn started reading `waiting` (#1040).
     #
     # NARROWER than #coming? for a `waiting` session, and the difference is
     # deliberate. #coming? counts
@@ -138,7 +138,7 @@ module Sessions
     # `good_jobs`.
     #
     # `running` and `waiting` are the two states a session with a turn can be in
-    # since #1036: `running` once a worker has spawned its process, `waiting`
+    # since #1040: `running` once a worker has spawned its process, `waiting`
     # while the turn sits in the `agents` queue. `needs_input`, `failed` and
     # `archived` are rest states — a job row against one of those is a corpse or
     # a race the callers here deliberately do not act on.

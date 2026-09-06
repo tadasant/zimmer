@@ -623,7 +623,7 @@ class AuthOutageParkService
       # that sees the marker is guaranteed to also see the state the resume left behind
       # (the same ordering, and the same reason, as Session#deliver_follow_up!).
       #
-      # Since #1036 that state is `waiting` — the turn is queued for a worker — which
+      # Since #1040 that state is `waiting` — the turn is queued for a worker — which
       # also takes this resume out of CleanupOrphanedSessionsJob's reach entirely: that
       # sweep calls a RUNNING session with a blank running_job_id "DEFINITELY orphaned"
       # with no grace period, and a sweep landing in that window used to reap the resume,
@@ -637,7 +637,7 @@ class AuthOutageParkService
     end
 
     # `waiting?`: the resume hands the turn over, and the session reads `running`
-    # only once a worker picks up the job enqueued below (#1036).
+    # only once a worker picks up the job enqueued below (#1040).
     return false if reason.blank? || !session.reload.waiting?
 
     session.logs.create!(level: "warning", content: resume_message(reason))

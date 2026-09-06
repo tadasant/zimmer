@@ -81,7 +81,7 @@
 # class creates, and the cap would go unenforced for exactly the sessions it was
 # holding.
 #
-# **Since #1036 the exemption is residual, and the fleet cap applies to every
+# **Since #1040 the exemption is residual, and the fleet cap applies to every
 # ordinary turn.** `running` is now stamped by `AgentSessionJob#perform` after the
 # process spawns, which is downstream of this gate, so a resume arriving here
 # reads `waiting` exactly as a first start always did — and is not counted in the
@@ -221,7 +221,7 @@ class SpotSessionHold
   # is counted in `Session.running_claude_code_count` itself, so only the
   # utilization reading can honestly refuse it.
   #
-  # Residual since #1036: an ordinary turn reaches this gate `waiting`, because
+  # Residual since #1040: an ordinary turn reaches this gate `waiting`, because
   # `running` is stamped after the process spawns and this gate runs before that.
   # Keying this on the prompt rather than on the session's status would exempt
   # exactly the population this class creates.
@@ -760,7 +760,7 @@ class SpotSessionHold
 
     # Whether this decision refuses this turn. Every hold reason refuses a session
     # that holds no slot; a session already counted in the running fleet — one
-    # reading `running` here, which since #1036 is a residual case — is refused
+    # reading `running` here, which since #1040 is a residual case — is refused
     # only by the utilization reading.
     def applies_to?(decision, session)
       return true unless session.running?
@@ -1006,7 +1006,7 @@ class SpotSessionHold
     end
 
     # Put a session whose turn was refused into the dormant `waiting` state a held
-    # session sits in. Since #1036 that is where every ordinary turn already is
+    # session sits in. Since #1040 that is where every ordinary turn already is
     # when it reaches the gate — a hand-over lands in `waiting` and only
     # `AgentSessionJob#perform` stamps `running` — so the `running` branch below
     # is a backstop rather than the common path.

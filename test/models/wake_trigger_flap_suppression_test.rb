@@ -107,7 +107,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
 
     assert @watched.reload.needs_input?
     assert_wake_delivered trigger, "the wake must be delivered, not dropped"
-    assert @watcher.reload.waiting?  # the wake queued its turn: `needs_input` -> `waiting` (#1036)
+    assert @watcher.reload.waiting?  # the wake queued its turn: `needs_input` -> `waiting` (#1040)
   end
 
   test "a session left holding an unexecuted pending_sleep still wakes its watcher" do

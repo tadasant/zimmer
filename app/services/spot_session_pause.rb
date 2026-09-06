@@ -472,7 +472,7 @@ class SpotSessionPause
         resumed = session.resume_for_system_recovery!
       end
       # `waiting?`, not `running?`. The resume hands the turn over; the session
-      # reads `running` only once a worker picks the job up below (#1036).
+      # reads `running` only once a worker picks the job up below (#1040).
       return false unless resumed && session.reload.waiting?
 
       session.logs.create!(level: "info", content: message)

@@ -1014,7 +1014,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal [ @session.id, "Now check the deploy logs" ],
       ActiveJob::Arguments.deserialize(enqueued.first["arguments"]),
       "the resume delivers the follow-up, not the session's original prompt"
-    assert @session.reload.waiting?, "the delivered turn queues for a worker (#1036)"
+    assert @session.reload.waiting?, "the delivered turn queues for a worker (#1040)"
   end
 
   # The other half of #887: a nudge is not a message anybody is waiting on.
@@ -2197,7 +2197,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.send(:handle_interrupt_error, error)
 
     @session.reload
-    # Paused, and then auto-continued — which since #1036 lands in `waiting` with
+    # Paused, and then auto-continued — which since #1040 lands in `waiting` with
     # the recovery turn queued rather than in `running`. Either resting state is
     # acceptable; the one that would be wrong is `running` with no job.
     assert @session.needs_input? || @session.waiting?,
@@ -2837,7 +2837,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_nil @session.metadata["runtime_started"], "precondition: the CLI never spawned"
 
     error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
-    # The auto-continue is what must happen here, and since #1036 it DOES happen
+    # The auto-continue is what must happen here, and since #1040 it DOES happen
     # for this shape: `pause` transitions from `running` only, so an interrupt
     # before the spawn leaves the session in `waiting` — which
     # #auto_continue_after_interrupt used to refuse, handing the whole population
@@ -8198,7 +8198,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_nil EnqueuedMessage.find_by(id: message.id), "Expected message to be destroyed after processing"
 
     # The message was delivered: the session left `needs_input` and its turn is
-    # queued for a worker, which is what `waiting` means here (#1036).
+    # queued for a worker, which is what `waiting` means here (#1040).
     @session.reload
     assert_equal "waiting", @session.status
 
@@ -8246,7 +8246,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert result, "Expected handoff to succeed when session is running"
 
     # No pause flap: the session goes straight back to the queue for its next turn
-    # rather than through `needs_input` (#1036).
+    # rather than through `needs_input` (#1040).
     @session.reload
     assert_equal "waiting", @session.status
 
