@@ -834,6 +834,64 @@ not a hole anything currently walks through.
 Separately, `release-image.yml` carries `paths-ignore: ["**/*.md", "docs/**"]`, so a docs-only push to
 `main` does not build an image at all.
 
+### Extensions do ship in the image
+
+The mirror image of the rule above, and it is the one that regressed. An
+[extension](/extend/extensions/) is a Ruby object that changes how Zimmer itself drives a runtime —
+which CLI adapter it spawns, which print-inference backend it uses, what environment it hands the
+child process. It only does any of that in the container that runs it.
+
+`.dockerignore` used to carry `/app/extensions/*/`, and that one line made the whole seam unreachable
+in production. The failure was completely silent, by construction: `ExtensionRegistry` resolves
+builtins with `safe_constantize` and skips the ones that no longer resolve — the mechanism that makes
+deleting an extension safe — so the app booted, every seam fell back to native, and nothing anywhere
+reported that an extension had been asked for and not found. It stayed that way long enough for the
+only extension that ever shipped, `mcp_tool_search`, to be rewritten as a plain `AppSetting` column
+instead. That is [#91](https://github.com/tadasant/zimmer/issues/91).
+
+The exclusion was there to demonstrate removability, and it conflated two different things.
+Removability is a property of the **source tree**: `rm -rf app/extensions/<id>/` drops the feature,
+and the `safe_constantize` skip is what lets it drop with no core edit. Stripping the directory at
+*image-build* time proves nothing about that, and it guarantees that the one build meant to carry an
+internal-only feature never carries it.
+
+The line is gone, and the opt-in mechanism it implied — `scripts/install-extension.sh`, a `docker cp`
+into a running container plus a restart — is deleted with it. It wanted a shell on the production
+host, which [Ops actions ship with the deploy](#ops-actions-ship-with-the-deploy) calls a defect to
+design out; and whatever it installed vanished at the next deploy. An extension merged to `main` is
+now in the next image, and an operator turns it on from Settings → Experimental. Nothing else.
+
+Enablement, not presence, is the safety property. A directory in `app/extensions/` does nothing
+unless its class name is also in `Zimmer::ExtensionRegistry::BUILTIN_EXTENSION_CLASSES` — a core edit
+that goes through review — and `Zimmer::Extension#default_enabled?` is `false`, so even then it is off
+until somebody turns it on.
+
+An absence is a hard thing to notice going missing, so two checks assert the outcome rather than the
+text of `.dockerignore`. Both run `scripts/assert-extensions-shipped.sh`, which fails if
+`app/extensions/` is absent, if `app/extensions/image_canary/IMAGE_CANARY.md` is missing, or if any
+`app/extensions/<id>/` arrived empty. A scan it could not run exits 2 rather than reporting OK, for
+the same reason the docs guardrail does.
+
+| Where | Against what | When it fires |
+| --- | --- | --- |
+| `Dockerfile`, final stage | `/rails` — the published image's own filesystem | during the release build, so an image with the seam stripped out is never pushed |
+| `image_includes_extensions` in `ci.yml` | the real build context, via `Dockerfile.extensions-audit` (busybox + `COPY . /ctx`) | on every PR, before merge |
+
+`app/extensions/image_canary/` is not an extension: it holds no Ruby, so Zeitwerk's
+`collapse("app/extensions/*")` loads nothing from it, and it registers nothing. It exists only so the
+check has something positive to find. The marker has to be one level down — the old rule excluded
+subdirectories and left `app/extensions/CLAUDE.md` sitting at the top of the tree throughout, so a
+marker there would have passed the whole time.
+
+The empty-directory check is what covers the exclusions a single canary would not: a pattern like
+`app/extensions/**/*.rb` leaves every directory standing and hollows out the ones that carry code,
+and the canary, which holds no Ruby, would arrive intact.
+
+`test/infra/extensions_shipped_in_image_test.rb` covers the half of this that needs no Docker daemon —
+that the detector detects (including the exact tree the old rule produced, so it cannot pass
+vacuously), that it does not fire on a healthy tree, that the canary is where the script looks, that
+`.dockerignore` carries no pattern naming the path, and that both callers are still wired up.
+
 ### Static files in `public/` are not digest stamped
 
 `config.public_file_server.headers` in `production.rb` and `staging.rb` sets the cache header for
@@ -883,7 +941,7 @@ which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · `test-system` (Chrome browser suite) · GHCR-retention logic · docs site build · `shellcheck` over every tracked `*.sh` · `image_excludes_docs` (see [The docs never ship in the image](#the-docs-never-ship-in-the-image)) · `all-checks-pass` (the aggregate gate). Every job except the gate is guarded to run only on `push` and on same-repo PRs, so a fork PR never checks out or executes fork code on the self-hosted runners. The gate itself is unguarded — it must never skip, or it would block branch protection — but it has no checkout step and only reads the other jobs' results. |
+| `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · `test-system` (Chrome browser suite) · GHCR-retention logic · docs site build · `shellcheck` over every tracked `*.sh` · `image_excludes_docs` (see [The docs never ship in the image](#the-docs-never-ship-in-the-image)) · `image_includes_extensions` (see [Extensions do ship in the image](#extensions-do-ship-in-the-image)) · `all-checks-pass` (the aggregate gate). Every job except the gate is guarded to run only on `push` and on same-repo PRs, so a fork PR never checks out or executes fork code on the self-hosted runners. The gate itself is unguarded — it must never skip, or it would block branch protection — but it has no checkout step and only reads the other jobs' results. |
 | `pr-auto-close.yml` | outside PR opened/reopened | Zimmer does not accept pull requests: this politely comments and closes PRs from forks and non-members (owner/member/collaborator PRs are left open), pointing them at the issue tracker. Runs on GitHub-hosted `ubuntu-latest`, never the self-hosted pool. |
 | `alert-ci-failure.yml` | any other workflow completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
 | `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | rebuilds `zimmer-base:content-<key>` first when any of the five base inputs changed, then builds and pushes `zimmer:{version, latest, sha-…}`, [retrying up to three times](#the-release-build-retries-ghcr-on-the-way-in-and-on-the-way-out) at three of the four points it touches GHCR — the login, the base manifest read, and the app build's pull and push (the base build itself is still single-shot) |
