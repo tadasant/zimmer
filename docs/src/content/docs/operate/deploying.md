@@ -327,8 +327,11 @@ shapes:
 | `table_drop` | `drop_table`, raw `DROP TABLE` | `# expand-contract: contract of <ref>` |
 
 Raw SQL is matched against string *contents*, so heredocs count — which is how anyone actually
-writes SQL in a migration. `rename_index` and `remove_index` are deliberately absent: an index
-carries no attribute and no query of the old container names it, so neither strands anything.
+writes SQL in a migration. A rename is only recorded while the statement in scope alters a *table*,
+so the `ALTER INDEX … RENAME TO` that ends a zero-downtime index swap does not trip it, and neither
+does `ALTER TYPE` or `ALTER SEQUENCE`. `rename_index` and `remove_index` are absent for the same
+reason: an index carries no attribute and no query of the old container names it, so neither
+strands anything. Lines beginning `--` are SQL comments, not statements, and are skipped.
 
 The two annotations are separate because they assert different facts. `two-phase-drop` says an
 `ignored_columns` deploy shipped. `expand-contract` says an earlier deploy left the old *name*
@@ -398,7 +401,7 @@ once nothing touches it.
 
 | Deploy | Migration | Code |
 | --- | --- | --- |
-| 1 — **expand** | `add_column :sessions, :goal, :string` (nullable, no default), plus a post-deploy task that backfills it | the model writes **both** names on every write; reads still come from `stop_condition` |
+| 1 — **expand** | `add_column :sessions, :goal, :string` (nullable, no default), `change_column_null :sessions, :stop_condition, true` if the old column was `NOT NULL`, plus a post-deploy task that backfills | the model writes **both** names on every write; reads still come from `stop_condition` |
 | 2 — **switch reads** | none | every read moves to `goal`; both are still written |
 | 3 — **stop writing the old name** | none | `self.ignored_columns += %w[stop_condition]`, and the dual-write goes |
 | 4 — **contract** | `remove_column :sessions, :stop_condition`, annotated `# two-phase-drop: phase 2 of #<deploy-3 PR>` | the `ignored_columns` line goes |
@@ -428,11 +431,16 @@ end
 slice runs out of its 90-second budget. The `goal IS NULL` predicate is what makes a second run a
 no-op.
 
+**The old column has to be nullable before deploy 3, whatever else you do.** `ignored_columns`
+leaves it out of every `INSERT`, so a `NOT NULL` column with no database default gives
+`PG::NotNullViolation` on the new image's first write. Relax the constraint back in deploy 1, where
+it cannot hurt anyone: the old containers still write the column, and dropping a constraint never
+breaks a writer.
+
 **Deploys 2 and 3 are separate for a reason.** Merge them and, for the length of that swap window,
 the new containers are inserting rows with the old column NULL while the old containers are still
-reading it. You may merge them when the old column is nullable *and* the old code shrugs at a NULL
-there — a display string, say. Do not merge them when the old column is `NOT NULL`: the new
-image's `INSERT`s omit it and fail outright.
+reading it. You may merge them when the old code shrugs at a NULL there — a display string, say —
+and you may not when it does not.
 
 **The cheapest correct rename is usually no rename.** Four deploys to improve a name is a real
 price. `alias_attribute`, or just living with `stop_condition` in the schema and `goal` in the

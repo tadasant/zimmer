@@ -89,8 +89,8 @@ two deploys — delete the model and every reference, then drop.
 without that annotation, and on a forward `rename_column` / `t.rename` / `rename_table` /
 `drop_table` — and their raw-SQL spellings — without `# expand-contract: contract of #<ref>`.
 Neither annotation clears the other's shape. Full recipes:
-[Dropping a column takes two deploys](docs/src/content/docs/operate/deploying.md) and
-[Renames and table drops expand before they contract](docs/src/content/docs/operate/deploying.md).
+[Dropping a column takes two deploys](docs/src/content/docs/operate/deploying.md#dropping-a-column-takes-two-deploys)
+and [Renames and table drops expand before they contract](docs/src/content/docs/operate/deploying.md#renames-and-table-drops-expand-before-they-contract).
 
 ## Documentation lives in `docs/` — update it in the same PR
 
