@@ -178,11 +178,29 @@ The heartbeat is the one caller that passes `stamp_pending_prompt: false`. A use
 replaying after a SIGTERM retry; a drumbeat is not — replaying one would deliver a beat for a moment
 that has already passed.
 
-:::note[The goal rule is still duplicated]
-Delivery is shared; the rule for applying a follow-up *goal* is not. It has four copies — the two API
-controllers, the MCP tool, and `EnqueuedMessageProcessorService` — each writing its own wording of the
-same log line. Tracked in [#105](https://github.com/tadasant/zimmer/issues/105).
-:::
+### The goal rule is `Sessions::FollowUpGoal`
+
+Delivery is shared, and so is the rule for applying a *goal* that arrived alongside a follow-up
+prompt. It used to have four copies — the web controller, `Api::V1::SessionsController#follow_up`,
+the MCP tool's `direct_follow_up`, and `EnqueuedMessageProcessorService` — each writing its own
+wording of the same log line. All four now call `Sessions::FollowUpGoal`, which owns three things:
+
+- `normalize` — strip the input; blank becomes `nil`, so `""`, `"  "` and absent are one input.
+- `too_long?` — the `Session::GOAL_MAX_LENGTH` check every surface runs *before* any branch mutates
+  state, so an over-long goal fails the same way whether the message is queued, interrupted in, or
+  sent directly. Only the phrasing of the refusal is the surface's own.
+- `apply!` — a non-blank goal that differs from the session's current goal overwrites it and logs
+  that it did; a blank goal preserves whatever goal the session already has.
+
+The web UI is the one deliberate exception, and it passes `clear_when_blank: true` to say so. Its
+follow-up form always submits the goal field, so it can tell "the human emptied the box" (a clear)
+from "no goal was involved" — the API, MCP and queue paths cannot, and for them a blank goal is
+never a clear. Clearing a goal from those surfaces is its own operation: `PATCH
+/api/v1/sessions/:id`, the web `update_goal` action, or the MCP `change_goal` action.
+
+The log wording stays per-source — a reader of a session's log wants to know whether the goal came
+in with a typed follow-up or off a message that had been sitting in the queue — but it lives in the
+service's `LOG_PHRASES`, so the four cannot drift apart again.
 
 ## `needs_input` vs `archived`
 

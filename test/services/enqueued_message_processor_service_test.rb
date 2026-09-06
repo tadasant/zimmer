@@ -205,6 +205,47 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
     assert_equal "new condition", @session.goal
   end
 
+  # The wording lives in Sessions::FollowUpGoal::LOG_PHRASES now, shared with the
+  # three surfaces that apply a goal directly. Pinned here so the queue's own
+  # phrasing — "from enqueued message", not "from follow-up" — survives that move.
+  test "process_next_message logs the goal change in the queue's own wording" do
+    @session.update!(goal: "old condition")
+    @session.enqueued_messages.create!(
+      content: "Follow up prompt",
+      position: 1,
+      goal: "new condition"
+    )
+
+    service = EnqueuedMessageProcessorService.new(@session)
+
+    assert_enqueued_with(job: AgentSessionJob) do
+      service.process_next_message
+    end
+
+    assert_equal 1, @session.logs.where(content: "Goal updated from enqueued message").count
+  end
+
+  # The service decides WHAT the line says; the caller decides how it is
+  # persisted. This one buffers, so the line must reach the buffer rather than
+  # going straight to the logs table behind its back.
+  test "process_next_message routes the goal log line through the log buffer" do
+    @session.update!(goal: "old condition")
+    @session.enqueued_messages.create!(
+      content: "Follow up prompt",
+      position: 1,
+      goal: "new condition"
+    )
+
+    buffer = LogBuffer.new(@session)
+    service = EnqueuedMessageProcessorService.new(@session, log_buffer: buffer)
+
+    assert_enqueued_with(job: AgentSessionJob) do
+      service.process_next_message
+    end
+
+    assert_equal 1, @session.logs.where(content: "Goal updated from enqueued message").count
+  end
+
   test "process_next_message preserves session goal when message has none" do
     @session.update!(goal: "existing goal")
     @session.enqueued_messages.create!(
