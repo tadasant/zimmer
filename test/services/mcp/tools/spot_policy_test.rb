@@ -690,4 +690,30 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     end
     assert_match(/Invalid spot policy/, error.message)
   end
+  # --- the audit line ---------------------------------------------------------
+
+  # The counterpart of the controller tests: a change an agent makes has to be
+  # recorded and attributed too, or "who moved the cap" is answerable for a human
+  # and not for a session.
+  test "set_gating records the change, naming the tool and the action" do
+    action(action: "set_gating", max_concurrent_sessions: 12)
+
+    entries = capture_log_entries { action(action: "set_gating", max_concurrent_sessions: 8) }
+
+    line = entries.map(&:last).find { |message| message.include?("[FleetPolicy]") }
+    assert line, "the tool moved the cap and nothing recorded it"
+    assert_includes line, "spot_max_concurrent_sessions 12 -> 8"
+    assert_includes line, "#{Mcp::Tools::ActionSpotPolicy::CHANGE_SOURCE} set_gating"
+  end
+
+  test "set_top_up records the change, naming the tool and the action" do
+    action(action: "set_top_up", max_running_sessions: 12)
+
+    entries = capture_log_entries { action(action: "set_top_up", max_running_sessions: 8) }
+
+    line = entries.map(&:last).find { |message| message.include?("[FleetPolicy]") }
+    assert line, "the tool moved the top-up ceiling and nothing recorded it"
+    assert_includes line, "fleet_idle_max_sessions 12 -> 8"
+    assert_includes line, "#{Mcp::Tools::ActionSpotPolicy::CHANGE_SOURCE} set_top_up"
+  end
 end

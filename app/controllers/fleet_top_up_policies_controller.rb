@@ -15,15 +15,29 @@
 # PATCH that saved both would let a validation failure on one card reject a change
 # made on the other.
 class FleetTopUpPoliciesController < ApplicationController
+  # The three numbers this card writes. One list, for the same reason
+  # SpotPoliciesController keeps one: the audit-coverage test reads it to check
+  # that everything reachable from this form is recorded when it moves.
+  FIELDS = %i[
+    fleet_idle_max_sessions
+    fleet_idle_threshold_minutes
+    fleet_idle_min_fire_interval_minutes
+  ].freeze
+
+  # Named on the audit line, so a change made here is distinguishable from one an
+  # agent made through `action_spot_policy`.
+  CHANGE_SOURCE = "web:/inference backlog top-up form"
+
   def update
     setting = AppSetting.editable
+    setting.policy_change_source = CHANGE_SOURCE
     top_up_params = params[:app_setting]
     top_up_params = ActionController::Parameters.new unless top_up_params.is_a?(ActionController::Parameters)
 
     # Only the keys the request actually carries, matching SpotPoliciesController:
     # a hand-built PATCH that omits one would otherwise assign nil to a NOT NULL
     # column and 500 instead of leaving that number as it was.
-    %i[fleet_idle_max_sessions fleet_idle_threshold_minutes fleet_idle_min_fire_interval_minutes].each do |field|
+    FIELDS.each do |field|
       setting.public_send("#{field}=", top_up_params[field]) if top_up_params.key?(field)
     end
 

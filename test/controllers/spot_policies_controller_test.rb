@@ -148,4 +148,20 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
     refute AppSetting.current.spot_preemption_enabled
     assert_equal 30, AppSetting.current.spot_reserve_weekly_pct
   end
+  # The audit line is what makes a silent revert reconstructible. A change made
+  # here has to be distinguishable from one an agent made through
+  # `action_spot_policy`, because "which surface moved this" is the first question
+  # anyone asks and nothing else on the row answers it.
+  test "a change made through this form is recorded, naming the form" do
+    AppSetting.editable.update!(spot_max_concurrent_sessions: 12)
+
+    entries = capture_log_entries do
+      patch spot_policy_path, params: { app_setting: { spot_max_concurrent_sessions: "8" } }
+    end
+
+    line = entries.map(&:last).find { |message| message.include?("[FleetPolicy]") }
+    assert line, "the form moved the cap and nothing recorded it"
+    assert_includes line, "spot_max_concurrent_sessions 12 -> 8"
+    assert_includes line, SpotPoliciesController::CHANGE_SOURCE
+  end
 end
