@@ -115,7 +115,8 @@ container. See [limitations](/limitations/#a-csrf-failure-still-ships-a-context-
 
 Not every WARN is a failure. `[FleetPolicy]` lines are the other use of the level: one per
 persisted change to the fleet-scheduling policy — the spot gate, the concurrency limit, the
-backlog top-up thresholds — naming the surface that made it and every value that moved.
+backlog top-up thresholds — naming the surface that made it, the calling session where there is
+one, and every value that moved.
 
 ```logsql
 {service.name="zimmer"} deployment.environment:=production "[FleetPolicy]"
@@ -126,7 +127,7 @@ fleet does, they can be moved from three separate surfaces, and a change to one 
 invisible; at INFO the record would reach container stdout and nothing else, and there is no shell
 on the production box to read stdout with. WARN does not page, so the record costs nobody a
 notification. See [Every change to these numbers is
-recorded](/sessions/spot-and-priority/#every-change-to-these-numbers-is-recorded).
+recorded](/sessions/spot-and-priority/#every-change-to-both-ceilings-is-recorded).
 
 ### A failure the code recovered from is logged at WARN, not ERROR
 

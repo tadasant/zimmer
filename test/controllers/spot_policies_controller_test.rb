@@ -148,6 +148,7 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
     refute AppSetting.current.spot_preemption_enabled
     assert_equal 30, AppSetting.current.spot_reserve_weekly_pct
   end
+
   # The audit line is what makes a silent revert reconstructible. A change made
   # here has to be distinguishable from one an agent made through
   # `action_spot_policy`, because "which surface moved this" is the first question

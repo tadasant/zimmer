@@ -246,18 +246,21 @@ class AppSetting < ApplicationRecord
   # Record every change to the fleet-scheduling policy, old value → new value,
   # naming the surface that made it.
   #
-  # This exists because these numbers can be moved from three different places —
-  # two forms on `/inference`, the `action_spot_policy` MCP tool, a console — and
-  # until this callback NOTHING recorded any of them. A cap silently going back
-  # down halves fleet throughput and looks exactly like a quiet day, and the only
-  # way to reconstruct what happened was to read every agent transcript in the
-  # window and rule the rest out by elimination.
+  # These numbers move from five places — the spot gate, backlog top-up and
+  # genesis forms on `/inference`, the `action_spot_policy` MCP tool, and a
+  # console — and a change to one is invisible from outside. Spot work is
+  # deferred rather than cancelled, so a cap that goes back down fails nothing
+  # and pages nobody: it is indistinguishable from a quiet day until somebody
+  # reconstructs the whole fleet's history by hand.
+  #
+  # `after_commit`, not `after_save`: a record of a change that was rolled back
+  # is the one thing an audit record must never be.
   #
   # WARN, not INFO, and that is the whole point: the OTel exporter ships WARN and
   # above, so an INFO line reaches container stdout and nothing else — and there
   # is no shell on the production box to read stdout with. WARN does not page.
   # See docs/src/content/docs/operate/observability.md.
-  after_save :log_fleet_policy_change
+  after_commit :log_fleet_policy_change, on: [ :create, :update ]
 
   class << self
     # The singleton row for reads. Returns a blank, unsaved record when no row
