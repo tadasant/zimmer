@@ -263,7 +263,6 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
     end
   end
 
-
   test "every spelling of a forward rename or table change is caught, with its shape" do
     result = scan_source(<<~RUBY)
       class RenameEverything < ActiveRecord::Migration[8.0]
@@ -449,6 +448,88 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
 
       assert_empty TwoPhaseColumnDropGuard.violations(dir)
     end
+  end
+
+  # `ALTER INDEX … RENAME TO` is how the zero-downtime index swap ends, and the
+  # guard's own claim is that index churn is invisible to an old container. A
+  # rename shape is only recorded while the statement in scope alters a TABLE.
+  test "a raw-SQL rename of anything other than a table is not a hazard" do
+    result = scan_source(<<~'RUBY')
+      class SwapIndex < ActiveRecord::Migration[8.0]
+        def up
+          execute "ALTER INDEX index_sessions_on_widget RENAME TO index_sessions_on_gadget"
+          execute "ALTER TYPE session_state RENAME TO session_status"
+          execute "ALTER SEQUENCE sessions_id_seq RENAME TO sessions_pk_seq"
+        end
+      end
+    RUBY
+
+    assert_not result.hazardous?
+  end
+
+  test "an ALTER TABLE spanning lines still renames, and the target does not leak past its string" do
+    result = scan_source(<<~'RUBY')
+      class RenameAcrossLines < ActiveRecord::Migration[8.0]
+        def up
+          execute <<~SQL
+            ALTER TABLE sessions
+              RENAME TO agent_sessions
+          SQL
+          execute "ALTER INDEX index_sessions_on_widget RENAME TO index_agent_sessions_on_widget"
+        end
+      end
+    RUBY
+
+    assert_equal [ :table_rename ], result.hazards.map(&:shape)
+    assert_equal 5, result.hazards.first.line
+  end
+
+  # Prism hands an interpolated string to the visitor in fragments, and no
+  # fragment of `"… RENAME COLUMN \#{old} TO \#{new}"` satisfies `\w+\s+TO`.
+  test "an interpolated raw-SQL column rename is still caught" do
+    result = scan_source(<<~'RUBY')
+      class RenameDynamically < ActiveRecord::Migration[8.0]
+        OLD = "stop_condition"
+        NEW = "goal"
+
+        def up
+          execute "ALTER TABLE sessions RENAME COLUMN #{OLD} TO #{NEW}"
+        end
+      end
+    RUBY
+
+    assert_equal [ :column_rename ], result.hazards.map(&:shape)
+  end
+
+  test "a SQL comment describing a drop is a plan, not a statement" do
+    result = scan_source(<<~'RUBY')
+      class NotYet < ActiveRecord::Migration[8.0]
+        def up
+          execute <<~SQL
+            -- DROP TABLE legacy_widgets once #123 lands
+            -- ALTER TABLE sessions DROP COLUMN widget
+            ANALYZE sessions;
+          SQL
+        end
+      end
+    RUBY
+
+    assert_not result.hazardous?
+  end
+
+  # `t.rename` is matched on its receiver, and the receiver has to be the
+  # `change_table` block parameter — a local variable. `File.rename` in a data
+  # migration is not a schema change.
+  test "a rename on a constant receiver is not a schema change" do
+    result = scan_source(<<~RUBY)
+      class MoveAFile < ActiveRecord::Migration[8.0]
+        def up
+          File.rename("/tmp/a", "/tmp/b")
+        end
+      end
+    RUBY
+
+    assert_not result.hazardous?
   end
 
   private

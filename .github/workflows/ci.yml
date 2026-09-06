@@ -46,7 +46,7 @@ jobs:
       # forward column drops, column and table renames, and table drops. See
       # docs/operate/deploying.md, "Dropping a column takes two deploys" and
       # "Renames and table drops expand before they contract".
-      - name: Two-phase column drop guard
+      - name: Migration drop/rename guard
         run: |
           bundle exec ruby -r./test/support/two_phase_column_drop_guard \
             -e 'report = TwoPhaseColumnDropGuard.report; abort(report) unless report.empty?'

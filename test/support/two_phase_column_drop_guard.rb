@@ -26,8 +26,8 @@ require "prism"
 #
 #   :column_drop   remove_column & friends, t.remove, raw `DROP COLUMN`
 #                  -> # two-phase-drop: phase 2 of <ref>
-#   :column_rename rename_column, t.rename, raw `RENAME COLUMN`
-#   :table_rename  rename_table, raw `RENAME TO`
+#   :column_rename rename_column, t.rename, `ALTER TABLE … RENAME COLUMN`
+#   :table_rename  rename_table, `ALTER TABLE … RENAME TO`
 #   :table_drop    drop_table, raw `DROP TABLE`
 #                  -> # expand-contract: contract of <ref>
 #
@@ -68,9 +68,10 @@ class TwoPhaseColumnDropGuard
     drop_table: :table_drop
   ).freeze
 
-  # `t.remove` / `t.rename` inside a `change_table` block. Only counted when
-  # they have a receiver, so a bare `remove` or `rename` — something else
-  # entirely — does not trip them.
+  # `t.remove` / `t.rename` inside a `change_table` block. Only counted when the
+  # receiver is a local variable — which is exactly what a `change_table do |t|`
+  # parameter is. A bare `remove` is something else entirely, and `File.rename`
+  # in a data migration is not a schema change at all.
   RECEIVER_METHOD_SHAPES = { remove: :column_drop, rename: :column_rename }.freeze
 
   # Bodies that run in the reverse direction. A `remove_column` in here is the
@@ -84,19 +85,38 @@ class TwoPhaseColumnDropGuard
   REVERSING_BLOCKS = %i[down revert].freeze
 
   # Raw SQL, matched against string *contents* so a heredoc counts — which is
-  # how anyone actually writes SQL in a migration. Ordered: Postgres spells a
-  # table rename `RENAME TO` and a column rename `RENAME [COLUMN] old TO new`,
-  # so the table form has to be tried first and the column form has to refuse a
-  # bare `TO`.
+  # how anyone actually writes SQL in a migration. Postgres spells a table
+  # rename `RENAME TO` and a column rename `RENAME [COLUMN] old TO new`, so the
+  # table form is tried first and the column form has to refuse a bare `TO`.
+  # The bare `RENAME COLUMN` entry is there for the interpolated spelling —
+  # `"… RENAME COLUMN #{old} TO #{new}"` reaches the visitor as fragments, and
+  # no fragment of it satisfies `\w+\s+TO`.
   SQL_SHAPES = {
     /\bDROP\s+COLUMN\b/i => :column_drop,
     /\bDROP\s+TABLE\b/i => :table_drop,
     /\bRENAME\s+TO\b/i => :table_rename,
-    /\bRENAME\s+(?:COLUMN\s+)?(?!TO\b)\w+\s+TO\b/i => :column_rename
+    /\bRENAME\s+COLUMN\b/i => :column_rename,
+    /\bRENAME\s+(?!TO\b)\w+\s+TO\b/i => :column_rename
   }.freeze
 
+  # A rename is only a hazard when it is a TABLE being altered. `ALTER INDEX …
+  # RENAME TO` is how the zero-downtime index swap ends, and `ALTER TYPE` /
+  # `ALTER SEQUENCE` are no more visible to an old container than an index is —
+  # so the raw-SQL rename shapes are recorded only while the statement in scope
+  # is an `ALTER TABLE`. Tracked across string nodes, not within one: Prism
+  # hands a squiggly heredoc to the visitor one line at a time, and the
+  # realistic heredoc puts `ALTER TABLE sessions` and `RENAME TO …` on separate
+  # lines. The scope resets at each enclosing call, so one `execute` cannot lend
+  # its `ALTER TABLE` to the next.
+  ALTER_TARGET = /\bALTER\s+(TABLE|INDEX|SEQUENCE|TYPE|VIEW|MATERIALIZED\s+VIEW)\b/i
+  RENAME_SHAPES = %i[column_rename table_rename].freeze
+
   # What each shape has to say for itself. `:column_drop` keeps the original
-  # annotation; the three name-changing shapes share the other one.
+  # annotation; the three name-changing shapes share the other one, so one
+  # `expand-contract` annotation clears every name change in the file. The
+  # annotation is per kind rather than per hazard — the same latitude the
+  # original one always had, since a migration doing two things at once is
+  # already asking a reviewer to read it as a whole.
   SHAPE_ANNOTATIONS = {
     column_drop: :two_phase_drop,
     column_rename: :expand_contract,
@@ -359,6 +379,7 @@ class TwoPhaseColumnDropGuard
 
     def initialize
       @hazards = []
+      @sql_target = nil
       super
     end
 
@@ -373,6 +394,10 @@ class TwoPhaseColumnDropGuard
       # block is a reversing *body*: `revert 20260101000000` reverts a whole
       # other migration and has nothing here to inspect.
       return if node.block && REVERSING_BLOCKS.include?(node.name)
+
+      # `execute <<~SQL … SQL` is one call holding many string nodes, and the
+      # `ALTER TABLE` that scopes them is in the first. The next call starts over.
+      @sql_target = nil
 
       shape = shape_of(node)
       push(node, shape) if shape
@@ -391,7 +416,7 @@ class TwoPhaseColumnDropGuard
 
     def shape_of(node)
       METHOD_SHAPES[node.name] ||
-        (node.receiver ? RECEIVER_METHOD_SHAPES[node.name] : nil)
+        (node.receiver.is_a?(Prism::LocalVariableReadNode) ? RECEIVER_METHOD_SHAPES[node.name] : nil)
     end
 
     def push(node, shape)
@@ -400,14 +425,28 @@ class TwoPhaseColumnDropGuard
 
     # Line by line, so a heredoc that drops two columns reports both, each at the
     # line it is written on — Prism's call-node slice stops at the `<<~SQL`
-    # marker, so matching the *call* source would miss every realistic one.
+    # marker, so matching the *call* source would miss every realistic one. SQL
+    # comments are skipped: a `-- drop the widget column once #123 lands` note
+    # is a plan, not a statement.
     def push_sql(node)
       node.unescaped.lines.each_with_index do |line, offset|
-        shape = SQL_SHAPES.find { |pattern, _| line.match?(pattern) }&.last
-        next unless shape
+        next if line.strip.start_with?("--")
 
-        @hazards << Hazard.new(line: node.location.start_line + offset, source: line.strip, shape: shape)
+        @sql_target = line[ALTER_TARGET, 1].upcase.squeeze(" ") if line.match?(ALTER_TARGET)
+
+        shapes(line).each do |shape|
+          @hazards << Hazard.new(line: node.location.start_line + offset, source: line.strip, shape: shape)
+        end
       end
+    end
+
+    # Every distinct shape on the line, not just the first: one line can both
+    # drop a column and rename a table, and two patterns can name the same shape.
+    def shapes(line)
+      SQL_SHAPES
+        .filter_map { |pattern, shape| shape if line.match?(pattern) }
+        .uniq
+        .reject { |shape| RENAME_SHAPES.include?(shape) && @sql_target != "TABLE" }
     end
   end
 end
