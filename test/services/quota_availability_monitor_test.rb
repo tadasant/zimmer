@@ -129,6 +129,81 @@ class QuotaAvailabilityMonitorTest < ActiveSupport::TestCase
       "the level stays spent — re-arming here is what made the next check! fire again"
   end
 
+  # tadasant/zimmer#655: the edge fires once per recovery, and whatever the fleet
+  # session it spawns did not reach has no wake path left. The session found in
+  # that position had sat 33 hours past its own recorded recovery time. So a
+  # spent announcement goes STALE rather than final, and the sweep's fifteen-
+  # minute ask can announce the same recovery again.
+  test "request_wake! announces a spent recovery again once it has gone stale" do
+    account(:active)
+    QuotaAvailabilityMonitor.check!
+    AppSetting.current.update!(
+      quota_pool_available_changed_at: (QuotaAvailabilityMonitor::ANNOUNCEMENT_STALE_AFTER + 1.minute).ago
+    )
+
+    assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+      assert QuotaAvailabilityMonitor.request_wake!(reason: "1 parked session")
+    end
+    assert_equal true, AppSetting.current.reload.quota_pool_available,
+      "the level stays spent — a re-arm is what would make the next check! call this a rising edge"
+  end
+
+  # And renews its own cooldown, which is what bounds the cost of the re-ask to
+  # one fleet session per ANNOUNCEMENT_STALE_AFTER rather than one per sweep.
+  test "a re-announcement renews the cooldown" do
+    account(:active)
+    QuotaAvailabilityMonitor.check!
+    AppSetting.current.update!(
+      quota_pool_available_changed_at: (QuotaAvailabilityMonitor::ANNOUNCEMENT_STALE_AFTER + 1.minute).ago
+    )
+    assert QuotaAvailabilityMonitor.request_wake!(reason: "1 parked session")
+
+    assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+      3.times { |pass| assert_not QuotaAvailabilityMonitor.request_wake!(reason: "pass #{pass}") }
+    end
+  end
+
+  # A level that says "announced" with no record of when cannot be allowed to
+  # make the re-ask permanently unreachable — that is the failure the whole path
+  # exists to remove.
+  test "an announcement with no stamp counts as stale" do
+    account(:active)
+    QuotaAvailabilityMonitor.check!
+    AppSetting.current.update!(quota_pool_available_changed_at: nil)
+
+    assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+      assert QuotaAvailabilityMonitor.request_wake!(reason: "1 parked session")
+    end
+  end
+
+  # A full fleet does not defer the recovery's ONE edge (see above) — but it does
+  # defer a re-announcement, because that ask comes round again in fifteen
+  # minutes and a fleet session spawned into a full fleet could start nothing.
+  test "a re-announcement defers while the fleet is at its cap" do
+    enable_spot_gating(max_concurrent: 1)
+    live = account(:active)
+    seed_reading(live, utilization_5h: 0.10, utilization_7d: 0.10)
+    QuotaAvailabilityMonitor.check!
+    AppSetting.current.update!(
+      quota_pool_available: true,
+      quota_pool_available_changed_at: (QuotaAvailabilityMonitor::ANNOUNCEMENT_STALE_AFTER + 1.minute).ago
+    )
+
+    occupying = Session.create!(prompt: "occupying the only slot", agent_runtime: "claude_code",
+      status: :running, git_root: "https://github.com/test/repo.git", branch: "main",
+      execution_provider: "local_filesystem", session_id: SecureRandom.uuid)
+    GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
+      job_class: "AgentSessionJob", serialized_params: { "arguments" => [ occupying.id ] },
+      scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
+    assert_equal SpotGateService::FLEET_CAP_REASON, SpotGateService.evaluate.reason,
+      "the fixture must reproduce a gate held on the cap rather than on a window"
+
+    assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+      assert_not QuotaAvailabilityMonitor.request_wake!(reason: "1 parked session")
+    end
+    assert_equal true, AppSetting.current.reload.quota_pool_available
+  end
+
   # The loop this guards: `check!` and the sweep that calls `request_wake!` run in
   # the SAME fifteen-minute pass. If a spent request re-armed the edge, the next
   # pass would see false→true against a pool that never left, fire again, and

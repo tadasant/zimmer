@@ -502,6 +502,37 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_includes output, "the ranked fleet wake reaches it in precedence order (currently 640)"
   end
 
+  # tadasant/zimmer#617: this output is what the ranked fleet wake reads to decide
+  # what to restart, and half the parked population is not its to touch. The
+  # boundary has to be stated here rather than inferred from the scheduling class,
+  # which is the arrangement that let both mechanisms claim the priority parks.
+  test "a parked priority session says outright that the fleet wake must not restart it" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::PRIORITY, metadata: {
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => "2026-08-22T11:50:51Z"
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Woken by:** Zimmer's own auth-outage sweep"
+    assert_includes output, "the fleet wake must not restart it"
+    assert_includes output, "- **Resumes when:** the account pool recovers"
+  end
+
+  test "a parked spot session says the fleet wake is the one that starts it" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => "2026-08-22T11:50:51Z"
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Woken by:** the ranked fleet wake (the `quota_available` event)"
+    refute_includes output, "must not restart it"
+  end
+
   # Session 6808, as reported (#642): the headline named a start-hold whose own
   # re-check was two days in the past, while an auth-outage park a full day newer
   # sat beside it unrendered — pointing every reader at the spot gate when the

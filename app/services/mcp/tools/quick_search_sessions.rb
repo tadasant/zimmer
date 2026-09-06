@@ -381,6 +381,18 @@ module Mcp
                    "whatever its precedence or scheduling class. Skip it and take the next candidate."
         end
 
+        # An auth-outage park says who wakes it, on the LIST row rather than only
+        # in `get_session`. The caller that reads this list to decide what to
+        # restart is the ranked fleet wake, and half of this population is not
+        # its to touch — a boundary it had to infer from the scheduling class is
+        # what let two mechanisms claim the same sessions (tadasant/zimmer#617).
+        # Rendered in compact rows too: it is one line, only on a parked session,
+        # and it is the difference between a correct restart and a collision.
+        if AuthOutageParkService.parked?(session)
+          lines << "- **Parked on an auth outage** (`#{session.metadata['auth_outage_reason']}`), " \
+                   "woken by #{AuthOutageWakeAuthority.instruction(session)}"
+        end
+
         # Reported only when it is not the default, and reported with the reminder
         # attached: the one way this field can do harm is an agent reading it as a
         # reason not to act on a session.

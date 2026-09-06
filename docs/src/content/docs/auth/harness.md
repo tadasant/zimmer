@@ -1137,12 +1137,32 @@ time, the large majority of the whole trigger list. And a wall clock knows nothi
 parked session matters most, so whichever timer fired first won, regardless of
 [precedence](/sessions/spot-and-priority/#precedence-ranking-the-spot-queue).
 
-Two things wake a parked session now, and they cover different populations.
+Two mechanisms wake a parked session now, and **`AuthOutageWakeAuthority` is the one place that
+says which parks belong to which**. Everything that starts a park, and every surface that tells a
+human or an agent who is coming for one, asks it.
 
 | Population | Woken by | Why |
 | --- | --- | --- |
-| **spot** | the `quota_available` trigger event → one `fleet-maintenance` session running the `awaken-waiting-sessions` skill | spot work is exactly the work whose ORDER matters when quota is scarce, and the skill is what reads precedence, the spot thresholds and the concurrency ceiling to decide who starts. Both artifacts ship in Zimmer's own catalog, so the seeded trigger resolves on a standalone install; a test asserts the root it names exists |
-| **priority** | `AuthOutageParkService.wake_parked_sessions!`, from `QuotaResetCheckerJob` every 15 minutes | priority work is never gated on quota, so making it wait for a spawned session to take its first turn would be a regression — and there is no ordering question to get wrong |
+| **spot** — `AuthOutageWakeAuthority::FLEET` | the `quota_available` trigger event → one `fleet-maintenance` session running the `awaken-waiting-sessions` skill | spot work is exactly the work whose ORDER matters when quota is scarce, and the skill is what reads precedence, the spot thresholds and the concurrency ceiling to decide who starts. Both artifacts ship in Zimmer's own catalog, so the seeded trigger resolves on a standalone install; a test asserts the root it names exists |
+| **priority** — `AuthOutageWakeAuthority::SWEEP` | `AuthOutageParkService.wake_parked_sessions!`, from `QuotaResetCheckerJob` every 15 minutes | priority work is never gated on quota, so making it wait for a spawned session to take its first turn would be a regression — and there is no ordering question to get wrong |
+
+The split is old; the single answer is not. It used to be a paragraph, restated in four comments and
+re-derived from the scheduling class at each of them, while the fleet-side policy — which lives in
+`tadasant/tadasant-internal`, not here — believed it owned the whole parked population. Both sides
+claimed the priority parks, and the skill's own collision check answered by refusing to wake
+*anything*, handing the recovery to a sweep that ranks nothing
+([#617](https://github.com/tadasant/zimmer/issues/617)). Two things follow from that, and they are
+the shape of the fix:
+
+- **The owner is derived, never stored.** A park does not stamp its owner into metadata. A session's
+  scheduling class can be changed while it is asleep, and a stamped owner would then name a
+  mechanism that is no longer looking for it — a park owned by nobody, which is
+  [#655](https://github.com/tadasant/zimmer/issues/655)'s shape. Derived, a reclassified session
+  simply changes hands on the next sweep.
+- **The boundary is stated where the other side reads, not only in Zimmer's comments.** A parked
+  session's `get_session` output carries a **Woken by:** line, and its `quick_search_sessions` row
+  says the same thing without costing a detail read. For the half the fleet wake must not touch,
+  those lines say so outright.
 
 Neither wakes a session that is **also** asleep on a wake-up somebody chose. A park and a pause are
 different states that happen to share `waiting`: the pool recovering answers the park and says
@@ -1208,16 +1228,35 @@ not an edge, nothing fires, and everything parked in that window waits forever. 
 records it: `park!` calls `QuotaAvailabilityMonitor.record_unavailable!`, which is both the earliest
 moment Zimmer has positive evidence the pool is empty and the most certain.
 
-The sweep can also ask for the wake outright (`request_wake!`). It does that only for a parked SPOT
-session it has found eligible on evidence the pool edge does not carry — an **auth** park whose pool
-credentials changed while `accounts.available` never went false→true. A quota-parked spot session
-never asks, because the pool's own edge already covers it.
+The sweep can also ask for the wake outright (`request_wake!`), and this is the second half of its
+job: it starts the parks it owns, and it **speaks for the ones it does not**. Every pass counts the
+fleet-owned parks it found eligible and left alone, and hands that number to `request_wake!`. Two
+different populations end up in the count, and this is the only path either has:
 
-Once the edge has been spent the request is a **no-op**, and that is load-bearing rather than
-defensive. The sweep runs in the same fifteen-minute pass as `check!`, so re-arming the level here
-would make the next pass read `false` against a pool that never left, call it a rising edge, and fire
-again — one fleet session every fifteen minutes for as long as a single session stayed parked, each
-burning the quota that just recovered. The level and the job that spends it are written in one
+- An **auth** park, for which no edge fires at all — it is woken by the pool's *credentials*
+  changing, which happens with `accounts.available` true throughout, so `check!` never sees a
+  false→true.
+- A park **the fleet session did not reach** on the edge that did fire, because the ceiling or the
+  windows ran out first. The edge is spent, and nothing re-examines it until the pool exhausts and
+  recovers all over again. [#655](https://github.com/tadasant/zimmer/issues/655) is a spot session
+  found 33 hours past its own recorded recovery time in exactly that position.
+
+It is a *request* and never a wake: the fleet session re-reads the gate, the ceiling and the ordering
+for itself, so the sweep never decides which spot session starts.
+
+An **unspent** level is announced exactly as `check!` announces one. A **spent** level may be
+announced again once it has stood for `ANNOUNCEMENT_STALE_AFTER` (1 hour) — the same conditional
+`UPDATE` claim against a different predicate, which renews the stamp so the next re-ask is another
+hour away. What must **not** happen is a re-arm: putting the level back to `false` would make the next
+pass of the very same cron read it as a fresh rising edge, and one parked session would spawn a fleet
+session every fifteen minutes for as long as it stayed parked, each burning the quota that just
+recovered.
+
+A re-announcement also defers on **any** held gate, not just the window's. The asymmetry is
+deliberate: `fleet_at_cap` must not suppress a recovery's *one* edge, for the reason two paragraphs
+up — but a re-announcement is not that edge, it is a fifteen-minute re-ask standing behind it, so
+deferring it while every slot is full costs an hour at most and saves a fleet session that could have
+started nothing. The level and the job that spends it are written in one
 transaction for the same reason: a job that ran before the level committed would find nothing
 delivered, re-arm against a stale `false`, and silently lose the edge.
 

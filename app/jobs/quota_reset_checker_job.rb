@@ -8,17 +8,25 @@
 #
 # Restoring accounts is only half the job: sessions parked by
 # AuthOutageParkService because the pool had nothing usable are dormant in
-# `waiting`, waiting for someone to notice the pool came back. Two things do,
-# and they cover different populations:
+# `waiting`, waiting for someone to notice the pool came back. Two mechanisms
+# do, and AuthOutageWakeAuthority — not this comment — is what says which parks
+# belong to which:
 #
 #   1. QuotaAvailabilityMonitor fires the `quota_available` trigger event on the
 #      rising edge, which spawns ONE fleet-maintenance session that decides — in
 #      precedence order, against the spot thresholds and the concurrency ceiling —
-#      which waiting sessions start. That is how every SPOT session wakes.
-#   2. AuthOutageParkService.wake_parked_sessions! resumes parked PRIORITY
-#      sessions directly. Priority work is never gated on quota, so making it wait
-#      for a fleet session to be spawned and take its first turn would be a
+#      which waiting sessions start. That is how every FLEET-owned (spot) park
+#      is started.
+#   2. AuthOutageParkService.wake_parked_sessions! resumes the SWEEP-owned
+#      (priority) parks directly. Priority work is never gated on quota, so making
+#      it wait for a fleet session to be spawned and take its first turn would be a
 #      regression; it recovers with the accounts, as it always has.
+#
+# The sweep runs second and does both halves of its job in one pass: it resumes
+# what it owns, and it counts the fleet-owned parks it left alone and asks
+# QuotaAvailabilityMonitor to announce the recovery again on their behalf. That
+# ask is what keeps a park the fleet wake never reached from waiting for the pool
+# to exhaust and recover all over again (tadasant/zimmer#655).
 #
 # Restoring an account is also what changes the pool fingerprint an
 # auth-unrecoverable park waits on, so the sweep covers both park reasons; see

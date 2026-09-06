@@ -85,6 +85,26 @@
 class QuotaAvailabilityMonitor
   EVENT_NAME = "quota_available"
 
+  # How long an ANNOUNCED recovery must have stood before the sweep may announce
+  # it again on behalf of parked sessions the fleet wake never reached.
+  #
+  # The edge fires once per recovery, and the fleet session it spawns is bounded:
+  # it starts what the ceiling and the windows have room for and leaves the rest.
+  # Whatever it leaves has no wake path at all until the pool exhausts and
+  # recovers again, which on a deployment sitting near its utilization limit may
+  # be days — tadasant/zimmer#655, a spot park found 33 hours past its own
+  # recorded recovery time.
+  #
+  # So a spent announcement goes stale rather than being final. An hour, and
+  # renewed by the re-announcement itself, which is what bounds the cost: at most
+  # one extra fleet session an hour, only while fleet-owned parks are actually
+  # sitting there eligible, and only while the gate says something could start.
+  # The alternative — re-arming the level — is the loop #request_wake! describes:
+  # the sweep runs in the same pass as `check!`, so the next pass would read
+  # `false` against a pool that never left and call it a fresh rising edge, once
+  # every fifteen minutes forever.
+  ANNOUNCEMENT_STALE_AFTER = 1.hour
+
   class << self
     # Observe the pool now, record the level, and fire the event if this is the
     # rising edge.
@@ -207,29 +227,46 @@ class QuotaAvailabilityMonitor
       false
     end
 
-    # Fire the wake for a reason that is not the pool's own rising edge.
+    # Fire the wake on behalf of parked sessions the pool's own rising edge will
+    # not reach.
     #
-    # The sweep calls this when a parked SPOT session has become eligible on
-    # evidence the edge does not carry — an auth park whose pool credentials
-    # changed while `accounts.available` never went false→true. The fleet session
-    # re-reads everything for itself, so firing it is safe; not firing it leaves
-    # that session with no wake path at all.
+    # AuthOutageParkService.wake_parked_sessions! calls this every fifteen
+    # minutes with the count of FLEET-owned parks it found eligible and left
+    # alone (see AuthOutageWakeAuthority). Two different populations end up in
+    # that count, and this is the only path either of them has:
     #
-    # When the edge has already been spent this is a NO-OP, and that is
-    # load-bearing. Re-arming here instead reads as harmless — "let the next
-    # check! fire it once" — but the sweep runs in the same pass as `check!`, on
-    # the same fifteen-minute cron, so the next pass finds the level `false`
-    # against an available pool, calls that a rising edge, and fires again. A
-    # single spot session the fleet wake legitimately declines to start (the
-    # thresholds are still breached, say) then spawns one fleet session every
-    # fifteen minutes for as long as it stays parked, each burning the quota that
-    # just recovered. That is the exact loop the edge exists to prevent.
+    #   * An AUTH park, for which no edge fires at all. It is woken by the pool's
+    #     CREDENTIALS changing, which happens with `accounts.available` true
+    #     throughout, so `check!` never sees a false→true.
+    #   * A park the fleet session did not reach on the edge that DID fire,
+    #     because the ceiling or the windows ran out first. Nothing re-examines
+    #     it, and #655 is what that costs.
+    #
+    # Firing is safe because the fleet session re-reads the gate, the ceiling and
+    # the ordering for itself; this decides only WHETHER it is asked, never who
+    # it starts.
+    #
+    # == The two claims ==
+    #
+    # An UNSPENT level is announced exactly as `check!` announces one, and for
+    # the same reason: two passes can read the same unspent level in the same
+    # instant, so the transition itself has to be the claim.
+    #
+    # A SPENT level may be announced again once it has stood for
+    # ANNOUNCEMENT_STALE_AFTER — the same conditional-UPDATE claim against a
+    # different predicate, which renews the stamp so the next re-announcement is
+    # another hour away. What must NOT happen here is a re-arm: putting the level
+    # back to `false` would make the next pass of the very same cron read it as a
+    # fresh rising edge, and one parked session would spawn a fleet session every
+    # fifteen minutes for as long as it stayed parked.
     #
     # @return [Boolean] true when a wake was fired
     def request_wake!(reason: nil)
       setting = AppSetting.current
+      announced = setting.quota_pool_available
+      cutoff = ANNOUNCEMENT_STALE_AFTER.ago
 
-      if setting.quota_pool_available
+      if announced && !announcement_stale?(setting, cutoff)
         Rails.logger.info(
           "[QuotaAvailabilityMonitor] #{EVENT_NAME} already fired for this recovery" \
           "#{" (#{reason})" if reason}"
@@ -241,7 +278,15 @@ class QuotaAvailabilityMonitor
       # be answered by the same fleet session, which can start nothing while spot
       # work is held. The sweep that asks runs every fifteen minutes and asks
       # again, so a deferral here costs one sweep and no edge.
-      if (hold = spot_gate_hold)
+      #
+      # A RE-announcement defers on any hold, not just the window's. The
+      # asymmetry is the same one #spot_gate_hold argues: `fleet_at_cap` must not
+      # suppress a recovery's ONE edge, because a fleet habitually at its cap
+      # would starve the parked population of its only wake path. A
+      # re-announcement is not that edge — it is a fifteen-minute re-ask standing
+      # behind it — so deferring it while every slot is full costs an hour at
+      # most and saves a fleet session that could have started nothing.
+      if (hold = spot_gate_hold(any_hold: announced))
         Rails.logger.info(
           "[QuotaAvailabilityMonitor] Not firing #{EVENT_NAME}#{" (#{reason})" if reason}: " \
           "spot work is held (#{hold.reason})"
@@ -249,13 +294,14 @@ class QuotaAvailabilityMonitor
         return false
       end
 
-      # Same claim as `check!`, for the same reason and against the same column:
-      # this call and a `check!` on another worker can both read an unspent level
-      # in the same instant, and only one of them may announce the recovery.
       fired = ActiveRecord::Base.transaction do
-        next false unless claim_announcement!(setting)
+        claimed = announced ? claim_stale_announcement!(setting, cutoff) : claim_announcement!(setting)
+        next false unless claimed
 
-        Rails.logger.info "[QuotaAvailabilityMonitor] Firing #{EVENT_NAME}#{" (#{reason})" if reason}"
+        Rails.logger.info(
+          "[QuotaAvailabilityMonitor] Firing #{EVENT_NAME}#{" (#{reason})" if reason}" \
+          "#{' — re-announcing a recovery the fleet wake did not finish' if announced}"
+        )
         SystemEventTriggerJob.perform_later(EVENT_NAME)
         true
       end
@@ -271,6 +317,18 @@ class QuotaAvailabilityMonitor
     rescue => e
       Rails.logger.info "[QuotaAvailabilityMonitor] Could not request a wake: #{e.message}"
       false
+    end
+
+    # Has an announced recovery stood long enough to be announced again?
+    #
+    # A NULL stamp counts as stale. It means the level was written by something
+    # that did not record when — no row of this code does, but a hand-edited or
+    # migrated setting can be in that shape — and treating it as fresh would make
+    # the re-ask silently unreachable forever, which is the failure this whole
+    # path exists to remove.
+    def announcement_stale?(setting, cutoff = ANNOUNCEMENT_STALE_AFTER.ago)
+      at = setting.quota_pool_available_changed_at
+      at.nil? || at <= cutoff
     end
 
     # The gate decision when a WINDOW is refusing spot work, or nil when the
@@ -299,9 +357,15 @@ class QuotaAvailabilityMonitor
     # every parked session's only wake path — the fleet session re-reads the gate
     # for itself before it starts anything, so a spurious fire is bounded by one
     # session while a suppressed one is not.
-    def spot_gate_hold
+    #
+    # `any_hold` is the one caller that wants every held reason rather than the
+    # window's: #request_wake! re-announcing a recovery that has already been
+    # spent. The argument above is about the edge that fires once; a re-ask that
+    # comes round again in fifteen minutes can afford to wait for a slot.
+    def spot_gate_hold(any_hold: false)
       decision = SpotGateService.evaluate
       return nil unless decision.held?
+      return decision if any_hold
       return nil unless decision.reason == SpotGateService::UTILIZATION_REASON
 
       decision
@@ -368,6 +432,32 @@ class QuotaAvailabilityMonitor
 
       # `update_all` skips the in-memory record, and a stale `setting` handed back
       # to a caller that reads it would misreport the level it just spent.
+      setting.reload
+      true
+    end
+
+    # Claim the right to announce an ALREADY-SPENT recovery again, atomically.
+    #
+    # The sibling of #claim_announcement! and the same shape — one conditional
+    # UPDATE, so the transition is the claim and two passes holding the same
+    # stale level cannot both spend it. Only the predicate differs: the level
+    # must still be `true` and its stamp must not have moved since `cutoff`.
+    #
+    # Renewing `quota_pool_available_changed_at` is what makes the claim
+    # self-limiting. The column keeps saying the recovery is announced, so
+    # nothing reads this as a fresh rising edge; the stamp says when it was last
+    # announced, so the next re-ask is ANNOUNCEMENT_STALE_AFTER away.
+    def claim_stale_announcement!(setting, cutoff)
+      return false unless setting.persisted?
+
+      claimed = AppSetting
+        .where(id: setting.id)
+        .where(quota_pool_available: true)
+        .where("quota_pool_available_changed_at IS NULL OR quota_pool_available_changed_at <= ?", cutoff)
+        .update_all(quota_pool_available_changed_at: Time.current, updated_at: Time.current)
+
+      return false if claimed.zero?
+
       setting.reload
       true
     end

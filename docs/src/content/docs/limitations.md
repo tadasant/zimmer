@@ -1378,7 +1378,10 @@ There is no visibility into *which* session holds the lock; the only signal is t
 timer, no per-session trigger (see [Agent harness auth](/auth/harness/#when-the-pool-runs-dry)). What
 wakes it is the `quota_available` edge, fired once per recovery, which spawns one fleet-maintenance
 session that starts spot work in precedence order. Parked **priority** sessions keep a direct sweep
-of their own every fifteen minutes.
+of their own every fifteen minutes. `AuthOutageWakeAuthority` is what says which park is whose, and
+the 15-minute sweep asks for a fleet wake on behalf of the parks it left alone — so a spot session
+the fleet wake did not reach is re-asked for hourly rather than waiting for the pool to exhaust and
+recover again.
 
 That removes the wake → fail → re-park cycle the timers produced, and with it the dozens of
 `Auth outage retry for session #N` rows the trigger list used to carry. It also concentrates the
@@ -1403,6 +1406,20 @@ whole spot wake into one event, and the sharp edges are all about that concentra
   edge of its own. `accounts.available` never goes false→true for a rejected identity, so a *spot*
   session parked `auth_unrecoverable` is woken only because the fifteen-minute sweep notices its pool
   fingerprint changed and asks for the wake on its behalf. Between sweeps it waits.
+- **A spot park the fleet wake did not reach waits up to an hour, not up to the next outage.** The
+  edge is spent once the fleet session has run, and whatever it left behind has no wake path of its
+  own. The sweep re-asks every fifteen minutes, but `QuotaAvailabilityMonitor` will only announce an
+  already-spent recovery again once it has stood for `ANNOUNCEMENT_STALE_AFTER` (1 hour) and the spot
+  gate is not holding for *any* reason. That bound is deliberate — a shorter one spawns a fleet
+  session per sweep — but it is a bound, and a deployment sitting permanently at its utilization
+  limit still defers indefinitely, because none of those sessions could have started anyway.
+- **The other half of the boundary lives in a different repository.** The
+  `awaken-waiting-sessions` skill is what the fleet-maintenance session runs, and it ships from
+  `tadasant/tadasant-internal`, not from here. Zimmer states the ownership boundary in
+  `get_session` and `quick_search_sessions` and honours it in its own sweep; it cannot enforce it on
+  the skill, which is free to restart any `waiting` session through the same MCP surface a human
+  uses. A skill that ignores the **Woken by:** line reproduces
+  [#617](https://github.com/tadasant/zimmer/issues/617).
 - **The fingerprint is coarse in both directions.** It cannot see an outage that heals on Anthropic's
   side without touching an account row, and it fires on credential changes that are not repairs at
   all — the five-minute `sync_current_account_tokens!` adopting a token the CLI rotated on disk moves

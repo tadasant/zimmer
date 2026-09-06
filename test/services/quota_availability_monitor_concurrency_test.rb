@@ -68,6 +68,23 @@ class QuotaAvailabilityMonitorConcurrencyTest < ActiveSupport::TestCase
     assert_equal true, AppSetting.editable.reload.quota_pool_available
   end
 
+  # The re-announcement claim is the same claim against a different predicate, so
+  # it has to lose the same race: two sweeps holding one stale announcement must
+  # not both re-announce it.
+  test "two passes re-announcing one stale recovery fire the event once" do
+    AppSetting.editable.update!(
+      quota_pool_available: true,
+      quota_pool_available_changed_at: (QuotaAvailabilityMonitor::ANNOUNCEMENT_STALE_AFTER + 1.minute).ago
+    )
+
+    results = race_two_passes { QuotaAvailabilityMonitor.request_wake!(reason: "1 parked session") }
+
+    assert_equal [ false, true ], results.sort_by { |fired| fired ? 1 : 0 },
+      "a stale announcement is one announcement, however many sweeps hold it"
+    assert_equal 1, enqueued_jobs.count { |job| job[:job] == SystemEventTriggerJob }
+    assert_equal true, AppSetting.editable.reload.quota_pool_available
+  end
+
   # Over-tightening is the failure mode on the other side: a claim that outlived
   # its recovery would leave the parked sessions asleep through the NEXT outage.
   # The predicate is the unspent level and nothing else, so re-exhausting and
@@ -109,7 +126,7 @@ class QuotaAvailabilityMonitorConcurrencyTest < ActiveSupport::TestCase
     original_gate = QuotaAvailabilityMonitor.method(:spot_gate_hold)
 
     QuotaAvailabilityMonitor.define_singleton_method(:pool_available?) { |_runtime| true }
-    QuotaAvailabilityMonitor.define_singleton_method(:spot_gate_hold) do
+    QuotaAvailabilityMonitor.define_singleton_method(:spot_gate_hold) do |any_hold: false|
       gate_barrier&.wait(10)
       nil
     end
