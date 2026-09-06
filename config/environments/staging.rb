@@ -32,7 +32,13 @@ Rails.application.configure do
   # (`./skills/skills.json`), so resolving the copy from tmp/ would look for
   # tmp/skills/skills.json and find nothing. Returning base_path when the rewrite
   # matched nothing keeps a set-but-inert AIR_CATALOG_REF from emptying the
-  # catalog. See docs/limitations.md for the same trap on the CatalogPin path.
+  # catalog.
+  #
+  # A rewrite that DOES match still has to move, so the copy carries absolute
+  # source paths (`absolutize_sources`) rather than the relative ones it would
+  # leave behind. Same two-step, in the same order, as
+  # AirCatalogService#generate_effective_config — see #1078, where the CatalogPin
+  # path emptied the catalog fleet-wide for want of it.
   config.air_json_path = ENV.fetch("AIR_CONFIG") {
     base_path = Rails.root.join("air.production.json").to_s
     catalog_ref = ENV["AIR_CATALOG_REF"].to_s.strip
@@ -57,7 +63,10 @@ Rails.application.configure do
       else
         out_path = Rails.root.join("tmp", "air.staging.json")
         FileUtils.mkdir_p(out_path.dirname)
-        File.write(out_path, rewritten)
+        File.write(
+          out_path,
+          AirCatalogRefRewriter.absolutize_sources(rewritten, base_dir: File.dirname(base_path))
+        )
         out_path.to_s
       end
     end

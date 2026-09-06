@@ -1,5 +1,12 @@
-# Rewrites `github://owner/repo/...` URIs in an air.json document to pin each
-# matching catalog to a specific git ref. Two callers:
+# Produces a *relocatable* copy of an air.json document. Two transforms, applied
+# in that order by both callers, and deliberately kept separate so a caller can
+# tell "the pin changed nothing" from "the pin changed something":
+#
+#   - `rewrite` pins each matching `github://owner/repo/...` catalog URI to a ref.
+#   - `absolutize_sources` turns the document's relative local source paths into
+#     absolute ones, so the copy still resolves from wherever it is written.
+#
+# Two callers:
 #   - staging.rb, when AIR_CATALOG_REF is set, to pin tadasant/zimmer-catalog for a
 #     deploy that tests catalog changes from a branch before merging.
 #   - AirCatalogService, to apply the UI-configured CatalogPin set (any of the
@@ -21,6 +28,17 @@
 class AirCatalogRefRewriter
   CATALOG_PREFIX = "github://tadasant/zimmer-catalog"
 
+  # The air.json keys whose array entries are always local index paths (the six
+  # artifact types AIR resolves from `./<type>/<type>.json` siblings).
+  LOCAL_SOURCE_KEYS = %w[skills mcp roots references hooks plugins].freeze
+
+  # Keys whose entries are local paths *or* something else — `catalogs` may hold
+  # a `github://` URI, `extensions` may hold an npm package specifier. Only
+  # explicitly-relative entries (`./x`, `../x`) are absolutized here.
+  MIXED_SOURCE_KEYS = %w[catalogs extensions].freeze
+
+  URI_SCHEME = %r{\A[a-zA-Z][a-zA-Z0-9+.\-]*://}
+
   class << self
     # @param json_string [String] an air.json document
     # @param pins [Hash{String => String}] { "github://owner/repo" => "ref" }
@@ -33,7 +51,63 @@ class AirCatalogRefRewriter
       JSON.pretty_generate(deep_rewrite(parsed, cleaned))
     end
 
+    # Rewrite the document's relative local source paths to absolute paths
+    # anchored at `base_dir`.
+    #
+    # AIR resolves a config's local index paths **relative to the config file's
+    # own directory**, and Zimmer's catalogs declare exactly such paths
+    # (`"skills": ["./skills/skills.json"]` and five siblings). So a copy of a
+    # catalog is only equivalent to the original if it sits in the same
+    # directory or carries absolute paths. Callers write their copy elsewhere
+    # (`tmp/`), which makes this the second half of producing that copy: without
+    # it, `./skills/skills.json` resolves to `tmp/skills/skills.json`, AIR finds
+    # no index files, and the resolve exits 0 with an empty catalog (#1078).
+    #
+    # @param json_string [String] an air.json document
+    # @param base_dir [String] the directory the document's relative paths are
+    #   currently anchored at — i.e. the directory holding the *base* config
+    # @return [String] pretty-printed document with absolute local source paths
+    def absolutize_sources(json_string, base_dir:)
+      parsed = JSON.parse(json_string)
+      base = File.expand_path(base_dir)
+
+      LOCAL_SOURCE_KEYS.each do |key|
+        next unless parsed[key].is_a?(Array)
+
+        parsed[key] = parsed[key].map { |entry| absolutize(entry, base) }
+      end
+
+      MIXED_SOURCE_KEYS.each do |key|
+        next unless parsed[key].is_a?(Array)
+
+        parsed[key] = parsed[key].map do |entry|
+          explicitly_relative?(entry) ? absolutize(entry, base) : entry
+        end
+      end
+
+      JSON.pretty_generate(parsed)
+    end
+
     private
+
+    # Anchor one relative path at `base`. Entries that are not relative
+    # filesystem paths pass through untouched: a URI (`github://`, `https://`),
+    # an already-absolute path, and a `~`-prefixed path — AIR, not Ruby, owns
+    # whether `~` expands, so expanding it here would change the meaning of the
+    # document rather than preserve it.
+    def absolutize(entry, base)
+      return entry unless entry.is_a?(String)
+      return entry if entry.empty? || entry.start_with?("/", "~") || entry.match?(URI_SCHEME)
+
+      File.expand_path(entry, base)
+    end
+
+    # `./x` and `../x` are unambiguously filesystem paths. A bare `x` in
+    # `catalogs` or `extensions` may be a package specifier or a provider URI
+    # shorthand, so it is left alone.
+    def explicitly_relative?(entry)
+      entry.is_a?(String) && (entry.start_with?("./") || entry.start_with?("../"))
+    end
 
     # Drop blank refs and order by descending prefix length for longest-match.
     def normalize_pins(pins)

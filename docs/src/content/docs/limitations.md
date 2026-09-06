@@ -2218,20 +2218,30 @@ how you mount your own catalog, and what `config/deploy.production.yml` does —
 `production.rb` has no equivalent at all. It therefore applies to the in-image `air.production.json`
 and nothing else.
 
-:::caution[A pin rewrites the catalog into `tmp/`, and relative index paths do not follow it]
+:::note[A pin rewrites the catalog into `tmp/`, and relative index paths have to be made to follow it]
 Both pinning paths write the rewritten catalog to a new location — `tmp/air.staging.json` for
 `AIR_CATALOG_REF`, `tmp/air.effective.<pid>.json` for a `CatalogPin` row — and AIR resolves a
 catalog's local index paths **relative to the config file's own directory**. Zimmer's catalogs
-declare exactly such paths (`./skills/skills.json`), so a copy resolved from `tmp/` looks for
-`tmp/skills/skills.json` and finds nothing: an empty catalog, which
-[Zimmer treats as a failed resolve](/air/zimmer-integration/#a-dangling-reference-is-treated-as-a-failed-resolve).
+declare exactly such paths (`./skills/skills.json`), so a copy resolved from `tmp/` used to look for
+`tmp/skills/skills.json` and find nothing: an empty catalog, and one nothing complained about,
+because a resolve that finds no index files drops no references and so trips none of the
+[stderr-based detection](/air/zimmer-integration/#a-dangling-reference-is-treated-as-a-failed-resolve).
 
-`AIR_CATALOG_REF` no longer has this problem — an unmatched rewrite returns the base path instead of
-writing a copy. The `CatalogPin` path still does, and it is reachable: `effective_air_json_path`
-switches to the tmp copy when **any** `catalog_pins` row exists, the settings form cannot create one
-on a local-only catalog, but `/supervisor/catalog_pins` is full Administrate CRUD and can. The fix is
-for the rewritten copy to carry absolute source paths, or to be written beside the base config rather
-than in `tmp/`. Tracked in [#1078](https://github.com/tadasant/zimmer/issues/1078).
+The `CatalogPin` path was reachable: `effective_air_json_path` switched to the tmp copy when **any**
+`catalog_pins` row existed — a row naming a catalog `air.json` never mentions was enough — and while
+the settings form cannot create one on a local-only catalog, `/supervisor/catalog_pins` is full
+Administrate CRUD and can. On this deployment that emptied a 12-root catalog to 0.
+
+Three changes closed it ([#1078](https://github.com/tadasant/zimmer/issues/1078)):
+
+- **A pin that matches nothing changes nothing.** If applying the pin set leaves the parsed document
+  identical, `effective_air_json_path` returns the base path and no copy is written — the same shape
+  `AIR_CATALOG_REF` already used for an unmatched rewrite.
+- **A copy that does get written carries absolute source paths.** `AirCatalogRefRewriter.absolutize_sources`
+  anchors every relative local index path at the base config's own directory before the copy is
+  written, so it resolves identically from `tmp/`. Both pinning paths call it.
+- **An empty resolve is now a failed resolve.** See
+  [an empty resolve is a failed resolve](/air/zimmer-integration/#an-empty-resolve-is-a-failed-resolve-too).
 :::
 
 Reported as [#69](https://github.com/tadasant/zimmer/issues/69).
