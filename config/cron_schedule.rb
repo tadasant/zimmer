@@ -344,7 +344,7 @@ module CronSchedule
     claude_usage_sampler: {
       cron: "*/15 * * * *", # Every 15 minutes
       class: "ClaudeUsageSamplerJob",
-      description: "Sample the serving Claude account's quota so the per-session usage rate has a time series",
+      description: "Sample the serving Claude account's quota, plus any spare whose reading has gone stale, so the pool average the spot gate decides on is fresh",
       environments: %i[production staging]
     },
     refresh_runtime_auth_tokens: {

@@ -6,10 +6,11 @@
 # - On account rotation (captures state of outgoing and incoming accounts)
 # - When bootstrap validates a candidate before making it current
 # - On Inference page load (live probe of current account)
-# - By periodic cron (future extension)
+# - By periodic cron: QuotaResetCheckerJob on every exceeded account, and
+#   ClaudeUsageSamplerJob on the serving one plus any spare whose reading is stale
 #
 # The trigger field records why the snapshot was taken: "rotation", "bootstrap",
-# "manual_refresh", "page_view", or "scheduled".
+# "manual_refresh", "page_view", "scheduled", or "usage_sample".
 #
 # A snapshot outlives the account it was taken for: deleting a ClaudeAccount
 # nullifies `claude_account_id` rather than destroying the reading, so the

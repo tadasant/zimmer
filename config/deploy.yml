@@ -94,6 +94,16 @@ env:
     # a name containing a `"` rather than ending the scalar early.
     ZIMMER_GIT_USER_NAME: <%= ENV.fetch("ZIMMER_GIT_USER_NAME", "").to_json %>
     ZIMMER_GIT_USER_EMAIL: <%= ENV.fetch("ZIMMER_GIT_USER_EMAIL", "").to_json %>
+    # How ClaudeUsageSamplerJob trades probe count against how stale a spare
+    # account's quota reading may get before the spot gate averages it into a
+    # decision. Set here rather than on the box, because there is no box shell to
+    # export them from -- the same reason ZIMMER_SESSION_MEMORY_MAX_MB is here.
+    #
+    # Raising the staleness or lowering the per-tick budget spends fewer probes
+    # and lets a spare's contribution age further; the job's header states the
+    # arithmetic both ways.
+    CLAUDE_SPARE_SAMPLE_MAX_STALENESS_MINUTES: "<%= ENV.fetch("CLAUDE_SPARE_SAMPLE_MAX_STALENESS_MINUTES", "60") %>"
+    CLAUDE_SPARE_SAMPLE_MAX_PROBES_PER_TICK: "<%= ENV.fetch("CLAUDE_SPARE_SAMPLE_MAX_PROBES_PER_TICK", "2") %>"
 
 aliases:
   console: app exec --interactive --reuse "bin/rails console"
