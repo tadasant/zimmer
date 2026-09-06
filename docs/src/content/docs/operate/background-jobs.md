@@ -204,10 +204,7 @@ or not the backlog is drained. The next tick resumes. A deployment starting from
 over hours, with no human, no shell, and no separate drain step.
 
 It deletes **by primary key**. Each pass computes a *ceiling* — an id worth scanning up to — and
-drives the delete off `id <= ceiling`, which is a pk range scan. That is why the change ships no
-`created_at` index: building one over 124M rows would happen inside `db:prepare` at container boot,
-which kamal-proxy health-gates on a `deploy_timeout` of 120 seconds, so it would fail the very deploy
-that ships the fix.
+drives the delete off `id <= ceiling`, which is a pk range scan.
 
 The ceiling comes from a binary search (~31 single-row index lookups) for the id below which every
 row is older than the cutoff. That search needs the lowest-id row to be expired, and when it is not,
@@ -231,6 +228,65 @@ retention window is never deleted whatever the ceiling says.
 The same PR drops `index_logs_on_session_id`, which was fully redundant with the leading column of
 `index_logs_on_session_id_and_created_at` — including for the `ON DELETE CASCADE` from `sessions` —
 and was being maintained on every insert.
+
+### The verbose pass has an index, and why it needed one
+
+`index_logs_on_level_and_id_and_created_at` serves exactly one query: the verbose pass's batch
+selector, `level = 'verbose' AND created_at < $1 AND id <= $2 ORDER BY id DESC LIMIT 5000`. All three
+columns in that order, because what makes it fast is an **index-only scan** — `level` is the
+equality, `id` is the ordered range the `LIMIT` stops on, and `created_at` rides along so the cutoff
+is applied without touching a heap production has grown to ~15 GB.
+
+It was added after that selector turned up as the largest `DatabaseChoke` of the day, by a factor of
+3–10 over everything else, recurring every ten minutes at 26–50 seconds a run
+([#329](https://github.com/tadasant/zimmer/issues/329)). One finished 45 seconds before
+`ElicitationEndpointHealthCheckJob`'s 5-second probe timed out and paged `#alerts` — Rails could not
+answer its own HTTP request because Postgres was saturated.
+
+The cost was not fixed, and the reason is the downward walk seen from one tick out. Within a tick the
+walk is linear. But the ceiling resets to the top on the *next* tick, and the region just below it is
+precisely what earlier ticks already emptied of verbose rows, so the prefix the first batch steps
+over before reaching a deletable row only ever grows. Nor does it end when the backlog does: once the
+expired verbose rows are gone the selector walks the whole span below the ceiling to collect the thin
+sliver that has crossed the window since the last tick, returns fewer than 5,000, and stops — a full
+walk every ten minutes, forever. On a 570k-row reproduction of that terminal state the selector took
+508 ms and 52,752 buffers to return four rows; with the index, 0.1 ms and 4 buffers.
+
+Two candidate indexes that look obvious do nothing, and are recorded so nobody re-derives them:
+`(created_at)` alone and `(level, id)` are both ignored by the planner, which keeps the `logs_pkey`
+walk because a heap fetch per row costs more than the walk the `LIMIT` makes it misestimate. The win
+is the index-only scan, not the column list.
+
+`index_logs_on_level` goes at the same time. It is a strict prefix of the new index, so every plan it
+served is served by the composite, and dropping it is what keeps this a like-for-like replacement
+rather than a fourth btree maintained on every insert into the busiest table in the schema.
+
+What the index does **not** fix is the head-probe stall in [Known limitations](/limitations/):
+`created_at` is the third column, so the ceiling still cannot be read off it directly and
+`ceiling_id` still binary-searches the primary key.
+
+#### It is built after the deploy, not during it
+
+`db/migrate/20260906160000_add_retention_scan_index_to_logs.rb` builds the index inline only when
+`logs` is small — every developer machine, CI, a fresh install. Above 250,000 estimated rows it
+declines, which is where both deployed environments sit, and `db/post_deploy/20260906160100_build_logs_retention_scan_index.rb` does the build
+instead.
+
+Migrations run inside `bin/docker-entrypoint`'s `db:prepare`, which kamal-proxy health-gates on a
+120-second `deploy_timeout`. `CREATE INDEX CONCURRENTLY` over a 15 GB table is two heap passes plus
+two waits for every concurrent transaction to drain — one of which is this job's own 90-second slice
+— so on the production table the boot path is where it would most likely spend the deploy's timeout.
+A deploy that fails is strictly worse than a prune that is slow. Off the boot path it is ordinary
+work: `PostDeployTaskJob` starts it a couple of minutes after the deploy, under a 20-minute lease,
+and reports itself in `post_deploy_task_runs` (see
+[One-time post-deploy tasks](/operate/deploying/#one-time-post-deploy-tasks)).
+
+The cost of the split is a window on a large deployment where the migration is recorded as applied
+and the index does not exist yet. It is minutes long, and it is visible on `/health` rather than
+silent. Retrying is safe: the task takes an advisory lock so two builders cannot overlap, drops the
+`indisvalid = false` wreckage an interrupted `CREATE INDEX CONCURRENTLY` leaves behind (which a plain
+`IF NOT EXISTS` would skip over forever), and drops the superseded index only once the new one is
+valid, so no failure ordering leaves `logs` with neither.
 
 ### Deleting does not shrink the files
 

@@ -5884,10 +5884,34 @@ partial restore would, and it fails silently apart from the `/health` panel's ow
 `test "more unexpired rows than the probe window is wide is a documented stall"` pins the boundary
 where it is.
 
-The exact fix for all of this is an index on `logs.created_at`, and it is deliberately not here: it
-would be built during `db:prepare` at container boot, inside kamal-proxy's 120-second
-`deploy_timeout`, so on the table this issue is about it would fail the deploy rather than speed up
-the prune.
+The fix for the stall specifically is an index on `logs.created_at`, off which the ceiling could be
+read directly instead of binary-searched, and it is still not here. `logs` does now carry
+`index_logs_on_level_and_id_and_created_at`, but `created_at` is its third column, so it cannot serve
+that read and `ceiling_id` still searches the primary key. That index was added for a different
+problem — the verbose batch selector's scan cost, described below — and it does not move this one.
+
+What has changed is the reason. Until 2026-09-06 this page said an index on `logs` was unaffordable
+outright, because it would be built during `db:prepare` at container boot inside kamal-proxy's
+120-second `deploy_timeout`. That was true of the 124M-row table the retention work was written
+against; production's `logs` is now ~3.3M rows, and the boot path is no longer the only place a build
+can happen. An index on `logs` is a question of whether it earns its keep on the insert path, not of
+whether the deploy survives it — see
+[The verbose pass has an index](/operate/background-jobs/#the-verbose-pass-has-an-index-and-why-it-needed-one).
+
+## The verbose retention pass re-walks what it has already deleted
+
+`LogRetentionJob`'s verbose pass restarts each tick at a ceiling near the 7-day boundary and walks
+down. Everything it deletes it deletes from the top of that range, so the region just below the
+ceiling is the part previous ticks already emptied — and the first batch of the next tick walks over
+it again. The prefix grows monotonically, and it does not stop growing when the backlog is gone: with
+no expired verbose rows left, the selector walks the whole span below the ceiling to collect the thin
+sliver that crossed the window in the last ten minutes, and does it again ten minutes later.
+
+`index_logs_on_level_and_id_and_created_at` makes that walk an index-only scan over just the rows the
+pass can delete, which is what took the query off the top of `DatabaseChoke`
+([#329](https://github.com/tadasant/zimmer/issues/329)). The re-walk itself is still in the design:
+the ceiling is recomputed from scratch every tick and nothing carries across ticks. It is cheap now
+rather than absent, and it is bounded by the number of rows the pass will actually delete.
 
 ## The log retention panel reports the lowest-id row, not the oldest
 
