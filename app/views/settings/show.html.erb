@@ -101,11 +101,11 @@
         <div class="px-4 py-5 sm:px-6">
           <%= form_with url: app_settings_path, method: :patch, data: { turbo: false } do %>
             <%# One list, from ExperimentalSettingsRegistry: the AppSetting-backed
-                toggles that ship in the image, then any registered experimental
-                Zimmer Extension (usually none — .dockerignore excludes
-                app/extensions/*/ from the built image). The same registry tags
-                every session with each setting's value, so anything togglable here
-                shows up in the Costs page's experiment report. %>
+                toggles, then any registered experimental Zimmer Extension (usually
+                none — BUILTIN_EXTENSION_CLASSES is empty; the directories
+                themselves do ship in the image). The same registry tags every
+                session with each setting's value, so anything togglable here shows
+                up in the Costs page's experiment report. %>
             <% @experimental_settings.each_with_index do |setting, index| %>
               <%= render "settings/experimental_toggle",
                     title: setting.title,

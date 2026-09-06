@@ -67,6 +67,19 @@ COPY --from=build /rails /rails
 # and it runs during the BUILD, so an image carrying the docs is never pushed.
 RUN /rails/scripts/assert-docs-excluded.sh --root /rails
 
+# The mirror image of the rule above: extensions must never STOP shipping in this image.
+# An extension (app/extensions/<id>/, see Zimmer::Extension) only does anything in the
+# container that runs it, and the whole invariant rests on .dockerignore NOT excluding
+# that path -- an absence, in a file whose every other line is a presence.
+#
+# It regressed once and nothing said so: the app booted, ExtensionRegistry skipped the
+# classes that no longer resolved, every seam fell back to native, and the seam stayed
+# dead long enough for the one extension that ever shipped to be rewritten as an
+# AppSetting column (tadasant/zimmer#91). This asserts the outcome against the image's
+# own filesystem, during the BUILD, so an image with the seam stripped out is never
+# pushed.
+RUN /rails/scripts/assert-extensions-shipped.sh --root /rails
+
 # Fix ownership of runtime directories for the rails user (user already exists in base)
 RUN mkdir -p db log storage tmp && chown -R rails:rails db log storage tmp
 

@@ -75,8 +75,9 @@ class ExperimentalSettingsRegistry
     end
   end
 
-  # Settings backed by an AppSetting column. These ship in the image, so unlike a
-  # Zimmer Extension (which .dockerignore excludes) they are always present.
+  # Settings backed by an AppSetting column, so they are always present. A Zimmer
+  # Extension can also be toggled here, but only once one is registered in
+  # BUILTIN_EXTENSION_CLASSES; these are the ones that need no registration at all.
   BUILT_INS = [
     Setting.new(
       key: "mcp_tool_search",

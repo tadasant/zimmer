@@ -44,11 +44,19 @@
 /.dockerignore
 /Dockerfile*
 
-# Extensions are NOT baked into the core image. The extension registry
-# auto-skips any missing app/extensions/<id>/ directory and falls back to the
-# native path, so the core image ships without them. Operators opt in per
-# extension via scripts/install-extension.sh.
-/app/extensions/*/
+# Extensions ARE baked into the core image. Nothing excludes app/extensions/ --
+# the blanket `COPY . .` in Dockerfile carries every app/extensions/<id>/ into
+# /rails, so an extension registered in BUILTIN_EXTENSION_CLASSES resolves in a
+# deployed container and an operator turns it on from Settings -> Experimental.
+#
+# Do not add an exclusion here. Removability is a property of the SOURCE TREE
+# (`rm -rf app/extensions/<id>/` and the registry's safe_constantize skip drops
+# the feature), not of the image, and stripping the directory at build time only
+# guaranteed the one build that is supposed to carry an internal-only feature
+# never did. scripts/assert-extensions-shipped.sh asserts the outcome from
+# Dockerfile and from CI's image_includes_extensions job, so an exclusion added
+# here fails the build rather than silently disabling the seam again.
+# See docs/operate/deploying.md, "Extensions do ship in the image".
 
 # The documentation site is a standalone Astro project deployed to Cloudflare
 # Pages. The Rails image never serves it.

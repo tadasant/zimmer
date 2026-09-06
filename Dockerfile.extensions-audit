@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1
+# check=error=true
+
+# A throwaway image whose only purpose is to materialize the REAL Docker build context --
+# the same context `Dockerfile` blanket-copies into /rails -- and assert that the
+# app/extensions/ tree is intact in it. CI's image_includes_extensions job builds this;
+# nothing runs it. The publish-time half of the guardrail is in `Dockerfile` itself.
+#
+# `COPY` can only read from the build context, so an extension tree absent from the
+# context cannot reach the app image -- which makes a few megabytes of busybox worth more
+# on every PR than a multi-GB zimmer-base pull. Note the direction: this proves the
+# context carries the tree, NOT that the image does. A later Dockerfile step could still
+# remove or shadow it, and closing that is the `Dockerfile`-side assertion's job, not
+# this one's. See docs/operate/deploying.md, "Extensions do ship in the image".
+#
+# .dockerignore's existing `/Dockerfile*` rule keeps this file itself out of the context.
+#
+#   docker build --file Dockerfile.extensions-audit .
+FROM busybox:stable
+
+COPY . /ctx
+RUN /ctx/scripts/assert-extensions-shipped.sh --root /ctx
