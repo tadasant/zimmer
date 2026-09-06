@@ -31,9 +31,12 @@
 # is deliberately independent of how sysbox got onto the box.
 #
 # PRODUCTION IS NOT THIS PATH. Production's sysbox provisioning lives in the private
-# companion repo and already converges the same `override_rc` line on every production
-# deploy. This script is staging's equivalent; it takes a host and is not wired into
-# production's deploy.
+# companion repo and already converges the same `override_rc` line, at the same path, on
+# every production deploy. This script is staging's equivalent; it takes a host and is not
+# wired into production's deploy. One path, two managers, one host each -- the headers the
+# two write differ, so the file on a box always names whichever one owns it. Pointing both
+# at the same host would leave them rewriting each other's header on alternating runs; if
+# that ever becomes wanted, make the two bodies identical rather than running both.
 #
 # Usage: install-needrestart-sysbox-dropin.sh <tailnet-host-or-ip>
 set -euo pipefail
@@ -70,10 +73,11 @@ echo "Converging the needrestart sysbox drop-in on ${HOST}"
 # the upgrade it was called from. `mv` within one directory is atomic; `cat >` in place is
 # not.
 #
-# `99-` sorts last among conf.d snippets, which is what makes the merge below see the stock
-# `override_rc` rather than the other way round. Same filename production uses, so on a host
-# that carries a hand-copied version of it this converge REPLACES the pet file instead of
-# sitting beside it.
+# The merge below sees the stock `override_rc` because needrestart.conf assigns it ~150
+# lines before it evals conf.d, not because of the filename. What `99-` buys is ordering
+# against OTHER snippets: a later one cannot silently reassign over this. The filename is
+# the one production uses, so on a host carrying a hand-copied version of it this converge
+# REPLACES the pet file instead of sitting beside it.
 rc=0
 ssh "${SSH_OPTS[@]}" "root@${HOST}" 'sh -s' <<'REMOTE' || rc=$?
 set -eu
@@ -96,7 +100,14 @@ fi
 before=$(md5sum "$dropin" 2>/dev/null | cut -d' ' -f1 || true)
 
 mkdir -p "$conf_d"
-cat > "${conf_d}/.99-sysbox.conf.new" <<'NRCONF'
+staged="${conf_d}/.99-sysbox.conf.new"
+
+# Nothing may leave a staged file behind in a directory needrestart reads. It cannot be
+# picked up -- the name does not end in .conf, and needrestart globs *.conf -- but one per
+# failed deploy accumulates, and the next reader has to work out which file is live.
+trap 'rm -f "$staged"' EXIT
+
+cat > "$staged" <<'NRCONF'
 # Managed by scripts/install-needrestart-sysbox-dropin.sh in tadasant/zimmer, run by the
 # "Deploy staging" workflow. Do not hand-edit: every deploy rewrites this file.
 #
@@ -107,33 +118,35 @@ cat > "${conf_d}/.99-sysbox.conf.new" <<'NRCONF'
 # costs a container recreation, which unattended-upgrades is in no position to do.
 # See https://github.com/tadasant/zimmer/issues/774.
 #
-# Merge, never reassign -- a bare assignment would drop the stock dbus/display-manager/
-# networking entries this hash already carries.
+# Merge, never reassign -- a bare assignment would drop the 43 stock entries this hash
+# already carries, among them qr(^docker) => 0. Dropping that one hands unattended-upgrades
+# permission to restart Docker out from under every container on the host.
 $nrconf{override_rc} = { %{$nrconf{override_rc} // {}}, qr(^sysbox) => 0 };
 NRCONF
-chmod 0644 "${conf_d}/.99-sysbox.conf.new"
-mv "${conf_d}/.99-sysbox.conf.new" "$dropin"
+chmod 0644 "$staged"
 
-after=$(md5sum "$dropin" | cut -d' ' -f1)
-if [ "$before" = "$after" ]; then
-  echo "drop-in already current at ${dropin} (unchanged)"
-elif [ -z "$before" ]; then
-  echo "drop-in created at ${dropin}"
-else
-  echo "drop-in updated at ${dropin} (${before} -> ${after})"
-fi
+# Both assertions run against the STAGED file, before it is published. needrestart `die`s
+# on a snippet that does not compile, and it is unattended-upgrades that carries the error
+# -- so a broken file here is worse than no file at all: it aborts every upgrade run on the
+# box until someone removes it. Validating after the `mv` would report that correctly and
+# still have installed it. The staged name is safe to leave sitting there while this runs,
+# because needrestart globs `*.conf` and this is not one.
+
+# Both assertions exit 4 rather than letting perl's own status through. perl exits 255 on
+# a compile error or a `die`, and 255 is also how ssh reports that it never got a session
+# at all -- so an unremapped failure here would be read locally as an unreachable host and
+# send whoever is looking at the deploy to the wrong place entirely. Nothing in this remote
+# script may exit 255.
 
 # --- assertion 1: it parses -------------------------------------------------------
-# needrestart `die`s on a snippet that does not compile, and it is unattended-upgrades that
-# would carry the error. A broken file here is worse than no file: it takes the whole
-# upgrade run down rather than just failing to protect sysbox.
-perl -c "$dropin"
+perl -c "$staged" || exit 4
 
 # --- assertion 2: it says what it is meant to say ---------------------------------
 # Parsing is not the property that matters; matching a real unit name and preserving the
-# stock hash are. The seeded entry stands in for the ~20 the stock config ships (dbus,
-# display managers, networking) -- if the snippet ever regresses to a bare assignment it
-# still parses, still deselects sysbox, and silently re-arms an automatic dbus restart.
+# stock hash are. The seeded entry stands in for the 43 the stock config ships -- among
+# them `qr(^docker) => 0`, so a snippet that regressed to a bare assignment would still
+# parse, still deselect sysbox, and hand unattended-upgrades permission to restart Docker
+# out from under every container on the host.
 perl -e '
   our %nrconf;
   $nrconf{override_rc} = { qr(^dbus) => 0 };
@@ -151,7 +164,19 @@ perl -e '
     unless @kept;
 
   print "override_rc: sysbox-mgr.service deselected, pre-existing entries preserved\n";
-' "$dropin"
+' "$staged" || exit 4
+
+# Only now is it allowed to become the live file.
+mv "$staged" "$dropin"
+
+after=$(md5sum "$dropin" | cut -d' ' -f1)
+if [ "$before" = "$after" ]; then
+  echo "drop-in already current at ${dropin} (unchanged)"
+elif [ -z "$before" ]; then
+  echo "drop-in created at ${dropin}"
+else
+  echo "drop-in updated at ${dropin} (${before} -> ${after})"
+fi
 
 # --- assertion 3: needrestart actually reads conf.d -------------------------------
 # The drop-in only works because /etc/needrestart/needrestart.conf ends with a loop that
@@ -169,20 +194,51 @@ if [ "$have_needrestart" = 1 ]; then
   fi
   needrestart --version 2>&1 | head -1 || true
   echo "needrestart evaluates ${conf_d}, and ${dropin} sorts last within it"
+else
+  # Signalled by exit status rather than by a token in stdout, because the deploy log
+  # streams this output live -- capturing it locally to grep for a marker would withhold
+  # every line of it until the ssh returns. 3 is ours; ssh forwards it verbatim, and only
+  # this branch produces it.
+  echo "the drop-in is in place, but nothing on this box reads it yet."
+  exit 3
 fi
 REMOTE
 
-if [ "$rc" -ne 0 ]; then
-  echo "::error::Could not converge the needrestart sysbox drop-in on ${HOST}."
-  echo "::error::Until it is in place, the next apt-daily-upgrade that touches a library sysbox"
-  echo "::error::links against will restart sysbox-mgr/sysbox-fs and PERMANENTLY orphan every"
-  echo "::error::sysbox container on the box -- including the worker this deploy is about to put"
-  echo "::error::there. It keeps reporting Status=running while every \`docker exec\` into it"
-  echo "::error::fails with \"unsafe procfs detected\"; see"
-  echo "::error::https://github.com/tadasant/zimmer/issues/774 and docs/operate/nested-docker."
-  echo "::error::An ssh failure here is a reachability problem, not a needrestart one -- the"
-  echo "::error::preceding steps reach the same host the same way."
-  exit 1
+if [ "$rc" -eq 0 ]; then
+  echo "✅ needrestart on ${HOST} will not auto-restart sysbox"
+  exit 0
 fi
 
-echo "✅ needrestart on ${HOST} will not auto-restart sysbox"
+# Everywhere else this script is careful not to claim more than it checked, and the closing
+# line is no place to stop: on a box with no needrestart the third assertion cannot run, so
+# what was converged is an override that is correct and not yet consulted by anything.
+if [ "$rc" -eq 3 ]; then
+  echo "✅ the override is in place on ${HOST}, and takes effect if needrestart is ever installed"
+  exit 0
+fi
+
+# 255 is ssh's own failure -- connect timed out, host unreachable, auth rejected, or the
+# connection dropped mid-command -- and not a status forwarded from the remote script. The
+# two send an operator to completely different places, and the remote script has already
+# printed a precise reason for every exit of its own, so repeating a generic one over the
+# top of it is worse than saying nothing. Same split, for the same reason, as
+# clear-root-password-expiry.sh.
+if [ "$rc" -eq 255 ]; then
+  # Unambiguous: the remote script remaps its own perl failures off 255 precisely so this
+  # branch can only mean ssh itself.
+  echo "::error::Could not complete an SSH session with ${HOST}, so the drop-in was not converged."
+  echo "::error::This is a reachability problem, not a needrestart one -- the preceding steps reach"
+  echo "::error::the same host the same way, so check those first."
+else
+  echo "::error::Reached ${HOST}, but converging the needrestart sysbox drop-in exited ${rc}."
+  echo "::error::The remote output above says which part failed -- the write, one of the two"
+  echo "::error::assertions about the snippet, or the check that needrestart still reads conf.d."
+fi
+
+echo "::error::Until the override is in place and readable, the next apt-daily-upgrade that"
+echo "::error::touches a library sysbox links against will restart sysbox-mgr/sysbox-fs and"
+echo "::error::PERMANENTLY orphan every sysbox container on the box -- including the worker this"
+echo "::error::deploy is about to put there. It keeps reporting Status=running while every"
+echo "::error::\`docker exec\` into it fails with \"unsafe procfs detected\"; see"
+echo "::error::https://github.com/tadasant/zimmer/issues/774 and docs/operate/nested-docker."
+exit 1

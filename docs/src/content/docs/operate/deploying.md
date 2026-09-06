@@ -1506,9 +1506,13 @@ units, and the daemons come back with an empty container registry — which orph
 container already running, permanently, while leaving their processes alive. Both hosts went
 that way on 2026-09-02, twelve minutes apart
 ([#774](https://github.com/tadasant/zimmer/issues/774)). The step drops one snippet into
-`/etc/needrestart/conf.d` that declines the restart, and then asserts the snippet parses,
-deselects a real sysbox unit name without clobbering the stock entries, and is somewhere
-needrestart still reads. The mechanism and the one line it writes are in
+`/etc/needrestart/conf.d` that declines the restart. The snippet is validated **before** it is
+published, not after: it is staged under a name needrestart's `*.conf` glob cannot pick up,
+asserted against there, and only then moved into place — a file needrestart cannot parse
+aborts every upgrade run on the box, which is worse than the exposure it was meant to close.
+The assertions are that it compiles, that it deselects a real sysbox unit name while leaving a
+*seeded* stand-in entry intact (it does not read the host's own `needrestart.conf` to check
+that), and that `needrestart.conf` is still somewhere the snippet gets read from. The mechanism and the one line it writes are in
 [The host must not restart sysbox on its own](/operate/nested-docker/#the-host-must-not-restart-sysbox-on-its-own).
 
 Ordering is the point of putting it *before* the preflight: a droplet whose sysbox is broken
