@@ -327,22 +327,32 @@ $nrconf{override_rc} = { %{$nrconf{override_rc} // {}}, qr(^sysbox) => 0 };
 ```
 
 Two details in that one line. It **merges** rather than assigns — a bare assignment parses
-fine, deselects sysbox, and silently drops the ~20 stock entries (dbus, the display managers,
-the networking units) that `needrestart.conf` already put there. And the file is `99-` so it
-sorts last among the `conf.d` snippets `needrestart.conf` evals, which is what lets the merge
-see the stock hash rather than the other way round.
+fine, still deselects sysbox, and silently drops the 43 stock entries `needrestart.conf`
+already put there. Among them is `qr(^docker) => 0`, so the regression is not cosmetic: it
+would hand `unattended-upgrades` permission to restart Docker out from under every container
+on the host. And the file is `99-` so no later `conf.d` snippet can reassign over it — the
+merge sees the stock hash because `needrestart.conf` assigns it ~150 lines before it evals
+`conf.d`, not because of the prefix.
 
 Where it comes from depends on the host. Production's sysbox provisioning lives in the
 private companion repo and converges the same override on every production deploy. Nothing
 in *this* repo provisions sysbox — the staging deploy only preflights it — so staging gets
 its own convergence point, `Keep needrestart from restarting sysbox (converge)`, which runs
 `scripts/install-needrestart-sysbox-dropin.sh` before the preflight and before the cutover
-([#775](https://github.com/tadasant/zimmer/issues/775)). It writes the snippet by
-temp-and-move (needrestart `die`s on a half-written file, and it is `unattended-upgrades`
-that would carry the error), then asserts three things: that the file compiles, that it
-actually deselects a real unit name while preserving the pre-existing entries, and that
+([#775](https://github.com/tadasant/zimmer/issues/775)). It stages the snippet under a name
+that is not `*.conf`, **asserts against the staged copy, and only then moves it into place** —
+needrestart `die`s on a file it cannot parse and it is `unattended-upgrades` that carries the
+error, so a bad snippet aborts every upgrade run on the box until someone removes it. That is
+strictly worse than the exposure it was meant to close, which is why it must never be
+published in the first place. Three things get asserted: that the file compiles; that it
+deselects a real sysbox unit name while leaving a pre-existing entry intact (a seeded
+stand-in, not the host's own `needrestart.conf`, which the assertion never reads); and that
 `needrestart.conf` still evals `conf.d` at all — the last one because a needrestart upgrade
 that dropped the snippet mechanism would leave the file inert with nothing to say so.
+
+`test/scripts/install_needrestart_sysbox_dropin_test.rb` drives the whole thing against a
+stubbed `ssh` and a throwaway root, including all three sabotage cases. That test is the only
+coverage the remote half has: `shellcheck` and `bash -n` do not descend into a heredoc body.
 
 The step is a **converge**, not a one-off, for the same reason the watchdog is: cloud-init
 runs only at first boot and Terraform provisions the droplet with
