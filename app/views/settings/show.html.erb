@@ -178,7 +178,12 @@
           </p>
         </div>
       </div>
-      <!-- Catalog Pins Section -->
+      <%# Catalog Pins Section. Only a github:// catalog can be pinned, and a
+          local-only catalog (Zimmer's default) declares none — so this card
+          would otherwise render prose, an empty list, and a save button that
+          does nothing. Hidden rather than shown empty: dormant machinery that
+          reads as live is the thing worth not doing (#69). %>
+      <% if @deployment_info[:catalog_pins].any? %>
       <div class="bg-white shadow-sm rounded-lg border border-gray-200">
         <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
           <h2 class="text-lg font-medium text-gray-900">Catalog Pins</h2>
@@ -253,6 +258,7 @@
           <% end %>
         </div>
       </div>
+      <% end %>
 
       <!-- Deployment Information Section -->
       <div class="bg-white shadow-sm rounded-lg border border-gray-200">

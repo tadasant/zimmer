@@ -185,27 +185,70 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
     assert_equal "github://tadasant/zimmer-catalog@feat-branch/some/other/path.json", parsed.dig("nested", "deep", "uri")
   end
 
-  test "rewriting the actual air.production.json on disk produces a valid JSON document" do
+  # This one used to skip twice over: once if air.production.json was missing,
+  # once because that file declares no github:// catalogs to pin. The second
+  # skip is permanent for a local-only catalog, which is Zimmer's default — so
+  # the test never ran, in CI or anywhere else (#69).
+  #
+  # The fix is to assert the property that holds for EITHER shape of catalog:
+  # whatever the real file contains, rewriting it yields valid JSON and leaves
+  # no tadasant/zimmer-catalog URI un-pinned. For today's local-only file that
+  # is vacuously true, and the next assertion is the one that carries weight —
+  # staging.rb pipes this exact file through the rewriter on every boot with
+  # AIR_CATALOG_REF set, so a rewrite that mangled it would break staging's
+  # catalog and nothing else would catch it.
+  test "rewriting the real air.production.json on disk produces a valid JSON document" do
     air_production_path = Rails.root.join("air.production.json")
-    skip "air.production.json not present" unless File.exist?(air_production_path)
+    assert File.exist?(air_production_path), "air.production.json is shipped in the image; it must exist"
 
-    # Zimmer's default air.production.json points at the self-contained local artifact
-    # indexes (no `catalogs` aggregation of github:// URIs), so there is nothing for the
-    # ref-rewriter to pin. The rewriter is exercised on synthetic fixtures above;
-    # skip here unless a deployment actually uses github:// catalogs.
-    src = JSON.parse(File.read(air_production_path))
-    unless src["catalogs"].is_a?(Array) && src["catalogs"].any? { |c| c.to_s.start_with?("github://") }
-      skip "air.production.json uses a self-contained local catalog (no github:// catalogs to pin)"
-    end
-
-    rewritten = AirCatalogRefRewriter.rewrite(File.read(air_production_path), pins: { ZIMMER_CATALOG => "test-ref" })
+    source = File.read(air_production_path)
+    rewritten = AirCatalogRefRewriter.rewrite(source, pins: { ZIMMER_CATALOG => "test-ref" })
     parsed = JSON.parse(rewritten)
 
-    catalogs = parsed["catalogs"]
-    assert catalogs.is_a?(Array)
-    assert catalogs.any? { |c| c.start_with?("github://tadasant/zimmer-catalog@test-ref/") },
-      "Expected at least one catalog to be rewritten with @test-ref, got: #{catalogs.inspect}"
-    refute catalogs.any? { |c| c == "github://tadasant/zimmer-catalog/agents" },
-      "Expected no un-rewritten tadasant/zimmer-catalog URIs, got: #{catalogs.inspect}"
+    unpinned = string_values(parsed).grep(%r{\A#{Regexp.escape(ZIMMER_CATALOG)}/})
+    assert_empty unpinned, "Expected no un-rewritten tadasant/zimmer-catalog URIs"
+
+    pinned = string_values(parsed).grep(%r{\A#{Regexp.escape(ZIMMER_CATALOG)}@test-ref})
+    assert_equal(
+      string_values(JSON.parse(source)).grep(%r{\A#{Regexp.escape(ZIMMER_CATALOG)}(?:[/@]|\z)}).size,
+      pinned.size,
+      "Every tadasant/zimmer-catalog URI in the source must come back pinned"
+    )
+  end
+
+  # The no-op path staging.rb relies on, and the exact comparison it makes to
+  # decide whether AIR_CATALOG_REF pinned anything. Note `rewrite` always
+  # re-serializes with JSON.pretty_generate, so the output is never byte-equal
+  # to arbitrary input — an un-pinned rewrite matches the zero-pin rewrite, not
+  # the source text. Synthetic rather than the real file so it keeps testing the
+  # local-only shape even if air.production.json later grows github:// sources.
+  test "a catalog with nothing to pin is left unchanged by a pin" do
+    source = <<~JSON
+      {
+        "name": "zimmer-catalog",
+        "gitProtocol": "https",
+        "skills": ["./skills/skills.json"],
+        "mcp": ["./mcp.json"],
+        "roots": ["./roots.json"]
+      }
+    JSON
+
+    rewritten = AirCatalogRefRewriter.rewrite(source, pins: { ZIMMER_CATALOG => "test-ref" })
+
+    assert_equal AirCatalogRefRewriter.rewrite(source, pins: {}), rewritten
+    assert_equal JSON.parse(source), JSON.parse(rewritten)
+  end
+
+  private
+
+  # Every string anywhere in a parsed JSON document — the rewriter walks nested
+  # values, so assertions about it have to as well.
+  def string_values(node)
+    case node
+    when String then [ node ]
+    when Array  then node.flat_map { |v| string_values(v) }
+    when Hash   then node.flat_map { |k, v| string_values(k) + string_values(v) }
+    else []
+    end
   end
 end

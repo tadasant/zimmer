@@ -4,26 +4,41 @@ require_relative "../../app/services/air_catalog_ref_rewriter"
 Rails.application.configure do
   # Settings specified here will take precedence over those in config/application.rb.
 
-  # Staging shares production's catalog source: the in-image air.production.json
-  # uses github:// URIs to pull catalog content (skills, mcp servers, roots, etc.)
-  # from tadasant/zimmer-catalog HEAD. Deployed images only ship agents/agent-orchestrator,
-  # so the dev air.json's ../skills/... relative paths would not resolve here.
-  # AIR_CONFIG env still wins.
+  # Staging shares production's catalog source: the in-image air.production.json,
+  # which points at the six artifact indexes baked into the image
+  # (`./skills/skills.json` and its siblings, copied to the image root alongside it)
+  # and resolves entirely from local paths, offline. It is content-identical to the
+  # dev/test air.json today; the split is a seam, so the image can change its own
+  # catalog sources without touching dev. AIR_CONFIG env still wins.
   #
   # AIR_CATALOG_REF (optional): when set, generate a temp air.staging.json that
   # rewrites every `github://tadasant/zimmer-catalog/...` URI to pin the catalog to
-  # the given ref (branch / tag / commit SHA). Lets a staging deploy test
-  # catalog changes from a feature branch without merging them to main.
+  # the given ref (branch / tag / commit SHA). Lets a staging deploy test catalog
+  # changes from a feature branch without merging them to main.
+  #
+  # It only bites on a catalog that declares github:// sources. The in-image
+  # air.production.json declares none, so with the default catalog this rewrite is
+  # a no-op and AIR_CATALOG_REF changes nothing — hence the warning below, so an
+  # operator who sets it learns that immediately instead of trusting a pin that was
+  # never applied. It takes effect when AIR_CONFIG points at a catalog that does
+  # declare them.
   config.air_json_path = ENV.fetch("AIR_CONFIG") {
     base_path = Rails.root.join("air.production.json").to_s
     catalog_ref = ENV["AIR_CATALOG_REF"].to_s.strip
     if catalog_ref.empty?
       base_path
     else
+      source = File.read(base_path)
       rewritten = AirCatalogRefRewriter.rewrite(
-        File.read(base_path),
+        source,
         pins: { AirCatalogRefRewriter::CATALOG_PREFIX => catalog_ref }
       )
+      # `rewrite` re-serializes with JSON.pretty_generate either way, so the
+      # comparison is against a zero-pin rewrite, not against the source text.
+      if rewritten == AirCatalogRefRewriter.rewrite(source, pins: {})
+        warn "[staging] AIR_CATALOG_REF=#{catalog_ref} pinned nothing: " \
+             "#{base_path} declares no #{AirCatalogRefRewriter::CATALOG_PREFIX} URIs."
+      end
       out_path = Rails.root.join("tmp", "air.staging.json")
       FileUtils.mkdir_p(out_path.dirname)
       File.write(out_path, rewritten)

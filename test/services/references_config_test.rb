@@ -71,20 +71,42 @@ class ReferencesConfigTest < ActiveSupport::TestCase
   end
 
   # Test that reference files actually exist on disk.
-  # Local catalog entries carry `file` relative to ../references/ next to
-  # air.json. GitHub-catalog entries carry `path` (an absolute path AIR
+  # Local catalog entries carry `file` relative to the references index that
+  # declared them. GitHub-catalog entries carry `path` (an absolute path AIR
   # resolved into the provider cache). Validate whichever the entry has.
+  #
+  # The index directories come from air.json's own `references` list rather than
+  # a guessed sibling of air.json: this used to look in
+  # `File.expand_path("../references", air_json_dir)`, which resolves one level
+  # ABOVE the catalog root, so the directory was never found and the whole test
+  # skipped itself in CI.
   test "all references should point to existing files" do
-    references_dir = File.expand_path("../references", AirCatalogService.air_json_dir)
-    skip "references directory not found at #{references_dir}" unless File.directory?(references_dir)
+    assert index_dirs.any?, "air.json declares no local references index"
 
     ReferencesConfig.all.each do |ref|
       assert ref.file.present? || ref.path.present?,
         "Reference '#{ref.id}' has neither file nor path"
 
-      full_path = ref.path.presence || File.join(references_dir, ref.file)
-      assert File.exist?(full_path),
-        "Reference '#{ref.id}' points to missing file: #{full_path}"
+      if ref.path.present?
+        assert File.exist?(ref.path),
+          "Reference '#{ref.id}' points to missing file: #{ref.path}"
+      else
+        candidates = index_dirs.map { |dir| File.join(dir, ref.file) }
+        assert candidates.any? { |p| File.exist?(p) },
+          "Reference '#{ref.id}' points to missing file; tried: #{candidates.join(', ')}"
+      end
     end
+  end
+
+  private
+
+  # Directories holding the local references indexes air.json declares, which is
+  # what a local entry's `file` is relative to.
+  def index_dirs
+    air_json = AirCatalogService.air_json_path
+    Array(JSON.parse(File.read(air_json))["references"])
+      .reject { |entry| entry.to_s.include?("://") }
+      .map { |entry| File.dirname(File.expand_path(entry.to_s, AirCatalogService.air_json_dir)) }
+      .uniq
   end
 end
