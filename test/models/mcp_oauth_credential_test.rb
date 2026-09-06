@@ -250,8 +250,10 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     assert credential.requires_reauth?, "an unrefreshable expired credential should ask for re-auth"
 
     posted = stub_token_post(->(*) { flunk("posted the client secret to a cleartext endpoint") }) do
-      error = assert_raises(RuntimeError) { credential.refresh! }
-      assert_match(/not https/, error.message)
+      # Same class the transport raises (McpOauthService#post_form), so the one
+      # rule has one exception type however it is tripped.
+      error = assert_raises(McpOauthService::InsecureEndpoint) { credential.refresh! }
+      assert_match(/is not https/, error.message)
     end
     assert_nil posted
 
