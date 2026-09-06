@@ -1200,6 +1200,25 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "pending", enqueued.status
   end
 
+  # An accepted follow-up has to exist somewhere a resume path can read it, not
+  # only as the argument of the job this branch enqueues. A worker shutdown
+  # discards that job, `handle_interrupt_error` resumes the session on a
+  # SYSTEM_RECOVERY nudge, and the caller — already answered "Follow-up prompt
+  # sent" — has no way to tell that apart from delivery (tadasant/zimmer#1023).
+  test "a follow-up sent straight to an idle session is stamped on the row" do
+    session = sessions(:needs_input)
+
+    post follow_up_api_v1_session_path(session.id), params: {
+      prompt: "Rebase the branch and finish the PR"
+    }, headers: @headers
+
+    assert_response :success
+    session.reload
+    assert_equal "Rebase the branch and finish the PR", session.metadata["pending_follow_up_prompt"]
+    assert_equal "running", session.status,
+      "a reader who sees the marker must be guaranteed to also see running"
+  end
+
   test "should reject follow-up to failed session" do
     session = sessions(:failed)
     post follow_up_api_v1_session_path(session.id), params: {

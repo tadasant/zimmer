@@ -428,9 +428,21 @@ class SessionRecoveryService
 
         add_log("Auto-restarting session after hung process termination", level: "info")
 
-        AgentSessionJob.enqueue_with_prompt(session.id, AutomatedPrompts::SYSTEM_RECOVERY)
+        # A follow-up this session accepted and never delivered outranks the nudge
+        # — see Session#recovery_turn_prompt. The hung process was killed above,
+        # so the restart is the first turn that can carry it.
+        holding_follow_up = session.holding_undelivered_follow_up?
+        AgentSessionJob.enqueue_with_prompt(session.id, session.recovery_turn_prompt)
 
-        add_log("Session auto-restarted after hung process recovery", level: "info")
+        add_log(
+          if holding_follow_up
+            "Session auto-restarted after hung process recovery, delivering the follow-up prompt it " \
+            "was still holding instead of the recovery nudge"
+          else
+            "Session auto-restarted after hung process recovery"
+          end,
+          level: "info"
+        )
       end
     end
 
