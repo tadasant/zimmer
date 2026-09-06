@@ -480,8 +480,10 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "pinnable_catalogs returns github prefixes and ignores local paths" do
-    skip "Requires a remote (github://) catalog; Zimmer default catalog is local-only."
+  # Zimmer's own catalog is local-only, so nothing here reads air.json from the
+  # repo: the test writes a synthetic remote-catalog air.json into its tmpdir.
+  # That is the whole configuration under test, and it needs no network.
+  test "pinnable_catalogs returns deduped github prefixes and ignores local paths" do
     File.write(@air_json, JSON.generate("catalogs" => [
       "github://tadasant/zimmer-catalog/agents",
       "github://tadasant/zimmer-catalog/artifacts",
@@ -490,17 +492,20 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     ]))
     AirCatalogService.reset!
 
+    # Two paths into one repo are one pinnable catalog: a pin freezes the repo,
+    # not the path, so offering the settings UI two identical rows would let an
+    # operator set contradictory refs for the same clone.
     assert_equal [
-      "github://tadasant/zimmer-catalog",
       "github://tadasant/zimmer-catalog",
       "github://pulsemcp/ai-artifacts"
     ], AirCatalogService.pinnable_catalogs
   end
 
+  # The "provider cache" here is a local `git init`, not a fetch: resolved_sha_for
+  # only ever reads a clone AIR already placed on disk.
   test "resolved_sha_for reads the commit SHA from the cache clone" do
-    skip "Requires a remote (github://) catalog; Zimmer default catalog is local-only."
     cache_dir = File.join(@tmpdir, "cache")
-    clone = File.join(cache_dir, "zimmer", "ai-artifacts", "HEAD")
+    clone = File.join(cache_dir, "pulsemcp", "ai-artifacts", "HEAD")
     FileUtils.mkdir_p(clone)
     system("git", "-C", clone, "init", "-q", exception: true)
     File.write(File.join(clone, "f.txt"), "x")

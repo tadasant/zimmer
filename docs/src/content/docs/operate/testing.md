@@ -143,12 +143,19 @@ Several tests `skip` when a credential or file is absent — which in CI means t
 | --- | --- |
 | `preregistered_oauth_config_test.rb:189` | "OAuth credentials not available (CI environment)" |
 | `secrets_loader_test.rb:158` | "Credentials key not available (CI environment)" |
-| `references_config_test.rb:79` | "references directory not found" |
-| `air_catalog_ref_rewriter_test.rb:190,198` | "air.production.json not present" / "no `github://` catalogs to pin" |
 | `sessions_test.rb` "changing agent root updates MCP server selection…" | Needs **two** agent roots with `default_mcp_servers`. Only `playwright-custom` declares `default_in_roots` (→ `zimmer`), so exactly one root qualifies and the test always skips — the root→MCP-defaults switch has no system coverage. |
 
-That last pair means the catalog-pinning feature has zero CI coverage — the code path exists,
-the tests exist, and neither runs. Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).
+The catalog-pinning tests used to be the worst case on this list — eight tests across four files,
+which left the whole feature with zero CI coverage — plus
+`references_config_test.rb`'s file-existence test, which skipped on a path bug rather than a missing
+fixture. All nine now run ([#69](https://github.com/tadasant/zimmer/issues/69)).
+
+The lesson is worth keeping. The eight skipped for want of a `github://` catalog Zimmer
+deliberately does not run, but a *configuration* is what the code reads, not the environment: a
+synthetic air.json in a tmpdir, a stub on `pinnable_catalogs`, and a local `git init` standing in
+for the provider cache cover the whole path offline, with no network and no token. And two of the
+eight had rotted while dormant — one built its cache clone under the wrong owner directory, another
+expected a list the implementation dedupes — which is exactly what an unrun test does.
 
 ## Tests that would never run — and the one that looked like it
 

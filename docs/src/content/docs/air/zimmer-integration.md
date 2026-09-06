@@ -97,13 +97,17 @@ production image pin its own catalog sources without touching the dev/test confi
 per-environment: `development`/`test` use `air.json`, `production`/`staging` use
 `air.production.json`. `AIR_CONFIG` always wins.
 
-:::caution[The environment configs describe a setup that no longer exists]
-The comments in `config/environments/production.rb` and `staging.rb` still say
-`air.production.json` *"uses `github://` URIs to pull catalog content from tadasant/zimmer-catalog."*
+:::note[The github-cache machinery is inert here, not gone]
+Because the catalog is local-only, all of `AirCatalogService`'s github-cache machinery
+(`~/.air/cache/github`, `resolved_sha_for`, `pinnable_catalogs`, catalog pins) does nothing on this
+deployment: there is no `github://` URI for it to act on. It stays because `AIR_CONFIG` can point at
+a catalog that *does* declare them, and the `@pulsemcp/air-provider-github` extension that resolves
+them ships in every image.
 
-It doesn't. The file on disk is entirely local paths. As a result, all of `AirCatalogService`'s
-github-cache machinery (`~/.air/cache/github`, `resolved_sha_for`, `pinnable_catalogs`, catalog
-pins) is currently dormant infrastructure — correct code for a configuration nobody is running.
+What it must not do is *read* as live. The settings page hides its **Catalog Pins** card unless at
+least one catalog is pinnable, `AIR_CATALOG_REF` warns at boot when it pinned nothing, and the
+tests that cover the pinning path run in CI against synthetic remote-catalog fixtures rather than
+skipping for want of a real one ([#69](https://github.com/tadasant/zimmer/issues/69)).
 :::
 
 ## A dangling reference is treated as a failed resolve

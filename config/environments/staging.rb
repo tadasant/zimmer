@@ -4,30 +4,62 @@ require_relative "../../app/services/air_catalog_ref_rewriter"
 Rails.application.configure do
   # Settings specified here will take precedence over those in config/application.rb.
 
-  # Staging shares production's catalog source: the in-image air.production.json
-  # uses github:// URIs to pull catalog content (skills, mcp servers, roots, etc.)
-  # from tadasant/zimmer-catalog HEAD. Deployed images only ship agents/agent-orchestrator,
-  # so the dev air.json's ../skills/... relative paths would not resolve here.
-  # AIR_CONFIG env still wins.
+  # Staging shares production's catalog source: the in-image air.production.json,
+  # which points at the six artifact indexes baked into the image
+  # (`./skills/skills.json` and its siblings, copied to the image root alongside it)
+  # and resolves entirely from local paths, offline. It is content-identical to the
+  # dev/test air.json today; the split is a seam, so the image can change its own
+  # catalog sources without touching dev. AIR_CONFIG env still wins.
   #
-  # AIR_CATALOG_REF (optional): when set, generate a temp air.staging.json that
-  # rewrites every `github://tadasant/zimmer-catalog/...` URI to pin the catalog to
-  # the given ref (branch / tag / commit SHA). Lets a staging deploy test
-  # catalog changes from a feature branch without merging them to main.
+  # AIR_CATALOG_REF (optional): pins every `github://tadasant/zimmer-catalog/...`
+  # URI in the catalog to one ref (branch / tag / commit SHA), so a staging deploy
+  # can test catalog changes from a feature branch without merging them to main.
+  # The rewritten copy is written to tmp/ and resolved from there.
+  #
+  # Its reach is narrower than it looks, in two ways that are easy to misread:
+  #
+  #   1. It applies to the in-image air.production.json ONLY. It sits inside the
+  #      ENV.fetch("AIR_CONFIG") block, so a deployment that sets AIR_CONFIG —
+  #      which is how an operator mounts their own catalog, and what
+  #      config/deploy.production.yml does — bypasses it entirely.
+  #   2. air.production.json declares no github:// URIs, so there is nothing in it
+  #      for the rewrite to match.
+  #
+  # Together those mean the knob pins nothing on any deployment as configured
+  # today, which is why an unmatched rewrite says so and falls back to the base
+  # config. Falling back is not cosmetic: the rewritten copy lands in tmp/, and
+  # air.production.json's index paths are RELATIVE to the config file's directory
+  # (`./skills/skills.json`), so resolving the copy from tmp/ would look for
+  # tmp/skills/skills.json and find nothing. Returning base_path when the rewrite
+  # matched nothing keeps a set-but-inert AIR_CATALOG_REF from emptying the
+  # catalog. See docs/limitations.md for the same trap on the CatalogPin path.
   config.air_json_path = ENV.fetch("AIR_CONFIG") {
     base_path = Rails.root.join("air.production.json").to_s
     catalog_ref = ENV["AIR_CATALOG_REF"].to_s.strip
     if catalog_ref.empty?
       base_path
     else
+      source = File.read(base_path)
       rewritten = AirCatalogRefRewriter.rewrite(
-        File.read(base_path),
+        source,
         pins: { AirCatalogRefRewriter::CATALOG_PREFIX => catalog_ref }
       )
-      out_path = Rails.root.join("tmp", "air.staging.json")
-      FileUtils.mkdir_p(out_path.dirname)
-      File.write(out_path, rewritten)
-      out_path.to_s
+      # Compare parsed documents: `rewrite` re-serializes with JSON.pretty_generate
+      # whether or not it matched anything, so the source text is never the baseline.
+      if JSON.parse(rewritten) == JSON.parse(source)
+        # Kernel#warn, not Rails.logger: config.logger is assigned further down this
+        # same block, so there is no configured logger yet. Fires once per process
+        # (each Puma worker, each GoodJob worker).
+        warn "[staging] AIR_CATALOG_REF=#{catalog_ref} changed nothing in #{base_path} " \
+             "(no #{AirCatalogRefRewriter::CATALOG_PREFIX} URI needed pinning). " \
+             "Resolving the catalog unrewritten."
+        base_path
+      else
+        out_path = Rails.root.join("tmp", "air.staging.json")
+        FileUtils.mkdir_p(out_path.dirname)
+        File.write(out_path, rewritten)
+        out_path.to_s
+      end
     end
   }
 
