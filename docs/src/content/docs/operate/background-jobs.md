@@ -1241,8 +1241,9 @@ Most short jobs run on `default`. Six kinds of work are deliberately isolated:
   threads; excess work remains one queued row per request and drains as a worker becomes free.
   Deterministic notification types stay on `default` because they do no inference.
 - **`:maintenance`** — package and bundle installs, deploy recovery, transcript archiving, token
-  backfill, Docker cleanup, and clone/trash filesystem sweeps. These operations are bounded but may
-  run for minutes or scale with the data they inspect. Two workers let that backlog drain without
+  backfill, Docker cleanup, clone/trash filesystem sweeps, and `TriggerPromotionReleaseJob` (which
+  starts every session a trigger's scheduling-class change promoted, one queue read and one row lock
+  apiece). These operations are bounded but may run for minutes or scale with the data they inspect. Two workers let that backlog drain without
   occupying both `default` threads; rows inherited from an older image are moved by a deploy-time
   migration and a converging post-deploy task.
 - **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob` and `GithubTriggerPollerJob`, and

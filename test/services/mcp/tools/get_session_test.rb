@@ -287,6 +287,49 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     refute_includes output, "spot-hold sweep re-arms it automatically"
   end
 
+  # The record and the class contradicting each other in one dump. Session 6934
+  # read back `Scheduling class: priority (set on this session)` beside `Held by
+  # the spot gate (at_utilization_limit)`, `Holds so far: 52`, under a frozen
+  # gate sentence ending "Priority sessions are unaffected" (#423). An agent
+  # parsing that has no way to tell which half is true.
+  test "a hold record its own class has overtaken says so, and stops advertising the remedy" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::PRIORITY, metadata: {
+      SpotSessionHold::HELD_AT => 20.minutes.ago.utc.iso8601,
+      SpotSessionHold::HELD_REASON => "at_utilization_limit",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: the weekly window is at its target. " \
+                                      "Priority sessions are unaffected.",
+      SpotSessionHold::HELD_RETRY_AT => 40.minutes.from_now.utc.iso8601,
+      SpotSessionHold::HELD_COUNT => 52,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Superseded by this session's class:**"
+    assert_includes output, SpotSessionHold::PROMOTED_SENTENCE
+    assert_includes output, "The prompt that woke it is not lost"
+    refute_includes output, "Promote this session to priority to run it now",
+      "the advertised remedy must not be offered to a session that has already used it"
+  end
+
+  test "a spot session still carrying its own hold is not reported as superseded" do
+    session = sessions(:running)
+    session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
+      SpotSessionHold::HELD_AT => 20.minutes.ago.utc.iso8601,
+      SpotSessionHold::HELD_REASON => "at_utilization_limit",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: the weekly window is at its target.",
+      SpotSessionHold::HELD_RETRY_AT => 40.minutes.from_now.utc.iso8601,
+      SpotSessionHold::HELD_COUNT => 3,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME
+    })
+
+    output = @tool.call("id" => session.id)
+
+    refute_includes output, "Superseded by this session's class"
+    assert_includes output, "Promote this session to priority to run it now"
+  end
+
   test "a spot session held at the starting line does not claim a queued prompt" do
     session = sessions(:running)
     session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {

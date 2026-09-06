@@ -176,9 +176,33 @@ indistinguishable. The form's flash notice, `action_trigger`'s response and `PAT
 /api/v1/triggers/:id`'s `reclassified_waiting_sessions` all report how many sessions actually moved
 between classes — a rewrite that resolves to the same class is not counted, because nothing moved.
 
-A released session starts on its own next re-check rather than instantly; the change lands the class,
-it does not pull the deferred re-check forward
-([#423](https://github.com/tadasant/zimmer/issues/423)).
+A session the change **promotes** is then started, rather than left to wait out a re-check the
+promotion made moot. Each one goes through
+[`Sessions::StartNow`](#starting-a-queued-session-now) — the same owner every other promotion path
+uses — so a session held behind a deferred `AgentSessionJob` scheduled up to an hour out has that job
+pulled forward instead of a second one being enqueued beside it. Until this, the change landed the
+class and nothing else, and the backlog an operator had just promoted went on waiting exactly as long
+as before ([#423](https://github.com/tadasant/zimmer/issues/423)).
+
+The release runs in `TriggerPromotionReleaseJob`, off the operator's request and after the trigger's
+save has committed. Both halves matter. Releasing is not a set operation the way the reclassification
+above is — each session needs its own queue read and its own reschedule — so a long backlog inside a
+`PATCH` would time out halfway through, leaving the operator unable to tell a failed release from a
+failed save. And the class has to be *visible* before any job is pulled forward, or the worker reads
+the session as still spot and holds it straight back.
+
+Four populations are left alone, and each is re-read at release time rather than trusted from the
+write:
+
+- **A demotion, or a rewrite that resolves to the class the sessions already had.** Nothing moved.
+- **A session that is no longer `waiting`, or whose class did not end up priority.** It started, was
+  moved by hand, or its promotion rolled back in between.
+- **A session carrying a spot-ceiling pause or an auth-outage park.** Each has its own resume owner,
+  and a `pause_into_spot_queue` park is a per-session choice a trigger-wide one must not override —
+  the same rule that leaves a hand-moved session's class where somebody put it.
+- **A session in a frozen category**, which is opted out of every bulk start.
+
+One session that cannot be started does not abandon the rest of the backlog.
 
 To move a session this does not reach — one that has started, or one from a different trigger — move
 that session: the **Make this session priority** button on its hold banner, the **Scheduling class**
@@ -715,6 +739,38 @@ through to the recovery path and was stamped `paused_by: "recovery"` on top of i
 7507 was: twelve auto-continue attempts against a clone deleted days earlier, then abandoned at
 `02:54:32Z`, leaving it in `waiting` holding a re-check that had already been lost.
 
+### A hold a promotion has overtaken
+
+The gate holds **spot** sessions. A hold record on a session that is no longer spot is a fossil, and
+until 2026-09-06 nothing cleared one: `hold_if_needed` returned early on a priority session without
+touching the record it found, so a promoted session kept its `spot_hold_*` keys through its whole run
+and every surface that reads them read them as live.
+
+That produced a record which contradicted itself. Session 6934 simultaneously said `Scheduling class:
+priority (set on this session)` and `Held by the spot gate (at_utilization_limit)`, with `Holds so
+far: 52`, over a frozen gate sentence ending *"Priority sessions are unaffected"* — and its banner
+offered the **Make this session priority** button to a session that already was
+([#423](https://github.com/tadasant/zimmer/issues/423)). Both halves cannot be true, and the class is
+the one that is.
+
+Two changes, in the two places the record can be wrong:
+
+- **The gate clears what it will not act on.** A session that reaches `hold_if_needed` and is not
+  spot has its hold record dropped, the same way a session the gate lets through does. This is the
+  *last* door a promoted session comes through, not the first — every promotion path releases the
+  hold itself — so reaching it with a record means something moved the class without going through
+  one: a demote-then-promote, a write straight to the row, a genesis-wide policy flip.
+- **The surfaces that replay a record say when its class has overtaken it.** The session page's hold
+  banner and `get_session` both render one shared sentence
+  (`SpotSessionHold::PROMOTED_SENTENCE`), so they cannot drift; the banner also stops describing a
+  `priority` session as a spot one and withholds the **Make this session priority** button, and
+  `get_session` stops telling an agent to promote a session that already is.
+
+`SpotSessionHold.held?` is deliberately **not** narrowed to spot sessions. That predicate is what the
+[stalled-ladder sweep](#a-hold-that-loses-its-re-check) keys its population on, and a promoted
+session whose re-check was lost still needs the sweep to put a turn back on it. Narrowing it would
+hide exactly that session from the one thing that can rescue it.
+
 ### A hold lasts as long as the number does
 
 There is no escape hatch and no deadline: while a window is ahead of its curve or out of budget, spot
@@ -1108,8 +1164,10 @@ declines entirely and a phone gets the full session page.
 
 #### Starting a queued session now
 
-`Sessions::StartNow` is the operation behind **Start now**, and the one a promote to priority
-performs on the row it just promoted. It exists because the hold banner's "Make this one session
+`Sessions::StartNow` is the operation behind **Start now**, and the one every promotion to priority
+performs on the rows it just promoted — the Ranked view's Promote, the hold banner's button,
+`action_session`'s `change_scheduling_class`, `PATCH /api/v1/sessions/:id`, and a
+[trigger selector change](#stored-only-when-someone-chose-it). It exists because the hold banner's "Make this one session
 priority to start it now" was not true: promoting removed the *reason* a session was held and changed
 nothing about *when* it would next be asked, so a session somebody had just decided was urgent went
 on waiting out a re-check up to an hour away.
