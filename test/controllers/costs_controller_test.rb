@@ -7,7 +7,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
   # method by that name, and it builds a Rack test session, not this one.
   def make_session(title)
     Session.create!(title: title, prompt: "x", git_root: "https://github.com/test/repo.git",
-                    branch: "main", execution_provider: "local_filesystem")
+                    branch: "main")
   end
 
   # A tagged session with enough calls to clear ExperimentAnalytics' floor.

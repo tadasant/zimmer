@@ -44,7 +44,6 @@ class AgentSessionJobBootstrapRetryTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       # A session with at least one MCP server is the one that actually runs
       # `air prepare`; an empty-catalog session takes the baseline branch and
       # never gets near the install.
@@ -303,7 +302,6 @@ class AgentSessionJobBootstrapRetryTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       mcp_servers: [ "zimmer-self-session" ],
       status: :waiting,
       # The two signals `Session#before_first_agent_turn?` reads. Either one on
@@ -328,7 +326,6 @@ class AgentSessionJobBootstrapRetryTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       mcp_servers: [ "zimmer-self-session" ],
       status: :waiting,
       transcript: { "type" => "assistant", "message" => { "content" => "On it." } }.to_json

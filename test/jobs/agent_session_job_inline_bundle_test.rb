@@ -28,8 +28,7 @@ class AgentSessionJobInlineBundleTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
   end
 

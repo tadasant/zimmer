@@ -8,7 +8,6 @@ class AgentJobIntentTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "process_pid" => 4242, "clone_path" => "/tmp/test-clone" }
     )
   end

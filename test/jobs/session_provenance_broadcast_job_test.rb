@@ -130,9 +130,11 @@ class SessionProvenanceBroadcastJobTest < ActiveSupport::TestCase
   #
   # Asserted against the SQL rather than against a duration, because a timing
   # threshold on a shared CI box is a flake and this is a categorical claim: the
-  # fan-out must never ask for that column. `SELECT "sessions".*` is the shape
-  # that drags it, so the assertion is that no such statement survives — an
-  # explicit projection is what a loader here is allowed to issue.
+  # fan-out must never ask for that column, however the projection is spelled. The
+  # star form is kept in the check for the case where some other model's loader
+  # drags it in; for Session itself ActiveRecord has enumerated the columns since
+  # `execution_provider` went into `ignored_columns` (#172), so naming the transcript
+  # column is what actually catches a whole-row read today.
   test "the fan-out never asks Postgres for a session's transcript" do
     router = create_session(title: "Router")
     10.times { |i| create_session(title: "Child #{i}", parent_session_id: router.id) }

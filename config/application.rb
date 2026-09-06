@@ -52,14 +52,11 @@ module Zimmer
     # config.time_zone = "Central Time (US & Canada)"
     # config.eager_load_paths << Rails.root.join("extras")
 
-    # Execution layer configuration
-    # Configure the directory for bare git repositories.
-    config.x.execution.repos_dir = ENV.fetch("EXECUTION_REPOS_DIR", "/tmp/agents/repos")
     # NOTE: the clones base directory is intentionally NOT configured here. It is
     # resolved at runtime through ClonesDirectory.base (env: AGENT_CLONES_DIR),
     # which is the single source of truth shared by every clone writer
-    # (GitCloneService, ForkSessionService, the LocalFilesystem execution provider)
-    # and the garbage collector (StaleCloneCleanupJob, OrphanCloneFilesystemCleanupJob).
+    # (GitCloneService, ForkSessionService) and the garbage collector
+    # (StaleCloneCleanupJob, OrphanCloneFilesystemCleanupJob).
     # Clones live on durable storage that survives container restarts AND deploys
     # (the `zimmer_data` named volume mounted at ~/.zimmer; see
     # infra/terraform/cloud-init.yaml.tftpl).

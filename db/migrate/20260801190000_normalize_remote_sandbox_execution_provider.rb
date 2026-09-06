@@ -3,6 +3,10 @@
 # Rewrites any `sessions.execution_provider = 'remote_sandbox'` row to
 # `local_filesystem`.
 #
+# Shipped, so it stays as it ran, and it describes code that no longer exists: #172
+# deleted `lib/execution/` and retired the column this statement writes. Read the rest
+# as a record of 2026-08-01, not of the tree you are looking at.
+#
 # `remote_sandbox` was an accepted value on `Session::EXECUTION_PROVIDERS` and is not
 # anymore, because the provider behind it never existed — every method on
 # `Execution::Providers::RemoteSandbox` returns `Result.failure("not yet implemented")`.

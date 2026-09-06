@@ -169,8 +169,7 @@ class ProcessTerminationServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :running,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
 
     service = create_service_with_existing_process(
@@ -224,8 +223,7 @@ class ProcessTerminationServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :running,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
 
     service = create_service_with_existing_process(

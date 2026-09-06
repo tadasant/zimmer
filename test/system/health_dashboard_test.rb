@@ -27,16 +27,14 @@ class HealthDashboardTest < ApplicationSystemTestCase
       agent_runtime: "claude_code",
       status: :running,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     Session.create!(
       prompt: "Test 2",
       agent_runtime: "claude_code",
       status: :failed,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
 
     visit health_dashboard_path
@@ -122,7 +120,6 @@ class HealthDashboardTest < ApplicationSystemTestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       title: "My Failed Test Session"
     )
     session.logs.create!(content: "Something went wrong", level: "error")

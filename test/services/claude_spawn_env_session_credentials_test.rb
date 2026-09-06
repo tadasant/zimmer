@@ -49,8 +49,7 @@ class ClaudeSpawnEnvSessionCredentialsTest < ActiveSupport::TestCase
     AppSetting.stubs(:session_scoped_credentials_enabled?).returns(false)
     session = Session.create!(
       prompt: "Shared mode", agent_runtime: "claude_code", status: :running,
-      git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem", session_id: SecureRandom.uuid
+      git_root: "https://github.com/test/repo.git", branch: "main", session_id: SecureRandom.uuid
     )
 
     Host.new(session_id: session.id, logger: @logger).apply!
@@ -84,8 +83,7 @@ class ClaudeSpawnEnvSessionCredentialsTest < ActiveSupport::TestCase
     AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
     session = Session.create!(
       prompt: "Scoped mode", agent_runtime: "claude_code", status: :running,
-      git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem", session_id: SecureRandom.uuid
+      git_root: "https://github.com/test/repo.git", branch: "main", session_id: SecureRandom.uuid
     )
 
     Host.new(session_id: session.id, logger: @logger).apply!

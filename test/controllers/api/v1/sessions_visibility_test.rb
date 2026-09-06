@@ -31,8 +31,7 @@ class Api::V1::SessionsVisibilityTest < ActionDispatch::IntegrationTest
       mcp_servers: [],
       config: {},
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     }.merge(attrs))
   end
 

@@ -716,7 +716,6 @@ class ForkSessionService
           git_root: source_session.git_root,
           branch: source_session.branch,
           subdirectory: source_session.subdirectory,
-          execution_provider: source_session.execution_provider,
           mcp_servers: source_session.mcp_servers,
           catalog_skills: source_session.catalog_skills,
           catalog_hooks: source_session.catalog_hooks,

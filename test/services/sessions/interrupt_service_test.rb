@@ -25,7 +25,6 @@ class Sessions::InterruptServiceTest < ActiveJob::TestCase
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       metadata: { "clone_path" => "/tmp/test-clone" }
     )
@@ -227,8 +226,7 @@ class Sessions::InterruptServiceTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     other_message = other_session.enqueued_messages.create!(content: "From other", position: 1)
 
@@ -392,7 +390,6 @@ class Sessions::InterruptServiceTest < ActiveJob::TestCase
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "clone_path" => "/tmp/test-clone-2" }
     )
     msg1 = @session.enqueued_messages.create!(content: "S1 msg", position: 1)

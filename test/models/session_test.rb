@@ -398,29 +398,26 @@ class SessionTest < ActiveSupport::TestCase
     assert session.valid?
   end
 
-  # The enum is an advertisement — the REST API and the MCP start_session tool both offer
-  # its values to callers — so it must list only providers that can actually run. Zimmer has
-  # exactly one, and `Execution::Providers::RemoteSandbox` returns
-  # `Result.failure("not yet implemented")` from every method.
-  test "local_filesystem is the only execution provider" do
-    assert_equal [ "local_filesystem" ], Session::EXECUTION_PROVIDERS
+  # `execution_provider` named a choice that never existed. It gated `lib/execution/`,
+  # a Strategy-pattern layer nothing in the spawn path called, so the value on a row
+  # decided nothing: a session created with "remote_sandbox" validated (until #49
+  # narrowed the enum), persisted, and ran locally anyway. #172 deleted the layer and
+  # retired the field; the column is in `ignored_columns` pending its phase-2 drop, so
+  # the attribute is gone from the model entirely rather than merely constrained.
+  test "sessions carry no execution_provider attribute" do
+    assert_not_includes Session.column_names, "execution_provider"
+    assert_not Session.new.respond_to?(:execution_provider)
+    assert_nil defined?(Session::EXECUTION_PROVIDERS)
   end
 
-  test "should reject the stub remote_sandbox execution provider" do
-    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test",
-                          agent_runtime: "claude_code", status: :waiting,
-                          execution_provider: "remote_sandbox")
+  test "assigning an execution provider is an unknown attribute, not a validation failure" do
+    error = assert_raises(ActiveModel::UnknownAttributeError) do
+      Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test",
+                  agent_runtime: "claude_code", status: :waiting,
+                  execution_provider: "remote_sandbox")
+    end
 
-    assert_not session.valid?
-    assert_includes session.errors[:execution_provider], "remote_sandbox is not a valid execution provider"
-  end
-
-  test "should default execution_provider to local_filesystem" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test",
-                              agent_runtime: "claude_code", status: :waiting)
-
-    assert_equal "local_filesystem", session.execution_provider
-    assert session.valid?
+    assert_includes error.message, "execution_provider"
   end
 
   test "should validate mcp_servers is an array" do

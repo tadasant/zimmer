@@ -133,7 +133,13 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
 
     assert_equal [ "id", "updated_at" ], relation.select_values.map(&:to_s)
     assert_match(/"sessions"."transcript" IS NOT NULL/, relation.to_sql)
-    assert_no_match(/SELECT "sessions".\*/, relation.to_sql)
+    # Against the projection alone, not the whole statement: `transcript` is named in
+    # this relation's WHERE clause on purpose, and the claim here is only that the scan
+    # does not fetch it. Keyed on the column rather than on `SELECT "sessions".*`,
+    # which ActiveRecord stopped emitting for this model when `execution_provider`
+    # went into `ignored_columns` (#172) — an enumerated projection is now the shape a
+    # full-row read takes.
+    assert_no_match(/"sessions"\."transcript"/, projection_of(relation.to_sql))
   end
 
   test "incremental update adds new sessions without full rebuild" do
@@ -290,13 +296,24 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
   # seconds, roughly four times an hour, with a single job thread active.
   # ---------------------------------------------------------------------------
 
+  # The projected column list of a SELECT, or "" for anything else — so an assertion
+  # about what a query FETCHES cannot be fooled by the same column appearing in the
+  # WHERE clause.
+  def projection_of(sql)
+    sql.squish[/\ASELECT (.*?) FROM /i, 1].to_s
+  end
+
   # Full-row reads are the ones that carry `transcript`. The marker scan selects only
-  # id and updated_at and is pinned by its own test above.
+  # id and updated_at and is pinned by its own test above. Identified by the transcript
+  # column in the projection rather than by `SELECT "sessions".*`: ActiveRecord
+  # enumerates the columns of a model with `ignored_columns` (#172), so the star form is
+  # no longer emitted for Session at all and matching on it would silently collect
+  # nothing.
   def full_session_row_selects(&block)
     selects = []
     callback = lambda do |_name, _start, _finish, _id, payload|
       sql = payload[:sql].squish
-      selects << sql if sql.match?(/\ASELECT "sessions"\.\* FROM "sessions"/)
+      selects << sql if projection_of(sql).include?('"sessions"."transcript"')
     end
 
     ActiveSupport::Notifications.subscribed(callback, "sql.active_record", &block)

@@ -34,7 +34,6 @@ class FollowUpSurvivesRecoveryResumeTest < ActiveJob::TestCase
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       metadata: { "working_directory" => @working_directory }
     )
@@ -190,8 +189,7 @@ class FollowUpSurvivesRecoveryResumeTest < ActiveJob::TestCase
   test "a status-summary fork's non-summary prompt is not stamped onto it" do
     source = Session.create!(
       prompt: "Do the work", status: :running,
-      git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem"
+      git_root: "https://github.com/test/repo.git", branch: "main"
     )
     @session.update!(
       status: :running,

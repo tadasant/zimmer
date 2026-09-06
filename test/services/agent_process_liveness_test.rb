@@ -16,7 +16,6 @@ class AgentProcessLivenessTest < ActiveSupport::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid
     )
     @spawned_pids = []
