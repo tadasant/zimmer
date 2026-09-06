@@ -768,6 +768,24 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # `transcript=open` and the deferred frame have to compose, and the composition
+  # is what makes the round trip work at all: rendering the disclosure open is
+  # what gives the frame layout, which is what makes Turbo fetch it. So the page
+  # still ships no rows — it ships a frame that will go and get them, at the level
+  # the reader just picked.
+  test "an open disclosure still defers its rows, and the frame carries the new filter" do
+    session = sessions(:with_transcript)
+
+    get session_url(session, transcript: "open", filter: "condensed")
+    assert_response :success
+
+    assert_select "details[data-controller~='transcript-panel'][open]"
+    assert_select "turbo-frame#session_#{session.id}_transcript[loading='lazy']" \
+                  "[src='#{transcript_panel_session_path(session, filter: 'condensed')}']"
+    assert_select "[data-timeline-item]", false,
+      "an open disclosure must still defer its rows — the frame fetches them"
+  end
+
   test "the drawer variant honours the transcript param too" do
     session = sessions(:running)
 
