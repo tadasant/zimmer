@@ -178,18 +178,19 @@ module CronSchedule
       description: "Poll GitHub for label-added and new-issue trigger conditions and create sessions",
       environments: %i[production staging]
     },
-    # Staging does not run this; production and development do. The reason on record
-    # (test/config/cron_schedule_test.rb's NOT_ON_STAGING) is that it is an alerting
-    # canary and a staging copy would double-page on production's own signals. That reason
-    # came with the schedule rather than from a decision, and it is only about staging:
-    # AlertService::ALERTING_ENVIRONMENTS excludes development, so the development copy
-    # cannot page anything. Staging can, so whether staging should run it is a real and
-    # open question -- tadasant/zimmer#686.
+    # Everywhere, including staging, which schedules slack_trigger_poller: a poller with no
+    # canary is the gap this job exists to close, and staging is where a change to the
+    # poller is exercised first. It reads staging's own trigger_conditions -- staging's
+    # Postgres is a throwaway accessory on the droplet rather than a copy of production's
+    # data -- so it can only ever report a feed staging itself polls, and with no enabled
+    # Slack trigger there it walks an empty relation and says nothing.
+    # GithubTriggerHealthCheckJob, written to mirror this one for the other poller, has
+    # always run on staging. Decided in tadasant/zimmer#686.
     slack_trigger_health_check: {
       cron: "45 * * * *", # Every hour at minute 45 (offset from other hourly jobs)
       class: "SlackTriggerHealthCheckJob",
       description: "Detect Slack trigger feeds that have silently stopped firing and alert",
-      environments: %i[production development]
+      environments: %i[production staging development]
     },
     github_trigger_health_check: {
       cron: "*/5 * * * *", # Every 5 minutes — catches a silent poller freeze within ~15-20 min
@@ -401,13 +402,19 @@ module CronSchedule
     # laptop (VPN, captive portal, offline) would waste I/O and flash a false "network
     # egress degraded" banner locally.
     #
-    # Staging is the open question, on the same footing as slack_trigger_health_check
-    # above -- tadasant/zimmer#686.
+    # Staging runs it. It spawns agent sessions on a droplet of its own, so it has the
+    # exact failure this probe was written for -- a primary resolver that SERVFAILs every
+    # public name, which serving survives by fallthrough and the `claude` login CLI does
+    # not -- and that resolver is staging's own, on its own host and its own Redis, so
+    # nothing it reports is production's signal. Silence is not neutral either:
+    # HealthMonitorService#egress_health reads an empty cache as "DNS egress resolving", so
+    # an unprobed environment reports an answer nothing went and measured. Decided in
+    # tadasant/zimmer#686.
     egress_health_check: {
       cron: "* * * * *", # Every minute
       class: "EgressHealthCheckJob",
       description: "Probe the primary DNS resolver's public egress; drive the network-degraded banner",
-      environments: %i[production]
+      environments: %i[production staging]
     },
     live_clone_integrity: {
       cron: "40 * * * *", # Every hour at minute 40 (offset from the clone sweeps at :00)
