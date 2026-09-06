@@ -1368,16 +1368,33 @@ class AgentSessionJob < ApplicationJob
           # Inject secrets from Rails credentials into .env file
           inject_secrets_to_env_file(working_directory, log_buffer)
 
-          # Enqueue background bundle install if Gemfile exists
-          # This runs asynchronously so Claude Code can start immediately
-          # In most cases, Claude starts by reading files (doesn't need gems)
+          # Give the clone its gems, before the agent exists rather than after.
+          #
+          # A clone of this repo at a commit that has not touched the Gemfile needs nothing
+          # installed — the image's bundle already satisfies it — and settling that costs a
+          # byte comparison and one `bundle check`. Taking it inline is what makes
+          # `bin/rails` work in the clone from the agent's first turn: the alternative is a
+          # clone with no `.bundle/config` for as long as the maintenance queue takes to
+          # reach it, and with no config there is nothing telling the clone where its gems
+          # are (zimmer#592).
+          #
+          # Anything that needs an actual install is unbounded, so it stays in the
+          # background.
           if @file_system.exists?(File.join(working_directory, "Gemfile"))
-            BundleInstallJob.perform_later(session.id, working_directory)
-            log_buffer.add(
-              "Preparing gems in the background (a clone matching the image is ready at once; " \
-              "otherwise Ruby commands may not work until the install finishes)",
-              level: "info"
-            )
+            if (bundle_path = BundleInstallJob.adopt_image_bundle_now(working_directory))
+              log_buffer.add(
+                "Gems ready: this clone matches the image, so it resolves them from " \
+                "#{bundle_path} — nothing to install",
+                level: "info"
+              )
+            else
+              BundleInstallJob.perform_later(session.id, working_directory)
+              log_buffer.add(
+                "Preparing gems in the background (Ruby commands in this clone may not " \
+                "work until the install finishes)",
+                level: "info"
+              )
+            end
           end
 
           # Generate and store session_id for new sessions

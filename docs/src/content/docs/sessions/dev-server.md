@@ -10,6 +10,10 @@ host it runs on had no database on it anywhere the session could reach.
 `bin/agent-dev` is the boot path that works from inside a session. This page is what it
 does, what has to exist for it to work, and why the obvious alternatives don't.
 
+To run *tests* rather than boot a server, see
+[Running tests inside a session](/sessions/running-tests/) — same database, no server, and
+no `foreman`.
+
 ## Where a session actually runs
 
 A session is **not** its own container. `AgentSessionJob` runs inside the Kamal **worker**
