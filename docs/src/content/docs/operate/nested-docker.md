@@ -387,18 +387,29 @@ useradd -s /bin/false sysbox 2>/dev/null || true
 jq --indent 4 '.runtimes |= (. // {}) + {"sysbox-runc":{"path":"/usr/bin/sysbox-runc"}}
             | .features |= (. // {}) + {"time-namespaces": false}' \
   /etc/docker/daemon.json > /tmp/dj && install -m0644 /tmp/dj /etc/docker/daemon.json
-systemctl daemon-reload && systemctl enable --now sysbox-mgr sysbox-fs
+systemctl daemon-reload && systemctl enable --now sysbox.service
 systemctl restart docker                          # containers restart per their policy
 ```
+
+**Enable `sysbox.service`, not `sysbox-mgr` and `sysbox-fs`.** The two daemon units are
+`WantedBy=sysbox.service`, so enabling them only symlinks them under
+`sysbox.service.wants/`, which nothing at boot reads; the umbrella unit is the one carrying
+`WantedBy=multi-user.target` and `Before=docker.service`, and it `BindsTo` the other two, so
+enabling it starts all three in the order `--restart` policies need. Enable only the daemons
+and the runtime works now but is gone after the next reboot, with the worker still asking for
+`runtime: sysbox-runc`.
 
 Verify before deploying anything onto it:
 
 ```bash
+systemctl is-enabled sysbox.service                                 # expect: enabled
 docker info --format '{{range $k,$v := .Runtimes}}{{$k}} {{end}}'   # expect sysbox-runc
 docker run --rm --runtime=sysbox-runc alpine echo ok                # expect: ok
 ```
 
-If that last command fails with the `time` namespace error, the flag did not land.
+`is-enabled` is the check that survives a reboot: `active` on the daemons proves only that
+someone started them by hand. If that last command fails with the `time` namespace error,
+the flag did not land.
 
 ### Then check the worker *works*, not that it exists
 
