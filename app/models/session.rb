@@ -1376,7 +1376,7 @@ class Session < ApplicationRecord
   end
 
   # The canonical key of the session's agent root from roots.json
-  # (e.g., "zimmer", "agents", "zimmer-orchestrator").
+  # (e.g., "zimmer", "general-agent", "zimmer-orchestrator").
   #
   # Prefers the explicit key stored in metadata at creation time, then falls back
   # to resolving by git_root URL + subdirectory against the current catalog.

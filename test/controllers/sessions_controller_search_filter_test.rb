@@ -63,6 +63,9 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     get root_url(agent_root: "general-agent")
     assert_response :success
 
+    # Bounded, so an extra row leaking into this filter fails rather than passing
+    # the three per-row assertions below.
+    assert_select "#sessions_grid turbo-frame", count: 2
     assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@other_root_session)}"
     # The `zimmer`-keyed session is excluded on its key. The key-LESS legacy row is
     # not: since #67 every root shares one (url, subdirectory), so the fallback

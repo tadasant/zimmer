@@ -234,7 +234,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   end
 
   test "post_process! does NOT inject the subagent server when root has no default_subagent_roots but injects self-session server" do
-    # agent-orchestrator root has no default_subagent_roots
+    # the general-agent root has no default_subagent_roots
     @session.update!(metadata: { "agent_root_key" => "general-agent" })
 
     write_config(
@@ -618,7 +618,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   end
 
   test "ensure_baseline! does NOT inject the subagent Zimmer server for a root without default_subagent_roots" do
-    # agent-orchestrator root has no default_subagent_roots: only the self-session
+    # the general-agent root has no default_subagent_roots: only the self-session
     # server should be injected, never the subagent-spawning server.
     @session.update!(mcp_servers: [], catalog_skills: [], metadata: { "agent_root_key" => "general-agent" })
 

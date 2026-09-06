@@ -3,6 +3,11 @@
 require "test_helper"
 
 class AgentRootsConfigTest < ActiveSupport::TestCase
+  # The repositories a shipped root is allowed to point at. See the reachability
+  # test near the bottom of this file for why the list is an allowlist rather
+  # than a live check.
+  CLONABLE_ROOT_URLS = [ "https://github.com/tadasant/zimmer.git" ].freeze
+
   test "loads agent roots from config file" do
     agent_roots = AgentRootsConfig.all
 
@@ -93,8 +98,6 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
   # every root it ships is a root on Zimmer's own repo. A root somewhere else is
   # not forbidden -- it just has to be named here deliberately, by someone who
   # has checked it clones.
-  CLONABLE_ROOT_URLS = [ "https://github.com/tadasant/zimmer.git" ].freeze
-
   test "every shipped root points at a repository this catalog vouches for" do
     stray = AgentRootsConfig.all.reject { |root| CLONABLE_ROOT_URLS.include?(root.url) }
 

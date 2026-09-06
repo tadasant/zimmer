@@ -113,8 +113,8 @@ The other five kept their names and moved to `tadasant/zimmer`, which is where t
 describe maintaining actually lives.
 
 One consequence to know about: `AgentRootsConfig#find_for_session` resolves a root *backwards* from
-`(url, subdirectory)`, and the ten roots that ship occupy only two distinct locations. That fallback
-is first-match, so it cannot tell `catalog-management` from `zimmer`. It is only reached by rows that
+`(url, subdirectory)`, and all ten roots that ship occupy one location. That fallback is
+first-match, so it cannot tell `catalog-management` from `zimmer`. It is only reached by rows that
 never stored an `agent_root_key` — everything created through `create_from_agent_root!` carries the
 key, and the key wins.
 :::
