@@ -229,6 +229,12 @@ if it were production. Staging is for reading, not for paging. Scope production 
 `deployment.environment="production"`.
 :::
 
+Errors are separated a second way, and a stronger one: staging and production point at
+**different GlitchTip projects**. A DSN selects a project, and GlitchTip's alert rules are
+per-project with no environment filter — so sharing one DSN across both environments would
+make every staging error page the production alert channel, forever. Give staging its own
+project and its own DSN.
+
 ### `service.version` says which deploy a record came from
 
 `service.version` is the commit the running image was built from. Without it a burst of
@@ -260,16 +266,24 @@ instance is in, so a missing field in Grafana does not have to be guessed at.
 ### `service.instance.id` says which container
 
 Production runs the `web` and `worker` roles as separate containers under one
-`service.name`, so without an instance identifier a burst affecting only the workers looks
-identical to one affecting everything. `service.instance.id` defaults to
-`<hostname>-<pid>`: in a container the hostname is the container id, and the pid separates
-the Puma workers inside it. `OTEL_SERVICE_INSTANCE_ID` overrides it.
+`service.name`, so without an instance identifier a burst confined to the workers reads
+exactly like one affecting everything. `service.instance.id` defaults to `<hostname>-<pid>`
+and `OTEL_SERVICE_INSTANCE_ID` overrides it.
 
-Errors are separated a second way, and a stronger one: staging and production point at
-**different GlitchTip projects**. A DSN selects a project, and GlitchTip's alert rules are
-per-project with no environment filter — so sharing one DSN across both environments would
-make every staging error page the production alert channel, forever. Give staging its own
-project and its own DSN.
+The hostname is not the container id: Kamal boots each container with
+`--hostname "<deploy host, truncated>-<6 random bytes>"`, regenerated on every boot. So the
+value is unique per running container and changes when that container is replaced — which is
+what makes it usable for "is this burst one instance or all of them?":
+
+```logsql
+{service.name="zimmer"} deployment.environment:=production severity_text:="ERROR"
+  | stats by (service.instance.id) count()
+```
+
+**It identifies the container, not its role.** One instance standing out tells you the burst
+is confined; it does not tell you that instance is the worker. Answering *that* would need an
+attribute carrying the role, and there isn't one — cross-reference `scope.name`
+(`rails.activejob` records only come from a worker) or the job attributes on the record.
 
 ## Only production and staging may report
 

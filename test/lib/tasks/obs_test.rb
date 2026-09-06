@@ -76,32 +76,53 @@ class ObsTasksTest < ActiveSupport::TestCase
     assert_not_includes output, "test-token"
   end
 
-  test "status reports the build identity every exported record carries" do
-    install_exporter
-    original = ENV["ZIMMER_GIT_SHA"]
-    ENV["ZIMMER_GIT_SHA"] = "0123456789abcdef0123456789abcdef01234567"
-
-    output = invoke("obs:status")
-
-    assert_match(/service\.version\s+: 0123456789abcdef0123456789abcdef01234567/, output)
-    assert_match(/service\.instance\.id=\S+ \(this process\)/, output)
+  # Both env vars are stashed, not just the one under test: OTEL_SERVICE_VERSION
+  # takes precedence over ZIMMER_GIT_SHA, so leaving it alone makes these fail on
+  # any machine that happens to set it.
+  def with_env(vars)
+    original = vars.keys.to_h { |k| [ k, ENV.key?(k) ? ENV[k] : nil ] }
+    vars.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
+    yield
   ensure
-    original.nil? ? ENV.delete("ZIMMER_GIT_SHA") : ENV["ZIMMER_GIT_SHA"] = original
+    original.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
+  end
+
+  test "status reports the build identity every exported record carries" do
+    with_env("ZIMMER_GIT_SHA" => "0123456789abcdef0123456789abcdef01234567", "OTEL_SERVICE_VERSION" => nil) do
+      install_exporter
+
+      output = invoke("obs:status")
+
+      assert_match(/service\.version\s+: 0123456789abcdef0123456789abcdef01234567/, output)
+      assert_match(/service\.instance\.id=\S+ \(this process\)/, output)
+    end
+  end
+
+  # The exporter resolves its identity once, at construction. obs:status must
+  # report what is actually being SHIPPED, so a variable that changed after boot
+  # must not change the answer — that would reintroduce the guesswork the task
+  # exists to remove.
+  test "status reports the exporter's resolved version, not whatever ENV says now" do
+    exporter = with_env("ZIMMER_GIT_SHA" => "sha-at-boot", "OTEL_SERVICE_VERSION" => nil) { install_exporter }
+    assert_equal "sha-at-boot", exporter.describe[:service_version]
+
+    output = with_env("ZIMMER_GIT_SHA" => "sha-changed-later") { invoke("obs:status") }
+
+    assert_match(/service\.version\s+: sha-at-boot/, output)
   end
 
   # An image built outside release-image.yml/deploy-staging.yml ships records with
   # no service.version at all. Saying so here is the point of the task: from inside
   # Grafana a missing attribute is indistinguishable from a broken pipeline.
   test "status says why service.version is missing when no build baked one in" do
-    install_exporter
-    original = ENV.delete("ZIMMER_GIT_SHA")
+    with_env("ZIMMER_GIT_SHA" => nil, "OTEL_SERVICE_VERSION" => nil) do
+      install_exporter
 
-    output = invoke("obs:status")
+      output = invoke("obs:status")
 
-    assert_match(/service\.version\s+: \(unset --/, output)
-    assert_match(/records ship without service\.version/, output)
-  ensure
-    ENV["ZIMMER_GIT_SHA"] = original if original
+      assert_match(/service\.version\s+: \(unset --/, output)
+      assert_match(/records ship without service\.version/, output)
+    end
   end
 
   test "status states plainly that metrics and traces are not shipped" do

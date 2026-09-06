@@ -744,12 +744,15 @@ build attempts) and `deploy-staging.yml` pass `GIT_SHA=<commit>` to `docker/buil
 `OtelLogsExporter` ships it as the `service.version` resource attribute on every exported log
 record ([Observability](/operate/observability/#serviceversion-says-which-deploy-a-record-came-from)).
 
-Two details are deliberate. The `ARG` sits at the very **end** of the final stage: its value changes
-on every commit, so declaring it earlier would invalidate the build cache for every layer below it.
-And its default is the **empty string**, not a placeholder — a hand-run `docker build` bakes in
-nothing, and the exporter then omits `service.version` rather than shipping a blank one.
-`test/config/image_build_workflows_test.rb` asserts both ends of that wire, because renaming either
-one alone leaves every build green while the attribute silently stops shipping.
+Two details are deliberate. The `ENV` sits at the very **end** of the final stage: an `ARG` produces
+no layer, so a changed value invalidates the cache at its first *use* rather than at its
+declaration — and this value changes on every commit, so an `ENV` placed above the `RUN` steps would
+rebuild all of them on every build. And the `ARG`'s default is the **empty string**, not a
+placeholder — a hand-run `docker build` bakes in nothing, and the exporter then omits
+`service.version` rather than shipping a blank one.
+`test/config/image_build_workflows_test.rb` asserts both ends of that wire and the `ENV`'s position,
+because renaming either end alone — or hoisting the `ENV` — leaves every build green while doing
+real damage silently.
 
 ### Two paths rebuild the base image
 

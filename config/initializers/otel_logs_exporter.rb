@@ -24,9 +24,11 @@
 #   severity_text ∈ {INFO, WARN, ERROR, FATAL}   (OTLP severityText)
 #
 # service.version is what makes a burst of errors correlatable with a deploy
-# without cross-referencing GitHub Actions timings, and service.instance.id is
-# what tells the web container's records apart from the workers' — both
-# environments run several containers under one service.name.
+# without cross-referencing GitHub Actions timings. service.instance.id is what
+# separates the several containers a deployment runs under one service.name, so
+# a burst confined to one of them is visible as such rather than reading like a
+# burst affecting everything. It identifies the container, not its role — see
+# the note on resolve_instance_id.
 #
 # Wire format: minimal hand-rolled OTLP/HTTP JSON. We avoid the alpha-quality
 # `opentelemetry-logs-sdk` gem and hit the documented OTLP/HTTP logs endpoint
@@ -253,26 +255,36 @@ class OtelLogsExporter
   # service.version is worse than no service.version — it matches a selector for
   # the attribute while identifying nothing.
   def resolve_service_version
-    presence(ENV["OTEL_SERVICE_VERSION"]) || presence(ENV["ZIMMER_GIT_SHA"])
+    blank_to_nil(ENV["OTEL_SERVICE_VERSION"]) || blank_to_nil(ENV["ZIMMER_GIT_SHA"])
   end
 
-  # One value per running process. The hostname alone is the container (Docker
-  # defaults it to the container id), which is what separates the web container
-  # from the workers; the pid separates the Puma workers inside one container,
-  # each of which builds its own exporter. Never nil — every process can name
+  # One value per running process, and never nil — every process can name
   # itself, so unlike service.version this attribute always ships.
+  #
+  # The hostname identifies the container and the pid the process inside it (a
+  # Puma worker builds its own exporter). Under Kamal the hostname is neither
+  # the container id nor the host's real name: `kamal app boot` passes
+  # `--hostname "<deploy host, truncated>-<6 random bytes>"`, freshly generated
+  # on every container boot. So the value is unique per running container, and
+  # deliberately says nothing about which ROLE that container is — a burst is
+  # visibly confined to one instance, but naming it as `web` or `worker` would
+  # need an attribute carrying the role, which this is not.
   def resolve_instance_id
-    presence(ENV["OTEL_SERVICE_INSTANCE_ID"]) || "#{hostname}-#{Process.pid}"
+    blank_to_nil(ENV["OTEL_SERVICE_INSTANCE_ID"]) || "#{hostname}-#{Process.pid}"
   end
 
   def hostname
-    presence(Socket.gethostname) || "unknown"
+    blank_to_nil(Socket.gethostname) || "unknown"
   rescue => e
     Kernel.warn "[otel_logs_exporter] could not read hostname: #{e.class}: #{e.message}"
     "unknown"
   end
 
-  def presence(value)
+  # Not named `presence`: this class is loaded as an initializer and its
+  # instances are ordinary objects, so a private `presence` would shadow
+  # ActiveSupport's Object#presence with a different arity — and with different
+  # semantics, since this treats only "" as absent, not whitespace.
+  def blank_to_nil(value)
     value = value.to_s
     value.empty? ? nil : value
   end

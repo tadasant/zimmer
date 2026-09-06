@@ -27,10 +27,10 @@ class OtelLogsExporterTest < ActiveSupport::TestCase
   end
 
   # Set (or, with nil, unset) env vars for the block and restore exactly what was
-  # there before. Load-bearing rather than convenience: the suite itself runs
-  # inside a Zimmer image, which after this change carries ZIMMER_GIT_SHA — so a
-  # fallback test that merely assumed the variable was absent would pass on a
-  # developer laptop and fail in a container.
+  # there before. Load-bearing rather than convenience: the suite runs inside a
+  # Zimmer image, which carries ZIMMER_GIT_SHA — so a fallback test that merely
+  # assumed the variable was absent would pass on a developer laptop and fail in
+  # a container.
   def with_env(vars)
     original = vars.keys.to_h { |k| [ k, ENV.key?(k) ? ENV[k] : nil ] }
     vars.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
@@ -72,10 +72,10 @@ class OtelLogsExporterTest < ActiveSupport::TestCase
 
   # ---- Build and container identity --------------------------------------
   # service.version answers "which deploy is this?" and service.instance.id
-  # answers "which container?". Before they existed a stored record's complete
-  # field set was ten keys, none of which identified the build or the process —
-  # so a job-claim query crashing seconds after a Kamal cutover could only be
-  # tied to the deploy that caused it by reading GitHub Actions job timings
+  # answers "which container?". Without them a stored record's complete field
+  # set is ten keys, none of which identifies the build or the process — so a
+  # job-claim query crashing seconds after a Kamal cutover can only be tied to
+  # the deploy that caused it by reading GitHub Actions job timings
   # (tadasant/zimmer#736).
 
   test "service.version carries the commit baked in by the image build" do
@@ -107,14 +107,18 @@ class OtelLogsExporterTest < ActiveSupport::TestCase
   end
 
   # An unset Docker ARG renders to "", not to an absent variable: the Dockerfile
-  # sets ENV ZIMMER_GIT_SHA=${GIT_SHA} unconditionally, so every non-CI build
-  # arrives here with an empty string rather than with nothing.
+  # sets ENV ZIMMER_GIT_SHA=${GIT_SHA} unconditionally, so a non-CI build arrives
+  # here with an empty string rather than with nothing.
   test "an empty ZIMMER_GIT_SHA is treated as unset" do
     with_env("ZIMMER_GIT_SHA" => "", "OTEL_SERVICE_VERSION" => nil) do
       assert_not_includes resource_attributes(build_exporter).keys, "service.version"
     end
   end
 
+  # Under Kamal the hostname is `<deploy host>-<6 random bytes>`, regenerated on
+  # every container boot — not the container id and not the host's own name — so
+  # the pair is unique per running container. Assert the composition rather than
+  # any particular shape of hostname.
   test "service.instance.id defaults to hostname-pid and always ships" do
     with_env("OTEL_SERVICE_INSTANCE_ID" => nil) do
       instance_id = resource_attributes(build_exporter).fetch("service.instance.id")["stringValue"]
