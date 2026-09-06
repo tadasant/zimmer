@@ -105,16 +105,31 @@ class AppSettingFleetPolicyAuditTest < ActiveSupport::TestCase
     assert_match(/changed via #{Regexp.escape(AppSetting::UNATTRIBUTED_SOURCE)}/, message)
   end
 
-  # The coverage guard. Every field the two /inference forms and the MCP tool can
+  # The coverage guard. Every field the /inference forms and the MCP tool can
   # write has to be one the audit records — a knob added to a surface and
   # forgotten here would move silently, which is the whole bug this exists for.
   test "every field the write surfaces expose is in FLEET_POLICY_ATTRIBUTES" do
     reachable =
       SpotPoliciesController::FIELDS.map(&:to_s) +
       FleetTopUpPoliciesController::FIELDS.map(&:to_s) +
+      Mcp::Tools::ActionSpotPolicy::GATING_FIELDS.values.map(&:to_s) +
       Mcp::Tools::ActionSpotPolicy::TOP_UP_FIELDS.values.map(&:to_s)
 
     assert_empty reachable.uniq - AppSetting::FLEET_POLICY_ATTRIBUTES,
       "these settings can be changed but their change is not recorded"
+  end
+
+  # Every comment in this area justifies the source constants by
+  # distinguishability, and each surface's own test asserts its constant against
+  # itself — which holds just as well for a copy-pasted duplicate.
+  test "each write surface names itself differently" do
+    sources = [
+      SpotPoliciesController::CHANGE_SOURCE,
+      FleetTopUpPoliciesController::CHANGE_SOURCE,
+      GenesisClassesController::CHANGE_SOURCE,
+      Mcp::Tools::ActionSpotPolicy::CHANGE_SOURCE
+    ]
+
+    assert_equal sources.size, sources.uniq.size, "two surfaces log under the same name"
   end
 end

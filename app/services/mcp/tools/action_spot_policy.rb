@@ -21,8 +21,26 @@ module Mcp
       # Named on the audit line AppSetting writes for every policy change, so a
       # change an agent made through this tool is distinguishable from one a human
       # made on /inference. The action is appended, because "which of the five"
-      # is the first thing anyone reading the line wants.
+      # is the first thing anyone reading the line wants — and the calling
+      # session when the context carries one, because a single API key is shared
+      # by the whole fleet and names a caller but not a session.
       CHANGE_SOURCE = "mcp:action_spot_policy"
+
+      # The five gate settings, as tool argument → column. Read by the dispatch
+      # below and by the audit-coverage test, so a knob added here that
+      # AppSetting does not record fails the build rather than moving silently.
+      GATING_FIELDS = {
+        "enabled" => :spot_gating_enabled,
+        "five_hour_reserve_pct" => :spot_reserve_five_hour_pct,
+        "weekly_reserve_pct" => :spot_reserve_weekly_pct,
+        "max_concurrent_sessions" => :spot_max_concurrent_sessions,
+        "preemption_enabled" => :spot_preemption_enabled
+      }.freeze
+
+      # The two of those that arrive as booleans and need casting. `false` is the
+      # only value anybody sends `preemption_enabled` for, so it is cast rather
+      # than tested for truth.
+      BOOLEAN_GATING_ARGS = %w[enabled preemption_enabled].freeze
 
       # The three numbers FleetIdleMonitor fires on, as tool argument → column.
       # One list, so the schema, the dispatch and the echo cannot drift apart.
@@ -185,32 +203,19 @@ module Mcp
 
       def set_gating(args)
         setting = AppSetting.editable
-        setting.policy_change_source = "#{CHANGE_SOURCE} set_gating"
+        setting.policy_change_source = change_source("set_gating")
         changes = []
 
-        unless args["enabled"].nil?
-          setting.spot_gating_enabled = ActiveModel::Type::Boolean.new.cast(args["enabled"])
-          changes << "gating #{setting.spot_gating_enabled ? 'enabled' : 'disabled'}"
-        end
-        # `.nil?`, not truthiness: 0 is a meaningful reserve (hold nothing back)
-        # and would otherwise be silently ignored.
-        unless args["five_hour_reserve_pct"].nil?
-          setting.spot_reserve_five_hour_pct = args["five_hour_reserve_pct"]
-          changes << "5-hour priority reserve #{setting.spot_reserve_five_hour_pct}%"
-        end
-        unless args["weekly_reserve_pct"].nil?
-          setting.spot_reserve_weekly_pct = args["weekly_reserve_pct"]
-          changes << "weekly priority reserve #{setting.spot_reserve_weekly_pct}%"
-        end
-        if args["max_concurrent_sessions"]
-          setting.spot_max_concurrent_sessions = args["max_concurrent_sessions"]
-          changes << "max #{setting.spot_max_concurrent_sessions} sessions at once"
-        end
-        # `.nil?` again: `false` is the whole point of this argument, and
-        # truthiness would silently ignore the only value anybody sends it for.
-        unless args["preemption_enabled"].nil?
-          setting.spot_preemption_enabled = ActiveModel::Type::Boolean.new.cast(args["preemption_enabled"])
-          changes << "priority preemption #{setting.spot_preemption_enabled ? 'enabled' : 'disabled'}"
+        # `.nil?`, not truthiness: 0 is a meaningful reserve (hold nothing back),
+        # and `false` is the whole point of `preemption_enabled` — testing for
+        # truth would silently ignore the only value anybody sends it for.
+        GATING_FIELDS.each do |arg, column|
+          next if args[arg].nil?
+
+          value = args[arg]
+          value = ActiveModel::Type::Boolean.new.cast(value) if BOOLEAN_GATING_ARGS.include?(arg)
+          setting.public_send(:"#{column}=", value)
+          changes << gating_phrase(arg, setting)
         end
 
         if changes.empty?
@@ -224,13 +229,35 @@ module Mcp
         "Spot policy updated: #{changes.join(', ')}.\n\n#{decision_summary}"
       end
 
+      # What each gate setting reads back as, echoed to the caller so a write does
+      # not need a second call to confirm. Read off the assigned record rather
+      # than off the argument, so the echo is the value that was actually cast.
+      def gating_phrase(arg, setting)
+        case arg
+        when "enabled" then "gating #{setting.spot_gating_enabled ? 'enabled' : 'disabled'}"
+        when "five_hour_reserve_pct" then "5-hour priority reserve #{setting.spot_reserve_five_hour_pct}%"
+        when "weekly_reserve_pct" then "weekly priority reserve #{setting.spot_reserve_weekly_pct}%"
+        when "max_concurrent_sessions" then "max #{setting.spot_max_concurrent_sessions} sessions at once"
+        when "preemption_enabled" then "priority preemption #{setting.spot_preemption_enabled ? 'enabled' : 'disabled'}"
+        end
+      end
+
+      # The surface AppSetting names on its audit line. The calling session rides
+      # along when the context carries one: the tool alone narrows a change to
+      # "some agent", and the whole point of the record is not having to read the
+      # fleet's transcripts to find which.
+      def change_source(action)
+        [ CHANGE_SOURCE, action, ("session ##{context.self_session_id}" if context.self_session_id) ]
+          .compact.join(" ")
+      end
+
       # The backlog top-up policy. `.nil?` rather than truthiness, so an explicit
       # null is skipped rather than assigned to a NOT NULL column — and a call
       # carrying nothing but nulls raises "Nothing to change" instead of saving an
       # empty edit.
       def set_top_up(args)
         setting = AppSetting.editable
-        setting.policy_change_source = "#{CHANGE_SOURCE} set_top_up"
+        setting.policy_change_source = change_source("set_top_up")
         changes = []
 
         TOP_UP_FIELDS.each do |arg, column|
@@ -263,7 +290,7 @@ module Mcp
         end
 
         setting = AppSetting.editable
-        setting.policy_change_source = "#{CHANGE_SOURCE} #{klass == SessionGenesis::PRIORITY ? 'promote_genesis' : 'demote_genesis'}"
+        setting.policy_change_source = change_source(klass == SessionGenesis::PRIORITY ? "promote_genesis" : "demote_genesis")
         setting.set_genesis_class(genesis, klass)
         setting.save!
 
@@ -274,7 +301,7 @@ module Mcp
 
       def reset_genesis_classes
         setting = AppSetting.editable
-        setting.policy_change_source = "#{CHANGE_SOURCE} reset_genesis_classes"
+        setting.policy_change_source = change_source("reset_genesis_classes")
         setting.reset_genesis_classes
         setting.save!
 
