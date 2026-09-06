@@ -35,7 +35,7 @@ Core code never says "Claude." It asks `RuntimeRegistry.for(runtime)`.
 | `config_post_processor_class` | `ClaudeMcpConfigPostProcessor` | `CodexConfigTomlPostProcessor` | `PiMcpConfigPostProcessor` |
 | `mcp_credential_writer_class` | `ClaudeMcpCredentialWriter` | `CodexMcpCredentialWriter` | `PiMcpCredentialWriter` |
 | `artifact_bridge_class` | `NullRuntimeArtifactBridge` | `NullRuntimeArtifactBridge` | `PiAirBridge` |
-| `usage_ingestor_class` | `TokenUsageIngestionService` | `nil` | `PiTokenUsageIngestionService` |
+| `usage_ingestor_class` | `TokenUsageIngestionService` | `CodexTokenUsageIngestionService` | `PiTokenUsageIngestionService` |
 | `prompt_contribution_class` | `ClaudeRuntimePromptContribution` | `nil` | `PiRuntimePromptContribution` |
 | `auth_provider_class` | `nil` | `nil` | `nil` |
 | `config_preparer_class` | `nil` | `nil` | `nil` |
@@ -66,11 +66,14 @@ read, which Claude's and Codex's AIR adapters already handle for them. See
 `.new(modified_since:)` and `#call`, returning something that responds to `#session_rows`
 and `#to_s`; `TokenUsageIngestionJob` runs every non-`nil` one on
 its cron and isolates a failure to the ingestor that raised it. It is a slot rather than a
-conditional because *where a runtime records what it spent* has no common answer: Claude Code
-writes a host-global tree, Pi writes into the clone (and is therefore read back out of
-`sessions.transcript`, since the clone is reaped), and Codex reports cumulative per-turn totals
-with no per-call identifier — which is why its slot is the one `nil` here that means "not
-ingested yet" rather than "resolved elsewhere" ([#1077](https://github.com/tadasant/zimmer/issues/1077)).
+conditional because *where a runtime records what it spent* has no common answer, and all three
+runtimes answer it differently: Claude Code writes a host-global `~/.claude/projects` tree keyed
+on the API's own `requestId`; Pi writes into the clone, and is therefore read back out of
+`sessions.transcript` because the clone is reaped; Codex writes a date-partitioned rollout tree
+that Zstandard-compresses itself when a session finishes, and reports tokens with no per-call
+identifier and no model, so both the key and the model attribution are constructed as the rollout
+is streamed. `nil` remains legal in this slot and means "this runtime's spend is not ingested yet";
+no registered runtime is `nil` today.
 
 Two `pi` slots are worth reading in full — one because it is emphatically *not*
 `nil`, the other because it is `nil` for a reason of its own rather than by that

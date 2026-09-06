@@ -112,12 +112,13 @@ class BurnRateCalculator
     #
     # And `quota_bearing`, which is the non-obvious one: these rates exist to let
     # SpotGateService price the running CLAUDE fleet against a Claude quota
-    # window. A Pi row's own rate could never be looked up — its model reads
-    # `openrouter/anthropic/claude-opus-4.6` where a Claude session's config
-    # reads `opus` — but it would still land in
-    # HarnessModelBurnRate.fleet_default_usd_per_minute, which is a cost-weighted
-    # average over every stored row and is exactly what prices a Claude
-    # combination the sampler has never seen.
+    # window. Another runtime's own rate could never be looked up — a Pi row's
+    # model reads `openrouter/anthropic/claude-opus-4.6` and a Codex row's
+    # `gpt-5.6-terra`, where a Claude session's config reads `opus` — but both
+    # would still land in HarnessModelBurnRate.fleet_default_usd_per_minute,
+    # which is a cost-weighted average over every stored row and is exactly what
+    # prices a Claude combination the sampler has never seen. A Codex row would
+    # drag that average toward zero, since its model is unpriced.
     def session_spans(now)
       since = now - HarnessModelBurnRate::SAMPLE_LOOKBACK
 

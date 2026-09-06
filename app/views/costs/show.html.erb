@@ -14,7 +14,9 @@
         Token spend from Zimmer's own ledger, priced at current list rates.
         <span class="text-gray-500">Volumes are stored; prices are applied on read, so this re-prices itself when rates change.
         Claude Code spend is subscription-billed and priced at Anthropic list; Pi spend is metered by OpenRouter and priced at
-        the rates it publishes. See <span class="font-medium">By runtime</span> below for the split.</span>
+        the rates it publishes; Codex spend is subscription-billed too, and its tokens land here with <em>no</em> dollars, because
+        no OpenAI rate is carried yet. See <span class="font-medium">By runtime</span> below for the split, and
+        <span class="font-medium">Unpriced models</span> for the volume that carries no cost.</span>
       </p>
     </div>
 
@@ -158,13 +160,16 @@
             max: max_cost.call(@by_thread_kind), total: @totals[:cost_usd] %>
 
       <%# Spend by runtime is spend by BILLING RELATIONSHIP: `claude_code` is
-          subscription spend priced at list, `pi` is a metered OpenRouter invoice.
-          Every other total on this page adds them together, so without this split
-          a reader cannot tell what share of a number is money actually owed. %>
+          subscription spend priced at list, `pi` is a metered OpenRouter invoice,
+          `codex` is subscription spend whose models have no rate yet. Every other
+          total on this page adds them together, so without this split a reader
+          cannot tell what share of a number is money actually owed — nor that
+          Codex contributes tokens and no dollars. %>
       <%= render "bar_table", rows: @by_runtime, label_key: :runtime,
             title: "By runtime",
             subtitle: "By billing relationship, really: Claude Code is subscription-billed and priced at Anthropic list; " \
-                      "Pi is metered by OpenRouter, so its share is money actually owed.",
+                      "Pi is metered by OpenRouter, so its share is money actually owed; Codex is subscription-billed and " \
+                      "reads $0 here because its models are unpriced — its tokens are in the ledger, its dollars are not.",
             empty: "No session spend in this window.",
             max: max_cost.call(@by_runtime), total: @totals[:cost_usd] %>
 

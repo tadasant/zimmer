@@ -89,6 +89,19 @@ class CostsMobileTest < ApplicationSystemTestCase
       cache_creation_5m_tokens: 20_000_000
     )
 
+    # And a Codex row, the third billing relationship: subscription-billed like
+    # Claude Code, but priced at $0 because `TokenPricing` carries no OpenAI rate.
+    # It is what makes the by-runtime table three rows and the unpriced-models list
+    # non-empty, which is the pair of things a reader needs together to read a
+    # Codex figure correctly.
+    SessionTokenUsage.create!(
+      request_id: "codex:#{SecureRandom.uuid}:2026-08-14T11:44:54.291Z", session_id: session.id,
+      agent_runtime: "codex", model: "gpt-5.6-terra",
+      agent_root: "tadasant-internal/artifacts-agent-roots-pr-merge-gate",
+      called_at: 2.hours.ago, input_tokens: 34_051, output_tokens: 184,
+      cache_read_tokens: 11_008
+    )
+
     AdhocTokenUsage.create!(
       request_id: "req_mobile_adhoc", source: "cli_status_probe",
       model: "claude-opus-5", called_at: 1.hour.ago,
@@ -125,6 +138,11 @@ class CostsMobileTest < ApplicationSystemTestCase
     # the probes below are measuring it rather than passing on its absence.
     assert_text "By runtime"
     assert_text "openrouter/anthropic/claude-opus-4.6"
+    # All three runtimes, and the one whose tokens carry no dollars named in the
+    # unpriced list right below them — a Codex row reading $0 is only legible next
+    # to the reason it does.
+    assert_text "codex"
+    assert_text "gpt-5.6-terra"
 
     assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
       "Costs page overflows the viewport at #{MOBILE_WIDTH}px"

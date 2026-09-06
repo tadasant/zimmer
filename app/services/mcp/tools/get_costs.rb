@@ -77,12 +77,15 @@ module Mcp
         - Establish the cost side of a cost-vs-performance comparison
         - Notice app-internal inference that should not be running at all
 
-        **A caveat worth passing on:** list price is not a bill, and it is not one in two
-        different ways. Claude Code and Codex spend is subscription-billed, so treat its dollars as
-        a comparable unit across models rather than money owed. Pi spend is metered by OpenRouter
-        and IS money owed — priced here at the same rates OpenRouter publishes for the Anthropic
-        models, and at zero for the OpenAI and Google ones, which appear in the unpriced list
-        below.
+        **A caveat worth passing on:** list price is not a bill, and it is not one in three
+        different ways. Claude Code spend is subscription-billed, so treat its dollars as a
+        comparable unit across models rather than money owed. Pi spend is metered by OpenRouter and
+        IS money owed — priced here at the same rates OpenRouter publishes for the Anthropic models,
+        and at zero for the OpenAI and Google ones. Codex spend is billed against a ChatGPT plan and
+        is priced at **zero throughout**: its tokens are in the ledger but TokenPricing carries no
+        OpenAI rates, so every Codex model appears in the unpriced list below and contributes volume
+        without dollars. Read a fleet total as Claude Code plus Pi money, with Codex volume alongside
+        it.
       DESC
 
       MAX_DAYS = CostWindow::MAX_DAYS
@@ -170,10 +173,11 @@ module Mcp
         lines.concat(table("By model", "Model", analytics.by_model, :model, totals[:cost_usd]))
         lines.concat(table("Main thread vs subagents", "Thread", analytics.by_thread_kind, :kind, totals[:cost_usd]))
         # By billing relationship, not just by harness: `claude_code` is
-        # subscription spend priced at list, `pi` is a metered OpenRouter invoice.
-        # Every other figure in this report adds them together.
+        # subscription spend priced at list, `pi` is a metered OpenRouter invoice,
+        # `codex` is subscription spend whose models have no rate yet. Every other
+        # figure in this report adds them together.
         lines.concat(table("By runtime — `claude_code` is subscription-billed; `pi` is metered by OpenRouter, so its " \
-                           "share is money actually owed",
+                           "share is money actually owed; `codex` carries tokens at $0 because its models are unpriced",
                            "Runtime", analytics.by_runtime, :runtime, totals[:cost_usd]))
 
         adhoc = analytics.by_adhoc_source
@@ -229,8 +233,8 @@ module Mcp
           "figure above. A combination with no sample is priced at the fleet average of " \
           "#{default ? "#{money(default)}/min" : "— (nothing sampled yet)"}. Current rates, not rates " \
           "for the window this report covers. **Claude Code only** — the window these price against is " \
-          "an Anthropic one, so a runtime billed elsewhere (Pi, via OpenRouter) is sampled out here " \
-          "while appearing in every table above._"
+          "an Anthropic one, so a runtime billed elsewhere (Pi via OpenRouter, Codex against a ChatGPT " \
+          "plan) is sampled out here while appearing in every table above._"
         ]
       end
 
