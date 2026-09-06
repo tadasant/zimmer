@@ -117,7 +117,9 @@ class SpotHoldExplanation
       "limit, so it yielded the slot rather than the fleet running one wider than the limit. " \
       "Priority work is meant to crowd spot work out, and this is the half of that which applies to " \
       "work already underway. Nothing was cancelled: #{pronoun.downcase} from the same queue as the " \
-      "paused sessions above, highest precedence first, as soon as the fleet has a free slot."
+      "paused sessions above, highest precedence first, once the fleet has a free slot AND the gate " \
+      "allows spot work — the same resume decision, because it is the same queue, so a spent budget " \
+      "keeps them asleep even after a slot frees."
   end
 
   # The other dormant population.
