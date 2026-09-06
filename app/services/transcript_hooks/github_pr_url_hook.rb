@@ -27,6 +27,12 @@
 #   3. RE-CREATED — the URL appears in a *failed* create next to an "already
 #      exists" message, i.e. the PR for the branch we just tried to push.
 #      Weaker (the failure text is not ours), so it is held to the same-repo guard.
+#
+#      Whether a create *failed* is itself read per command, not per tool call. A
+#      result carries one error flag for a whole shell script, and in a shell that
+#      flag is the status of whatever ran last — so a `gh pr create ... | tail -1;
+#      gh pr view ...` reports the `gh pr view`, and a successful create in front
+#      of it is not a failed one. See #create_exit_status_observed? (#620).
 #   4. CLAIMED — the agent's own prose says it opened the PR ("Opened PR: <url>").
 #      This is what catches creation paths none of the above see — a wrapper
 #      script, an MCP tool whose name is not the one above, the web UI. Weakest of
@@ -45,6 +51,10 @@
 #     the repo's open PRs, which is the #214 shape again. Nor does a POST
 #     somewhere else on the line make one: creates are read per command segment,
 #     never across the whole script.
+#   - More than one URL out of a create whose success was only *inferred* — a
+#     line that exited non-zero somewhere after the create. One create opens one
+#     pull request, and on a line that ended in a failure there is no telling what
+#     else printed into the same blob.
 #   - The result of an MCP tool that writes *about* a pull request rather than
 #     opening one. `create_pull_request_review` and
 #     `create_pull_request_review_comment` sit next to `create_pull_request` in
@@ -190,6 +200,17 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # `repo` or `repository`. Anything else names no repo that can be read.
   MCP_INPUT_OWNER_KEY = "owner"
   MCP_INPUT_REPO_KEYS = %w[repo repository].freeze
+
+  # The separators after which a shell throws the preceding command's exit status
+  # away: a pipe replaces it with the downstream command's, and `;` or a newline
+  # replaces it with the next command's. `&&` and `||` are deliberately absent —
+  # both propagate a failure, so a create in front of one really can be what set
+  # the flag. See #create_exit_status_observed?.
+  #
+  # A bare `&` is not on the list because TranscriptHooks::ShellSegments does not
+  # treat one as a separator at all; a backgrounded create stays part of its
+  # segment and keeps the veto.
+  EXIT_STATUS_DISCARDING_SEPARATORS = [ ";", "|", "\n" ].freeze
 
   # `gh pr create` exits non-zero when the branch already has a PR, printing
   # "a pull request for branch \"x\" into branch \"main\" already exists: <url>".
@@ -404,6 +425,8 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   #
   # For Claude the failure flag is the result's own is_error; for Codex it is
   # derived from the shell's exit code (see TranscriptHooks::CodexToolCallParser).
+  # Either way it is ONE flag for the whole script, which is why
+  # #create_exit_status_observed? decides whether it is about the create at all.
   def urls_from_pr_create_results
     return [] if pr_create_commands.empty?
 
@@ -411,15 +434,78 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
       command = pr_create_commands[result[:id]]
       next [] if command.nil? || result[:text].blank?
 
-      target_repos = unbounded_create?(command) ? nil : create_repos(command)
-
-      pr_urls_with_context(result[:text]).filter_map do |url, preceding|
-        if result[:is_error]
-          url if preceding.match?(PR_ALREADY_EXISTS_PATTERN) && same_repo?(url)
-        elsif target_repos.nil? || same_repo?(url) || target_repos.include?(url_owner_repo(url))
-          url
-        end
+      if result[:is_error] && create_exit_status_observed?(command)
+        urls_from_failed_create(result)
+      else
+        urls_from_successful_create(result, command, capped: result[:is_error])
       end
+    end
+  end
+
+  # The URLs a create's output vouches for when the create ran.
+  #
+  # +capped+ says this is a create whose success is *inferred* — the script exited
+  # non-zero, but not on the create's account (see #create_exit_status_observed?).
+  # One create opens one pull request, so an inferred success vouches for exactly
+  # one URL: the first the bound below allows, which is the one `gh pr create`
+  # prints. Anything after it was printed by whatever else ran on that line, and
+  # on a line that ended in a failure there is no telling what that was — a
+  # `gh pr list` fallback would otherwise hand over every PR it printed, which is
+  # #214 through a new door. The same cap the MCP tier takes, for the same reason.
+  #
+  # A create the flag never contradicted keeps vouching for everything its own
+  # bound allows, exactly as before.
+  def urls_from_successful_create(result, command, capped: false)
+    target_repos = unbounded_create?(command) ? nil : create_repos(command)
+
+    urls = pr_urls_with_context(result[:text]).map(&:first).select do |url|
+      target_repos.nil? || same_repo?(url) || target_repos.include?(url_owner_repo(url))
+    end
+
+    capped ? urls.first(1) : urls
+  end
+
+  # Evidence 3: the one URL a create that really did fail can still vouch for —
+  # the PR that already exists for the branch we just pushed, which is ours.
+  def urls_from_failed_create(result)
+    pr_urls_with_context(result[:text]).filter_map do |url, preceding|
+      url if preceding.match?(PR_ALREADY_EXISTS_PATTERN) && same_repo?(url)
+    end
+  end
+
+  # Whether the script's exit status is a statement about its create at all.
+  #
+  # A tool result carries one error flag for the whole command, and a command is a
+  # whole shell script. In a shell that flag is the status of whatever ran LAST:
+  # `gh pr create ... | tail -1` reports tail's status, and `gh pr create ...; B`
+  # reports B's. In both, the create's own status — success included — is thrown
+  # away before Zimmer can see it. Only `&&` and `||` propagate a failure, and only
+  # a create with nothing after it sets the status itself.
+  #
+  # Reading the flag across that boundary is the same mistake as reading a create
+  # across one, which this hook has refused to do since #562: a POST in one segment
+  # cannot vouch for a list in another. #620's second sighting is the failure
+  # direction of it — an ordinary
+  #
+  #   gh pr create --repo owner/repo ... 2>&1 | tail -1; gh pr view --repo owner/repo ...
+  #
+  # where the create succeeded and printed its URL, the `gh pr view` after it was
+  # missing its argument and exited 1, and the whole result was read as a failed
+  # create. The PR was recorded nowhere, so no merge notification could reach the
+  # session that opened it.
+  #
+  # Answered TRUE when it cannot be decided — a separator the split could not
+  # recover reads as `nil`, which is "nothing follows". The question is only ever
+  # asked to DISCOUNT a failure, so an unreadable command keeps the flag it was
+  # given and records less rather than more.
+  #
+  # `any?`, so a command running two creates keeps the veto if either of them
+  # could be what failed.
+  def create_exit_status_observed?(command)
+    segments_with_separators_of(command).any? do |segment, separator|
+      next false if EXIT_STATUS_DISCARDING_SEPARATORS.include?(separator)
+
+      gh_pr_create?(segment) || rest_pr_create?(segment)
     end
   end
 
@@ -709,8 +795,15 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # every broadcast, and each of `creates_pr?`, `unbounded_create?` and
   # `create_repos` asks for the same split.
   def segments_of(command)
-    @segments_of ||= {}
-    @segments_of[command] ||= shell_segments(command)
+    segments_with_separators_of(command).map(&:first)
+  end
+
+  # The same split, with each command's trailing separator — which is what
+  # #create_exit_status_observed? reads. Memoized here rather than in
+  # #segments_of, so the two views share one split of each command.
+  def segments_with_separators_of(command)
+    @segments_with_separators_of ||= {}
+    @segments_with_separators_of[command] ||= shell_segments_with_separators(command)
   end
 
   def normalize_repo(repo)
