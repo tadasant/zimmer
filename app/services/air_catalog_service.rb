@@ -53,11 +53,13 @@ class AirCatalogService
       Rails.application.config.air_json_path
     end
 
-    # Path to the air.json the AIR CLI should actually use. When CatalogPins
-    # exist, the base config is rewritten to freeze each pinned catalog to its
-    # ref (see AirCatalogRefRewriter) and written to a process-unique
-    # tmp/air.effective.<pid>.json (see effective_config_path); otherwise the
-    # base path is returned as-is.
+    # Path to the air.json the AIR CLI should actually use. When a CatalogPin
+    # actually pins one of the catalogs the base config declares, that config is
+    # rewritten to freeze the pinned catalog to its ref (see
+    # AirCatalogRefRewriter) and written to a process-unique
+    # tmp/air.effective.<pid>.json (see effective_config_path); otherwise — no
+    # pins at all, or pins that match nothing in this config — the base path is
+    # returned as-is.
     #
     # Memoized on CatalogPin.fingerprint so every process (web + worker)
     # regenerates its local copy the moment the pin set changes in the shared
@@ -318,7 +320,9 @@ class AirCatalogService
       raise CatalogError, "air.json not found at #{air_json_path}" unless File.exist?(air_json_path)
 
       parsed = parse_resolve_output(run_air_resolve!)
-      store_loaded_entries(normalize_parsed(parsed))
+      entries = normalize_parsed(parsed)
+      reject_empty_resolve!(entries)
+      store_loaded_entries(entries)
     rescue CatalogError => e
       # Recorded before serve_last_known_good!, which re-raises when there is no
       # fallback — the one path where degraded? never gets set and the pickers go
@@ -384,6 +388,34 @@ class AirCatalogService
         value.length >= TranscriptRedactor::MIN_KNOWN_SECRET_LENGTH &&
         value.match?(/\A\S+\z/) &&
         !value.match?(/\A(?:true|false|null|none|\d+)\z/i)
+    end
+
+    # A resolve that found nothing of any type is a failed resolve, whatever the
+    # exit code said.
+    #
+    # The dropped-reference check in run_air_resolve! only catches a resolve that
+    # found index files and could not resolve every reference *between* their
+    # entries. A resolve pointed at a config whose index paths do not exist finds
+    # no index files at all: nothing is dropped, nothing is printed, AIR exits 0,
+    # and the tree is legitimately, completely empty. That is exactly what a
+    # relocated config with unfollowed relative paths produced (#1078), and the
+    # silence was at the one layer built to catch it — `degraded?` stayed false
+    # and the empty tree was persisted over the last-known-good snapshot.
+    #
+    # Raising routes load! into serve_last_known_good!, so an empty resolve
+    # serves the previous catalog and flags degraded rather than overwriting it.
+    # With no fallback to serve, the CatalogError surfaces on the settings /
+    # session-form failure banner (every *Config reader rescues it to []) —
+    # still empty pickers, but with a stated reason instead of none. A catalog
+    # this empty cannot create a session either way; the only question is
+    # whether anyone is told. Adjacent to #66, which is about the *other*
+    # detector: the brittleness of matching AIR's stderr wording.
+    def reject_empty_resolve!(entries)
+      return if entries.any? { |_type, of_type| of_type.present? }
+
+      raise CatalogError, "air resolve exited 0 but returned no artifacts of any type " \
+        "(#{ARTIFACT_TYPES.join(", ")}) from #{effective_air_json_path}, indicating a catalog whose " \
+        "declared index files were not found"
     end
 
     # Cache a freshly resolved tree, persist it as the new last-known-good
@@ -622,14 +654,48 @@ class AirCatalogService
     end
 
     # Rewrite the base air.json with the pin set and persist it to tmp/. Returns
-    # the path to the generated file.
+    # the path to the generated file — or the base path itself when the pins
+    # changed nothing.
+    #
+    # Two guards, both of them the difference between a pin narrowing the
+    # catalog and a pin emptying it (#1078):
+    #
+    #   1. **A pin that matches nothing leaves resolution exactly as it was.**
+    #      `CatalogPin` rows are not validated against the catalogs the config
+    #      declares — `/supervisor/catalog_pins` is full Administrate CRUD over
+    #      `[:catalog, :ref]` — so a row naming a catalog this air.json never
+    #      mentions is writable, and used to switch every process onto a copy
+    #      for no reason at all. Compared on the parsed documents, because
+    #      `rewrite` re-serializes with JSON.pretty_generate whether or not it
+    #      matched anything, so the source text is never the baseline. Same
+    #      shape as staging.rb's AIR_CATALOG_REF fallback.
+    #   2. **The copy carries absolute source paths.** AIR resolves a config's
+    #      local index paths relative to the config file's own directory, and
+    #      both air.json and air.production.json declare relative ones
+    #      (`"skills": ["./skills/skills.json"]` and five siblings). Written
+    #      into tmp/ unchanged, those resolve to tmp/skills/skills.json — which
+    #      does not exist, so `air resolve` exits 0 with an empty catalog and
+    #      every subsequent session creation fails agent_root validation.
+    #
+    # Absolute paths rather than writing the copy beside the base config: tmp/
+    # is the one directory this process is guaranteed to be able to write (an
+    # operator can point AIR_CONFIG at a read-only mount), and the process-unique
+    # filename below only makes sense somewhere ephemeral.
     def generate_effective_config(base_path, pins)
       raise CatalogError, "air.json not found at #{base_path}" unless File.exist?(base_path)
 
-      rewritten = AirCatalogRefRewriter.rewrite(File.read(base_path), pins: pins)
+      source = File.read(base_path)
+      rewritten = AirCatalogRefRewriter.rewrite(source, pins: pins)
+      if JSON.parse(rewritten) == JSON.parse(source)
+        Rails.logger.info "[AirCatalogService] catalog pins (#{pins.keys.join(", ")}) matched no catalog " \
+          "declared in #{base_path}; resolving the catalog unrewritten."
+        return base_path
+      end
+
+      relocatable = AirCatalogRefRewriter.absolutize_sources(rewritten, base_dir: File.dirname(base_path))
       out_path = effective_config_path
       FileUtils.mkdir_p(out_path.dirname)
-      File.write(out_path, rewritten)
+      File.write(out_path, relocatable)
       out_path.to_s
     end
 

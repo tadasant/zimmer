@@ -246,6 +246,124 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
     assert_equal JSON.parse(source), JSON.parse(rewritten)
   end
 
+  # --- absolutize_sources -------------------------------------------------
+  #
+  # AIR resolves a config's local index paths relative to the config file's own
+  # directory, so a copy written anywhere else needs absolute ones (#1078).
+
+  test "absolutize_sources anchors every local index path at the base directory" do
+    source = <<~JSON
+      {
+        "name": "zimmer-catalog",
+        "skills": ["./skills/skills.json"],
+        "mcp": ["./mcp.json"],
+        "roots": ["./roots.json"],
+        "references": ["./references/references.json"],
+        "hooks": ["./hooks/hooks.json"],
+        "plugins": ["./plugins/plugins.json"]
+      }
+    JSON
+
+    parsed = JSON.parse(AirCatalogRefRewriter.absolutize_sources(source, base_dir: "/catalog/root"))
+
+    assert_equal [ "/catalog/root/skills/skills.json" ], parsed["skills"]
+    assert_equal [ "/catalog/root/mcp.json" ], parsed["mcp"]
+    assert_equal [ "/catalog/root/roots.json" ], parsed["roots"]
+    assert_equal [ "/catalog/root/references/references.json" ], parsed["references"]
+    assert_equal [ "/catalog/root/hooks/hooks.json" ], parsed["hooks"]
+    assert_equal [ "/catalog/root/plugins/plugins.json" ], parsed["plugins"]
+  end
+
+  test "absolutize_sources anchors an index path written without a ./ prefix" do
+    source = JSON.generate("name" => "c", "skills" => [ "skills/skills.json" ])
+
+    parsed = JSON.parse(AirCatalogRefRewriter.absolutize_sources(source, base_dir: "/catalog/root"))
+
+    assert_equal [ "/catalog/root/skills/skills.json" ], parsed["skills"]
+  end
+
+  test "absolutize_sources resolves .. segments against the base directory" do
+    source = JSON.generate("name" => "c", "skills" => [ "../shared/skills.json" ])
+
+    parsed = JSON.parse(AirCatalogRefRewriter.absolutize_sources(source, base_dir: "/catalog/root"))
+
+    assert_equal [ "/catalog/shared/skills.json" ], parsed["skills"]
+  end
+
+  test "absolutize_sources leaves already-absolute index paths alone" do
+    source = JSON.generate("name" => "c", "skills" => [ "/elsewhere/skills.json" ])
+
+    parsed = JSON.parse(AirCatalogRefRewriter.absolutize_sources(source, base_dir: "/catalog/root"))
+
+    assert_equal [ "/elsewhere/skills.json" ], parsed["skills"]
+  end
+
+  # A URI, an npm package specifier and a ~-path all mean something other than
+  # "a path relative to this config", so anchoring them would change the
+  # document rather than relocate it.
+  test "absolutize_sources leaves catalog URIs, package specifiers and ~ paths alone" do
+    source = <<~JSON
+      {
+        "name": "zimmer-catalog",
+        "extensions": ["@pulsemcp/air-adapter-claude", "./ext/local-adapter.mjs"],
+        "catalogs": ["github://tadasant/zimmer-catalog/agents", "https://example.com/c.json", "./sibling-catalog"],
+        "skills": ["~/catalogs/skills.json"]
+      }
+    JSON
+
+    parsed = JSON.parse(AirCatalogRefRewriter.absolutize_sources(source, base_dir: "/catalog/root"))
+
+    assert_equal [ "@pulsemcp/air-adapter-claude", "/catalog/root/ext/local-adapter.mjs" ], parsed["extensions"]
+    assert_equal(
+      [ "github://tadasant/zimmer-catalog/agents", "https://example.com/c.json", "/catalog/root/sibling-catalog" ],
+      parsed["catalogs"]
+    )
+    assert_equal [ "~/catalogs/skills.json" ], parsed["skills"]
+  end
+
+  test "absolutize_sources leaves everything that is not a source path verbatim" do
+    parsed_source = JSON.parse(PRODUCTION_AIR_JSON)
+
+    parsed = JSON.parse(AirCatalogRefRewriter.absolutize_sources(PRODUCTION_AIR_JSON, base_dir: "/catalog/root"))
+
+    assert_equal parsed_source.keys, parsed.keys
+    assert_equal parsed_source["exclude"], parsed["exclude"]
+    assert_equal parsed_source["catalogs"], parsed["catalogs"],
+      "github:// catalog URIs are not filesystem paths and must pass through untouched"
+    assert_equal parsed_source["extensions"], parsed["extensions"]
+  end
+
+  # The end of the fix for #1078, asserted against the file actually shipped:
+  # every index path the real catalog declares must come back as a path that
+  # exists on disk, because that is the property a copy written to tmp/ needs
+  # and the one the relative form silently loses.
+  test "absolutizing the real air.json yields index paths that exist on disk" do
+    air_json_path = Rails.root.join("air.json")
+    base_dir = File.dirname(air_json_path)
+
+    parsed = JSON.parse(
+      AirCatalogRefRewriter.absolutize_sources(File.read(air_json_path), base_dir: base_dir)
+    )
+
+    declared = AirCatalogRefRewriter::LOCAL_SOURCE_KEYS.flat_map { |key| Array(parsed[key]) }
+    assert_operator declared.size, :>=, 6, "air.json declares one index per artifact type"
+
+    declared.each do |path|
+      assert File.absolute_path?(path), "#{path} must be absolute so the copy resolves from anywhere"
+      assert File.exist?(path), "#{path} must exist — an index AIR cannot find resolves to an empty catalog"
+    end
+  end
+
+  # The rewriter keeps its own copy of the type list rather than reading
+  # AirCatalogService::ARTIFACT_TYPES: staging.rb `require_relative`s this file
+  # at boot, before autoloading, so it cannot reach an app service. This test is
+  # what keeps the two copies from drifting — a seventh artifact type added to
+  # one and not the other would silently stop being absolutized.
+  test "the local source keys are exactly the artifact types AirCatalogService resolves" do
+    assert_equal AirCatalogService::ARTIFACT_TYPES.map(&:to_s).sort,
+      AirCatalogRefRewriter::LOCAL_SOURCE_KEYS.sort
+  end
+
   private
 
   # Every string the rewriter could reach in a parsed JSON document. It mirrors
