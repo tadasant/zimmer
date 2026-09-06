@@ -400,6 +400,21 @@ is scanning for, and Zimmer's titles are the sort an ellipsis would eat. The dep
 level below `sm:` and the full 20px per level from `sm:` up; every level stays distinct at both widths,
 which at `MAX_DEPTH` costs a phone 64px of a roughly 343px row.
 
+**The panel is deferred, and the page paints without it.** It is a
+`<turbo-frame loading="lazy">` pointing at `GET /sessions/:id/provenance_panel`, with a skeleton the
+size of the loaded tree standing in until the answer arrives. The reason is the walk: `SessionHierarchy`
+is breadth-first with one query per level in each direction, and on a lineage of any size that was the
+majority of the queries a detail response issued before it could show the reader anything — 48 of the
+67 on a 19-session tree. The frame is on screen from the first paint, so Turbo fetches it immediately;
+what changes is that the identity of the session no longer waits behind the tree.
+
+Two consequences worth knowing. The skeleton deliberately carries **no** `id` and no
+`data-live-region`: the reconnect backfill reconciles by id against a freshly fetched copy of the page
+(whose frame is unloaded), so a skeleton answering to `session_<id>_provenance` would let a recovery
+replace a reader's real hierarchy with grey bars. And because that fetched page cannot carry the panel
+either, the recovery fetches the panel's own URL — see
+[The reopen backfill](/sessions/lifecycle/#the-reopen-backfill).
+
 An open detail screen refreshes this panel when the hierarchy changes or when a human message is
 recorded anywhere in that hierarchy, so it does not stay pinned to the tree it rendered on first load.
 

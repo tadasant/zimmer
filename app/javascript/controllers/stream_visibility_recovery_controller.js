@@ -164,10 +164,73 @@ export default class extends Controller {
       if (response.redirected || !response.ok) return this.reload()
 
       const fresh = new DOMParser().parseFromString(await response.text(), "text/html")
-      const changed = backfillLiveRegions(fresh)
+      let changed = backfillLiveRegions(fresh)
+      changed += await this.backfillDeferredPanels()
       this.dispatch("recovered", { detail: { socketWasOpen: false, changed } })
     } catch (_e) {
       this.reload()
+    }
+  }
+
+  // The live regions inside a deferred panel are not in the page just fetched.
+  // That copy has its <turbo-frame loading="lazy"> unloaded — it holds a
+  // skeleton, which carries no ids on purpose — so backfillLiveRegions finds no
+  // source for them and leaves them alone. Their source is the panel's own URL.
+  //
+  // Fetched and reconciled the same way rather than reloaded, because reloading
+  // the frame would throw away what the reader accumulated inside it: the older
+  // pages infinite scroll pulled in, and their place among them. Reconciling
+  // appends what is missing and touches nothing else, exactly as it does for the
+  // regions on the page.
+  //
+  // Only frames the reader actually opened are fetched — an unloaded frame has
+  // nothing on screen to bring up to date. A panel that will not come back is
+  // skipped rather than escalated to a full reload: by this point the socket is
+  // open again, so the next broadcast reaches it anyway.
+  async backfillDeferredPanels() {
+    const loaded = Array.from(document.querySelectorAll("turbo-frame[data-deferred-panel][src]")).filter(
+      (frame) => frame.complete
+    )
+
+    let changed = 0
+
+    for (const frame of loaded) {
+      try {
+        const response = await fetch(frame.src, {
+          headers: { Accept: "text/html" },
+          credentials: "same-origin",
+          cache: "no-store",
+          signal: AbortSignal.timeout(this.fetchTimeoutValue)
+        })
+        if (response.redirected || !response.ok) continue
+
+        const panel = new DOMParser().parseFromString(await response.text(), "text/html")
+        this.graftAppendTargets(panel)
+        changed += backfillLiveRegions(panel)
+      } catch (_e) {
+        // Skip this panel; the reopened socket carries its next update.
+      }
+    }
+
+    return changed
+  }
+
+  // Give a panel's batch container the id of the live region on the page it is
+  // the server's answer for.
+  //
+  // The transcript's rows arrive in the frame, but broadcasts append them to
+  // #session_<id>_timeline on the page — one id, two places, so the panel's copy
+  // cannot carry it in the markup. Renaming it here is what lets the reconcile
+  // append a recovered row into the SAME container as one that arrived over the
+  // socket, and therefore in the right order relative to it.
+  graftAppendTargets(panelDocument) {
+    for (const container of panelDocument.querySelectorAll("[data-live-append-into]")) {
+      const id = container.dataset.liveAppendInto
+      // Never overwrite an id the panel already renders under that name.
+      if (!id || panelDocument.getElementById(id)) continue
+
+      container.id = id
+      container.setAttribute("data-live-region", "append")
     }
   }
 

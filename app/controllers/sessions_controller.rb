@@ -697,6 +697,13 @@ class SessionsController < ApplicationController
 
   # GET /sessions/:id
   # The full session page. Always frameless: this URL has exactly one body.
+  #
+  # What this action does NOT load is as deliberate as what it does. The two
+  # heaviest panels of the detail body — the transcript and the provenance tree
+  # — are <turbo-frame loading="lazy"> stubs pointing at #transcript_panel and
+  # #provenance_panel, so the first paint carries the identity of the session
+  # (title, status, metadata, composer) and nothing that has to be walked or
+  # parsed to produce. See load_session_detail.
   def show
     load_session_detail
   end
@@ -724,6 +731,34 @@ class SessionsController < ApplicationController
     @in_drawer = true
     load_session_detail
     render :show, layout: false
+  end
+
+  # GET /sessions/:id/transcript_panel
+  # The body of the detail page's Transcript disclosure, on its own path so the
+  # panel can be a lazy frame.
+  #
+  # This is the expensive half of the old #show: the tail of the transcript and
+  # the logs merged and filtered, plus a total count that has to normalize every
+  # transcript entry to be exact. The disclosure is CLOSED on first paint, and a
+  # lazy frame inside a closed <details> has no layout, so none of that work
+  # happens until a reader actually opens the panel.
+  #
+  # One path serves both the full page and the drawer. Unlike #show/#drawer there
+  # is only ever one body here — the same frame id, the same markup — so the
+  # prefetch-cache hazard that forced those two apart does not arise.
+  def transcript_panel
+    @session = find_session
+    load_timeline_tail
+    render layout: false
+  end
+
+  # GET /sessions/:id/provenance_panel
+  # The spawn hierarchy and human-message panels, on their own path for the same
+  # reason. SessionHierarchy walks up to MAX_NODES sessions breadth-first, which
+  # is the bulk of the queries a detail page used to issue before it painted.
+  def provenance_panel
+    @session = find_session
+    render layout: false
   end
 
   # Fetch older timeline items for infinite scroll
@@ -2945,8 +2980,11 @@ class SessionsController < ApplicationController
     request.headers["Turbo-Frame"] == "session_detail"
   end
 
-  # Loads everything #show and #drawer render: the session, its timeline tail,
-  # and the form/selector collections the detail view needs.
+  # Loads everything #show and #drawer render: the session and the
+  # form/selector collections the detail view needs.
+  #
+  # Not the timeline. That is #transcript_panel's job — see load_timeline_tail,
+  # and the lazy frame in _detail.html.erb that fetches it.
   def load_session_detail
     @session = find_session
 
@@ -2968,45 +3006,21 @@ class SessionsController < ApplicationController
       end
     end
 
-    # Get filter level from params (for page load with filter param)
-    # Default to "minimal" which matches the client-side default
-    @filter_level = params[:filter].presence || "minimal"
-    @filter_level = "minimal" unless VALID_FILTER_LEVELS.include?(@filter_level)
+    # The filter level the transcript frame will be asked for. The frame carries
+    # it in its own src, and the log-level select is rendered from it, so it is
+    # still resolved here even though nothing on this page reads the transcript.
+    @filter_level = resolved_filter_level
 
     # The Transcript disclosure is collapsed on every ordinary load (see _detail).
     # The one address that asks for it open is the log-level filter's own re-fetch
     # (log_level_filter_controller.js#refetchAtLevel). Exact-match, not `present?`:
     # the param is one instruction with one spelling, so anything else leaves the
     # disclosure where the default puts it.
-    @transcript_open = params[:transcript] == "open"
-
-    # Performance optimization: instead of loading ALL logs and parsing the ENTIRE
-    # transcript (which can be 280K+ logs and 9MB+ for long-running sessions),
-    # only load the tail of each data source. We need enough items from each source
-    # so that after merging, sorting, and filtering, we have at least
-    # INITIAL_TIMELINE_ITEMS_LIMIT items to display.
     #
-    # For the total count, we use cheap counting methods (SQL COUNT, line counting)
-    # instead of loading all data into memory.
-    @total_timeline_items_count = compute_filtered_count(@session, @filter_level)
-
-    tail_items = build_timeline_items_tail(@session, @filter_level, TAIL_FETCH_BUFFER)
-    filtered_items = filter_timeline_items(tail_items, @filter_level)
-
-    # For initial page load, only show the last N filtered items
-    if @total_timeline_items_count > INITIAL_TIMELINE_ITEMS_LIMIT
-      @has_more_items = true
-      @oldest_displayed_index = @total_timeline_items_count - [ filtered_items.count, INITIAL_TIMELINE_ITEMS_LIMIT ].min
-      @timeline_items = filtered_items.last(INITIAL_TIMELINE_ITEMS_LIMIT)
-    else
-      @has_more_items = false
-      @oldest_displayed_index = 0
-      @timeline_items = filtered_items
-    end
-
-    # Timestamp cursor for infinite scroll pagination.
-    # The oldest displayed item's timestamp is used as the cursor for loading earlier items.
-    @oldest_displayed_timestamp = @timeline_items.first&.dig(:sort_time)&.iso8601(6)
+    # It is also what makes the deferred transcript frame load: a lazy frame in a
+    # closed <details> has no layout and is never fetched, so rendering the
+    # disclosure open is exactly the instruction to go and get the rows.
+    @transcript_open = params[:transcript] == "open"
 
     # Load MCP servers for the editable MCP selector, each carrying whether
     # Zimmer can actually start it — see McpServerOptions.
@@ -3038,6 +3052,50 @@ class SessionsController < ApplicationController
 
     # Load Claude skills for the follow-up form slash command typeahead
     @session_skills = ClaudeSkillsCacheService.get_for_session(@session)
+  end
+
+  # The filter level this request should render at: the explicit param, or the
+  # "minimal" default the client-side filter also starts from.
+  def resolved_filter_level
+    level = params[:filter].presence || "minimal"
+    VALID_FILTER_LEVELS.include?(level) ? level : "minimal"
+  end
+
+  # Everything the transcript panel renders: the tail of the timeline, the total
+  # it is a tail OF, and the cursors infinite scroll pages backwards with.
+  #
+  # Instead of loading ALL logs and parsing the ENTIRE transcript (280K+ logs and
+  # 9MB+ on a long-running session) this loads only the tail of each source —
+  # enough that after merging, sorting and filtering there are at least
+  # INITIAL_TIMELINE_ITEMS_LIMIT items to show.
+  #
+  # The total is the one part that cannot be a tail: an exact count of what the
+  # active filter would show means normalizing every transcript entry. That is
+  # why this whole method lives behind the lazy frame rather than in
+  # load_session_detail — it is linear in transcript size, and it used to run on
+  # every page load and every drawer open for a panel that starts closed.
+  def load_timeline_tail
+    @filter_level = resolved_filter_level
+
+    @total_timeline_items_count = compute_filtered_count(@session, @filter_level)
+
+    tail_items = build_timeline_items_tail(@session, @filter_level, TAIL_FETCH_BUFFER)
+    filtered_items = filter_timeline_items(tail_items, @filter_level)
+
+    # For the initial render, only show the last N filtered items
+    if @total_timeline_items_count > INITIAL_TIMELINE_ITEMS_LIMIT
+      @has_more_items = true
+      @oldest_displayed_index = @total_timeline_items_count - [ filtered_items.count, INITIAL_TIMELINE_ITEMS_LIMIT ].min
+      @timeline_items = filtered_items.last(INITIAL_TIMELINE_ITEMS_LIMIT)
+    else
+      @has_more_items = false
+      @oldest_displayed_index = 0
+      @timeline_items = filtered_items
+    end
+
+    # Timestamp cursor for infinite scroll pagination.
+    # The oldest displayed item's timestamp is used as the cursor for loading earlier items.
+    @oldest_displayed_timestamp = @timeline_items.first&.dig(:sort_time)&.iso8601(6)
   end
 
   # True when the current request is a deliberate human page/drawer load, as

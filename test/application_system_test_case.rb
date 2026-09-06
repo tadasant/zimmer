@@ -240,11 +240,17 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   # real click does so the transcript-panel controller still scrolls to the
   # newest message. A no-op on pages that have no such panel.
   #
-  # `wait` defaults to 0 because the panel is server-rendered and `visit` has
-  # already returned by the time this runs. Pass a real wait when the panel
+  # `wait` defaults to 0 because the disclosure is server-rendered and `visit`
+  # has already returned by the time this runs. Pass a real wait when the panel
   # arrives asynchronously — the dashboard drawer loads the detail into a lazy
   # turbo-frame, so it is not in the DOM the instant the drawer opens.
-  def open_transcript_panel(wait: 0)
+  #
+  # Opening is only half of it. The rows are themselves a
+  # <turbo-frame loading="lazy">, and giving it layout is exactly what makes
+  # Turbo fetch it — so this returns when that fetch has landed, which Turbo
+  # marks with a `complete` attribute on the frame. Without the wait every caller
+  # would race the request and see an empty panel.
+  def open_transcript_panel(wait: 0, load_timeout: 10)
     return unless page.has_css?("details[data-controller~='transcript-panel']", wait: wait)
 
     page.execute_script(<<~JS)
@@ -255,6 +261,8 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
         }
       })
     JS
+
+    assert_selector "turbo-frame[id$='_transcript'][complete]", wait: load_timeout
   end
 
   # Capybara's matchers retry until the page agrees; a plain `assert` on a record

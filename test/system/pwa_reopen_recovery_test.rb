@@ -166,10 +166,11 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
   test "reopening the PWA with a dead socket recovers in place instead of reloading" do
     session = create_session
     visit session_path(session, filter: "verbose")
+    open_transcript_panel
     wait_for_turbo_streams_connected
 
-    # Something the reader accumulated on screen, which a reload would destroy.
-    page.execute_script("document.querySelector('details[data-controller~=\"transcript-panel\"]').open = true")
+    # The open disclosure above is something the reader accumulated on screen,
+    # which a reload would destroy.
 
     tune_recovery(stale_after: 0)
     instrument_page
@@ -211,6 +212,7 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
   test "a page recovered in place is live again afterwards" do
     session = create_session
     visit session_path(session, filter: "verbose")
+    open_transcript_panel
     wait_for_turbo_streams_connected
 
     tune_recovery(stale_after: 0)
@@ -229,6 +231,7 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
   test "a socket found dead on becoming visible is recovered the same way" do
     session = create_session
     visit session_path(session, filter: "verbose")
+    open_transcript_panel
     wait_for_turbo_streams_connected
 
     tune_recovery(stale_after: 0)
@@ -248,6 +251,7 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
   test "reopening the PWA with a live socket does nothing at all" do
     session = create_session
     visit session_path(session, filter: "verbose")
+    open_transcript_panel
     wait_for_turbo_streams_connected
 
     tune_recovery(stale_after: 0)
@@ -269,6 +273,7 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
   test "a brief hide is ignored" do
     session = create_session
     visit session_path(session, filter: "verbose")
+    open_transcript_panel
     wait_for_turbo_streams_connected
 
     # The real 5s window. Kill the socket first so this pins the duration gate
@@ -294,6 +299,7 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
   test "a row that arrived live is not duplicated by the reopen" do
     session = create_session
     visit session_path(session, filter: "verbose")
+    open_transcript_panel
     wait_for_turbo_streams_connected
 
     # Arrives over the live socket, the way an agent's output does.
@@ -320,6 +326,7 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
   test "reopening twice does not accumulate copies" do
     session = create_session
     visit session_path(session, filter: "verbose")
+    open_transcript_panel
     wait_for_turbo_streams_connected
 
     tune_recovery(stale_after: 0)
@@ -362,6 +369,7 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
     )
 
     visit session_path(session, filter: "verbose")
+    open_transcript_panel
     wait_for_turbo_streams_connected
     assert_selector "#session_#{session.id}_elicitations", text: "APPROVE THE THING?", wait: 5
 
@@ -384,6 +392,7 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
   test "a backfill that cannot fetch falls back to a replacing visit" do
     session = create_session
     visit session_path(session, filter: "verbose")
+    open_transcript_panel
     wait_for_turbo_streams_connected
 
     tune_recovery(stale_after: 0)

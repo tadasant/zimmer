@@ -297,13 +297,11 @@
           <option value="show-logs" <%= 'selected' if @filter_level == 'show-logs' %>>Show Logs</option>
           <option value="verbose" <%= 'selected' if @filter_level == 'verbose' %>>Verbose</option>
         </select>
-        <p class="mt-2 text-xs text-gray-500">
-          <% if @has_more_items %>
-            Showing <%= @timeline_items.count %> of <%= @total_timeline_items_count %> items
-          <% else %>
-            <%= @total_timeline_items_count %> <%= @total_timeline_items_count == 1 ? 'item' : 'items' %>
-          <% end %>
-        </p>
+        <%# The item count that used to sit here now lives in the transcript
+            panel, which is where it is affordable: producing it means
+            normalizing every entry in the transcript, and this sheet is
+            rendered on every page load whether or not anyone opens it. %>
+        <p class="mt-2 text-xs text-gray-500">Applies to the transcript panel.</p>
       </div>
     </div>
   </div>

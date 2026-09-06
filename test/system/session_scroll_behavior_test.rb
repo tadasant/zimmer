@@ -8,6 +8,17 @@ require "application_system_test_case"
 # - Scroll back to bottom: Re-enables auto-scroll (tailing again)
 # - Infinite scroll (upward): When scrolling up to the top, load older messages
 class SessionScrollBehaviorTest < ApplicationSystemTestCase
+  # Visit a session's detail page and open its Transcript disclosure.
+  #
+  # The page renders no timeline items on its own: the transcript is a
+  # <turbo-frame loading="lazy"> inside a closed <details>, which Turbo fetches
+  # only once that disclosure has layout. Every scrolling behaviour asserted
+  # below is behaviour of the OPEN panel, so opening it is part of arriving.
+  def visit_session_with_transcript_open(session)
+    visit session_path(session)
+    open_transcript_panel
+  end
+
   # Create a session with many messages for infinite scroll testing
   def create_session_with_many_messages(count:)
     transcript_entries = count.times.map do |i|
@@ -93,7 +104,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     # Create a session with enough messages to have scrollable content
     session = create_session_with_many_messages(count: 50)
 
-    visit session_path(session)
+    visit_session_with_transcript_open(session)
 
     # Wait for timeline content to load
     assert_selector "[data-timeline-item]", minimum: 1
@@ -119,7 +130,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     # Create a session with more than the limit (100)
     session = create_session_with_many_messages(count: 150)
 
-    visit session_path(session)
+    visit_session_with_transcript_open(session)
 
     # Wait for timeline content to load
     assert_selector "[data-timeline-item]", minimum: 1
@@ -142,7 +153,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
   test "scrolling up disables auto-scroll tailing" do
     session = create_session_with_many_messages(count: 50)
 
-    visit session_path(session)
+    visit_session_with_transcript_open(session)
     assert_selector "[data-timeline-item]", minimum: 1
 
     # Wait for initial scroll to bottom
@@ -182,7 +193,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
   test "scrolling back to bottom re-enables tailing" do
     session = create_session_with_many_messages(count: 50)
 
-    visit session_path(session)
+    visit_session_with_transcript_open(session)
     assert_selector "[data-timeline-item]", minimum: 1
 
     # Wait for initial scroll
@@ -227,7 +238,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     # Create a session with more than the limit (100)
     session = create_session_with_many_messages(count: 150)
 
-    visit session_path(session)
+    visit_session_with_transcript_open(session)
 
     # Wait for timeline content to load
     assert_selector "[data-timeline-item]", minimum: 1
@@ -252,7 +263,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     # Create a session with more than the limit (100)
     session = create_session_with_many_messages(count: 150)
 
-    visit session_path(session)
+    visit_session_with_transcript_open(session)
     assert_selector "[data-timeline-item]", minimum: 1
 
     # Wait for initial scroll to bottom and IntersectionObserver to be set up
@@ -294,7 +305,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     session.logs.create!(content: "Test log message 1", level: "info")
     session.logs.create!(content: "Test log message 2", level: "debug")
 
-    visit session_path(session)
+    visit_session_with_transcript_open(session)
 
     # The items count should be visible
     assert_selector "[data-infinite-scroll-target='itemsCount']"
@@ -308,7 +319,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
   test "running session indicator is visible above follow-up form when session is running" do
     session = sessions(:running)
 
-    visit session_path(session)
+    visit_session_with_transcript_open(session)
 
     # The running indicator is now part of the follow-up form (compact bar above input)
     assert_selector "[id$='_running_indicator']", visible: :all
@@ -322,7 +333,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     # This tests that infinite scroll works continuously, not just once
     session = create_session_with_many_messages(count: 500)
 
-    visit session_path(session)
+    visit_session_with_transcript_open(session)
 
     # Wait for timeline content to load
     assert_selector "[data-timeline-item]", minimum: 1
@@ -370,7 +381,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     # Full test with 1000 messages to verify large session handling
     session = create_session_with_many_messages(count: 1000)
 
-    visit session_path(session)
+    visit_session_with_transcript_open(session)
 
     # Wait for timeline content to load
     assert_selector "[data-timeline-item]", minimum: 1
@@ -483,7 +494,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
   test "full-page session view auto-scroll controller uses the window scroller" do
     session = create_session_with_many_messages(count: 50)
 
-    visit session_path(session)
+    visit_session_with_transcript_open(session)
     assert_selector "[data-timeline-item]", minimum: 1
 
     sleep 0.5

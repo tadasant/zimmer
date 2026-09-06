@@ -193,4 +193,63 @@ class MobileOverlaySubmitTest < ApplicationSystemTestCase
     assert_selector "[data-bottom-drawer-target='content']", visible: :hidden
     assert_selector "[data-bottom-drawer-target='trigger']", visible: true
   end
+
+  # The detail screen's two deferred panels are on screen twice — once as a
+  # skeleton, once as the content that replaces it — and a placeholder sized for a
+  # laptop is exactly the kind of thing that reaches past a phone's right edge
+  # without anything failing. Both states are measured.
+  #
+  # Two probes, because each is blind to something the other sees: the document
+  # measure cannot see past a clipping ancestor, and getBoundingClientRect cannot
+  # be fooled by one but does see the off-canvas overlays the layout parks to the
+  # right of the viewport on purpose (the notes drawer, the chat bubble), which is
+  # why those are excluded by their own transform class rather than by position.
+  test "the deferred panels fit a phone, as skeletons and as content" do
+    session = Session.create!(
+      prompt: "Initial prompt",
+      status: :waiting,
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      transcript: 3.times.map { |i|
+        { type: "user", message: { role: "user", content: "Message #{i}" },
+          timestamp: (Time.current - (3 - i).minutes).iso8601 }.to_json
+      }.join("\n")
+    )
+
+    visit session_path(session)
+
+    # Skeleton state: opened before the frames land, so both placeholders are up.
+    page.execute_script(
+      "document.querySelector(\"details[data-controller~='transcript-panel']\").open = true"
+    )
+    assert_no_horizontal_overflow("deferred panel skeletons")
+
+    # Content state.
+    assert_selector "turbo-frame[id$='_provenance_panel'][complete]", visible: :all
+    assert_selector "turbo-frame[id$='_transcript'][complete]", visible: :all
+    assert_no_horizontal_overflow("deferred panel content")
+  end
+
+  private
+
+  def assert_no_horizontal_overflow(label)
+    assert page.evaluate_script(
+      "document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"
+    ), "#{label}: the document is wider than the viewport at #{MOBILE_WIDTH}px"
+
+    offenders = page.evaluate_script(<<~JS)
+      (function () {
+        const limit = document.documentElement.clientWidth;
+        return Array.from(document.querySelectorAll("*"))
+          .filter((el) => el.getBoundingClientRect().right > limit + 1)
+          .filter((el) => !el.closest('[class*="translate-x-full"]'))
+          .slice(0, 20)
+          .map((el) => `${el.tagName.toLowerCase()}.${el.classList.value} @ ${Math.round(el.getBoundingClientRect().right)}px`);
+      })()
+    JS
+
+    assert_empty offenders,
+      "#{label}: these elements reach past the right edge at #{MOBILE_WIDTH}px: #{offenders.join(', ')}"
+  end
 end

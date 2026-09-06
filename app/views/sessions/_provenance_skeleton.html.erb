@@ -1,0 +1,43 @@
+<%# Placeholder for the Session hierarchy and Human messages panels while their
+    frame is in flight.
+
+    Two summary rows and an indented outline, sized like _session_hierarchy's
+    own: a 3-row-deep tree under an expanded first disclosure, then a collapsed
+    second row. That is the shape the loaded panel has for the ordinary session,
+    so the swap does not push the Transcript disclosure below it up or down.
+
+    Carries no id, on purpose: #session_<id>_provenance is a
+    data-live-region="replace" region, and if this skeleton answered to that id a
+    reconnect backfill fetching the page (whose frame is unloaded) would replace
+    the reader's real hierarchy with grey bars. Without the id the backfill finds
+    no source element and leaves the live one alone. %>
+<div class="divide-y divide-gray-200" role="status" aria-busy="true" aria-label="Loading session hierarchy">
+  <span class="sr-only">Loading session hierarchy…</span>
+
+  <div class="animate-pulse">
+    <div class="px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
+      <span class="flex items-center gap-2 min-w-0">
+        <div class="h-4 w-4 rounded bg-gray-200 flex-shrink-0"></div>
+        <div class="h-3.5 w-32 rounded bg-gray-200"></div>
+        <div class="h-3 w-40 rounded bg-gray-100 hidden sm:block"></div>
+      </span>
+      <div class="h-3 w-44 rounded bg-gray-100 hidden sm:block"></div>
+    </div>
+    <div class="border-t border-gray-200 px-4 sm:px-6 py-3 space-y-2">
+      <% [ 0, 1, 2, 2 ].each do |depth| %>
+        <div class="flex items-center gap-2" style="padding-left: <%= depth * 20 %>px">
+          <div class="h-3 w-10 rounded bg-gray-200 flex-shrink-0"></div>
+          <div class="h-3 <%= [ "w-2/5", "w-1/3", "w-1/2", "w-2/5" ][depth] %> rounded bg-gray-100"></div>
+        </div>
+      <% end %>
+    </div>
+  </div>
+
+  <div class="animate-pulse px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
+    <span class="flex items-center gap-2 min-w-0">
+      <div class="h-4 w-4 rounded bg-gray-200 flex-shrink-0"></div>
+      <div class="h-3.5 w-28 rounded bg-gray-200"></div>
+    </span>
+    <div class="h-3 w-36 rounded bg-gray-100 hidden sm:block"></div>
+  </div>
+</div>

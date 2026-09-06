@@ -1,0 +1,28 @@
+<%# What the Transcript disclosure shows for the moment between being opened and
+    its frame arriving.
+
+    Shaped like the rows it stands in for — an avatar-sized square, a name line,
+    two or three lines of body — so the swap to real content does not move
+    anything already on screen. Rows alternate the way a conversation does, and
+    the widths vary, because a column of identical bars reads as a broken layout
+    rather than as loading.
+
+    Carries no id and no data-live-region: the reconnect backfill reconciles
+    regions by id (lib/live_region_backfill.js), and a skeleton that answered to
+    the timeline's id would let a fetched-but-unopened page replace real rows
+    with grey bars. %>
+<div class="divide-y divide-gray-200" role="status" aria-busy="true" aria-label="Loading transcript">
+  <span class="sr-only">Loading transcript…</span>
+  <% [ [ false, "w-3/4", "w-1/2" ], [ true, "w-5/6", "w-2/3" ], [ false, "w-2/3", "w-5/6" ], [ true, "w-1/2", "w-3/4" ] ].each do |mine, first_line, second_line| %>
+    <div class="px-4 sm:px-6 py-4 animate-pulse <%= "bg-gray-50" if mine %>">
+      <div class="flex items-start gap-3">
+        <div class="h-8 w-8 rounded-full bg-gray-200 flex-shrink-0"></div>
+        <div class="min-w-0 flex-1 space-y-2">
+          <div class="h-3 w-24 rounded bg-gray-200"></div>
+          <div class="h-3 <%= first_line %> rounded bg-gray-100"></div>
+          <div class="h-3 <%= second_line %> rounded bg-gray-100"></div>
+        </div>
+      </div>
+    </div>
+  <% end %>
+</div>
