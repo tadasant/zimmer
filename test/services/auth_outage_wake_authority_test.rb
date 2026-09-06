@@ -13,7 +13,6 @@ class AuthOutageWakeAuthorityTest < ActiveSupport::TestCase
       scheduling_class: scheduling_class,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid
     )
   end
@@ -73,7 +72,7 @@ class AuthOutageWakeAuthorityTest < ActiveSupport::TestCase
     derived = Session.create!(
       prompt: "Test prompt", agent_runtime: "claude_code", status: :waiting,
       genesis: SessionGenesis::DEFAULT_KEY, git_root: "https://github.com/test/repo.git",
-      branch: "main", execution_provider: "local_filesystem", session_id: SecureRandom.uuid
+      branch: "main", session_id: SecureRandom.uuid
     )
     overrides = { SessionGenesis::DEFAULT_KEY => SessionGenesis::SPOT }
 

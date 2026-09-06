@@ -34,7 +34,6 @@ class IngestPiSessionTokenUsageTest < ActiveSupport::TestCase
       status: :archived,
       git_root: "https://github.com/tadasant/zimmer.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: uuid,
       transcript: transcript,
       metadata: { "agent_root_key" => "zimmer" }
@@ -102,7 +101,6 @@ class IngestPiSessionTokenUsageTest < ActiveSupport::TestCase
   test "does not touch the other runtimes" do
     Session.create!(prompt: "claude", agent_runtime: "claude_code", status: :archived,
                     git_root: "https://github.com/tadasant/zimmer.git", branch: "main",
-                    execution_provider: "local_filesystem",
                     session_id: SecureRandom.uuid, transcript: "{}\n")
 
     run, _ = run_task
