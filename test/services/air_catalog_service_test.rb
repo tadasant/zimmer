@@ -657,6 +657,190 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     assert_nil AirCatalogService.resolve_failure
   end
 
+  # --- #319: the recorded message is rendered on an unauthenticated page ------
+  #
+  # The session form prints this string, and /sessions/new has no Rails-layer
+  # authentication (#312) — while the process that produced the string is handed
+  # AIR_GITHUB_TOKEN by #provider_credentials_env. `air resolve` is not known to
+  # echo its environment, so these cover a rendering surface rather than an
+  # observed leak.
+
+  # redact_secrets is public because the banner is not the only surface: the
+  # refresh flash (CatalogsController) and the pin flash (CatalogPinsController)
+  # render the same subprocess text.
+  test "redact_secrets passes a nil or blank string straight through" do
+    assert_nil AirCatalogService.redact_secrets(nil)
+    assert_equal "", AirCatalogService.redact_secrets("")
+  end
+
+  test "redact_secrets replaces a credential wherever a caller found it" do
+    token = "ghp_#{"p" * 36}"
+
+    scrubbed = SecretsLoader.stub(:all, { "AIR_GITHUB_TOKEN" => token }) do
+      AirCatalogService.redact_secrets("Pins not saved: 401 using #{token}")
+    end
+
+    assert_equal "Pins not saved: 401 using [REDACTED:AIR_GITHUB_TOKEN]", scrubbed
+  end
+
+  test "scrubs a credential Zimmer holds out of the recorded resolve failure" do
+    token = "ghp_#{"z" * 36}"
+
+    SecretsLoader.stub(:all, { "AIR_GITHUB_TOKEN" => token }) do
+      failing_resolve("fatal: could not read Username for 'https://#{token}@github.com'")
+    end
+
+    message = AirCatalogService.resolve_failure[:message]
+    refute_includes message, token
+    refute_includes message, "ghp_"
+    assert_includes message, "[REDACTED:AIR_GITHUB_TOKEN]"
+    # The scrub replaces the credential, not the diagnosis around it.
+    assert_includes message, "could not read Username"
+    assert_includes message, "github.com"
+  end
+
+  test "scrubs every credential in the secret set, not just the one it injects" do
+    github = "ghp_#{"z" * 36}"
+    slack = "xoxb-#{"9" * 30}"
+
+    SecretsLoader.stub(:all, { "AIR_GITHUB_TOKEN" => github, "SLACK_BOT_TOKEN" => slack }) do
+      failing_resolve("resolve blew up on #{github} and then on #{slack}")
+    end
+
+    message = AirCatalogService.resolve_failure[:message]
+    assert_includes message, "[REDACTED:AIR_GITHUB_TOKEN]"
+    assert_includes message, "[REDACTED:SLACK_BOT_TOKEN]"
+    refute_includes message, github
+    refute_includes message, slack
+  end
+
+  test "scrubs a credential set only in the process environment" do
+    token = "ghp_#{"e" * 36}"
+
+    with_env("AIR_GITHUB_TOKEN" => token) do
+      SecretsLoader.stub(:all, {}) do
+        failing_resolve("401 fetching github://tadasant/zimmer-catalog with #{token}")
+      end
+    end
+
+    message = AirCatalogService.resolve_failure[:message]
+    refute_includes message, token
+    assert_includes message, "[REDACTED:AIR_GITHUB_TOKEN]"
+  end
+
+  test "records the error unchanged when no credential is set" do
+    with_env("AIR_GITHUB_TOKEN" => nil) do
+      SecretsLoader.stub(:all, {}) do
+        failing_resolve("cross-scope shortname collision: `open-pr`")
+      end
+    end
+
+    assert_includes AirCatalogService.resolve_failure[:message], "cross-scope shortname collision: `open-pr`"
+  end
+
+  test "leaves a secret too short to be distinguishable from prose alone" do
+    # Scrubbing an 8-character value would shred every error that happens to
+    # contain it, which costs more than it protects.
+    with_env("AIR_GITHUB_TOKEN" => nil) do
+      SecretsLoader.stub(:all, { "SHORT_ONE" => "resolved" }) do
+        failing_resolve("catalog resolved 0 roots")
+      end
+    end
+
+    assert_includes AirCatalogService.resolve_failure[:message], "catalog resolved 0 roots"
+    refute_includes AirCatalogService.resolve_failure[:message], "REDACTED"
+  end
+
+  test "scrubs a credential-named value out of the process environment" do
+    # The AIR subprocess inherits this process's whole env through Open3, so an
+    # echoed environment would print SECRET_KEY_BASE and friends — none of which
+    # are in SecretsLoader.all.
+    secret = "envsecret#{"9" * 20}"
+
+    with_env("SOME_SERVICE_API_KEY" => secret) do
+      SecretsLoader.stub(:all, {}) do
+        failing_resolve("resolve died holding #{secret}")
+      end
+    end
+
+    message = AirCatalogService.resolve_failure[:message]
+    refute_includes message, secret
+    assert_includes message, "[REDACTED:SOME_SERVICE_API_KEY]"
+  end
+
+  test "leaves an environment value whose name says nothing about credentials" do
+    with_env("AIR_CATALOG_BRANCH_NAME" => "release-candidate-2026") do
+      SecretsLoader.stub(:all, {}) do
+        failing_resolve("could not resolve release-candidate-2026")
+      end
+    end
+
+    assert_includes AirCatalogService.resolve_failure[:message], "could not resolve release-candidate-2026"
+  end
+
+  test "leaves a long secret that reads like prose rather than a credential" do
+    # An exact-match scrub of a spaced value would shred any error containing it.
+    with_env("AIR_GITHUB_TOKEN" => nil) do
+      SecretsLoader.stub(:all, { "NOTE" => "resolution failed" }) do
+        failing_resolve("catalog resolution failed on roots.json")
+      end
+    end
+
+    assert_includes AirCatalogService.resolve_failure[:message], "catalog resolution failed on roots.json"
+    refute_includes AirCatalogService.resolve_failure[:message], "REDACTED"
+  end
+
+  test "survives invalid UTF-8 in the subprocess error and still scrubs it" do
+    # Open3 tags stderr UTF-8 without validating it; a mis-encoded path in a git
+    # error used to make String#blank? raise and cost the whole diagnosis.
+    token = "ghp_#{"u" * 36}"
+
+    SecretsLoader.stub(:all, { "AIR_GITHUB_TOKEN" => token }) do
+      failing_resolve("fatal: cannot read \xFF path for #{token}")
+    end
+
+    message = AirCatalogService.resolve_failure[:message]
+    assert message.valid_encoding?, "the recorded message should be renderable"
+    refute_includes message, token
+    assert_includes message, "[REDACTED:AIR_GITHUB_TOKEN]"
+    assert_includes message, "fatal: cannot read"
+  end
+
+  test "withholds the message when the credential set cannot be read" do
+    token = "ghp_#{"w" * 36}"
+    # A missing master key is the failure SecretsLoader does NOT swallow:
+    # #load_secrets rescues InvalidMessage itself, and EncryptedConfiguration
+    # rescues only MissingContentError.
+    raiser = ->(*) { raise ActiveSupport::EncryptedFile::MissingKeyError }
+
+    SecretsLoader.stub(:all, raiser) do
+      failing_resolve("fatal: could not read Username for 'https://#{token}@github.com'")
+    end
+
+    message = AirCatalogService.resolve_failure[:message]
+    refute_includes message, token
+    assert_includes message, "withheld"
+    assert_includes message, "application logs"
+  end
+
+  test "scrubs the failure a refresh records before it ever reaches load!" do
+    token = "ghp_#{"r" * 36}"
+
+    SecretsLoader.stub(:all, { "AIR_GITHUB_TOKEN" => token }) do
+      without_install_bootstrap do
+        AirCatalogService.stub(:air_binary, @fake_binary) do
+          Open3.stub(:capture3, ->(*) { [ "", "auth failed for #{token}", fake_status(1) ] }) do
+            assert_raises(AirCatalogService::CatalogError) { AirCatalogService.refresh! }
+          end
+        end
+      end
+    end
+
+    message = AirCatalogService.resolve_failure[:message]
+    refute_includes message, token
+    assert_includes message, "[REDACTED:AIR_GITHUB_TOKEN]"
+  end
+
   test "clears degraded state and persists a fresh snapshot once resolution recovers" do
     CatalogSnapshot.store!(roots: { "stale" => { "name" => "stale" } })
     AirCatalogService.reset!
@@ -790,6 +974,26 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
   end
 
   private
+
+  # Drive a resolve that fails with `stderr`, so the failure is recorded by the
+  # real load! rescue rather than written onto the ivar by hand.
+  def failing_resolve(stderr)
+    without_install_bootstrap do
+      AirCatalogService.stub(:air_binary, @fake_binary) do
+        Open3.stub(:capture3, ->(*) { [ "", stderr, fake_status(1) ] }) do
+          assert_raises(AirCatalogService::CatalogError) { AirCatalogService.entries_for(:roots) }
+        end
+      end
+    end
+  end
+
+  def with_env(pairs)
+    original = pairs.keys.index_with { |key| ENV[key] }
+    pairs.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+    yield
+  ensure
+    original.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+  end
 
   def with_air_resolve(parsed)
     without_install_bootstrap do

@@ -37,8 +37,9 @@
           <%# No link to the health dashboard: it reports egress, jobs and logins, and says nothing
               about catalog resolution, so sending an operator there is a dead end. The resolve error
               below is the actionable part. %>
-          Try <span class="font-medium">Refresh catalogs</span> above; the error is verbatim from
-          <code>air resolve</code>.
+          Try <span class="font-medium">Refresh catalogs</span> above; the error below is
+          <code>air resolve</code>'s own text, with any credential Zimmer holds replaced by a
+          <code>[REDACTED:NAME]</code> marker.
         </p>
         <p class="mt-2 text-xs font-mono break-words <%= degraded ? "text-amber-800" : "text-red-800" %>">
           <%= truncate(failure[:message].to_s, length: 400) %>

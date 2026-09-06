@@ -34,6 +34,40 @@ class CatalogsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/git fetch failed/, flash[:alert])
   end
 
+  # #319: this flash is `air update`'s own text from a process holding
+  # AIR_GITHUB_TOKEN, and redirect_back puts it on /sessions/new — the same
+  # unauthenticated page as the catalog-failure banner.
+  test "refresh scrubs a credential out of the failure flash" do
+    token = "ghp_#{"z" * 36}"
+    SecretsLoader.stubs(:all).returns({ "AIR_GITHUB_TOKEN" => token })
+    AirCatalogService.expects(:refresh!).once
+      .raises(AirCatalogService::CatalogError, "air update failed (exit 1): auth error using #{token}")
+    CatalogRefreshJob.stubs(:perform_and_wait).returns(ok_result)
+
+    post refresh_catalogs_path
+
+    assert_redirected_to new_session_path
+    refute_includes flash[:alert], token
+    assert_includes flash[:alert], "[REDACTED:AIR_GITHUB_TOKEN]"
+    assert_includes flash[:alert], "air update failed"
+  end
+
+  test "refresh scrubs a credential out of a worker-side failure flash" do
+    token = "ghp_#{"w" * 36}"
+    SecretsLoader.stubs(:all).returns({ "AIR_GITHUB_TOKEN" => token })
+    AirCatalogService.expects(:refresh!).once.returns(true)
+    CatalogRefreshJob.expects(:perform_and_wait).once
+      .returns(CatalogRefreshJob::WaitResult.new(
+        status: :failed, error_message: "AirCatalogService::CatalogError: worker boom with #{token}"
+      ))
+
+    post refresh_catalogs_path
+
+    assert_redirected_to new_session_path
+    refute_includes flash[:alert], token
+    assert_match(/Catalog refresh failed: worker boom with \[REDACTED:AIR_GITHUB_TOKEN\]/, flash[:alert])
+  end
+
   test "refresh redirects with alert when the worker refresh fails, stripping the exception class prefix" do
     AirCatalogService.expects(:refresh!).once.returns(true)
     # GoodJob records the error as "ExceptionClass: message"; the flash should

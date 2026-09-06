@@ -190,11 +190,13 @@ module Mcp
       # fresh install, which is #112's defect on the agent side of the wall.
       #
       # Deliberately narrower than the operator-facing banner on the session
-      # form. The banner prints `air resolve`'s stderr verbatim; that process is
-      # given AIR_GITHUB_TOKEN by AirPrepareService#air_env, so its output is not
-      # something to echo onto an agent channel. What an agent needs in order not
-      # to act wrongly is the fact and its age, not the text. Same fact,
-      # different fidelity, different audience.
+      # form. The banner prints `air resolve`'s stderr with the credentials
+      # Zimmer holds scrubbed out of it (AirCatalogService#record_failure) —
+      # which lowers the blast radius of that text without making it safe to
+      # echo onto an agent channel, since it cannot scrub a credential Zimmer
+      # never issued. What an agent needs in order not to act wrongly is the
+      # fact and its age, not the text. Same fact, different fidelity,
+      # different audience.
       def catalog_health_lines
         failure = AirCatalogService.resolve_failure
         return [] unless failure

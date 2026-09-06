@@ -279,9 +279,10 @@ class Mcp::Tools::GetConfigsTest < ActiveSupport::TestCase
     refute_includes result, "### Unavailable"
   end
 
-  # The session form prints `air resolve`'s stderr verbatim for an operator. That
-  # process is handed AIR_GITHUB_TOKEN, so the same text must not travel to an
-  # agent: the MCP surface carries the fact and its age, never the message.
+  # The session form prints `air resolve`'s error text for an operator, scrubbed
+  # of the credentials Zimmer holds but not of ones it never issued. That process
+  # is handed AIR_GITHUB_TOKEN, so the text must not travel to an agent at all:
+  # the MCP surface carries the fact and its age, never the message.
   test "never echoes the resolve error onto the agent channel" do
     secret = "fatal: could not read Password for 'https://ghp_supersecrettoken@github.com'"
     AirCatalogService.stubs(:resolve_failure).returns({ message: secret, at: Time.current })

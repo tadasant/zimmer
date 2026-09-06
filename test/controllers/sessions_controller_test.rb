@@ -338,6 +338,28 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/air resolve failed \(exit 1\): boom/, response.body)
   end
 
+  # #319: this banner renders `air resolve`'s own text on a page with no
+  # Rails-layer authentication (#312), and the process that produced that text is
+  # handed AIR_GITHUB_TOKEN. Recorded through the real rescue path rather than by
+  # stubbing resolve_failure, because the scrub is what is under test.
+  test "new session form renders the resolve error with credentials scrubbed" do
+    token = "ghp_#{"z" * 36}"
+    stderr = "air resolve failed (exit 1): fatal: could not read Username for 'https://#{token}@github.com'"
+    SecretsLoader.stubs(:all).returns({ "AIR_GITHUB_TOKEN" => token })
+    AirCatalogService.send(:record_failure, stderr)
+    AirCatalogService.stubs(:degraded?).returns(false)
+
+    get new_session_url
+
+    assert_response :success
+    assert_match(/Catalog resolution failed — the lists below are empty/, response.body)
+    refute_includes response.body, token
+    refute_includes response.body, "ghp_"
+    assert_includes response.body, "[REDACTED:AIR_GITHUB_TOKEN]"
+    # The diagnosis survives; only the credential goes.
+    assert_includes response.body, "could not read Username"
+  end
+
   test "new session form warns that pickers are stale when a last-known-good catalog is served" do
     AirCatalogService.stubs(:resolve_failure).returns({ message: "air resolve failed (exit 1): boom", at: Time.current })
     AirCatalogService.stubs(:degraded?).returns(true)

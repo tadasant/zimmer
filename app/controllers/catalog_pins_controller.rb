@@ -36,7 +36,11 @@ class CatalogPinsController < ApplicationController
   rescue ActiveRecord::RecordInvalid => e
     redirect_to settings_path, alert: "Invalid pin: #{e.record.errors.full_messages.join(", ")}"
   rescue AirCatalogService::CatalogError => e
+    # `air resolve`'s own text, from a process holding AIR_GITHUB_TOKEN — the
+    # same string the session-form banner renders, so it gets the same scrub
+    # (#319).
     redirect_to settings_path,
-      alert: "Pins not saved — catalogs failed to resolve with those refs (check the SHAs): #{e.message}"
+      alert: "Pins not saved — catalogs failed to resolve with those refs (check the SHAs): " \
+             "#{AirCatalogService.redact_secrets(e.message)}"
   end
 end
