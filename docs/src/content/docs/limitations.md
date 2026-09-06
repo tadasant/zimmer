@@ -2238,8 +2238,12 @@ Three changes closed it ([#1078](https://github.com/tadasant/zimmer/issues/1078)
   identical, `effective_air_json_path` returns the base path and no copy is written — the same shape
   `AIR_CATALOG_REF` already used for an unmatched rewrite.
 - **A copy that does get written carries absolute source paths.** `AirCatalogRefRewriter.absolutize_sources`
-  anchors every relative local index path at the base config's own directory before the copy is
-  written, so it resolves identically from `tmp/`. Both pinning paths call it.
+  anchors every relative local source path at the base config's own directory before the copy is
+  written, so it resolves identically from `tmp/`. It mirrors AIR's own rules rather than guessing at
+  them — `getScheme` decides path-versus-provider (so `file://` counts as local and a bare `catalogs`
+  entry like `"vendor/shared"` is a path, not a shorthand), and the anchoring matches `path.resolve`,
+  which does not expand `~`. `AirCatalogRefRewriter.relocated` composes the pin and the anchoring, and
+  is the single entry point both pinning paths call, so the two cannot drift.
 - **An empty resolve is now a failed resolve.** See
   [an empty resolve is a failed resolve](/air/zimmer-integration/#an-empty-resolve-is-a-failed-resolve-too).
 :::

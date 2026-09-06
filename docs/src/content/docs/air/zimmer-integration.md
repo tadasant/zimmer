@@ -177,9 +177,12 @@ A tree with entries for one type and nothing for the other five is not empty —
 a normal catalog. Only nothing-at-all trips this.
 
 With no last-known-good to fall back on, the `CatalogError` surfaces the way every other resolve
-failure does: each `*Config` reader rescues it to `[]` and the
-[failure banner](#the-six-façades) renders `resolve_failure`. The pickers are still empty — a
-catalog this empty cannot create a session either way — but now they come with a stated reason.
+failure does: each of the [six façades](#the-six-façades) rescues it to an empty value and the
+session form renders `resolve_failure` as a banner. The pickers are still empty — a catalog this
+empty cannot create a session either way — but now they come with a stated reason. That includes
+each façade's raw `config` reader, which `/settings` reads through `DeploymentInfoService`: those
+used to call `entries_for` unrescued, so a catalog that resolved to nothing would have 500'd the one
+page an operator would go to in order to clear the offending pin.
 
 This is a second detector, not a replacement for the stderr one, and it does not close
 [#66](https://github.com/tadasant/zimmer/issues/66): a reworded AIR warning would still let a

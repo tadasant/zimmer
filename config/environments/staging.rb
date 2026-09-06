@@ -34,25 +34,25 @@ Rails.application.configure do
   # matched nothing keeps a set-but-inert AIR_CATALOG_REF from emptying the
   # catalog.
   #
-  # A rewrite that DOES match still has to move, so the copy carries absolute
-  # source paths (`absolutize_sources`) rather than the relative ones it would
-  # leave behind. Same two-step, in the same order, as
-  # AirCatalogService#generate_effective_config — see #1078, where the CatalogPin
-  # path emptied the catalog fleet-wide for want of it.
+  # A rewrite that DOES match still has to move, so the copy it writes carries
+  # absolute source paths rather than the relative ones it would leave behind.
+  # `AirCatalogRefRewriter.relocated` is both halves — apply the pin, and return
+  # nil if it matched nothing, otherwise a document that resolves from wherever
+  # it lands. AirCatalogService#generate_effective_config calls the same method
+  # for the CatalogPin path, so the two cannot drift; see #1078, where that path
+  # emptied the catalog fleet-wide for want of the second half.
   config.air_json_path = ENV.fetch("AIR_CONFIG") {
     base_path = Rails.root.join("air.production.json").to_s
     catalog_ref = ENV["AIR_CATALOG_REF"].to_s.strip
     if catalog_ref.empty?
       base_path
     else
-      source = File.read(base_path)
-      rewritten = AirCatalogRefRewriter.rewrite(
-        source,
-        pins: { AirCatalogRefRewriter::CATALOG_PREFIX => catalog_ref }
+      relocatable = AirCatalogRefRewriter.relocated(
+        File.read(base_path),
+        pins: { AirCatalogRefRewriter::CATALOG_PREFIX => catalog_ref },
+        base_dir: File.dirname(base_path)
       )
-      # Compare parsed documents: `rewrite` re-serializes with JSON.pretty_generate
-      # whether or not it matched anything, so the source text is never the baseline.
-      if JSON.parse(rewritten) == JSON.parse(source)
+      if relocatable.nil?
         # Kernel#warn, not Rails.logger: config.logger is assigned further down this
         # same block, so there is no configured logger yet. Fires once per process
         # (each Puma worker, each GoodJob worker).
@@ -63,10 +63,7 @@ Rails.application.configure do
       else
         out_path = Rails.root.join("tmp", "air.staging.json")
         FileUtils.mkdir_p(out_path.dirname)
-        File.write(
-          out_path,
-          AirCatalogRefRewriter.absolutize_sources(rewritten, base_dir: File.dirname(base_path))
-        )
+        File.write(out_path, relocatable)
         out_path.to_s
       end
     end

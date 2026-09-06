@@ -104,8 +104,16 @@ class SkillsConfig
 
     # Raw merged entry hash keyed by name. Used by DeploymentInfoService to
     # surface the catalog as JSON on the settings page.
+    #
+    # Degrades the same way `all` does. This is the settings page's read
+    # (DeploymentInfoService), and /settings is where an operator goes to clear
+    # a bad catalog pin — so a resolve failure with no last-known-good fallback
+    # must render an empty catalog there, not a 500 on the page holding the fix.
     def config
       AirCatalogService.entries_for(:skills)
+    rescue AirCatalogService::CatalogError => e
+      Rails.logger.warn "[SkillsConfig] catalog unavailable: #{e.message}"
+      {}
     end
 
     private

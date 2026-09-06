@@ -298,27 +298,74 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
     assert_equal [ "/elsewhere/skills.json" ], parsed["skills"]
   end
 
-  # A URI, an npm package specifier and a ~-path all mean something other than
-  # "a path relative to this config", so anchoring them would change the
-  # document rather than relocate it.
-  test "absolutize_sources leaves catalog URIs, package specifiers and ~ paths alone" do
-    source = <<~JSON
-      {
-        "name": "zimmer-catalog",
-        "extensions": ["@pulsemcp/air-adapter-claude", "./ext/local-adapter.mjs"],
-        "catalogs": ["github://tadasant/zimmer-catalog/agents", "https://example.com/c.json", "./sibling-catalog"],
-        "skills": ["~/catalogs/skills.json"]
-      }
-    JSON
+  # A provider URI routes to a catalog provider rather than the filesystem, so
+  # anchoring it would change the document rather than relocate it.
+  test "absolutize_sources leaves provider URIs alone" do
+    source = JSON.generate(
+      "name" => "c",
+      "catalogs" => [ "github://tadasant/zimmer-catalog/agents", "https://example.com/c.json" ]
+    )
 
     parsed = JSON.parse(AirCatalogRefRewriter.absolutize_sources(source, base_dir: "/catalog/root"))
 
-    assert_equal [ "@pulsemcp/air-adapter-claude", "/catalog/root/ext/local-adapter.mjs" ], parsed["extensions"]
+    assert_equal [ "github://tadasant/zimmer-catalog/agents", "https://example.com/c.json" ], parsed["catalogs"]
+  end
+
+  # AIR's resolveCatalogRoot is `getScheme(c) ? provider : resolve(baseDir, c)`,
+  # so a catalogs entry with no provider scheme is an ordinary path — including
+  # a bare one. Leaving `"."` or `"vendor/shared"` relative in a relocated copy
+  # points catalog discovery at a directory that isn't there, which is #1078's
+  # failure through a different key.
+  test "absolutize_sources anchors bare relative catalogs entries, not just ./ ones" do
+    source = JSON.generate("name" => "c", "catalogs" => [ ".", "vendor/shared", "./sibling-catalog" ])
+
+    parsed = JSON.parse(AirCatalogRefRewriter.absolutize_sources(source, base_dir: "/catalog/root"))
+
     assert_equal(
-      [ "github://tadasant/zimmer-catalog/agents", "https://example.com/c.json", "/catalog/root/sibling-catalog" ],
+      [ "/catalog/root", "/catalog/root/vendor/shared", "/catalog/root/sibling-catalog" ],
       parsed["catalogs"]
     )
-    assert_equal [ "~/catalogs/skills.json" ], parsed["skills"]
+  end
+
+  # AIR's extension loader is the odd one out: an entry is a local path only if
+  # it starts with ./, ../ or /, and an npm package specifier otherwise. So a
+  # bare entry here is left alone where a bare `catalogs` entry is anchored.
+  test "absolutize_sources anchors local extensions but not package specifiers" do
+    source = JSON.generate(
+      "name" => "c",
+      "extensions" => [ "@pulsemcp/air-adapter-claude", "./ext/local.mjs", "../shared/ext.mjs", "/opt/ext.mjs" ]
+    )
+
+    parsed = JSON.parse(AirCatalogRefRewriter.absolutize_sources(source, base_dir: "/catalog/root"))
+
+    assert_equal(
+      [ "@pulsemcp/air-adapter-claude", "/catalog/root/ext/local.mjs", "/catalog/shared/ext.mjs", "/opt/ext.mjs" ],
+      parsed["extensions"]
+    )
+  end
+
+  # AIR never expands `~` — its path.resolve treats it as an ordinary segment,
+  # so `~/x` means `<config dir>/~/x`. File.expand_path would expand it to this
+  # process's home directory, which is a different document.
+  test "absolutize_sources anchors a ~ path the way AIR reads it, not the way the shell would" do
+    source = JSON.generate("name" => "c", "skills" => [ "~/catalogs/skills.json" ])
+
+    parsed = JSON.parse(AirCatalogRefRewriter.absolutize_sources(source, base_dir: "/catalog/root"))
+
+    assert_equal [ "/catalog/root/~/catalogs/skills.json" ], parsed["skills"]
+    refute_includes parsed["skills"].first, Dir.home,
+      "expanding ~ to the process's home directory would relocate the catalog somewhere AIR never looks"
+  end
+
+  # AIR's getScheme returns null for `file`, so AIR resolves a file:// entry
+  # against the config directory like any other path rather than handing it to
+  # a provider.
+  test "absolutize_sources treats file:// as local, the way AIR does" do
+    source = JSON.generate("name" => "c", "skills" => [ "file://skills.json" ])
+
+    parsed = JSON.parse(AirCatalogRefRewriter.absolutize_sources(source, base_dir: "/catalog/root"))
+
+    assert_equal [ "/catalog/root/file:/skills.json" ], parsed["skills"]
   end
 
   test "absolutize_sources leaves everything that is not a source path verbatim" do
@@ -333,6 +380,39 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
     assert_equal parsed_source["extensions"], parsed["extensions"]
   end
 
+  # --- relocated: the composed step both callers use ------------------------
+
+  test "relocated returns nil when the pins match nothing the config declares" do
+    source = JSON.generate("name" => "c", "skills" => [ "./skills/skills.json" ])
+
+    assert_nil AirCatalogRefRewriter.relocated(
+      source, pins: { ZIMMER_CATALOG => "test-ref" }, base_dir: "/catalog/root"
+    )
+  end
+
+  test "relocated returns nil when the config already carries the pinned ref" do
+    source = JSON.generate("name" => "c", "catalogs" => [ "#{ZIMMER_CATALOG}@abc123/agents" ])
+
+    assert_nil AirCatalogRefRewriter.relocated(
+      source, pins: { ZIMMER_CATALOG => "abc123" }, base_dir: "/catalog/root"
+    )
+  end
+
+  test "relocated applies the pin and anchors the paths in one step" do
+    source = JSON.generate(
+      "name" => "c",
+      "catalogs" => [ "#{ZIMMER_CATALOG}/agents" ],
+      "skills" => [ "./skills/skills.json" ]
+    )
+
+    parsed = JSON.parse(AirCatalogRefRewriter.relocated(
+      source, pins: { ZIMMER_CATALOG => "abc123" }, base_dir: "/catalog/root"
+    ))
+
+    assert_equal [ "#{ZIMMER_CATALOG}@abc123/agents" ], parsed["catalogs"]
+    assert_equal [ "/catalog/root/skills/skills.json" ], parsed["skills"]
+  end
+
   # The end of the fix for #1078, asserted against the file actually shipped:
   # every index path the real catalog declares must come back as a path that
   # exists on disk, because that is the property a copy written to tmp/ needs
@@ -345,7 +425,7 @@ class AirCatalogRefRewriterTest < ActiveSupport::TestCase
       AirCatalogRefRewriter.absolutize_sources(File.read(air_json_path), base_dir: base_dir)
     )
 
-    declared = AirCatalogRefRewriter::LOCAL_SOURCE_KEYS.flat_map { |key| Array(parsed[key]) }
+    declared = AirCatalogRefRewriter::PATH_KEYS.flat_map { |key| Array(parsed[key]) }
     assert_operator declared.size, :>=, 6, "air.json declares one index per artifact type"
 
     declared.each do |path|
