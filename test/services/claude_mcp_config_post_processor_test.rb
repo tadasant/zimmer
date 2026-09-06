@@ -39,7 +39,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     @session.update!(
       mcp_servers: [ "playwright-custom" ],
       catalog_skills: [ "zimmer-run-tests" ],
-      metadata: { "agent_root_key" => "agent-orchestrator" }
+      metadata: { "agent_root_key" => "general-agent" }
     )
     @working_dir = Dir.mktmpdir
     @mock_fs = MockFileSystemAdapter.new
@@ -235,7 +235,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
 
   test "post_process! does NOT inject the subagent server when root has no default_subagent_roots but injects self-session server" do
     # agent-orchestrator root has no default_subagent_roots
-    @session.update!(metadata: { "agent_root_key" => "agent-orchestrator" })
+    @session.update!(metadata: { "agent_root_key" => "general-agent" })
 
     write_config(
       "playwright-custom" => {
@@ -395,7 +395,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     # A skills-only session (no explicit MCP servers) takes the prepare! branch
     # but AIR writes no .mcp.json. post_process! must still create one and inject
     # the self-session server rather than leaving the session with no Zimmer tools.
-    @session.update!(mcp_servers: [], catalog_skills: [ "zimmer-run-tests" ], metadata: { "agent_root_key" => "agent-orchestrator" })
+    @session.update!(mcp_servers: [], catalog_skills: [ "zimmer-run-tests" ], metadata: { "agent_root_key" => "general-agent" })
 
     processor = build_processor
     processor.post_process!
@@ -620,7 +620,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   test "ensure_baseline! does NOT inject the subagent Zimmer server for a root without default_subagent_roots" do
     # agent-orchestrator root has no default_subagent_roots: only the self-session
     # server should be injected, never the subagent-spawning server.
-    @session.update!(mcp_servers: [], catalog_skills: [], metadata: { "agent_root_key" => "agent-orchestrator" })
+    @session.update!(mcp_servers: [], catalog_skills: [], metadata: { "agent_root_key" => "general-agent" })
 
     processor = build_processor
     processor.ensure_baseline!

@@ -45,7 +45,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     @session.update!(
       mcp_servers: [ "playwright-custom" ],
       catalog_skills: [ "zimmer-run-tests" ],
-      metadata: { "agent_root_key" => "agent-orchestrator" },
+      metadata: { "agent_root_key" => "general-agent" },
       agent_runtime: "codex"
     )
     @working_dir = Dir.mktmpdir
@@ -468,7 +468,7 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     # A skills-only session takes the prepare! branch but AIR writes no config.
     # post_process! must synthesize one and inject the self-session server rather
     # than leaving the session with no Zimmer tools (mirrors the Claude processor).
-    @session.update!(mcp_servers: [], catalog_skills: [ "zimmer-run-tests" ], metadata: { "agent_root_key" => "agent-orchestrator" })
+    @session.update!(mcp_servers: [], catalog_skills: [ "zimmer-run-tests" ], metadata: { "agent_root_key" => "general-agent" })
 
     processor = build_processor
     processor.post_process!
