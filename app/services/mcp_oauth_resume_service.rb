@@ -264,7 +264,7 @@ class McpOauthResumeService
     # Re-asked under the lock, against the row `with_lock` reloaded. The read
     # above happened before it, and a session that started producing a
     # transcript in between is no longer replaying a first turn.
-    images, files = session.transcript.present? ? [ [], [] ] : attachments
+    images, files = session.transcript_present? ? [ [], [] ] : attachments
 
     # A turn the session is still owed outranks the stored prompt: replaying the
     # first turn on top of it is how the human's message got dropped (#887).
@@ -444,7 +444,7 @@ class McpOauthResumeService
   #
   # @return [Array(Array<Hash>, Array<Hash>)] images, files
   def replayable_attachments
-    return [ [], [] ] if session.transcript.present?
+    return [ [], [] ] if session.transcript_present?
 
     Sessions::FirstTurnAttachments.for(session)
   end

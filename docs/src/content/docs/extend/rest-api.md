@@ -244,7 +244,7 @@ yourself. A value carrying its own offset is rejected, as is one in the past. Th
 ### Searching transcript contents
 
 `GET /sessions/search` matches session titles plus the `metadata` and `custom_metadata` JSON by
-default. `search_contents` widens it to `sessions.transcript` — the whole conversation.
+default. `search_contents` widens it to the stored transcript — the whole conversation.
 
 Two things about the query string, both of which used to bite callers who guessed:
 

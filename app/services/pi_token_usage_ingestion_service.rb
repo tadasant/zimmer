@@ -19,7 +19,7 @@ require "json"
 # clone happens to still exist, and would lose a session's whole spend the moment
 # it was archived — the exact opposite of what a ledger is for.
 #
-# `sessions.transcript` is the durable copy. TranscriptPollerService writes the
+# the stored transcript is the durable copy. TranscriptPollerService writes the
 # raw Pi JSONL there on every poll, it survives reaping and archival, and it makes
 # the historical sweep a `WHERE agent_runtime = 'pi'` rather than a corpus walk.
 # It is the redacted copy — TranscriptSource#read runs it through
@@ -92,10 +92,14 @@ class PiTokenUsageIngestionService
     each_session do |session|
       result.sessions_scanned += 1
 
-      # One transcript in memory at a time. `sessions.transcript` is the largest
-      # column in the schema — gigabytes across the table — so it is fetched per
-      # session rather than selected into a batch of records.
-      raw = Session.where(id: session[:id]).pick(:transcript)
+      # One transcript in memory at a time. A transcript is the largest thing in
+      # the schema — gigabytes across the table — so it is fetched per session
+      # rather than selected into a batch of records.
+      #
+      # Through the model, not `pick(:transcript)`: a transcript lives in
+      # `session_transcript_chunks` since #110, and the column of that name holds
+      # only the rows `BackfillSessionTranscriptChunks` has not reached yet.
+      raw = Session.select(:id, :transcript, :transcript_byte_size).find_by(id: session[:id])&.transcript
       next if raw.blank?
 
       batch.concat(rows_for(session, raw.to_s, result))
@@ -122,7 +126,11 @@ class PiTokenUsageIngestionService
   # TokenUsageIngestionService derives from a Claude clone directory name, so the
   # by-root rollup adds the two runtimes together without special-casing either.
   def each_session
-    scope = Session.where(agent_runtime: RUNTIME).where.not(transcript: nil)
+    # Either storage counts as "has a transcript": the chunk set for everything
+    # written since #110, the legacy column for the rows the backfill has not
+    # reached. `agent_runtime` carries the query either way.
+    scope = Session.where(agent_runtime: RUNTIME)
+                   .where("sessions.transcript_byte_size > 0 OR sessions.transcript IS NOT NULL")
     scope = scope.where(updated_at: @modified_since..) if @modified_since
     scope = scope.where(id: @session_ids) if @session_ids
 
@@ -235,8 +243,8 @@ class PiTokenUsageIngestionService
         web_search_requests: 0,
         web_fetch_requests: 0,
         called_at: parse_time(entry["timestamp"]) || session[:created_at] || now,
-        # Left null on purpose: the durable copy of a Pi transcript is
-        # `sessions.transcript`, and the clone path it was read from is gone by
+        # Left null on purpose: the durable copy of a Pi transcript is the one
+        # Zimmer stores, and the clone path it was read from is gone by
         # the time anyone reads this row.
         transcript_path: nil,
         created_at: now,

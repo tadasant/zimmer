@@ -170,7 +170,7 @@ class Mcp::Tools::StatusSummaryParityTest < ActiveSupport::TestCase
   end
 
   test "action_session errors with the reason when the session has nothing to summarize" do
-    @session.update_column(:transcript, nil)
+    @session.update!(transcript: nil)
 
     error = nil
     assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do

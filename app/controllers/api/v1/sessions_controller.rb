@@ -745,8 +745,8 @@ class Api::V1::SessionsController < Api::BaseController
         # transcript means the clone was recreated at a new path and started a fresh
         # file; session.transcript is the only durable record, so we keep the longer
         # stored copy instead of destroying history. Response shape is unchanged.
-        if Session.transcript_regression?(@session.transcript, transcript_content)
-          Rails.logger.warn "[Api::V1::SessionsController#refresh] Refused transcript regression for session #{@session.id} (stored #{Session.transcript_line_count(@session.transcript)} events, filesystem #{message_count}); preserving stored transcript"
+        if @session.transcript_regression?(transcript_content)
+          Rails.logger.warn "[Api::V1::SessionsController#refresh] Refused transcript regression for session #{@session.id} (stored #{@session.transcript_line_count} events, filesystem #{message_count}); preserving stored transcript"
           render json: { session: session_json(@session), message: "Filesystem transcript is shorter than the stored one (clone likely recreated); kept the stored transcript" }
           return
         end
@@ -1555,8 +1555,8 @@ class Api::V1::SessionsController < Api::BaseController
 
     message_count = count_transcript_messages(transcript_content)
 
-    if Session.transcript_regression?(session.transcript, transcript_content)
-      Rails.logger.warn "[API refresh_all] Skipped transcript regression for session #{session.id} (stored #{Session.transcript_line_count(session.transcript)} events, filesystem #{message_count}); preserving stored transcript"
+    if session.transcript_regression?(transcript_content)
+      Rails.logger.warn "[API refresh_all] Skipped transcript regression for session #{session.id} (stored #{session.transcript_line_count} events, filesystem #{message_count}); preserving stored transcript"
       return false
     end
 

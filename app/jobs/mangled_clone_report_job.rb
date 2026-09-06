@@ -93,8 +93,9 @@ class MangledCloneReportJob < ApplicationJob
   # free-form `metadata` column cannot raise `PG::InvalidDatetimeFormat` and take
   # the whole report down with it.
   #
-  # `pluck`, not `find_each`: `sessions.transcript` is the largest column on the
-  # table, and this needs an id and an integer.
+  # `pluck`, not `find_each`: this needs an id and an integer, not a Session each
+  # with its `prompt` and (on a row the #110 backfill has not reached) its whole
+  # transcript.
   # The key names are interpolated rather than bound: they are frozen constants,
   # and a bind parameter on the left of `->>` leaves Postgres unable to resolve
   # which overload of the operator is meant. A row with no marker (or no metadata

@@ -132,7 +132,10 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
     relation = TranscriptArchiveJob.new.send(:transcript_session_markers)
 
     assert_equal [ "id", "updated_at" ], relation.select_values.map(&:to_s)
-    assert_match(/"sessions"."transcript" IS NOT NULL/, relation.to_sql)
+    # Both storages: the chunk-set summary for everything written since #110, the
+    # legacy column for rows BackfillSessionTranscriptChunks has not reached yet.
+    assert_match(/sessions\.transcript_byte_size > 0/, relation.to_sql)
+    assert_match(/sessions\.transcript IS NOT NULL/, relation.to_sql)
     # Against the projection alone, not the whole statement: `transcript` is named in
     # this relation's WHERE clause on purpose, and the claim here is only that the scan
     # does not fetch it. Keyed on the column rather than on `SELECT "sessions".*`,
@@ -218,7 +221,7 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
     end
 
     metadata_scan = session_selects.find do |sql|
-      sql.include?("\"sessions\".\"transcript\" IS NOT NULL") &&
+      sql.include?("sessions.transcript_byte_size > 0") &&
         sql.include?("ORDER BY \"sessions\".\"id\" ASC") &&
         sql.include?("LIMIT")
     end
