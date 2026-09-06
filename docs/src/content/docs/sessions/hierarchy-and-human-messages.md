@@ -204,6 +204,12 @@ page into a fleet-wide render. Both bounds apply to the **upward** walk too, bec
 than looping — a backstop, since `RecordUncleEdge` refuses to create one, but a bound that assumes
 every writer was correct is not a bound.
 
+When either bound is hit, the reader is told: the UI shows an amber "Showing at most 150 sessions, 8
+levels from the highest ancestor reached. This tree is larger." and the MCP and REST responses carry
+the same note (`truncated: true` in JSON). The session you asked about is always included, even if the ceiling cut the branch it
+lives on — a page that omits the session you are looking at is worse than one that admits it is
+truncated.
+
 ### What the walk reads off a row
 
 A third bound, and the one that decides what the walk *costs* rather than how far it goes: the walk
@@ -228,12 +234,6 @@ in CI, because at runtime there is none. A missing column raises
 repainting, and five swallowed failures would open that service's circuit breaker and pause live
 updates for everyone. So the test suite renders the real partial from a projected record, and that
 is what fails the build.
-
-When either bound is hit, the reader is told: the UI shows an amber "Showing at most 150 sessions, 8
-levels from the highest ancestor reached. This tree is larger." and the MCP and REST responses carry
-the same note (`truncated: true` in JSON). The session you asked about is always included, even if the ceiling cut the branch it
-lives on — a page that omits the session you are looking at is worse than one that admits it is
-truncated.
 
 ## Human messages
 

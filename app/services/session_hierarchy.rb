@@ -67,12 +67,11 @@ class SessionHierarchy
   # `default` threads for 17 minutes and starve every other lane behind a saturated
   # database ([#1063](https://github.com/tadasant/zimmer/issues/1063)).
   #
-  # `parent_ids_of` already plucked for this reason, and its comment named
-  # `prompt` as the thing to avoid dragging up. It was right and it was too
-  # narrow — `transcript` is the larger column, and the six loaders that
-  # instantiate records rather than plucking never got the treatment at all.
-  # This constant is that fix, applied once, in a place a new loader has to go
-  # through.
+  # `parent_ids_of` plucks for the same reason, and names `prompt` as the thing
+  # not to drag up. That is right and too narrow on its own: `transcript` is the
+  # larger column, and pluck only covers the two loaders that want ids. The six
+  # that want records go through this constant instead, so a loader added here
+  # inherits the projection rather than having to remember it.
   #
   # Every name here is read somewhere below or in `node_for`:
   #   id, title, status         — the Node's own fields
@@ -104,7 +103,12 @@ class SessionHierarchy
   #
   # Read-only by construction. Nothing in the graph writes — it renders — and a
   # projected record whose unselected attributes are simply absent has no business
-  # being saved, so the mistake raises here instead of somewhere downstream.
+  # being saved. `readonly` makes the attempt raise `ActiveRecord::ReadOnlyRecord`
+  # at the save, rather than letting a partial row quietly become a partial write.
+  #
+  # Note the return of `origin` and `roots` is therefore MIXED: the caller's own
+  # session comes back as they passed it, and everything the walk loaded comes
+  # back projected and frozen against writes. Every consumer reads `id`.
   def self.graph_scope
     Session.select(*COLUMNS).readonly
   end

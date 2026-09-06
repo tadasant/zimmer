@@ -11,12 +11,13 @@
 # own human-message record. For a long-lived router with a wide tree that is
 # thousands of row loads and a Redis publish per viewer.
 #
-# Those row loads used to be WHOLE rows, `prompt` and `transcript` included, and
-# squaring a multi-megabyte row load is what wedged the production `default` lane
-# for 17 minutes ([#1063](https://github.com/tadasant/zimmer/issues/1063)). Every
-# session this job touches now comes through `SessionHierarchy.graph_scope`, the
-# ten-column projection the graph actually reads. The fan-out is still quadratic
-# in ROWS — that is the design, and it is cheap — but no longer in megabytes.
+# Every session this job touches comes through `SessionHierarchy.graph_scope`,
+# the ten-column projection the graph reads, and that is what keeps the square
+# affordable. Squared over WHOLE rows — `prompt` and `transcript`, the latter a
+# multi-megabyte agent transcript — the same fan-out held the production
+# `default` lane for 17 minutes and starved every lane behind it
+# ([#1063](https://github.com/tadasant/zimmer/issues/1063)). The cost is
+# quadratic in rows by design, and rows are cheap; megabytes are not.
 #
 # Run inline in `after_create_commit`, all of that sat inside the HTTP request
 # that created the session. That is the create-path latency behind #577: the
