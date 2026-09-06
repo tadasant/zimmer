@@ -2977,28 +2977,52 @@ class AgentSessionJob < ApplicationJob
   #    reason.
   # 3. **Already handed to the runtime.** The follow-up arm moves this turn's
   #    prompt from `pending_follow_up_prompt` to `active_follow_up_prompt` just
-  #    before it spawns, so an `active_follow_up_prompt` CONTAINING this prompt
-  #    means the original execution got that far and the agent has it. Stamping
-  #    then would replay a message the session already acted on — the opposite
-  #    failure, and just as silent (#1009). Containment rather than equality
-  #    because the stored value is `build_prompt_with_goal` output, the raw prompt
-  #    with the goal block appended; `TranscriptPollerService` matches the same
-  #    pair the same way. A value naming some *other* prompt is a leftover from an
-  #    earlier turn and does not refuse this one.
-  # 4. **Already stamped.** Something else — `Session#deliver_follow_up!`,
-  #    `SigtermRetryService`, `AuthOutageParkService` — holds an undelivered
-  #    prompt in the single slot. Overwriting it would lose that one to save this
-  #    one.
-  # 5. **Already queued verbatim.** A copy is in the durable queue and drains on
+  #    before it spawns, so an `active_follow_up_prompt` that STARTS WITH this
+  #    prompt means the original execution got that far and the agent has it.
+  #    Stamping then would replay a message the session already acted on — the
+  #    opposite failure, and just as silent (#1009).
+  #
+  #    `start_with?` rather than equality or containment, and the choice is
+  #    load-bearing in both directions. Equality would miss the ordinary case:
+  #    the stored value is `build_prompt_with_goal` output, which only ever
+  #    APPENDS to the raw prompt — a goal block, the session notes, a degraded-MCP
+  #    notice — so the prompt is always a prefix and never the whole string.
+  #    Containment would be worse than either: the appended goal block is fixed
+  #    boilerplate ("…do not stop iterating on your progress until you have
+  #    achieved it"), so a short follow-up like "continue" is a substring of a
+  #    STALE `active_follow_up_prompt` left by an earlier turn, and this refusal
+  #    would silently drop it. A prefix cannot collide that way.
+  # 4. **Already held, and it is this same prompt.** Both producers stamp before
+  #    they enqueue, so an interrupt landing on a freshly-accepted follow-up finds
+  #    its own text already in the slot. Nothing to do and nothing to say: the
+  #    marker is doing exactly what it is for.
+  # 5. **Already stamped, with something else.** `Session#deliver_follow_up!`,
+  #    `SigtermRetryService` or `AuthOutageParkService` holds a DIFFERENT
+  #    undelivered prompt in the single slot. Overwriting it would lose that one
+  #    to save this one.
+  # 6. **Already queued verbatim.** A copy is in the durable queue and drains on
   #    its own; a second copy costs the session a duplicate turn. Same coalesce
   #    `RequeueSkippedPrompt` makes.
+  # 7. **A status-summary fork's non-summary prompt.** The carve-out
+  #    `RequeueSkippedPrompt` makes for the queue, made here for the marker, and
+  #    for a sharper reason: `AbandonedStatusSummaryForkSweepJob` excludes any
+  #    session carrying a `pending_follow_up_prompt`, so a marker stamped onto a
+  #    fork that will refuse the turn anyway takes it out of the one sweep that
+  #    would ever reclaim its clone.
+  #
+  # An archived session is deliberately NOT refused. `RequeueSkippedPrompt` refuses
+  # it because `archive` retires the pending queue, so a row written afterwards is
+  # one nothing delivers; the marker has no such property — it is inert on an
+  # archived session (`Sessions::LiveTurn#undelivered_prompt?` ignores it there)
+  # and it is the honest record of a prompt that was accepted, for a session a
+  # human can still restore from the trash.
   #
   # Called only from the recovery-pause branch of #handle_interrupt_error. The two
   # branches above it need nothing: `#requeue_interrupted_start` re-enqueues this
   # job's arguments verbatim, prompt included, and a dormant session's prompt is
   # already held by whatever put it to sleep (`SpotSessionHold` re-enqueues
   # carrying it, `AuthOutageParkService` stamps this same marker) — so stamping
-  # there would be the duplicate refusal 5 exists to avoid.
+  # there would be the duplicate refusal 6 exists to avoid.
   #
   # @param session [Session] the session about to be recovery-paused
   # @return [Symbol] :stamped, or which refusal applied
@@ -3010,10 +3034,16 @@ class AgentSessionJob < ApplicationJob
     metadata = session.metadata || {}
 
     active = metadata["active_follow_up_prompt"].to_s
-    return :already_delivered if active.present? && active.include?(prompt)
+    return :already_delivered if active.present? && active.start_with?(prompt)
 
-    if metadata["pending_follow_up_prompt"].present?
+    held = metadata["pending_follow_up_prompt"]
+    if held.present?
+      return :already_held if held == prompt
+
       return refuse_prompt_preservation(session, :already_stamped, prompt)
+    end
+    if session.status_summary_fork? && !SessionStatusSummaryGenerator.fork_prompt?(prompt)
+      return refuse_prompt_preservation(session, :summary_fork, prompt)
     end
     if session.enqueued_messages.pending.exists?(content: prompt)
       return refuse_prompt_preservation(session, :already_queued, prompt)
@@ -3043,16 +3073,23 @@ class AgentSessionJob < ApplicationJob
 
   # Say on the session's own timeline why an interrupted prompt was not stamped.
   #
-  # Both refusals leave a copy somewhere that gets delivered, so neither is a loss
-  # — but "why did this session get a nudge instead of my message" is asked from
-  # the session page, and an unexplained nudge is what made #1023 take a raw
-  # transcript read to diagnose.
+  # Only the three refusals that could leave somebody wondering. "Why did this
+  # session get a nudge instead of my message" is asked from the session page, and
+  # an unexplained nudge is what made #1023 take a raw transcript read to diagnose
+  # — but a refusal that is simply the marker working as intended (`:already_held`,
+  # the common case now that both producers stamp) is noise, and a `warning` on
+  # every deploy that lands on an in-flight follow-up would be noise at volume.
   def refuse_prompt_preservation(session, reason, prompt)
     message =
-      if reason == :already_stamped
+      case reason
+      when :already_stamped
         "The prompt this job was carrying was not stamped for the recovery turn: this session is " \
-        "already holding an earlier undelivered prompt, which goes first. This one is not lost — it " \
+        "already holding a different undelivered prompt, which goes first. This one is not lost — it " \
         "is recorded here. #{quoted_undelivered_prompt(prompt)}"
+      when :summary_fork
+        "The prompt this job was carrying was not stamped for the recovery turn: this is a " \
+        "status-summary fork, which answers one question and refuses every other turn. " \
+        "#{quoted_undelivered_prompt(prompt)}"
       else
         "The prompt this job was carrying is already queued on this session, so it was not stamped a " \
         "second time — it is delivered once, by the turn recovery is about to start or the one after it."
