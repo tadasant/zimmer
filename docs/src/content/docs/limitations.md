@@ -4302,13 +4302,23 @@ and resume.
 
 ---
 
-## The spot gate decides on a reading up to 15 minutes old
+## The spot gate decides on a reading up to 15 minutes old — 75 for a spare
 
 The gate compares each window's utilization against its target, and that utilization is the average of
 the last `ClaudeAccountQuotaSnapshot` on file for every account in the pool. `ClaudeUsageSamplerJob`
-refreshes the serving account every 15 minutes and a spare is read only on rotation or when somebody
-opens `/inference`, so between samples the gate is deciding on numbers that may already have moved —
-and a spare's contribution to the average can be considerably staler than 15 minutes.
+refreshes the serving account every 15 minutes, and each tick also re-reads up to two other accounts
+whose newest reading has aged past an hour — so a spare's contribution is at most 75 minutes old,
+against a serving account's 15. Between samples the gate is deciding on numbers that may already have
+moved, in either direction.
+
+Two accounts are outside that bound, and both are inherent rather than a cadence choice. An account in
+`needs_reauth` is never probed at all: Zimmer cannot authenticate as it, so its last reading stands
+until a human re-authenticates — and it is still averaged into the pool, because its window is really
+draining while it waits. And a pool larger than nine accounts cannot fit its stale spares under the
+two-per-tick cap, so past that size the guarantee degrades gracefully toward round-robin: staleness
+grows with the pool instead of probes bursting in one tick. Both bounds are knobs —
+`CLAUDE_SPARE_SAMPLE_MAX_STALENESS_MINUTES` and `CLAUDE_SPARE_SAMPLE_MAX_PROBES_PER_TICK` — traded
+against a probe rate of at most `96 + 24(N-1)` a day for a pool of N.
 
 Two consequences worth knowing:
 
