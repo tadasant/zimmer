@@ -168,6 +168,32 @@ module ApplicationHelper
     "in about #{seconds} seconds"
   end
 
+  # How long a flash toast stays on screen, in milliseconds, for the
+  # `data-flash-duration-value` FlashController reads.
+  #
+  # A toast carrying an inline action holds an affordance the reader has to
+  # decide about, so it outlives the timer a bare notice uses. The Undo toast's
+  # lifetime is not a taste call at all: it is the server-side undo window
+  # itself, so the button cannot still be on screen after the server has started
+  # refusing it. That is what drifted in
+  # [#1036](https://github.com/tadasant/zimmer/issues/1036) — the toast said 30
+  # seconds, the controller accepted 5.
+  #
+  # `action` is the inline action parsed out of the flash message by
+  # shared/_flash ("undo_archive", "force_archive", or nil).
+  def flash_duration_ms(action)
+    case action
+    when "undo_archive"
+      SessionStateMachine::UNDO_ARCHIVE_WINDOW.in_milliseconds
+    when "force_archive"
+      # "Archive anyway" behind a confirm dialog is not a five-second decision,
+      # and nothing on the server expires while it is up.
+      30_000
+    else
+      5_000
+    end
+  end
+
   private
 
   # Memoize the markdown parser for better performance

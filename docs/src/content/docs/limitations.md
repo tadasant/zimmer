@@ -2249,7 +2249,7 @@ the session over MCP/REST never generates.
 ### A regenerated summary for an old session is written in an empty directory
 
 Pressing **Regenerate** on a session archived long ago works, but not by restoring anything.
-`DeferredCloneCleanupJob` deletes an archived session's clone once the ten-second undo window closes,
+`DeferredCloneCleanupJob` deletes an archived session's clone once the undo window closes,
 so there is no working tree left to fork; the fork is given an **empty, freshly `git init`ed
 directory** to run in instead (empty so there is nothing to read, a repository because `codex exec`
 refuses to start outside one), and answers from the conversation Zimmer forked it with.
@@ -3631,11 +3631,8 @@ sent on both call sites. Registering the URI is X's manual step and stays.
 
 ## UI
 
-All four are open issues:
+All three are open issues:
 
-- [#12](https://github.com/tadasant/zimmer/issues/12) 🔴 The Undo button never appears. The
-  archive `turbo_stream` response doesn't render the flash toast, so the 5-second undo window is
-  unusable, even though the endpoint works.
 - [#14](https://github.com/tadasant/zimmer/issues/14) Dashboard actions do full page reloads
   (restart/refresh/archive/pause explicitly opt out of Turbo). Lost scroll position, collapsed sections
   spring open, the drawer closes.

@@ -27,11 +27,11 @@
       end
     %>
     <%# A flash carrying an action holds an affordance the reader has to decide
-        about, so it does not vanish on the 5-second timer a bare notice uses:
-        "Archive anyway" behind a confirm dialog is not a five-second decision,
-        and "Undo" reads better with room to spare too. %>
+        about, so it does not vanish on the 5-second timer a bare notice uses.
+        The Undo toast's lifetime is the server's undo window itself — see
+        ApplicationHelper#flash_duration_ms. %>
     <div data-controller="flash"
-         data-flash-duration-value="<%= action ? 30_000 : 5000 %>"
+         data-flash-duration-value="<%= flash_duration_ms(action) %>"
          class="bg-white shadow-lg rounded-lg px-6 py-4 max-w-md transform transition-all duration-300 ease-in-out <%= type.to_s == 'notice' ? 'border-l-4 border-green-500' : 'border-l-4 border-red-500' %>">
       <div class="flex items-start">
         <div class="flex-1">

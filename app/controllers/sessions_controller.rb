@@ -942,8 +942,10 @@ class SessionsController < ApplicationController
       return
     end
 
-    # Check if the trash is within the 5-second undo window
-    if @session.archived_at.nil? || Time.current - @session.archived_at > 5.seconds
+    # The window the toast's Undo button is offered for. The same constant sets
+    # how long that toast stays on screen (ApplicationHelper#flash_duration_ms),
+    # so a button that is still visible is still live.
+    if @session.archived_at.nil? || Time.current - @session.archived_at > SessionStateMachine::UNDO_ARCHIVE_WINDOW
       respond_with_flash(alert: "The undo window has expired. Use the restore feature instead.", location: root_path)
       return
     end
