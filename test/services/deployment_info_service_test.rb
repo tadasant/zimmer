@@ -305,6 +305,24 @@ class DeploymentInfoServiceTest < ActiveSupport::TestCase
     assert_no_match pattern, "redis://localhost:6379"
   end
 
+  # /settings is where an operator goes to clear a bad catalog pin, and it reads
+  # the catalog through the three `config` methods below. Those used to call
+  # `entries_for` unrescued, so a resolve failure with no last-known-good
+  # fallback — the state a bad pin can leave the process in — would 500 the one
+  # page holding the fix. They degrade to an empty hash the way `all` does.
+  test "info renders an empty catalog rather than raising when no catalog resolves at all" do
+    boom = ->(_type) { raise AirCatalogService::CatalogError, "air resolve exited 0 but returned no artifacts" }
+
+    AirCatalogService.stub(:entries_for, boom) do
+      info = nil
+      assert_nothing_raised { info = DeploymentInfoService.info }
+
+      assert_equal({}, info[:mcp_config])
+      assert_equal({}, info[:agent_roots_config])
+      assert_equal({}, info[:skills_config])
+    end
+  end
+
   # Test sensitive value pattern detection
   test "sensitive_value_patterns detect secrets in values" do
     patterns = DeploymentInfoService::SENSITIVE_VALUE_PATTERNS

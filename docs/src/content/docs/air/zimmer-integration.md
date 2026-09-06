@@ -161,6 +161,35 @@ registered in `hooks/hooks.json`, bundled by `plugins/ci-workflow`, `default_in_
 won't tell you.
 :::
 
+## An empty resolve is a failed resolve too
+
+The stderr check above only speaks up about references *between* entries AIR found. Point AIR at a
+config whose index paths do not exist and it finds no index files at all: nothing to drop, nothing
+printed, exit 0, and a tree that is legitimately and completely empty.
+
+That is the quieter failure, and it used to be the silent one — `degraded?` stayed `false`, and the
+empty tree was persisted as the new last-known-good, overwriting the good one. So
+`reject_empty_resolve!` raises `CatalogError` when a resolve comes back with no artifacts of **any**
+of the six types, which routes it down the same path as a dropped reference: serve the previous
+catalog, flag `degraded?`, and never reach `persist_snapshot`.
+
+A tree with entries for one type and nothing for the other five is not empty — a lopsided catalog is
+a normal catalog. Only nothing-at-all trips this.
+
+With no last-known-good to fall back on, the `CatalogError` surfaces the way every other resolve
+failure does: each of the [six façades](#the-six-façades) rescues it to an empty value and the
+session form renders `resolve_failure` as a banner. The pickers are still empty — a catalog this
+empty cannot create a session either way — but now they come with a stated reason. That includes
+each façade's raw `config` reader, which `/settings` reads through `DeploymentInfoService`: those
+used to call `entries_for` unrescued, so a catalog that resolved to nothing would have 500'd the one
+page an operator would go to in order to clear the offending pin.
+
+This is a second detector, not a replacement for the stderr one, and it does not close
+[#66](https://github.com/tadasant/zimmer/issues/66): a reworded AIR warning would still let a
+*partially* dropped catalog through. It was added with
+[#1078](https://github.com/tadasant/zimmer/issues/1078), where a relocated config's relative index
+paths produced exactly this shape of empty tree and nothing noticed.
+
 ## Three cache layers
 
 1. **60-second in-memory TTL** on the parsed tree, per process (`CATALOG_CACHE_TTL`).

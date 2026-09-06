@@ -36,6 +36,12 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     AirPrepareService.stub(:ensure_air_installed!, nil, &block)
   end
 
+  # The smallest resolve output that is not empty-of-everything. Tests that
+  # assert on how `air resolve` is *invoked* (its argv, its env) still have to
+  # hand back a tree with something in it: a resolve that returns no artifacts
+  # of any type is treated as a failed resolve (see reject_empty_resolve!).
+  NON_EMPTY_RESOLVE = { "skills" => { "alpha" => { "description" => "ok" } } }.freeze
+
   test "entries_for returns flat {id => entry} hash from air resolve output" do
     with_air_resolve(
       "skills" => {
@@ -52,8 +58,9 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "entries_for returns empty hash when air resolve returns no entries for type" do
-    with_air_resolve({}) do
+  test "entries_for returns empty hash for a type the resolve returned no entries for" do
+    with_air_resolve("roots" => { "general-agent" => { "description" => "ok" } }) do
+      assert_equal [ "general-agent" ], AirCatalogService.entries_for(:roots).keys
       assert_equal({}, AirCatalogService.entries_for(:skills))
       assert_equal({}, AirCatalogService.entries_for(:mcp))
       assert_equal({}, AirCatalogService.entries_for(:plugins))
@@ -78,7 +85,7 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
       AirCatalogService.stub(:air_binary, @fake_binary) do
         Open3.stub(:capture3, ->(_env, _bin, *args) {
           captured_args = args
-          [ JSON.generate("skills" => {}), "", fake_status(0) ]
+          [ JSON.generate(NON_EMPTY_RESOLVE), "", fake_status(0) ]
         }) do
           AirCatalogService.entries_for(:skills)
         end
@@ -96,7 +103,7 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
         AirCatalogService.stub(:air_binary, @fake_binary) do
           Open3.stub(:capture3, ->(env, _bin, *_args) {
             captured_env = env
-            [ JSON.generate("skills" => {}), "", fake_status(0) ]
+            [ JSON.generate(NON_EMPTY_RESOLVE), "", fake_status(0) ]
           }) do
             AirCatalogService.entries_for(:skills)
           end
@@ -117,7 +124,7 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
         AirCatalogService.stub(:air_binary, @fake_binary) do
           Open3.stub(:capture3, ->(env, _bin, *_args) {
             captured_env = env
-            [ JSON.generate("skills" => {}), "", fake_status(0) ]
+            [ JSON.generate(NON_EMPTY_RESOLVE), "", fake_status(0) ]
           }) do
             AirCatalogService.entries_for(:skills)
           end
@@ -137,7 +144,7 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
         AirCatalogService.stub(:air_binary, @fake_binary) do
           Open3.stub(:capture3, ->(env, _bin, *_args) {
             captured_env = env
-            [ JSON.generate("skills" => {}), "", fake_status(0) ]
+            [ JSON.generate(NON_EMPTY_RESOLVE), "", fake_status(0) ]
           }) do
             AirCatalogService.entries_for(:skills)
           end
@@ -177,7 +184,7 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
         update_env = env
         [ "updated\n", "", fake_status(0) ]
       else
-        [ JSON.generate("skills" => {}), "", fake_status(0) ]
+        [ JSON.generate(NON_EMPTY_RESOLVE), "", fake_status(0) ]
       end
     end
 
@@ -423,6 +430,58 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     assert_equal "github://pulsemcp/ai-artifacts@abc123", parsed["catalogs"][0]
   end
 
+  # Regression for #1078. A CatalogPin row is not validated against the catalogs
+  # the config declares — /supervisor/catalog_pins is full Administrate CRUD
+  # over [:catalog, :ref] — so a row naming a catalog this air.json never
+  # mentions is writable. It used to switch every web and worker process onto a
+  # tmp/ copy for no reason at all, and the copy's relative index paths did not
+  # follow it, so the catalog resolved empty fleet-wide.
+  test "effective_air_json_path ignores a pin that matches no catalog the config declares" do
+    File.write(@air_json, JSON.generate(
+      "name" => "zimmer-catalog",
+      "skills" => [ "./skills/skills.json" ],
+      "roots" => [ "./roots.json" ]
+    ))
+    CatalogPin.create!(catalog: "github://some/repo", ref: "abc123")
+    AirCatalogService.reset!
+
+    assert_equal @air_json, AirCatalogService.effective_air_json_path,
+      "a pin naming a catalog the config never mentions must leave resolution exactly as it was"
+  end
+
+  # The other half of #1078: when a pin *does* match, the copy is written
+  # somewhere else (tmp/), and AIR resolves a config's local index paths
+  # relative to the config file's own directory. Relative paths in the copy
+  # would resolve to tmp/skills/skills.json and find nothing.
+  test "effective_air_json_path writes a pinned copy whose index paths still resolve" do
+    catalog_dir = File.dirname(@air_json)
+    FileUtils.mkdir_p(File.join(catalog_dir, "skills"))
+    File.write(File.join(catalog_dir, "skills", "skills.json"), JSON.generate("skills" => []))
+    File.write(File.join(catalog_dir, "roots.json"), JSON.generate("roots" => []))
+    File.write(@air_json, JSON.generate(
+      "name" => "zimmer-catalog",
+      "catalogs" => [ "github://pulsemcp/ai-artifacts" ],
+      "skills" => [ "./skills/skills.json" ],
+      "roots" => [ "./roots.json" ]
+    ))
+    CatalogPin.create!(catalog: "github://pulsemcp/ai-artifacts", ref: "abc123")
+    AirCatalogService.reset!
+
+    path = AirCatalogService.effective_air_json_path
+    refute_equal @air_json, path, "a pin that matches must be applied through a rewritten copy"
+    refute_equal File.dirname(@air_json), File.dirname(path),
+      "the copy is written to tmp/, which is exactly why its paths must be absolute"
+
+    parsed = JSON.parse(File.read(path))
+    assert_equal "github://pulsemcp/ai-artifacts@abc123", parsed["catalogs"][0]
+
+    (parsed["skills"] + parsed["roots"]).each do |declared|
+      assert File.absolute_path?(declared), "#{declared} must be absolute to survive the move to tmp/"
+      assert File.exist?(declared),
+        "#{declared} must exist — an index AIR cannot find resolves to an empty catalog"
+    end
+  end
+
   test "effective_air_json_path regenerates when the pin set changes" do
     File.write(@air_json, JSON.generate("catalogs" => [ "github://pulsemcp/ai-artifacts" ]))
     pin = CatalogPin.create!(catalog: "github://pulsemcp/ai-artifacts", ref: "aaa")
@@ -586,6 +645,67 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
           end
         end
       end
+    end
+  end
+
+  # --- an empty resolve is a failed resolve (#1078) ---------------------------
+  #
+  # The dropped-reference check keys on AIR's stderr, which only speaks up about
+  # references *between* entries it found. A resolve pointed at a config whose
+  # index paths do not exist finds no index files at all: nothing is dropped,
+  # nothing is printed, AIR exits 0, and the tree is completely empty. Without
+  # this check that tree was served as healthy and persisted over the good
+  # snapshot — the failure was silent at exactly the layer built to catch it.
+
+  test "treats a resolve that returns no artifacts of any type as a failed resolve" do
+    without_install_bootstrap do
+      AirCatalogService.stub(:air_binary, @fake_binary) do
+        ok = ->(*) { [ JSON.generate("roots" => { "zimmer-router" => { "name" => "zimmer-router" } }), "", fake_status(0) ] }
+        Open3.stub(:capture3, ok) do
+          assert_equal [ "zimmer-router" ], AirCatalogService.entries_for(:roots).keys
+        end
+        refute AirCatalogService.degraded?
+
+        # Exit 0, clean stderr, and nothing in the tree — what a config whose
+        # index paths were left behind by a relocation actually produces.
+        empty = ->(*) { [ JSON.generate({}), "", fake_status(0) ] }
+        Open3.stub(:capture3, empty) do
+          AirCatalogService.reload!
+
+          assert_equal [ "zimmer-router" ], AirCatalogService.entries_for(:roots).keys,
+            "an empty resolve must serve the last-known-good catalog, not replace it"
+          assert AirCatalogService.degraded?,
+            "an empty resolve must be reported as degraded even though AIR exited 0"
+          assert_match(/no artifacts of any type/, AirCatalogService.resolve_failure[:message])
+        end
+      end
+    end
+  end
+
+  test "does not persist an empty resolve over the last-known-good snapshot" do
+    without_install_bootstrap do
+      AirCatalogService.stub(:air_binary, @fake_binary) do
+        ok = ->(*) { [ JSON.generate("roots" => { "zimmer-router" => { "name" => "zimmer-router" } }), "", fake_status(0) ] }
+        Open3.stub(:capture3, ok) { AirCatalogService.entries_for(:roots) }
+
+        Open3.stub(:capture3, ->(*) { [ JSON.generate({}), "", fake_status(0) ] }) do
+          AirCatalogService.reload!
+          AirCatalogService.entries_for(:roots)
+        end
+      end
+    end
+
+    assert_equal [ "zimmer-router" ], CatalogSnapshot.latest.entries["roots"].keys,
+      "the persisted snapshot must still be the last catalog that actually resolved"
+  end
+
+  # A resolve that finds *something* is not empty, however lopsided the tree is:
+  # only a tree with nothing in it of any type is the failure this catches.
+  test "a resolve carrying entries for a single type is not treated as empty" do
+    with_air_resolve("roots" => { "zimmer-router" => { "name" => "zimmer-router" } }) do
+      assert_equal [ "zimmer-router" ], AirCatalogService.entries_for(:roots).keys
+      assert_equal({}, AirCatalogService.entries_for(:skills))
+      refute AirCatalogService.degraded?
     end
   end
 
