@@ -4209,18 +4209,36 @@ and not a regression: before #620 nothing on any runtime read the flag per comma
 
 **A create the hook reads perfectly well is still lost when it lands in a transcript file Zimmer is
 not reading.** Session [7619](https://zimmer.tadasant.com/sessions/7619) is the worked case, and it
-is the half of [#620](https://github.com/tadasant/zimmer/issues/620) that is *not* fixed. It opened
-[PR #616](https://github.com/tadasant/zimmer/pull/616) with an ordinary
+is the half of [#620](https://github.com/tadasant/zimmer/issues/620) that #620's own fix did not
+reach. Zimmer recorded no PR for it, even though
+[PR #616](https://github.com/tadasant/zimmer/pull/616) was opened with an ordinary
 `gh pr create --repo tadasant/zimmer …` whose result was a clean success carrying the URL — evidence
-the Created tier would have taken instantly. But the Claude Code process that ran it was writing
-`d608fcfe-….jsonl` in a *different* clone directory: a second conversation, seeded with a
-byte-identical copy of the first 421 events of the session's own transcript and then re-keyed to a
-new runtime session id. Zimmer keeps polling the `session_id` it recorded at spawn
-(`ClaudeTranscriptSource#locate` prefers `<session_id>.jsonl`), which by then named the branch that
-never ran the create. Nothing in the recording path can see that — the matcher was never handed the
-file — so this is a transcript-identity failure rather than a matcher one, and every conclusion drawn
-from a transcript is exposed to it, not only PR ownership. Tracked as
-[#1047](https://github.com/tadasant/zimmer/issues/1047).
+the Created tier would have taken instantly. The create is in `d608fcfe-….jsonl`, a file whose first
+421 lines are byte-identical to 7619's own transcript and whose remaining 177 carry a different
+session id.
+
+**That file is a [status-summary fork](/sessions/status-summary/) of 7619, and the cause is gone.**
+Line 427 of it is `SessionStatusSummaryGenerator`'s fork prompt verbatim ("Write the Status panel
+for this Zimmer session (#7619)"), line 433 is an automated recovery nudge, and everything after is
+the fork continuing the conversation it had been handed a copy of — including the create. That is
+[#695](https://github.com/tadasant/zimmer/issues/695) exactly, fixed on 2026-09-02: a summary fork
+now refuses any turn whose prompt is not the summary request, so it can no longer act as the session
+it copied. 7619's own transcript kept being written until 21:34, an hour and a half after the fork
+stopped; the two were separate sessions in separate clones, not one conversation Zimmer lost track
+of.
+
+What [#1047](https://github.com/tadasant/zimmer/issues/1047) changed is the identity rule that let
+the shape go unnoticed: transcript selection is no longer by filename alone, so a file that opens
+with this session's conversation and re-keys **inside the session's own transcript directory** is
+followed rather than abandoned — and one owned by another `Session` row, which is what a fork is, is
+excluded rather than adopted. See
+[a re-keyed transcript](/sessions/transcripts/#a-re-keyed-transcript-and-why-the-name-is-only-a-preference).
+Neither reaches across clone directories: a transcript directory is a pure function of the working
+directory Zimmer recorded, so a copy written from another cwd is outside every directory the poller
+looks in, and enumerating `~/.claude/projects/*` on every poll of every session is not a trade worth
+making for it. A PR opened by a session other than the one holding the work is still recorded
+against the session that opened it, which is correct and is not the same thing as being recorded
+against the session a human is watching.
 
 The warning log a PR-flavored goal gets when a session comes to rest (`pause`, `fail` or `archive`)
 covers the second case only, and only when the goal happens to mention pull requests. There is no

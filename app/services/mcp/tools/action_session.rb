@@ -1064,7 +1064,16 @@ module Mcp
         # TranscriptRedactor runs, so a manual refresh cannot write an unredacted
         # transcript over the redacted one the poller stored. It also decompresses a
         # Codex .zst rollout, which a raw read would have stored as binary.
-        content = TranscriptRuntime.source_for(session).read(transcript_file)
+        # RekeyedTranscriptBranch is what makes that read safe now that the
+        # locator can hand back a transcript this conversation was re-keyed into:
+        # such a file is NOT a superset of the stored one, and the line-count guard
+        # below would wave a longer branch through and take the abandoned file's
+        # tail with it (#1047). A no-op on every other file.
+        content = RekeyedTranscriptBranch.continue(
+          session: session,
+          transcript_path: transcript_file,
+          content: TranscriptRuntime.source_for(session).read(transcript_file)
+        )
         message_count = count_transcript_messages(content)
 
         # Never let a refresh shrink the stored transcript: a shorter filesystem
@@ -1175,7 +1184,12 @@ module Mcp
         # compares against the poller's redacted copy, so a raw read here would
         # never compare equal once a redaction has fired, and the two writers
         # would overwrite each other on every pass.
-        content = TranscriptRuntime.source_for(session).read(transcript_file)
+        # See #refresh for why the read goes through RekeyedTranscriptBranch.
+        content = RekeyedTranscriptBranch.continue(
+          session: session,
+          transcript_path: transcript_file,
+          content: TranscriptRuntime.source_for(session).read(transcript_file)
+        )
         return false if session.transcript == content
 
         message_count = count_transcript_messages(content)

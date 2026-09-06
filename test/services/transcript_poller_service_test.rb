@@ -589,6 +589,245 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
       "Should flag that a regression was detected"
   end
 
+  # === Following a re-keyed transcript branch (#1047) ===
+  #
+  # Claude Code can copy a live conversation forward into a file named by a NEW
+  # session uuid and carry on appending to the copy. The locator follows it; these
+  # cover what the poller has to do so that following it loses nothing.
+
+  test "poll_and_broadcast follows a re-keyed branch and broadcasts what it added" do
+    stored = rekey_lines("recorded-uuid", 1..5)
+    branch = stored + rekey_lines("branch-uuid", 6..7)
+    write_rekeyed_branch(stored: stored, branch_content: branch)
+
+    result = TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+
+    assert_equal true, result
+    @session.reload
+    assert_equal branch, @session.transcript, "the branch is a whole copy forward, so it stands alone"
+    assert_includes @session.transcript, "event 7"
+    assert_equal 7, @session.metadata["broadcast_message_count"]
+    assert_equal "branch-uuid", @session.metadata["transcript_branch_session_id"]
+    assert_equal "recorded-uuid", @session.session_id,
+      "the durable session id is never rewritten from transcript content"
+  end
+
+  test "poll_and_broadcast keeps the events the abandoned file recorded after the re-key" do
+    # #1047's own shape: the copy was taken partway through, and the abandoned
+    # file went on being appended to. Those events exist only in what Zimmer
+    # stored, so the branch alone would be a history loss.
+    stored = rekey_lines("recorded-uuid", 1..5)
+    branch = rekey_lines("recorded-uuid", 1..3) + rekey_lines("branch-uuid", 6..7)
+    write_rekeyed_branch(stored: stored, branch_content: branch)
+
+    result = TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+
+    assert_equal true, result
+    @session.reload
+    assert_equal stored + rekey_lines("branch-uuid", 6..7), @session.transcript
+    assert_includes @session.transcript, "event 5", "the abandoned tail survives"
+    assert_includes @session.transcript, "event 7", "and so does the branch's work"
+    assert_equal "branch-uuid", @session.metadata["transcript_branch_session_id"]
+    assert_nil @session.metadata["transcript_regression_detected"],
+      "the branch is shorter than the stored transcript, but the splice is not a regression"
+  end
+
+  test "poll_and_broadcast does not re-append the branch tail on a later poll" do
+    stored = rekey_lines("recorded-uuid", 1..5)
+    branch = rekey_lines("recorded-uuid", 1..3) + rekey_lines("branch-uuid", 6..7)
+    paths = write_rekeyed_branch(stored: stored, branch_content: branch)
+
+    TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+
+    # The branch keeps growing. Re-deriving the shared prefix here would find it
+    # at 3 again and re-append events 6 and 7.
+    grown = branch + rekey_lines("branch-uuid", 8..8)
+    @mock_file_system.write(paths[:branch], grown)
+    @mock_file_system.set_mtime(paths[:branch], Time.current)
+
+    result = TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+
+    assert_equal true, result
+    @session.reload
+    assert_equal stored + rekey_lines("branch-uuid", 6..8), @session.transcript
+    assert_equal 1, @session.transcript.scan("event 6").length
+    assert_equal 8, @session.metadata["broadcast_message_count"]
+  end
+
+  test "poll_and_broadcast retires the branch bookkeeping once the recorded file is live again" do
+    # What a resume produces: AgentSessionJob re-materializes the stored
+    # transcript at <session_id>.jsonl, so that file is the newest again.
+    stored = rekey_lines("recorded-uuid", 1..5)
+    paths = write_rekeyed_branch(stored: stored, branch_content: stored)
+    @session.update!(metadata: @session.metadata.merge("transcript_branch_session_id" => "branch-uuid"))
+    @mock_file_system.write(paths[:recorded], stored + rekey_lines("recorded-uuid", 6..6))
+    @mock_file_system.set_mtime(paths[:recorded], Time.current)
+    @mock_file_system.set_mtime(paths[:branch], 1.hour.ago)
+
+    result = TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+
+    assert_equal true, result
+    @session.reload
+    assert_not @session.metadata.key?("transcript_branch_session_id")
+    assert_equal stored + rekey_lines("recorded-uuid", 6..6), @session.transcript
+  end
+
+  test "poll_and_broadcast records no branch bookkeeping for a session that never re-keyed" do
+    stored = rekey_lines("recorded-uuid", 1..5)
+    transcript_dir = File.join(File.expand_path("~"), ".claude", "projects", "-tmp-test-clone")
+    @session.update!(
+      session_id: "recorded-uuid",
+      transcript: stored,
+      metadata: { "working_directory" => "/tmp/test-clone", "broadcast_message_count" => 5 }
+    )
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write("#{transcript_dir}/recorded-uuid.jsonl", stored + rekey_lines("recorded-uuid", 6..6))
+
+    result = TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+
+    assert_equal true, result
+    @session.reload
+    assert_equal stored + rekey_lines("recorded-uuid", 6..6), @session.transcript
+    assert_not @session.metadata.key?("transcript_branch_session_id")
+  end
+
+  test "the PR a re-keyed branch opened is recorded rather than lost with the abandoned file" do
+    # Session 7619's sighting, end to end: the `gh pr create` ran in the branch,
+    # and #1047's whole cost was that Zimmer never read the file it ran in.
+    @session.update!(custom_metadata: {}, git_root: "https://github.com/owner/repo.git")
+
+    stored = rekey_lines("recorded-uuid", 1..3)
+    create_call = {
+      "type" => "assistant",
+      "sessionId" => "branch-uuid",
+      "message" => { "role" => "assistant", "content" => [
+        { "type" => "tool_use", "id" => "toolu_create", "name" => "Bash",
+          "input" => { "command" => "gh pr create --repo owner/repo --base main --title x" } }
+      ] }
+    }.to_json
+    create_result = {
+      "type" => "user",
+      "sessionId" => "branch-uuid",
+      "message" => { "content" => [
+        { "tool_use_id" => "toolu_create", "type" => "tool_result",
+          "content" => "https://github.com/owner/repo/pull/616", "is_error" => false }
+      ] }
+    }.to_json
+
+    write_rekeyed_branch(stored: stored, branch_content: stored + create_call + "\n" + create_result + "\n")
+
+    assert_equal true, TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+
+    assert_equal [ "https://github.com/owner/repo/pull/616" ],
+      @session.reload.custom_metadata["github_pull_request_urls"]
+  end
+
+  test "poll_and_broadcast does not duplicate the first branch's work when the transcript re-keys twice" do
+    # The merge is recomputed from the two texts on every poll rather than from a
+    # remembered split point, because after the first splice the stored transcript
+    # is no longer prefix-shaped and a remembered K undercounts — compounding on
+    # every further re-key.
+    stored = rekey_lines("recorded-uuid", 1..5)
+    first_branch = rekey_lines("recorded-uuid", 1..3) + rekey_lines("branch-uuid", 6..8)
+    paths = write_rekeyed_branch(stored: stored, branch_content: first_branch)
+
+    TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+    assert_equal stored + rekey_lines("branch-uuid", 6..8), @session.reload.transcript
+
+    # A second re-key: the runtime copies the branch forward under yet another
+    # uuid and adds event 9.
+    second_branch = first_branch + rekey_lines("second-uuid", 9..9)
+    @mock_file_system.write("#{paths[:dir]}/second-uuid.jsonl", second_branch)
+    @mock_file_system.set_mtime("#{paths[:dir]}/second-uuid.jsonl", Time.current)
+    @mock_file_system.set_mtime(paths[:branch], 30.minutes.ago)
+
+    assert_equal true, TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+
+    @session.reload
+    assert_equal stored + rekey_lines("branch-uuid", 6..8) + rekey_lines("second-uuid", 9..9),
+      @session.transcript
+    assert_equal 1, @session.transcript.scan("event 6").length, "the first branch's tail must appear once"
+    assert_equal "second-uuid", @session.metadata["transcript_branch_session_id"]
+  end
+
+  test "poll_and_broadcast survives a poll that cannot read the branch, and re-follows it after" do
+    # A transient read failure makes the branch unrecognizable, so that poll reverts
+    # to the abandoned file. Nothing may be lost or duplicated by the round trip:
+    # the merge is recomputed from the two texts every time rather than resumed
+    # from a remembered split point.
+    stored = rekey_lines("recorded-uuid", 1..5)
+    branch = rekey_lines("recorded-uuid", 1..3) + rekey_lines("branch-uuid", 6..7)
+    paths = write_rekeyed_branch(stored: stored, branch_content: branch)
+
+    TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+    spliced = @session.reload.transcript
+
+    unreadable = MockFileSystemAdapter.new
+    @mock_file_system.files.each { |path, content| unreadable.write(path, content) }
+    @mock_file_system.directories.each { |dir| unreadable.mkdir_p(dir) }
+    unreadable.set_mtime(paths[:recorded], 1.hour.ago)
+    unreadable.set_mtime(paths[:branch], Time.current)
+    unreadable.stubs(:each_line).raises(Errno::EACCES.new(paths[:branch]))
+
+    assert_equal true, TranscriptPollerService.new(@session, file_system: unreadable).poll_and_broadcast
+    @session.reload
+    assert_equal spliced, @session.transcript, "reverting to the abandoned file must not shrink the record"
+
+    # The branch is readable again, and grows.
+    @mock_file_system.write(paths[:branch], branch + rekey_lines("branch-uuid", 8..8))
+    @mock_file_system.set_mtime(paths[:branch], Time.current)
+
+    assert_equal true, TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+    @session.reload
+    assert_equal stored + rekey_lines("branch-uuid", 6..8), @session.transcript
+    assert_equal 1, @session.transcript.scan("event 6").length, "no duplication across the round trip"
+    assert_equal "branch-uuid", @session.metadata["transcript_branch_session_id"]
+  end
+
+  test "poll_and_broadcast tolerates a stored transcript whose last line was read mid-flush" do
+    # The poller reads while the runtime writes, so session.transcript routinely
+    # ends in a partial line. Comparing it verbatim would find a mismatch the
+    # branch itself resolves.
+    complete = rekey_lines("recorded-uuid", 1..4)
+    partial = rekey_lines("recorded-uuid", 5..5).chomp[0..-20]
+    branch = rekey_lines("recorded-uuid", 1..5) + rekey_lines("branch-uuid", 6..6)
+    write_rekeyed_branch(stored: complete + partial, branch_content: branch)
+
+    assert_equal true, TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+
+    @session.reload
+    assert_equal branch, @session.transcript
+    assert_equal 1, @session.transcript.scan("event 5").length, "the half-written line is re-supplied, not doubled"
+  end
+
+  def rekey_lines(session_id, range)
+    range.map { |i|
+      { "type" => "user", "sessionId" => session_id, "message" => { "role" => "user", "content" => "event #{i}" } }.to_json
+    }.join("\n") + "\n"
+  end
+
+  # An abandoned <session_id>.jsonl holding what Zimmer stored, and alongside it a
+  # more recently written file named by a different uuid.
+  def write_rekeyed_branch(stored:, branch_content:)
+    transcript_dir = File.join(File.expand_path("~"), ".claude", "projects", "-tmp-test-clone")
+    recorded = "#{transcript_dir}/recorded-uuid.jsonl"
+    branch = "#{transcript_dir}/branch-uuid.jsonl"
+
+    @session.update!(
+      session_id: "recorded-uuid",
+      transcript: stored,
+      metadata: { "working_directory" => "/tmp/test-clone", "broadcast_message_count" => stored.lines.length }
+    )
+
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(recorded, stored)
+    @mock_file_system.write(branch, branch_content)
+    @mock_file_system.set_mtime(recorded, 1.hour.ago)
+    @mock_file_system.set_mtime(branch, Time.current)
+
+    { dir: transcript_dir, recorded: recorded, branch: branch }
+  end
+
   test "poll_and_broadcast appends Codex failed-resume recovery segment instead of skipping shorter rollout" do
     stored_transcript = (1..5).map { |i|
       { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "Stored #{i}" } ] } }.to_json
