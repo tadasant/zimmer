@@ -38,8 +38,7 @@ class TokenUsageBackfillJobTest < ActiveJob::TestCase
     uuid = SecureRandom.uuid
     Session.create!(
       prompt: "pi", agent_runtime: "pi", status: :archived,
-      git_root: "https://github.com/tadasant/zimmer.git", branch: "main",
-      execution_provider: "local_filesystem", session_id: uuid,
+      git_root: "https://github.com/tadasant/zimmer.git", branch: "main", session_id: uuid,
       metadata: { "agent_root_key" => "zimmer" },
       transcript: [
         { "type" => "session", "version" => 3, "id" => uuid, "timestamp" => "2026-01-01T00:00:00.000Z" },

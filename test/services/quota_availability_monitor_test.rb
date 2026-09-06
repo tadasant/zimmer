@@ -194,8 +194,7 @@ class QuotaAvailabilityMonitorTest < ActiveSupport::TestCase
     )
 
     occupying = Session.create!(prompt: "occupying the only slot", agent_runtime: "claude_code",
-      status: :running, git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem", session_id: SecureRandom.uuid)
+      status: :running, git_root: "https://github.com/test/repo.git", branch: "main", session_id: SecureRandom.uuid)
     GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
       job_class: "AgentSessionJob", serialized_params: { "arguments" => [ occupying.id ] },
       scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
