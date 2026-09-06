@@ -267,6 +267,11 @@ module Mcp
       # whole fleet — which triggers reference MCP server X — and the list is the
       # only view built for scanning many triggers, so leaving this out of it made
       # the answer cost one by-id call per trigger (#858).
+      def mcp_servers_summary(trigger)
+        names = catalog_names_with_unresolvable_marked(trigger, :mcp_servers)
+        names.presence&.join(", ") || "(none)"
+      end
+
       # The root as configured, marked when the catalog does not carry it. A
       # trigger is ALLOWED to name a root before the catalog entry that defines
       # it exists (zimmer#448), so a name that resolves to nothing reads here
@@ -276,11 +281,6 @@ module Mcp
         return trigger.agent_root_name unless trigger.agent_root_missing_from_catalog?
 
         "#{trigger.agent_root_name} (⚠ not in catalog — every fire that has to spawn a session will fail)"
-      end
-
-      def mcp_servers_summary(trigger)
-        names = catalog_names_with_unresolvable_marked(trigger, :mcp_servers)
-        names.presence&.join(", ") || "(none)"
       end
 
       # The names as configured, with the ones a fire has found the catalog

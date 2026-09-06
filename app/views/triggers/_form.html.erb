@@ -108,10 +108,17 @@
         # "", failing presence and locking the operator out of editing anything
         # else about the trigger. Carry the name instead, marked, the same way the
         # server/skill/hook/plugin controls carry an unresolvable one.
+        #
+        # Carrying it is unconditional; LABELLING it is not. @agent_roots is
+        # AgentRootsConfig.all, which rescues a failed resolve to [] — against
+        # which every stored name would land in this branch and every trigger's
+        # perfectly good root would read "(not in catalog)". The model's predicate
+        # is the one that knows the difference.
         agent_root_options = @agent_roots.map { |ar| [ ar.display_name, ar.name ] }
-        stored_agent_root = f.object.agent_root_name.presence
+        stored_agent_root = trigger.agent_root_name.presence
         if stored_agent_root && agent_root_options.none? { |_label, name| name == stored_agent_root }
-          agent_root_options << [ "#{stored_agent_root} (not in catalog)", stored_agent_root ]
+          label = trigger.agent_root_missing_from_catalog? ? "#{stored_agent_root} (not in catalog)" : stored_agent_root
+          agent_root_options << [ label, stored_agent_root ]
         end
       %>
       <%= f.select :agent_root_name,

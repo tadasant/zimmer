@@ -565,12 +565,18 @@ module Mcp
 
         trigger.toggle!
 
+        # The warning belongs on `toggle` too, and this is the surface where it
+        # matters most: re-arming is what an agent does to a trigger the 03:00
+        # fire parked `failed`, and without it the re-arm hands back a clean
+        # "New Status: enabled" for a trigger that will fail at the next 03:00
+        # for the same reason. That is the loop zimmer#448 is about.
         <<~TEXT.strip
           ## Trigger Toggled
 
           - **ID:** #{trigger.id}
           - **Name:** #{trigger.name}
           - **New Status:** #{trigger.status}
+          #{agent_root_warning_line(trigger)}
         TEXT
       end
 

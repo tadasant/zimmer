@@ -79,6 +79,34 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "span", text: "Agent root not in catalog", count: 1
   end
 
+  # The @catalog_agent_root_names ivar is the whole reason the badge is not an
+  # N+1 — AgentRootsConfig.all rebuilds every root and reads AppSetting.current
+  # per call. Nothing else fails if a future edit drops it, so this does.
+  # A catalog that failed to resolve leaves AgentRootsConfig.all == [], so EVERY
+  # stored root falls into the "no option for it" branch. Carrying the name is
+  # still right — the form has to post it back — but labelling it "(not in
+  # catalog)" on that reading would smear the outage across every trigger.
+  test "the edit form carries the stored root unlabelled when the catalog could not be read" do
+    AgentRootsConfig.stubs(:all).returns([])
+    AgentRootsConfig.stubs(:names).returns([])
+    trigger = trigger_named_for_a_root_that_does_not_exist
+
+    get edit_trigger_path(trigger)
+    assert_response :success
+    assert_select "select#trigger_agent_root_name option[selected][value=?]", "root-that-lands-tomorrow"
+    assert_not_includes response.body, "root-that-lands-tomorrow (not in catalog)"
+  end
+
+  test "the list reads the catalog once for the whole page" do
+    trigger_named_for_a_root_that_does_not_exist
+    assert_operator Trigger.count, :>, 1
+
+    AgentRootsConfig.expects(:names).at_most_once.returns(%w[zimmer general-agent])
+
+    get triggers_path
+    assert_response :success
+  end
+
   test "the list badges nothing when the catalog could not be read" do
     AgentRootsConfig.stubs(:names).returns([])
     trigger_named_for_a_root_that_does_not_exist
