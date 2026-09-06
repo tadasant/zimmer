@@ -15,7 +15,10 @@
        data-live-region="replace"
        class="fixed bottom-0 left-0 right-0 z-20 bg-white border-t border-gray-200 shadow-lg"
        data-controller="follow-up-prompt character-counter bottom-panel-padding bottom-drawer composer-drop image-attachment file-attachment slash-command"
-       data-action="composer-drop:files->image-attachment#handleComposerDrop composer-drop:files->file-attachment#handleComposerDrop"
+       <%# bottom-drawer#open is on this list because on a narrow viewport the composer
+           is behind the collapsed drawer, and so are both attachment previews — a drop
+           that staged a file without opening it would look like nothing happened. %>
+       data-action="composer-drop:files->image-attachment#handleComposerDrop composer-drop:files->file-attachment#handleComposerDrop composer-drop:files->bottom-drawer#open"
        data-character-counter-max-value="<%= Session::PROMPT_MAX_LENGTH %>"
        data-follow-up-prompt-prompt-max-length-value="<%= Session::PROMPT_MAX_LENGTH %>"
        data-follow-up-prompt-session-running-value="<%= agent_session.running? %>"
@@ -28,6 +31,13 @@
        data-slash-command-skills-value="<%= session_skills.to_json %>"
        data-bottom-panel-padding-target="panel"
        data-bottom-drawer-target="drawer">
+    <%# Sits directly under the fixed panel, not inside the form's container, so it
+        covers everything a user reads as the composer: the queued messages list, and
+        on a phone the collapsed drawer trigger. The panel is `fixed`, which is already
+        a containing block for an absolutely positioned child. %>
+    <%= render "shared/composer_drop_overlay",
+        message: "Drop images or files to attach them to your message" %>
+
     <%# Enqueued messages list - shown above the form %>
     <%= render "enqueued_messages/enqueued_messages_list", agent_session: agent_session %>
 
@@ -105,15 +115,7 @@
         </button>
       </div>
 
-      <div class="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 sm:py-4">
-        <%# Drop affordance. composer-drop accepts a file dropped anywhere on the page —
-            the composer is the only thing on the screen that takes one — so this overlay
-            is what tells the user where it is going. pointer-events-none keeps it out of
-            the way of the controls underneath it. %>
-        <div data-composer-drop-target="overlay"
-             class="hidden absolute inset-2 z-30 flex items-center justify-center rounded-lg border-2 border-dashed border-indigo-500 bg-indigo-50/95 pointer-events-none">
-          <span class="text-sm font-medium text-indigo-700">Drop images or files to attach them to your message</span>
-        </div>
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 sm:py-4">
         <%# Container for form errors - updated via Turbo Stream when validation fails %>
         <div id="enqueued_messages_form_errors"></div>
 

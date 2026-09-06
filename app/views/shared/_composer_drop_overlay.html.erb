@@ -1,0 +1,17 @@
+<%# The drop affordance for composer-drop.
+
+    composer-drop accepts a file dropped anywhere on the page, because the composer is
+    the only thing on the page that takes one. This overlay is what tells the user
+    where it is going, so it has to sit over the whole region that reads as "the
+    composer" — its parent must be positioned (`relative`, or a `fixed` panel).
+
+    pointer-events-none keeps it out of the way of the controls underneath, and
+    aria-hidden keeps a purely visual drag cue out of the accessibility tree.
+
+    Locals: message — the sentence to show. inset — the Tailwind inset utility. %>
+<% inset ||= "inset-0" %>
+<div data-composer-drop-target="overlay"
+     aria-hidden="true"
+     class="hidden absolute <%= inset %> z-30 flex items-center justify-center rounded-lg border-2 border-dashed border-indigo-500 bg-indigo-50/95 pointer-events-none">
+  <span class="text-sm font-medium text-indigo-700 px-4 text-center"><%= message %></span>
+</div>
