@@ -2971,11 +2971,11 @@ class SessionsController < ApplicationController
     @filter_level = params[:filter].presence || "minimal"
     @filter_level = "minimal" unless VALID_FILTER_LEVELS.include?(@filter_level)
 
-    # The Transcript disclosure is collapsed by default (see _detail), and stays
-    # collapsed on every ordinary load. The one address that asks for it open is
-    # the log-level filter's own re-fetch: changing the level re-renders this
-    # whole body, and a reader who was reading the transcript would otherwise get
-    # it back shut, with nothing on screen to show the new level applied.
+    # The Transcript disclosure is collapsed on every ordinary load (see _detail).
+    # The one address that asks for it open is the log-level filter's own re-fetch
+    # (log_level_filter_controller.js#refetchAtLevel). Exact-match, not `present?`:
+    # the param is one instruction with one spelling, so anything else leaves the
+    # disclosure where the default puts it.
     @transcript_open = params[:transcript] == "open"
 
     # Performance optimization: instead of loading ALL logs and parsing the ENTIRE

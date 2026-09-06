@@ -738,6 +738,48 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match "session_#{session.id}_timeline", response.body
   end
 
+  # The Transcript disclosure renders collapsed on every ordinary load. The one
+  # address that asks for it open is the log-level filter's own re-fetch, which
+  # sends `transcript=open` so the panel the reader had open survives the
+  # re-render (see test/system/session_drawer_log_filter_test.rb for the round
+  # trip). These pin the param itself, and above all that the check is an exact
+  # match: relaxed to `present?`, `?transcript=closed` would open the disclosure.
+  test "the transcript disclosure is collapsed unless the address asks for it open" do
+    session = sessions(:running)
+
+    get session_url(session)
+    assert_response :success
+    assert_select "details[data-controller~='transcript-panel'][open]", false,
+      "an ordinary load must render the transcript collapsed"
+
+    get session_url(session, transcript: "open")
+    assert_response :success
+    assert_select "details[data-controller~='transcript-panel'][open]"
+  end
+
+  test "only the exact value open opens the transcript disclosure" do
+    session = sessions(:running)
+
+    [ "1", "true", "OPEN", "closed", "", [ "open" ] ].each do |value|
+      get session_url(session, transcript: value)
+      assert_response :success
+      assert_select "details[data-controller~='transcript-panel'][open]", false,
+        "transcript=#{value.inspect} must not open the disclosure"
+    end
+  end
+
+  test "the drawer variant honours the transcript param too" do
+    session = sessions(:running)
+
+    get drawer_session_url(session)
+    assert_response :success
+    assert_select "details[data-controller~='transcript-panel'][open]", false
+
+    get drawer_session_url(session, transcript: "open")
+    assert_response :success
+    assert_select "details[data-controller~='transcript-panel'][open]"
+  end
+
   # A failed session's exception detail is rendered in full, inline, and
   # untruncated — the real root cause is frequently at the tail after a wall of
   # leading warnings, so truncating to 150 chars (the old behavior) hid it. The

@@ -105,7 +105,10 @@ class SessionDrawerLogFilterTest < ApplicationSystemTestCase
                     visible: :all
 
     # Still open, and showing the level that was just asked for — no second
-    # click on the disclosure to see the result of the first one.
+    # click on the disclosure to see the result of the first one. Asserting the
+    # frame's own `src` as well as the rendered state is what tells "the server
+    # was asked for it open" apart from "the browser happened to keep it open".
+    assert_selector "turbo-frame#session_detail[src*='transcript=open']", visible: :all
     assert_selector "turbo-frame#session_detail details[data-controller~='transcript-panel'][open]"
     within "turbo-frame#session_detail" do
       assert_text LOG_LINE
@@ -182,6 +185,7 @@ class SessionDrawerLogFilterTest < ApplicationSystemTestCase
 
     assert_selector "select#log-level-filter option[value='show-logs'][selected]", visible: :all
     assert_match(/[?&]filter=show-logs/, page.current_url)
+    assert_match(/[?&]transcript=open/, page.current_url)
     assert_selector "details[data-controller~='transcript-panel'][open]"
     assert_text LOG_LINE
   end
