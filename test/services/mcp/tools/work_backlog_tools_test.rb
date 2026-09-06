@@ -31,6 +31,7 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
     assert_equal 3, output[:total_matching]
     assert_equal 3, output.dig(:counts, :queued)
     assert_equal 0, output.dig(:counts, :in_flight)
+    assert_equal 0, output.dig(:counts, :parked)
     assert_nil output[:next_offset]
     assert_equal 3, output.dig(:ranking, :bands).size
   end
@@ -61,9 +62,33 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
 
     assert_raises(Mcp::ToolError) { @read.call("status" => "done") }
     assert_raises(Mcp::ToolError) { @read.call("limit" => 0) }
+    assert_raises(Mcp::ToolError) { @read.call("status" => "in-flight") }
     assert_raises(Mcp::ToolError) { @read.call("offset" => "abc") }
     assert_raises(Mcp::ToolError) { @read.call("pinned" => "maybe") }
     assert_equal WorkBacklog::Filters::MAX_LIMIT, WorkBacklog::Filters.new("limit" => 10_000).limit
+  end
+
+  # `counts.parked` says HOW MANY have stopped on a person; these say WHICH. A
+  # caller told "parked is not part of your WIP arithmetic" has to be able to go
+  # and look at them, or the advice is unactionable.
+  test "read lists the started items by what became of their session" do
+    running = backlog_item(key: "zimmer#1")
+    running.mark_started!(session: sessions(:running), by: nil)
+    parked = backlog_item(key: "zimmer#2")
+    parked.mark_started!(session: sessions(:needs_input), by: nil)
+    done = backlog_item(key: "zimmer#3")
+    done.mark_started!(session: sessions(:archived), by: nil)
+    backlog_item(key: "zimmer#4") # still queued
+
+    assert_equal [ "zimmer#1" ], @read.call("status" => "in_flight")[:items].map { |i| i[:key] }
+    assert_equal [ "zimmer#2" ], @read.call("status" => "parked")[:items].map { |i| i[:key] }
+    assert_equal [ "zimmer#1", "zimmer#2" ], @read.call("status" => "claimed")[:items].map { |i| i[:key] }.sort
+    assert_equal 3, @read.call("status" => "started")[:total_matching],
+                 "the plain `started` status still means every started item, however it ended"
+
+    counts = @read.call("status" => "claimed")[:counts]
+    assert_equal 1, counts[:in_flight]
+    assert_equal 1, counts[:parked]
   end
 
   # --- append ---------------------------------------------------------------
@@ -140,7 +165,8 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
     assert_match %r{/sessions/#{session[:id]}\z}, session[:url]
     assert_equal @gate.id, output[:pulled_by_session_id]
     assert_equal 0, output.dig(:queue, :queued)
-    assert_equal 2, output.dig(:queue, :in_flight)
+    assert_equal 2, output.dig(:queue, :in_flight), "a freshly spawned session is `waiting`, which is in flight"
+    assert_equal 0, output.dig(:queue, :parked)
     assert_equal @gate.id, WorkBacklogItem.find_by(key: "zimmer#1").started_by_session_id
   end
 

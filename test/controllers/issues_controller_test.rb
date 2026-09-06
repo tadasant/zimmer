@@ -10,10 +10,15 @@ class IssuesControllerTest < ActionDispatch::IntegrationTest
   include WorkBacklogHelpers
   include IssuesHelpers
 
-  test "renders the queue, the in-flight list and the GitHub half" do
+  test "renders the queue, the three started lists and the GitHub half" do
     backlog_item(key: "zimmer#498", title: "Queued and waiting", issue_url: url(498))
     running = backlog_item(key: "zimmer#499", title: "Already running", issue_url: url(499))
     running.mark_started!(session: sessions(:running), by: nil)
+    parked = backlog_item(key: "zimmer#500", title: "Parked on its PR", issue_url: url(500))
+    parked.mark_started!(session: sessions(:needs_input), by: nil, now: 20.hours.ago)
+    finished = backlog_item(key: "zimmer#501", title: "Ran and archived", issue_url: url(501))
+    finished.mark_started!(session: sessions(:archived), by: nil, now: 6.hours.ago)
+    sessions(:archived).update!(archived_at: 1.hour.ago)
 
     with_github_snapshot(github_snapshot(issues: [ github_issue(number: 498), github_issue(number: 700, title: "Not on the queue") ])) do
       get issues_path
@@ -23,7 +28,33 @@ class IssuesControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", "Issues"
     assert_match "Queued and waiting", response.body
     assert_match "Already running", response.body
+    assert_select "h2", text: /Parked on a person/
+    assert_match "Parked on its PR", response.body
+    assert_select "h2", text: /Finished recently/
+    assert_match "Ran and archived", response.body
     assert_match "Not on the queue", response.body
+  end
+
+  # The number Tadas read off this page, and the number the WIP ceiling is
+  # computed against, have to be the same number. A session parked in
+  # `needs_input` for a day is counted in neither.
+  test "the count strip separates what an agent is advancing from what is waiting on a person" do
+    running = backlog_item(key: "zimmer#1")
+    running.mark_started!(session: sessions(:running), by: nil)
+    2.times do |i|
+      parked = backlog_item(key: "zimmer##{20 + i}")
+      parked.mark_started!(session: sessions(:needs_input), by: nil)
+    end
+
+    with_github_snapshot(github_snapshot) { get issues_path }
+
+    assert_response :success
+    assert_select "div", text: "In flight" do |labels|
+      assert_equal "1", labels.first.parent.at_css("div.tabular-nums").text.strip
+    end
+    assert_select "div", text: "Parked on a person" do |labels|
+      assert_equal "2", labels.first.parent.at_css("div.tabular-nums").text.strip
+    end
   end
 
   test "the filters narrow the queue and are round-tripped into the promote button" do

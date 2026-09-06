@@ -123,9 +123,49 @@ to pull on a given night — three, against a WIP ceiling of ten — is the groo
 server's. A pull by `keys` is safe to retry after an error; a pull by `count` is not, and the tool
 says so. A **start now** starts one item at `priority`
 class — the human's lever over the spot queue, which is why it has no MCP path.
-`counts.in_flight` on the read surfaces is the number of started items whose session is still
-alive: the number the groomer's WIP ceiling counts, which is sessions this backlog produced and
-not the whole spot population.
+
+## What `in_flight` counts
+
+`in_flight` is not only a number on a page. The groomer's pull is
+`max(0, min(PER_RUN_CAP, WIP_CEILING − in_flight))`, so anything counted as in flight that is not
+actually being worked ratchets the ceiling down — and because the count only ever goes up while the
+queue stops draining, it fails silently, with no error anywhere.
+
+So the line is drawn at **will this move without a person**:
+
+| Session status | In flight? | Why |
+| --- | --- | --- |
+| `running` | yes | a turn is on a worker |
+| `waiting` | yes | queued for a worker, or asleep on a wake it armed for itself — it resumes on its own |
+| `needs_input` | **no** | it has stopped and handed the work to a human |
+| `archived`, `failed` | no | the session has ended |
+
+**A session parked holding an open PR is not in flight.** It is spending no compute, no agent is
+advancing it, and it can sit in `needs_input` for days — so counting it lets a handful of finished
+items hold the whole WIP ceiling shut. That cut lands exactly on the fleet's own protocol rather
+than beside it: a session whose PR is merely waiting for the merge gate to rate it *sleeps* on a
+bounded self-wake, which is a `waiting` session and stays in flight; it comes to rest in
+`needs_input` only once a human is what the PR is waiting on.
+
+Those parked items are not hidden. `counts.parked` is reported beside `counts.in_flight` on every
+read surface — the REST index, `get_work_backlog`, `pull_work_backlog_items` — and
+[the Issues view](/operate/issues-view/) renders them as their own section, because "these are
+waiting on you" is usually the answer to "why is the queue not draining".
+
+They are also **listable**, not only countable: `status` accepts `in_flight`, `parked` and
+`claimed` (both) alongside `queued` / `started` / `removed` / `all`, on the REST index and on
+`get_work_backlog`. A count says how many; a caller told "parked is not part of your WIP
+arithmetic" needs to be able to go and look at which.
+
+Both counts are of sessions **this backlog produced**, not of the whole spot population.
+
+**Nothing bounds the parked pile, and that is a deliberate open edge.** Narrowing `in_flight` also
+removes the only thing that indirectly limited how many finished-but-unmerged sessions the backlog
+could accumulate: parked sessions are outside `SpotGateService`'s fleet cap too, and `needs_input`
+is a non-reapable status, so each one holds its clone. If merging stops for a fortnight the pull
+keeps pulling while `parked` climbs. The rule for a groomer is therefore a second condition rather
+than a second number: when `parked` keeps growing, the useful action is to get those PRs merged,
+not to pull more. See [Limitations](/limitations/).
 
 ## The import
 

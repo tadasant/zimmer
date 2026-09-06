@@ -104,7 +104,7 @@ class Issues::BoardTest < ActiveSupport::TestCase
     assert_equal [ 3 ], result.loose_rows.map { |row| row.github.number }
   end
 
-  test "in-flight rows are started items with a live session, and ignore the filters" do
+  test "in-flight rows are started items an agent is advancing, and ignore the filters" do
     live = backlog_item(key: "zimmer#1", repo: "tadasant/zimmer")
     live.mark_started!(session: sessions(:running), by: nil)
     dead = backlog_item(key: "motet#1", repo: "tadasant/motet")
@@ -113,6 +113,60 @@ class Issues::BoardTest < ActiveSupport::TestCase
     rows = board(filters: { "repo" => "tadasant/motet" }).in_flight_rows
 
     assert_equal %w[zimmer#1], rows.map(&:key), "a repo filter must not empty the running list"
+  end
+
+  # THE BUG THE THREE SECTIONS EXIST FOR. One item is parked in `needs_input`
+  # holding an open PR, one archived hours ago. The old page counted the first as
+  # in flight — under the heading that answers "what is running" — and showed no
+  # trace of the second at all, so it simultaneously displayed work that had
+  # finished a day earlier and hid work that had run and completed that morning.
+  test "a parked item and a finished one each land in their own section, not in flight" do
+    running = backlog_item(key: "zimmer#1")
+    running.mark_started!(session: sessions(:running), by: nil)
+
+    holding_a_pr = sessions(:needs_input)
+    holding_a_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/tadasant/zimmer/pull/1" ] })
+    parked = backlog_item(key: "zimmer#2")
+    parked.mark_started!(session: holding_a_pr, by: nil, now: 20.hours.ago)
+
+    finished = backlog_item(key: "zimmer#3")
+    finished.mark_started!(session: sessions(:archived), by: nil, now: 6.hours.ago)
+    sessions(:archived).update!(archived_at: 1.hour.ago)
+
+    result = board
+
+    assert_equal %w[zimmer#1], result.in_flight_rows.map(&:key)
+    assert_equal 1, result.counts[:in_flight]
+    assert_equal %w[zimmer#2], result.parked_rows.map(&:key)
+    assert_equal 1, result.counts[:parked]
+    assert_equal %w[zimmer#3], result.recently_ended_rows.map(&:key)
+  end
+
+  # The window is measured from the END of the session, so the item that proves it
+  # is one started days before the window opened whose session archived inside it.
+  test "the finished-recently list stops at its window, measured from when each session ended" do
+    recent = backlog_item(key: "zimmer#1")
+    recent.mark_started!(session: sessions(:archived), by: nil, now: 4.days.ago)
+    sessions(:archived).update!(archived_at: 1.hour.ago)
+    stale = backlog_item(key: "zimmer#2")
+    stale.mark_started!(session: sessions(:failed), by: nil, now: 1.hour.ago)
+    sessions(:failed).update_columns(updated_at: Issues::Board::RECENTLY_ENDED_WINDOW.ago - 1.hour)
+
+    assert_equal %w[zimmer#1], board.recently_ended_rows.map(&:key),
+                 "a long-running item that just finished is in; one that ended before the window is out"
+  end
+
+  test "an issue whose session is parked on an open PR is claimed, not loose" do
+    item = backlog_item(key: "zimmer#7", issue_url: url(7))
+    item.mark_started!(session: sessions(:needs_input), by: nil)
+    snapshot = github_snapshot(issues: [ github_issue(number: 7) ])
+
+    result = board(snapshot: snapshot)
+
+    assert_empty result.in_flight_rows, "nothing is advancing it"
+    assert_equal %w[zimmer#7], result.parked_rows.map(&:key)
+    assert_empty result.loose_rows,
+                 "a session is sitting on it — the GitHub half must not say nobody is working it"
   end
 
   test "counts describe the whole queue, not the filtered slice" do

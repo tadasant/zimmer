@@ -15,6 +15,21 @@ module WorkBacklog
     MAX_LIMIT = 200
     ANY_STATUS = "all"
 
+    # Three readings of `started` that are not columns: which of the sessions the
+    # backlog produced are still being advanced, which have stopped on a person,
+    # and the two together. They are offered as `status` values because that is
+    # the question a caller is actually asking — `counts.in_flight` says HOW MANY
+    # without saying WHICH, and a caller told "parked is not part of your WIP
+    # arithmetic" needs to be able to go and look at them. The Issues page reads
+    # the same three through the same model scopes.
+    LIVE_STATUSES = {
+      "in_flight" => :in_flight,
+      "parked" => :parked,
+      "claimed" => :claimed
+    }.freeze
+
+    STATUS_VOCABULARY = (WorkBacklogItem::STATUSES + LIVE_STATUSES.keys + [ ANY_STATUS ]).freeze
+
     KEYS = %w[status surface repo scope_direction kind estimated_cost pinned key added_by].freeze
 
     # ActiveModel's Boolean cast reads any non-blank string that is not a known
@@ -61,7 +76,13 @@ module WorkBacklog
     # MCP tool slices with these.
     def scope
       scope = WorkBacklogItem.all
-      scope = scope.where(status: status) unless status == ANY_STATUS
+      scope = if LIVE_STATUSES.key?(status)
+        scope.public_send(LIVE_STATUSES.fetch(status))
+      elsif status == ANY_STATUS
+        scope
+      else
+        scope.where(status: status)
+      end
       scope = scope.where(surface: surface) if surface
       scope = scope.where(repo: repo) if repo
       scope = scope.where(scope_direction: scope_direction) if scope_direction
@@ -89,14 +110,15 @@ module WorkBacklog
     private
 
     # The queue is what callers almost always mean, so `queued` is the default;
-    # `all` widens to history.
+    # `all` widens to history, and LIVE_STATUSES narrows `started` by what became
+    # of the session.
     def parse_status(value)
       value = value.presence&.to_s&.strip
       return WorkBacklogItem::QUEUED if value.nil?
-      return ANY_STATUS if value == ANY_STATUS
-      return value if WorkBacklogItem::STATUSES.include?(value)
+      return value if value == ANY_STATUS
+      return value if WorkBacklogItem::STATUSES.include?(value) || LIVE_STATUSES.key?(value)
 
-      raise InvalidFilter, "status must be one of #{(WorkBacklogItem::STATUSES + [ ANY_STATUS ]).join(', ')} (got #{value.inspect})"
+      raise InvalidFilter, "status must be one of #{STATUS_VOCABULARY.join(', ')} (got #{value.inspect})"
     end
 
     def parse_enum(value, allowed, name)
