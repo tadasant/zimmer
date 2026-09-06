@@ -37,8 +37,11 @@
 # to `running` *before* it enqueues the job whose recreate path rebuilds the
 # clone — so on the congested afternoon this job exists for, `running` with no
 # clone root is a normal, minutes-to-hours-long state. That case is not silent
-# anyway: the session fails with "clone directory not found", which is already an
-# error somebody sees.
+# anyway: the follow-up path rebuilds the root from the row as a matter of
+# course, and the resume path now does too where it safely can
+# (`AgentSessionJob#handled_lost_clone?`, zimmer#817). Both say so on the
+# session's own timeline, and a resume whose rebuild is refused — a live agent
+# process, a spent budget — still fails with "clone directory not found".
 #
 # A scaffolded fork clone (`clone_scaffolded`) is exempt from the git-tree check:
 # it was created empty on purpose, and its `git init` is best-effort. It is not

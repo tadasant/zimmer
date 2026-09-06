@@ -50,6 +50,10 @@ class RetryBudgetTest < ActiveSupport::TestCase
     silent_recovery: {
       key: "silent_recovery_count", max: 3, stamp: "last_silent_recovery_at",
       clears: %w[silent_recovery_count last_silent_recovery_at]
+    },
+    lost_clone: {
+      key: "lost_clone_recovery_count", max: 2, stamp: "last_lost_clone_recovery_at",
+      clears: %w[lost_clone_recovery_count last_lost_clone_recovery_at]
     }
   }.freeze
 
@@ -64,7 +68,7 @@ class RetryBudgetTest < ActiveSupport::TestCase
     end
   end
 
-  test "all declares exactly the eight auto-recovery budgets" do
+  test "all declares exactly the nine auto-recovery budgets" do
     assert_equal DECLARED.keys, RetryBudget.all.map(&:name)
   end
 
