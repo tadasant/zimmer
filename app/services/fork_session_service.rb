@@ -582,19 +582,21 @@ class ForkSessionService
   end
 
   def cleanup_inherited_files(clone_path)
-    # Remove the inherited stderr log - the new session will create its own. The
-    # filename comes from the runtime the fork will be driven by, so a forked
-    # Codex session sheds codex_stderr.log rather than a Claude filename it never
-    # writes.
+    # Remove the spawn artifacts the source session's process left in the clone -
+    # the new session will create its own. The list comes from the runtime the
+    # fork will be driven by, so a forked Codex session sheds codex_stderr.log and
+    # codex_events.jsonl rather than a Claude filename it never writes. Shedding
+    # the Codex event log is not tidiness: it names the SOURCE session's Codex
+    # thread, and the transcript pipeline reads that id back (CodexEventStream),
+    # so a fork that kept it would continue someone else's conversation.
     adapter_class = RuntimeRegistry.cli_adapter_class_for(source_session.agent_runtime)
 
-    stderr_log = adapter_class.stderr_log_path(clone_path)
-    file_system.rm_rf(stderr_log) if file_system.exists?(stderr_log)
-
+    directories = [ clone_path ]
     # If there's a subdirectory, also clean up there
-    if source_session.subdirectory.present?
-      subdir_stderr_log = adapter_class.stderr_log_path(File.join(clone_path, source_session.subdirectory))
-      file_system.rm_rf(subdir_stderr_log) if file_system.exists?(subdir_stderr_log)
+    directories << File.join(clone_path, source_session.subdirectory) if source_session.subdirectory.present?
+
+    directories.flat_map { |dir| adapter_class.spawn_artifact_paths(dir) }.each do |path|
+      file_system.rm_rf(path) if file_system.exists?(path)
     end
   end
 

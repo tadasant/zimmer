@@ -4,6 +4,9 @@ require "test_helper"
 require "zstd-ruby"
 
 class CodexTranscriptSourceTest < ActiveSupport::TestCase
+  # A thread id from a real codex-cli 0.146.0 run; the same UUID names its rollout.
+  REAL_THREAD_ID = "01a07412-4d9a-78f0-aad9-2cde1bf7586e"
+
   setup do
     @original_codex_home = ENV["CODEX_HOME"]
     # Default the suite to the unset-CODEX_HOME case so path expectations are
@@ -107,6 +110,100 @@ class CodexTranscriptSourceTest < ActiveSupport::TestCase
     @file_system.set_mtime(newer, Time.current)
 
     assert_equal newer, @source.find_main_transcript(transcript_directory: @sessions_dir, session: @session)
+  end
+
+  # === the --json event stream names the rollout (#109) ===
+  #
+  # Codex prints its thread UUID on the first line of stdout, which the adapter
+  # captures into the working directory. Reading it turns "which of the shared
+  # tree's rollouts is ours?" from an inference into a lookup.
+
+  test "runtime_session_id reads the thread id from the captured event stream" do
+    clone = "/home/rails/.zimmer/clones/repo-main-OWN"
+    @session.update!(metadata: { "working_directory" => clone })
+    write_event_stream(clone, REAL_THREAD_ID)
+
+    assert_equal REAL_THREAD_ID, @source.runtime_session_id(session: @session)
+  end
+
+  test "runtime_session_id takes an explicit working directory over the session's metadata" do
+    metadata_clone = "/home/rails/.zimmer/clones/repo-main-STALE"
+    explicit_clone = "/home/rails/.zimmer/clones/repo-main-OWN"
+    @session.update!(metadata: { "working_directory" => metadata_clone })
+    write_event_stream(metadata_clone, "11111111-1111-1111-1111-111111111111")
+    write_event_stream(explicit_clone, REAL_THREAD_ID)
+
+    assert_equal REAL_THREAD_ID,
+      @source.runtime_session_id(session: @session, working_directory: explicit_clone)
+  end
+
+  test "runtime_session_id is nil with no working directory and no event stream" do
+    @session.update!(metadata: {})
+    assert_nil @source.runtime_session_id(session: @session)
+
+    @session.update!(metadata: { "working_directory" => "/home/rails/.zimmer/clones/repo-main-OWN" })
+    assert_nil @source.runtime_session_id(session: @session)
+  end
+
+  test "the event stream names this session's rollout even when a foreign one is newer" do
+    # The concurrent-session case, answered exactly rather than heuristically.
+    # Note the own rollout carries a FOREIGN cwd: the cwd scan would reject it,
+    # so passing this proves the stream — not the heuristic — made the choice.
+    own_clone = "/home/rails/.zimmer/clones/repo-main-OWN"
+    @session.update!(session_id: SecureRandom.uuid, metadata: { "working_directory" => own_clone })
+    write_event_stream(own_clone, REAL_THREAD_ID)
+    @file_system.mkdir_p(@day_dir)
+
+    own = "#{@day_dir}/rollout-2026-05-29T10-00-00-#{REAL_THREAD_ID}.jsonl"
+    foreign = "#{@day_dir}/rollout-2026-05-29T10-00-05-foreign-uuid.jsonl"
+    @file_system.write(own, session_meta_line(cwd: "/somewhere/else", id: REAL_THREAD_ID))
+    @file_system.write(foreign, session_meta_line(cwd: own_clone))
+    @file_system.set_mtime(own, 1.minute.ago)
+    @file_system.set_mtime(foreign, Time.current)
+
+    assert_equal own, @source.find_main_transcript(transcript_directory: @sessions_dir, session: @session)
+  end
+
+  test "the event stream selects the compressed rollout when that is all there is" do
+    own_clone = "/home/rails/.zimmer/clones/repo-main-OWN"
+    @session.update!(session_id: SecureRandom.uuid, metadata: { "working_directory" => own_clone })
+    write_event_stream(own_clone, REAL_THREAD_ID)
+    @file_system.mkdir_p(@day_dir)
+
+    compressed = "#{@day_dir}/rollout-2026-05-29T10-00-00-#{REAL_THREAD_ID}.jsonl.zst"
+    @file_system.binwrite(compressed, Zstd.compress(session_meta_line(cwd: own_clone, id: REAL_THREAD_ID)))
+
+    assert_equal compressed, @source.find_main_transcript(transcript_directory: @sessions_dir, session: @session)
+  end
+
+  test "the cwd heuristic still runs when the stream names a thread with no rollout yet" do
+    # Codex prints thread.started before it has written anything to the rollout,
+    # so the glob can legitimately miss. Falling through must not be an error.
+    own_clone = "/home/rails/.zimmer/clones/repo-main-OWN"
+    @session.update!(session_id: SecureRandom.uuid, metadata: { "working_directory" => own_clone })
+    write_event_stream(own_clone, REAL_THREAD_ID)
+    @file_system.mkdir_p(@day_dir)
+
+    own = "#{@day_dir}/rollout-2026-05-29T10-00-00-some-other-uuid.jsonl"
+    @file_system.write(own, session_meta_line(cwd: own_clone))
+
+    assert_equal own, @source.find_main_transcript(transcript_directory: @sessions_dir, session: @session)
+  end
+
+  test "a session id that already matches a rollout is preferred over the stream" do
+    # Once captured, the stored id IS the thread id; the stream is only consulted
+    # before that. This keeps the existing lookup the fast path.
+    own_clone = "/home/rails/.zimmer/clones/repo-main-OWN"
+    @session.update!(session_id: "uuid-stored", metadata: { "working_directory" => own_clone })
+    write_event_stream(own_clone, REAL_THREAD_ID)
+    @file_system.mkdir_p(@day_dir)
+
+    stored = "#{@day_dir}/rollout-2026-05-29T10-00-00-uuid-stored.jsonl"
+    streamed = "#{@day_dir}/rollout-2026-05-29T10-00-05-#{REAL_THREAD_ID}.jsonl"
+    @file_system.write(stored, session_meta_line(cwd: own_clone))
+    @file_system.write(streamed, session_meta_line(cwd: own_clone))
+
+    assert_equal stored, @source.find_main_transcript(transcript_directory: @sessions_dir, session: @session)
   end
 
   # === concurrent-session isolation (regression: cross-session contamination) ===
@@ -344,6 +441,15 @@ class CodexTranscriptSourceTest < ActiveSupport::TestCase
   # A Codex rollout's first JSONL record: the `session_meta` line whose payload
   # carries the spawn `cwd` (and `id`). This is what #rollout_cwd reads to scope
   # the fallback to the session's own clone.
+  # The `--json` event stream the adapter captures into the working directory —
+  # the head of a real one, whose first line names the thread.
+  def write_event_stream(working_directory, thread_id)
+    @file_system.write(
+      CodexRuntimeAdapter.event_log_path(working_directory),
+      %({"type":"thread.started","thread_id":"#{thread_id}"}\n{"type":"turn.started"}\n)
+    )
+  end
+
   def session_meta_line(cwd:, id: SecureRandom.uuid)
     JSON.generate(
       "timestamp" => "2026-05-29T10:00:00.000Z",

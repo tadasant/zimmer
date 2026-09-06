@@ -415,10 +415,33 @@ frozen for tens of minutes and then caught up all at once.
 The other half of the same failure is the id the poller looks the file up by. Codex mints its own
 rollout UUID, so after a fresh start the stored `session_id` names an abandoned rollout;
 `ProcessLifecycleManager#release_stale_runtime_session_id!` drops it so
-`CodexTranscriptSource#find_main_transcript` falls back to matching on the session's clone path and
-finds the live rollout. Without that, the locator kept returning the dead file and
-`capture_runtime_session_id!` could never learn the new UUID — it reads that UUID from a file the
-locator would never hand it.
+`CodexTranscriptSource#find_main_transcript` can find the live rollout instead. Without that, the
+locator kept returning the dead file and `capture_runtime_session_id!` could never learn the new
+UUID — it reads that UUID from a file the locator would never hand it.
+
+### Codex is told its UUID; it no longer has to be inferred
+
+That circle — the locator needs the UUID, the UUID comes from a file only the locator can find —
+is why the fallback existed at all. `codex exec --json` closes it. Zimmer was already passing the
+flag and discarding stdout; the adapter now captures that stream into `codex_events.jsonl` inside
+the working directory, and `CodexEventStream` reads the thread UUID off its first line
+(`{"type":"thread.started","thread_id":"…"}`), printed before the model is even contacted (#109).
+
+Two consumers, and both of them are earlier than they used to be:
+
+| Consumer | What it does with it |
+| --- | --- |
+| `TranscriptPollerService#capture_runtime_session_id_from_stream!` | Runs at the **top** of `poll_and_broadcast`, before the transcript is located, so `sessions.session_id` holds the real `codex exec resume` target from the first poll — including on a poll that finds no rollout at all |
+| `CodexTranscriptSource#find_main_transcript` | Globs the rollout by that UUID instead of inferring it |
+
+The clone-path inference survives as the fallback for the window before the first line is flushed,
+and for a rollout Zimmer adopted without having spawned it. `capture_runtime_session_id!` likewise
+survives as the second capture point. Both are now backstops rather than the primary path.
+
+The seam is `TranscriptSource#runtime_session_id`, which defaults to `nil` — "no side channel, use
+the transcript", which is the right answer for Claude and Pi, whose stored `session_id` Zimmer
+supplied in the first place. `ForkSessionService` sheds the event log along with the stderr log
+(`RuntimeCliAdapter.spawn_artifact_paths`), because it names the **source** session's thread.
 
 ## Rotation repairs the timeline, not the agent's memory
 
