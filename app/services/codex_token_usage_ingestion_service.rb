@@ -2,7 +2,6 @@
 
 require "json"
 require "zstd-ruby"
-require "stringio"
 
 # Reads token usage out of Codex rollouts and writes it to `session_token_usages`.
 #
@@ -163,10 +162,11 @@ class CodexTokenUsageIngestionService
     paths = @paths || self.class.rollout_paths(root: @root)
 
     paths.each do |path|
-      next if @modified_since && File.mtime(path) < @modified_since
+      # `stat` in its own rescue rather than around the yield, for the reason
+      # #each_line spells out: a rescue that spans the block catches the block's
+      # exceptions too, and the block below reaches the database.
+      next unless within_window?(path)
       yield path
-    rescue SystemCallError => e
-      @logger.warn("[CodexTokenUsageIngestion] #{path}: #{e.message}")
     end
   end
 
@@ -230,10 +230,23 @@ class CodexTokenUsageIngestionService
       end
 
       info = payload["info"]
-      next unless info.is_a?(Hash)
+      usage = info["last_token_usage"] if info.is_a?(Hash)
 
-      usage = info["last_token_usage"]
-      next unless usage.is_a?(Hash)
+      # REFUSED, not silently dropped, and this is the shape that makes the
+      # distinction matter. Codex CLI 0.45.0 wrote the counts flat on the payload
+      # (`{"type":"token_count","input_tokens":1200,…}`) with no `info` wrapper
+      # and no total/last split — see test/fixtures/files/codex_rollout.jsonl,
+      # which is that vintage. Those figures are the session's RUNNING TOTAL, so
+      # reading them as a per-turn delta would multiply an old rollout's spend by
+      # roughly the number of turns in it. Counting the skip is what stops a sweep
+      # of an all-0.45.0 corpus from reporting `rows_written: 0, skipped: 0` —
+      # indistinguishable, on /health, from a corpus that genuinely spent nothing.
+      unless usage.is_a?(Hash)
+        skip(result, "#{path}: a token_count event carries no info.last_token_usage — a pre-0.46 " \
+                     "rollout reports a cumulative total with no per-turn delta, which cannot be " \
+                     "keyed or summed safely")
+        next
+      end
 
       volumes = extract_volumes(usage)
       next if volumes.values_at(:input_tokens, :output_tokens,
@@ -295,33 +308,41 @@ class CodexTokenUsageIngestionService
 
   # Codex's `TokenUsage` onto the table's columns.
   #
-  #   input_tokens          → the TOTAL prompt, cached portion included
-  #   cached_input_tokens   → cache_read_tokens
+  #   input_tokens             → the TOTAL prompt, cached and written parts included
+  #   cached_input_tokens      → cache_read_tokens
   #   cache_write_input_tokens → cache_creation_tokens
-  #   output_tokens         → output_tokens (`reasoning_output_tokens` is a
-  #                           SUBSET of it, not extra volume — Codex's own
-  #                           `total_tokens` is exactly input + output)
+  #   output_tokens            → output_tokens (`reasoning_output_tokens` is a
+  #                              SUBSET of it, not extra volume — Codex's own
+  #                              `total_tokens` is exactly input + output)
   #
-  # `input_tokens` is stored NET of the cached portion, because that is what the
-  # column means everywhere else: Anthropic reports `input_tokens` excluding
-  # cache reads and creations, and TokenPricing charges the three at three
-  # different rates. Codex follows OpenAI, where the prompt total INCLUDES its
-  # cached part — so subtracting is what stops a cached token being billed twice,
-  # once at the input rate and again at the cache-read rate. Clamped at zero: the
-  # subtraction is arithmetic on data, and a volume is never negative.
+  # `input_tokens` is stored NET of the other two, because that is what the column
+  # means everywhere else: Anthropic reports `input_tokens` excluding cache reads
+  # and creations, and TokenPricing charges the three at three different rates.
+  # Codex follows OpenAI, where the prompt total INCLUDES its cached part — so
+  # subtracting is what stops a cached token being billed twice, once at the input
+  # rate and again at the cache-read rate, and what keeps the row's four volumes
+  # adding back up to the `total_tokens` the rollout reported.
+  #
+  # `cache_write_input_tokens` is subtracted on the same reasoning even though it
+  # is zero on every rollout in this deployment's corpus. It sits beside
+  # `cached_input_tokens` in the same struct, so the conservative reading is that
+  # it is a subset of the prompt in the same way; treating it as extra volume
+  # would inflate `total_tokens` on the day it first arrives non-zero, silently.
+  # Both are clamped: the subtraction is arithmetic on data, and a volume is never
+  # negative.
   def extract_volumes(usage)
     prompt = count(usage["input_tokens"])
     cached = count(usage["cached_input_tokens"]).clamp(0, prompt)
-    cache_write = count(usage["cache_write_input_tokens"])
+    cache_write = count(usage["cache_write_input_tokens"]).clamp(0, prompt - cached)
 
     {
-      input_tokens: prompt - cached,
+      input_tokens: prompt - cached - cache_write,
       output_tokens: count(usage["output_tokens"]),
       cache_read_tokens: cached,
       cache_creation_tokens: cache_write,
-      # Codex reports one undifferentiated cache-write figure with no TTL, so the
-      # split is left at zero and TokenPricing charges the whole amount at its
-      # unsplit rate — the same treatment a pre-`cache_creation` Claude line gets.
+      # Codex reports no TTL alongside the cache-write figure, so the split is left
+      # at zero and TokenPricing charges the whole amount at its unsplit rate —
+      # the same treatment a pre-`cache_creation` Claude line gets.
       cache_creation_5m_tokens: 0,
       cache_creation_1h_tokens: 0
     }
@@ -386,7 +407,14 @@ class CodexTokenUsageIngestionService
 
     @by_clone ||= {}
     @by_clone.fetch(basename) do
-      @by_clone[basename] = session_row(Session.where("metadata->>'clone_path' LIKE ?", "%/#{basename}"))
+      # Escaped, unlike TokenUsageIngestionService's otherwise identical lookup:
+      # that one is handed a directory name Zimmer sanitized itself, while this one
+      # comes out of a file on disk. `_` is a single-character wildcard and `%`
+      # matches everything, so an unescaped `cwd` could match a session that is not
+      # this one — and `pick` would then attribute the spend to whichever row the
+      # planner returned first.
+      pattern = "%/#{ActiveRecord::Base.sanitize_sql_like(basename)}"
+      @by_clone[basename] = session_row(Session.where("metadata->>'clone_path' LIKE ?", pattern))
     end
   end
 
@@ -421,6 +449,18 @@ class CodexTokenUsageIngestionService
     match && match[:root]
   end
 
+  # Is this rollout inside the lookback window? A file that vanished between the
+  # glob and the `stat` — a rollout compressed in place mid-sweep is the ordinary
+  # way — is skipped rather than raising.
+  def within_window?(path)
+    return true if @modified_since.nil?
+
+    File.mtime(path) >= @modified_since
+  rescue SystemCallError => e
+    @logger.warn("[CodexTokenUsageIngestion] #{path}: #{e.message}")
+    false
+  end
+
   def uuid_from_filename(path)
     match = ROLLOUT_FILENAME.match(File.basename(path.to_s))
     match && match[:uuid]
@@ -440,32 +480,90 @@ class CodexTokenUsageIngestionService
   # longest line is most of a system prompt, and a historical sweep visits every
   # one of them. Holding one decoded chunk plus one line beats holding a whole
   # decompressed transcript per file.
-  def each_line(path)
+  # THE RESCUES BELONG TO THE READ, NOT TO THE BLOCK. The caller's block issues
+  # database queries (session attribution), and a rescue around the whole
+  # `yield` would catch their exceptions too — including the two that
+  # TokenUsageIngestionJob and TokenUsageBackfillJob go out of their way to
+  # re-raise. `GoodJob::InterruptError` and `ActiveRecord::StatementTimeout` are
+  # both StandardError, so swallowing them here would silently disable
+  # `discard_interrupt_quietly` and `retry_on ... attempts: 5` for this runtime
+  # alone: a deploy landing mid-sweep would drop the rest of a rollout, log one
+  # `warn`, and let the post-deploy cursor advance past it. So the file-level
+  # rescues sit inside the readers, around the I/O only.
+  def each_line(path, &block)
     if path.to_s.end_with?(".zst")
-      each_zst_line(path) { |line| yield line }
+      each_zst_line(path, &block)
     else
-      File.foreach(path) { |line| yield line }
+      each_plain_line(path, &block)
     end
+  end
+
+  def each_plain_line(path)
+    io = File.open(path, "r")
   rescue SystemCallError => e
     @logger.warn("[CodexTokenUsageIngestion] #{path}: #{e.message}")
-  rescue StandardError => e
-    # A corrupt `.zst` costs its own file and no other. Logged at `warn`: a
-    # truncated compressed rollout is a data oddity, not a broken system, and the
-    # error-log alert pages on `.error`.
-    @logger.warn("[CodexTokenUsageIngestion] #{path}: #{e.class}: #{e.message}")
+  else
+    begin
+      while (line = read_line(io, path))
+        yield line
+      end
+    ensure
+      io.close
+    end
+  end
+
+  # One line, or nil at EOF / on a read error. Split out so the rescue covers the
+  # read and not the block the caller runs on the result.
+  def read_line(io, path)
+    io.gets
+  rescue SystemCallError, IOError => e
+    @logger.warn("[CodexTokenUsageIngestion] #{path}: #{e.message}")
+    nil
   end
 
   def each_zst_line(path)
     stream = Zstd::StreamingDecompress.new
     buffer = +""
+    io = begin
+      File.open(path, "rb")
+    rescue SystemCallError => e
+      @logger.warn("[CodexTokenUsageIngestion] #{path}: #{e.message}")
+      return
+    end
 
-    File.open(path, "rb") do |io|
-      while (chunk = io.read(ZST_CHUNK_BYTES))
-        buffer << stream.decompress(chunk).force_encoding(Encoding::UTF_8)
+    begin
+      loop do
+        # A corrupt or truncated `.zst` costs its own file and no other. `warn`
+        # rather than `error`: a half-written compressed rollout is a data
+        # oddity, not a broken system, and the error-log alert pages on `.error`.
+        chunk = begin
+          io.read(ZST_CHUNK_BYTES)
+        rescue SystemCallError, IOError => e
+          @logger.warn("[CodexTokenUsageIngestion] #{path}: #{e.message}")
+          nil
+        end
+        break if chunk.nil?
+
+        decoded = begin
+          # `force_encoding`, not `encode`: a multibyte character can straddle a
+          # chunk boundary, so the tail of a decoded chunk may be an incomplete
+          # sequence. Tagging the bytes and concatenating leaves the split
+          # character to be completed by the next chunk — `String#<<` between two
+          # UTF-8 strings is a byte concatenation with no transcode, and
+          # `String#index` returns nil rather than raising on a broken tail.
+          stream.decompress(chunk).force_encoding(Encoding::UTF_8)
+        rescue StandardError => e
+          @logger.warn("[CodexTokenUsageIngestion] #{path}: #{e.class}: #{e.message}")
+          break
+        end
+
+        buffer << decoded
         while (index = buffer.index("\n"))
           yield buffer.slice!(0..index)
         end
       end
+    ensure
+      io.close
     end
 
     yield buffer unless buffer.empty?

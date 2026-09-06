@@ -104,6 +104,31 @@ class CodexTokenUsageIngestionServiceTest < ActiveSupport::TestCase
 
   # --- what lands ------------------------------------------------------------
 
+  # `cache_write_input_tokens` is zero on every rollout in this deployment's
+  # corpus, so this is the only place its handling is pinned: it sits beside
+  # `cached_input_tokens` in the same struct and is treated as a subset of the
+  # prompt the same way. Counting it as extra volume instead would inflate
+  # `total_tokens` on the day it first arrives non-zero, silently.
+  test "treats a cache write as a subset of the prompt, not as extra volume" do
+    uuid = SecureRandom.uuid
+    codex_session(uuid: uuid)
+    write_rollout(
+      uuid, session_meta(uuid), turn_context,
+      token_count(timestamp: "2026-08-14T11:44:54.000Z", input: 1_000, cached: 300,
+                  cache_write: 200, output: 50)
+    )
+
+    ingest
+
+    row = SessionTokenUsage.sole
+    assert_equal 500, row.input_tokens
+    assert_equal 300, row.cache_read_tokens
+    assert_equal 200, row.cache_creation_tokens
+    assert_equal 50, row.output_tokens
+    assert_equal 1_050, row.input_tokens + row.cache_read_tokens +
+                        row.cache_creation_tokens + row.output_tokens
+  end
+
   test "writes one row per token_count event, keyed on the rollout uuid and the event timestamp" do
     uuid = SecureRandom.uuid
     session = codex_session(uuid: uuid)
@@ -134,6 +159,10 @@ class CodexTokenUsageIngestionServiceTest < ActiveSupport::TestCase
     assert_equal 11_008, first.cache_read_tokens
     assert_equal 184, first.output_tokens
     assert_equal 0, first.cache_creation_tokens
+    # The four volumes add back up to the `total_tokens` the rollout reported,
+    # which is the property the subtraction exists to preserve.
+    assert_equal 45_243, first.input_tokens + first.cache_read_tokens +
+                         first.cache_creation_tokens + first.output_tokens
     assert_equal "gpt-5.6-terra", first.model
     assert_equal "codex", first.agent_runtime
     assert_equal uuid, first.runtime_session_id
@@ -343,6 +372,114 @@ class CodexTokenUsageIngestionServiceTest < ActiveSupport::TestCase
 
     assert_equal 2, result.files_scanned
     assert_equal 1, result.session_rows
+  end
+
+  # --- events that cannot be keyed or read ------------------------------------
+
+  # Codex CLI 0.45.0 wrote the counts flat on the payload with no total/last
+  # split, and those figures are the session's RUNNING TOTAL — reading them as a
+  # per-turn delta would multiply an old rollout's spend by its turn count. The
+  # shape is real: test/fixtures/files/codex_rollout.jsonl is that vintage.
+  # Refused AND counted, so a sweep of an all-0.45.0 corpus does not report
+  # `rows_written: 0, skipped: 0` and read, on /health, like a corpus that spent
+  # nothing.
+  test "refuses a pre-0.46 flat token_count and says so in the skipped count" do
+    uuid = SecureRandom.uuid
+    codex_session(uuid: uuid)
+    write_rollout(
+      uuid, session_meta(uuid), turn_context,
+      { "timestamp" => "2026-05-29T21:39:18.000Z", "type" => "event_msg",
+        "payload" => { "type" => "token_count", "input_tokens" => 1_200, "output_tokens" => 340 } }
+    )
+
+    result = ingest
+
+    assert_equal 0, result.session_rows
+    assert_equal 1, result.skipped_events
+    assert_equal 0, SessionTokenUsage.count
+  end
+
+  # The timestamp IS the dedup key, so an event without one has no key that
+  # survives a re-run. Refused rather than falling back to the file mtime, which
+  # changes when the rollout is compressed.
+  test "skips a token_count event with no timestamp" do
+    uuid = SecureRandom.uuid
+    codex_session(uuid: uuid)
+    event = token_count(timestamp: "2026-08-14T11:44:54.000Z", input: 100, output: 10)
+    event.delete("timestamp")
+    write_rollout(uuid, session_meta(uuid), turn_context, event)
+
+    result = ingest
+
+    assert_equal 0, result.session_rows
+    assert_equal 1, result.skipped_events
+  end
+
+  # Both halves of the key have to be there. A rollout whose filename does not
+  # carry a uuid and whose session_meta does not either has no namespace.
+  test "skips an event from a rollout with no uuid in the filename or the header" do
+    dir = File.join(@root, "2026/08/14")
+    FileUtils.mkdir_p(dir)
+    events = [
+      { "timestamp" => "2026-08-14T11:44:44.566Z", "type" => "session_meta",
+        "payload" => { "cwd" => CWD } },
+      turn_context,
+      token_count(timestamp: "2026-08-14T11:44:54.000Z", input: 100, output: 10)
+    ]
+    File.write(File.join(dir, "rollout-2026-08-14T11-44-44-not-a-uuid.jsonl"),
+               events.map { |e| JSON.generate(e) }.join("\n") + "\n")
+
+    result = ingest
+
+    assert_equal 0, result.session_rows
+    assert_equal 1, result.skipped_events
+  end
+
+  # A rollout is compressed in place mid-sweep, so a path from the glob can be
+  # gone by the time it is stat'd. That costs the file, not the run.
+  test "a rollout that vanished between the glob and the read costs only itself" do
+    uuid = SecureRandom.uuid
+    codex_session(uuid: uuid)
+    present = write_rollout(uuid, session_meta(uuid), turn_context,
+                            token_count(timestamp: "2026-08-14T11:44:54.000Z", input: 100, output: 10))
+    missing = File.join(@root, "2026/08/14", "rollout-2026-08-14T09-00-00-#{SecureRandom.uuid}.jsonl")
+
+    result = ingest(paths: [ missing, present ], modified_since: 30.days.ago)
+
+    assert_equal 1, result.session_rows
+    assert_equal 1, SessionTokenUsage.count
+  end
+
+  # --- streaming a large compressed rollout ------------------------------------
+
+  # ZST_CHUNK_BYTES is 256 KB and every other rollout in this file is a few
+  # hundred bytes, so the decoder's buffer-accumulate loop runs exactly once and
+  # is otherwise untested. This one spans several chunks AND puts a multibyte
+  # character on a chunk boundary — the case where a naive `encode` would raise or
+  # mangle, because the tail of a decoded chunk is an incomplete UTF-8 sequence
+  # until the next chunk completes it.
+  test "decompresses a multi-chunk .zst with a multibyte character on a chunk boundary" do
+    uuid = SecureRandom.uuid
+    codex_session(uuid: uuid)
+
+    # Padding whose byte length puts a 3-byte character astride the 256 KB mark.
+    boundary = CodexTokenUsageIngestionService::ZST_CHUNK_BYTES
+    filler = agent_message("a" * (boundary - 200) + "→ ✅ 日本語")
+    events = [
+      session_meta(uuid), turn_context, filler,
+      token_count(timestamp: "2026-08-14T11:44:54.291Z", input: 45_059, cached: 11_008, output: 184),
+      agent_message("b" * (boundary + 500), timestamp: "2026-08-14T11:45:00.000Z"),
+      token_count(timestamp: "2026-08-14T11:46:54.291Z", input: 200, output: 20,
+                  cumulative_input: 45_259, cumulative_output: 204)
+    ]
+    path = write_rollout(uuid, *events, compressed: true)
+    assert_operator File.size(path), :>, 0
+
+    result = ingest
+
+    assert_equal 2, result.session_rows, "both events must survive the chunk boundary"
+    assert_equal 0, result.skipped_events
+    assert_equal [ 34_051, 200 ], SessionTokenUsage.order(:called_at).pluck(:input_tokens)
   end
 
   # --- model attribution -----------------------------------------------------

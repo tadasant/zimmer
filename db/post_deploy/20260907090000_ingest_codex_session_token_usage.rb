@@ -41,6 +41,15 @@ class IngestCodexSessionTokenUsage < PostDeployTask
     last = cursor[CURSOR_KEY]
     remaining = last.nil? ? paths : paths.drop_while { |path| path <= last }
 
+    # Stamp the coverage claim before the first slice, so an EMPTY corpus still
+    # answers "has it run, and what does it cover" with the root it swept rather
+    # than with `{}` — which on /health reads the same as a task that succeeded
+    # without doing anything, and is exactly the observability AGENTS.md asks a
+    # post-deploy task to have. Overwritten, not added to, by each checkpoint.
+    checkpoint!(root: root, rollouts_scanned: stats.fetch("rollouts_scanned", 0),
+                rows_written: stats.fetch("rows_written", 0),
+                skipped_events: stats.fetch("skipped_events", 0))
+
     loop do
       batch = remaining.first(BATCH_SIZE)
       return nil if batch.empty?
