@@ -1,26 +1,105 @@
 name: Teardown staging
 
-# MANUAL-ONLY now. Staging is a PERSISTENT droplet that Kamal deploys onto, so it
-# is no longer destroyed nightly -- that recreate-every-day churn is exactly what
-# the Kamal migration removed. Run this only when you deliberately want to tear
-# staging down (e.g. to stop billing for a while); `Deploy staging` stands it back
-# up.
+# Destroys the staging droplet, on a nightly schedule and on demand.
 #
-# With remote state, teardown is a clean `terraform destroy` -- no raw DO API reap
-# of account-unique names, because Terraform now tracks exactly what it created.
+# THE SCHEDULE IS CONDITIONAL, and that distinction is the whole design. The Kamal
+# migration removed the old destroy-and-recreate-every-day churn for a good reason, and
+# this does not bring it back: the nightly run tears staging down only on the days
+# NOBODY DEPLOYED to it. On a day staging is used, the run skips and the box stays warm
+# for the next Kamal swap.
+#
+# What it is for: `Deploy staging` is manual, so between deploys the droplet just sits
+# there. `staging.tfvars.example` sizes it `s-2vcpu-4gb` -- $24/month at list price,
+# billed hourly, and a powered-off droplet still bills, so destroying it is the only way
+# to stop the charge. Staging was up for ~30 continuous days with deploys on a handful of
+# them, and most of that line was idle time (tadasant/zimmer#403).
+#
+# What it costs: the first deploy after a teardown is a full `terraform apply` +
+# cloud-init bootstrap + fresh cert instead of a fast container swap onto a warm box.
+# That is a deliberate trade, not a free win.
+#
+# The two knobs are right here, together, because they are one decision:
+#   the cron below      -- how often the question gets asked.
+#   RECENT_DEPLOY_HOURS -- how long a successful deploy protects the droplet for.
+# At 24h against a daily run, staging outlives its last successful deploy by between one
+# and two days -- a deploy on any given day normally keeps the box through the next day's
+# run too, the exception being one made in the ~20 minutes before the cron hour, which is
+# already older than the window by the time that run fires. Deliberately generous: a
+# window shorter than the cron period lets the
+# run fall in the gap -- an 18h window would have destroyed the droplet at 06:23 on
+# 2026-08-16, 34 minutes before that morning's deploy -- and every teardown/deploy cycle
+# also costs one of Let's Encrypt's five certificates per 168h for the staging name (see
+# the deploy docs).
+#
+# With remote state, teardown is a clean `terraform destroy` -- no raw DO API reap of
+# account-unique names, because Terraform now tracks exactly what it created.
 on:
+  schedule:
+    - cron: "23 6 * * *" # 06:23 UTC daily. Off the hour: GitHub's cron queue is busiest there.
   workflow_dispatch: {}
 
+env:
+  # Skip tonight's teardown when a `Deploy staging` run succeeded within this many hours.
+  # One number, one place -- scripts/staging-lifecycle-guard.sh reads it from here.
+  RECENT_DEPLOY_HOURS: "24"
+
 concurrency:
-  # Shared with `Deploy staging` so teardown and deploy can never run concurrently.
+  # Shared with `Deploy staging` so teardown and deploy can never run concurrently. A
+  # deploy already in flight when the cron fires therefore finishes first, and the guard
+  # below then sees it and skips -- the scheduled run cannot pull the box out from under
+  # a deploy.
   group: staging-lifecycle
   cancel-in-progress: false
 
 permissions:
   contents: read
+  actions: read # the guard reads `Deploy staging`'s run history
 
 jobs:
+  # Only the SCHEDULE is conditional. A `workflow_dispatch` skips this job entirely and
+  # destroys unconditionally, exactly as it did before -- dispatching Teardown staging
+  # means tear staging down, including to clean up state after a droplet was removed
+  # some other way.
+  guard:
+    if: github.event_name == 'schedule'
+    runs-on: self-hosted
+    environment: staging
+    outputs:
+      proceed: ${{ steps.decide.outputs.proceed }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+          # The guard READS terraform's stdout to find the droplet, so it takes the raw
+          # binary rather than the action's Node wrapper -- there is nothing here for the
+          # wrapper's captured step outputs to be useful for, and one less layer between
+          # `terraform state list` and the decision.
+          terraform_wrapper: false
+
+      - name: Should staging be torn down tonight?
+        id: decide
+        env:
+          # No DO token: the guard only reads state, it does not talk to DigitalOcean.
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          # Whether staging exists HERE at all -- a boolean about the secret, never the
+          # secret. It is how the guard tells a fork that never configured staging (skip
+          # green, as `tailnet-reap-node.sh` does) from this repository having lost the
+          # keys to its own remote state (fail loudly, because a green skip there would
+          # switch the nightly teardown off for good and nothing would ever go red).
+          STAGING_IS_CONFIGURED: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN != '' }}
+        run: bash scripts/staging-lifecycle-guard.sh teardown
+
   teardown:
+    needs: [guard]
+    # `!cancelled()` and not `always()`: a plain `needs:` job is skipped when its
+    # dependency is skipped, which is exactly what happens on a manual dispatch -- so
+    # this has to run past a skipped `guard` while still respecting a real cancellation.
+    if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.guard.outputs.proceed == 'true') }}
     runs-on: self-hosted
     environment: staging
     steps:
