@@ -6,8 +6,8 @@
 # passes a two-hour lookback — so without this task the ledger would start at the
 # deploy and every Pi session run before it would stay at zero forever. Claude
 # Code's equivalent gap is covered by TokenUsageBackfillJob, which walks a
-# filesystem corpus with a cursor; Pi's corpus is `sessions.transcript` for
-# `agent_runtime = 'pi'`, small enough that a single pass is the whole job.
+# filesystem corpus with a cursor; Pi's corpus is the stored transcript of every
+# `agent_runtime = 'pi'` session, small enough that a single pass is the whole job.
 #
 # A post-deploy task rather than a rake task because there is no shell on the
 # production box to run one from (AGENTS.md, "No production box access"), and it
@@ -32,8 +32,14 @@ class IngestPiSessionTokenUsage < PostDeployTask
   PI_RUNTIME = "pi"
 
   def up
-    sweep(Session.select(:id).where(agent_runtime: PI_RUNTIME).where.not(transcript: nil),
-          batch_size: BATCH_SIZE) do |batch|
+    # Either storage counts as "has a transcript": the chunk set for everything
+    # written since #110, the legacy `sessions.transcript` column for the rows
+    # `BackfillSessionTranscriptChunks` has not reached yet.
+    scope = Session.select(:id)
+                   .where(agent_runtime: PI_RUNTIME)
+                   .where("sessions.transcript_byte_size > 0 OR sessions.transcript IS NOT NULL")
+
+    sweep(scope, batch_size: BATCH_SIZE) do |batch|
       # `modified_since: nil` — the whole of each session, not a window. That is
       # the one thing this task does that the cron cannot.
       result = PiTokenUsageIngestionService.new(

@@ -2349,7 +2349,7 @@ clone; and it is the same trade `codex_stderr.log` already makes.
 `codex_stderr.log` and `codex_last_message.txt` — and nothing excludes any of them. So an agent that
 runs `git add -A && git commit` commits its own conversation into the user's branch, and
 `CloneArtifactService` (which stages with `git add -A` before diffing) bakes the stream into the
-archived working-tree patch. Unlike `sessions.transcript`, that copy does not go through
+archived working-tree patch. Unlike the stored transcript, that copy does not go through
 `TranscriptRedactor`. This is a pre-existing property of the whole set rather than something the
 event log introduces, but the event log is much the largest member of it. The fix is one line of
 `.git/info/exclude` per clone, covering all four names, and it belongs with whichever service
@@ -5245,10 +5245,24 @@ Fixing it properly would mean matching each pair independently, which is the per
 
 ## Transcript content search is bounded, so an empty answer can mean "not yet"
 
-`sessions.transcript` is a `json` column and no index helps a leading-wildcard `ILIKE`, so searching
-it is a sequential scan that detoasts every transcript it passes — thousands of sessions and
-gigabytes of TOAST on production. Run as one statement it raced kamal-proxy's 30-second timeout and
-returned a 504 about as often as results ([#405](https://github.com/tadasant/zimmer/issues/405)).
+No index helps a leading-wildcard `ILIKE`, so searching transcripts is a sequential scan that
+detoasts every one it passes — thousands of sessions and gigabytes of TOAST on production. Run as one
+statement it raced kamal-proxy's 30-second timeout and returned a 504 about as often as results
+([#405](https://github.com/tadasant/zimmer/issues/405)).
+
+Moving the transcript into `session_transcript_chunks` ([#110](https://github.com/tadasant/zimmer/issues/110))
+relieved this rather than fixing it: the predicate is now an `EXISTS` over the chunk table, which can
+stop at the first matching chunk instead of detoasting a whole 32 MB conversation to find a phrase in
+its first megabyte, but an unindexed scan over the corpus is still an unindexed scan over the corpus.
+It also carries two small semantic changes, both of which make matching more truthful and both of
+which could change an existing query's answer. Chunks are cut at line breaks, so a phrase spanning
+the newline *between* two JSON events no longer matches — that newline is a record separator rather
+than anything a person typed, so the fragments it used to match were nonsense. And the chunk half
+matches the **raw** JSONL where the legacy column matched it JSON-*encoded*: `transcript::text` on a
+`json` column renders the document as a string literal, quoted and backslash-escaped, so a query
+containing a `"` used to have to match the `\"` in it. Against a chunk, a `"` is a `"`. Until
+`BackfillSessionTranscriptChunks` finishes, a corpus can hold both spellings, so a quote-bearing
+query can match some sessions and not others for no reason a caller can see.
 
 `SessionContentSearch` bounds it instead: candidates newest-first, in chunks, stopping at the result
 limit or a wall-clock budget (20s by default, `ZIMMER_CONTENT_SEARCH_BUDGET_SECONDS`), always

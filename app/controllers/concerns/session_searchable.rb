@@ -42,10 +42,15 @@ module SessionSearchable
   # in Api::V1::SessionsControllerTest and for the transcript in
   # SessionContentSearchTest.
   #
-  # What `transcript::text` matches is the stored JSON, not the rendered
-  # conversation: a phrase broken across a line break is `\n` in that text and does
-  # not match, and a hit can land in a tool argument or a file path rather than in
-  # anything anybody said.
+  # What the transcript half matches is the stored JSONL, not the rendered
+  # conversation: a hit can land in a tool argument or a file path rather than in
+  # anything anybody said. The two storages differ in one way worth knowing, and it
+  # is the `json` column's doing rather than the chunk table's: `transcript::text`
+  # renders the column as a JSON *string literal*, so the document arrives quoted
+  # and escaped and a query containing a `"` matches the `\"` in it. The chunk half
+  # is the raw JSONL, where a `"` is a `"`. That makes the chunk half the more
+  # truthful of the two, and it stops being a difference at all once
+  # `BackfillSessionTranscriptChunks` has emptied the column.
   #
   # Both JSON columns are read through `::jsonb::text`, never `::text` directly.
   # `metadata` is a `json` column and `custom_metadata` a `jsonb` one, and on `json`
@@ -92,7 +97,23 @@ module SessionSearchable
     OR metadata::jsonb::text ILIKE ANY (ARRAY[:q, :q_json])
     OR custom_metadata::jsonb::text ILIKE ANY (ARRAY[:q, :q_json])
   SQL
-  CONTENT_PREDICATE = "#{METADATA_PREDICATE} OR transcript::text ILIKE :q"
+  # The transcript half reaches both storages, because until
+  # `BackfillSessionTranscriptChunks` has emptied the legacy column a session's
+  # conversation may be in either one (#110). `EXISTS` over the chunk table rather
+  # than a join, so a session with 128 matching chunks is one row and one match.
+  #
+  # Chunk boundaries are cut at line breaks (SessionTranscriptChunk, invariant 1),
+  # so the only phrase a per-chunk match can miss is one spanning the newline
+  # BETWEEN two JSON events — text nobody typed, since that newline is a record
+  # separator. A phrase inside an event is inside one chunk by construction.
+  TRANSCRIPT_PREDICATE = <<~SQL.squish
+    transcript::text ILIKE :q
+    OR EXISTS (
+      SELECT 1 FROM session_transcript_chunks stc
+      WHERE stc.session_id = sessions.id AND stc.content ILIKE :q
+    )
+  SQL
+  CONTENT_PREDICATE = "#{METADATA_PREDICATE} OR #{TRANSCRIPT_PREDICATE}"
 
   # `:q_json` is `:q` respelled in the spacing Postgres itself uses, so a caller who
   # typed compact JSON finds the same rows as one who copied the pretty-printed blob

@@ -152,7 +152,7 @@ looking idle.
 ## Transcript
 
 The agent's JSONL output file, polled off disk by the worker, normalized into the vendor-neutral
-**OpenTranscripts v0.1** schema, and streamed to the UI over Turbo Streams. The whole raw file
-is also persisted onto the session row.
+**OpenTranscripts v0.1** schema, and streamed to the UI over Turbo Streams. The whole raw file is
+also persisted, as append-only slices in `session_transcript_chunks`.
 
 → [Transcripts](/sessions/transcripts/)

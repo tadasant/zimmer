@@ -289,12 +289,12 @@ class TranscriptPollerService
       updates = {}
 
       if @session.transcript != transcript_content
-        if Session.transcript_regression?(@session.transcript, transcript_content)
+        if @session.transcript_regression?(transcript_content)
           # Log once per session so a recurring regression doesn't spam every poll.
           unless @session.metadata&.dig("transcript_regression_detected")
             @logger.warn(
               "Refused to overwrite stored transcript with a shorter one; preserving history (likely clone recreation)",
-              stored_events: Session.transcript_line_count(@session.transcript),
+              stored_events: @session.transcript_line_count,
               incoming_events: Session.transcript_line_count(transcript_content)
             )
             metadata_updates["transcript_regression_detected"] = true
@@ -628,7 +628,7 @@ class TranscriptPollerService
     # by this bug before the fix shipped, which we do want to heal.
     return carryover if stored.blank?
     return carryover if last_path == main_transcript_file
-    return carryover unless Session.transcript_regression?(stored, carryover + live_content)
+    return carryover unless @session.transcript_regression?(carryover + live_content)
 
     rotated = ensure_trailing_newline(stored)
     metadata_updates["transcript_carryover_event_count"] = Session.transcript_line_count(rotated)

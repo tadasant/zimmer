@@ -56,16 +56,19 @@ class SessionHierarchy
   # The only columns this service reads off a session, and therefore the only
   # ones it may ask Postgres for.
   #
-  # THE POINT IS WHAT IS NOT HERE. `sessions.transcript` is a `json` column
-  # holding a whole agent transcript — megabytes on a session that ran for hours
-  # — and `prompt` runs to PROMPT_MAX_LENGTH beside it. A bare `Session.where(…)`
-  # selects both, TOAST-detoasts both, and ships both over the wire, to read a
+  # THE POINT IS WHAT IS NOT HERE. `prompt` runs to PROMPT_MAX_LENGTH, and until
+  # #110 moved it out of the row `transcript` was a whole agent transcript beside
+  # it — megabytes on a session that ran for hours. A bare `Session.where(…)`
+  # selected both, TOAST-detoasted both, and shipped both over the wire, to read a
   # title and two integers off each row. That is not a rounding error at this
   # scale: the walk instantiates a level at a time and SessionProvenanceBroadcastJob
   # runs the whole walk once per viewer, so a 47-session lineage loaded 2,452 full
   # rows and shipped 2.5 GB of transcript nobody looked at — enough to hold both
   # `default` threads for 17 minutes and starve every other lane behind a saturated
-  # database ([#1063](https://github.com/tadasant/zimmer/issues/1063)).
+  # database ([#1063](https://github.com/tadasant/zimmer/issues/1063)). The
+  # transcript now lives in `session_transcript_chunks` and a loaded row no longer
+  # drags it along, but every other reason to name the columns still holds — and a
+  # legacy row the backfill has not reached still carries one.
   #
   # `parent_ids_of` plucks for the same reason, and names `prompt` as the thing
   # not to drag up. That is right and too narrow on its own: `transcript` is the

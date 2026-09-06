@@ -122,7 +122,7 @@ class Api::V1::SessionsControllerStatusSummaryTest < ActionDispatch::Integration
   # 422 covers the refusals that remain — a caller must not read 202 for a
   # session that has nothing to summarize at all.
   test "regenerate_status_summary refuses a session with no transcript" do
-    @session.update_column(:transcript, nil)
+    @session.update!(transcript: nil)
 
     assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
       post "/api/v1/sessions/#{@session.id}/regenerate_status_summary", headers: @headers

@@ -29,6 +29,29 @@ module FixtureHelpers
     Session.create!(defaults.merge(attributes))
   end
 
+  # Put a transcript in the OLD storage — the `sessions.transcript` column — the way
+  # every row written before #110 shipped holds it, bypassing the chunk writer
+  # entirely.
+  #
+  # This is what a row `BackfillSessionTranscriptChunks` has not reached yet looks
+  # like, and the only way to produce the legacy Array format at all: `transcript=`
+  # encodes an Array to JSONL, so a test that needs the un-encoded shape has to
+  # write the column directly. Used to pin the read fallback and the backfill.
+  #
+  # @param session [Session]
+  # @param value [String, Array] the legacy column's contents
+  # @return [Session] the same session, reloaded
+  def store_legacy_transcript(session, value)
+    SessionTranscriptChunk.where(session_id: session.id).delete_all
+    session.update_columns(
+      transcript: value,
+      transcript_byte_size: 0,
+      transcript_line_count: 0,
+      transcript_digest: nil
+    )
+    session.reload
+  end
+
   # Create running session with transcript content
   # @param transcript_content [String, nil] Optional custom transcript content
   # @param attributes [Hash] Optional session attributes

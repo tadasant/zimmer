@@ -241,7 +241,13 @@ class TranscriptArchiveJob < ApplicationJob
   private
 
   def transcript_session_markers
-    Session.where.not(transcript: nil).select(:id, :updated_at)
+    # Either storage counts as "has a transcript": the chunk table for everything
+    # written since #110 shipped, the legacy column for rows
+    # `BackfillSessionTranscriptChunks` has not emptied yet. Both halves are served
+    # by a partial index on `id` (`index_sessions_on_id_where_transcript_stored`
+    # and `..._present`), which is what keeps this scan off the transcript bytes.
+    Session.where("sessions.transcript_byte_size > 0 OR sessions.transcript IS NOT NULL")
+      .select(:id, :updated_at)
   end
 
   # The freshness stamp the sidecar records for one session: the newest write across

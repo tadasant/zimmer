@@ -27,13 +27,25 @@ namespace :open_transcripts do
     added_markers = ->(before, after) { after.scan(/\[REDACTED:/).length - before.scan(/\[REDACTED:/).length }
 
     changed_sessions = 0
-    Session.where.not(transcript: [ nil, "" ]).find_each(batch_size: 50) do |session|
-      redacted = TranscriptRedactor.redact(session.transcript)
-      next if redacted == session.transcript
+    # Both storages, and the write goes through the model, not `update_columns`.
+    # A session's transcript lives in `session_transcript_chunks` since #110 and
+    # only the rows `BackfillSessionTranscriptChunks` has not reached are still in
+    # the column — so scoping on the column alone would silently match nothing once
+    # that task finishes, and writing to the column alone would put the redacted
+    # copy somewhere no reader looks while the secret stayed in the chunks.
+    # Redaction is line-preserving, so `transcript=` stores this as an ordinary
+    # rewrite and no regression guard stands in its way.
+    Session.where("sessions.transcript_byte_size > 0 OR sessions.transcript IS NOT NULL")
+           .find_each(batch_size: 50) do |session|
+      stored = session.transcript
+      next if stored.blank?
+
+      redacted = TranscriptRedactor.redact(stored)
+      next if redacted == stored
 
       changed_sessions += 1
-      puts "  session ##{session.id}: #{added_markers.call(session.transcript, redacted)} redaction(s)"
-      session.update_columns(transcript: redacted) unless dry_run
+      puts "  session ##{session.id}: #{added_markers.call(stored, redacted)} redaction(s)"
+      session.update!(transcript: redacted) unless dry_run
     end
 
     changed_subagents = 0

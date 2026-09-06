@@ -89,6 +89,9 @@ Rails.application.routes.draw do
     # there is a first-class detach (issue #299).
     resources :session_uncle_links, only: [ :index, :show, :destroy ]
     resources :subagent_transcripts
+    # Read-only: a chunk is one slice of an append-only transcript, and editing one
+    # through a generic form would corrupt the conversation rather than repair it.
+    resources :session_transcript_chunks, only: [ :index, :show ]
     resources :trigger_conditions
     resources :triggers
     # The roster of named humans. Full CRUD: this is where a Slack user ID is

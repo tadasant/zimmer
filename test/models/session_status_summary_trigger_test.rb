@@ -99,7 +99,7 @@ class SessionStatusSummaryTriggerTest < ActiveSupport::TestCase
   end
 
   test "a session with no transcript does not enqueue a summary refresh" do
-    @session.update_column(:transcript, nil)
+    @session.update!(transcript: nil)
 
     assert_no_enqueued_jobs(only: SessionStatusSummaryJob) do
       @session.pause!

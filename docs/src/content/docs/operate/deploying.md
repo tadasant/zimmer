@@ -688,6 +688,25 @@ silently reached nothing look identical from outside, so `stats` carries `rows_e
 `rows_reachable`, `rows_unreachable`, `rows_deleted` and a `kept_by_reason` histogram, and each
 deletion is logged whole — with the command whose output was misread — before the row goes.
 
+`BackfillSessionTranscriptChunks` is the third shape: a **storage move**, where the task is copying
+data it is then going to free. Every session's transcript has to leave `sessions.transcript` for
+`session_transcript_chunks` ([#110](https://github.com/tadasant/zimmer/issues/110)), and the whole
+risk is in the order of those two steps. So the copy is verified before the source is released: per
+row, in one transaction, it writes the chunks, reads them back, and requires the concatenation to
+equal the source byte for byte — and, for the legacy Array format, to re-parse to the same events —
+before it NULLs the column. A row that fails verification has its chunks deleted and its column left
+alone, so it goes on reading exactly as it did, and is named individually in
+`unmigrated_session_ids` alongside the `verification_failures` count. **That list is what phase 2
+gates on, not this task's `succeeded`** — a skipped row leaves the run green with its column still
+full, and `sweep` never revisits it, so treating green as "the column is empty" would drop exactly
+the transcripts the verification saved. Its idempotency is structural for the same reason as the
+repair above: every row it *migrates* ends with `transcript` NULL, which is the negation of its own
+predicate. And nothing waits on it —
+`Session#transcript` reads the legacy column for any row it has not reached yet, so the system is
+whole from the moment the deploy lands and only gets cheaper as the task walks the table. A read path
+that is correct only *after* a backfill finishes is a half-migrated read path. See
+[Where a transcript is stored](/sessions/transcripts/#where-a-transcript-is-stored).
+
 ### Seeing it without a shell
 
 One object, `PostDeployTaskRun.summary`, rendered four ways so they cannot disagree:

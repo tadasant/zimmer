@@ -49,7 +49,7 @@ class SendPushNotificationJobTest < ActiveJob::TestCase
 
   test "perform sends needs_input notification with fallback body" do
     # When no transcript, falls back to simple body
-    @session.update_column(:transcript, nil)
+    @session.update!(transcript: nil)
 
     @mock_service.expects(:send_to_all).with(
       title: @session.title,
@@ -102,7 +102,7 @@ class SendPushNotificationJobTest < ActiveJob::TestCase
   end
 
   test "perform accepts string notification type" do
-    @session.update_column(:transcript, nil)
+    @session.update!(transcript: nil)
 
     @mock_service.expects(:send_to_all).with(
       title: @session.title,
@@ -192,7 +192,7 @@ class SendPushNotificationJobTest < ActiveJob::TestCase
   # === Notification record creation ===
 
   test "perform creates notification record" do
-    @session.update_column(:transcript, nil)
+    @session.update!(transcript: nil)
     @mock_service.expects(:send_to_all).returns({ sent: 1, failed: 0, expired: 0 })
 
     assert_difference -> { Notification.count }, 1 do

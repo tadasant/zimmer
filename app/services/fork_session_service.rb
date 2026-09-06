@@ -238,7 +238,9 @@ class ForkSessionService
 
   def validate_inputs
     # Source session must exist and have a transcript
-    return "Source session has no transcript" if source_session.transcript.blank?
+    # `transcript_present?`, not `transcript.blank?`: the question is whether there
+    # is a conversation at all, and the row answers it without reassembling one.
+    return "Source session has no transcript" unless source_session.transcript_present?
 
     clone_error = validate_source_clone
     return clone_error if clone_error
