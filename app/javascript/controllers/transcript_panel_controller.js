@@ -61,6 +61,18 @@ export default class extends Controller {
     if (!this.inDrawer) this.handleHash()
   }
 
+  // The frame can arrive after this controller does — Stimulus connects on the
+  // element as soon as it is parsed, before the frame nested inside it exists —
+  // and a panel that was rendered ALREADY OPEN fires no toggle for #toggled to
+  // catch. `transcript=open` is exactly that page: the log-level filter's
+  // re-fetch asks for the disclosure open so the reader gets the panel back at
+  // the level they picked, and a reader on a phone is looking at a panel that
+  // has scrolled well down the page. Without this the frame stays lazy there,
+  // which is the whole defect #loadFrame exists to remove.
+  frameTargetConnected() {
+    if (this.element.open) this.loadFrame()
+  }
+
   disconnect() {
     window.removeEventListener("hashchange", this.boundHandleHash)
     this.element.removeEventListener("turbo:frame-load", this.boundFrameLoaded)
@@ -81,6 +93,11 @@ export default class extends Controller {
       return
     }
 
+    // Ahead of the `revealing` return below, not after it: a reveal that opened
+    // a closed panel is still an opening, and it has nothing to scroll to until
+    // the rows are fetched.
+    this.loadFrame()
+
     // A reveal opened this panel to land on one specific message, and the toggle
     // it caused must not then scroll past it to the newest row. Cleared on
     // close rather than once the reveal has run, because a frame that was
@@ -91,6 +108,44 @@ export default class extends Controller {
       // Let the browser lay the freshly-shown content out before measuring it.
       requestAnimationFrame(() => this.scrollToBottom())
     })
+  }
+
+  // Make opening the disclosure fetch the rows.
+  //
+  // `loading="lazy"` reads as "fetch once it is shown", and it is not: Turbo
+  // watches the frame with an IntersectionObserver and fetches when it APPEARS
+  // IN THE VIEWPORT. Layout is only half of that. A panel opened while it sits
+  // below the fold gains layout and is still never fetched, so it holds its
+  // skeleton and every caller queued on `whenLoaded` waits on a load that has
+  // nothing coming.
+  //
+  // A reader clicking the summary is looking at it, so the frame lands on
+  // screen and the distinction almost never shows. The two paths where it does
+  // are both openings the reader did not scroll to: a `#message-N` link opened
+  // cold, where `reveal` opens the panel under a viewport still parked at the
+  // top of the page, and the system suite, which opens every panel by script
+  // from wherever the page happens to be. The second is what failed CI run
+  // 34060027053 — two LostElicitationBannerTest cases, at an 800x600 window,
+  // green at 1400x900, on a commit that touched neither the view nor the test.
+  //
+  // Eager keeps everything lazy was for. The frame is still untouched for as
+  // long as the disclosure is closed, which is the whole point of deferring the
+  // panel (see sessions_controller#transcript_panel); this only stops the fetch
+  // being contingent on scroll position once the reader has asked for it.
+  // Called from three places, so it has to be safe to call twice — and
+  // `setAttribute` is not, even with the value the attribute already holds.
+  // There is no same-value short circuit: the DOM runs its attribute-change
+  // steps regardless, Turbo's `attributeChangedCallback` re-enters
+  // `loadingStyleChanged`, and `#loadSourceURL` is guarded only by `complete`.
+  // A second call while the first fetch is in flight therefore CANCELS it and
+  // issues another — a second GET of the most expensive response the session
+  // screen has, after the server has already built the first. Reading the
+  // attribute back is what makes the second call the no-op it reads as.
+  loadFrame() {
+    if (!this.deferredValue || !this.hasFrameTarget) return
+    if (this.frameTarget.getAttribute("loading") === "eager") return
+
+    this.frameTarget.setAttribute("loading", "eager")
   }
 
   handleHash() {
@@ -167,6 +222,11 @@ export default class extends Controller {
     // Set before opening: the toggle this causes reads it to stand down.
     this.revealing = true
     this.element.open = true
+
+    // Also here, and not only in #toggled: a panel that was ALREADY open fires
+    // no toggle, so the reveal would otherwise queue behind a frame that is
+    // still waiting to be scrolled to.
+    this.loadFrame()
 
     this.whenLoaded(() => {
       const target = this.element.querySelector(fragment)

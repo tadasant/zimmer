@@ -262,12 +262,17 @@
         whose size grows without bound — deferring it is the difference between a
         page that paints and one that waits.
 
+        Layout is not the same as a fetch, and the gap is what
+        transcript-panel#loadFrame closes: Turbo fetches a lazy frame when it
+        APPEARS IN THE VIEWPORT, so the controller switches this one to `eager`
+        the moment the disclosure opens — including a disclosure that arrived
+        open, via frameTargetConnected.
+
         `transcript=open` is therefore two instructions in one: render the
-        disclosure open, and — because that gives the frame layout — go and fetch
-        the rows. The one address that sends it is the log-level filter's own
-        re-fetch, so the panel the reader had open comes back open, at the level
-        they just picked. Why that round trip is the exception:
-        log_level_filter_controller.js#refetchAtLevel.
+        disclosure open, and go and fetch the rows. The one address that sends it
+        is the log-level filter's own re-fetch, so the panel the reader had open
+        comes back open, at the level they just picked. Why that round trip is
+        the exception: log_level_filter_controller.js#refetchAtLevel.
 
         Opening also scrolls to the bottom: while closed, the auto-scroll
         controller's pinning has nothing to measure, so a session that streamed

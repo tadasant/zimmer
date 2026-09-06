@@ -623,8 +623,29 @@ an agent with amnesia and a timeline that still looks fine.
 The Transcript disclosure on the session detail screen starts collapsed, and until a reader opens it
 the server does not build it at all. Its body is a `<turbo-frame loading="lazy">` pointing at
 `GET /sessions/:id/transcript_panel?filter=<level>`, and a lazy frame inside a closed `<details>` has
-no layout — so Turbo never fetches it. Opening the disclosure gives it layout, which is what starts
-the request; a skeleton shaped like the rows stands in until the answer lands.
+no layout — so Turbo never fetches it. Opening the disclosure is what starts the request; a skeleton
+shaped like the rows stands in until the answer lands.
+
+**Opening it is the trigger because `transcript-panel#loadFrame` makes it one.** Layout alone is not
+enough: `loading="lazy"` reads as "fetch once it is shown" and means something narrower — Turbo
+watches the frame with an `IntersectionObserver` and fetches when it appears **in the viewport**. A
+panel opened while it sits below the fold gains layout and is still never fetched, so it holds its
+skeleton and everything queued on the load waits for something that is not coming. The controller
+therefore switches the frame to `loading="eager"` the moment the disclosure opens, which keeps what
+lazy was for — the frame is untouched for as long as the panel is closed — and drops the part that
+was never wanted, the fetch being contingent on where the page happens to be scrolled.
+
+Three openings reach it, because a panel can be opened in three ways and only one of them fires a
+`toggle`: `#toggled` for a reader's click, `#reveal` for a `#message-N` link, and
+`#frameTargetConnected` for a panel the server rendered **already open** — which is the
+`transcript=open` page the log-level filter re-fetches, where nothing toggles at all. The last two
+are the openings nobody scrolls to, and they are where this actually bit: a `#message-N` link opened
+cold opens the panel under a viewport still parked at the top of the page, and the system suite,
+which opens every panel by script, failed
+[CI run 34060027053](https://github.com/tadasant/zimmer/actions/runs/34060027053) that way.
+`#loadFrame` reads the attribute back before writing it, because `setAttribute` has no same-value
+short circuit and a second write while the first fetch is in flight would cancel it and issue
+another.
 
 The panel is where the whole cost of the transcript lives, and on a long session it is most of the
 cost of the screen. Three things moved behind the frame:
