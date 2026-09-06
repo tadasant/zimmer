@@ -2279,6 +2279,21 @@ Four rules follow, and all of them are pinned by tests:
   holds, and no anchor points at it so the prefetch cache still cannot be seeded for it. A frame
   navigation has no browser loading UI behind it, so the drawer dims the frame for the round trip
   off Turbo's own `busy` attribute rather than leaving the previous filter's content looking live.
+- **The re-fetch carries the open Transcript with it.** The round trip re-renders the whole detail
+  body, and the Transcript disclosure is collapsed on every ordinary load — thousands of rows is not
+  what a returning reader wants first. But changing the log level is a request *about* the
+  transcript, made by someone who has it open and is reading it, so re-rendering it shut takes the
+  only thing they were looking at off the screen: the drawer stays open and the body underneath is
+  filtered correctly, and yet the change reads as having done nothing. So the filter's address
+  carries `transcript=open` when, and only when, the disclosure is open at the moment the level
+  changes; `SessionsController#load_session_detail` turns that into `@transcript_open` and `_detail`
+  renders `<details open>`. Only the filter round trip sets the param — no link, form or redirect
+  does, and `#session_redirect_target` drops it along with `filter` — so a reader who never opened
+  the transcript is never handed one open. The panel comes back open *with layout*, which is what
+  `session-scroll`'s `transcriptCollapsed` guard needs in order to run at all, so the reader lands on
+  the newest items rather than at the top of thousands of rows. On the full page, where the round
+  trip is a document navigation, the param stays in the address bar exactly as `filter` does, and a
+  reload restores the same view.
 - **A redirect the frame follows lands on the drawer url.** A frame follows a 302 with its own
   `Turbo-Frame` header still attached, so `#follow_up`'s "queued instead" branch and `#refresh` —
   the two that redirect rather than answering with a Turbo Stream — pick their target through
@@ -2291,7 +2306,9 @@ says, no link on the dashboard points at a drawer path, and — asserted over th
 drawer body, so a link added later is caught without anyone remembering the rule — every same-origin
 link inside the drawer escapes to `_top`. `test/system/session_drawer_log_filter_test.rb` drives the
 log-level filter in both contexts and asserts the dashboard's URL is untouched when the drawer
-re-filters. Opening `/sessions/:id/drawer` by hand is not a supported way to read a session — it
+re-filters, and that an open transcript survives the round trip while a closed one stays closed; the
+controller tests pin the `transcript` param itself, including that only the exact value `open` opens
+the disclosure. Opening `/sessions/:id/drawer` by hand is not a supported way to read a session — it
 answers with a bare frame and no chrome — it is the drawer's own address.
 
 ### The reopen backfill
