@@ -1014,6 +1014,46 @@ not a finished turn. `AuthOutageParkService.park_undelivered_turn!` parks it her
 the loop's "the process is gone" fallbacks pause it onto somebody's action queue. See
 [The park has to survive the paths that do not know about it](/auth/harness/#the-park-has-to-survive-the-paths-that-do-not-know-about-it).
 
+#### Every sleep records why it happened
+
+`sleep` is the funnel every `running → waiting` passes through — a running session is marked
+`pending_sleep`, paused to `needs_input`, and slept from the pause callback — so it is where
+`Sessions::StopRecord` writes the answer to *why did this session stop*. Three metadata keys, on
+every sleep:
+
+| Key | What it holds |
+| --- | --- |
+| `stopped_reason` | One of `auth_outage_park`, `spot_hold`, `spot_pause`, `scheduled_wake`, `deliberate_sleep`, `system_recovery_resleep`, `halted_turn`, `unstarted_requeue`, `user_pause`, `unattributed` |
+| `stopped_detail` | A sentence a human can read |
+| `stopped_at` | When the session went dormant, UTC |
+
+All three are cleared by `start` and `resume`, so they only ever describe a session that is dormant
+now. `SpotSessionHold.return_to_queue!` writes its own copy, because refusing a turn at the gate is
+the one `running → waiting` that does not go through the state machine.
+
+**`unattributed` is a finding, not a blank.** It is what the record says when nothing on the row
+explains the stop, and it also writes a `warning` to the session's own timeline and renders in
+`get_session` as *"went dormant with no attributable cause"*. This closes
+[#608](https://github.com/tadasant/zimmer/issues/608), where three priority sessions each started
+cleanly — fresh `job_started_at`, new pid, every MCP server `connected` — and were back in `waiting`
+sixty to seventy-five seconds later with no `exit_status`, no `auth_outage_reason` and no
+`auth_outage_parked_at`. A wake could not be verified from the wake side, a scheduler could not
+account for a start budget that had silently un-done itself, and the row looked exactly like one
+that was never woken.
+
+**Provenance rides with the intent.** A running session is marked `pending_sleep` now and slept at
+the end of its turn, so the mark and the mechanism's own record used to be two separate writes.
+Every writer now stamps `pending_sleep_reason` in the *same* statement as the flag —
+`Sessions::StopRecord.pending_sleep(reason)` — and the flag and its stamp are cleared together. So
+even a mechanism whose follow-up write is lost cannot produce a stop that nothing explains.
+
+`AuthOutageParkService` was the mechanism that could, and it is fixed at the source too: the outage
+keys and the sleep intent are now one `merge_metadata!`. Under the old ordering the session was
+marked `pending_sleep` first and the outage recorded several statements later, with a session-log
+insert in between and one rescue around the lot — so a log write that raised left the sleep intent
+behind with nothing beside it, `AgentSessionJob` read the exit as an ordinary completed turn (no
+`exit_status`), and the pause carried the session to `waiting` in silence.
+
 ### `block_on_elicitation` / `unblock_from_elicitation` — `running ⇄ needs_input`
 
 This pair exists because an elicitation is *not* a turn ending. An MCP server made a
