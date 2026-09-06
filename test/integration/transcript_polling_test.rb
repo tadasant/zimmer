@@ -109,7 +109,7 @@ class TranscriptPollingTest < IntegrationTestCase
     )
 
     # Set malformed transcript
-    session.update_column(:transcript, "This is not JSON")
+    session.update!(transcript: "This is not JSON")
 
     # Should handle gracefully when accessing
     get session_path(session)

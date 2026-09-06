@@ -1217,7 +1217,12 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     # extract_carryover returns "" regardless of the transcript's type, so the
     # assertion would pass against unguarded code too.
     _stored, live = prepare_codex_rotation(stored_events: 5, live_events: 2, carryover_count: 2)
-    @session.update!(transcript: [ { "type" => "user" }, { "type" => "assistant" } ])
+    # Written straight to the legacy column, because that is the only way an Array
+    # transcript exists now: `transcript=` encodes one to JSONL, so the shape this
+    # guard is about survives only on a row BackfillSessionTranscriptChunks has not
+    # reached yet — where `transcript_byte_size` is 0 and the reader falls back.
+    store_legacy_transcript(@session, [ { "type" => "user" }, { "type" => "assistant" } ])
+    assert_kind_of Array, @session.transcript
     service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
     updates = {}
 

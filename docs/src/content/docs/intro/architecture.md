@@ -95,9 +95,11 @@ already knows a Claude session's id because it supplies it. See
 ## Data
 
 **PostgreSQL** holds everything: sessions, logs, transcripts, triggers, notifications, OAuth
-credentials, and the catalog snapshot. The entire JSONL transcript is stored as one text column
-on `sessions.transcript`, rewritten on every poll.
-Tracked in [#110](https://github.com/tadasant/zimmer/issues/110).
+credentials, and the catalog snapshot. A session's JSONL transcript lives in
+`session_transcript_chunks` — append-only, line-aligned slices whose concatenation is the whole
+document — so a poll writes the bytes it added rather than rewriting the conversation
+([#110](https://github.com/tadasant/zimmer/issues/110)). See
+[Where a transcript is stored](/sessions/transcripts/#where-a-transcript-is-stored).
 
 It also backs Action Cable via `solid_cable`, on a second database (`zimmer_<env>_cable`) that
 must exist before boot.

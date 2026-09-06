@@ -363,8 +363,12 @@ module TranscriptRedactor
     #
     # Re-scanning the whole transcript on every poll hid that: a value that
     # entered the set late was retroactively redacted out of every earlier line
-    # the next time the poll rewrote `sessions.transcript`, which is exactly what
-    # "redaction falls back to shape patterns for this window" promises.
+    # the next time the poll persisted the transcript, which is exactly what
+    # "redaction falls back to shape patterns for this window" promises. That
+    # still holds under the chunk store (#110): a re-redacted transcript differs
+    # from the stored one in the middle rather than extending it, so the write
+    # takes the replace path and every chunk is rewritten. Redaction is
+    # line-preserving, so the regression guard does not stand in its way.
     # TranscriptRedactionCache stamps its cached prefix with this and re-scans
     # from scratch when it changes, so that self-healing survives prefix reuse.
     #

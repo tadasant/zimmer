@@ -4417,7 +4417,7 @@ class AgentSessionJob < ApplicationJob
     return true if path.nil?
 
     on_disk = @file_system.exists?(path) ? @file_system.read(path) : nil
-    return true unless on_disk.nil? || Session.transcript_regression?(session.transcript, on_disk)
+    return true unless on_disk.nil? || session.transcript_regression?(on_disk)
 
     write_transcript_to_clone(session, working_directory, log_buffer)
 
@@ -4426,7 +4426,7 @@ class AgentSessionJob < ApplicationJob
     # silent write failure must not be mistaken for a repair — otherwise we would
     # clear the regression marker and resume a truncated conversation.
     repaired = @file_system.exists?(path) ? @file_system.read(path) : nil
-    if repaired.nil? || Session.transcript_regression?(session.transcript, repaired)
+    if repaired.nil? || session.transcript_regression?(repaired)
       msg = "Failed to restore regressed transcript on disk before resume (path: #{path})"
       if log_buffer
         log_buffer.add(msg, level: "error")
@@ -4436,7 +4436,7 @@ class AgentSessionJob < ApplicationJob
       return false
     end
 
-    detail = on_disk.nil? ? "missing" : "regressed to #{Session.transcript_line_count(on_disk)} of #{Session.transcript_line_count(session.transcript)} events"
+    detail = on_disk.nil? ? "missing" : "regressed to #{Session.transcript_line_count(on_disk)} of #{session.transcript_line_count} events"
     msg = "Restored stored transcript to clone before resume (on-disk copy was #{detail})"
     if log_buffer
       log_buffer.add(msg, level: "warning")

@@ -317,9 +317,11 @@ class SweepMisrecordedAgentPostedGithubCommentsTest < ActiveSupport::TestCase
   end
 
   test "keeps a row whose transcript is neither a string nor an array" do
-    # The column is `json` and nothing constrains its shape. An odd row must not
-    # take the whole task down with it.
-    row = a_row(session: a_session(transcript: { "unexpected" => "shape" }))
+    # The legacy `sessions.transcript` column is `json` and nothing constrains its
+    # shape. An odd row must not take the whole task down with it. Written straight
+    # to that column, because that is the only place a non-JSONL shape can live now
+    # — `transcript=` normalises everything it is handed to text (#110).
+    row = a_row(session: store_legacy_transcript(a_session, { "unexpected" => "shape" }))
 
     run, = run_task
 

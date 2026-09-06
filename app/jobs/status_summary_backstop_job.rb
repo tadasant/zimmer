@@ -371,7 +371,10 @@ class StatusSummaryBackstopJob < ApplicationJob
 
   # The one column #candidates deliberately did not select, fetched for the
   # single row that needs it.
-  def transcript_of(session) = Session.where(id: session.id).pick(:transcript)
+  # Re-read through the model rather than `pick(:transcript)`: the transcript is
+  # assembled from `session_transcript_chunks` now, and the column that name refers
+  # to holds only the rows the backfill has not reached (#110).
+  def transcript_of(session) = Session.find_by(id: session.id)&.transcript
 
   # Whether the runtime's login pool has nothing left to run a fork on — which
   # is what picks the repair mode for every session on that runtime this sweep.

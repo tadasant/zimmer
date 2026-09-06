@@ -615,7 +615,7 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   # Nothing renderable means there is nothing to ask about, so no call is made
   # at all — but the record must still land in a state the sweep will retry.
   test "the headless path records a failure without calling out when there is nothing to render" do
-    @session.update_column(:transcript, "not json\nalso not json\n")
+    @session.update!(transcript: "not json\nalso not json\n")
     inference = FakeInference.new("An answer that should never be asked for.")
 
     result = SessionStatusSummaryGenerator.call(
@@ -708,7 +708,7 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   # ForkSessionService indexes into the JSON-PARSED transcript, so a blank or
   # unparseable line makes the raw line count the wrong index space.
   test "a transcript with an unparseable line still forks at its last real message" do
-    @session.update_column(:transcript, @transcript + "\n" + "not json\n")
+    @session.update!(transcript: @transcript + "\n" + "not json\n")
 
     result = generate
 
@@ -799,7 +799,7 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   end
 
   test "a session with no transcript is skipped" do
-    @session.update_column(:transcript, nil)
+    @session.update!(transcript: nil)
 
     assert_equal :skipped, generate.outcome
   end
@@ -809,8 +809,8 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   # turn asking for a summary of nothing — with neither a resume file nor an
   # inline excerpt to answer from.
   test "a session whose transcript holds no conversation is skipped" do
-    @session.update_column(
-      :transcript,
+    @session.update!(
+      transcript:
       "#{{ "type" => "ai-title", "aiTitle" => "Ship the thing", "sessionId" => @session.session_id }.to_json}\n"
     )
 

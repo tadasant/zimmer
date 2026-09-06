@@ -76,7 +76,7 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
   test "the recorded line count is the one captured when generation was requested" do
     fork = build_fork
     pending_record(fork, line_count: 2)
-    @source.update_column(:transcript, transcript_of("a", "b", "c", "d"))
+    @source.update!(transcript: transcript_of("a", "b", "c", "d"))
 
     SessionStatusSummaryHarvestJob.perform_now(fork.id)
 
@@ -211,7 +211,7 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
 
   test "a fork with no answer of its own records a failure" do
     fork = build_fork
-    fork.update_column(:transcript, transcript_of("Ship the thing", "Opened the PR"))
+    fork.update!(transcript: transcript_of("Ship the thing", "Opened the PR"))
     pending_record(fork)
 
     SessionStatusSummaryHarvestJob.perform_now(fork.id)
@@ -276,7 +276,7 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
   test "a parked fork leaves the displayed summary stale rather than stamping it current" do
     fork = build_fork(answer: "You've hit your weekly limit · resets Aug 22, 11am (UTC)")
     fork.update_column(:metadata, fork.metadata.merge("auth_outage_reason" => "quota_exhausted"))
-    @source.update_column(:transcript, transcript_of("a", "b", "c", "d"))
+    @source.update!(transcript: transcript_of("a", "b", "c", "d"))
     record = pending_record(fork, line_count: 4)
     record.update!(summary: "An older, real summary.", transcript_line_count: 2)
 

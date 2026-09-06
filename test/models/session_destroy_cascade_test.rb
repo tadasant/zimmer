@@ -55,6 +55,11 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     # the session it belonged to must not delete the evidence that it cost something,
     # or the by-root totals silently shrink when a session is cleaned up.
     [ "session_token_usages", "session_id", :nullify ],
+    # Cascade, and the database is the only sweep: a chunk is one slice of one
+    # session's transcript, so it is meaningless without it, and the association
+    # deliberately carries no `dependent:` — a session with 128 chunks would
+    # otherwise cost 128 DELETEs to say what one ON DELETE rule already says.
+    [ "session_transcript_chunks", "session_id", :cascade ],
     [ "sessions", "parent_session_id", :nullify ],
     # Cascade on BOTH ends, which is where an uncle edge differs from the spawn
     # pointer above. Nulling a parent pointer leaves a meaningful row — a session
