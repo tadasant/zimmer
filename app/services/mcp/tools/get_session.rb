@@ -543,12 +543,19 @@ module Mcp
         lines << "- **Branch:** #{session.branch}" if session.branch.present?
         lines << "- **Subdirectory:** #{session.subdirectory}" if session.subdirectory.present?
 
-        lines << ""
-        lines << "### Execution"
-        lines << "- **Goal:** #{session.goal}" if session.goal.present?
-        lines << "- **MCP Servers:** #{session.mcp_servers.join(', ')}" if session.mcp_servers.present?
-        lines << "- **Skills:** #{session.catalog_skills.join(', ')}" if session.catalog_skills.present?
-        lines << "- **Plugins:** #{session.catalog_plugins.join(', ')}" if session.catalog_plugins.present?
+        # Gathered before the heading is written, because every line in this section
+        # is conditional: a session with no goal, no explicitly-named MCP servers and
+        # no catalog artifacts would otherwise render the heading over nothing.
+        execution = []
+        execution << "- **Goal:** #{session.goal}" if session.goal.present?
+        execution << "- **MCP Servers:** #{session.mcp_servers.join(', ')}" if session.mcp_servers.present?
+        execution << "- **Skills:** #{session.catalog_skills.join(', ')}" if session.catalog_skills.present?
+        execution << "- **Plugins:** #{session.catalog_plugins.join(', ')}" if session.catalog_plugins.present?
+        if execution.any?
+          lines << ""
+          lines << "### Execution"
+          lines.concat(execution)
+        end
 
         lines.concat(prompt_lines(session, verbose)) if session.prompt.present?
 
