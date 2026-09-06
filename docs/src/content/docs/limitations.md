@@ -912,18 +912,24 @@ and nothing in the product offers one.
 Zimmer used to *say* otherwise. `Session::EXECUTION_PROVIDERS` accepted `remote_sandbox`, the MCP
 `start_session` tool listed it in its enum and described it as "runs in isolated sandbox," and the
 REST API docs repeated the pair. The provider behind the name
-(`lib/execution/providers/remote_sandbox.rb`) is a stub: every method returns
+(`lib/execution/providers/remote_sandbox.rb`) was a stub: every method returned
 `Result.failure("not yet implemented")`. An agent reading the tool schema could reasonably have
-picked it. So the advertisement is gone — `local_filesystem` is the only accepted value and anything
-else is a `422`. That removes the false claim; it does not add a sandbox.
+picked it. [#49](https://github.com/tadasant/zimmer/issues/49) removed the advertisement, leaving
+`local_filesystem` as the only accepted value.
 
-Building one is a real project — a new runner, new images, credential brokering, cloud provisioning
-— and it is backlog, not in flight. `lib/execution/` still holds the stub and its provider
-abstraction, unwired from `app/`; whether to build against that seam or delete it is
-[#172](https://github.com/tadasant/zimmer/issues/172).
+[#172](https://github.com/tadasant/zimmer/issues/172) finished the job by deleting the thing being
+advertised. `lib/execution/` — a Strategy-pattern execution layer with a `SessionExecutor`, a
+`Context`, a `Result`, a `CommandBuilder` and two providers behind an abstract base — was a parallel
+implementation of the spawn path that nothing under `app/` ever called, and had drifted from the
+live path it mirrored (it archived a finished session; a live session that finishes a turn parks in
+`needs_input`). The layer is gone, and with it the `execution_provider` field: not a permitted
+create param, not in `session_json`, not in the MCP `start_session` schema, not on the Administrate
+panel. The column itself comes out in a follow-up deploy, per the two-phase drop rule.
 
-Fixed in [#49](https://github.com/tadasant/zimmer/issues/49) as far as a fix goes here: the false
-advertisement is gone. The live remainder is #172, above.
+None of that adds a sandbox, and nothing in the product offers one. Building one is a real project —
+a new runner, new images, credential brokering, cloud provisioning — and it is not in flight. If it
+is ever built, the seam it grows from is `RuntimeRegistry` and `ProcessLifecycleManager`, which is
+where sessions actually start, rather than an abstraction kept warm beside them.
 
 ### Anyone in the workspace can trigger an agent via bot-mention, by default
 
@@ -2945,8 +2951,8 @@ forever.
 
 ### Private repositories are cloned with a PAT, never an SSH key
 
-`GitCloneService` and the local execution provider authenticate to private repos by rewriting an
-HTTPS remote to `https://TOKEN@github.com/owner/repo.git` using the GitHub PAT in credentials.
+`GitCloneService` authenticates to private repos by rewriting an HTTPS remote to
+`https://TOKEN@github.com/owner/repo.git` using the GitHub PAT in credentials.
 There is no SSH-key path: an `ssh://` or `git@host:` remote gets no credential at all, and a
 non-GitHub host gets none either. Tracked in
 [#90](https://github.com/tadasant/zimmer/issues/90).

@@ -32,8 +32,7 @@ class PostDeployTask::RunnerTest < ActiveSupport::TestCase
     files = counting_task("RunnerOnceTask", "20260201000000", <<~BODY)
       def up
         Session.create!(prompt: "ran once", agent_runtime: "claude_code", status: :waiting,
-                        git_root: "https://github.com/test/repo.git", branch: "main",
-                        execution_provider: "local_filesystem")
+                        git_root: "https://github.com/test/repo.git", branch: "main")
         checkpoint!(created: 1)
       end
     BODY
@@ -91,8 +90,7 @@ class PostDeployTask::RunnerTest < ActiveSupport::TestCase
   test "a task too slow for one slice resumes from its cursor on the next pass" do
     5.times do |i|
       Session.create!(prompt: "sweep target #{i}", agent_runtime: "claude_code", status: :waiting,
-                      git_root: "https://github.com/test/repo.git", branch: "main",
-                      execution_provider: "local_filesystem")
+                      git_root: "https://github.com/test/repo.git", branch: "main")
     end
 
     files = counting_task("RunnerSlicedTask", "20260203000000", <<~BODY)
@@ -128,8 +126,7 @@ class PostDeployTask::RunnerTest < ActiveSupport::TestCase
     files = counting_task("RunnerRaceTask", "20260204000000", <<~BODY)
       def up
         Session.create!(prompt: "raced", agent_runtime: "claude_code", status: :waiting,
-                        git_root: "https://github.com/test/repo.git", branch: "main",
-                        execution_provider: "local_filesystem")
+                        git_root: "https://github.com/test/repo.git", branch: "main")
       end
     BODY
 

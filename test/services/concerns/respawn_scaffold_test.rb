@@ -51,7 +51,6 @@ class RespawnScaffoldTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid
     )
     @process_manager = MockProcessManager.new
@@ -72,7 +71,6 @@ class RespawnScaffoldTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid
     )
     @session.update!(

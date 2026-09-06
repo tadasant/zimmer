@@ -15,8 +15,7 @@ class SessionClonePathTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
 
     @previous_clone = File.join(@clones_base, "repo-main-1780000000-deadbeef")

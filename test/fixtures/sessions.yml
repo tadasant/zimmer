@@ -8,7 +8,6 @@ active_session:
   config: {}
   git_root: "https://github.com/anthropics/anthropic-cookbook.git"
   branch: "main"
-  execution_provider: "local_filesystem"
 
 running:
   agent_runtime: claude_code
@@ -18,7 +17,6 @@ running:
   config: {}
   git_root: "https://github.com/test/repo.git"
   branch: "main"
-  execution_provider: "local_filesystem"
 
 waiting:
   agent_runtime: claude_code
@@ -28,7 +26,6 @@ waiting:
   config: {}
   git_root: "https://github.com/test/repo.git"
   branch: "develop"
-  execution_provider: "local_filesystem"
 
 needs_input:
   agent_runtime: claude_code
@@ -38,7 +35,6 @@ needs_input:
   config: {}
   git_root: "https://github.com/test/repo.git"
   branch: "feature-branch"
-  execution_provider: "local_filesystem"
 
 archived:
   agent_runtime: claude_code
@@ -48,7 +44,6 @@ archived:
   config: {}
   git_root: "https://github.com/test/repo.git"
   branch: "main"
-  execution_provider: "local_filesystem"
   session_id: "d3b07384-d9a0-4c8e-8f1a-0e5f34c2e7b1"
   transcript: |
     {"type": "user", "message": {"role": "user", "content": "Complete this task"}, "timestamp": "2025-11-12T12:00:00Z"}
@@ -65,7 +60,6 @@ failed:
   config: {}
   git_root: "https://github.com/test/repo.git"
   branch: "main"
-  execution_provider: "local_filesystem"
 
 with_transcript:
   agent_runtime: claude_code
@@ -75,7 +69,6 @@ with_transcript:
   config: {}
   git_root: "https://github.com/test/repo.git"
   branch: "main"
-  execution_provider: "local_filesystem"
   transcript: [{"type": "user", "message": {"role": "user", "content": "Hello, can you help me?"}, "timestamp": "2025-11-12T12:00:00Z"}, {"type": "assistant", "message": {"role": "assistant", "content": "Of course! I'd be happy to help. What do you need?"}, "timestamp": "2025-11-12T12:00:05Z"}, {"type": "user", "message": {"role": "user", "content": "I need to create a new feature"}, "timestamp": "2025-11-12T12:00:10Z"}]
 
 with_code_blocks:
@@ -86,7 +79,6 @@ with_code_blocks:
   config: {}
   git_root: "https://github.com/test/repo.git"
   branch: "main"
-  execution_provider: "local_filesystem"
   transcript: |
     {"type": "user", "message": {"role": "user", "content": "Show me a hello world example"}, "timestamp": "2025-11-12T12:00:00Z"}
     {"type": "assistant", "message": {"role": "assistant", "content": "Here's a hello world example in Ruby:\n\n```ruby\nputs \"Hello, World!\"\n```\n\nAnd here's one in JavaScript:\n\n```javascript\nconsole.log(\"Hello, World!\");\n```"}, "timestamp": "2025-11-12T12:00:05Z"}
@@ -99,7 +91,6 @@ with_pr_url:
   config: {}
   git_root: "https://github.com/owner/repo.git"
   branch: "main"
-  execution_provider: "local_filesystem"
   custom_metadata:
     github_pull_request_urls:
       - "https://github.com/owner/repo/pull/123"
@@ -112,7 +103,6 @@ with_pr_url_and_status:
   config: {}
   git_root: "https://github.com/owner/repo.git"
   branch: "main"
-  execution_provider: "local_filesystem"
   custom_metadata:
     github_pull_request_urls:
       - "https://github.com/owner/repo/pull/456"
@@ -127,7 +117,6 @@ with_multiple_pr_urls:
   config: {}
   git_root: "https://github.com/owner/repo.git"
   branch: "main"
-  execution_provider: "local_filesystem"
   custom_metadata:
     github_pull_request_urls:
       - "https://github.com/owner/repo/pull/100"
@@ -147,7 +136,6 @@ router_parent:
   config: {}
   git_root: "https://github.com/test/repo.git"
   branch: "main"
-  execution_provider: "local_filesystem"
   custom_metadata:
     spawned_by: null
 
@@ -160,7 +148,6 @@ router_child_running:
   config: {}
   git_root: "https://github.com/test/repo.git"
   branch: "main"
-  execution_provider: "local_filesystem"
   parent_session: router_parent
   custom_metadata:
     spawned_by: "zimmer-router"
@@ -174,7 +161,6 @@ router_child_archived:
   config: {}
   git_root: "https://github.com/test/repo.git"
   branch: "main"
-  execution_provider: "local_filesystem"
   parent_session: router_parent
   custom_metadata:
     spawned_by: "zimmer-router"
@@ -187,7 +173,6 @@ elicitation_session:
   config: {}
   git_root: "https://github.com/test/repo.git"
   branch: "main"
-  execution_provider: "local_filesystem"
 
 pending_oauth:
   agent_runtime: claude_code
@@ -197,7 +182,6 @@ pending_oauth:
   config: {}
   git_root: "https://github.com/test/repo.git"
   branch: "main"
-  execution_provider: "local_filesystem"
   metadata:
     failure_reason: "oauth_required"
     oauth_required_servers:

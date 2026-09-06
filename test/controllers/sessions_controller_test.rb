@@ -1749,8 +1749,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       status: :failed,
       prompt: "Another failed task",
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
 
     post bulk_archive_sessions_url, params: {
@@ -1782,8 +1781,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       status: :failed,
       prompt: "Another failed task",
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
 
     # One log per archive: the state machine's line, which carries the actor.

@@ -34,8 +34,7 @@ class PostDeployTaskTest < ActiveSupport::TestCase
   test "sweep walks every row once, in key order, and reports done" do
     sessions = 5.times.map do |i|
       Session.create!(prompt: "sweep #{i}", agent_runtime: "claude_code", status: :waiting,
-                      git_root: "https://github.com/test/repo.git", branch: "main",
-                      execution_provider: "local_filesystem")
+                      git_root: "https://github.com/test/repo.git", branch: "main")
     end
 
     seen = []
@@ -51,8 +50,7 @@ class PostDeployTaskTest < ActiveSupport::TestCase
   test "sweep yields on the budget and resumes from the cursor without repeating a row" do
     sessions = 4.times.map do |i|
       Session.create!(prompt: "resume #{i}", agent_runtime: "claude_code", status: :waiting,
-                      git_root: "https://github.com/test/repo.git", branch: "main",
-                      execution_provider: "local_filesystem")
+                      git_root: "https://github.com/test/repo.git", branch: "main")
     end
     relation = Session.where(id: sessions.map(&:id))
 

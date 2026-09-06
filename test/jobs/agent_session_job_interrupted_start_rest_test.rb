@@ -25,7 +25,6 @@ class AgentSessionJobInterruptedStartRestTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       # A runtime that mints its own rollout id leaves Zimmer's column blank until
       # transcript polling reads one back, so this is what "spawned, never wrote a
       # line" looks like on the row.

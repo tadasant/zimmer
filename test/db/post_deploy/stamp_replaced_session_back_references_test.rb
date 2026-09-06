@@ -122,7 +122,6 @@ class StampReplacedSessionBackReferencesTest < ActiveSupport::TestCase
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       **attrs
     )
   end

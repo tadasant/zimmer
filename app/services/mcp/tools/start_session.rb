@@ -30,8 +30,6 @@ module Mcp
 
       GOAL_DESC = 'Goal ID from get_configs (e.g. "pr_merged"). The description is automatically resolved and passed to the agent as context.'
 
-      EXECUTION_PROVIDER_DESC = 'Execution environment. Only option: "local_filesystem" — the agent runs on the Zimmer host itself, unsandboxed, with the host\'s git and gh credentials. Default: "local_filesystem"'
-
       # The one sentence every list-valued parameter below repeats, because the
       # failure it prevents was a caller that had read "drop what you don't need"
       # and wrote a fresh one-element list: the root's OTHER default went with it,
@@ -151,11 +149,6 @@ On a connection restricted to specific agent roots you cannot narrow at all: pas
           title: { type: "string", description: TITLE_DESC },
           slug: { type: "string", description: SLUG_DESC },
           goal: { type: "string", description: GOAL_DESC },
-          execution_provider: {
-            type: "string",
-            enum: Session::EXECUTION_PROVIDERS,
-            description: EXECUTION_PROVIDER_DESC
-          },
           mcp_servers: { type: "array", items: { type: "string" }, description: MCP_SERVERS_DESC },
           skills: { type: "array", items: { type: "string" }, description: SKILLS_DESC },
           plugins: { type: "array", items: { type: "string" }, description: PLUGINS_DESC },
@@ -264,7 +257,6 @@ On a connection restricted to specific agent roots you cannot narrow at all: pas
         attrs[:prompt] = args["prompt"] if args["prompt"].present?
         attrs[:title] = args["title"] if args["title"].present?
         attrs[:slug] = args["slug"] if args["slug"].present?
-        attrs[:execution_provider] = args["execution_provider"] if args["execution_provider"].present?
         attrs[:auto_compact_window] = args["auto_compact_window"] unless args["auto_compact_window"].nil?
         attrs[:goal] = resolved_goal(args["goal"]) if args["goal"].present?
         # Gate on "the caller named a list", not on "the list has entries" — the

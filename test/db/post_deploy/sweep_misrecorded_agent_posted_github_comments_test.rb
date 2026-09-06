@@ -35,7 +35,6 @@ class SweepMisrecordedAgentPostedGithubCommentsTest < ActiveSupport::TestCase
       status: :archived,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       transcript: transcript
     )
   end

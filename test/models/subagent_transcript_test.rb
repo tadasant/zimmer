@@ -93,8 +93,7 @@ class SubagentTranscriptTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :running,
       prompt: "Test",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     SubagentTranscript.create!(session: session, agent_id: "agent-1")
     SubagentTranscript.create!(session: session, agent_id: "agent-2")
@@ -110,8 +109,7 @@ class SubagentTranscriptTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :running,
       prompt: "Test",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     SubagentTranscript.create!(session: session, agent_id: "agent-to-destroy")
 

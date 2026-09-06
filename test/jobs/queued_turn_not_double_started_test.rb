@@ -40,7 +40,6 @@ class QueuedTurnNotDoubleStartedTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       status: status,
       running_job_id: nil,

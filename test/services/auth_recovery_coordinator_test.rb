@@ -35,7 +35,6 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       metadata: { "clone_path" => "/tmp/test-clone", "working_directory" => "/tmp/test-clone" }
     )
@@ -588,8 +587,7 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
   test "two sessions on the same failed account produce exactly one rotation" do
     second_session = Session.create!(
       prompt: "Second", agent_runtime: "claude_code", status: :running,
-      git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem", session_id: SecureRandom.uuid,
+      git_root: "https://github.com/test/repo.git", branch: "main", session_id: SecureRandom.uuid,
       metadata: {
         "clone_path" => "/tmp/other-clone",
         AuthRecoveryCoordinator::IDENTITY_KEY => @primary.email

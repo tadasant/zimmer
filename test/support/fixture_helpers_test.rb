@@ -12,9 +12,9 @@ require "test_helper"
 # literal path: a literal here would be the eleventh copy of the layout, which is
 # what #504 and #691 exist to stop.
 #
-# There is no execution_provider case to cover: `local_filesystem` is the only
-# member of Session::EXECUTION_PROVIDERS, so the branch the helper used to take on
-# that column had one reachable arm and one that no valid session could enter.
+# There is no execution_provider case to cover: #172 retired the column, along
+# with the unwired `lib/execution/` layer it named, so the branch the helper used
+# to take on it has nothing left to branch on.
 class FixtureHelpersTest < ActiveSupport::TestCase
   WORKING_DIRECTORY = "/home/rails/.zimmer/clones/repo-main-1-abc"
 

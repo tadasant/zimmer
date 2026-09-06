@@ -12,6 +12,18 @@ class Session < ApplicationRecord
   include RunningTurns
   include CatalogArtifactReferences
 
+  # Phase 1 of the two-phase drop of `execution_provider` (#172). The column
+  # named a Strategy-pattern execution layer under `lib/execution/` that nothing
+  # in the live spawn path ever called: `AgentSessionJob` → `GitCloneService` →
+  # `ProcessLifecycleManager` → the runtime adapters read no provider, so the
+  # value on a row never decided anything. The layer is deleted and every
+  # reference to the column with it; ignoring it here is what keeps the old
+  # containers serving through the cutover, and a later PR drops the column and
+  # its index and removes this line. Do not reintroduce it as an attribute — if a
+  # second execution substrate is ever built, the seam is RuntimeRegistry and
+  # ProcessLifecycleManager, not a column with one legal value.
+  self.ignored_columns += %w[execution_provider]
+
   has_many :logs, dependent: :destroy
   has_many :subagent_transcripts, dependent: :destroy
   has_many :enqueued_messages, dependent: :destroy
@@ -642,14 +654,6 @@ class Session < ApplicationRecord
   # than a column that landed empty by accident. See #record_explicit_mcp_servers.
   EXPLICIT_EMPTY_MCP_SERVERS_KEY = "mcp_servers_explicitly_empty"
 
-  # Execution providers a session may declare. Local filesystem is the only one: agents run
-  # unsandboxed on the app host, and Zimmer has no sandboxed alternative to offer. The one
-  # other provider class that exists, lib/execution/providers/remote_sandbox.rb, is an unwired
-  # stub whose every method returns Result.failure("not yet implemented"), so this enum lists
-  # only what can actually run. See docs limitations.md and
-  # https://github.com/tadasant/zimmer/issues/49.
-  EXECUTION_PROVIDERS = %w[local_filesystem].freeze
-
   # Character limits for prompts and goals
   # These limits are set to allow for large prompts while staying well within
   # Claude's ~200k token context window (~800k-1M characters). The prompt limit
@@ -742,7 +746,6 @@ class Session < ApplicationRecord
   # lets a caller spawn a session under a non-default runtime once a second
   # runtime is registered, without revisiting this validation.
   validates :agent_runtime, inclusion: { in: ->(_) { RuntimeRegistry.registered_runtimes }, message: "%{value} is not a valid agent runtime" }
-  validates :execution_provider, inclusion: { in: EXECUTION_PROVIDERS, message: "%{value} is not a valid execution provider" }
   validates :git_root, presence: true
   validates :branch, presence: true
   validates :slug, uniqueness: true, format: { with: /\A[a-z0-9-]+\z/, message: "only allows lowercase letters, numbers, and hyphens" }, allow_nil: true
