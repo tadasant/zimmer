@@ -57,4 +57,15 @@ class GenesisClassesControllerTest < ActionDispatch::IntegrationTest
 
     assert_equal SessionGenesis::PRIORITY, SessionGenesis.effective_class(SessionGenesis::SLACK)
   end
+
+  test "a reclassification made through this form is recorded, naming the form" do
+    entries = capture_log_entries do
+      patch genesis_class_path(genesis: "web_ui", priority_class: SessionGenesis::SPOT)
+    end
+
+    line = entries.map(&:last).find { |message| message.include?("[FleetPolicy]") }
+    assert line, "the buttons reclassified a genesis and nothing recorded it"
+    assert_includes line, "genesis_class_overrides"
+    assert_includes line, GenesisClassesController::CHANGE_SOURCE
+  end
 end

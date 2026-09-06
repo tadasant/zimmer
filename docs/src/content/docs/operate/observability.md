@@ -111,6 +111,24 @@ else. Grafana still shows the context-free WARN Rails logs from inside
 container. See [limitations](/limitations/#a-csrf-failure-still-ships-a-context-free-warn-and-is-still-counted-per-record).
 :::
 
+### WARN is also how a deliberate change gets a record
+
+Not every WARN is a failure. `[FleetPolicy]` lines are the other use of the level: one per
+persisted change to the fleet-scheduling policy — the spot gate, the concurrency limit, the
+backlog top-up thresholds — naming the surface that made it, the calling session where there is
+one, and every value that moved.
+
+```logsql
+{service.name="zimmer"} deployment.environment:=production "[FleetPolicy]"
+```
+
+The level is chosen for reach rather than for severity. These settings decide how much work the
+fleet does, they can be moved from three separate surfaces, and a change to one is otherwise
+invisible; at INFO the record would reach container stdout and nothing else, and there is no shell
+on the production box to read stdout with. WARN does not page, so the record costs nobody a
+notification. See [Every change to these numbers is
+recorded](/sessions/spot-and-priority/#every-change-to-both-ceilings-is-recorded).
+
 ### A failure the code recovered from is logged at WARN, not ERROR
 
 The same convention on the job side. A poller that hits a Slack 429, defers itself, and

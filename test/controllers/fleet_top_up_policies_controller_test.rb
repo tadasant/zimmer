@@ -63,4 +63,17 @@ class FleetTopUpPoliciesControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to inference_path(anchor: "fleet-top-up")
     assert_equal 4, AppSetting.current.fleet_idle_max_sessions
   end
+
+  test "a change made through this form is recorded, naming the form" do
+    AppSetting.editable.update!(fleet_idle_max_sessions: 12)
+
+    entries = capture_log_entries do
+      patch fleet_top_up_policy_path, params: { app_setting: { fleet_idle_max_sessions: "8" } }
+    end
+
+    line = entries.map(&:last).find { |message| message.include?("[FleetPolicy]") }
+    assert line, "the form moved the top-up ceiling and nothing recorded it"
+    assert_includes line, "fleet_idle_max_sessions 12 -> 8"
+    assert_includes line, FleetTopUpPoliciesController::CHANGE_SOURCE
+  end
 end

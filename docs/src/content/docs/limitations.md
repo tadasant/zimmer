@@ -6139,6 +6139,25 @@ Two smaller edges around the same window:
   ever being preempted. Nothing is lost each time (the release un-charges the ledger), but the log
   gets noisy.
 
+## A fleet-policy change is recorded but never announced
+
+Every persisted change to the spot gate, the concurrency limit and the backlog top-up thresholds
+writes a `[FleetPolicy]` line at WARN — see [Every change to both
+ceilings is recorded](/sessions/spot-and-priority/#every-change-to-both-ceilings-is-recorded). That
+closes the gap where a cap could go back down with no trace at all, but only halfway:
+
+- **Nothing counts the lines and nothing alerts on them.** There is no intended-policy value for a
+  health check to compare the live row against, so a revert is reconstructible from one VictoriaLogs
+  query and is still not announced to anyone. The symptom remains a fleet quietly running slower than
+  its budget supports.
+- **`update_column` and `update_all` bypass it**, as they bypass every callback. Nothing in Zimmer
+  writes these columns that way — the pollers use both only for their own state columns — but a
+  console session reaching for either moves the policy without a record.
+- **The `/inference` forms have no stale-submit protection.** Each card posts every field it renders,
+  with no `lock_version`, so a page rendered at one moment and submitted at another writes its own
+  stale values back over anything changed in between. The audit line makes that visible after the
+  fact; it does not prevent it.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
