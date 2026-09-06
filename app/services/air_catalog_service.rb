@@ -38,6 +38,12 @@ class AirCatalogService
   UNKNOWN_REFERENCE_MARKER = "references unknown"
   DROPPED_REFERENCE_MARKER = "Dropping the reference"
 
+  # A credential value shorter than this is indistinguishable from ordinary
+  # text, so scrubbing every occurrence of it would shred the error message
+  # instead of protecting anything. Same threshold, same reasoning, as
+  # TranscriptRedactor::MIN_KNOWN_SECRET_LENGTH.
+  MIN_REDACTABLE_SECRET_LENGTH = 12
+
   class << self
     # Get all entries for an artifact type, keyed by ID.
     # @param type [Symbol] one of ARTIFACT_TYPES
@@ -153,9 +159,48 @@ class AirCatalogService
     # Process-local, like the rest of the in-memory cache: it describes what this
     # process last saw, and is cleared the moment a resolve succeeds.
     #
+    # :message is `air resolve`'s own text with every credential this process
+    # holds replaced by a `[REDACTED:NAME]` marker — see #record_failure.
+    #
     # @return [Hash{Symbol => Object}, nil] :message and :at, or nil when healthy
     def resolve_failure
       @resolve_failure
+    end
+
+    # Replace every credential this process holds with a named marker, so an
+    # operator still sees *which* credential the error framed rather than a hole
+    # in the string.
+    #
+    # Public because the banner is not the only surface that renders an AIR
+    # subprocess's own words back to a browser: "Catalog refresh failed: …"
+    # (CatalogsController) lands on that same unauthenticated /sessions/new, and
+    # the pin flash (CatalogPinsController) carries an `air resolve` failure onto
+    # /settings. Every one of those strings came from a process holding
+    # AIR_GITHUB_TOKEN, so they all go through here (#319).
+    #
+    # Deliberately hand-rolled rather than delegating to TranscriptRedactor,
+    # whose known-value tier would be the better table: building that table calls
+    # ServersConfig.all, which reads the catalog through this very service — so
+    # from inside load!'s rescue it would re-enter load! on a still-broken
+    # catalog. A redactor that can recurse through the failure it is redacting is
+    # worse than a narrower one.
+    #
+    # @param text [String, nil]
+    # @return [String, nil] the text with known credentials replaced
+    def redact_secrets(text)
+      return text if text.blank?
+
+      redactable_secrets.reduce(text) do |scrubbed, (name, value)|
+        scrubbed.gsub(value, "[REDACTED:#{name}]")
+      end
+    rescue => e
+      # Withhold rather than fall through to the raw string: the whole point of
+      # this path is that the text may carry a credential, and a scrub that did
+      # not run is not evidence that it does not. The unscrubbed text is still in
+      # the application logs for an operator who can reach them.
+      Rails.logger.warn "[AirCatalogService] could not scrub credentials from an AIR error: #{e.class}: #{e.message}"
+      "the error text is withheld here because the credentials needed to scrub it could not be read " \
+        "(#{e.class}); it is in the application logs"
     end
 
     # Pull latest provider caches (github clones) via `air update`, then reload
@@ -171,7 +216,7 @@ class AirCatalogService
       # A refresh that dies before reload! never reaches load!'s rescue, so record
       # the failure here too — otherwise "Refresh catalogs" can fail while the
       # session form still shows a healthy catalog.
-      @resolve_failure = { message: e.message, at: Time.current }
+      record_failure(e.message)
       raise
     end
 
@@ -273,8 +318,44 @@ class AirCatalogService
       # Recorded before serve_last_known_good!, which re-raises when there is no
       # fallback — the one path where degraded? never gets set and the pickers go
       # silently empty.
-      @resolve_failure = { message: e.message, at: Time.current }
+      record_failure(e.message)
       serve_last_known_good!(e)
+    end
+
+    # Record a failed resolve for the session form's banner, with every
+    # credential this process holds scrubbed out of the message first.
+    #
+    # The banner renders this string on /sessions/new, which has no Rails-layer
+    # authentication (#312), under copy inviting an operator to paste it into a
+    # bug report — and the process that produced it is handed AIR_GITHUB_TOKEN
+    # by #provider_credentials_env. `air resolve` is not known to echo its
+    # environment, so this closes a rendering surface rather than an observed
+    # leak (#319).
+    #
+    # Scrubbed at the record site, not in the view: resolve_failure has more
+    # than one reader, and a message that never carries a credential into memory
+    # cannot be rendered by a reader that forgets to ask.
+    def record_failure(message)
+      @resolve_failure = { message: redact_secrets(message.to_s), at: Time.current }
+    end
+
+    # Credential values that could reach an AIR subprocess's stderr, longest
+    # first so a value containing another is replaced whole rather than shredded
+    # from the inside out.
+    #
+    # Broader than the single token #provider_credentials_env injects, because
+    # the exposure is broader: `air prepare` merges *all* of SecretsLoader.all
+    # into its own subprocess env, and every AIR subprocess inherits this
+    # process's ENV through Open3 — which is exactly how an operator-set
+    # AIR_GITHUB_TOKEN (CI) reaches the resolve that never merges it.
+    #
+    # @return [Array<Array(String, String)>] [name, value] pairs
+    def redactable_secrets
+      candidates = SecretsLoader.all.to_a + [ [ "AIR_GITHUB_TOKEN", ENV["AIR_GITHUB_TOKEN"] ] ]
+      candidates
+        .select { |_name, value| value.is_a?(String) && value.length >= MIN_REDACTABLE_SECRET_LENGTH }
+        .uniq { |_name, value| value }
+        .sort_by { |_name, value| -value.length }
     end
 
     # Cache a freshly resolved tree, persist it as the new last-known-good
