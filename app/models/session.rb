@@ -528,7 +528,6 @@ class Session < ApplicationRecord
   # what makes a metadata write worth broadcasting.
   METADATA_DISPLAY_FIELDS = %w[
     clone_path
-    full_clone_path
     failure_reason
     exit_status
     exception_class
@@ -560,7 +559,6 @@ class Session < ApplicationRecord
   SETUP_ARTIFACT_KEYS = %w[
     clone_path
     working_directory
-    full_clone_path
     process_pid
     runtime_started
   ].freeze
@@ -990,6 +988,20 @@ class Session < ApplicationRecord
   # @return [String, nil] nil until the session establishes a clone
   def working_directory
     metadata&.dig("working_directory").presence || metadata&.dig("clone_path").presence
+  end
+
+  # The root of this session's git clone — the directory `git clone` landed on,
+  # which for a session with an agent root is the PARENT of where the agent runs.
+  #
+  # This is the answer for deleting, preserving or measuring the tree, and for
+  # copying it into a fork. It is NOT the answer to "where does this session's
+  # agent run" — that is #working_directory, which is a subdirectory of this one
+  # for an agent-root session. Both concepts are named so a call site's choice
+  # between them is visible rather than implied by a raw metadata key.
+  #
+  # @return [String, nil] nil until the session establishes a clone
+  def clone_root
+    metadata&.dig("clone_path").presence
   end
 
   # Where this session's spawned process writes its stderr.
@@ -1874,9 +1886,9 @@ class Session < ApplicationRecord
   # with a follow-up prompt. Returns false when setup never completed (e.g., git
   # clone failed before session_id and clone_path were populated).
   #
-  # @return [Boolean] true if session_id and clone_path exist
+  # @return [Boolean] true if session_id and the clone root exist
   def setup_complete?
-    session_id.present? && metadata&.dig("clone_path").present?
+    session_id.present? && clone_root.present?
   end
 
   # Did this session's agent process never launch, leaving nothing to resume?

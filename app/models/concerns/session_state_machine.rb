@@ -1740,7 +1740,7 @@ module SessionStateMachine
 
   # Check if clone directory exists
   def clone_exists?
-    clone_path = metadata&.dig("clone_path")
+    clone_path = clone_root
     return false unless clone_path
 
     File.directory?(clone_path)

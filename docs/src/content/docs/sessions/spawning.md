@@ -267,6 +267,39 @@ the wrong runtime's filename, and those recoveries quietly stop firing. So there
 way to ask: `Session#stderr_log_path`, which resolves the working directory and gets the filename
 from the session's own adapter class (`RuntimeCliAdapter.stderr_log_filename`).
 
+### One accessor per question about a session's directory
+
+The same reasoning applies one level down, to the directory itself. Two questions get asked about
+a session's tree, and they have different answers for a session with an agent root:
+
+| Question | Accessor | Answer |
+| --- | --- | --- |
+| Where does this session's agent run? | `Session#working_directory` | the recorded working directory, falling back to the clone root |
+| Where is this session's clone? | `Session#clone_root` | `metadata["clone_path"]` — the parent of the above for an agent-root session |
+
+The fallback in the first one is the whole point. A session can hold a clone it has never been
+spawned in — created, cloned, and not yet started — and for that session the clone root *is* where
+its agent will run. A call site that reads `metadata["working_directory"]` directly gets `nil`
+there, and every such read sits behind a guard spelled like `return unless
+working_directory.present?`, which reads as "this session has no clone yet" and skips the work.
+[#183](https://github.com/tadasant/zimmer/issues/183) and
+[#187](https://github.com/tadasant/zimmer/issues/187) were both that defect, found separately and
+fixed separately, while the other ~48 sites reading the keys the same way stayed as they were
+([#790](https://github.com/tadasant/zimmer/issues/790)).
+
+So the keys are read in exactly one place — the two accessors on `Session` — and
+`SessionDirectoryAccessorContractTest` (`test/contracts/session_directory_accessor_contract_test.rb`)
+scans every `.rb` and `.erb` under `app/` on each CI run to keep it that way, the same shape of
+guard as [`NoWholeColumnMetadataWritersTest`](#metadata-races). Deletion, artifact preservation and
+disk reclamation genuinely want the clone root; they say so by calling `#clone_root`, so the choice
+is visible in the name rather than implied by a raw key.
+
+A third key, `full_clone_path`, used to be written alongside the other two at all four sites that
+establish a clone, always to the identical value as `working_directory`. It had one reader — the
+clipboard button in the session metadata panel, which spelled `#working_directory`'s semantics by
+hand rather than calling it. It is no longer written or read. Rows created before that still carry
+the key; nothing consults it.
+
 ### Why those tools are disallowed
 
 `Monitor`, `ScheduleWakeup`, `Bash(sleep *)`, and `Skill(schedule)` are all blocked because they

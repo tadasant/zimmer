@@ -251,7 +251,7 @@ class StaleCloneCleanupJob < ApplicationJob
 
     cleaned_anything = false
 
-    clone_path = session.metadata&.dig("clone_path")
+    clone_path = session.clone_root
     if clone_path.present? && File.directory?(clone_path)
       if GitCloneService.cleanup_clone(clone_path, reason: "StaleCloneCleanupJob stale-clone scope") == :refused
         return false

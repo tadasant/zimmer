@@ -182,7 +182,7 @@ class CodexTranscriptSource < TranscriptSource
     candidates = rollout_glob(transcript_directory, "*")
     return nil if candidates.empty?
 
-    working_directory = session.metadata&.dig("working_directory")
+    working_directory = session.working_directory
     # Defensive: without a working directory we cannot disambiguate by clone, so
     # preserve the legacy most-recent behavior rather than returning nothing.
     return most_recent(candidates) if working_directory.blank?

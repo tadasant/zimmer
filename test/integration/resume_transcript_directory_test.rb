@@ -252,7 +252,7 @@ class ResumeTranscriptDirectoryTest < ActiveJob::TestCase
     @session.update!(metadata: (@session.metadata || {}).merge(
       "clone_path" => result[:clone_path],
       "working_directory" => result[:working_directory],
-      "full_clone_path" => result[:working_directory],
+
       # The session has already taken a turn: there is a conversation to resume
       # into, which is what makes the next prompt a `--resume` rather than a
       # first spawn.
