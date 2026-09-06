@@ -165,4 +165,20 @@ class ApplicationHelperTest < ActionView::TestCase
     result = markdown("Line 1\nLine 2")
     assert_includes result, "<br"
   end
+
+  # The Undo toast may not outlive the window the server honors it in — that gap
+  # is #1036, where the button sat on screen for 25 seconds after it had stopped
+  # working. The toast reads the window rather than restating it.
+  test "the Undo toast lives exactly as long as the server's undo window" do
+    assert_equal SessionStateMachine::UNDO_ARCHIVE_WINDOW.in_milliseconds,
+      flash_duration_ms("undo_archive")
+  end
+
+  test "a flash with no inline action uses the short timer" do
+    assert_equal 5_000, flash_duration_ms(nil)
+  end
+
+  test "the Archive anyway toast outlives a bare notice" do
+    assert flash_duration_ms("force_archive") > flash_duration_ms(nil)
+  end
 end

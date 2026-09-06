@@ -2,8 +2,9 @@
 
 # Job to clean up a session's git clone after the undo window expires.
 #
-# When a session is archived, this job runs after a delay (default: 10 seconds)
-# to allow the user to click "Undo" within the 5-second window.
+# When a session is archived, this job runs after CLEANUP_DELAY — the undo window
+# (SessionStateMachine::UNDO_ARCHIVE_WINDOW) plus a few seconds of grace — so that
+# a user who clicks "Undo" inside that window gets their clone back with it.
 #
 # Before deleting the clone, the job checks for unpushed state (uncommitted changes
 # or unpushed commits). If found, lightweight artifacts are preserved for
@@ -24,8 +25,12 @@ class DeferredCloneCleanupJob < ApplicationJob
   include DurableSessionStorage
   queue_as :maintenance
 
-  # Delay before cleanup runs (should be longer than the undo window)
-  CLEANUP_DELAY = 10.seconds
+  # Delay before cleanup runs. Derived from the undo window rather than restated
+  # as a literal, because the ordering is load-bearing: SessionsController#undo_archive
+  # puts a session back to work on this clone without rebuilding it, so a cleanup
+  # that ran first would restore a session whose working tree is gone. The grace
+  # covers the round trip of the click that lands on the last second of the window.
+  CLEANUP_DELAY = SessionStateMachine::UNDO_ARCHIVE_WINDOW + 5.seconds
 
   # Total executions, including the first. This job is the ONLY thing that
   # reclaims an archived session's clone inside the reversible window, so a run

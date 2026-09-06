@@ -715,7 +715,7 @@ that panel dead, silently: the button was enabled, the panel flipped to "Generat
 because the session was in the trash, and no new summary ever arrived.
 
 **A reclaimed clone is not a refusal either.** `DeferredCloneCleanupJob` deletes an archived session's
-clone once the ten-second undo window closes — on the clean branch *and* on the branch that preserves
+clone once the undo window closes — on the clean branch *and* on the branch that preserves
 unpushed artifacts first; only a session whose artifacts Zimmer failed to preserve keeps its clone for
 the trash-retention window. So every archived session an operator actually opens later has no working
 tree at all, and a check for one would refuse exactly the sessions the panel exists to serve.
