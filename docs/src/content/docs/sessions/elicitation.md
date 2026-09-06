@@ -188,8 +188,10 @@ different ways:
 - `CliSpawnEnv#apply_elicitation_env` puts them on the agent CLI process. Claude Code hands a
   stdio server its own environment, so that reaches the server there.
 - `RuntimeConfigPostProcessor#inject_elicitation_env!` writes them into each stdio server's own
-  `env` table in the generated MCP config (`.mcp.json` / `.codex/config.toml`), at `air prepare`
-  time. This is the only channel Codex honors: it rebuilds a server's environment from
+  `env` table in the generated MCP config (`.mcp.json` for Claude Code and Pi, `.codex/config.toml`
+  for Codex), at `air prepare` time. Pi's post-processor inherits this step along with the rest of
+  the shared pipeline, so its servers get the pair the same way. This is the only channel Codex
+  honors: it rebuilds a server's environment from
   `HOME`/`LANG`/`PATH`/`PWD`/`SHELL` plus whatever the entry's own `env`/`env_vars` name. Measured
   on codex-cli 0.146.0, a stub stdio server spawned by `codex exec` from a shell where both
   variables were set received *neither* — so before this existed, every Codex approval POST went

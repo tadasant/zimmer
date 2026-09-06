@@ -46,8 +46,8 @@ makes it the interesting third column — see
 [Pi is the runtime that supplies nothing](#pi-is-the-runtime-that-supplies-nothing).
 
 :::note[Three slots are dead weight]
-`auth_provider_class` is `nil` for both runtimes even though both classes exist — auth resolves
-through `RuntimeAuthProvider.for` instead. `prompt_contribution_class` is `nil` for Codex even though
+`auth_provider_class` is `nil` for all three runtimes even though all three classes exist — auth
+resolves through `RuntimeAuthProvider.for` instead. `prompt_contribution_class` is `nil` for Codex even though
 `CodexRuntimePromptContribution` exists; it resolves through `RuntimePromptContribution.for`.
 `config_preparer_class` is `nil` everywhere and nothing reads it. Pi fills its
 `prompt_contribution_class` slot anyway — leaving it `nil` while the class exists

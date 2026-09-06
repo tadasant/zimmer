@@ -268,8 +268,8 @@ semantics are deliberately asymmetric:
 - **Priority sessions are never held by it.** A priority session starts whenever it is ready, even
   with every slot taken.
 - **Priority sessions still count toward it.** The number counted is every Claude Code session a
-  worker is running, whatever its class. (Codex sessions spend nothing against a Claude account, so
-  they do not take a slot.)
+  worker is running, whatever its class. (Codex and Pi sessions spend nothing against a Claude
+  account, so they do not take a slot.)
 - **So ten running priority sessions leave zero spot slots** — priority work is meant to crowd spot
   work out, and that is the intent rather than a side effect.
 
@@ -412,7 +412,7 @@ below 3" — but they are **not the same count**, so do not expect the two numbe
 match. The
 concurrency limit reads `Session.running_claude_code_count`: Claude Code sessions only, frozen
 categories included. The top-up ceiling reads `FleetIdleMonitor.running_sessions`: every runtime,
-frozen categories excluded. A fleet running Codex work shows up in the second and not the first. Both
+frozen categories excluded. A fleet running Codex or Pi work shows up in the second and not the first. Both
 go through `RunningTurns`, so they agree about what a `running` row *means* and differ only on runtime
 and frozen categories. The full rules live under
 [`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress).
@@ -945,8 +945,9 @@ sessions:
 `SpotSessionPause` reads `Decision#stops_running_work?`, not `held?`, which is what draws that
 first line. A fleet merely ahead of the curve is throttled at the door and never interrupted.
 
-Priority sessions are never paused, on any reading. Nor are Codex sessions (they spend nothing
-against a Claude window) or status-summary forks (Zimmer's own seconds-long bookkeeping).
+Priority sessions are never paused, on any reading. Nor are Codex or Pi sessions (they spend
+nothing against a Claude window — every pause and preemption path filters on
+`agent_runtime = 'claude_code'`) or status-summary forks (Zimmer's own seconds-long bookkeeping).
 
 ### What a pause does
 

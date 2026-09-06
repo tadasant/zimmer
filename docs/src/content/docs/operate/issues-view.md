@@ -59,7 +59,7 @@ a setting nobody sets.
 | `tadasant/zimmer` | Zimmer itself — this app |
 | `tadasant/strad` | The MCP gateway every Zimmer connector is served through |
 | `tadasant/tadasant-internal` | The AIR catalog, the gate postures, the fleet's own prose |
-| `tadasant/pi-extensions` | The Raspberry Pi extension set baked into the base image |
+| `tadasant/pi-extensions` | `@tadasant/pi-hooks` and `@tadasant/pi-plugins` — the [Pi runtime's](/sessions/runtimes/) hook and plugin extensions, baked into the base image |
 | `tadasant/motet` | Motet |
 | `pulsemcp/air` | The AIR framework the whole agent-harness layer resolves its catalog through |
 

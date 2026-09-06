@@ -260,12 +260,13 @@ Four details are load-bearing:
   `SSH_AUTH_SOCK` first and `SSH_PRIVATE_KEY_PATH` second, and nothing else — it does not go looking
   in `~/.ssh`. There is no ssh-agent in the container, so `CliSpawnEnv` exports
   `SSH_PRIVATE_KEY_PATH` into the [spawn environment](/sessions/spawning/#the-spawn-environment).
-- **The two runtimes reach the MCP server differently.** Claude Code hands a stdio MCP server its own
+- **The runtimes reach the MCP server differently.** Claude Code hands a stdio MCP server its own
   environment, so the spawn env is enough. Codex does not: it builds each server's environment from a
   fixed whitelist plus exactly the vars the entry names in `env_vars`. So
   `CodexConfigTomlPostProcessor` adds `SSH_PRIVATE_KEY_PATH` to every stdio server's `env_vars` in
   `.codex/config.toml`. Miss that and the fix works for Claude sessions and silently does not for
-  Codex ones.
+  Codex ones. [Pi](/sessions/runtimes/) gets the variable on its CLI process from the same shared
+  `CliSpawnEnv` step, and has no `env_vars`-style forwarding of its own.
 
 The key material itself is deliberately **not** a `mcp_secret`:
 `AgentSessionJob#inject_secrets_to_env_file` writes every `mcp_secret` in plaintext into the session

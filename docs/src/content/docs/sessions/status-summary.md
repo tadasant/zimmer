@@ -80,11 +80,19 @@ fork runs a single turn and pauses. `SessionStatusSummaryHarvestJob` lifts the a
 fork wrote *after* the fork point onto the source session's `SessionStatusSummary` record, then
 archives the fork so its clone is reclaimed on the normal trash path.
 
-For runtimes with a deterministic resume transcript file, such as Claude Code, the fork resumes from
-the copied transcript file. Codex does not have that shape: its rollouts live in a date-partitioned
-tree with runtime-generated UUID filenames, so Zimmer cannot recreate a resumable rollout for a
-fresh fork. A Codex summary fork therefore starts as a fresh one-shot turn and receives the copied
-conversation inline in the summary prompt.
+For runtimes with a deterministic resume transcript file — Claude Code and Pi — the fork resumes
+from the copied transcript file. Codex does not have that shape: its rollouts live in a
+date-partitioned tree with runtime-generated UUID filenames, so Zimmer cannot recreate a resumable
+rollout for a fresh fork. A Codex summary fork therefore starts as a fresh one-shot turn and
+receives the copied conversation inline in the summary prompt.
+
+:::note[A Pi session never reaches the fork path anyway]
+`#pool_exhausted?` reads `accounts.available.none?`, and `PiAuthProvider` pools no accounts by
+construction, so it is always true for Pi and every Pi status summary takes the headless path
+below. That is the right outcome rather than a lucky one: the fork would run on Pi and would need
+the same provider key the empty pool cannot vouch for. See [Runtimes](/sessions/runtimes/) and
+[Known limitations](/limitations/#a-pi-sessions-status-summary-always-takes-the-cheap-path).
+:::
 
 A source session with **no conversation** to copy takes that same fresh-turn path whatever its
 runtime. A session that died in its opening seconds has a transcript holding only the runtime's own

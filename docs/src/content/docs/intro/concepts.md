@@ -61,14 +61,16 @@ user-invocable, spawned as phases by the `catalog-management` lead root.
 
 ## Runtime (agent harness)
 
-Which CLI actually runs: `claude_code` or `codex`. Selected per session, defaulting from the
-agent root, then the global setting, then `claude_code`.
+Which CLI actually runs: `claude_code`, `codex` or `pi`. Selected per session, defaulting from
+the agent root, then the global setting, then `claude_code`.
 
-The two behave differently in ways that leak: Claude accepts a `--session-id` you generate;
-Codex mints its own. Claude reads `--mcp-config`; Codex reads `~/.codex/config.toml`. Claude
-takes `--append-system-prompt`; Codex requires you to write into `AGENTS.md`.
+The three behave differently in ways that leak. Claude and Pi accept a `--session-id` you
+generate; Codex mints its own. Claude reads `--mcp-config` and Pi reads a `.mcp.json` in the
+clone; Codex reads `~/.codex/config.toml`. Claude and Pi take `--append-system-prompt`; Codex
+requires you to write into `AGENTS.md`. And Pi arrives with no MCP, hooks or plugins of its own
+— all three are supplied by pinned Pi extensions.
 
-→ [Adding an agent harness](/extend/agent-harness/)
+→ [Runtimes](/sessions/runtimes/) · [Adding an agent harness](/extend/agent-harness/)
 
 ## Goal
 
