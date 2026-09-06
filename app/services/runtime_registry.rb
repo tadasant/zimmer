@@ -40,12 +40,13 @@ module RuntimeRegistry
   # ledger. It exists as a slot because "where a runtime records what it spent"
   # is a per-runtime fact with no common answer: Claude Code writes a host-global
   # `~/.claude/projects` tree, Pi writes into the clone (and so is read back out
-  # of `sessions.transcript`), and Codex reports cumulative per-turn totals with
-  # no per-call id at all. The contract is `.new(modified_since:)` — a `logger:`
-  # is accepted too — and `#call`, returning something that responds to
-  # `#session_rows` and `#to_s`;
-  # `nil` means this runtime's spend is not ingested yet, and says so in one
-  # place instead of in a conditional somewhere downstream.
+  # of `sessions.transcript`), and Codex writes a date-partitioned, partly
+  # Zstandard-compressed rollout tree whose token events carry no per-call id.
+  # The contract is `.new(modified_since:)` — a `logger:` is accepted too — and
+  # `#call`, returning something that responds to `#session_rows` and `#to_s`.
+  # Every registered runtime fills it today; `nil` remains legal and means this
+  # runtime's spend is not ingested yet, said in one place instead of in a
+  # conditional somewhere downstream.
   Bundle = Struct.new(
     :runtime,
     :air_adapter_name,
@@ -117,17 +118,16 @@ module RuntimeRegistry
     artifact_bridge_class: NullRuntimeArtifactBridge,
     auth_provider_class: nil,
     mcp_credential_writer_class: CodexMcpCredentialWriter,
-    # nil, and the honest reading of a gap rather than an oversight. Codex writes
-    # rollouts to `~/.codex/sessions/YYYY/MM/DD/`, which the Claude scanner's glob
-    # and clone-directory attribution never reach, so Codex spend is as invisible
-    # today as Pi's was. Closing it is not this slot away: a rollout records token
-    # counts as a `token_count` event carrying CUMULATIVE `total_token_usage` and
-    # the turn's `last_token_usage`, with no per-call identifier and no model on
-    # the event (the model is on `turn_context`). So the dedup key and the model
-    # attribution both have to be built rather than read, which is a different
-    # piece of work from Pi's — tracked in
-    # [#1077](https://github.com/tadasant/zimmer/issues/1077).
-    usage_ingestor_class: nil
+    # CodexTokenUsageIngestionService, and it reads the corpus none of the others
+    # could: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl{,.zst}`, four levels
+    # deep, date-partitioned, and Zstandard-compressed once a rollout finishes. A
+    # rollout also supplies less than either sibling format does — a
+    # `token_count` event carries a cumulative total, the turn's delta, and no
+    # per-call identifier or model at all — so the row's key is synthesised from
+    # the rollout uuid and the event timestamp, and the model is tracked forward
+    # off `turn_context`. See the service for why the delta rather than the
+    # total.
+    usage_ingestor_class: CodexTokenUsageIngestionService
   ).freeze
 
   # Pi coding agent runtime. Pi is the first runtime Zimmer supports that arrives

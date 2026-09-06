@@ -7,18 +7,21 @@
 # so a steady-state run is cheap: the Claude corpus is thousands of files and
 # tens of gigabytes, and re-reading all of it every few minutes to find a few
 # hundred new API calls would cost more than it measures. The full Claude corpus
-# is covered once by TokenUsageBackfillJob; the full Pi corpus by the one-time
-# post-deploy task that shipped its ingestor.
+# is covered once by TokenUsageBackfillJob; the Pi and Codex corpora by the
+# one-time post-deploy tasks that shipped their ingestors, and by that same
+# backfill job on any later re-scan.
 #
 # The lookback deliberately overlaps the cron interval by a wide margin. Ingestion
 # is idempotent on `request_id`, so overlap costs nothing and closes the gap left
 # by a missed run, a deploy, or a session whose transcript is written late.
 #
 # WHICH INGESTORS RUN IS READ OFF THE RUNTIME REGISTRY, not listed here. Where a
-# runtime records what it spent is a property of the runtime — a host-global tree
-# for Claude Code, the clone (and so `sessions.transcript`) for Pi — and
-# RuntimeRegistry::Bundle is where per-runtime facts live. A runtime whose slot is
-# nil is one whose spend is not ingested yet, and it is nil in one legible place.
+# runtime records what it spent is a property of the runtime — a host-global
+# `~/.claude/projects` tree for Claude Code, the clone (and so
+# `sessions.transcript`) for Pi, a date-partitioned and partly Zstandard-compressed
+# rollout tree for Codex — and RuntimeRegistry::Bundle is where per-runtime facts
+# live. A runtime whose slot is nil is one whose spend is not ingested yet, and it
+# is nil in one legible place.
 class TokenUsageIngestionJob < ApplicationJob
   queue_as :pollers
 

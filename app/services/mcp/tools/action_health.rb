@@ -41,12 +41,14 @@ module Mcp
           Calling it again while active extends the window. This is an INSTANCE-WIDE halt:
           everything except agent sessions stops until it is lifted.
         - **exit_queue_recovery_mode**: Resume normal background job processing.
-        - **backfill_token_usage**: Queue a sweep of every transcript on disk into the token-spend
-          ledger, so `get_costs` covers all of history rather than only spend since ingestion was
-          deployed. The sweep normally starts itself after a deploy and needs nobody; use this to
-          re-scan, or to restart one that stopped. Idempotent — it returns the run already in
-          flight rather than starting a second, and ingestion upserts on the API request id, so a
-          re-read directory writes no duplicate rows.
+        - **backfill_token_usage**: Queue a sweep of the ledger's whole history — every Claude Code
+          transcript on disk, plus every other runtime's corpus in whatever form it takes (for Pi,
+          the stored transcript of every Pi session; for Codex, every rollout under
+          `~/.codex/sessions`) — so `get_costs` covers all of history rather than only spend since
+          ingestion was deployed. The sweep normally starts itself after a deploy and needs nobody;
+          use this to re-scan, or to restart one that stopped. Idempotent — it returns the run
+          already in flight rather than starting a second, and ingestion upserts on the row's
+          request id, so a re-read corpus writes no duplicate rows.
         - **run_post_deploy_tasks**: Re-arm any failed one-time post-deploy task (`db/post_deploy/`)
           and queue a run. These normally run themselves within a couple of minutes of a deploy and
           need nobody; use this when one has failed for a reason that has since been fixed, or when

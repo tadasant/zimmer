@@ -5,17 +5,21 @@
 # Rows are written by the runtime's own ingestor — the `usage_ingestor_class`
 # slot on RuntimeRegistry::Bundle — because where a runtime records what it spent
 # differs per runtime: TokenUsageIngestionService reads Claude Code's
-# `~/.claude/projects` tree, PiTokenUsageIngestionService reads `sessions.transcript`.
+# `~/.claude/projects` tree, PiTokenUsageIngestionService reads `sessions.transcript`,
+# and CodexTokenUsageIngestionService reads `~/.codex/sessions`' rollout tree.
 #
 # They are keyed on `request_id`, one row per call. For Claude Code that is the
 # API's own identifier, because a single call appears in the JSONL as several
 # assistant lines each repeating the same `usage` object — see the migration for
-# why that distinction is load-bearing. Pi has no per-call provider id on every
-# usage-bearing entry shape, so its ingestor synthesises `pi:<session uuid>:<entry id>`.
+# why that distinction is load-bearing. The other two synthesise it, because
+# their formats carry nothing to use: Pi has no per-call provider id on every
+# usage-bearing entry shape, so its key is `pi:<session uuid>:<entry id>`, and a
+# Codex `token_count` event carries no identifier of any kind, so its key is
+# `codex:<rollout uuid>:<event timestamp>`.
 #
-# **Not every row is Anthropic spend.** A Pi row is billed by OpenRouter and
-# counts against no Anthropic quota window, which is what `quota_bearing` below
-# is for.
+# **Not every row is Anthropic spend.** A Pi row is billed by OpenRouter and a
+# Codex row against a ChatGPT plan; neither counts against an Anthropic quota
+# window, which is what `quota_bearing` below is for.
 #
 # `session` is nullable and nullifies on delete: a transcript can outlive its
 # Session row, and spend that happened is still spend. `agent_root` is
@@ -39,8 +43,9 @@ class SessionTokenUsage < ApplicationRecord
   # started to matter when a second billing relationship arrived in this table.
   # Every row here is money; only the Claude Code rows are money spent against
   # the subscription whose 5-hour and weekly windows Anthropic reports a
-  # percentage for. A Pi row is an OpenRouter invoice — real spend, and no claim
-  # at all on those windows.
+  # percentage for. A Pi row is an OpenRouter invoice and a Codex row draws on a
+  # ChatGPT plan's own limits — real spend both, and no claim at all on those
+  # windows.
   #
   # Two readers must have this filter and it is easy to miss both, because
   # neither says "Claude" in its name: QuotaCapacityCalibrator divides observed

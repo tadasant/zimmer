@@ -91,18 +91,23 @@ the runtime. `RuntimeRegistry::Bundle#usage_ingestor_class` is the slot that say
 | --- | --- | --- |
 | `claude_code` | `TokenUsageIngestionService` | `~/.claude/projects/<sanitized-working-directory>/*.jsonl` |
 | `pi` | `PiTokenUsageIngestionService` | `sessions.transcript`, for `agent_runtime = 'pi'` |
-| `codex` | — | nothing yet; Codex spend is not in the ledger ([#1077](https://github.com/tadasant/zimmer/issues/1077)) |
+| `codex` | `CodexTokenUsageIngestionService` | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` and `.jsonl.zst` |
 
 `session_token_usages.agent_runtime` records which, and `GET /api/v1/costs/records` both returns
 it and filters on it — a consumer reconciling against one provider's bill needs to be able to
-subtract the other's.
+subtract the others'.
 
-Pi is the odd one, and it is the runtime that forces the seam. It is the only runtime whose
-conversation is not in its home — `PiRuntimeAdapter` points `--session-dir` at
-`<clone>/.pi/sessions`, so the transcript is reaped with the clone. Reading it off disk would
-lose a Pi session's whole spend the moment it was archived, so the ingestor reads the durable
-copy `TranscriptPollerService` keeps in `sessions.transcript` instead. See
-[Pi's token usage](#pis-token-usage) below.
+Two of the three read something other than a plain per-session file, and each is what forced the
+slot to exist:
+
+- **Pi** is the only runtime whose conversation is not in its home — `PiRuntimeAdapter` points
+  `--session-dir` at `<clone>/.pi/sessions`, so the transcript is reaped with the clone. Reading
+  it off disk would lose a Pi session's whole spend the moment it was archived, so the ingestor
+  reads the durable copy `TranscriptPollerService` keeps in `sessions.transcript` instead. See
+  [Pi's token usage](#pis-token-usage) below.
+- **Codex** writes into a date-partitioned tree four levels deep and Zstandard-compresses a
+  rollout once it finishes, so half the corpus is not a text file at all — and its token events
+  carry no per-call identifier and no model. See [Codex's token usage](#codexs-token-usage) below.
 
 Two jobs drive ingestion, and **both run themselves** — there is no step here that needs a
 shell on the production box:
@@ -255,6 +260,61 @@ to ask for it back. So *Re-scan history* on the Costs page, `POST /api/v1/costs/
 Both are no-ops on a second run for the same reason every ingestion run is: rows are keyed on
 `request_id` and written with `insert_all ... unique_by`.
 
+### Codex's token usage
+
+A Codex rollout is JSONL too, but it supplies less than either sibling format does, and every
+decision below follows from something it does not carry.
+
+**The corpus is not where the Claude scanner looks.** Rollouts live under
+`~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<uuid>.jsonl` — four levels, date-partitioned,
+resolved through `CodexHome` so `CODEX_HOME` moves both the writer and the reader together. A
+finished rollout is Zstandard-compressed in place to `.jsonl.zst`, so most of the corpus is not a
+text file; both extensions are read, streamed a chunk at a time through the `zstd-ruby` the
+transcript source already depends on.
+
+**The delta is recorded, not the running total.** Tokens arrive on an `event_msg` line whose
+payload type is `token_count`, and it reports them twice — `total_token_usage`, cumulative for the
+whole rollout, and `last_token_usage`, just this turn. One row per API call is what the table
+means, so the turn's delta is what lands. That is also the more complete of the two readings: on
+production rollout `019ffff8-…` the cumulative counter freezes across a context compaction while
+the delta still reports the 21,983 tokens the summarization spent, so the running total ends
+21,983 short of the sum of its own deltas.
+
+**The key is synthesised from the timestamp**, because a `token_count` event carries no identifier
+of any kind — no request id, no turn id, no event id. Rows are keyed
+`codex:<rollout uuid>:<event timestamp>`. The obvious alternative, the event's ordinal position in
+the file, was rejected: it is not stable under a dropped line, so one unparseable record in the
+middle of a rollout would shift every later ordinal and re-ingest the rest of the session as new
+spend. Two events sharing a millisecond are numbered in file order (`…#1`), which an append-only
+file makes deterministic.
+
+**The model is tracked forward.** It is not on the token event; it is on `turn_context` (and on the
+`thread_settings_applied` event), emitted at the head of a turn. Both are followed as the model *in
+force*, so a rollout whose model changes mid-session attributes each turn to the model that served
+it. A token event arriving before either has been seen is **skipped and counted** in the run's
+`skipped` figure — `model` is `NOT NULL`, and inventing one would put a wrong rate on real volume.
+
+**Attribution has two strategies**, like the Claude path. The rollout uuid is Codex's own thread id,
+which Zimmer captures into `sessions.session_id`; failing that, the `cwd` Codex stamps on
+`session_meta` is the session's clone path, and the same `clone_path LIKE` lookup resolves it. A
+rollout matching neither is still ingested with a null session — spend that happened is still
+spend — and shows as unattributed rather than disappearing.
+
+:::caution[Codex spend is tokens without dollars]
+`TokenPricing` carries Anthropic rates only, so a `gpt-5.6-terra` row prices at **$0** and the model
+appears in the Costs page's unpriced-models list. Codex volume is therefore in every token figure on
+the page and in no dollar figure. That is the existing honest behaviour for a model with no rate —
+visibly unpriced beats silently mis-priced — and it is a strict improvement on the runtime being
+absent from the ledger altogether, which is what [#1077](https://github.com/tadasant/zimmer/issues/1077)
+was about. Pricing OpenAI models needs `Rate` to carry explicit cache rates rather than deriving them
+from Anthropic's multipliers, which is the same separate change Pi's non-Anthropic models need.
+:::
+
+History is covered the same two ways Pi's is: the one-time post-deploy task
+`20260907090000_ingest_codex_session_token_usage` pages the rollout tree in sorted path order, 25
+files at a time, resumable from its cursor — and `TokenUsageBackfillJob` re-sweeps the whole corpus
+at the head of every run it works, so *Re-scan history* recovers Codex spend too.
+
 ## Picking a window
 
 The Costs page carries both a set of one-click horizons — 24 hours, 7 days, 30 days,
@@ -318,14 +378,16 @@ different money on the same model.
 where "what did we spend" and "what draws down the quota window" come apart, and both readers of
 the distinction are easy to miss because neither says *Claude* in its name. These rates exist for
 the spot gate, which prices the running **Claude** fleet against an **Anthropic** window; a Pi row
-is an OpenRouter invoice with no claim on that window. Its own rate could never be looked up
-anyway — a Pi row's model reads `openrouter/anthropic/claude-opus-4.6` where a Claude session's
-config reads `opus` — but it would still land in the cost-weighted fleet average that prices a
-combination nobody has sampled. `QuotaCapacityCalibrator` carries the same filter for the same
-reason, and there it matters more: it divides spend by Anthropic's reported utilization, so a
-dollar Anthropic never counted inflates the capacity estimate *in proportion*. The Costs page, the
-REST index and `get_costs` are deliberately not filtered — they are asked what Zimmer spent, and
-the answer is every runtime.
+is an OpenRouter invoice and a Codex row draws on a ChatGPT plan, and neither has a claim on that
+window. Their own rates could never be looked up anyway — a Pi row's model reads
+`openrouter/anthropic/claude-opus-4.6` and a Codex row's `gpt-5.6-terra`, where a Claude session's
+config reads `opus` — but both would still land in the cost-weighted fleet average that prices a
+combination nobody has sampled, and a Codex row would drag it toward zero because its model is
+unpriced. `QuotaCapacityCalibrator` carries the same filter for the same reason, and there it
+matters more: it divides spend by Anthropic's reported utilization, so a dollar Anthropic never
+counted inflates the capacity estimate *in proportion*. The Costs page, the REST index and
+`get_costs` are deliberately not filtered — they are asked what Zimmer spent, and the answer is
+every runtime.
 
 The prices are `TokenPricing`'s, applied through the same `cost_sum_sql` the rest of this page uses.
 There is deliberately no second pricing path — a rate priced differently from the page would make

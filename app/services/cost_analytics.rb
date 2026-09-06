@@ -94,11 +94,11 @@ class CostAnalytics
   # Claude transcript, so only Claude Code rows can ever have a `token_usage_features`
   # row to be attributed BY. Dividing attributed tokens by every runtime's tokens
   # would make `coverage` fall and the residual grow purely as a function of Pi
-  # volume, which the page would read as "attribution is degrading" when nothing
-  # about attribution had changed. `quota_bearing` is the same predicate for a
-  # different reason and they are deliberately not shared: this one would still be
-  # right if Pi spent against an Anthropic window, and that one would still be
-  # right if Pi grew a feature attributor.
+  # and Codex volume, which the page would read as "attribution is degrading"
+  # when nothing about attribution had changed. `quota_bearing` is the same
+  # predicate for a different reason and they are deliberately not shared: this
+  # one would still be right if Pi spent against an Anthropic window, and that
+  # one would still be right if Pi grew a feature attributor.
   def attributable_scope = session_scope.where(agent_runtime: ClaudeAuthProvider::RUNTIME)
 
   # Headline numbers, both tables combined.
@@ -207,10 +207,13 @@ class CostAnalytics
   # by-model table.
   #
   # A `claude_code` row is subscription spend: a list-price figure, comparable
-  # across models, and not money owed. A `pi` row is a metered OpenRouter
-  # invoice, which is. Every other total on this page adds the two together —
-  # correctly, since both are spend — so without this split a reader has no way
-  # to tell what share of a number is an actual bill.
+  # across models, and not money owed. A `codex` row is the same, against a
+  # ChatGPT plan — and priced at zero today, because TokenPricing carries no
+  # OpenAI rates. A `pi` row is a metered OpenRouter invoice, which IS money
+  # owed. Every other total on this page adds the three together — correctly,
+  # since all of them are spend — so without this split a reader has no way to
+  # tell what share of a number is an actual bill, or how much of it is a
+  # runtime priced at zero.
   def by_runtime
     rows = grouped(session_scope, "agent_runtime")
     rows.map { |runtime, v| v.merge(runtime: runtime) }.sort_by { |r| -r[:cost_usd] }
