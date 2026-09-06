@@ -17,7 +17,9 @@ Redis. To run the whole stack in Docker instead — no host Ruby, Postgres, or R
 - **PostgreSQL 14+**
 - **Redis**
 - **Node.js** (for the AIR CLI and `npx`-based MCP servers)
-- The **`claude`** and/or **`codex`** CLI, logged in
+- The **`claude`** and/or **`codex`** CLI, logged in — or **`pi`**, which takes an
+  `OPENROUTER_API_KEY` in the environment instead of a login. See
+  [Runtimes](/sessions/runtimes/)
 - **`gh`** CLI, logged in (agents use it to open PRs)
 
 ## Setup

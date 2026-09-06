@@ -78,6 +78,7 @@ export default defineConfig({
           items: [
             { label: "The session lifecycle", slug: "sessions/lifecycle" },
             { label: "Spawning and monitoring", slug: "sessions/spawning" },
+            { label: "Runtimes", slug: "sessions/runtimes" },
             { label: "Goals and stop conditions", slug: "sessions/goals" },
             { label: "Transcripts", slug: "sessions/transcripts" },
             { label: "Outcome analysis", slug: "sessions/outcomes" },

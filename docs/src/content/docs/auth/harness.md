@@ -22,8 +22,8 @@ outages caused by exactly this are written up in the source.
 
 ## The model
 
-`ClaudeAccount` is the pool for both runtimes, discriminated by a `runtime` column
-(`claude_code` | `codex`). The naming is a leftover.
+`ClaudeAccount` is the pool for the two runtimes that have one, discriminated by a `runtime`
+column (`claude_code` | `codex`). The naming is a leftover.
 
 Everything goes through `RuntimeAuthProvider.for(runtime)` → `ClaudeAuthProvider` or
 `CodexAuthProvider`.
@@ -36,6 +36,36 @@ Everything goes through `RuntimeAuthProvider.for(runtime)` → `ClaudeAuthProvid
 | Token TTL | from `expiresAt` (~8h, inferred) | 24h, inferred — `auth.json` has no expiry field |
 | Rotation | `AccountRotationService`, 5-minute interval | inline in the provider, 24h |
 | Identity check on capture | email must match | none |
+
+### Pi is not in the pool, and nothing here applies to it
+
+Everything on this page — the pool, the refresh loop, the credentials-owner marker, quota
+rotation, the drained-pool park, the login screen — is about a **pooled subscription identity**.
+Pi does not have one. It resolves a provider credential per request out of its own process
+environment, so there is no Pi row in `claude_accounts`, nothing to mark current, and nothing to
+rotate to. `ClaudeAccount`'s `RUNTIMES` inclusion validation would reject a `pi` row outright.
+
+`PiAuthProvider` exists anyway, and every pooling method on it is a deliberate no-op rather than
+an unimplemented stub. It has to exist: `RuntimeAuthProvider.for` **raises** for an unregistered
+runtime, and `SessionStatusSummaryGenerator`, `ProcessLifecycleManager`, `AuthOutageParkService`
+and `QuotaAvailabilityMonitor` all pass `session.agent_runtime` straight into it. `#accounts`
+returns the always-empty `pi`-scoped relation rather than `nil`, because callers chain
+`.available.exists?` onto it and a relation is what makes that answer "no" instead of raising.
+
+Pi is deliberately **not** in `RuntimeAuthProvider::RUNTIMES`. That constant drives the
+token-refresh dispatcher and the auth warm-up fan-out, and a runtime with no tokens to refresh has
+no business in either sweep.
+
+What Pi needs instead is one environment variable, `OPENROUTER_API_KEY`, set on the Inference
+page's Pi tab. The write goes to the Parameter Store rather than to an account row, which is why
+setting it is a store write and not an account activation. `PiRuntimeAdapter#apply_provider_key`
+resolves it from the `${VAR}` chain into the spawn environment at each spawn. See
+[Runtimes](/sessions/runtimes/#credentials) and [How the key reaches a Pi
+session](/operate/secrets-parameter-store/#how-the-key-reaches-a-pi-session).
+
+One consequence is worth carrying forward: `#pool_exhausted?` is permanently true for Pi, so a Pi
+session's [status summary](/sessions/status-summary/) is always produced by a headless completion
+rather than by forking the session.
 
 ## Session-scoped credentials: the DB owns the chain
 

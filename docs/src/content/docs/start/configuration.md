@@ -62,6 +62,9 @@ not in Terraform — Terraform only provisions the host.
 | `ANTHROPIC_API_KEY` | Claude Code, when not using OAuth |
 | `ANTHROPIC_BASE_URL` | Test-only; triggers reading the OAuth token off disk and passing it as an API key |
 | `CODEX_HOME` | Codex config dir. Default `~/.codex` |
+| `PI_CODING_AGENT_DIR` | Pi config dir (`auth.json`, `models.json`, `settings.json`). Default `~/.pi/agent`, and set explicitly in `Dockerfile.base` so every container agrees. `PiRuntimeAdapter` exports it to the spawned process |
+| `PI_EXTENSIONS_DIR` | Where the [Pi extensions](/sessions/runtimes/#pi-brings-no-mcp-hooks-or-plugins-of-its-own) are installed. Default `/opt/pi-extensions`; CI runners that cannot write there redirect it |
+| `OPENROUTER_API_KEY` | Pi's provider credential. Normally set through the Inference page's Pi tab rather than here — see [Runtimes](/sessions/runtimes/#credentials) |
 | `CLAUDE_CONFIG_DIR` | Login isolation only (a scratch dir during the login flow) |
 | `AIR_CONFIG` | Which `air.json` to resolve. Always wins over the per-environment default. |
 | `AIR_CATALOG_REF` | Staging-only catalog pinning: rewrites every `github://tadasant/zimmer-catalog/…` URI in the **in-image** `air.production.json` to pin that ref. It is read inside the `AIR_CONFIG` fallback, so setting `AIR_CONFIG` bypasses it entirely — and `air.production.json` declares no `github://` URIs, so as shipped it pins nothing on any deployment and staging warns at boot and resolves the catalog unrewritten. See [Catalog pinning is real code for a catalog this deployment does not run](/limitations/#catalog-pinning-is-real-code-for-a-catalog-this-deployment-does-not-run) |
@@ -108,7 +111,8 @@ Consumed as `${VAR}` placeholders in `mcp.json`, resolved by `SecretsLoader` at 
 
 `/settings` writes to a single `AppSetting` row:
 
-- **Default runtime** (`claude_code` | `codex`) and default model.
+- **Default runtime** (`claude_code` | `codex` | `pi`) and default model. See
+  [Runtimes](/sessions/runtimes/).
 - **Extension toggles** — the `extension_states` JSONB map. See [Extensions](/extend/extensions/).
 - Catalog refresh controls.
 
@@ -117,8 +121,9 @@ Consumed as `${VAR}` placeholders in `mcp.json`, resolved by `SecretsLoader` at 
 `AgentRootsConfig`. With no `agent_root` param, it returns early and the runtime is the database
 column default — `claude_code`.
 
-Set the global default to `codex`, create a session via the API without an `agent_root`, and you get
-Claude Code. The old `docs/REST_API.md` documented the intended chain; the behavior above is the actual one.
+Set the global default to `codex` or `pi`, create a session via the API without an `agent_root`,
+and you get Claude Code. The old `docs/REST_API.md` documented the intended chain; the behavior
+above is the actual one.
 :::
 
 ## Hard-coded limits

@@ -33,8 +33,8 @@ Zimmer handles the toil of getting an agent from a prompt to a verified PR.
 
 <CardGrid>
   <Card title="It isn't a bet on one vendor" icon="seti:plan">
-    The agent harness is a [registry behind a contract](/extend/agent-harness/) — Claude
-    Code and Codex both ship today, and you pick the model per session (Claude or OpenAI).
+    The agent harness is a [registry behind a contract](/extend/agent-harness/) — [Claude
+    Code, Codex and Pi](/sessions/runtimes/) all ship today, and you pick the model per session.
     [MCP servers](/air/mcp-servers/) are a JSON entry, not a code change. Nothing in the design
     assumes whose agent wins, which is the point: nobody knows yet, and the orchestration
     layer outlives the answer.
@@ -62,7 +62,8 @@ Zimmer handles the toil of getting an agent from a prompt to a verified PR.
     The goal is to juggle as few long-lived secrets as possible. Claude and Codex
     authenticate against your own account over OAuth, `gh` uses the device flow, and MCP
     servers [register themselves and refresh their own tokens](/auth/mcp-oauth/) — dynamic
-    client registration, PKCE, automatic refresh.
+    client registration, PKCE, automatic refresh. Pi is the exception: it takes a provider
+    API key, which you set once on the Inference page.
 
     Which matters on the bad day. Agents read and write a lot of text, and sooner or later a
     credential lands somewhere it shouldn't — a log line, a transcript, a pasted diff. If it
@@ -116,7 +117,7 @@ New to the idea? Read [What Zimmer is](/intro/what-zimmer-is/) first, then come 
 
 <CardGrid>
   <Card title="It runs a real agent, headless" icon="server">
-    A session is a real Claude Code or Codex process running against a real clone of a
+    A session is a real Claude Code, Codex or Pi process running against a real clone of a
     real repo. It commits, it pushes, it opens a PR, and it hands the result back for you
     to approve.
   </Card>

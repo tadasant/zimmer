@@ -35,8 +35,8 @@ Any MCP client that speaks streamable HTTP works. The whole configuration is a U
 }
 ```
 
-That is Claude Code's `.mcp.json`. Codex's `config.toml` wants the same two things under different
-keys:
+That is Claude Code's `.mcp.json` — and Pi's, since `pi-mcp-adapter` reads the same file by
+convention. Codex's `config.toml` wants the same two things under different keys:
 
 ```toml
 [mcp_servers.zimmer]

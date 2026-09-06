@@ -53,8 +53,9 @@ flowchart LR
 
 :::caution[Only one of those three is runtime-generic]
 `spawn_env_contribution` receives a `runtime` context, which implies it applies to any runtime. It
-doesn't: `CodexRuntimeAdapter#spawn_process` never calls the registry. Extension env contributions
-are unreachable for Codex sessions.
+doesn't: `ClaudeSpawnEnv` is the only caller, so neither `CodexRuntimeAdapter#spawn_process` nor
+`PiRuntimeAdapter#spawn_process` reaches the registry. Extension env contributions are unreachable
+for Codex and [Pi](/sessions/runtimes/) sessions alike.
 
 The other two mount points are Claude-specific by name (`ClaudePrintRunner`, `ClaudeSpawnEnv`).
 :::
