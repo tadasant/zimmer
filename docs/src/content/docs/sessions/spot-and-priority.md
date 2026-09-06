@@ -1305,6 +1305,12 @@ Two sweeps hand out recovered capacity, and both read precedence:
 The two populations are different (`auth_outage_reason` parks versus `paused_by: "spot_quota"`) and
 neither can start the other's sessions.
 
+Within the outage-parked population there is a third boundary, and it runs between Zimmer and the
+fleet wake rather than between two Zimmer sweeps: `AuthOutageWakeAuthority` says whether a given park
+is the ranked fleet wake's to start (**spot**) or Zimmer's own 15-minute sweep's to resume
+(**priority**). Zimmer's sweep starts only what it owns, and asks for a fleet wake on behalf of what
+it does not — see [When the pool runs dry](/auth/harness/#when-the-pool-runs-dry).
+
 ### Three parks, one headline
 
 A session can carry all three park records at once, because none of them clears the others: the gate

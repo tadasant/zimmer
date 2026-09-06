@@ -25,7 +25,9 @@ class AuthOutageBannerTest < ApplicationSystemTestCase
 
     assert_text "Quota exceeded across all accounts"
     assert_text "there is nothing to rotate into"
-    assert_text "resumes automatically once the account pool recovers"
+    # The sentence comes from AuthOutageWakeAuthority, so it names the mechanism
+    # that is actually coming — the same one `get_session` names for an agent.
+    assert_text "Zimmer's own auth-outage sweep resumes it, within fifteen minutes"
     assert_text "The pool's earliest reset is"
   end
 
@@ -47,6 +49,38 @@ class AuthOutageBannerTest < ApplicationSystemTestCase
 
     assert_text "No usable login available"
     assert_text "re-injecting credentials did not fix it"
+  end
+
+  # The banner's resume sentence grew when AuthOutageWakeAuthority took it over
+  # (tadasant/zimmer#617), and it is read on a phone. Pinned at 375px: the amber
+  # box has to stay inside the viewport, and the page has to stay no wider than
+  # the screen — an overflow here is invisible on a laptop and unreachable on a
+  # phone.
+  test "the outage banner fits a 375px viewport" do
+    page.driver.browser.manage.window.resize_to(375, 812)
+
+    begin
+      session = parked_session(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+      session.update!(scheduling_class: SessionGenesis::SPOT, precedence: 640)
+      visit session_path(session)
+      assert_text "fleet wake reaches it in precedence order"
+
+      assert page.evaluate_script(
+        "document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"
+      ), "the session page must not be wider than a 375px viewport"
+
+      banner_overflow = page.evaluate_script(<<~JS)
+        (function () {
+          const limit = document.documentElement.clientWidth;
+          const el = document.querySelector(".bg-amber-50");
+          return el ? Math.round(el.getBoundingClientRect().right) - limit : -1;
+        })()
+      JS
+      assert banner_overflow <= 1,
+        "the outage banner's right edge is #{banner_overflow}px past the viewport"
+    ensure
+      page.driver.browser.manage.window.resize_to(1400, 900)
+    end
   end
 
   test "a healthy session shows no outage banner" do
