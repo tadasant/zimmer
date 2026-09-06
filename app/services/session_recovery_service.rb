@@ -181,8 +181,27 @@ class SessionRecoveryService
   # (no activity for extended period but process still exists)
   # Terminates the process and auto-restarts the session
   def recover_with_hung_process(process_pid)
-    add_log("Claude CLI process #{process_pid} appears hung (no activity). Terminating...", level: "warning")
-    @logger.warn("Terminating hung process", process_pid: process_pid, session_id: session.id)
+    # Say which of the two this is, because the fifteen minutes of silence do not.
+    # A hung process and an absent one look the same from `last_timeline_entry_at`,
+    # and #988's four wedged sessions were all the second — recorded pid gone,
+    # `ps -p` empty — while every log line about them said "appears hung". The
+    # verdict is only ever asserted when it is provable: AgentProcessLiveness reports
+    # `:unknown` for another boot, another PID namespace or no `/proc` at all, and
+    # this reads exactly as it did before in that case.
+    liveness = AgentProcessLiveness.status(session)
+    add_log(
+      if %i[dead recycled].include?(liveness)
+        "The agent process #{process_pid} recorded for this session is already gone " \
+        "(liveness: #{liveness}) — the silence is an absent process, not a hung one. " \
+        "Cleaning up and restarting..."
+      else
+        "Claude CLI process #{process_pid} appears hung (no activity). Terminating..."
+      end,
+      level: "warning"
+    )
+    @logger.warn(
+      "Terminating hung process", process_pid: process_pid, session_id: session.id, liveness: liveness
+    )
 
     # Set a metadata flag BEFORE killing the process so the monitoring loop's
     # handle_exit method knows this was a recovery-initiated termination and
@@ -362,6 +381,25 @@ class SessionRecoveryService
     unless working_directory.present? && Dir.exist?(working_directory)
       add_log("Cannot auto-restart after hung process: working directory not found", level: "warning")
       @logger.info("Skipped auto-restart - working directory missing", process_pid: process_pid)
+      return
+    end
+
+    # Nothing above bounds this restart. The hung-process verdict is reached from
+    # `last_timeline_entry_at`, and the restart itself moves that timestamp to now —
+    # `start`/`resume` call `reset_elapsed_time_counter` — so a session whose restarts
+    # produce nothing is re-decided identically every fifteen minutes for as long as
+    # it exists, reporting `running` throughout (#988). Sessions::SilentRecoveryGuard
+    # is the exit: after RetryBudget::SILENT_RECOVERY.max turns that started and wrote
+    # no transcript event, it fails the session instead, which is a state a human, a
+    # parent's wake trigger and the health surface can all see.
+    guard = Sessions::SilentRecoveryGuard.call(
+      session, source: "hung-process recovery", log_buffer: @log_buffer
+    )
+    if guard.gave_up?
+      @logger.warn(
+        "Skipped auto-restart - recovery restarts produce no output",
+        process_pid: process_pid, reason: guard.message
+      )
       return
     end
 

@@ -86,6 +86,31 @@ module SessionContinuation
       return true
     end
 
+    # Only now, with no user message to deliver, ask whether recovery has been
+    # restarting this session into silence.
+    #
+    # MAX_CONTINUE_ATTEMPTS above bounds continues that never START — the validation
+    # refuses them and the counter survives, because nothing clears it. It cannot
+    # bound the case #988 reports, where every continue SUCCEEDS: the restart clears
+    # STALE_RETRY_METADATA_KEYS (that counter with it), the session flips to
+    # `running`, and fifteen minutes later the sweep reaches the same verdict,
+    # forever, with no transcript line written in between.
+    # Sessions::SilentRecoveryGuard is the bound for that, and it fails the session
+    # rather than parking it: a session nothing can restart is not `running`, and
+    # reporting it as `running` is what made four production stalls invisible for 92
+    # minutes to three hours.
+    #
+    # BELOW the queued-message branch deliberately, so a human's queued message is
+    # never stranded by this give-up. `failed` refuses a follow-up, so failing the
+    # session with a message still pending would put it out of reach of the one turn
+    # most likely to be worth running — and a queued message outranks a recovery
+    # nudge everywhere else in Zimmer (AgentSessionJob#queued_message_took_over?,
+    # and SessionRecoveryService#recover_with_hung_process, which drains the queue
+    # before it reaches the auto-restart this guard also sits in). Delivering the
+    # message clears `paused_by` and resets the stale keys, so the next pass judges
+    # the turn it produced rather than this one.
+    return false if Sessions::SilentRecoveryGuard.call(session, source: continuation_source).gave_up?
+
     # The transaction is here for the LOCK, not for a rollback. `find_each` handed
     # us a session object read at the top of the sweep, and the row may have been
     # archived since; claim_system_recovery_turn! re-reads it `FOR UPDATE`, and

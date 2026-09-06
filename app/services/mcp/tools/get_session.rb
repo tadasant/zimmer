@@ -361,17 +361,54 @@ module Mcp
         lines << Sanitize.sanitize_for_fence(record.summary)
         lines << "```"
         lines << "- **Generated:** #{record.generated_at&.iso8601}"
-        lines << if behind.zero?
-          "- **Freshness:** current — no transcript events since it was written"
-        else
-          "- **Freshness:** STALE — #{behind} transcript event(s) since it was written, so it describes an earlier point in the session"
-        end
+        lines << freshness_line(session, record, behind)
         # Why the blurb above is the one still showing. A failed generation leaves
         # the last real summary in place rather than blanking the panel, so
         # without this a caller sees stale text and no reason for it — which the
         # web panel and `GET /api/v1/sessions/:id` both give.
         lines << "- **Last regeneration failed:** #{record.error}" if record.failed? && record.error.present?
         lines
+      end
+
+      # How much to trust the blurb — and, when nothing has moved, how long nothing
+      # has moved for.
+      #
+      # "current — no transcript events since it was written" was true of a session
+      # that had been dead for an hour and of one that answered thirty seconds ago,
+      # and it read as the second in both cases. In #988 four production sessions
+      # wedged with their agent process gone; every poll of every one of them
+      # rendered that sentence, so the surface an agent checks a stalled child on
+      # actively said the stall was not happening.
+      #
+      # Zero events is still zero events — the fix is not a different verdict, it is
+      # the DURATION next to it, which is the fact that separates "quiet" from
+      # "silent". Past CleanupOrphanedSessionsJob::INACTIVITY_THRESHOLD on a session
+      # that is still `running`, that is also the interval after which Zimmer's own
+      # sweep stops believing the session is working, so the line says so: a reader
+      # deciding whether to intervene is looking at the same evidence the sweep is.
+      # It stops short of asserting the session is dead, because a legitimately slow
+      # turn — one long tool call, a compaction, a subagent — looks identical from
+      # here and must not be reported as broken.
+      def freshness_line(session, record, behind)
+        if behind.positive?
+          return "- **Freshness:** STALE — #{behind} transcript event(s) since it was written, " \
+                 "so it describes an earlier point in the session"
+        end
+
+        generated_at = record.generated_at
+        return "- **Freshness:** current — no transcript events since it was written" if generated_at.blank?
+
+        silence = ActionController::Base.helpers.distance_of_time_in_words(generated_at, Time.current)
+        line = "- **Freshness:** current — no transcript event has landed in the #{silence} since " \
+               "it was written"
+        return line unless session.running? &&
+          (Time.current - generated_at) >= CleanupOrphanedSessionsJob::INACTIVITY_THRESHOLD
+
+        "#{line}. This session has been `running` and silent for that whole window, which is past " \
+        "the point where Zimmer's own orphan sweep stops believing a quiet session is working — " \
+        "so read it as \"silent since #{generated_at.utc.iso8601}\" rather than \"nothing has " \
+        "happened recently\". A slow turn looks identical from here; check the agent process " \
+        "before concluding either way."
       end
 
       # Both provenance sections come from ProvenanceSections, shared with the
