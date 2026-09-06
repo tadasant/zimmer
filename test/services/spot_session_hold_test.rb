@@ -431,6 +431,63 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
   end
 
   # ---------------------------------------------------------------------------
+  # A hold record a promotion has overtaken (#423)
+  # ---------------------------------------------------------------------------
+  #
+  # Session 6934 read `Scheduling class: priority (set on this session)` and
+  # `Held by the spot gate (at_utilization_limit)` at the same time, with `Holds
+  # so far: 52`, under a frozen gate sentence ending "Priority sessions are
+  # unaffected". Both halves cannot be true.
+
+  test "a stale hold record is cleared when the gate is reached by a session that is no longer spot" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    SpotGateService.stub(:evaluate, held_decision) { SpotSessionHold.hold_if_needed(session) }
+    assert SpotSessionHold.held?(session.reload)
+
+    session.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      refute SpotSessionHold.hold_if_needed(session.reload), "a priority session is never held"
+    end
+
+    session.reload
+    SpotSessionHold::METADATA_KEYS.each do |key|
+      refute session.metadata.key?(key), "#{key} should not outlive the promotion that made it moot"
+    end
+  end
+
+  test "a promoted session with no hold record is not written one on the way past" do
+    session = build_session(SessionGenesis::WEB_UI)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      refute SpotSessionHold.hold_if_needed(session)
+    end
+
+    assert_equal({}, session.reload.metadata.slice(*SpotSessionHold::METADATA_KEYS))
+  end
+
+  test "superseded_by_promotion? is about the record's honesty, not about dormancy" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    SpotGateService.stub(:evaluate, held_decision) { SpotSessionHold.hold_if_needed(session) }
+    session.reload
+
+    refute SpotSessionHold.superseded_by_promotion?(session),
+      "a spot session's own hold is not superseded by anything"
+
+    session.update!(scheduling_class: SessionGenesis::PRIORITY)
+    assert SpotSessionHold.superseded_by_promotion?(session)
+
+    # #held? is what the sweep's population keys on, and a promoted session whose
+    # ladder stalled still needs the sweep to put a turn back on it.
+    assert SpotSessionHold.held?(session), "narrowing #held? would hide this session from its own repair"
+  end
+
+  test "a session carrying no hold record is never reported as superseded" do
+    session = build_session(SessionGenesis::WEB_UI)
+    refute SpotSessionHold.superseded_by_promotion?(session)
+  end
+
+  # ---------------------------------------------------------------------------
   # A resume is a turn, and a turn is what the gate holds
   # ---------------------------------------------------------------------------
 

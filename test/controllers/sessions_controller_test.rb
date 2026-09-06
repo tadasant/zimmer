@@ -3697,6 +3697,42 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "[data-spot-hold-banner] h3", text: /Held for quota headroom/
     assert_select "[data-spot-hold-banner]", text: /it will start on its own once the gate lets it/
+    assert_select "[data-spot-hold-banner]", text: /This is a spot session/
+    assert_select "[data-spot-hold-promoted]", false
+  end
+
+  # The contradiction #423 is about, on the surface a human reads it from. Session
+  # 6934's page said `Scheduling class: priority (set on this session)` and `Held
+  # by the spot gate (at_utilization_limit)` at once, with `Holds so far: 52`,
+  # over a frozen gate sentence ending "Priority sessions are unaffected" — and it
+  # offered the "Make this session priority" button to a session that already was.
+  test "a hold record the session's own class has overtaken is named as stale, not replayed as live" do
+    session = Session.create!(
+      prompt: "Fix the bug",
+      status: :waiting,
+      scheduling_class: SessionGenesis::PRIORITY,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      SpotSessionHold::HELD_AT => 2.minutes.ago.iso8601,
+      SpotSessionHold::HELD_REASON => "at_utilization_limit",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: the weekly window is at its target. " \
+                                      "Priority sessions are unaffected.",
+      SpotSessionHold::HELD_RETRY_AT => 55.minutes.from_now.iso8601,
+      SpotSessionHold::HELD_COUNT => 52,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-hold-banner] h3", text: /Spot hold no longer applies/
+    assert_select "[data-spot-hold-promoted]", text: /the spot gate does not hold priority sessions/
+    assert_select "[data-spot-hold-banner]", text: /This is a priority session/
+    assert_select "[data-spot-hold-banner]", { text: /This is a spot session/, count: 0 }
+    assert_select "[data-spot-hold-banner]", { text: /it will start on its own once the gate lets it/, count: 0 }
+    assert_select "[data-spot-hold-banner]", { text: /Make this session priority/, count: 0 },
+      "offering the remedy to a session that has already used it is the defect wearing a button"
   end
 
   # A hold record is a SNAPSHOT of what the gate said at `spot_hold_at`, and the

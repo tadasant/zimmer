@@ -1707,6 +1707,45 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert session.logs.where("content LIKE ?", "%Started now by an agent promoting it through MCP%").exists?
   end
 
+  # The symptom #423 reported, pinned on the path it was reported from. A held
+  # session's turn is ALREADY QUEUED on a delayed job — up to an hour out — so
+  # the promotion has to move that job rather than enqueue a second one. Two
+  # jobs for one session is two runtimes against one clone, and it is not
+  # visible instantly.
+  test "promoting a HELD session releases the hold and moves its queued turn, without enqueuing a second" do
+    session = sessions(:waiting)
+    session.update!(scheduling_class: SessionGenesis::SPOT, metadata: {
+      SpotSessionHold::HELD_AT => 8.minutes.ago.utc.iso8601,
+      SpotSessionHold::HELD_REASON => "at_utilization_limit",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: the weekly window is at its target. " \
+                                      "Priority sessions are unaffected.",
+      SpotSessionHold::HELD_RETRY_AT => 55.minutes.from_now.utc.iso8601,
+      SpotSessionHold::HELD_COUNT => 52,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    })
+    job = GoodJob::Job.create!(
+      active_job_id: SecureRandom.uuid, job_class: "AgentSessionJob", queue_name: "agents",
+      scheduled_at: 55.minutes.from_now,
+      serialized_params: { "job_class" => "AgentSessionJob", "arguments" => [ session.id ] }
+    )
+
+    output = nil
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      output = @tool.call("action" => "change_scheduling_class", "session_id" => session.id,
+                          "scheduling_class" => "priority")
+    end
+
+    session.reload
+    assert session.priority?
+    refute SpotSessionHold.held?(session),
+      "the hold outlived the promotion: #{session.metadata.slice(*SpotSessionHold::METADATA_KEYS)}"
+    assert_operator job.reload.scheduled_at, :<=, Time.current,
+      "the deferred turn should be due now rather than in 55 minutes"
+    assert_equal 1, GoodJob::Job.where(job_class: "AgentSessionJob")
+                                .where("serialized_params->'arguments'->0 = ?", session.id.to_json).count
+    assert_includes output, "- **Start:** "
+  end
+
   test "change_scheduling_class says nothing about a start on a session it left alone" do
     session = sessions(:waiting)
     session.update!(scheduling_class: SessionGenesis::SPOT, session_id: "cli-abc")

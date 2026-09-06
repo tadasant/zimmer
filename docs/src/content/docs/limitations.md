@@ -4363,6 +4363,31 @@ says so, plus `SpotSessionHold::OVERDUE_GRACE` and a sweep tick on top.
 
 ---
 
+## Pulling a held turn forward cannot see a job that is mid-execution
+
+`Sessions::StartNow` is the one owner of "start this waiting session now", and its whole job is to
+avoid a second turn: a held session's turn is already queued on a delayed `AgentSessionJob`, so it
+**reschedules** that job rather than enqueuing another. It finds the job with
+`finished_at: nil, performed_at: nil` — and that second clause is the gap. A job a worker has just
+picked up but which has not yet moved the session out of `waiting` (it is still inside the archived,
+pause and gate guards, with `session_id` still blank) reads as *nothing queued*, so a session that
+has never run falls to the enqueue branch and can end up with two turns.
+
+`AgentSessionJob`'s concurrency guard covers the overlap while the first job holds `running_job_id`;
+nothing covers the case where it has already let go. The window is milliseconds wide per session and
+the guard is real, so a single **Start now** or a single promotion almost never hits it.
+
+What changed the shape of the risk rather than the risk itself is
+[#423](https://github.com/tadasant/zimmer/issues/423): a trigger's scheduling-class change now
+releases every session it promotes, so the same mechanism is pointed at a whole backlog at once —
+and the population it is aimed at is exactly the one where dozens of `AgentSessionJob`s are cycling
+through the gate continuously. The chance that at least one of *N* sessions sits in that window
+scales with *N*. Closing it properly means `StartNow` reading a job that is on a worker as *a turn
+is coming* rather than as *nothing is queued*, which is a change to the meaning of its queue read,
+not a guard.
+
+---
+
 ## A stranded `waiting` session is only rescued if it never started
 
 `StalledStartSweepJob` closes the case that stranded production session 10426 for three days: a

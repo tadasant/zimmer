@@ -249,6 +249,19 @@ class Trigger < ApplicationRecord
   # instance must not echo the first one's figure.
   after_update :reclassify_spawned_waiting_sessions
 
+  # …and then STARTS the ones that change released, rather than leaving them to
+  # wait out a re-check the promotion made moot. See
+  # #start_promoted_spawned_sessions and TriggerPromotionReleaseJob.
+  #
+  # after_commit rather than after_update, and that is load-bearing twice over.
+  # The release pulls each session's deferred job to `scheduled_at = now`, so a
+  # worker can pick it up the instant the row is visible — inside the trigger's
+  # transaction the new class is not visible yet, and the job would read the
+  # session as still spot and hold it straight back, the promotion racing its own
+  # effect. And the enqueue itself must not survive a rollback: a save that
+  # failed promoted nobody.
+  after_commit :start_promoted_spawned_sessions, on: :update
+
   # A schedule that was switched off when its slot came round did not miss that
   # slot — it was not live for it. Enabling re-arms it, so its first fire is the
   # next configured slot rather than the next poller tick.
@@ -1130,10 +1143,16 @@ class Trigger < ApplicationRecord
   # so a session that starts between the read and the write keeps the class it is
   # running with.
   #
-  # This lands the class; it does not pull the sessions' deferred re-checks
-  # forward, so a released session starts on its own next tick (#423).
+  # This lands the class. Pulling the released sessions' deferred re-checks
+  # forward is #start_promoted_spawned_sessions' job, once this save commits.
   def reclassify_spawned_waiting_sessions
     @reclassified_session_count = nil
+    # ACCUMULATED, where the count above is overwritten, and the difference is
+    # deliberate. The count reports what the LAST save did, so a second save on
+    # the same instance must not echo the first one's figure. This is work still
+    # owed: two saves inside one transaction share one after_commit, and resetting
+    # here would silently drop the first save's promotions on the floor.
+    @promoted_spawned_session_ids ||= []
     return unless saved_change_to_scheduling_class?
 
     previous, current = saved_change_to_scheduling_class
@@ -1157,7 +1176,39 @@ class Trigger < ApplicationRecord
     now = current.presence || default_scheduling_class
     @reclassified_session_count = written_ids.size unless was == now
 
+    # Handed to the after_commit rather than acted on here. Only a move INTO
+    # priority releases anything: a demotion must start nothing, and a rewrite
+    # that resolves to the class the sessions already had moved nobody.
+    if was != now && now == SessionGenesis::PRIORITY
+      @promoted_spawned_session_ids |= written_ids
+    end
+
     log_reclassification(written_ids, was: was, now: now)
+  end
+
+  # Hand the sessions this trigger's selector change just promoted to the job
+  # that starts them.
+  #
+  # Everything about WHICH sessions actually get started, and what the release
+  # refuses, lives in TriggerPromotionReleaseJob — including why the release is a
+  # job rather than the rest of this callback. This end is only responsible for
+  # not enqueuing when nothing moved, and for not taking a queue failure out on a
+  # save that already committed.
+  def start_promoted_spawned_sessions
+    ids = @promoted_spawned_session_ids
+    @promoted_spawned_session_ids = []
+    return if ids.blank?
+
+    TriggerPromotionReleaseJob.perform_later(id, ids)
+  rescue StandardError => e
+    # The trigger's write is committed and correct; a queue that would not take
+    # the follow-up must not turn that into a 500 for the operator. The sessions
+    # keep the class and fall back to the behaviour before this existed — they
+    # start on their own next re-check.
+    Rails.logger.warn(
+      "[Trigger] Could not enqueue the release for trigger #{id}'s promoted sessions: " \
+      "#{e.class}: #{e.message}"
+    )
   end
 
   # An audit line on every session the sweep wrote, in one INSERT — including the
