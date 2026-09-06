@@ -5697,11 +5697,29 @@ class AgentSessionJob < ApplicationJob
     # so "already the prompt" is an ordinary arrival, not a curiosity.
     return session.prompt if own == message
 
+    # Two populations reach this, and telling them the same thing would make one of
+    # the two sentences false. A session that NEVER RAN has not done the prompt
+    # above either, so both halves are new work. A session that has a transcript but
+    # whose runtime session id was released — ProcessLifecycleManager#
+    # release_stale_runtime_session_id! and the failed-resume recovery both write
+    # `session_id = nil` over a full transcript — HAS done work; what it has lost is
+    # the conversation, not the history. Claiming "nothing above this has been said"
+    # to that one would be a lie the agent has no way to check.
+    preamble =
+      if session.never_ran?
+        "There was not: this session had never started, so nothing above this point has been " \
+        "said to an agent before — including the prompt, which has not run either. Read the " \
+        "two together: the prompt is the task, and this is what was said about it afterwards."
+      else
+        "There was not: the conversation this session had could no longer be resumed, so you " \
+        "are starting a fresh one with no history in it. The prompt above may already have " \
+        "been worked on in that lost conversation — check the working tree and the git log " \
+        "before redoing any of it. Read this message as the more recent of the two."
+      end
+
     carried = <<~BLOCK.strip
       <message-received-before-this-session-started>
-      This message was sent to the session while it was idle, as though there were a conversation for it to continue. There was not: this session had never started, so nothing above this point has been said to an agent before — including the prompt, which has not run either.
-
-      Read the two together. The prompt is the task; this is what was said about it afterwards, and it is more recent.
+      This message was sent to the session while it was idle, as though there were a conversation for it to continue. #{preamble}
 
       #{message}
       </message-received-before-this-session-started>
