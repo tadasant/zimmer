@@ -40,10 +40,14 @@ const REMINDER = [
 // Matches a push subcommand with any leading git options — `git push`,
 // `git -C /repo push`, `git --no-pager push`. Deliberately does not try to parse
 // compound shell lines beyond finding the invocation, and it does not track
-// quoting: `echo "git push"` matches and `bash -c "git push"` does not. Both are
-// acceptable, because the worst a false positive costs is one extra paragraph of
-// context.
-const GIT_PUSH = /(^|[;&|(\s])git\s+(?:-{1,2}[^\s]+(?:\s+[^\s-][^\s]*)?\s+)*push(\s|$|;|&|\||\))/;
+// quoting: a quote counts as a boundary like any other separator, so both
+// `echo "git push"` and `bash -c "git push"` match. That is acceptable, because
+// the worst a false positive costs is one extra paragraph of context — while a
+// false negative is a missed reminder that reads exactly like a hook that never
+// fired at all. It read like one once: zimmer#1073 probed the Pi runtime with
+// `echo "git push origin main"`, got the command back verbatim, and concluded
+// AIR hooks did not fire on Pi. The hooks fired; this pattern declined the quote.
+const GIT_PUSH = /(^|[;&|(\s"'])git\s+(?:-{1,2}[^\s]+(?:\s+[^\s-][^\s]*)?\s+)*push(\s|$|;|&|\||\))/;
 
 // A dry run pushes nothing, so there is no CI to wait for. Tested against the
 // push invocation's own arguments rather than the whole command line, so an

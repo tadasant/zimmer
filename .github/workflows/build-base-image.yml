@@ -120,7 +120,7 @@ jobs:
       # Dockerfile.base's `test -f` lines prove what the BUILD produced. This proves what
       # the REGISTRY serves, which is the artifact every app image is built from: it
       # pulls the tag back down and reads the versions out of the published layers.
-      # `Dockerfile.base` pins `@tadasant/pi-hooks@0.1.0` and `@tadasant/pi-plugins@0.1.0`
+      # `Dockerfile.base` pins `@tadasant/pi-hooks@0.2.0` and `@tadasant/pi-plugins@0.2.0`
       # and nothing downstream asserts they arrived, which is the gap this closes.
       - name: Verify the published image carries every pin
         run: |
