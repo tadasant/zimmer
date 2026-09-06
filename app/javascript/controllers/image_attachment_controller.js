@@ -3,11 +3,16 @@ import { csrfHeaders } from "lib/csrf"
 
 // Controller for handling image attachments on session prompts
 // Supports: file input, paste, and drag-and-drop
+//
+// Drag-and-drop is not bound here. composer-drop owns the drag surface for the whole
+// composer and dispatches `composer-drop:files`, which #handleComposerDrop claims the
+// image files out of; file-attachment takes the rest from the same event.
+//
 // Works for both:
 // - Follow-up prompts (existing session, uses sessionId)
 // - New session creation (uses tempSessionId)
 export default class extends Controller {
-  static targets = ["input", "cameraInput", "preview", "imagesField", "dropZone", "attachButton", "cameraButton"]
+  static targets = ["input", "cameraInput", "preview", "imagesField", "attachButton", "cameraButton"]
   static values = {
     sessionId: Number,
     tempSessionId: String, // Used for new session creation before session exists
@@ -19,7 +24,6 @@ export default class extends Controller {
   connect() {
     this.images = []
     this.setupPasteHandler()
-    this.setupDropZone()
   }
 
   disconnect() {
@@ -32,32 +36,6 @@ export default class extends Controller {
   setupPasteHandler() {
     this.boundPasteHandler = this.handlePaste.bind(this)
     document.addEventListener("paste", this.boundPasteHandler)
-  }
-
-  // Setup drag and drop on the drop zone
-  setupDropZone() {
-    if (!this.hasDropZoneTarget) return
-
-    const dropZone = this.dropZoneTarget
-
-    dropZone.addEventListener("dragover", (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      dropZone.classList.add("border-indigo-500", "bg-indigo-50")
-    })
-
-    dropZone.addEventListener("dragleave", (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      dropZone.classList.remove("border-indigo-500", "bg-indigo-50")
-    })
-
-    dropZone.addEventListener("drop", (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      dropZone.classList.remove("border-indigo-500", "bg-indigo-50")
-      this.handleDroppedFiles(e.dataTransfer.files)
-    })
   }
 
   // Open the file dialog when attach button is clicked
@@ -116,8 +94,13 @@ export default class extends Controller {
     }
   }
 
-  // Handle dropped files
-  handleDroppedFiles(files) {
+  // Files dropped on the composer, routed here by composer-drop. Only top-level
+  // images are claimed; file-attachment handles everything else, including images
+  // found inside a dropped folder (this controller does not walk folders).
+  handleComposerDrop(event) {
+    const files = event.detail?.dataTransfer?.files
+    if (!files) return
+
     const imageFiles = Array.from(files).filter(f => f.type.startsWith("image/"))
     if (imageFiles.length > 0) {
       this.uploadFiles(imageFiles)

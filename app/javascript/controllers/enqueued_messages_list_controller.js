@@ -47,8 +47,21 @@ export default class extends Controller {
     this.draggedOverElement = null
   }
 
+  // True when the drag carries files from outside the page rather than a message
+  // being reordered. Those belong to composer-drop, which listens on the document —
+  // and the queued list is rendered inside the composer panel, so without this test
+  // the handlers below would claim a dropped file and then discard it: `drop`'s
+  // stopPropagation keeps it from ever reaching that listener, and its own early
+  // return drops it because no internal drag is in progress.
+  carriesFiles(event) {
+    const types = event.dataTransfer?.types
+    return types ? Array.from(types).includes("Files") : false
+  }
+
   // Called when dragged item is over a drop target
   dragOver(event) {
+    if (this.carriesFiles(event)) return
+
     event.preventDefault() // Necessary to allow drop
     event.dataTransfer.dropEffect = "move"
 
@@ -77,12 +90,16 @@ export default class extends Controller {
 
   // Called when dragged item leaves a drop target
   dragLeave(event) {
+    if (this.carriesFiles(event)) return
+
     const target = event.currentTarget
     target.classList.remove("border-t-4", "border-blue-500", "border-b-4")
   }
 
   // Called when item is dropped
   drop(event) {
+    if (this.carriesFiles(event)) return
+
     event.preventDefault()
     event.stopPropagation()
 
