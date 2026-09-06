@@ -861,13 +861,15 @@ unthrottled. `GET /health` is unaffected. See
 the app deliberately does not try to do that analysis itself.
 
 Session rows carry `agent_runtime`, and it is worth filtering on rather than ignoring: the ledger
-holds **two billing relationships**. A `claude_code` row is subscription spend against an Anthropic
-quota window; a `pi` row is a metered OpenRouter invoice. Reconciling against either provider's bill
-means subtracting the other's rows. See [Token spend](/operate/costs/#how-usage-gets-in).
+holds **three billing relationships**. A `claude_code` row is subscription spend against an Anthropic
+quota window; a `pi` row is a metered OpenRouter invoice; a `codex` row draws on a ChatGPT plan and
+carries tokens with no dollars, because `TokenPricing` has no OpenAI rates yet. Reconciling against
+any one provider's bill means subtracting the others' rows. See
+[Token spend](/operate/costs/#how-usage-gets-in).
 
 `POST /api/v1/costs/backfill` → queue a sweep of the ledger's whole history — every Claude Code
 transcript on disk, and every other runtime's corpus in whatever form it takes (for Pi, the stored
-transcripts of every Pi session). This is an **ops action with an endpoint rather than a shell**:
+transcripts of every Pi session; for Codex, every rollout under `~/.codex/sessions`). This is an **ops action with an endpoint rather than a shell**:
 getting history into the ledger must not require SSH onto the production box. Idempotent — it returns the run already in flight rather than
 starting a second one, and ingestion upserts on `request_id`, so a re-read directory writes no
 duplicate rows. The same sweep starts itself after a deploy; this is for a re-scan.

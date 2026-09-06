@@ -30,10 +30,11 @@ class RuntimeBundleSlotContractTest < ActiveSupport::TestCase
   # nil through #credential_key_for and killed every Pi session with an
   # OAuth-credentialed MCP server. McpOauthCredentialInjectorTest asserts the
   # gate and injection for every registered runtime now, which is where a fourth
-  # caller would be caught. `usage_ingestor_class` is the newest deliberate nil:
-  # its only reader is RuntimeRegistry.usage_ingestor_classes, which `filter_map`s
-  # it away, and nil there carries meaning — "this runtime's spend is not in the
-  # ledger yet" (Codex, zimmer#1077).
+  # caller would be caught. `usage_ingestor_class` is not listed either: its only
+  # reader is RuntimeRegistry.usage_ingestor_classes, which `filter_map`s a nil
+  # away, and nil there carries meaning — "this runtime's spend is not in the
+  # ledger yet". No registered runtime is nil today (Codex was the last, zimmer#1077),
+  # so what is asserted about it below is its CONTRACT rather than its presence.
   UNCONDITIONALLY_DEREFERENCED_SLOTS = {
     cli_adapter_class: "RuntimeRegistry.cli_adapter_class_for / ProcessLifecycleManager",
     retry_strategy_class: "the runtime's own #retry_strategy factory",
@@ -135,6 +136,33 @@ class RuntimeBundleSlotContractTest < ActiveSupport::TestCase
       models = ModelCatalog.models_for(runtime)
       assert models.any?, "#{runtime} has no models in ModelCatalog"
       assert_not_nil ModelCatalog.default_for(runtime), "#{runtime} has no default model"
+    end
+  end
+
+  # `usage_ingestor_class` is allowed to be nil, so "it is filled" is not the
+  # contract — "if it is filled, TokenUsageIngestionJob can drive it" is.
+  #
+  # That job constructs each ingestor with `.new(modified_since:)` and calls
+  # `#call`, then interpolates the result into a log line and reads
+  # `#session_rows` off it downstream. An ingestor that took a different keyword,
+  # or returned a bare integer, would raise inside a rescue that logs and moves
+  # on — so the sweep would silently stop covering that runtime while the ledger
+  # went on looking healthy. Asserted about the class rather than exercised,
+  # because exercising it means letting three real corpora be scanned.
+  RuntimeRegistry.registered_runtimes.each do |runtime|
+    test "#{runtime}'s usage ingestor, if it has one, takes the keyword TokenUsageIngestionJob passes" do
+      ingestor = RuntimeRegistry.for(runtime).usage_ingestor_class
+      next if ingestor.nil?
+
+      parameters = ingestor.instance_method(:initialize).parameters
+      keywords = parameters.filter_map { |kind, name| name if %i[key keyreq].include?(kind) }
+      accepts_any_keyword = parameters.any? { |kind, _| kind == :keyrest }
+
+      assert accepts_any_keyword || keywords.include?(:modified_since),
+        "#{ingestor} does not accept `modified_since:`, which TokenUsageIngestionJob passes to every " \
+        "ingestor it finds in the registry. The job rescues and logs, so this runtime's spend would " \
+        "simply stop being swept."
+      assert ingestor.method_defined?(:call), "#{ingestor} must define #call"
     end
   end
 
