@@ -1089,7 +1089,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     json = JSON.parse(response.body)
     assert_equal "Follow-up prompt sent", json["message"]
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
   end
 
   # message_parent — the child -> parent direction. :id names the CHILD; the
@@ -1109,7 +1109,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     json = JSON.parse(response.body)
     assert_equal parent.id, json["parent_session"]["id"]
     assert_equal "sent", json["delivery"]
-    assert_equal "running", parent.reload.status
+    assert_equal "waiting", parent.reload.status
     assert_match(/the deploy scripts live in the infra root/, parent.metadata["pending_follow_up_prompt"])
   end
 
@@ -1215,7 +1215,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     session.reload
     assert_equal "Rebase the branch and finish the PR", session.metadata["pending_follow_up_prompt"]
-    assert_equal "running", session.status,
+    assert_equal "waiting", session.status,
       "a reader who sees the marker must be guaranteed to also see running"
   end
 
@@ -1253,7 +1253,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     json = JSON.parse(response.body)
     assert_equal "Follow-up prompt sent", json["message"]
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
   end
 
   test "should queue multiple follow-ups to running session with correct positions" do
@@ -1476,7 +1476,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     json = JSON.parse(response.body)
     assert_equal "Follow-up prompt sent immediately", json["message"]
-    assert_equal "running", json["session"]["status"]
+    assert_equal "waiting", json["session"]["status"]
     # force_immediate delivers the prompt via the enqueued-message/processor
     # path (the AgentSessionJob argument asserted above), consistent with the
     # web interrupt button and the plain queue path. The session's original
@@ -1756,7 +1756,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     json = JSON.parse(response.body)
     assert_equal "Session restarted", json["message"]
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
   ensure
     FileUtils.rm_rf(clone_path)
   end
@@ -1868,7 +1868,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Session restarted from scratch", json["message"]
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_equal "Investigate the flaky test", session.prompt
   end
 
@@ -1907,7 +1907,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Session restarted from scratch", json["message"]
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_nil session.session_id
     assert_nil session.metadata["failure_reason"]
     assert_nil session.metadata["clone_path"]
@@ -1960,7 +1960,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_response :success
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
   end
 
   test "should not restart from scratch without git_root" do
@@ -2095,7 +2095,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
 
     # runtime_started must be cleared for pre-prompt failures
     assert_nil session.metadata["runtime_started"]
@@ -2128,7 +2128,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
 
     # runtime_started must be preserved for post-prompt failures
     assert_equal true, session.metadata["runtime_started"]
