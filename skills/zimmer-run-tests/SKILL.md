@@ -28,6 +28,7 @@ A PR is red if **any** job fails:
 | `verify_lockfile` | `bundle lock && git diff --exit-code Gemfile.lock` | Fails if `Gemfile.lock` is stale |
 | `test-unit` | `bin/rails db:test:prepare && bin/rails test` | Unit + integration. Postgres 16 + Redis 7 services |
 | `test-system` | `bin/rails test:system` | Capybara + headless Chrome. `PARALLEL_WORKERS=1` |
+| `schema_verify` | `bin/rails db:schema:verify` | Round-trips `db/schema.rb` against `db/migrate/`. Its own scratch Postgres 16 — it drops and recreates databases |
 | `retention_logic` | `ruby scripts/ghcr_retention_test.rb` | Pure Ruby, no Rails boot |
 | `docs_site` | `npm run build` in `docs/` | Astro Starlight build |
 | `all-checks-pass` | Aggregate gate | `needs:` every job above; the single required check for branch protection |
