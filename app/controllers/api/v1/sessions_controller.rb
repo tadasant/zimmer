@@ -342,12 +342,12 @@ class Api::V1::SessionsController < Api::BaseController
       return
     end
 
-    goal = params[:goal].to_s.strip.presence
+    goal = Sessions::FollowUpGoal.normalize(params[:goal])
 
     # Rejected up front, before any branch mutates state, so an over-long goal
     # fails the same way whether the message is queued, interrupted in, or sent
     # directly — and never after the prompt has already been delivered.
-    if goal && goal.length > Session::GOAL_MAX_LENGTH
+    if Sessions::FollowUpGoal.too_long?(goal)
       render_api_error("Validation failed", "goal is too long (maximum #{Session::GOAL_MAX_LENGTH} characters)", status: :unprocessable_entity)
       return
     end
@@ -454,15 +454,17 @@ class Api::V1::SessionsController < Api::BaseController
     ActiveRecord::Base.transaction do
       # The goal is applied here, on the session itself — the other two branches
       # carry it on the EnqueuedMessage and EnqueuedMessageProcessorService applies
-      # it when it claims the message. Same rule in all three places: a non-blank
-      # goal overwrites, a blank or absent one leaves the session's goal alone
-      # (clearing a goal is PATCH /api/v1/sessions/:id).
-      if goal && goal != @session.goal
-        @session.update!(prompt: prompt, goal: goal)
-        @session.logs.create!(content: "Goal updated from follow-up", level: "info")
-      else
-        @session.update!(prompt: prompt)
-      end
+      # it when it claims the message. Sessions::FollowUpGoal is that rule, written
+      # once for all four surfaces: a non-blank goal overwrites, a blank or absent
+      # one leaves the session's goal alone (clearing a goal is
+      # PATCH /api/v1/sessions/:id). `also_update` keeps the goal and the prompt in
+      # the one UPDATE they have always shared.
+      Sessions::FollowUpGoal.apply!(
+        session: @session,
+        goal: goal,
+        source: :follow_up,
+        also_update: { prompt: prompt }
+      )
       # Not `resume!`: a follow-up adds to whatever this session was waiting on,
       # so its own pending wake-ups survive it (#898).
       @session.resume_for_follow_up!

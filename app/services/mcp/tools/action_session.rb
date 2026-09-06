@@ -280,8 +280,8 @@ module Mcp
 
         # Rejected before any branch mutates state, so an over-long goal fails the
         # same way whether the message is queued, interrupted in, or sent directly.
-        goal = args["goal"].to_s.strip.presence
-        if goal && goal.length > Session::GOAL_MAX_LENGTH
+        goal = Sessions::FollowUpGoal.normalize(args["goal"])
+        if Sessions::FollowUpGoal.too_long?(goal)
           raise ToolError, "goal is too long (maximum #{Session::GOAL_MAX_LENGTH} characters)"
         end
 
@@ -322,15 +322,17 @@ module Mcp
         ActiveRecord::Base.transaction do
           # The goal is applied to the session here; the queue and interrupt
           # branches carry it on the EnqueuedMessage and let
-          # EnqueuedMessageProcessorService apply it on claim. Same rule
-          # everywhere: a non-blank goal overwrites, a blank or absent one leaves
-          # the session's goal alone (clearing it is the "change_goal" action).
-          if goal && goal != session.goal
-            session.update!(prompt: prompt, goal: goal)
-            session.logs.create!(content: "Goal updated from follow-up", level: "info")
-          else
-            session.update!(prompt: prompt)
-          end
+          # EnqueuedMessageProcessorService apply it on claim. Sessions::FollowUpGoal
+          # is that rule, written once for all four surfaces: a non-blank goal
+          # overwrites, a blank or absent one leaves the session's goal alone
+          # (clearing it is the "change_goal" action). `also_update` keeps the goal
+          # and the prompt in the one UPDATE they have always shared.
+          Sessions::FollowUpGoal.apply!(
+            session: session,
+            goal: goal,
+            source: :follow_up,
+            also_update: { prompt: prompt }
+          )
           # Not `resume!`: a follow-up adds to whatever this session was waiting
           # on, so its own pending wake-ups survive it (#898). This is the path
           # the filed strand came down — a router redirecting a session asleep on

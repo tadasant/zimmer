@@ -1513,15 +1513,18 @@ class SessionsController < ApplicationController
     end
 
     # Get goal from params (can be blank to remove goal)
-    # If not provided in params, default to session's existing goal
+    # If not provided in params, default to session's existing goal. The web form
+    # always submits the field, so a blank value here really is "the human emptied
+    # the box" — which is why this is the one surface that passes
+    # `clear_when_blank: true` to Sessions::FollowUpGoal below.
     goal = if params.key?(:goal)
-      params[:goal].to_s.strip.presence
+      Sessions::FollowUpGoal.normalize(params[:goal])
     else
       @session.goal
     end
 
     # Validate goal length if present
-    if goal.present? && goal.length > Session::GOAL_MAX_LENGTH
+    if Sessions::FollowUpGoal.too_long?(goal)
       respond_to_follow_up_error("Goal is too long (maximum #{Session::GOAL_MAX_LENGTH.to_fs(:delimited)} characters).")
       return
     end
@@ -1577,15 +1580,15 @@ class SessionsController < ApplicationController
     # Use transaction to ensure atomicity with retry logic
     result = with_db_retry do
       ActiveRecord::Base.transaction do
-        # Update session's goal if it changed
-        if goal != @session.goal
-          @session.update!(goal: goal)
-          goal_message = goal.present? ? "updated" : "removed"
-          @session.logs.create!(
-            content: "Goal #{goal_message} for this follow-up",
-            level: "info"
-          )
-        end
+        # Update session's goal if it changed. `clear_when_blank: true` because
+        # this surface can tell an emptied goal field from an absent one — see
+        # Sessions::FollowUpGoal for the rule the other three surfaces share.
+        Sessions::FollowUpGoal.apply!(
+          session: @session,
+          goal: goal,
+          source: :web_follow_up,
+          clear_when_blank: true
+        )
 
         # Parse image paths from params if provided (stored by upload_images action)
         images = parse_image_params
