@@ -8,9 +8,16 @@
 # The work is proportional to the SQUARE of the lineage: `SessionHierarchy`
 # renders up to `MAX_NODES` (150) sessions, the panel is re-rendered once for each
 # of them, and each of those renders builds that viewer's own hierarchy and its
-# own human-message record — every one of which loads whole `Session` rows,
-# `prompt` and `transcript` columns included. For a long-lived router with a wide
-# tree that is thousands of row loads and a Redis publish per viewer.
+# own human-message record. For a long-lived router with a wide tree that is
+# thousands of row loads and a Redis publish per viewer.
+#
+# Every session this job touches comes through `SessionHierarchy.graph_scope`,
+# the ten-column projection the graph reads, and that is what keeps the square
+# affordable. Squared over WHOLE rows — `prompt` and `transcript`, the latter a
+# multi-megabyte agent transcript — the same fan-out held the production
+# `default` lane for 17 minutes and starved every lane behind it
+# ([#1063](https://github.com/tadasant/zimmer/issues/1063)). The cost is
+# quadratic in rows by design, and rows are cheap; megabytes are not.
 #
 # Run inline in `after_create_commit`, all of that sat inside the HTTP request
 # that created the session. That is the create-path latency behind #577: the
@@ -33,7 +40,15 @@ class SessionProvenanceBroadcastJob < ApplicationJob
     # and no reader waiting for one. The argument is an id rather than the record,
     # so this is the check that covers it — there is no GlobalID to fail to
     # deserialize.
-    session = Session.find_by(id: session_id)
+    #
+    # Loaded through the hierarchy's projection rather than as a whole row. The
+    # two things done with this record — walking its lineage, and broadcasting
+    # from its id — read nothing outside SessionHierarchy::COLUMNS, while a whole
+    # row detoasts this session's entire `transcript` to answer "does it still
+    # exist". That is the smallest instance of the cost this job was wedging on;
+    # the expensive one is the same mistake made once per viewer, downstream in
+    # `broadcast_provenance_change_to_hierarchy`.
+    session = SessionHierarchy.graph_scope.find_by(id: session_id)
     return unless session
 
     session.broadcast_provenance_change_to_hierarchy

@@ -210,6 +210,31 @@ the same note (`truncated: true` in JSON). The session you asked about is always
 lives on — a page that omits the session you are looking at is worse than one that admits it is
 truncated.
 
+### What the walk reads off a row
+
+A third bound, and the one that decides what the walk *costs* rather than how far it goes: the walk
+never selects whole `sessions` rows. `SessionHierarchy::COLUMNS` names the ten columns a node is
+built from — `id`, `title`, `status`, `parent_session_id`, `custom_metadata`, `genesis`,
+`scheduling_class`, `metadata`, `git_root`, `subdirectory` — and every loader in the graph goes
+through `SessionHierarchy.graph_scope`, which is that projection and is read-only.
+
+What is deliberately not in it is `transcript`, a `json` column holding a whole agent transcript and
+running to megabytes on a session that ran for hours, with `prompt` beside it. A bare
+`Session.where(…)` selects both and TOAST-detoasts both, per row, to read a title and two integers —
+and because the fan-out below runs the whole walk once per viewer, that cost is squared. Measured on
+a 47-session lineage, the fan-out loaded 2,452 whole rows and pulled 2.5 GB of transcript nobody
+read; through the projection it loads none. In production that saturated the `sessions` table badly
+enough to hold both `default` GoodJob threads for 17 minutes and starve every other lane behind it
+([#1063](https://github.com/tadasant/zimmer/issues/1063)).
+
+Adding a field to `Node` therefore means adding its column to `COLUMNS` — and the guard for that is
+in CI, because at runtime there is none. A missing column raises
+`ActiveModel::MissingAttributeError`, a `StandardError`, from a render that happens inside the block
+`BroadcastService` runs under a bare `rescue`; the panel would not blow up, it would silently stop
+repainting, and five swallowed failures would open that service's circuit breaker and pause live
+updates for everyone. So the test suite renders the real partial from a projected record, and that
+is what fails the build.
+
 ## Human messages
 
 The defining property is **provenance, not content**. A record exists only when Zimmer can establish
@@ -421,7 +446,7 @@ recorded anywhere in that hierarchy, so it does not stay pinned to the tree it r
 That refresh is a **background job**, `SessionProvenanceBroadcastJob`, not a callback in the request
 that changed the graph. The fan-out is quadratic in the size of the lineage — the panel is re-rendered
 once for every session in the tree (up to `MAX_NODES`, 150), and each of those renders builds that
-viewer's own hierarchy and human-message record, loading whole `Session` rows. Run inline, all of it
+viewer's own hierarchy and human-message record. Run inline, all of it
 sat inside the HTTP request that spawned the session, which is how spawning a session under a
 long-lived router could outrun the reverse proxy's timeout and hand the caller a 504 for a session
 that had already been created (see [Creating a
