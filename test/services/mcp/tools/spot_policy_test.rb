@@ -642,7 +642,20 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_match(/the crossing below 100, not the last session start/, policy)
 
     AppSetting.editable.update!(fleet_idle_since: nil)
-    assert_match(/Under its ceiling since:\*\* — \(the fleet was at or over its ceiling/, get_policy)
+    assert_match(/Under its ceiling since:\*\* — \(the fleet is at or over its ceiling/, get_policy)
+
+    # A clock the sweep has not caught up with yet is a stretch that is already
+    # over, so neither surface reports it.
+    AppSetting.editable.update!(fleet_idle_max_sessions: 1, fleet_idle_since: 2.minutes.ago)
+    running = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+                              genesis: SessionGenesis::GITHUB_ISSUE, status: :running,
+                              session_id: "cli-#{SecureRandom.hex(4)}")
+    # On a worker, which is the only population the ceiling counts.
+    GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
+                         job_class: "AgentSessionJob",
+                         serialized_params: { "arguments" => [ running.id ] },
+                         scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
+    assert_match(/Under its ceiling since:\*\* — \(the fleet is at or over its ceiling/, get_policy)
   end
 
   test "promote_genesis reclassifies existing sessions" do

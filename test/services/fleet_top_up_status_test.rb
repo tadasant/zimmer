@@ -219,6 +219,23 @@ class FleetTopUpStatusTest < ActiveSupport::TestCase
     assert_equal "at most once every 2 days", s.cadence_phrase
   end
 
+  # The window between the fleet reaching its ceiling and the sweep observing it.
+  # The stored clock is a stretch that is already over, and both surfaces would
+  # otherwise print "under its ceiling since 3 hours ago" beside a badge reading
+  # "at its work ceiling".
+  test "the clock is not reported while the fleet is at its ceiling" do
+    now = Time.current
+    @setting.update!(fleet_idle_since: now - 3.hours, fleet_idle_event_fired_at: nil)
+
+    over = status(running: 3, now: now)
+    assert_equal :at_ceiling, over.state
+    assert_nil over.under_ceiling_since, "the stored value is a stretch that has ended"
+    assert_equal (now - 3.hours).to_i, over.idle_since.to_i, "the raw column is still readable"
+
+    under = status(running: 2, now: now)
+    assert_equal (now - 3.hours).to_i, under.under_ceiling_since.to_i
+  end
+
   test "headroom is the room left under the ceiling, floored at zero" do
     assert_equal 3, status(running: 0).headroom
     assert_equal 1, status(running: 2).headroom

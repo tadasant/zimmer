@@ -80,6 +80,17 @@ class FleetTopUpStatus
   # the pool can run.
   def effective_ceiling = RunningTurns.effective_ceiling(max_sessions)
 
+  # The clock the threshold is measured against, or nil when no stretch is
+  # running — which is what `fleet_idle_since` holds, EXCEPT in the window
+  # between the fleet reaching its ceiling and the next observation of it. In
+  # that window the stored value is a stretch that is already over, and the two
+  # surfaces would otherwise print "under its ceiling since 3 hours ago" beside a
+  # badge reading "at its work ceiling". Report what the next sweep will store
+  # rather than what the last one did.
+  def under_ceiling_since
+    idle_since if under_ceiling?
+  end
+
   def state
     return :at_ceiling unless under_ceiling?
     return :clock_not_started if idle_since.nil?

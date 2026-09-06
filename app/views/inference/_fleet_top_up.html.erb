@@ -156,10 +156,12 @@
               12 for one minute while it had been under 12 for hours. %>
           <dt class="text-gray-500">Under its ceiling since</dt>
           <dd class="font-medium text-gray-900" id="fleet-top-up-idle-since">
-            <%= @fleet_top_up.idle_since ? "#{time_ago_in_words(@fleet_top_up.idle_since)} ago" : "—" %>
-            <div class="text-xs text-gray-500 font-normal mt-0.5">
-              the crossing below <%= @fleet_top_up.max_sessions %>, not the last session start
-            </div>
+            <%= @fleet_top_up.under_ceiling_since ? "#{time_ago_in_words(@fleet_top_up.under_ceiling_since)} ago" : "—" %>
+            <% if @fleet_top_up.under_ceiling_since %>
+              <div class="text-xs text-gray-500 font-normal mt-0.5">
+                the crossing below <%= @fleet_top_up.max_sessions %>, not the last session start
+              </div>
+            <% end %>
           </dd>
         </div>
         <div>

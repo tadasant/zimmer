@@ -1703,26 +1703,26 @@ that does it has known limits:
   job already in flight still leaves the row `running`. The counting is right; the status is still
   misleading in that residue.
 - **The cooldown is the real cap on top-up frequency, and it is a blunt one.**
-  `fleet_idle_min_fire_interval_minutes` exists because the session the event spawns re-arms the latch
-  by running, so without it a quiet deployment would get one spawn every stretch, forever. With a
-  ceiling above 1 the fleet is usually still under it while that session runs, so the cooldown — not
-  the ceiling — decides the cadence: 60 minutes means at most 24 top-ups a day. It is tunable now, but
-  it is still a fixed floor rather than anything derived from how much work is actually queued, and it
-  applies even when the previous fire delivered nothing.
-- **On a fleet that churns faster than the stretch, the ceiling buys nothing.** The re-arm on
-  `running` is unconditional — it has to be, or the latch would hold forever on a fleet that never
-  climbs above its ceiling — so *any* session starting clears `fleet_idle_since` and restarts the
-  clock. A deployment holding one or two sessions that starts a new one more often than every
-  `fleet_idle_threshold_minutes` therefore never accumulates a stretch and never fires, exactly as it
-  would at a ceiling of 1. The ceiling only buys idle capacity back when the sessions occupying the
-  fleet are longer-lived than the stretch.
+  `fleet_idle_min_fire_interval_minutes` exists because the session the event spawns is itself work on
+  the fleet, so a cadence that consulted the fleet would let the event re-qualify itself and a quiet
+  deployment would get one spawn every stretch, forever. The idle stretch runs on *through* a fire —
+  only the fleet reaching its ceiling ends one — so the cooldown, not the ceiling and not the stretch,
+  decides the cadence: 60 minutes means at most 24 top-ups a day. It is tunable, but it is still a
+  fixed floor rather than anything derived from how much work is actually queued, and it applies even
+  when the previous fire delivered nothing.
+- **A fleet that flaps across its ceiling never accumulates a stretch.** The dwell has to be
+  *continuous*, and both the sweep and the state-machine hook end it the moment the fleet is at or
+  over the ceiling. A deployment that keeps touching its ceiling and dropping back more often than
+  every `fleet_idle_threshold_minutes` therefore never fires, however much headroom it has on average.
+  Churn *under* the ceiling is not flapping and costs nothing — that is the point of the ceiling — but
+  a ceiling set at or just above the fleet's usual peak turns ordinary variation into flapping.
 - **A single fire tops up by one session, whatever the headroom.** The event says "there is room",
   not how much: a fleet at 1 of 10 and a fleet at 2 of 3 produce the same one fire, and filling eight
   free slots takes eight cooldowns. `FleetTopUpStatus#headroom` reports the number on `/inference` and
   in `get_spot_policy`, but nothing acts on it — the event carries no "how many" and the trigger that
   listens spawns one session per fire.
 - **The three conditions are not equally legible.** `/inference` reports the ceiling, both clocks and
-  which of the four not-fired-yet states the fleet is in, and `get_spot_policy` prints the same. The
+  which of the not-fired-yet states the fleet is in, and `get_spot_policy` prints the same. The
   auth-outage park and the pool reading are *not* in that card — they are reported elsewhere on the
   page, in their own words, so "under the ceiling but still not firing" takes two readings to
   diagnose. Neither is on `/health` or in `get_system_health`.

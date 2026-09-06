@@ -78,9 +78,9 @@ class AppSetting < ApplicationRecord
   DEFAULT_FLEET_IDLE_THRESHOLD_MINUTES = 5
 
   # The floor between two fires, however many times the fleet dips under the
-  # ceiling in between. Once the ceiling stops being the binding term this is
-  # what caps top-up frequency — at 60 minutes, 24 fires a day. See
-  # FleetIdleMonitor, "Why a cooldown as well as a latch".
+  # ceiling in between. On a fleet that stays under its ceiling this is the whole
+  # of the cadence — at 60 minutes, 24 fires a day. See FleetIdleMonitor,
+  # "Why the cadence is the cooldown alone".
   DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES = 60
 
   # The knobs an OPERATOR sets: the spot gate, the concurrency limit, the backlog
@@ -92,7 +92,9 @@ class AppSetting < ApplicationRecord
   # and `quota_pool_available*` live on the same record but are written by the
   # pollers on their own sweep rather than by anyone deciding anything — folding
   # them in would bury the handful of lines that matter under a running
-  # commentary and make `updated_at` useless as "when did the policy last move". `default_runtime`,
+  # commentary. (`updated_at` is no help in telling the two apart: the pollers
+  # bump it too, so the audit line below is the only record of when the policy
+  # itself moved.) `default_runtime`,
   # `default_model`, `extension_states` and `uncategorized_position` are settings
   # too, but they are not fleet scheduling and they are not what silently halves
   # throughput.

@@ -14,7 +14,7 @@
 #   something. See QuotaAvailabilityMonitor, which owns the edge detection.
 # - no_sessions_in_progress: the deployment has been RUNNING fewer sessions than
 #   its configured ceiling for the whole of its configured stretch. See
-#   FleetIdleMonitor, which owns the latch and the cooldown under it.
+#   FleetIdleMonitor, which owns that dwell and the cooldown under it.
 #
 # System events are broadcast by nature — every enabled trigger carrying a
 # matching condition fires — and recurring, so a condition is never spent and the
@@ -138,10 +138,9 @@ class SystemEventTriggerJob < ApplicationJob
   #
   # `no_sessions_in_progress` has nobody waiting on it: an idle fleet with no
   # enabled trigger is a deployment that has not asked for idle-time work.
-  # Re-arming its latch would fire once per sweep for as long as the quiet
-  # lasts, which is the loop FleetIdleMonitor's latch exists to prevent — so an
-  # undelivered fire is simply spent, and the next one comes after the fleet has
-  # actually run something.
+  # Re-arming it would fire once per sweep for as long as the quiet lasts, which
+  # is the loop FleetIdleMonitor's cooldown exists to prevent — so an undelivered
+  # fire is simply spent, and the next one comes when that cooldown does.
   def rearm(event_name)
     QuotaAvailabilityMonitor.rearm! if event_name == QuotaAvailabilityMonitor::EVENT_NAME
     nil
