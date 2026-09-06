@@ -676,10 +676,12 @@ Costs page compares the two cohorts. See
 
 The setting is a plain column rather than a [Zimmer Extension](/extend/extensions/) on purpose. It
 used to be the `mcp_tool_search` extension, which could not work in a deployed container:
-`.dockerignore` excludes `/app/extensions/*/`, so the class was absent from the image and the old
-`ENABLE_TOOL_SEARCH=false` baseline always stood in production. A column ships with the image. An
-enabled extension can still override the variable through the spawn-env seam below — extension
-contributions are merged last.
+`.dockerignore` then excluded `/app/extensions/*/`, so the class was absent from the image and the
+old `ENABLE_TOOL_SEARCH=false` baseline always stood in production. That exclusion is gone
+([#91](https://github.com/tadasant/zimmer/issues/91)) and extension directories ship in the image
+now, but the column stays: this is a value the app reads, not a change to how Zimmer drives a
+runtime. An enabled extension can still override the variable through the spawn-env seam below —
+extension contributions are merged last.
 
 :::caution[A spawn-env asymmetry]
 `Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` —

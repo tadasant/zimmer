@@ -161,6 +161,25 @@ class ExtensionsShippedInImageTest < ActiveSupport::TestCase
     end
   end
 
+  # The same exclusion, one level down -- and the reason the scan is not depth-limited.
+  # app/extensions/CLAUDE.md blesses a `lib/` driver script inside an extension, so that
+  # is where `app/extensions/**/*.rb` empties a directory in the layout the repo actually
+  # recommends. A scan capped at depth 1 sees pty_transport/ still holding lib/ and calls
+  # the tree healthy.
+  test "a hollow directory nested inside an extension fails" do
+    Dir.mktmpdir do |dir|
+      healthy_tree(dir)
+      FileUtils.mkdir_p(File.join(dir, "app/extensions/pty_transport/lib"))
+      File.write(File.join(dir, "app/extensions/pty_transport/pty_transport_extension.rb"), "# x\n")
+
+      output, status = detect(dir)
+
+      refute_predicate status, :success?, "Expected a nested empty directory to fail. Output:\n#{output}"
+      assert_match "arrived empty", output
+      assert_match "pty_transport/lib", output
+    end
+  end
+
   test "an extension directory carrying code passes" do
     Dir.mktmpdir do |dir|
       healthy_tree(dir)
@@ -171,6 +190,14 @@ class ExtensionsShippedInImageTest < ActiveSupport::TestCase
 
       assert_predicate status, :success?, "Expected a populated extension to pass. Output:\n#{output}"
     end
+  end
+
+  # Both Dockerfiles invoke the script directly (`RUN /rails/scripts/...`), not through an
+  # interpreter, so the mode bit is part of the contract. Without this the failure is a
+  # bare Errno::EACCES from every other test in the file, which names the symptom and not
+  # the cause.
+  test "the script is executable, since Docker runs it directly" do
+    assert File.executable?(SCRIPT), "#{SCRIPT} must be executable; Dockerfile runs it directly."
   end
 
   # ---- Usage errors are not passes -----------------------------------------------------
@@ -216,6 +243,28 @@ class ExtensionsShippedInImageTest < ActiveSupport::TestCase
 
         #{CONTEXT_ASSERTION}
     MSG
+  end
+
+  # A guardrail that reports OK when its own machinery is broken looks exactly like a
+  # passing check, which is worse than no check. The empty-directory scan is the one step
+  # that shells out, so a `find` that cannot run must exit 2 rather than fall through to
+  # the "OK" at the bottom.
+  test "a find that cannot run exits 2 rather than passing" do
+    Dir.mktmpdir do |shim_dir|
+      shim = File.join(shim_dir, "find")
+      File.write(shim, "#!/bin/sh\nexit 1\n")
+      File.chmod(0o755, shim)
+
+      Dir.mktmpdir do |dir|
+        env = { "PATH" => "#{shim_dir}:#{ENV['PATH']}" }
+        _, status = Open3.capture2e(env, SCRIPT.to_s, "--root", healthy_tree(dir))
+
+        assert_equal 2, status.exitstatus, <<~MSG
+          Expected a broken `find` to exit 2. Exiting 0 would make a guardrail whose scan
+          silently failed indistinguishable from one that found nothing wrong.
+        MSG
+      end
+    end
   end
 
   test "CI runs the build-context audit and the aggregate gate requires it" do

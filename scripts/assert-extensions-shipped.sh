@@ -126,11 +126,19 @@ if [ ! -f "$ext_root/image_canary/IMAGE_CANARY.md" ]; then
   fail "app/extensions/image_canary/IMAGE_CANARY.md is missing, so no subdirectory of app/extensions/ survived."
 fi
 
-# 3. Any extension directory that arrived hollow. Catches the narrower exclusions a
+# 3. Any directory under the tree that arrived hollow. Catches the narrower exclusions a
 # subdirectory canary alone would not: `app/extensions/**/*.rb` leaves every directory
-# standing and empties the ones that carry code. `-empty` is in busybox find and in
-# GNU find; nothing else here needs to be.
-if ! empty_dirs=$(find "$ext_root" -mindepth 1 -maxdepth 1 -type d -empty -print); then
+# standing and empties the ones that carry code.
+#
+# Not depth-limited, deliberately. app/extensions/CLAUDE.md blesses a `lib/` driver
+# script inside an extension, so the code an exclusion would strip is routinely one more
+# level down -- and against `pty_transport/lib/*.rb`, a scan capped at depth 1 sees
+# pty_transport/ still holding lib/ and calls the tree healthy.
+#
+# `-mindepth`, `-empty`: both are in busybox find (busybox:stable is what
+# Dockerfile.extensions-audit runs) and in GNU find. A build of find without them exits
+# non-zero, which lands in scan_failed and reddens the job rather than passing it.
+if ! empty_dirs=$(find "$ext_root" -mindepth 1 -type d -empty -print); then
   scan_failed "could not scan for empty extension directories"
 fi
 if [ -n "$empty_dirs" ]; then

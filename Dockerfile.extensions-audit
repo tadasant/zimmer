@@ -6,10 +6,12 @@
 # app/extensions/ tree is intact in it. CI's image_includes_extensions job builds this;
 # nothing runs it. The publish-time half of the guardrail is in `Dockerfile` itself.
 #
-# `COPY` can only read from the build context, so an extension tree present in the
-# context reaches the app image -- which is what makes a few megabytes of busybox a fair
-# stand-in on every PR for a multi-GB zimmer-base pull. See docs/operate/deploying.md,
-# "Extensions do ship in the image", for what that stand-in does and does not cover.
+# `COPY` can only read from the build context, so an extension tree absent from the
+# context cannot reach the app image -- which makes a few megabytes of busybox worth more
+# on every PR than a multi-GB zimmer-base pull. Note the direction: this proves the
+# context carries the tree, NOT that the image does. A later Dockerfile step could still
+# remove or shadow it, and closing that is the `Dockerfile`-side assertion's job, not
+# this one's. See docs/operate/deploying.md, "Extensions do ship in the image".
 #
 # .dockerignore's existing `/Dockerfile*` rule keeps this file itself out of the context.
 #

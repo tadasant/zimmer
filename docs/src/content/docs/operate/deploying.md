@@ -869,7 +869,7 @@ until somebody turns it on.
 An absence is a hard thing to notice going missing, so two checks assert the outcome rather than the
 text of `.dockerignore`. Both run `scripts/assert-extensions-shipped.sh`, which fails if
 `app/extensions/` is absent, if `app/extensions/image_canary/IMAGE_CANARY.md` is missing, or if any
-`app/extensions/<id>/` arrived empty. A scan it could not run exits 2 rather than reporting OK, for
+directory under `app/extensions/` arrived empty. A scan it could not run exits 2 rather than reporting OK, for
 the same reason the docs guardrail does.
 
 | Where | Against what | When it fires |
@@ -885,7 +885,10 @@ marker there would have passed the whole time.
 
 The empty-directory check is what covers the exclusions a single canary would not: a pattern like
 `app/extensions/**/*.rb` leaves every directory standing and hollows out the ones that carry code,
-and the canary, which holds no Ruby, would arrive intact.
+and the canary, which holds no Ruby, would arrive intact. It is not depth-limited, because the code
+an exclusion strips is routinely one level further down than the extension directory —
+`app/extensions/CLAUDE.md` blesses a `lib/` driver script inside an extension, and a scan capped at
+depth 1 would see `pty_transport/` still holding `lib/` and call the tree healthy.
 
 `test/infra/extensions_shipped_in_image_test.rb` covers the half of this that needs no Docker daemon —
 that the detector detects (including the exact tree the old rule produced, so it cannot pass
