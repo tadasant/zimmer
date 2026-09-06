@@ -293,8 +293,8 @@ timing cannot drift apart again.
 One gap survives, so know where it is: the injected CSS does **not** defeat a JS-driven
 `scrollIntoView({ behavior: "smooth" })` — per CSSOM-View, an explicit `behavior` in the options beats
 the CSS `scroll-behavior` property. The select/autocomplete controllers (`goal`, `mcp-server-select`,
-`plugins-select`, `hooks-select`, `slash-command`, `subagent-accordion`) scroll their options that way,
-so a test clicking an option mid-scroll is still aiming at a moving target.
+`plugins-select`, `hooks-select`, `catalog-multiselect`, `slash-command`, `subagent-accordion`) scroll
+their options that way, so a test clicking an option mid-scroll is still aiming at a moving target.
 
 The rule: **never wait out an animation to make a click land — remove the motion.** And when a system
 test fails only on the runner, look at the screenshot: `test-system` uploads `tmp/capybara/` (that is
