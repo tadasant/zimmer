@@ -96,7 +96,7 @@ Three MCP tools, in an **opt-in tool group of their own** (`gate_decisions`), se
 
 | Tool | What it is for |
 | --- | --- |
-| `search_gate_decisions` | The calibration read. Filter by gate, surface, decision, artifact URL, date window, or full text over the whole entry |
+| `search_gate_decisions` | The calibration read. Filter by gate, surface, decision, artifact URL (exact, or `artifact_query` for a substring of it), date window, or full text over the whole entry |
 | `get_gate_decision_feedback` | Every note a human left, and nothing else — roughly eight across ~1,500 decisions |
 | `record_gate_decision` | Write one rating. The only write tool in the group |
 

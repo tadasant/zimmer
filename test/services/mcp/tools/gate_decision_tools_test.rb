@@ -47,6 +47,29 @@ class Mcp::Tools::GateDecisionToolsTest < ActiveSupport::TestCase
     assert_includes output, "1 match(es)"
   end
 
+  test "search takes a substring of the artifact URL, and declares that it does" do
+    pr = decision(artifact_url: "https://github.com/tadasant/zimmer/pull/781")
+    issue = decision(artifact_url: "https://github.com/tadasant/zimmer/issues/781")
+    decision(artifact_url: "https://github.com/tadasant/zimmer/pull/902")
+
+    output = @search.call("artifact_query" => "781")
+
+    assert_includes output, "**Id:** #{pr.id}"
+    assert_includes output, "**Id:** #{issue.id}"
+    assert_includes output, "2 match(es)"
+
+    narrower = @search.call("artifact_query" => "pull/781")
+    assert_includes narrower, "**Id:** #{pr.id}"
+    assert_not_includes narrower, "**Id:** #{issue.id}"
+
+    # The schema promises "case-insensitive", so the promise is what is pinned.
+    assert_includes @search.call("artifact_query" => "PULL/781"), "**Id:** #{pr.id}"
+
+    schema = Mcp::Tools::SearchGateDecisions.input_schema.to_h.deep_stringify_keys
+    assert_equal "string", schema.dig("properties", "artifact_query", "type")
+    assert_includes Mcp::Tools::SearchGateDecisions.description, "{ artifact_query:"
+  end
+
   test "search summarises by default and returns the whole entry on request" do
     decision(payload: { "title" => "T", "reason" => "r", "disclosures" => { "note" => "the-whole-entry-marker" } })
 
