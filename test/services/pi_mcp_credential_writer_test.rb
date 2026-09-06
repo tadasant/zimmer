@@ -103,9 +103,14 @@ class PiMcpCredentialWriterTest < ActiveSupport::TestCase
     # file WITHOUT reading it when it finds one there. Writing beside a stale
     # entry would silently keep the old token.
     account = account_for("notion")
+    order = sequence("clear-then-write")
     @writer.unstub(:keyring_call)
-    @writer.expects(:keyring_call).with("read", account).returns({ "ok" => true, "found" => true, "value" => "{}" })
-    @writer.expects(:keyring_call).with("remove", account).returns({ "ok" => true })
+    @writer.expects(:keyring_call).with("read", account)
+      .returns({ "ok" => true, "found" => true, "value" => "{}" }).in_sequence(order)
+    @writer.expects(:keyring_call).with("remove", account).returns({ "ok" => true }).in_sequence(order)
+    # Ordering is the whole point: a file written BEFORE the clear is read by the
+    # adapter, found shadowed by the store entry, and deleted unread.
+    @writer.expects(:write_one_file).in_sequence(order)
 
     @writer.write!(working_directory: "/clone", credentials: [ credential ])
   end
@@ -114,14 +119,37 @@ class PiMcpCredentialWriterTest < ActiveSupport::TestCase
     # The adapter splits a payload over ~1KB across `<account>.chunk.<digest>.<n>`.
     # Leaving one behind lets the stale entry reassemble.
     account = account_for("notion")
-    manifest = JSON.generate({ "__piMcpAdapterOAuthChunked" => 1, "chunkCount" => 2, "chunkDigest" => "abc123" })
+    manifest = JSON.generate({ "__piMcpAdapterOAuthChunked" => 1, "chunkCount" => 2, "chunkDigest" => "0123456789abcdef" })
     @writer.unstub(:keyring_call)
     @writer.stubs(:keyring_call).with("read", account).returns({ "ok" => true, "found" => true, "value" => manifest })
-    @writer.expects(:keyring_call).with("remove", "#{account}.chunk.abc123.0").returns({ "ok" => true })
-    @writer.expects(:keyring_call).with("remove", "#{account}.chunk.abc123.1").returns({ "ok" => true })
+    @writer.expects(:keyring_call).with("remove", "#{account}.chunk.0123456789abcdef.0").returns({ "ok" => true })
+    @writer.expects(:keyring_call).with("remove", "#{account}.chunk.0123456789abcdef.1").returns({ "ok" => true })
     @writer.expects(:keyring_call).with("remove", account).returns({ "ok" => true })
 
     @writer.write!(working_directory: "/clone", credentials: [ credential ])
+  end
+
+  test "an implausible chunk manifest is refused rather than becoming N subprocesses" do
+    account = account_for("notion")
+    bogus = JSON.generate({ "__piMcpAdapterOAuthChunked" => 1, "chunkCount" => 100_000, "chunkDigest" => "0123456789abcdef" })
+    @writer.unstub(:keyring_call)
+    @writer.stubs(:keyring_call).with("read", account).returns({ "ok" => true, "found" => true, "value" => bogus })
+    # Only the base account is removed: no chunk accounts are derived from a
+    # manifest whose count is out of range, even though its digest is well-formed.
+    @writer.expects(:keyring_call).with("remove", account).returns({ "ok" => true })
+
+    @writer.write!(working_directory: "/clone", credentials: [ credential ])
+  end
+
+  test "the credential store is never touched from a test" do
+    # The store is host-global and out of process. #keyring_call short-circuits in
+    # the test environment so no test — including the shared writer contract test,
+    # which calls #delete_credentials on every writer — can spawn `node` against
+    # a developer's login keychain or a droplet's live store.
+    writer = PiMcpCredentialWriter.new
+    writer.expects(:run_helper).never
+
+    assert_nil writer.send(:keyring_call, "read", "sha256-abc")
   end
 
   test "a credential store Zimmer cannot reach does not stop the spawn" do
