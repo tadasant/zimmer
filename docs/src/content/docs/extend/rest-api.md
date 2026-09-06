@@ -324,9 +324,9 @@ and runs the same scan — see [the MCP server](/extend/mcp-server/).
 ### Creating a session
 
 Permitted params: `agent_root`, `agent_runtime`, `prompt`, `git_root`, `branch`, `subdirectory`,
-`title`, `slug`, `goal`, `is_autonomous`, `parent_session_id`,
-`auto_compact_window`, `scheduling_class`, `precedence`, `place`, `idempotency_key`, `mcp_servers[]`,
-`catalog_skills[]`, `catalog_hooks[]`, `catalog_plugins[]`, `config{}`, `custom_metadata{}`.
+`title`, `slug`, `goal`, `is_autonomous`, `parent_session_id`, `auto_compact_window`,
+`scheduling_class`, `precedence`, `place`, `idempotency_key`, `mcp_servers[]`, `catalog_skills[]`,
+`catalog_hooks[]`, `catalog_plugins[]`, `config{}`, `custom_metadata{}`.
 
 `branch` defaults to the root's `default_branch`, or `main`. `show_archived` and `search_contents`
 default to false wherever they appear.
@@ -398,12 +398,13 @@ and for why an explicit `[]` survives to job start rather than being restored fr
 defaults. Note that a form-encoded body cannot express an empty array; send JSON to request none.
 Zimmer's own injected servers (`zimmer-self-session`) are added separately and still arrive.
 
-**`execution_provider` is gone** ([#172](https://github.com/tadasant/zimmer/issues/172)). It named a
-choice that never existed: one legal value, `local_filesystem`, and no code path that read it. It is
-no longer a permitted create param and no longer appears in `session_json`. Sending it is ignored
-rather than an error, so a caller that still passes `execution_provider: "local_filesystem"` keeps
-working — it just no longer says anything. Every agent runs on the Zimmer host itself, unsandboxed;
-see [Agents run unsandboxed on the app host](/limitations/#agents-run-unsandboxed-on-the-app-host).
+`execution_provider` is **not** a parameter, and `session_json` does not carry it. It named a choice
+that never existed — one legal value, `local_filesystem`, and no code path that read it — and was
+removed in [#172](https://github.com/tadasant/zimmer/issues/172) along with the unwired execution
+layer behind it. A create that still sends the key has it dropped by the permitted-params filter
+rather than rejected, so an older client keeps working. Every agent runs on the Zimmer host itself,
+unsandboxed; see [Agents run unsandboxed on the app
+host](/limitations/#agents-run-unsandboxed-on-the-app-host).
 
 The `AgentSessionJob` is enqueued only if `prompt` is present.
 
@@ -591,8 +592,8 @@ semantics.
 ### `session_json`
 
 `id`, `slug`, `title`, `status`, `agent_runtime`, `prompt`, `git_root`, `branch`, `subdirectory`,
-`goal`, `mcp_servers`, `all_mcp_servers`, `injected_mcp_servers`,
-`catalog_skills`, `catalog_hooks`, `catalog_plugins`, `config`, `metadata`, `custom_metadata`,
+`goal`, `mcp_servers`, `all_mcp_servers`, `injected_mcp_servers`, `catalog_skills`, `catalog_hooks`,
+`catalog_plugins`, `config`, `metadata`, `custom_metadata`,
 `is_autonomous`, `heartbeat_enabled`, `heartbeat_interval_seconds`, `auto_compact_window`,
 `genesis`, `scheduling_class`, `priority_class`, `category_id`, `category{}`, `session_id`, `job_id`,
 `running_job_id`, `archived_at`, `trash_after`, `created_at`, `updated_at`, `session_notes`,
