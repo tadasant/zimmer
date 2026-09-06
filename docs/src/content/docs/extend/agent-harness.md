@@ -90,7 +90,7 @@ convention:
   than only constructing.
 - **`mcp_credential_writer_class`** — Pi keeps MCP OAuth tokens inside the
   `pi-mcp-adapter` extension's own state, which Zimmer does not write. This slot
-  *may* be `nil` because both its callers are guarded:
+  *may* be `nil` because every caller is guarded:
   `RuntimeRegistry.mcp_credential_writer_classes` compacts the list (the caller
   instantiates every class it returns, on the credential-retire path — i.e. while
   a credential is already failing), and `McpOauthCredentialInjector` asks
@@ -98,6 +98,19 @@ convention:
   defensive: `McpOauthController#reinject_and_resume` calls injection and the
   resume service inside one `rescue`, so a raise from injection would skip the
   resume and leave a session parked on an OAuth gate permanently un-resumable.
+
+  **"Every caller" is a wider set than the write paths**, and reading it as
+  narrowly as "the one that writes the file" is what broke the first Pi session
+  with an OAuth-credentialed MCP server attached. The writer also owns the
+  credential *key* (`#credential_key_for`), so resolution needs it too: the key
+  on each `ResolvedMcpCredential`, and the key `McpOauthRuntimeReconciler` reads
+  the on-disk store under. `#check_credentials_status` — the pre-spawn OAuth
+  gate, which never writes anything — went through that second one and
+  dereferenced the `nil`, so the session died at the gate with `NoMethodError:
+  undefined method 'credential_key_for' for nil` before producing a line of
+  output. Every path that needs a runtime credential key now short-circuits on
+  `#credential_store?`, and the injector's contract tests assert both the gate
+  and injection for *every* registered runtime rather than for Claude alone.
 
 ## The three registries that bypass the bundle
 
