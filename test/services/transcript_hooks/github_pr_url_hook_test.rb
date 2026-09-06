@@ -2002,9 +2002,15 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
   # === The missing-PR warning (#89) ===========================================
 
   # The warning only speaks for a session that got an agent turn (#356), so
-  # every "it warns" case below has to be a session that ran one. `runtime_started`
-  # is what AgentSessionJob stamps the instant it records a spawned pid, and it is
-  # the signal `Session#before_first_agent_turn?` reads first.
+  # every case below has to be a session that ran one — the negative cases as
+  # much as the positive. `sessions(:running)` carries neither metadata nor a
+  # transcript, so without this it reads as never-run and the #356 guard, which
+  # sits *below* the fork, goal and recorded-URL checks, is what returns: each
+  # of those tests would then pass with the guard it names deleted.
+  #
+  # `runtime_started` is what AgentSessionJob stamps the instant it records a
+  # spawned pid, and it is the signal `Session#before_first_agent_turn?` reads
+  # first.
   def mark_ran(session = @session)
     session.update!(metadata: session.metadata.to_h.merge("runtime_started" => true))
     session
@@ -2057,6 +2063,7 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
   end
 
   test "does not warn when a PR was recorded" do
+    mark_ran
     @session.update!(
       goal: "Open a PR and leave it unmerged for review.",
       custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/1" ] }
@@ -2068,6 +2075,7 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
   end
 
   test "does not warn when the goal is not about pull requests" do
+    mark_ran
     @session.update!(goal: "Research the codebase and answer the question inline.")
 
     assert_no_difference -> { @session.logs.count } do
@@ -2080,6 +2088,7 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
   # it in #prepare_fork — which #abandon_fork runs before on its early-exit
   # paths, archiving a throwaway that still says "open a PR".
   test "does not warn about a status-summary fork that still carries its inherited goal" do
+    mark_ran
     @session.update!(
       goal: "Open a PR and leave it unmerged for review.",
       metadata: @session.metadata.to_h.merge(SessionStatusSummaryGenerator::FORK_MARKER => 12_345)
@@ -2091,6 +2100,7 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
   end
 
   test "does not warn when the session has no goal" do
+    mark_ran
     @session.update!(goal: nil)
 
     assert_no_difference -> { @session.logs.count } do

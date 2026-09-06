@@ -1581,8 +1581,9 @@ trashed before it started, or bulk-archived by `HealthMonitorService`'s seven-da
 turn in which to open a PR — so there is no miss to report, and saying it anyway is noise in exactly
 the place the warning is meant to be a signal ([#356](https://github.com/tadasant/zimmer/issues/356)).
 `Session#before_first_agent_turn?` decides it, and it errs toward speaking: a session carrying
-`runtime_started` in any form, or a transcript in any form, is one where an agent could have opened
-something, and it is still warned about.
+`runtime_started` in any form — including the `false` that Zimmer writes when it finds a killed
+process wrote no conversation — or a transcript in any form, is one where a runtime was spawned, and
+it is still warned about.
 
 #### The archive line names who did it
 
