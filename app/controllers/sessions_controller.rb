@@ -3628,18 +3628,12 @@ class SessionsController < ApplicationController
           level: "info"
         )
 
-        # Clear running_job_id and stale retry metadata before enqueuing.
-        # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
-        stale_keys = Session::STALE_RETRY_METADATA_KEYS
-
-        # For pre-prompt failures (MCP connection failed, spawn failed, etc.),
-        # also clear runtime_started so the restart job uses --session-id
-        # (with --mcp-config) instead of --resume. Using --resume for a session
-        # that never processed its initial prompt causes "No conversation found"
-        # errors because the conversation on Anthropic's servers is empty/broken.
-        # We don't clear runtime_started for normal restarts because those
-        # sessions have real conversation history that --resume can continue.
-        stale_keys += [ "runtime_started" ] if use_initial_prompt
+        # Clear running_job_id and stale retry metadata before enqueuing. A
+        # pre-prompt failure (MCP connection failed, spawn failed, …) also drops
+        # runtime_started so the restart spawns with --session-id instead of
+        # --resume; both policies, and the two others, are declared together on
+        # Session — see Session::PRE_PROMPT_RESTART_KEYS.
+        stale_keys = use_initial_prompt ? Session::PRE_PROMPT_RESTART_KEYS : Session::STALE_RETRY_METADATA_KEYS
 
         session.remove_metadata!(stale_keys)
         session.update!(running_job_id: nil)
@@ -3671,80 +3665,22 @@ class SessionsController < ApplicationController
   end
 
   # Restart a session from scratch by re-running the full setup pipeline.
-  # Used when a session failed before setup completed (e.g., git clone failed)
-  # and there are no setup artifacts to resume from.
   #
-  # Clears all setup-related metadata and re-enqueues the session as a new session,
-  # which triggers the full setup pipeline: git clone, MCP configuration, skill
-  # injection, session_id generation, and process spawn.
+  # Used when a session failed before setup completed (e.g. the git clone failed)
+  # and there are no setup artifacts to resume from. The operation itself —
+  # the git_root guard, the metadata reset, the transaction and its retry, the
+  # log rows, the resume, the enqueue and the job-id claim — belongs to
+  # Sessions::RestartFromScratch, shared with the REST API and the MCP tool so
+  # that the same request means the same thing through every door. This method is
+  # only the translation into the [success, error_message] tuple the restart
+  # callers here already speak.
   #
   # @param session [Session] The failed session to restart from scratch
   # @return [Array<Boolean, String|nil>] [success, error_message] tuple
   def restart_from_scratch(session)
-    unless session.git_root.present?
-      error_message = "cannot restart from scratch: no git_root configured"
-      with_db_retry do
-        session.logs.create!(content: "Cannot restart session: #{error_message}", level: "warning")
-      end
-      return [ false, error_message ]
-    end
+    result = Sessions::RestartFromScratch.call(session, actor: :web)
 
-    # The replacement turn IS the original first turn — same prompt, new clone,
-    # new session_id — so it carries the attachments that turn was created with
-    # (Sessions::FirstTurnAttachments, which never raises). Replaying all of them
-    # is deliberate: this path is reached only when there is no conversation to
-    # prompt into — a pre-prompt failure with setup incomplete, or a session that
-    # never ran — so nothing was delivered to an agent, and a restart from scratch
-    # has just discarded the conversation any earlier delivery went to.
-    # Read outside the transaction so a slow volume cannot hold it open.
-    images, files = Sessions::FirstTurnAttachments.for(session)
-    carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)
-
-    result = with_db_retry do
-      ActiveRecord::Base.transaction do
-        session.logs.create!(
-          content: "Restarting session from scratch: re-running full setup pipeline " \
-                   "(git clone, MCP config, process spawn)#{carrying}",
-          level: "info"
-        )
-
-        # Clear all stale retry metadata AND setup artifacts so the job starts fresh.
-        # Setup artifacts (clone_path, working_directory, etc.) are cleared because
-        # the previous setup attempt failed partway through and may have left
-        # partial/inconsistent state.
-        session.remove_metadata!(
-          Session::STALE_RETRY_METADATA_KEYS,
-          Session::SETUP_ARTIFACT_KEYS,
-          SpotSessionHold::METADATA_KEYS
-        )
-
-        session.update!(running_job_id: nil, session_id: nil)
-        session.resume! if session.may_resume?
-
-        # Enqueue as a new session (not a follow-up) to trigger the full setup
-        # pipeline: git clone, MCP configuration, skill injection, process spawn.
-        AgentSessionJob.enqueue_new_session(session.id, images: images.presence, files: files.presence)
-
-        session.logs.create!(
-          content: "Session resumed - status changed to running, full setup will be re-attempted",
-          level: "info"
-        )
-      end
-    end
-
-    return [ false, "database operation failed" ] if result == false
-
-    Rails.logger.info "[SessionsController] Restart from scratch initiated for session #{session.id}"
-    [ true, nil ]
-  rescue => e
-    Rails.logger.error "[SessionsController] Error restarting session #{session.id} from scratch: #{e.message}"
-    with_db_retry do
-      session.logs.create!(
-        content: "Error restarting session from scratch: #{e.message}",
-        level: "error"
-      )
-    end
-    [ false, e.message ]
+    result.ok? ? [ true, nil ] : [ false, result.error ]
   end
 
   # Resume a failed session by attempting to send an automated recovery prompt

@@ -575,9 +575,11 @@ here:
 - **The session gets through.** `spot_hold_count` is one of the `spot_hold_*` metadata keys cleared
   on start, so the next outage begins again at ten minutes rather than resuming where the last one
   left off.
-- **A person asks for this session directly.** Restart, `action_session`'s `restart_from_scratch`
-  and `POST /api/v1/sessions/:id/restart` all except the same keys from the metadata they carry
-  forward. They have to: those paths re-enter the gate looking *exactly* like a scheduled re-check —
+- **A person asks for this session directly.** Restart, `action_session`'s `restart` and
+  `POST /api/v1/sessions/:id/restart` run one implementation — `Sessions::RestartFromScratch` — so
+  the keys they except from the metadata they carry forward are one list,
+  `Session::RESTART_FROM_SCRATCH_KEYS`. They have to except them: those paths re-enter the gate
+  looking *exactly* like a scheduled re-check —
   no prompt, no resume flag — so without it they would read as another consecutive hold and push the
   ladder up, making someone who asked for the session now wait longer than if they had left it
   alone.

@@ -1004,14 +1004,14 @@ class SpotSessionHold
     #
     # It is not always there. A resume's deliverer has already flipped the session
     # to `running`, and so has every "restart from scratch" path — the Restart
-    # button, `action_session`, `POST /api/v1/sessions/:id/restart` — which calls
-    # `resume!` and only then enqueues the job. Leaving it in `running` is a lie
-    # with consequences: it counts against the fleet cap, the session card claims
-    # work is happening, and `CleanupOrphanedSessionsJob` reads "running with a
-    # blank running_job_id" as DEFINITELY orphaned and reaps it on its next
-    # five-minute pass, long before the ten-minute re-check the hold scheduled
-    # (issue #589). `waiting` makes a deferred turn indistinguishable from a hold
-    # at the starting line, which is exactly what it is.
+    # button, `action_session`, `POST /api/v1/sessions/:id/restart` — all three of
+    # which run `Sessions::RestartFromScratch`, which calls `resume!` and only then
+    # enqueues the job. Leaving it in `running` is a lie with consequences: it
+    # counts against the fleet cap, the session card claims work is happening, and
+    # `CleanupOrphanedSessionsJob` reaps a session whose recorded job is gone on
+    # its next five-minute pass, long before the ten-minute re-check the hold
+    # scheduled (issue #589). `waiting` makes a deferred turn indistinguishable
+    # from a hold at the starting line, which is exactly what it is.
     #
     # Deliberately NOT `pause!`. That event means "a turn ended and the session
     # wants a human": it fires the `session_needs_input` event triggers — waking
