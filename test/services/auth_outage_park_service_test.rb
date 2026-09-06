@@ -301,20 +301,111 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     assert_equal "waiting", @session.reload.status
   end
 
-  # A quota-parked spot session is woken by the POOL's own rising edge, which
-  # QuotaAvailabilityMonitor fires. The sweep asking again would be a second
-  # request for a wake already on its way — and, since the sweep runs in the same
-  # pass as the check, the interplay is what made every later pass re-fire.
-  test "an eligible parked spot QUOTA session leaves the pool edge to fire" do
+  # The #617 collision, from Zimmer's side. The fleet wake's own policy woke
+  # priority parks too, so both mechanisms claimed that population; its collision
+  # check then answered by refusing to wake ANYTHING, including the spot sessions
+  # only it can rank. Which mechanism owns a park now has exactly one answer, and
+  # this sweep asks it rather than re-deriving it.
+  test "the sweep starts exactly the population AuthOutageWakeAuthority gives it" do
+    create_account(email: "restored@example.com", status: :active)
+    mine = parked_peer
+    mine.update!(scheduling_class: SessionGenesis::PRIORITY)
+    AuthOutageParkService.new(mine).park!(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+    theirs = parked_peer
+    theirs.update!(scheduling_class: SessionGenesis::SPOT)
+    AuthOutageParkService.new(theirs).park!(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+
+    assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+
+    assert_not AuthOutageParkService.parked?(mine.reload),
+      "the sweep must resume every park it owns"
+    assert AuthOutageParkService.parked?(theirs.reload),
+      "and start none that it does not"
+  end
+
+  # Derived, never stored: a park reclassified while it is asleep changes hands on
+  # the next sweep rather than naming an owner that is no longer looking for it.
+  test "a spot park reclassified as priority is picked up by the next sweep" do
+    create_account(email: "restored@example.com", status: :active)
+    @session.update!(status: :needs_input, scheduling_class: SessionGenesis::SPOT)
+    park!
+    assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+
+    @session.reload.update!(scheduling_class: SessionGenesis::PRIORITY)
+
+    assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+  end
+
+  # The other half of the boundary: the sweep's own population must not be
+  # reachable only through the fleet wake's conditions. A spent announcement and
+  # a gate holding every spot start say nothing about priority work.
+  test "a sweep-owned park is woken with the recovery already announced and the gate held" do
+    create_account(email: "restored@example.com", status: :active)
+    @session.update!(status: :needs_input, scheduling_class: SessionGenesis::PRIORITY)
+    park!
+    AppSetting.current.update!(quota_pool_available: true, quota_pool_available_changed_at: Time.current)
+
+    held = SpotGateService::ALWAYS_ALLOWED.with(
+      allowed: false, reason: SpotGateService::UTILIZATION_REASON, detail: "both windows over target"
+    )
+    SpotGateService.stub(:evaluate, ->(*) { held }) do
+      assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+    end
+    assert_not AuthOutageParkService.parked?(@session.reload)
+  end
+
+  # Not this sweep's to START is not this sweep's to IGNORE. Both park reasons ask
+  # for a wake, because both can be left sitting by the one edge that fires —
+  # #wake_parked_sessions! is the fleet wake's fifteen-minute watchdog. Whether
+  # the ask actually announces anything is QuotaAvailabilityMonitor's decision,
+  # and in the real pass `check!` has already spent the edge by the time the
+  # sweep asks (see QuotaResetCheckerJobTest).
+  test "an eligible parked spot QUOTA session asks the fleet wake to come round" do
     create_account(email: "restored@example.com", status: :active)
     @session.update!(status: :needs_input, scheduling_class: SessionGenesis::SPOT)
     park!
     AppSetting.current.update!(quota_pool_available: false)
 
+    assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+      assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+    end
+    assert_equal "waiting", @session.reload.status,
+      "it stays parked — the sweep asks for the ranked wake, it does not perform one"
+  end
+
+  # tadasant/zimmer#655, from the sweep's side: the fleet wake ran, did not reach
+  # this session, and spent the edge. Nothing else re-examines a fleet-owned park,
+  # so the sweep's ask is what has to reach it once the announcement goes stale.
+  test "a spot park the fleet wake never reached is asked for again once the announcement is stale" do
+    create_account(email: "restored@example.com", status: :active)
+    @session.update!(status: :needs_input, scheduling_class: SessionGenesis::SPOT)
+    park!
+    AppSetting.current.update!(
+      quota_pool_available: true,
+      quota_pool_available_changed_at: (QuotaAvailabilityMonitor::ANNOUNCEMENT_STALE_AFTER + 1.minute).ago
+    )
+
+    assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+      assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+    end
+  end
+
+  # `quota_available` is announced against ONE global level that only ever reads
+  # the Claude Code pool, so a Codex park asking for it would spend the Claude
+  # edge on a recovery of a pool it was never blocked on — and swallow the real
+  # Claude recovery when it arrived. It costs the Codex park nothing it had: the
+  # fleet wake scopes its enumeration to the recovered runtime.
+  test "a parked spot Codex session does not ask for the Claude pool's wake" do
+    create_account(email: "codex@example.com", status: :active, runtime: "codex")
+    codex = parked_peer(runtime: "codex")
+    codex.update!(scheduling_class: SessionGenesis::SPOT)
+    AuthOutageParkService.new(codex).park!(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+    AppSetting.current.update!(quota_pool_available: false)
+
     assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
       assert_equal 0, AuthOutageParkService.wake_parked_sessions!
     end
-    assert_equal "waiting", @session.reload.status
+    assert AuthOutageParkService.parked?(codex.reload), "it stays parked either way"
   end
 
   # The reason an auth park needs it: `accounts.available` never goes false→true

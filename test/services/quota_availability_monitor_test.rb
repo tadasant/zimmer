@@ -108,6 +108,10 @@ class QuotaAvailabilityMonitorTest < ActiveSupport::TestCase
   # carry — an auth park whose credentials changed. Firing on request is its only
   # wake path.
   test "request_wake! fires when the edge has not been spent" do
+    # The pool has to be able to serve, because that is the precondition the
+    # caller checked before counting this session: AuthOutageParkService's sweep
+    # only reaches its ask for a park whose runtime has an available account.
+    account(:active)
     QuotaAvailabilityMonitor.record_unavailable!
 
     assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
@@ -127,6 +131,109 @@ class QuotaAvailabilityMonitorTest < ActiveSupport::TestCase
     end
     assert_equal true, AppSetting.current.reload.quota_pool_available,
       "the level stays spent — re-arming here is what made the next check! fire again"
+  end
+
+  # tadasant/zimmer#655: the edge fires once per recovery, and whatever the fleet
+  # session it spawns did not reach has no wake path left. The session found in
+  # that position had sat 33 hours past its own recorded recovery time. So a
+  # spent announcement goes STALE rather than final, and the sweep's fifteen-
+  # minute ask can announce the same recovery again.
+  test "request_wake! announces a spent recovery again once it has gone stale" do
+    account(:active)
+    QuotaAvailabilityMonitor.check!
+    AppSetting.current.update!(
+      quota_pool_available_changed_at: (QuotaAvailabilityMonitor::ANNOUNCEMENT_STALE_AFTER + 1.minute).ago
+    )
+
+    assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+      assert QuotaAvailabilityMonitor.request_wake!(reason: "1 parked session")
+    end
+    assert_equal true, AppSetting.current.reload.quota_pool_available,
+      "the level stays spent — a re-arm is what would make the next check! call this a rising edge"
+  end
+
+  # And renews its own cooldown, which is what bounds the cost of the re-ask to
+  # one fleet session per ANNOUNCEMENT_STALE_AFTER rather than one per sweep.
+  test "a re-announcement renews the cooldown" do
+    account(:active)
+    QuotaAvailabilityMonitor.check!
+    AppSetting.current.update!(
+      quota_pool_available_changed_at: (QuotaAvailabilityMonitor::ANNOUNCEMENT_STALE_AFTER + 1.minute).ago
+    )
+    assert QuotaAvailabilityMonitor.request_wake!(reason: "1 parked session")
+
+    assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+      3.times { |pass| assert_not QuotaAvailabilityMonitor.request_wake!(reason: "pass #{pass}") }
+    end
+  end
+
+  # A level that says "announced" with no record of when cannot be allowed to
+  # make the re-ask permanently unreachable — that is the failure the whole path
+  # exists to remove.
+  test "an announcement with no stamp counts as stale" do
+    account(:active)
+    QuotaAvailabilityMonitor.check!
+    AppSetting.current.update!(quota_pool_available_changed_at: nil)
+
+    assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+      assert QuotaAvailabilityMonitor.request_wake!(reason: "1 parked session")
+    end
+  end
+
+  # A full fleet does not defer the recovery's ONE edge (see above) — but it does
+  # defer a re-announcement, because that ask comes round again in fifteen
+  # minutes and a fleet session spawned into a full fleet could start nothing.
+  test "a re-announcement defers while the fleet is at its cap" do
+    enable_spot_gating(max_concurrent: 1)
+    live = account(:active)
+    seed_reading(live, utilization_5h: 0.10, utilization_7d: 0.10)
+    QuotaAvailabilityMonitor.check!
+    AppSetting.current.update!(
+      quota_pool_available: true,
+      quota_pool_available_changed_at: (QuotaAvailabilityMonitor::ANNOUNCEMENT_STALE_AFTER + 1.minute).ago
+    )
+
+    occupying = Session.create!(prompt: "occupying the only slot", agent_runtime: "claude_code",
+      status: :running, git_root: "https://github.com/test/repo.git", branch: "main",
+      execution_provider: "local_filesystem", session_id: SecureRandom.uuid)
+    GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
+      job_class: "AgentSessionJob", serialized_params: { "arguments" => [ occupying.id ] },
+      scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
+    assert_equal SpotGateService::FLEET_CAP_REASON, SpotGateService.evaluate.reason,
+      "the fixture must reproduce a gate held on the cap rather than on a window"
+
+    assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+      assert_not QuotaAvailabilityMonitor.request_wake!(reason: "1 parked session")
+    end
+    assert_equal true, AppSetting.current.reload.quota_pool_available
+  end
+
+  # `check!` never announces a level it has not just read. This one is handed a
+  # count by a caller, so it has to look for itself — otherwise a caller that
+  # believes there is work to wake announces a recovery of a pool that can serve
+  # nothing, which is the #611 shape from the other direction.
+  test "request_wake! refuses on a pool that can still serve nothing" do
+    account(:quota_exceeded)
+    QuotaAvailabilityMonitor.record_unavailable!
+
+    assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+      assert_not QuotaAvailabilityMonitor.request_wake!(reason: "1 parked session")
+    end
+    assert_equal false, AppSetting.current.reload.quota_pool_available,
+      "the level is untouched — nothing was announced, so nothing was spent"
+  end
+
+  # ...but an UNREADABLE pool is not that confirmation, and suppressing the ask on
+  # one would turn a monitoring gap into an outage of a parked session's only
+  # wake path. Same fail-open rule the gate read keeps.
+  test "request_wake! still fires when the pool cannot be read" do
+    QuotaAvailabilityMonitor.record_unavailable!
+
+    QuotaAvailabilityMonitor.stub(:pool_available?, nil) do
+      assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+        assert QuotaAvailabilityMonitor.request_wake!(reason: "1 parked session")
+      end
+    end
   end
 
   # The loop this guards: `check!` and the sweep that calls `request_wake!` run in

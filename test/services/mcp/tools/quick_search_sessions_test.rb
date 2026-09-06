@@ -27,6 +27,45 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     assert_includes output, "- **Agent Runtime:** claude_code"
   end
 
+  # tadasant/zimmer#617: the caller that reads this list to decide what to restart
+  # is the ranked fleet wake, and half of the parked population is not its to
+  # touch. It should not have to spend a `get_session` detail read — or infer the
+  # boundary from the scheduling class — to find that out.
+  test "an auth-outage-parked row names the mechanism that wakes it" do
+    parked = Session.create!(
+      title: "Parked, priority", prompt: "prompt", git_root: "https://github.com/test/repo.git",
+      agent_runtime: "claude_code", status: :waiting, scheduling_class: SessionGenesis::PRIORITY,
+      metadata: {
+        "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+        "auth_outage_parked_at" => "2026-08-22T11:50:51Z"
+      }
+    )
+
+    output = @tool.call("id" => parked.id)
+
+    assert_includes output, "- **Parked on an auth outage** (`quota_exhausted`), " \
+                            "woken by Zimmer's own auth-outage sweep"
+    assert_includes output, "the fleet wake must not restart it"
+  end
+
+  test "a parked spot row names the fleet wake instead, and an unparked row says nothing" do
+    parked = Session.create!(
+      title: "Parked, spot", prompt: "prompt", git_root: "https://github.com/test/repo.git",
+      agent_runtime: "claude_code", status: :waiting, scheduling_class: SessionGenesis::SPOT,
+      metadata: {
+        "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+        "auth_outage_parked_at" => "2026-08-22T11:50:51Z"
+      }
+    )
+    ordinary = Session.create!(
+      title: "Not parked", prompt: "prompt", git_root: "https://github.com/test/repo.git",
+      agent_runtime: "claude_code", status: :waiting
+    )
+
+    assert_includes @tool.call("id" => parked.id), "woken by the ranked fleet wake"
+    refute_includes @tool.call("id" => ordinary.id), "Parked on an auth outage"
+  end
+
   test "unknown id raises a tool error" do
     error = assert_raises(Mcp::ToolError) { @tool.call("id" => 999_999) }
     assert_match(/Session not found/, error.message)

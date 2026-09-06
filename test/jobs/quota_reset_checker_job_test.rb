@@ -402,6 +402,26 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
     assert_nil parked.reload.metadata["auth_outage_reason"]
   end
 
+  # The sweep now asks for a fleet wake on behalf of every fleet-owned park it
+  # left alone, quota parks included — so the pass has two callers that could
+  # announce one recovery. `check!` runs first and claims it; the sweep's ask
+  # finds the level spent and its stamp fresh, and fires nothing. One recovery,
+  # one fleet session (tadasant/zimmer#606 is what two would be).
+  test "a recovery with spot parks waiting fires exactly one wake for the pass" do
+    parked = create_parked_session(scheduling_class: "spot")
+    assert_equal false, AppSetting.current.reload.quota_pool_available
+
+    SystemEventTriggerJob.expects(:perform_later).with("quota_available").once
+
+    QuotaResetCheckerJob.perform_now
+
+    assert claude_accounts(:exceeded).reload.active?, "the pool did recover"
+    assert_equal "waiting", parked.reload.status
+    assert AuthOutageParkService.parked?(parked),
+      "the ranked fleet wake starts it — this pass only asked for one"
+    assert_equal true, AppSetting.current.reload.quota_pool_available
+  end
+
   # The two readings the incident had in disagreement. Every account carries a
   # reading whose own windows are clear enough to leave it in rotation — the
   # `exceeded` fixture is restored by this very sweep — while the pool's average

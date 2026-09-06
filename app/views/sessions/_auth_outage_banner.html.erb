@@ -21,11 +21,9 @@
       <% else %>
         The runtime reported "Not logged in" and re-injecting credentials did not fix it.
       <% end %>
-      <% if agent_session.spot? %>
-        This session is parked. It resumes when the account pool recovers and the fleet wake reaches it in precedence order (currently <%= agent_session.precedence %>).
-      <% else %>
-        This session is parked and resumes automatically once the account pool recovers.
-      <% end %>
+      <%# One sentence, from AuthOutageWakeAuthority, so the human reading this page and the
+          agent reading `get_session` are told the same thing about who is coming for it. %>
+      This session is parked. It resumes when <%= AuthOutageWakeAuthority.resume_sentence(agent_session) %>
       <% if recovers_at&.future? %>
         The pool's earliest reset is <%= recovers_at.utc.strftime("%b %-d, %H:%M") %> UTC (<%= time_ago_in_words(recovers_at) %> from now).
       <% end %>
