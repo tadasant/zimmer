@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class SettingsControllerTest < ActionDispatch::IntegrationTest
   test "should get show" do
@@ -130,8 +131,21 @@ class SettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   # Catalog Pins Section
-  test "should have catalog pins section with an editable form" do
-    skip "Requires a remote (github://) catalog; Zimmer default catalog is local-only."
+  #
+  # Only a github:// catalog is pinnable, and Zimmer's default catalog is
+  # local-only — so the card is hidden by default and rendered when a remote
+  # catalog exists. Both halves are asserted here; the remote half stubs the two
+  # AirCatalogService reads the settings page makes, so neither needs a network.
+  test "should not render the catalog pins section for a local-only catalog" do
+    get settings_url
+    assert_select "h2", text: "Catalog Pins", count: 0
+    assert_select "form[action=?]", catalog_pins_path, count: 0
+  end
+
+  test "should have catalog pins section with an editable form when a catalog is pinnable" do
+    AirCatalogService.stubs(:pinnable_catalogs).returns([ "github://pulsemcp/ai-artifacts" ])
+    AirCatalogService.stubs(:resolved_sha_for).returns("a" * 40)
+
     get settings_url
     assert_select "h2", "Catalog Pins"
     # form_with method: :patch renders a POST form with a hidden _method override.

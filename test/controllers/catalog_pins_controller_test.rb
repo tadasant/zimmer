@@ -4,12 +4,19 @@ require "test_helper"
 require "mocha/minitest"
 
 class CatalogPinsControllerTest < ActionDispatch::IntegrationTest
-  # The test air.json declares github://pulsemcp/ai-artifacts as its only
-  # catalog, so that is the one pinnable catalog in this environment.
+  # A remote catalog is a *configuration*, not an environment, so these tests
+  # declare one rather than waiting for one. `pinnable_catalogs` is the only
+  # thing the controller consults and the only thing that reads air.json, so
+  # stubbing it is the whole fixture: no network, no token, no catalog repo.
+  # Zimmer's own catalog is local-only, which leaves the real value empty — and
+  # a test that waits for it to be non-empty never runs at all (#69).
   PINNABLE = "github://pulsemcp/ai-artifacts"
 
+  setup do
+    AirCatalogService.stubs(:pinnable_catalogs).returns([ PINNABLE ])
+  end
+
   test "creates a pin and re-resolves catalogs" do
-    skip "Remote-catalog pinning requires a declared remote catalogs[] entry in air.json; Zimmer's default catalog is local-only (no pinnable remote catalogs)."
     AirCatalogService.expects(:refresh!).once.returns(true)
 
     patch catalog_pins_path, params: { pins: [ { catalog: PINNABLE, ref: "abc123def" } ] }
@@ -21,7 +28,6 @@ class CatalogPinsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "clears a pin when the ref is blank" do
-    skip "Remote-catalog pinning requires a declared remote catalogs[] entry in air.json; Zimmer's default catalog is local-only (no pinnable remote catalogs)."
     CatalogPin.create!(catalog: PINNABLE, ref: "oldsha")
     AirCatalogService.expects(:refresh!).once.returns(true)
 
@@ -41,7 +47,6 @@ class CatalogPinsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "rolls back the pin change when catalogs fail to resolve" do
-    skip "Remote-catalog pinning requires a declared remote catalogs[] entry in air.json; Zimmer default catalog is local-only."
     CatalogPin.create!(catalog: PINNABLE, ref: "oldsha")
     AirCatalogService.expects(:refresh!).once
       .raises(AirCatalogService::CatalogError, "ref not found")
@@ -55,7 +60,6 @@ class CatalogPinsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "rejects an invalid ref without persisting it" do
-    skip "Remote-catalog pinning requires a declared remote catalogs[] entry in air.json; Zimmer default catalog is local-only."
     patch catalog_pins_path, params: { pins: [ { catalog: PINNABLE, ref: "bad ref" } ] }
 
     assert_redirected_to settings_path
