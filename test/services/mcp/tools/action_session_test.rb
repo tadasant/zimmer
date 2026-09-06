@@ -1406,6 +1406,14 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/"message_index" parameter is required/, error.message)
   end
 
+  # JSONL lines shaped so TranscriptFileLocator can read a head sessionId out of
+  # them, which is what makes a file a re-keyed branch of a session.
+  def rekey_lines(session_id, range)
+    range.map { |i|
+      { "type" => "user", "sessionId" => session_id, "uuid" => "e#{i}", "text" => "event #{i}" }.to_json
+    }.join("\n") + "\n"
+  end
+
   test "refresh reports when the session has no clone path" do
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "refresh", "session_id" => sessions(:needs_input).id) }
     assert_match(/No clone path/, error.message)
@@ -1442,6 +1450,39 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
       assert_includes result, "- **Refreshed:** 1"
       assert_equal fresh, session.reload.transcript
       assert_equal 2, session.metadata["broadcast_message_count"]
+    end
+  end
+
+  # A manual refresh reaches sessions.transcript through the same locator the
+  # poller does, so it inherited #1047's hazard: a re-keyed branch is not a
+  # superset of the stored transcript, and the transcript_regression? guard
+  # compares line COUNTS, so a longer branch sails through it and takes the
+  # abandoned file's tail with it.
+  test "refresh does not lose the abandoned tail when the located file is a re-keyed branch" do
+    session = sessions(:running)
+    session.update!(session_id: "recorded-uuid")
+    # H = 1..3, A = 4..5 (recorded only by the abandoned file), T = 6..7.
+    stored = rekey_lines("recorded-uuid", 1..5) + rekey_lines("branch-uuid", 6..7)
+    session.update!(transcript: stored)
+
+    Dir.mktmpdir do |dir|
+      # 8 lines against 7 stored, so the line-count guard passes — and the branch
+      # has never held events 4 and 5.
+      branch = rekey_lines("recorded-uuid", 1..3) + rekey_lines("branch-uuid", 6..10)
+      file = File.join(dir, "branch-uuid.jsonl")
+      File.write(file, branch)
+
+      @tool.stubs(:transcript_directory).returns(dir)
+      TranscriptFileLocator.stubs(:find_main_transcript).returns(file)
+
+      @tool.call("action" => "refresh", "session_id" => session.id)
+
+      refreshed = session.reload.transcript
+      assert_includes refreshed, "event 4", "the abandoned file's tail is held nowhere else"
+      assert_includes refreshed, "event 5"
+      assert refreshed.start_with?(stored), "the stored transcript must survive as the prefix"
+      assert_includes refreshed, "event 10", "and the branch's new events must land"
+      assert_equal 1, refreshed.scan("event 6").length
     end
   end
 

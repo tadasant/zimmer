@@ -46,7 +46,8 @@ class TranscriptFileLocator
   # first `sessionId` in it is ours. The window exists only because a transcript
   # can open with lines that carry none (a `summary` record), and it is small
   # because this is a head read on a file that may be tens of megabytes — never a
-  # full parse.
+  # full parse. A transcript whose head runs longer than this without naming a
+  # session is not recognized as a branch, which is the safe direction to fail.
   BRANCH_HEAD_SCAN_LINES = 20
 
   # Find the main transcript file for a session
@@ -69,11 +70,11 @@ class TranscriptFileLocator
   # The uuid naming `path`, when `path` is a re-keyed branch of this session's
   # conversation rather than the recorded <session_id>.jsonl.
   #
-  # nil for the recorded file, and — deliberately — nil for any other file that
-  # does not carry this session's id in its head. The pre-session_id fallback can
-  # return a file this locator never established an identity for, and a caller
-  # that spliced *that* onto the stored transcript would be grafting on a
-  # conversation Zimmer has no evidence belongs here.
+  # nil for the recorded file, and — deliberately — nil for any file that
+  # #branch_of_session? would not have selected either. `find_main_transcript` can
+  # return a file through the pre-session_id fallback, which establishes no
+  # identity at all, and a caller that spliced *that* onto the stored transcript
+  # would be grafting on a conversation Zimmer has no evidence belongs here.
   #
   # @param session [Session]
   # @param path [String, nil] a located transcript path
@@ -81,67 +82,83 @@ class TranscriptFileLocator
   # @return [String, nil] the branch uuid, or nil when `path` is not a branch
   def self.rekeyed_branch_id(session, path, file_system: nil)
     return nil if path.blank? || session.session_id.blank?
-
-    branch_id = File.basename(path, ".jsonl")
-    return nil if branch_id == session.session_id
+    return nil if File.basename(path, ".jsonl") == session.session_id
 
     file_system ||= DefaultFileSystem.new
-    return nil unless continues_session?(session, path, file_system)
+    return nil unless branch_of_session?(session, path, file_system)
 
-    branch_id
+    File.basename(path, ".jsonl")
   end
 
-  # The recorded <session_id>.jsonl, unless the runtime re-keyed this
-  # conversation and is writing the continuation elsewhere in the same directory.
+  # The recorded <session_id>.jsonl, unless this conversation was re-keyed and
+  # the continuation is the file being written in the same directory.
   #
   # nil means neither exists, which hands the caller back to the fallback.
+  #
+  # Only a sibling written *more recently* than the recorded file can displace
+  # it, so mtime prunes the candidates before any of them is opened: the recorded
+  # name stays the default answer, it wins a tie, and the ordinary session — where
+  # it is also the newest file — costs one glob and one stat per sibling with no
+  # reads at all.
   def self.live_transcript(session, transcript_dir, file_system)
     recorded = File.join(transcript_dir, "#{session.session_id}.jsonl")
+    recorded_mtime = mtime_or_nil(recorded, file_system)
 
-    candidates = branch_transcripts(session, transcript_dir, recorded, file_system)
-    # Appended last so it wins an mtime tie: the recorded name stays the default
-    # answer, and a branch has to be strictly more recently written to displace it.
-    candidates << recorded if file_system.exists?(recorded)
+    newer = file_system.glob(File.join(transcript_dir, "*.jsonl"))
+      .reject { |path| path == recorded || File.basename(path).start_with?("agent-") }
+      .filter_map { |path| [ path, mtime_or_nil(path, file_system) ] }
+      .select { |_path, mtime| mtime && (recorded_mtime.nil? || mtime > recorded_mtime) }
+      .sort_by { |_path, mtime| mtime }
+      .reverse
 
-    return nil if candidates.empty?
-    return candidates.first if candidates.one?
+    branch = newer.find { |path, _mtime| branch_of_session?(session, path, file_system) }
+    return branch.first if branch
 
-    candidates.each_with_index.max_by { |path, index| [ file_system.mtime(path), index ] }.first
+    recorded_mtime ? recorded : nil
   end
   private_class_method :live_transcript
 
-  # Siblings named by some other uuid whose head is this session's own
-  # conversation — the shape a re-key takes on disk.
+  # Is this file a copy of this session's conversation carried on under another
+  # uuid — the shape a re-key takes on disk?
   #
-  # Identity is established from **content**, never from mtime: a candidate only
+  # Identity is established from **content**, never from mtime: the file only
   # qualifies if its head declares `sessionId == session.session_id`. That is the
-  # evidence #1047 used to tie the branch to its session, and requiring it is what
+  # evidence #1047 used to tie a branch to its session, and requiring it is what
   # keeps this from decaying into the broad "newest .jsonl wins" rule the fallback
-  # above is deliberately narrow to avoid.
+  # below is deliberately narrow to avoid.
   #
   # A uuid some other Session row already holds is excluded outright, because a
   # **fork** has exactly this shape: its transcript is copied verbatim from its
   # source, so its early lines carry the SOURCE session's id. A fork that ran in
   # this working directory is a different conversation, not this one's
   # continuation, and following it would show a session its own child's work.
-  def self.branch_transcripts(session, transcript_dir, recorded, file_system)
-    candidates = file_system.glob(File.join(transcript_dir, "*.jsonl"))
-      .reject { |path| path == recorded || File.basename(path).start_with?("agent-") }
-    return [] if candidates.empty?
+  #
+  # Both callers go through here rather than re-deriving the rule, because a
+  # `rekeyed_branch_id` that answered where selection would not is a licence to
+  # splice a conversation onto a session that never had it.
+  def self.branch_of_session?(session, path, file_system)
+    branch_id = File.basename(path, ".jsonl")
+    return false if session.session_id.blank? || branch_id == session.session_id
+    return false if Session.exists?(session_id: branch_id)
 
-    candidates = candidates.select { |path| continues_session?(session, path, file_system) }
-    return [] if candidates.empty?
-
-    owned = Session.where(session_id: candidates.map { |path| File.basename(path, ".jsonl") }).pluck(:session_id)
-    candidates.reject { |path| owned.include?(File.basename(path, ".jsonl")) }
-  end
-  private_class_method :branch_transcripts
-
-  # Does this file open with this session's conversation?
-  def self.continues_session?(session, path, file_system)
     head_session_id(path, file_system) == session.session_id
   end
-  private_class_method :continues_session?
+  private_class_method :branch_of_session?
+
+  # A file's mtime, or nil when it cannot be stat'd — which is also how this asks
+  # whether a file exists, in one syscall rather than two.
+  #
+  # A transcript directory is written by a live runtime and swept by the reapers,
+  # so a path can vanish between the glob that listed it and the stat that reads
+  # it. This runs on every poll of every session, and an Errno escaping here would
+  # surface as a failed poll — which AgentSessionJob counts toward
+  # `transcript_unavailable` and ultimately fails the session with.
+  def self.mtime_or_nil(path, file_system)
+    file_system.mtime(path)
+  rescue SystemCallError, IOError
+    nil
+  end
+  private_class_method :mtime_or_nil
 
   # The first `sessionId` in the file's head, or nil when the head names none.
   #
@@ -183,15 +200,17 @@ class TranscriptFileLocator
   def self.fallback_transcript(session, transcript_dir, file_system)
     candidates = file_system.glob(File.join(transcript_dir, "*.jsonl"))
       .reject { |path| File.basename(path).start_with?("agent-") }
+      .filter_map { |path| [ path, mtime_or_nil(path, file_system) ] }
+      .select { |_path, mtime| mtime }
     return nil if candidates.empty?
 
     # The runtime is spawned after the session row exists, so its transcript is
     # always written after session.created_at. Anything older belongs to a
     # previous occupant of this working directory.
     floor = session.created_at&.-(MTIME_GRANULARITY_GRACE)
-    candidates = candidates.select { |path| file_system.mtime(path) >= floor } if floor
+    candidates = candidates.select { |_path, mtime| mtime >= floor } if floor
 
-    candidates.max_by { |path| file_system.mtime(path) }
+    candidates.max_by { |_path, mtime| mtime }&.first
   end
   private_class_method :fallback_transcript
 

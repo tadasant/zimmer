@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class TranscriptFileLocatorTest < ActiveSupport::TestCase
   setup do
@@ -309,6 +310,49 @@ class TranscriptFileLocatorTest < ActiveSupport::TestCase
     @session.update!(session_id: nil)
 
     assert_nil TranscriptFileLocator.rekeyed_branch_id(@session, dirs[:branch], file_system: @mock_file_system)
+  end
+
+  test "rekeyed_branch_id refuses a fork's transcript the fallback handed back" do
+    # The fallback establishes no identity, so it can return a fork's file when the
+    # recorded one is missing. Answering "branch" for that would let the poller
+    # splice another session's conversation onto this one's durable record — the
+    # regression guard cannot catch it, because the merge is never shorter.
+    fork = sessions(:needs_input)
+    fork.update!(session_id: "the-fork-uuid")
+    dirs = build_rekeyed_branch(branch_id: "the-fork-uuid")
+    @mock_file_system.rm_rf(dirs[:recorded])
+
+    assert_equal dirs[:branch],
+      TranscriptFileLocator.find_main_transcript(@session, dirs[:dir], file_system: @mock_file_system),
+      "the fallback still returns it — that is what makes the check below load-bearing"
+    assert_nil TranscriptFileLocator.rekeyed_branch_id(@session, dirs[:branch], file_system: @mock_file_system)
+  end
+
+  test "find_main_transcript survives a sibling that vanishes between the glob and the stat" do
+    # A transcript directory is written by a live runtime and swept by the reapers.
+    # An Errno escaping here becomes a failed poll, which counts toward
+    # transcript_unavailable and eventually fails the session.
+    dirs = build_rekeyed_branch
+    @mock_file_system.stubs(:mtime).with(dirs[:branch]).raises(Errno::ENOENT.new(dirs[:branch]))
+    @mock_file_system.stubs(:mtime).with(dirs[:recorded]).returns(Time.current)
+
+    result = nil
+    assert_nothing_raised do
+      result = TranscriptFileLocator.find_main_transcript(@session, dirs[:dir], file_system: @mock_file_system)
+    end
+    assert_equal dirs[:recorded], result
+  end
+
+  test "find_main_transcript does not open a sibling that cannot outrank the recorded file" do
+    # Only a more recently written file can displace the recorded name, so mtime
+    # prunes before anything is read. The ordinary session pays a glob and a stat.
+    dirs = build_rekeyed_branch
+    @mock_file_system.set_mtime(dirs[:branch], 2.hours.ago)
+    @mock_file_system.set_mtime(dirs[:recorded], Time.current)
+    @mock_file_system.expects(:each_line).never
+
+    assert_equal dirs[:recorded],
+      TranscriptFileLocator.find_main_transcript(@session, dirs[:dir], file_system: @mock_file_system)
   end
 
   test "DefaultFileSystem works with real filesystem" do

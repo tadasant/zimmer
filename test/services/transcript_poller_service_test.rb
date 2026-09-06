@@ -608,8 +608,6 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_includes @session.transcript, "event 7"
     assert_equal 7, @session.metadata["broadcast_message_count"]
     assert_equal "branch-uuid", @session.metadata["transcript_branch_session_id"]
-    assert_equal 5, @session.metadata["transcript_branch_base_event_count"]
-    assert_equal 5, @session.metadata["transcript_branch_shared_event_count"]
     assert_equal "recorded-uuid", @session.session_id,
       "the durable session id is never rewritten from transcript content"
   end
@@ -629,8 +627,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_equal stored + rekey_lines("branch-uuid", 6..7), @session.transcript
     assert_includes @session.transcript, "event 5", "the abandoned tail survives"
     assert_includes @session.transcript, "event 7", "and so does the branch's work"
-    assert_equal 5, @session.metadata["transcript_branch_base_event_count"]
-    assert_equal 3, @session.metadata["transcript_branch_shared_event_count"]
+    assert_equal "branch-uuid", @session.metadata["transcript_branch_session_id"]
     assert_nil @session.metadata["transcript_regression_detected"],
       "the branch is shorter than the stored transcript, but the splice is not a regression"
   end
@@ -662,11 +659,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     # transcript at <session_id>.jsonl, so that file is the newest again.
     stored = rekey_lines("recorded-uuid", 1..5)
     paths = write_rekeyed_branch(stored: stored, branch_content: stored)
-    @session.update!(metadata: @session.metadata.merge(
-      "transcript_branch_session_id" => "branch-uuid",
-      "transcript_branch_base_event_count" => 3,
-      "transcript_branch_shared_event_count" => 3
-    ))
+    @session.update!(metadata: @session.metadata.merge("transcript_branch_session_id" => "branch-uuid"))
     @mock_file_system.write(paths[:recorded], stored + rekey_lines("recorded-uuid", 6..6))
     @mock_file_system.set_mtime(paths[:recorded], Time.current)
     @mock_file_system.set_mtime(paths[:branch], 1.hour.ago)
@@ -675,9 +668,7 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
 
     assert_equal true, result
     @session.reload
-    assert_nil @session.metadata["transcript_branch_session_id"]
-    assert_nil @session.metadata["transcript_branch_base_event_count"]
-    assert_nil @session.metadata["transcript_branch_shared_event_count"]
+    assert_not @session.metadata.key?("transcript_branch_session_id")
     assert_equal stored + rekey_lines("recorded-uuid", 6..6), @session.transcript
   end
 
@@ -729,6 +720,84 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
 
     assert_equal [ "https://github.com/owner/repo/pull/616" ],
       @session.reload.custom_metadata["github_pull_request_urls"]
+  end
+
+  test "poll_and_broadcast does not duplicate the first branch's work when the transcript re-keys twice" do
+    # The merge is recomputed from the two texts on every poll rather than from a
+    # remembered split point, because after the first splice the stored transcript
+    # is no longer prefix-shaped and a remembered K undercounts — compounding on
+    # every further re-key.
+    stored = rekey_lines("recorded-uuid", 1..5)
+    first_branch = rekey_lines("recorded-uuid", 1..3) + rekey_lines("branch-uuid", 6..8)
+    paths = write_rekeyed_branch(stored: stored, branch_content: first_branch)
+
+    TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+    assert_equal stored + rekey_lines("branch-uuid", 6..8), @session.reload.transcript
+
+    # A second re-key: the runtime copies the branch forward under yet another
+    # uuid and adds event 9.
+    second_branch = first_branch + rekey_lines("second-uuid", 9..9)
+    @mock_file_system.write("#{paths[:dir]}/second-uuid.jsonl", second_branch)
+    @mock_file_system.set_mtime("#{paths[:dir]}/second-uuid.jsonl", Time.current)
+    @mock_file_system.set_mtime(paths[:branch], 30.minutes.ago)
+
+    assert_equal true, TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+
+    @session.reload
+    assert_equal stored + rekey_lines("branch-uuid", 6..8) + rekey_lines("second-uuid", 9..9),
+      @session.transcript
+    assert_equal 1, @session.transcript.scan("event 6").length, "the first branch's tail must appear once"
+    assert_equal "second-uuid", @session.metadata["transcript_branch_session_id"]
+  end
+
+  test "poll_and_broadcast survives a poll that cannot read the branch, and re-follows it after" do
+    # A transient read failure makes the branch unrecognizable, so that poll reverts
+    # to the abandoned file. Nothing may be lost or duplicated by the round trip:
+    # the merge is recomputed from the two texts every time rather than resumed
+    # from a remembered split point.
+    stored = rekey_lines("recorded-uuid", 1..5)
+    branch = rekey_lines("recorded-uuid", 1..3) + rekey_lines("branch-uuid", 6..7)
+    paths = write_rekeyed_branch(stored: stored, branch_content: branch)
+
+    TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+    spliced = @session.reload.transcript
+
+    unreadable = MockFileSystemAdapter.new
+    @mock_file_system.files.each { |path, content| unreadable.write(path, content) }
+    @mock_file_system.directories.each { |dir| unreadable.mkdir_p(dir) }
+    unreadable.set_mtime(paths[:recorded], 1.hour.ago)
+    unreadable.set_mtime(paths[:branch], Time.current)
+    unreadable.stubs(:each_line).raises(Errno::EACCES.new(paths[:branch]))
+
+    assert_equal true, TranscriptPollerService.new(@session, file_system: unreadable).poll_and_broadcast
+    @session.reload
+    assert_equal spliced, @session.transcript, "reverting to the abandoned file must not shrink the record"
+
+    # The branch is readable again, and grows.
+    @mock_file_system.write(paths[:branch], branch + rekey_lines("branch-uuid", 8..8))
+    @mock_file_system.set_mtime(paths[:branch], Time.current)
+
+    assert_equal true, TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+    @session.reload
+    assert_equal stored + rekey_lines("branch-uuid", 6..8), @session.transcript
+    assert_equal 1, @session.transcript.scan("event 6").length, "no duplication across the round trip"
+    assert_equal "branch-uuid", @session.metadata["transcript_branch_session_id"]
+  end
+
+  test "poll_and_broadcast tolerates a stored transcript whose last line was read mid-flush" do
+    # The poller reads while the runtime writes, so session.transcript routinely
+    # ends in a partial line. Comparing it verbatim would find a mismatch the
+    # branch itself resolves.
+    complete = rekey_lines("recorded-uuid", 1..4)
+    partial = rekey_lines("recorded-uuid", 5..5).chomp[0..-20]
+    branch = rekey_lines("recorded-uuid", 1..5) + rekey_lines("branch-uuid", 6..6)
+    write_rekeyed_branch(stored: complete + partial, branch_content: branch)
+
+    assert_equal true, TranscriptPollerService.new(@session, file_system: @mock_file_system).poll_and_broadcast
+
+    @session.reload
+    assert_equal branch, @session.transcript
+    assert_equal 1, @session.transcript.scan("event 5").length, "the half-written line is re-supplied, not doubled"
   end
 
   def rekey_lines(session_id, range)

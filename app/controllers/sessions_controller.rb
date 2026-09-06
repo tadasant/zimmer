@@ -1207,7 +1207,16 @@ class SessionsController < ApplicationController
           # TranscriptRedactor runs, so a manual refresh cannot write an unredacted
           # transcript over the redacted one the poller stored. It also decompresses a
           # Codex .zst rollout, which a raw read would have stored as binary.
-          transcript_content = TranscriptRuntime.source_for(@session).read(main_transcript_file)
+          # RekeyedTranscriptBranch is what makes that read safe now that the
+          # locator can hand back a transcript this conversation was re-keyed
+          # into: such a file is NOT a superset of the stored one, and the
+          # line-count guard below would wave a longer branch through and take the
+          # abandoned file's tail with it (#1047). A no-op on every other file.
+          transcript_content = RekeyedTranscriptBranch.continue(
+            session: @session,
+            transcript_path: main_transcript_file,
+            content: TranscriptRuntime.source_for(@session).read(main_transcript_file)
+          )
 
           # Parse transcript to count messages
           message_count = count_transcript_messages(transcript_content)
@@ -1442,7 +1451,13 @@ class SessionsController < ApplicationController
           # TranscriptRedactor runs, so a manual refresh cannot write an unredacted
           # transcript over the redacted one the poller stored. It also decompresses a
           # Codex .zst rollout, which a raw read would have stored as binary.
-          transcript_content = TranscriptRuntime.source_for(session).read(main_transcript_file)
+          # See #refresh: a re-keyed branch is not a superset of the stored
+          # transcript, and the line-count guard below cannot tell (#1047).
+          transcript_content = RekeyedTranscriptBranch.continue(
+            session: session,
+            transcript_path: main_transcript_file,
+            content: TranscriptRuntime.source_for(session).read(main_transcript_file)
+          )
 
           # Parse transcript to count messages
           message_count = count_transcript_messages(transcript_content)
