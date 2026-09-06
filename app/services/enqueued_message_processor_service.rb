@@ -251,10 +251,21 @@ class EnqueuedMessageProcessorService
   #   `Sessions::RequeueSkippedPrompt` and `AgentSessionJob#queued_message_took_over?`
   #   both make.
   #
-  # Best-effort, and deliberately fails toward the OLD behaviour rather than a new
-  # one: if the queue write raises, the marker is left standing and the rescue
-  # writes down that it was, so the outcome is the pre-existing swallow with a log
-  # line rather than a rolled-back delivery.
+  # The queue write and the release are ONE savepoint, and that is the whole of
+  # what makes this safe. A half-applied pair is worse than either outcome on its
+  # own: a row written and the marker left standing gives the session two live
+  # copies, so the job below delivers the held prompt (the marker outranks
+  # `message_content`) and the queue drains it a second time at the end of the
+  # turn — the claimed message lost AND the held one doubled, which is both of the
+  # failures this PR exists to close, at once. Rolling the pair back leaves the
+  # pre-existing behaviour instead: the marker stands and swallows the claimed
+  # message, with the rescue's log line to say so.
+  #
+  # The rescue cannot see a position collision, and that is fine rather than a
+  # gap: the `(session_id, position)` unique constraint is DEFERRABLE INITIALLY
+  # DEFERRED, so a race with another writer of this queue surfaces at COMMIT of the
+  # outer transaction, which rolls the whole claim back. The message stays
+  # `pending` and is redelivered — late, not lost.
   #
   # @param message_content [String] the message this turn is about to deliver
   # @return [void]
@@ -262,24 +273,26 @@ class EnqueuedMessageProcessorService
     held = session.metadata&.dig("pending_follow_up_prompt").presence
     return if held.blank?
 
-    if held != message_content && !AutomatedPrompts.nudge?(held) &&
-       !session.enqueued_messages.pending.exists?(content: held)
-      position = (session.enqueued_messages.maximum(:position) || 0) + 1
-      session.enqueued_messages.create!(
-        content: held,
-        position: position,
-        status: "pending",
-        origin: EnqueuedMessage.origin_for_prompt(held)
-      )
-      add_log(
-        "This session was also holding an undelivered follow-up prompt, which would have been " \
-        "delivered in place of the message above. It is queued at position #{position} instead, so " \
-        "both are delivered — this one now, that one at the end of this turn.",
-        level: "warning"
-      )
-    end
+    ActiveRecord::Base.transaction(requires_new: true) do
+      if held != message_content && !AutomatedPrompts.nudge?(held) &&
+         !session.enqueued_messages.pending.exists?(content: held)
+        position = (session.enqueued_messages.maximum(:position) || 0) + 1
+        session.enqueued_messages.create!(
+          content: held,
+          position: position,
+          status: "pending",
+          origin: EnqueuedMessage.origin_for_prompt(held)
+        )
+        add_log(
+          "This session was also holding an undelivered follow-up prompt, which would have been " \
+          "delivered in place of the message above. It is queued at position #{position} instead, so " \
+          "both are delivered — this one now, that one at the end of this turn.",
+          level: "warning"
+        )
+      end
 
-    session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
+      session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
+    end
   rescue => e
     Rails.logger.error(
       "[EnqueuedMessageProcessorService] Could not displace the held follow-up prompt for session " \

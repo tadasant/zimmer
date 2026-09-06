@@ -43,6 +43,20 @@ class Sessions::RequeueSkippedPromptTest < ActiveSupport::TestCase
     assert_equal [ "Finish the PR" ], @session.enqueued_messages.pending.map(&:content)
   end
 
+  # The `:already_queued` refusal is a custody transfer too: the queue already holds
+  # this exact text, so a marker left standing beside it is a second live copy and
+  # the next recovery resume delivers the prompt again.
+  test "releases the pending marker when it declines because the prompt is already queued" do
+    @session.enqueued_messages.create!(content: "Finish the PR", position: 1, status: "pending")
+    @session.merge_metadata!("pending_follow_up_prompt" => "Finish the PR")
+
+    assert_equal :already_queued, requeue("Finish the PR")
+
+    assert_nil @session.reload.metadata["pending_follow_up_prompt"]
+    assert_equal 1, @session.enqueued_messages.pending.count,
+      "the existing row is the one copy, and stays the one copy"
+  end
+
   # A marker naming some *other* prompt is a different, still-undelivered turn.
   # Dropping it would be the loss this class exists to prevent, from the inside.
   test "leaves a pending marker for a different prompt alone" do

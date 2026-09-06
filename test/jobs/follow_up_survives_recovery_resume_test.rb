@@ -105,7 +105,7 @@ class FollowUpSurvivesRecoveryResumeTest < ActiveJob::TestCase
 
     assert_equal "An earlier undelivered prompt", @session.metadata["pending_follow_up_prompt"],
       "an earlier undelivered prompt must not be overwritten to save a later one"
-    assert @session.logs.any? { |log| log.content.include?("already holding an earlier undelivered prompt") },
+    assert @session.logs.any? { |log| log.content.include?("already holding a different undelivered prompt") },
       "the refusal has to name itself where 'why did nothing happen' is asked"
     assert @session.logs.any? { |log| log.content.include?(PROMPT) },
       "the refused prompt has to be recoverable from the log line"
@@ -142,6 +142,66 @@ class FollowUpSurvivesRecoveryResumeTest < ActiveJob::TestCase
     interrupt!(AgentSessionJob.new(@session.id, PROMPT))
 
     assert_equal PROMPT, @session.metadata["pending_follow_up_prompt"]
+  end
+
+  # The refusal matches on PREFIX, not containment, and this is why. The goal block
+  # `build_prompt_with_goal` appends is fixed boilerplate containing the words
+  # "continue" and "progress", so a short follow-up is a substring of almost any
+  # goal-carrying `active_follow_up_prompt` left standing by an earlier turn.
+  # Containment would read that as "the agent already has it" and drop the message.
+  test "a short prompt is not refused by a stale active prompt that merely contains it" do
+    @session.update!(
+      status: :running,
+      metadata: @session.metadata.merge(
+        "active_follow_up_prompt" =>
+          "Something from an earlier turn\n\nThe user has indicated the goal for this task is: " \
+          "Open a PR.\n\nHand back control to the user AS SOON as the goal is satisfied. Do not " \
+          "continue past it, do not stop iterating on your progress until you have achieved it."
+      )
+    )
+
+    interrupt!(AgentSessionJob.new(@session.id, "continue"))
+
+    assert_equal "continue", @session.metadata["pending_follow_up_prompt"],
+      "a prompt that is merely a substring of a stale expanded prompt has not been delivered"
+  end
+
+  # The common case now that both producers stamp before they enqueue: the marker
+  # already holds this job's own text. Nothing to do, and nothing worth a warning on
+  # every deploy that lands on an in-flight follow-up.
+  test "a marker already holding this job's own prompt is left alone and says nothing" do
+    @session.update!(
+      status: :running,
+      metadata: @session.metadata.merge("pending_follow_up_prompt" => PROMPT)
+    )
+
+    interrupt!(AgentSessionJob.new(@session.id, PROMPT))
+
+    assert_equal PROMPT, @session.metadata["pending_follow_up_prompt"]
+    assert_not @session.logs.any? { |log| log.content.include?("already holding a different") },
+      "the marker doing its job is not a warning"
+    assert_includes enqueued_prompts, PROMPT
+  end
+
+  # AbandonedStatusSummaryForkSweepJob excludes any session carrying a
+  # `pending_follow_up_prompt`, so stamping one onto a fork that will refuse the turn
+  # anyway takes it out of the only sweep that would reclaim its clone.
+  test "a status-summary fork's non-summary prompt is not stamped onto it" do
+    source = Session.create!(
+      prompt: "Do the work", status: :running,
+      git_root: "https://github.com/test/repo.git", branch: "main",
+      execution_provider: "local_filesystem"
+    )
+    @session.update!(
+      status: :running,
+      metadata: @session.metadata.merge(SessionStatusSummaryGenerator::FORK_MARKER => source.id)
+    )
+    assert @session.status_summary_fork?, "fixture must actually be a fork"
+
+    interrupt!(AgentSessionJob.new(@session.id, PROMPT))
+
+    assert_nil @session.metadata["pending_follow_up_prompt"]
+    assert @session.logs.any? { |log| log.content.include?("status-summary fork") }
   end
 
   test "an interrupted job carrying only a nudge stamps nothing" do
@@ -243,11 +303,78 @@ class FollowUpSurvivesRecoveryResumeTest < ActiveJob::TestCase
       "one prompt must not become two turns"
   end
 
+  # A held nudge is released rather than queued: the real message about to be
+  # delivered is already the answer to "are you alive, carry on".
+  test "a held nudge is dropped rather than queued behind the claimed message" do
+    recovery_pause!(AutomatedPrompts::SYSTEM_RECOVERY)
+    @session.enqueued_messages.create!(content: "Do the thing", position: 1, status: "pending")
+
+    CleanupOrphanedSessionsJob.perform_now
+    @session.reload
+
+    assert_equal [ "Do the thing" ], enqueued_prompts
+    assert_nil @session.metadata["pending_follow_up_prompt"]
+    assert_equal [], @session.enqueued_messages.pending.to_a
+  end
+
+  # The displaced prompt goes to the TAIL, behind everything already queued — the
+  # positions are renumbered before it is written, so `max + 1` has to be computed
+  # rather than assumed.
+  test "the displaced prompt is queued behind everything already waiting" do
+    recovery_pause!(PROMPT)
+    @session.enqueued_messages.create!(content: "First", position: 1, status: "pending")
+    @session.enqueued_messages.create!(content: "Second", position: 2, status: "pending")
+    @session.enqueued_messages.create!(content: "Third", position: 3, status: "pending")
+
+    CleanupOrphanedSessionsJob.perform_now
+    @session.reload
+
+    assert_equal [ "First" ], enqueued_prompts, "the head of the queue takes this turn"
+    assert_equal [ "Second", "Third", PROMPT ],
+      @session.enqueued_messages.pending.ordered.map(&:content),
+      "the held prompt goes last, behind the messages that were already waiting"
+    assert_equal [ 1, 2, 3 ], @session.enqueued_messages.pending.ordered.map(&:position)
+  end
+
   # The marker survives the sweep's own metadata clearing. If it did not, the
   # branch above would hand the prompt to a job and then delete the only copy.
+  # The claim block clears STALE_RETRY_METADATA_KEYS. If that ever grew to include
+  # this marker, the branch above would hand the prompt to a job and delete the only
+  # copy in the same transaction. Asserted on the row after a real sweep, not on the
+  # constant, so any other route to clearing it fails here too.
   test "the recovery sweep does not clear the stamped prompt when it claims the turn" do
+    recovery_pause!(PROMPT)
+
+    CleanupOrphanedSessionsJob.perform_now
+
+    assert_equal PROMPT, @session.reload.metadata["pending_follow_up_prompt"],
+      "the marker must survive the claim — the job that consumes it has not run yet"
     assert_not_includes Session::STALE_RETRY_METADATA_KEYS, "pending_follow_up_prompt",
       "an undelivered prompt is not retry state and must not be cleared on resume"
+  end
+
+  # The fourth automated resume, and the only one that reaches SYSTEM_RECOVERY
+  # without a recovery pause in front of it.
+  test "the hung-process auto-restart delivers a stamped follow-up instead of the nudge" do
+    @session.update!(
+      status: :running,
+      metadata: @session.metadata.merge(
+        "process_pid" => 4242, "pending_follow_up_prompt" => PROMPT
+      )
+    )
+
+    process_manager = MockProcessManager.new
+    process_manager.set_process_state(4242, :dead)
+
+    SessionRecoveryService.new(
+      @session, process_manager: process_manager, force_terminate_hung_process: true
+    ).recover
+
+    assert_equal [ PROMPT ], enqueued_prompts,
+      "the restart must carry the follow-up the session was holding"
+    assert @session.reload.logs.any? { |log|
+      log.content.include?("delivering the follow-up prompt it was still holding")
+    }
   end
 
   private

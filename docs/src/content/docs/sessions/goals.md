@@ -167,9 +167,12 @@ clears the stale per-turn metadata, transitions the session to running, stamps t
 recovery paths look for it, enqueues `AgentSessionJob`, and records `running_job_id` so the session
 is never "running with no job."
 
-Two direct-delivery paths deliberately stay outside it: the REST API's `follow_up` (which never
-stamped a pending prompt, and would change behaviour if it started) and `EnqueuedMessageProcessorService`
-(which delivers a message it has already claimed from a queue, under different locking).
+Three direct-delivery paths deliberately stay outside it: the REST API's `follow_up` and the MCP
+tool's `direct_follow_up`, which each own a transaction of their own around a goal update and an
+uncle edge, and `EnqueuedMessageProcessorService`, which delivers a message it has already claimed
+from a queue, under different locking. The first two still stamp `pending_follow_up_prompt` inline —
+see [a follow-up the session is still holding](/sessions/lifecycle/#and-a-follow-up-the-session-is-still-holding-outranks-it-too)
+for why an accepted prompt that lives only as a job argument is one a deploy can silently discard.
 
 The heartbeat is the one caller that passes `stamp_pending_prompt: false`. A user's message is worth
 replaying after a SIGTERM retry; a drumbeat is not — replaying one would deliver a beat for a moment

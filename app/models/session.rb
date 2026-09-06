@@ -1621,11 +1621,17 @@ class Session < ApplicationRecord
   # the delivery path had to be made five times. The heartbeat sweep said so in a comment.
   # Those five now share this one copy.
   #
-  # Two direct-delivery paths deliberately do NOT route here, and it is worth knowing
-  # which: `Api::V1::SessionsController#follow_up` (which never stamped
-  # `pending_follow_up_prompt` and would change behaviour if it started) and
-  # `EnqueuedMessageProcessorService` (which delivers a message it has already claimed
-  # from a queue, under different locking). #105 is not fully closed by this method.
+  # Three direct-delivery paths deliberately do NOT route here, and it is worth knowing
+  # which: `Api::V1::SessionsController#follow_up` and
+  # `Mcp::Tools::ActionSession#direct_follow_up`, which each own a transaction of their
+  # own around a goal update and an uncle edge, and `EnqueuedMessageProcessorService`,
+  # which delivers a message it has already claimed from a queue, under different
+  # locking. #105 is not fully closed by this method.
+  #
+  # The first two DO stamp `pending_follow_up_prompt`, inline and after their own
+  # resume, and it is not optional for them: until #1023 they left an accepted prompt
+  # living only as the argument of the job they enqueued, which a worker shutdown
+  # discards.
   #
   # Callers keep what is genuinely theirs (validation, logging, broadcasting) and pass
   # only what differs. The prompt is stamped AFTER the state transition, so a reader who

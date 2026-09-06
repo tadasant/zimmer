@@ -12,8 +12,14 @@ module Sessions
   # `AgentSessionJob` carrying its content. From that moment the prompt exists only
   # as that job's argument — the row is gone, and this path deliberately does not
   # route through `Session#deliver_follow_up!`, so `pending_follow_up_prompt` is
-  # never stamped either. Every other delivery route has the same property once the
-  # job is enqueued: the prompt is a job argument and nothing else.
+  # never stamped either.
+  #
+  # The routes that accept a follow-up into an IDLE session do stamp it (#1023), so
+  # for them the row keeps a copy — which is why #release_pending_marker exists
+  # below: queueing the prompt takes custody of it, and the session has to stop
+  # holding it in the same breath or the one prompt becomes two turns. The property
+  # above still holds for every path that reaches this guard with nothing on the
+  # row: the queued-message drain, a fired trigger, a poller's notice.
   #
   # If that job then reaches the guard and finds a genuinely live job holding the
   # session, the guard did exactly what it was designed to do — and the prompt was
@@ -170,6 +176,15 @@ module Sessions
     end
 
     def refuse(reason)
+      # `:already_queued` is a custody transfer too, and the only refusal that is
+      # one. The queue already holds this exact text, so the session must stop
+      # holding it as well — the argument #release_pending_marker makes about the
+      # row it writes applies identically to a row somebody else wrote, and a
+      # marker left standing beside a queued copy is delivered a second time by
+      # the next recovery resume. The other three refusals leave the marker alone:
+      # for them nothing took custody of anything.
+      release_pending_marker if reason == :already_queued
+
       message, level = refusal_log(reason)
       add_log(message, level: level)
       Rails.logger.info(

@@ -5456,6 +5456,24 @@ A held wake is also visible at `/triggers` as an ordinary enabled wake for the l
 There is no "held" badge — the row is gone again once the turn comes to rest, and adding a UI state
 for a window measured in minutes was not worth the surface.
 
+## A recovered follow-up keeps its text and loses its attachments
+
+`metadata["pending_follow_up_prompt"]` is [the slot a resume path reads](/sessions/lifecycle/#and-a-follow-up-the-session-is-still-holding-outranks-it-too)
+to deliver an accepted follow-up instead of the recovery nudge, and it holds one string. A follow-up
+sent with images or files carries them as arguments of the `AgentSessionJob` it enqueues, not in that
+slot — so when the slot is what survives, the text comes back and the attachments do not.
+
+Two paths reach it: `AgentSessionJob#preserve_interrupted_prompt`, handing an interrupted job's
+prompt back to the row, and the four automated resumes that read `Session#recovery_turn_prompt` and
+call `enqueue_with_prompt` with the prompt alone. The agent is then asked about a screenshot it
+cannot see, with nothing in the turn to say one was ever attached.
+
+`Sessions::RequeueSkippedPrompt` does not have this shape — an `EnqueuedMessage` has `images` and
+`files` columns, so a prompt parked in the durable queue keeps its attachments. Widening the marker
+to a structured value, or routing the hand-back through the queue instead, would close it; neither
+was worth doing inside the fix that made the text survive at all, where the alternative was losing
+the whole message.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
