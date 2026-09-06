@@ -589,6 +589,35 @@ in the meantime.
 So rebuilds are cheap, but not free: the fifth one in a week is the last that gets a cert. If you
 expect several in a day — chasing a cloud-init change, say — count them.
 
+`recreate_droplet` is no longer the only thing that spends one. Since
+[#403](https://github.com/tadasant/zimmer/issues/403) the nightly teardown destroys staging on the
+days nobody deploys to it, so **every teardown/deploy cycle is an issuance too** — see below.
+
+### Staging's nightly teardown buys the idle bill back with a cold start
+
+`teardown-staging.yml` runs nightly and destroys the staging droplet on the days nobody deployed to it
+([#403](https://github.com/tadasant/zimmer/issues/403)). That is a **deliberate trade**, not a free
+saving, and it is worth knowing which way it cuts before you plan a day in staging:
+
+- The first `Deploy staging` after a teardown is a full `terraform apply` + cloud-init bootstrap +
+  fresh cert, not a fast Kamal swap onto a warm box. **Nobody has measured how long that costs on the
+  Kamal-era bootstrap** — every `terraform apply` in the recorded run history is a 5–6 second reconcile
+  of a droplet that already existed, so there is no cold Kamal-era run to time. The closest evidence is
+  the pre-Kamal, recreate-every-run flow, where creating the droplet took ~34s and the first health
+  check waited a further ~5m for it to boot; today's cloud-init also installs sysbox, so the real
+  number is likely higher. If it turns out to be painful, `RECENT_DEPLOY_HOURS` and the cron are two
+  lines at the top of the workflow.
+- Every teardown/deploy cycle spends one of Let's Encrypt's five certificates per 168 hours (above).
+  Seven cycles in a week would leave two of them without HTTPS on the custom name.
+- While staging is down, the `staging.zimmer.tadasant.com` A record still points at the destroyed
+  box's tailnet IP. Nothing resolves there, and the next deploy upserts it. This was already true of
+  a manual teardown; the nightly one just makes it common.
+
+The guard is deliberately biased against destroying: an unreadable Terraform backend fails the run
+rather than being read as "no droplet", and a GitHub API that will not say when staging was last
+deployed to is read as "in use". The failure mode that remains is therefore the cheap one — a droplet
+kept for a day nobody wanted, about $0.80.
+
 ### Double-suffixed Redis URL (fixed, but the sharp edge remains in production)
 
 `REDIS_URL` names the Redis **server**, not a database — each environment config picks the index it
