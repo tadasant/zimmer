@@ -2129,22 +2129,31 @@ class Session < ApplicationRecord
   # Both signals must be absent, the same caution `never_ran?` takes and for the
   # same reason — the dangerous mistake is the inverse one:
   #
-  # * `runtime_started` is stamped by `Session#record_agent_process!` at the
-  #   instant a spawned pid is recorded, which is the single place in the job
-  #   where a turn crosses from setup into a live runtime. It survives archive,
-  #   unarchive and restart, so it answers "ever", not "this turn".
+  # * `runtime_started` is stamped by `#record_agent_process!` at the instant a
+  #   spawned pid is recorded, which is the single place in `AgentSessionJob`
+  #   where a turn crosses from setup into a live runtime.
   # * `transcript` is the runtime's own output. A session holding one has had an
   #   agent speak into it whatever the metadata says, which is the case
   #   `ProcessLifecycleManager#release_stale_runtime_session_id!` can produce.
   #
-  # `session_id` is deliberately NOT one of them, and that is what makes this
-  # different from `never_ran?`: `AgentSessionJob` stamps the runtime session id
-  # right after the clone and BEFORE `air prepare`, so every failure this
-  # predicate exists to catch already has one.
+  # ABSENT, not merely falsey, and the difference is the whole point.
+  # `ProcessLifecycleManager#fresh_start!`, `Sessions::RestartUnstartedTurn`,
+  # `SessionStatusSummaryGenerator` and `ForkSessionService` all write
+  # `runtime_started => false` — deliberately, to make the next spawn use
+  # `--session-id` rather than `--resume`. Every one of those is a session that
+  # HAS been through a spawn; `false.blank?` is true in Rails, so reading this
+  # with `blank?` would call each of them a session that had never started and
+  # hand it a re-clone. `nil` is the only value that means "no spawn has ever
+  # been recorded here".
+  #
+  # `session_id` is deliberately NOT one of the signals, and that is what makes
+  # this different from `never_ran?`: `AgentSessionJob` stamps the runtime
+  # session id right after the clone and BEFORE `air prepare`, so every failure
+  # this predicate exists to catch already has one.
   #
   # @return [Boolean]
   def before_first_agent_turn?
-    metadata&.dig("runtime_started").blank? && transcript.blank?
+    metadata&.dig("runtime_started").nil? && transcript.blank?
   end
 
   # Can this session only be restarted by re-running the whole setup pipeline —

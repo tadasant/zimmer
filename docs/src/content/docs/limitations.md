@@ -5427,9 +5427,9 @@ the thing that re-delivers, which reopens the double-run hazard of
 ## A session retrying its bootstrap looks exactly like a session that has not started yet
 
 `AgentSessionJob#retry_bootstrap_failure` leaves a session that died before its first agent turn in
-`waiting`, and `waiting` is also what every brand-new session is. The retry is recorded — a
-`warning` on the session's own timeline and `bootstrap_retry_count` in metadata — but nothing rolls
-it up: `HealthMonitorService#failure_reason_distribution` and `#recent_failures` both query
+`waiting`, and `waiting` is also what every brand-new session is. The retry is recorded on the
+session itself — the catch-all's `error` line and backtrace, a `warning` explaining the re-queue,
+and `bootstrap_retry_count` in metadata — but nothing rolls it up: `HealthMonitorService#failure_reason_distribution` and `#recent_failures` both query
 `status: :failed`, and there is no scope for "waiting, on its third bootstrap attempt".
 
 So a fleet-wide bootstrap fault — the 2026-09-02 `EXDEV` outage is the worked case — is now
@@ -5442,17 +5442,23 @@ would have.
 The trade was made deliberately in that direction: the old behaviour's alert was loud and its
 recovery was a human restarting sessions by hand seven hours later.
 
-## Each bootstrap retry abandons the clone the failed attempt made
+## A bootstrap retry deletes its own clone, so a delete that fails leaks one
 
-The same retry clears `Session::SETUP_ARTIFACT_KEYS` so the next attempt re-runs `air prepare`
-rather than adopting a clone that was never prepared (`#perform`'s reuse arm does not call it). The
-directory itself is left on disk and reclaimed by `OrphanCloneFilesystemCleanupJob` on its own
-schedule, which is the same bargain `Sessions::RestartFromScratch` makes — deleting a tree from
-inside a rescue block is the more dangerous of the two options.
+`AgentSessionJob#retry_bootstrap_failure` clears `Session::SETUP_ARTIFACT_KEYS` so the next attempt
+re-runs `air prepare` rather than adopting a clone that was never prepared (`#perform`'s reuse arm
+does not call it), and then deletes the tree through `AtomicCloneRemoval`. Deleting rather than
+leaving it for a reaper is deliberate: every clone reaper's youngest age bar is
+`OrphanCloneFilesystemCleanupJob::PRESSURE_AGE_THRESHOLD` at two hours, and the whole retry ladder
+fits inside that, so an abandoned clone would be unreclaimable for the entire window in which more
+of them are being made.
 
-The bound is the retry budget: at most five abandoned clones per session, and
-`CloneDiskGuard` prunes orphans ahead of a clone that would not otherwise fit. A sustained
-fleet-wide bootstrap fault does mean five times the usual clone churn on the volume while it lasts.
+The cost is that the delete happens inside a rescue block, on a path whose whole premise is that
+something is already wrong with the host. It is wrapped and best-effort — a delete that raises is
+logged at `warn` and the retry proceeds, because the metadata pointer is already gone and that is
+the part the next attempt depends on. So a filesystem sick enough to fail both `rename` and `rm_rf`
+leaks one directory per attempt, at most five per session, with no pointer left for
+`DeferredCloneCleanupJob` or `StaleCloneCleanupJob` to find it by. `OrphanCloneFilesystemCleanupJob`
+is what reclaims those, at its 48-hour scheduled bar or its two-hour pressure bar.
 
 ## A parked boot failure is invisible to the health rollups
 
