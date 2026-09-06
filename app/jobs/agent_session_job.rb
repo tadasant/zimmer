@@ -149,6 +149,50 @@ class AgentSessionJob < ApplicationJob
   MAX_CLONE_JOB_RETRIES = 5
   CLONE_JOB_RETRY_DELAYS_SECONDS = [ 30, 60, 120, 300, 600 ].freeze
 
+  # Budget for a failure raised BEFORE the first agent turn — session bootstrap.
+  #
+  # THE OUTAGE THIS EXISTS FOR (#785). On 2026-09-02 an OverlayFS `EXDEV`
+  # (`Invalid cross-device link @ rb_file_s_rename`) came out of the AIR CLI's
+  # install swap, on the host, for 45 minutes. `AirPrepareService` raised
+  # `AirPrepareError`; that class is in neither call-site rescue, so it reached
+  # #perform's catch-all, which stamped `failure_reason: "exception"` and called
+  # `fail!`. 14+ sessions went terminal in that window, every one of them killed
+  # before it had done any work — three were the only live shepherd for an open
+  # PR, and one was the session spawned to fix the underlying bug. Nothing
+  # retries `failed`, `Sessions::StartNow` refuses it, and they sat there ~7
+  # hours until a human-run sweep restarted them.
+  #
+  # `AirPrepareService`'s own [5, 10, 20] ladder did not cover it and could not:
+  # that ladder wraps the `air prepare` SUBPROCESS, and this was a Ruby-side
+  # raise in the install that runs before it. Widening it would have bought
+  # exactly this one signature, and the next fault will be a different one.
+  #
+  # SO THE GATE IS WHEN, NOT WHAT. `Session#before_first_agent_turn?` is the
+  # whole classification: a turn that raised before an agent ever spoke has
+  # nothing to lose by running again, whatever raised. There is no allowlist of
+  # exception classes here on purpose — an allowlist only ever knows about the
+  # outages that already happened.
+  #
+  # The ladder spans ~52 minutes, chosen to outlast the 45-minute window that
+  # produced the outage, and the jitter is what keeps a fleet-wide fault from
+  # re-landing in lockstep the way it arrived. The budget is bounded because the
+  # opposite error is just as silent: a genuinely broken configuration that
+  # retried forever would never reach anybody either.
+  MAX_BOOTSTRAP_RETRIES = 5
+  BOOTSTRAP_RETRY_DELAYS_SECONDS = [ 30, 120, 300, 900, 1800 ].freeze
+  BOOTSTRAP_RETRY_JITTER_SECONDS = 30
+  BOOTSTRAP_RETRY_COUNT = "bootstrap_retry_count"
+  BOOTSTRAP_RETRY_AT = "last_bootstrap_retry_at"
+
+  # Stamped instead of the catch-all's generic `"exception"` once the budget
+  # above is spent, so the one failure that outlived five automatic attempts is
+  # not indistinguishable from the first. It is a member of
+  # `Session::PRE_PROMPT_FAILURE_REASONS` — by construction it can only be set on
+  # a session `before_first_agent_turn?`, so a restart must re-send the initial
+  # prompt against a fresh `--session-id` rather than `--resume` a conversation
+  # that was never written.
+  BOOTSTRAP_EXHAUSTED_FAILURE_REASON = "bootstrap_retries_exhausted"
+
   # Budget for replaying a start job that was interrupted while its session was
   # still queued. See #requeue_interrupted_start: the session never left `waiting`,
   # so the fix is to run the job again rather than to "recover" one that never started.
@@ -2477,6 +2521,28 @@ class AgentSessionJob < ApplicationJob
         # `retry_on` is this class's declaration: a turn whose exception is about to
         # be retried has not ended, and parking it would announce an ending in the
         # action queue while another attempt at the same prompt was still queued.
+        # A turn that raised before the agent has EVER spoken destroyed nothing,
+        # so it is retryable by construction — whatever raised (#785). Asked
+        # first, and answered from the row rather than from the exception class;
+        # see MAX_BOOTSTRAP_RETRIES for the outage this closes and
+        # #retry_bootstrap_failure for the six conditions. Disjoint from the
+        # park below, which owns the turn that carried a prompt.
+        bootstrap = retry_bootstrap_failure(
+          session,
+          error: e,
+          spawned: (lifecycle_manager.current_pid || process_pid).present?,
+          retry_pending: another_attempt_queued?(e),
+          prompt: follow_up_prompt,
+          log_buffer: log_buffer
+        )
+
+        # Not re-raised, deliberately. The `raise e` below is the reporting path
+        # — Sentry's ActiveJob integration and the ERROR line the
+        # `zimmer_backend_log_errors` Grafana rule reads — and a fault that is
+        # about to be retried automatically has not ended. The exhausted case
+        # below takes both.
+        return if bootstrap == :retried
+
         parked = Sessions::ParkUndeliveredTurn.call(
           session,
           error: e,
@@ -2495,7 +2561,9 @@ class AgentSessionJob < ApplicationJob
           # (e.g. stale MCP server catalog), update! would re-trigger the same
           # validation and prevent the session from reaching a terminal state.
           session.merge_metadata!(
-            "failure_reason" => "exception",
+            "failure_reason" => (
+              bootstrap == :exhausted ? BOOTSTRAP_EXHAUSTED_FAILURE_REASON : "exception"
+            ),
             "exception_class" => e.class.name,
             "exception_message" => e.message.to_s.truncate(EXCEPTION_MESSAGE_MAX_CHARS)
           )
@@ -2717,6 +2785,143 @@ class AgentSessionJob < ApplicationJob
     # (future-scheduled) job and leaves the session alone until the retry runs.
     session.update!(running_job_id: retry_job.job_id)
     true
+  end
+
+  # A failure raised before the first agent turn: run the whole thing again.
+  #
+  # See MAX_BOOTSTRAP_RETRIES for the outage and for why the gate is *when* the
+  # failure happened rather than what it was. This is the disposition half.
+  #
+  # THE SIX CONDITIONS, and what each one is keeping out:
+  #
+  # 1. **Nothing was spawned.** Answered from `ProcessLifecycleManager#current_pid`
+  #    and this job's own local pid, exactly as `Sessions::ParkUndeliveredTurn`
+  #    asks it: "did THIS job start an agent", not "is there an agent somewhere".
+  # 2. **No further attempt is queued.** `retry_on` covers three transient classes
+  #    and #perform re-raises, so a turn dying on one of them already has another
+  #    attempt at it. A second ladder underneath that one would double-run the
+  #    setup.
+  # 3. **The turn carried no prompt.** An undelivered prompt is
+  #    `Sessions::ParkUndeliveredTurn`'s case (#439) and it must stay there: this
+  #    retry clears the runtime session id, which routes the replacement down
+  #    #perform's fresh-start reclassification — and that arm drops the follow-up
+  #    text when the session already has a prompt of its own. Retrying a turn
+  #    carrying a human's message would swallow the message. The two paths are
+  #    disjoint by this line, which is why order between them does not matter.
+  # 4. **The session is `waiting`.** Since #1040 that is what a turn still in
+  #    setup reads as — queued for a worker, `start!` not yet fired. A session
+  #    that has moved on is not this job's to re-enqueue.
+  # 5. **Before the first agent turn.** The classification itself. See
+  #    `Session#before_first_agent_turn?`.
+  # 6. **Budget left.** Bounded, or a broken configuration retries forever
+  #    fleet-wide — the failure mode that is exactly as silent as the one this
+  #    method removes.
+  #
+  # WHY THE PARTIAL SETUP IS DISCARDED, on both the retry and the give-up path.
+  # #perform reuses an existing clone when it finds one ("RESUME: Reuse existing
+  # clone on retry") and that arm does not run `air prepare` at all — it assumes
+  # the clone it is adopting was prepared by the attempt that made it. For a
+  # bootstrap failure that assumption is false by construction, so a retry that
+  # kept the clone would skip the very step that failed and spawn against a
+  # `.mcp.json` that was never written. Clearing `Session::SETUP_ARTIFACT_KEYS`
+  # and the runtime session id is what makes the next attempt a genuine fresh
+  # start; it is the same clearing `Sessions::RestartFromScratch` does, and like
+  # that path it leaves the abandoned directory to
+  # `OrphanCloneFilesystemCleanupJob` rather than deleting a tree from inside a
+  # rescue block. Doing it on the give-up path too is what leaves the terminal
+  # session `needs_restart_from_scratch?`, so the Restart button on the page a
+  # human lands on re-runs the pipeline instead of resuming a conversation that
+  # does not exist.
+  #
+  # What is deliberately NOT cleared: everything that is the session's
+  # configuration — its prompt, agent root, MCP servers, catalog selections,
+  # goal, attachments. The replacement job carries this job's own arguments, so
+  # the retry is the same turn, not an approximation of it.
+  #
+  # @return [Symbol] `:retried` when a replacement is queued and #perform must
+  #   return without failing the session; `:exhausted` when the budget is spent
+  #   and the caller should fail it loudly under
+  #   BOOTSTRAP_EXHAUSTED_FAILURE_REASON; `:not_applicable` otherwise.
+  def retry_bootstrap_failure(session, error:, spawned:, retry_pending:, prompt:, log_buffer:)
+    return :not_applicable if spawned
+    return :not_applicable if retry_pending
+    return :not_applicable if prompt.present?
+
+    # Re-read before deciding from the row: the setup this rescue sits at the end
+    # of runs for minutes, and the session object this job has carried since
+    # before the clone is not evidence of what the row says now.
+    session.reload
+    return :not_applicable unless session.waiting?
+    return :not_applicable unless session.before_first_agent_turn?
+
+    attempts = session.metadata&.dig(BOOTSTRAP_RETRY_COUNT).to_i
+    discard_partial_setup(session)
+
+    if attempts >= MAX_BOOTSTRAP_RETRIES
+      log_buffer.add(
+        "Session bootstrap failed #{attempts + 1} times before the agent ever started "         "(#{error.class.name}: #{error.message}) — the automatic retry budget is spent, so this is failing "         "loudly instead. Restarting the session re-runs the whole setup pipeline.",
+        level: "error"
+      )
+      log_buffer.flush
+      Rails.logger.error(
+        "[AgentSessionJob] Session #{session.id} exhausted its bootstrap retry budget after "         "#{attempts} automatic attempts: #{error.class}: #{error.message}"
+      )
+      return :exhausted
+    end
+
+    next_attempt = attempts + 1
+    delay = BOOTSTRAP_RETRY_DELAYS_SECONDS[[ next_attempt - 1, BOOTSTRAP_RETRY_DELAYS_SECONDS.length - 1 ].min]
+    delay += rand(BOOTSTRAP_RETRY_JITTER_SECONDS)
+
+    # `warning`, not `error`. The re-raise at the end of the catch-all is the
+    # reporting path (config/initializers/sentry.rb says so in as many words) and
+    # this path deliberately does not take it, so a page per attempt would be a
+    # page for a fault that is about to fix itself. The give-up path above is
+    # where the volume goes.
+    log_buffer.add(
+      "This turn stopped before the agent started, so nothing has been done and nothing is lost "       "(#{error.class.name}: #{error.message}). The session stays queued and the whole setup is being "       "re-attempted in #{delay}s (attempt #{next_attempt}/#{MAX_BOOTSTRAP_RETRIES}).",
+      level: "warning"
+    )
+    log_buffer.flush
+
+    session.merge_metadata!(
+      BOOTSTRAP_RETRY_COUNT => next_attempt,
+      BOOTSTRAP_RETRY_AT => Time.current.iso8601
+    )
+
+    retry_job = self.class.set(wait: delay).perform_later(*arguments)
+
+    # Point the session at the scheduled retry so orphan detection and
+    # `Sessions::StalledSessionStart` see a live (future-scheduled) job and leave
+    # the row alone until it runs. Only if this job still holds the claim — a
+    # spot-held session carries no `running_job_id` at all, and writing one there
+    # would leave a pointer at a job that has finished.
+    session.update_columns(running_job_id: retry_job.job_id) if session.running_job_id == job_id
+
+    Rails.logger.warn(
+      "[AgentSessionJob] Session #{session.id} raised #{error.class} before its first agent turn; "       "re-queued the whole start (attempt #{next_attempt}/#{MAX_BOOTSTRAP_RETRIES}, in #{delay}s)"
+    )
+    :retried
+  rescue => e
+    # A retry that cannot be arranged must not become the thing that breaks the
+    # failure path. Answer :not_applicable and the caller fails the session
+    # exactly as it used to.
+    Rails.logger.error(
+      "[AgentSessionJob] Could not schedule a bootstrap retry for session #{session&.id}: #{e.class}: #{e.message}"
+    )
+    :not_applicable
+  end
+
+  # Drop what the failed attempt built, keeping what the session IS.
+  #
+  # `update_columns` rather than `update!` for the runtime session id, for the
+  # same reason the catch-all's loud path uses it: the exception being handled
+  # may itself be a validation failure, and re-running validations here would
+  # raise it a second time out of the recovery.
+  def discard_partial_setup(session)
+    session.remove_metadata!(Session::SETUP_ARTIFACT_KEYS)
+    session.update_columns(session_id: nil) if session.session_id.present?
+    session.reload
   end
 
   # Handle GoodJob::InterruptError raised by the InterruptErrors extension.
