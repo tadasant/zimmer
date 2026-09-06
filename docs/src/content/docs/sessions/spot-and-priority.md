@@ -973,7 +973,8 @@ after picking a time means "not then, this instead".
 
 The sweep runs every five minutes, but what bounds how fast the ceiling reacts is the **reading**, not
 the sweep: utilization comes from quota snapshots, which land when `ClaudeUsageSamplerJob` samples
-(every 15 minutes), when an account rotates, and when someone opens `/inference`.
+(the serving account every 15 minutes, a spare within 75), when an account rotates, and when someone
+opens `/inference`.
 
 ## Precedence: ranking the spot queue
 
