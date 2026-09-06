@@ -3930,6 +3930,20 @@ Heuristics have two failure directions and neither announces itself:
   `mcp` proxy tool rather than by name, so there is no `mcp__<server>__create_pull_request` in a Pi
   transcript to key on.
 
+**A create the hook reads perfectly well is still lost when it lands in a transcript file Zimmer is
+not reading.** Session [7619](https://zimmer.tadasant.com/sessions/7619) is the worked case, and it
+is the half of [#620](https://github.com/tadasant/zimmer/issues/620) that is *not* fixed. It opened
+[PR #616](https://github.com/tadasant/zimmer/pull/616) with an ordinary
+`gh pr create --repo tadasant/zimmer …` whose result was a clean success carrying the URL — evidence
+the Created tier would have taken instantly. But the Claude Code process that ran it was writing
+`d608fcfe-….jsonl` in a *different* clone directory: a second conversation, seeded with a
+byte-identical copy of the first 421 events of the session's own transcript and then re-keyed to a
+new runtime session id. Zimmer keeps polling the `session_id` it recorded at spawn
+(`ClaudeTranscriptSource#locate` prefers `<session_id>.jsonl`), which by then named the branch that
+never ran the create. Nothing in the recording path can see that — the matcher was never handed the
+file — so this is a transcript-identity failure rather than a matcher one, and every conclusion drawn
+from a transcript is exposed to it, not only PR ownership.
+
 The warning log a PR-flavored goal gets when a session comes to rest (`pause`, `fail` or `archive`)
 covers the second case only, and only when the goal happens to mention pull requests. There is no
 check at all for the first. That warning is also written once per session and never retracted, so a

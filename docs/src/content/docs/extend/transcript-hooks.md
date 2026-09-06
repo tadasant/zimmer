@@ -90,6 +90,37 @@ a retry loop, `out=$(...)`, Codex's `bash -lc` wrapper). Reading them together w
 borrow the POST beside it and adopt every PR it printed. `TranscriptHooks::ShellSegments` does the
 split, and `GithubCommentAuthorshipHook` classifies its own `gh api` writes through the same seam.
 
+**Whether a create *failed* is read per segment too.** A tool result carries one error flag for the
+whole script — Claude Code's `is_error`, Codex's `exec_command_end` exit code — and in a shell that
+flag is the status of whatever ran **last**. `gh pr create ... | tail -1` reports tail's status and
+`gh pr create ...; B` reports B's; only `&&` and `||` propagate a failure, and only a create with
+nothing after it sets the status itself. So the separator that follows a create decides whether the
+flag is about the create at all, and `ShellSegments#shell_segments_with_separators` is what says
+which one it was.
+
+Reading the flag across a segment boundary is the same mistake as reading a create across one, in the
+other direction, and it is [#620](https://github.com/tadasant/zimmer/issues/620): session 11907 ran
+
+```
+gh pr create --repo tadasant/zimmer … --body-file … 2>&1 | tail -1; gh pr view --repo tadasant/zimmer --json …
+```
+
+The create succeeded and printed `https://github.com/tadasant/zimmer/pull/804`. The `gh pr view`
+after it was missing its positional argument and exited 1, so the whole call was flagged, so the
+create read as failed, so the PR was recorded nowhere — no merge notification, no comment or
+merge-conflict polling, and the merge gate's conflict hand-back path with no session to hand back to.
+
+A create whose success is only **inferred** this way vouches for exactly **one** URL — the first its
+own repo bound allows, which is the one `gh pr create` prints. Anything after it was printed by
+whatever else ran on that line, and on a line that ended in a failure there is no telling what that
+was: a `gh pr list` fallback would otherwise hand over every PR it printed, which is #214 through a
+new door. It is the same cap the MCP-created tier takes, for the same reason. A create the flag never
+contradicted is unchanged, and still vouches for everything its bound allows.
+
+When the split cannot say which separator went where — a line whose quoting never resolves falls back
+to a crude split — the flag is read as written. The question is only ever asked in order to
+*discount* a failure, so an unreadable command records less rather than more.
+
 A create is also read out of what a command **runs**, never out of what it **quotes**. `gh pr create`
 inside a `grep` pattern, an `rg` argument, an `echo` or a `sed` script is data, and session 11898 ran
 exactly that — `grep -n "def \|gh pr create\|pull/" hook.rb` over this hook's own source — and

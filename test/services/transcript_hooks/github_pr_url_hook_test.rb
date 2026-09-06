@@ -418,6 +418,173 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     assert_equal [ "https://github.com/owner/repo/pull/37" ], tracked_urls
   end
 
+  # === A create whose line failed after it (#620) ==============================
+  #
+  # A tool result carries ONE error flag for a command that is a whole shell
+  # script, and in a shell that flag is the status of whatever ran last. The hook
+  # has always read a *create* per segment; these read the *failure* per segment
+  # too. Both directions are asserted: a create the flag never spoke about is
+  # recorded, and a create the flag really is about is still not.
+
+  # #620's second sighting, verbatim from session 11907's transcript: the create
+  # succeeded and printed its URL, the `gh pr view` after it was missing its
+  # positional argument and exited 1, and Claude Code flagged the whole call.
+  test "records a PR whose create succeeded on a line that exited non-zero later" do
+    run_hook(
+      claude_shell_call(
+        id: "toolu_620",
+        command: %q(gh pr create --repo owner/repo --base main --head feat/work-backlog-db --title "T" ) +
+                 %q(--body-file "$AO_SESSION_SCRATCH_DIR/pr-body.md" 2>&1 | tail -1; ) +
+                 %q{gh pr view --repo owner/repo --json number,url,body -q '"\(.number) \(.url)"'}
+      ),
+      claude_tool_result(
+        id: "toolu_620",
+        content: "Exit code 1\nhttps://github.com/owner/repo/pull/804\n" \
+                 "argument required when using the --repo flag\n\nUsage:  gh pr view [<number> | <url> | <branch>] [flags]",
+        is_error: true
+      )
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/804" ], tracked_urls
+  end
+
+  test "records a PR whose create is followed by a failing command on the same line" do
+    run_hook(
+      claude_shell_call(id: "toolu_seq", command: "gh pr create --fill; ./scripts/announce.sh"),
+      claude_tool_result(
+        id: "toolu_seq",
+        content: "https://github.com/owner/repo/pull/9\n./scripts/announce.sh: not found",
+        is_error: true
+      )
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/9" ], tracked_urls
+  end
+
+  test "records a PR whose create is piped into a command that exits non-zero" do
+    run_hook(
+      claude_shell_call(id: "toolu_pipe", command: "gh pr create --fill 2>&1 | grep -F 'nothing here'"),
+      claude_tool_result(id: "toolu_pipe", content: "https://github.com/owner/repo/pull/10", is_error: true)
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/10" ], tracked_urls
+  end
+
+  test "records a PR whose create is inside a shell wrapper the line failed after" do
+    run_hook(
+      claude_shell_call(id: "toolu_wrap", command: %q(bash -lc "cd /repo && gh pr create --fill"; exit 1)),
+      claude_tool_result(id: "toolu_wrap", content: "https://github.com/owner/repo/pull/11", is_error: true)
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/11" ], tracked_urls
+  end
+
+  test "records a cross-repo PR whose create is followed by a failing command" do
+    @session.update!(git_root: "https://github.com/owner/repo.git")
+
+    run_hook(
+      claude_shell_call(id: "toolu_x", command: "gh pr create --repo other-org/proj --head b | tail -1; false"),
+      claude_tool_result(id: "toolu_x", content: "https://github.com/other-org/proj/pull/5", is_error: true)
+    )
+
+    assert_equal [ "https://github.com/other-org/proj/pull/5" ], tracked_urls
+  end
+
+  # A create whose success is only INFERRED vouches for one PR, not for whatever
+  # else printed into the same blob. One create opens one pull request — the same
+  # cap the MCP tier takes, and the guard that keeps this from becoming #214.
+  test "records only the created PR when a create's line goes on to list the repo's PRs" do
+    run_hook(
+      claude_shell_call(
+        id: "toolu_cap",
+        command: "gh pr create --repo owner/repo --fill | tail -1; gh pr list --repo owner/repo --json url --jq '.[].url'"
+      ),
+      claude_tool_result(
+        id: "toolu_cap",
+        content: "https://github.com/owner/repo/pull/50\n" \
+                 "https://github.com/owner/repo/pull/12\nhttps://github.com/owner/repo/pull/13",
+        is_error: true
+      )
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/50" ], tracked_urls
+  end
+
+  # And a create whose success was never in doubt still vouches for everything its
+  # own repo bound allows — the cap is on the inferred reading only.
+  test "records both PRs of a two-repo create line that did not fail" do
+    run_hook(
+      claude_shell_call(
+        id: "toolu_two",
+        command: "gh pr create --repo owner/repo --fill; gh pr create --repo other-org/proj --head b"
+      ),
+      claude_tool_result(
+        id: "toolu_two",
+        content: "https://github.com/owner/repo/pull/60\nhttps://github.com/other-org/proj/pull/61"
+      )
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/60", "https://github.com/other-org/proj/pull/61" ], tracked_urls
+  end
+
+  # The other direction. `&&` and `||` propagate a failure, and a create with
+  # nothing after it sets the status itself, so in all three the flag really is
+  # about the create — and a failed create still vouches for nothing but an
+  # "already exists" URL.
+  test "ignores a same-repo PR named by a create that failed with nothing after it" do
+    run_hook claude_pr_create(
+      "pull request create failed: GraphQL: Head sha can't be blank\nhttps://github.com/owner/repo/pull/70",
+      is_error: true
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "ignores the PRs a failed create's && fallback goes on to read" do
+    run_hook(
+      claude_shell_call(id: "toolu_and", command: "gh pr create --fill && gh pr list --repo owner/repo --json url"),
+      claude_tool_result(id: "toolu_and", content: "no commits between main and feat\nhttps://github.com/owner/repo/pull/71", is_error: true)
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "ignores the PRs a failed create's || fallback goes on to read" do
+    run_hook(
+      claude_shell_call(id: "toolu_or", command: "gh pr create --fill || gh pr list --repo owner/repo --json url"),
+      claude_tool_result(id: "toolu_or", content: "no commits between main and feat\nhttps://github.com/owner/repo/pull/72", is_error: true)
+    )
+
+    assert_nil tracked_urls
+  end
+
+  # A line whose quoting never resolves falls back to a crude split that cannot
+  # say what separated what. The flag is then read as written: this is only ever
+  # asked in order to DISCOUNT a failure, so an unreadable command records less.
+  test "ignores a same-repo PR named by a failed create whose line quoting does not resolve" do
+    run_hook(
+      claude_shell_call(id: "toolu_qq", command: %q(gh pr create --title "unclosed | tail -1; echo done)),
+      claude_tool_result(id: "toolu_qq", content: "error\nhttps://github.com/owner/repo/pull/73", is_error: true)
+    )
+
+    assert_nil tracked_urls
+  end
+
+  # Still an "already exists" rescue when the create really is what failed, and
+  # still one when the failure belonged to something else on the line.
+  test "records the already-existing PR of a create that failed with a command after it" do
+    run_hook(
+      claude_shell_call(id: "toolu_exists", command: "gh pr create --fill; gh pr view --json url"),
+      claude_tool_result(
+        id: "toolu_exists",
+        content: "a pull request for branch \"feat\" into branch \"main\" already exists:\nhttps://github.com/owner/repo/pull/74",
+        is_error: true
+      )
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/74" ], tracked_urls
+  end
+
   test "records a same-repo PR when gh pr create fails because the branch already has one" do
     # Re-running the open-pr flow on a branch that already has a PR: gh exits
     # non-zero and names the PR for OUR branch, which is ours to track.
@@ -1385,6 +1552,24 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     )
 
     assert_nil tracked_urls
+  end
+
+  # The exit code Codex reports is the `bash -lc` script's, which is the same one
+  # flag over the same whole script that Claude's is_error is — so #620's reading
+  # of it holds for both runtimes.
+  test "codex: records a PR whose create succeeded on a line that exited non-zero later" do
+    @session.update!(agent_runtime: "codex")
+
+    run_hook(
+      codex_shell_call(
+        call_id: "call_1",
+        command: [ "bash", "-lc", "gh pr create --repo owner/repo --fill 2>&1 | tail -1; gh pr view --repo owner/repo --json url" ]
+      ),
+      codex_exec_end(call_id: "call_1", exit_code: 1),
+      codex_output(call_id: "call_1", output: "https://github.com/owner/repo/pull/80\nargument required when using the --repo flag")
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/80" ], tracked_urls
   end
 
   test "codex: associates a cross-repo gh pr create PR when no exec_command_end line exists" do
