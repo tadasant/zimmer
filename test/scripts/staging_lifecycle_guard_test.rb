@@ -81,7 +81,8 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
 
   # Returns [exit status, combined output, parsed $GITHUB_OUTPUT hash, curl urls].
   def run_guard(mode, state: LIVE_STATE, state_err: "", init_fail: false,
-                hours: "18", body: nil, code: "200", credentials: true, output_path: :tmp)
+                hours: "18", body: nil, code: "200", credentials: true, configured: false,
+                output_path: :tmp)
     Dir.mktmpdir do |dir|
       out_file = File.join(dir, "gh_output")
       env = {
@@ -99,7 +100,8 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
         "GH_TOKEN" => "t0ken",
         "RECENT_DEPLOY_HOURS" => hours,
         "AWS_ACCESS_KEY_ID" => credentials ? "spaces-key" : "",
-        "AWS_SECRET_ACCESS_KEY" => credentials ? "spaces-secret" : ""
+        "AWS_SECRET_ACCESS_KEY" => credentials ? "spaces-secret" : "",
+        "STAGING_IS_CONFIGURED" => configured ? "true" : "false"
       }
       # `nil`, not `delete`: the parent process may well have GITHUB_OUTPUT set (this
       # suite runs in Actions), and only an explicit nil unsets it for the child.
@@ -146,6 +148,9 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
   test "teardown skips cleanly when the environment has never been applied at all" do
     code, _out, outputs = run_guard(
       "teardown", state: TORN_DOWN_STATE,
+      # Terraform 1.10.5's wording (the version both workflows pin). This is the
+      # never-applied case; the case this repo actually reaches after a teardown is an
+      # empty state OBJECT, which exits 0 with no output and is covered above.
       state_err: "Error: No state file was found!\n\nState management commands require a state file."
     )
 
@@ -156,7 +161,8 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
   end
 
   test "teardown proceeds when a droplet exists and no deploy is holding it" do
-    code, _out, outputs, curls = run_guard("teardown", body: deploy_history(40))
+    tf = nil
+    code, _out, outputs, curls = run_guard("teardown", body: deploy_history(40)) { |calls| tf = calls }
 
     assert_equal EXIT_ANSWERED, code
     assert_equal "true", outputs["proceed"]
@@ -165,6 +171,14 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
     assert_equal 1, curls.length
     assert_match(%r{/repos/tadasant/zimmer/actions/workflows/deploy-staging\.yml/runs\?status=success},
                  curls.first)
+
+    # The defaults are what the workflow relies on and never restates, so a typo in either
+    # would pass every other assertion here and fail only at 06:23 in production.
+    assert tf.any? { |c| c.include?("-chdir=infra/terraform") && c.include?("init") },
+      "it must init the staging Terraform directory: #{tf.inspect}"
+    assert tf.any? { |c| c.include?("-backend-config=backend.staging.hcl") },
+      "it must open the STAGING remote state, not whatever backend is configured by default"
+    assert tf.any? { |c| c.include?("-chdir=infra/terraform state list") }
   end
 
   # --- The recent-deploy window ------------------------------------------------------
@@ -218,6 +232,28 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
     end
   end
 
+  test "a 200 whose body is not run history keeps the droplet" do
+    # `%{http_code}` is written as soon as the response headers arrive, so a --max-time
+    # expiry or a connection reset mid-body reports 200 over a truncated document. Reading
+    # a failed parse as "no deploy on record" would destroy a droplet somebody is using.
+    [ "<html>502 Bad Gateway</html>", "", '{"workflow_runs":' ].each do |garbage|
+      code, out, outputs = run_guard("teardown", code: "200", body: garbage)
+
+      assert_equal EXIT_ANSWERED, code, garbage.inspect
+      assert_equal "false", outputs["proceed"],
+        "#{garbage.inspect}: an unparseable body is unknown deploy history, not an absent one"
+      assert_match(/::warning::/, out)
+    end
+  end
+
+  test "a run with no timestamp on it keeps the droplet" do
+    body = JSON.dump({ "workflow_runs" => [ { "updated_at" => nil } ] })
+    code, _out, outputs = run_guard("teardown", body: body)
+
+    assert_equal EXIT_ANSWERED, code
+    assert_equal "false", outputs["proceed"]
+  end
+
   test "a timestamp it cannot parse keeps the droplet" do
     body = JSON.dump({ "workflow_runs" => [ { "updated_at" => "the day before yesterday" } ] })
     code, out, outputs = run_guard("teardown", body: body)
@@ -249,7 +285,7 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
 
   test "no remote-state credentials is a warned skip, not a nightly red X on somebody's fork" do
     tf_calls = nil
-    code, out, outputs = run_guard("teardown", credentials: false) { |tf| tf_calls = tf }
+    code, out, outputs = run_guard("teardown", credentials: false, configured: false) { |tf| tf_calls = tf }
 
     assert_equal EXIT_ANSWERED, code
     assert_equal "false", outputs["proceed"]
@@ -257,6 +293,37 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
     assert_match(/::warning::/, out)
     assert_match(/not configured in this repository/, outputs["reason"])
     assert_empty tf_calls, "terraform must not be invoked at all without the keys that open the backend"
+  end
+
+  test "but losing the state credentials in a repo that HAS staging fails loudly" do
+    # The asymmetry is the point. A green skip here would switch the nightly teardown off
+    # permanently and silently — the droplet bills round the clock again and nothing ever
+    # goes red — which is the same do-nothing failure the broken-backend branch refuses.
+    code, out, outputs = run_guard("teardown", credentials: false, configured: true)
+
+    assert_equal EXIT_COULD_NOT_ANSWER, code
+    assert_match(/::error::/, out)
+    assert_match(/bill continuously again/, out)
+    assert_empty outputs
+  end
+
+  test "a state with leftovers but no droplet says so, loudly enough to reach an operator" do
+    # An unassigned digitalocean_reserved_ip still bills, and no scheduled run will ever
+    # clean it up — the guard skips past it every night. Saying so in the run is the only
+    # way anyone finds out without a shell.
+    code, out, outputs = run_guard("teardown", state: "digitalocean_reserved_ip.zimmer")
+
+    assert_equal EXIT_ANSWERED, code
+    assert_equal "false", outputs["proceed"]
+    assert_equal "absent", outputs["droplet"]
+    assert_match(/::warning::  digitalocean_reserved_ip\.zimmer/, out)
+    assert_match(/unassigned digitalocean_reserved_ip still bills/, out)
+  end
+
+  test "an empty state says nothing about leftovers, because there are none" do
+    _code, out, = run_guard("teardown", state: TORN_DOWN_STATE)
+
+    refute_match(/state is not empty/, out)
   end
 
   # --- Cert mode ---------------------------------------------------------------------
@@ -291,11 +358,23 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
 
   test "a missing RECENT_DEPLOY_HOURS is a usage error rather than a guessed window" do
     [ "", "eighteen", "0" ].each do |value|
-      code, out, _outputs = run_guard("teardown", hours: value)
+      tf = nil
+      code, out, _outputs = run_guard("teardown", hours: value) { |calls| tf = calls }
 
       assert_equal EXIT_BAD_USAGE, code, "RECENT_DEPLOY_HOURS=#{value.inspect}"
       assert_match(/RECENT_DEPLOY_HOURS must be a positive integer/, out)
+
+      # Before the backend is read, not after. On the nights staging is down the script
+      # answers and exits early, so a window validated at the point of use would sit
+      # undiscovered until the first night the droplet happens to exist.
+      assert_empty tf, "the window must be validated before anything slow happens"
     end
+  end
+
+  test "the cert mode needs no window at all" do
+    _code, _out, outputs = run_guard("cert", hours: "")
+
+    assert_equal "true", outputs["proceed"]
   end
 
   test "a missing GITHUB_OUTPUT is refused, because every gated step would read it as skip" do
