@@ -40,7 +40,7 @@ class SessionProvenancePanelTest < ApplicationSystemTestCase
     worker = spawn_session(parent: router, title: "Do the work", agent_root: "zimmer")
     # A real roots.json key: agent_root_key resolves against the catalog rather
     # than echoing the metadata, so an unknown name would render as "—".
-    helper = spawn_session(parent: worker, title: "Help out", agent_root: "agents")
+    helper = spawn_session(parent: worker, title: "Help out", agent_root: "general-agent")
 
     add_message(router, content: "Fix the login bug", at: Time.utc(2026, 8, 2, 4, 0, 0))
     add_message(worker, content: "Start with the session cookie", at: Time.utc(2026, 8, 2, 4, 30, 0))
