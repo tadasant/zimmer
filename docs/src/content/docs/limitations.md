@@ -1994,9 +1994,19 @@ records every failed resolve — including the no-fallback case `degraded?` cann
 session form renders it as a banner.
 
 `Mcp::Tools::GetConfigs` carries the same fact to agents, which read the catalog through those same
-façades — but not the same detail. The banner prints `air resolve`'s stderr verbatim, and that process
+façades — but not the same detail. The banner prints `air resolve`'s own error text, and that process
 is given `AIR_GITHUB_TOKEN`, so the MCP surface reports only *that* resolution failed and when. Same
 fact, different fidelity, different audience.
+
+The error text is scrubbed before it is recorded: `AirCatalogService#record_failure` replaces every
+credential this process holds — all of `SecretsLoader.all`, plus a process-env `AIR_GITHUB_TOKEN` —
+with a `[REDACTED:NAME]` marker, so `/sessions/new`, which has no Rails-layer authentication
+([#312](https://github.com/tadasant/zimmer/issues/312)), cannot render one
+([#319](https://github.com/tadasant/zimmer/issues/319)). That is defense in depth, not a guarantee:
+`air resolve` has never been observed echoing its environment, and the scrub only knows values Zimmer
+itself holds — a credential it never issued, in text it never saw, would still print. It is also
+narrower than the surface: the same unscrubbed message still reaches `Rails.logger`, which is an
+operator-only channel and deliberately left alone.
 
 The residual limit: that flag is process-local, like the rest of the in-memory catalog cache. It
 describes what *this* web process last saw. With more than one web process, a form served by a worker

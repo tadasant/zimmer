@@ -36,6 +36,25 @@ class CatalogFailureBannerTest < ApplicationSystemTestCase
     assert_text "2 hours ago"
   end
 
+  # #319: this is the one surface that renders `air resolve`'s own text, and
+  # /sessions/new has no Rails-layer authentication (#312). Recorded through the
+  # real rescue path rather than by stubbing resolve_failure, so the scrub is
+  # covered service-to-pixels.
+  test "a credential in the resolve error renders as a marker, not as the credential" do
+    token = "ghp_#{"z" * 36}"
+    SecretsLoader.stubs(:all).returns({ "AIR_GITHUB_TOKEN" => token })
+    AirCatalogService.send(:record_failure,
+      "air resolve failed (exit 1): fatal: could not read Username for 'https://#{token}@github.com'")
+    AirCatalogService.stubs(:degraded?).returns(false)
+
+    visit new_session_path
+
+    assert_text "Catalog resolution failed — the lists below are empty"
+    assert_text "[REDACTED:AIR_GITHUB_TOKEN]"
+    assert_text "could not read Username"
+    assert_no_text token
+  end
+
   test "a healthy catalog shows no banner" do
     AirCatalogService.stubs(:resolve_failure).returns(nil)
 
