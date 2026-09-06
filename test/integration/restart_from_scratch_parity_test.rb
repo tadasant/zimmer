@@ -201,7 +201,7 @@ class RestartFromScratchParityTest < ActionDispatch::IntegrationTest
     end
 
     assert_equal 3, attempts[:web], "the web UI's retry budget changed"
-    assert_equal attempts.values.uniq.length, 1,
+    assert_equal 1, attempts.values.uniq.length,
       "the three surfaces spend different retry budgets on a dropped connection: #{attempts.inspect}"
   end
 

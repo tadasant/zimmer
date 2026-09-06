@@ -3814,8 +3814,8 @@ class SessionTest < ActiveSupport::TestCase
   # The error-scan positions are the keys every reset policy deliberately leaves
   # alone: clearing one makes the scanner re-process errors it has already
   # handled, which is how an old quota entry misclassifies a new transient one.
-  test "no reset policy clears an error-scan position" do
-    scan_positions = %w[api_error_last_checked_line auth_error_last_checked_line context_length_last_checked_line]
+  test "no reset policy clears the API or auth error-scan position" do
+    scan_positions = %w[api_error_last_checked_line auth_error_last_checked_line]
     policies = {
       "STALE_RETRY_METADATA_KEYS" => Session::STALE_RETRY_METADATA_KEYS,
       "RESTART_FROM_SCRATCH_KEYS" => Session::RESTART_FROM_SCRATCH_KEYS,
@@ -3824,12 +3824,16 @@ class SessionTest < ActiveSupport::TestCase
     }
 
     policies.each do |name, keys|
-      # context_length_last_checked_line is the deliberate exception, and it is on
-      # the default set rather than exempted from it — asserted here so the
-      # asymmetry is stated rather than assumed.
-      assert_empty (scan_positions & keys) - [ "context_length_last_checked_line" ],
+      assert_empty scan_positions & keys,
         "#{name} clears an error-scan position, which makes the scanner re-handle old errors"
     end
+  end
+
+  # The asymmetry, stated rather than assumed: the context-length scanner's
+  # position IS on the default set, so every policy clears it. Asserted so the
+  # test above cannot be read as "no scan position is ever cleared".
+  test "context_length_last_checked_line is the scan position every policy does clear" do
+    assert_includes Session::STALE_RETRY_METADATA_KEYS, "context_length_last_checked_line"
   end
 
   # === all_mcp_servers / injected_mcp_servers tests ===

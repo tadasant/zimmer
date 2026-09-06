@@ -196,6 +196,39 @@ class Sessions::RestartFromScratchTest < ActiveSupport::TestCase
     assert_equal "failed", session.reload.status, "the transaction must have rolled back"
   end
 
+  # A rollback does not undo what AASM already did to the in-memory object, so an
+  # attempt that fails AFTER `resume!` leaves `status` dirty as an unpersisted
+  # `running`. Without the re-read, the next attempt writes that through `update!`
+  # — no state machine — and then finds `may_resume?` false and skips `resume!`
+  # altogether, dropping every callback it carries. `paused_by` would still be
+  # cleared (it is in the key set), but `pending_sleep` is in none of the reset
+  # sets and only `clear_pending_sleep` removes it: left behind, it drops the
+  # session to `waiting` at its next pause.
+  test "a retry that succeeds on the second attempt still runs the resume callbacks" do
+    session = failed_before_setup_session
+    session.merge_metadata!("pending_sleep" => true)
+    attempts = 0
+    enqueue = AgentSessionJob.method(:enqueue_new_session)
+
+    AgentSessionJob.stub(:enqueue_new_session, ->(*args, **kwargs) {
+      attempts += 1
+      raise ActiveRecord::ConnectionNotEstablished, "connection lost" if attempts == 1
+
+      enqueue.call(*args, **kwargs)
+    }) do
+      Sessions::RestartFromScratch.any_instance.stubs(:sleep)
+      assert Sessions::RestartFromScratch.call(session).ok?
+    end
+
+    assert_equal 2, attempts
+    session.reload
+    assert_equal "running", session.status
+    assert_nil session.metadata["pending_sleep"],
+      "the second attempt skipped resume!, so clear_pending_sleep never ran"
+    assert session.logs.where(content: "[State Machine] Session resumed").exists?,
+      "the resume event did not fire on the successful attempt"
+  end
+
   test "reports any other failure with its message and records it on the timeline" do
     session = failed_before_setup_session
 

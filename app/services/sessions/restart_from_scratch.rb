@@ -67,7 +67,7 @@ module Sessions
     # `no_git_root`          - there is no repository to clone; nothing to restart
     # `database_unavailable` - the write kept failing on a dropped connection
     # `failed`               - anything else the sequence raised
-    Result = Struct.new(:ok, :session, :error, :error_code, keyword_init: true) do
+    Result = Struct.new(:ok, :error, :error_code, keyword_init: true) do
       def ok? = ok
     end
 
@@ -89,20 +89,36 @@ module Sessions
     end
 
     def call
-      return no_git_root_error unless @session.git_root.present?
+      return no_git_root_error if @session.git_root.blank?
 
       images, files = Sessions::FirstTurnAttachments.for(@session)
       carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)
 
-      with_db_retry do
+      # `base_delay` is the controller helper's, not the job helper's. All three
+      # doors are request/response — a browser, an HTTP client, an MCP tool call —
+      # so somebody is waiting, and 0.3s/0.6s is the budget the web copy always
+      # spent. `DatabaseRetry` supplies the retry itself because its give-up path
+      # re-raises, where `ControllerDatabaseRetry`'s *renders* and returns false:
+      # a service must hand the surface a result to render, not render one itself.
+      with_db_retry(base_delay: 0.3) do
+        # Re-read the row before every attempt, including the first. A rollback
+        # does not restore the in-memory attributes AASM has already changed — it
+        # re-marks them dirty — so a second attempt would carry `status` as an
+        # unpersisted `running` change, write it through `update!` without the
+        # state machine, and then find `may_resume?` false and skip `resume!`
+        # entirely. That silently drops the resume callbacks: the pending
+        # one-time wake would survive a restart that should have cancelled it,
+        # and `pending_sleep` (in none of the reset key sets) would survive to
+        # drop the session to `waiting` at its next pause.
+        @session.reload
         ActiveRecord::Base.transaction { restart!(images, files, carrying) }
       end
 
       Rails.logger.info(
         "[Sessions::RestartFromScratch] Restart from scratch initiated for session #{@session.id} " \
-        "(requested through #{ACTOR_LABELS.fetch(@actor, @actor.to_s)})"
+        "(requested through #{ACTOR_LABELS.fetch(@actor)})"
       )
-      Result.new(ok: true, session: @session)
+      Result.new(ok: true)
     rescue *DatabaseRetry::RETRYABLE_EXCEPTIONS => e
       database_unavailable_error(e)
     rescue => e
@@ -160,7 +176,7 @@ module Sessions
     def no_git_root_error
       message = "cannot restart from scratch: no git_root configured"
       log_best_effort("Cannot restart session: #{message}", level: "warning")
-      Result.new(ok: false, session: @session, error: message, error_code: :no_git_root)
+      Result.new(ok: false, error: message, error_code: :no_git_root)
     end
 
     def database_unavailable_error(error)
@@ -169,18 +185,25 @@ module Sessions
       )
       Result.new(
         ok: false,
-        session: @session,
         error: "The operation couldn't be completed due to high server activity. Please try again.",
         error_code: :database_unavailable
       )
     end
 
+    # The catch-all. Two of the three surfaces already swallowed everything here
+    # and turned it into a rendered error; the MCP one did not, so without this
+    # report a genuine bug on this path would now read to an agent as an ordinary
+    # refusal and escalate nowhere. ErrorReporter is the seam Zimmer uses to keep
+    # deliberate swallow-rescues visible — see its own comment for why.
     def failed_error(error)
       Rails.logger.error(
         "[Sessions::RestartFromScratch] Error restarting session #{@session.id} from scratch: #{error.message}"
       )
+      ErrorReporter.report_exception(
+        error, context: { session_id: @session.id, service: "Sessions::RestartFromScratch", actor: @actor }
+      )
       log_best_effort("Error restarting session from scratch: #{error.message}", level: "error")
-      Result.new(ok: false, session: @session, error: error.message, error_code: :failed)
+      Result.new(ok: false, error: error.message, error_code: :failed)
     end
 
     # The refusal and the failure are both recorded on the session's own timeline,
