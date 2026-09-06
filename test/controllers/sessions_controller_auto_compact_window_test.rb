@@ -9,11 +9,11 @@ class SessionsControllerAutoCompactWindowTest < ActionDispatch::IntegrationTest
     post sessions_url, params: {
       session: {
         prompt: "Test prompt",
-        git_root: "https://github.com/tadasant/zimmer-catalog.git",
+        git_root: "https://github.com/tadasant/zimmer.git",
         auto_compact_window: 350_000,
         mcp_servers: []
       },
-      agent_root_name: "agent-orchestrator",
+      agent_root_name: "zimmer",
       agent_runtime: "claude_code"
     }
 
@@ -24,11 +24,11 @@ class SessionsControllerAutoCompactWindowTest < ActionDispatch::IntegrationTest
     post sessions_url, params: {
       session: {
         prompt: "Test prompt",
-        git_root: "https://github.com/tadasant/zimmer-catalog.git",
+        git_root: "https://github.com/tadasant/zimmer.git",
         auto_compact_window: "",
         mcp_servers: []
       },
-      agent_root_name: "agent-orchestrator",
+      agent_root_name: "zimmer",
       agent_runtime: "claude_code"
     }
 
@@ -39,10 +39,10 @@ class SessionsControllerAutoCompactWindowTest < ActionDispatch::IntegrationTest
     post sessions_url, params: {
       session: {
         prompt: "Test prompt",
-        git_root: "https://github.com/tadasant/zimmer-catalog.git",
+        git_root: "https://github.com/tadasant/zimmer.git",
         mcp_servers: []
       },
-      agent_root_name: "agent-orchestrator"
+      agent_root_name: "zimmer"
     }
 
     assert_equal 1_000_000, Session.last.auto_compact_window
@@ -53,11 +53,11 @@ class SessionsControllerAutoCompactWindowTest < ActionDispatch::IntegrationTest
       post sessions_url, params: {
         session: {
           prompt: "Test prompt",
-          git_root: "https://github.com/tadasant/zimmer-catalog.git",
+          git_root: "https://github.com/tadasant/zimmer.git",
           auto_compact_window: 2_000_000,
           mcp_servers: []
         },
-        agent_root_name: "agent-orchestrator",
+        agent_root_name: "zimmer",
         agent_runtime: "claude_code"
       }
     end
@@ -70,11 +70,11 @@ class SessionsControllerAutoCompactWindowTest < ActionDispatch::IntegrationTest
       post sessions_url, params: {
         session: {
           prompt: "Test prompt",
-          git_root: "https://github.com/tadasant/zimmer-catalog.git",
+          git_root: "https://github.com/tadasant/zimmer.git",
           auto_compact_window: 0,
           mcp_servers: []
         },
-        agent_root_name: "agent-orchestrator",
+        agent_root_name: "zimmer",
         agent_runtime: "claude_code"
       }
     end

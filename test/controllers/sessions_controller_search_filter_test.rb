@@ -15,56 +15,63 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     Log.delete_all
     Session.delete_all
 
-    # Belongs to "agent-orchestrator" via the explicit metadata key (how new sessions
-    # record their root).
+    # Belongs to "zimmer" via the explicit metadata key (how new sessions record
+    # their root).
     @zimmer_session = Session.create!(
-      git_root: "https://github.com/tadasant/zimmer-catalog.git",
-      subdirectory: "agents/agent-orchestrator",
+      git_root: "https://github.com/tadasant/zimmer.git",
       prompt: "Zimmer session",
       title: "Zimmer Session",
       status: :needs_input,
-      metadata: { "agent_root_key" => "agent-orchestrator" }
+      metadata: { "agent_root_key" => "zimmer" }
     )
 
-    # Belongs to "agent-orchestrator" via git_root + subdirectory only (an older session
-    # created before agent_root_key was persisted in metadata).
+    # Belongs to "zimmer" via git_root + subdirectory only (an older session created
+    # before agent_root_key was persisted in metadata).
     @zimmer_legacy_session = Session.create!(
-      git_root: "https://github.com/tadasant/zimmer-catalog.git",
-      subdirectory: "agents/agent-orchestrator",
+      git_root: "https://github.com/tadasant/zimmer.git",
       prompt: "Zimmer legacy session",
       title: "Zimmer Legacy Session",
       status: :needs_input
     )
 
-    # Belongs to a different root ("agents").
-    @agents_session = Session.create!(
-      git_root: "https://github.com/tadasant/zimmer-catalog.git",
-      subdirectory: "agents",
-      prompt: "Agents session",
-      title: "Agents Session",
+    # Belongs to a different root, and says so explicitly. Its git_root and
+    # subdirectory are identical to the two above -- since #67 every shipped root
+    # sits at the root of this one repo, so the key is the only thing telling them
+    # apart, which is exactly what the filter has to honour.
+    @other_root_session = Session.create!(
+      git_root: "https://github.com/tadasant/zimmer.git",
+      prompt: "General agent session",
+      title: "General Agent Session",
       status: :needs_input,
-      metadata: { "agent_root_key" => "agents" }
+      metadata: { "agent_root_key" => "general-agent" }
     )
   end
 
   test "filtering by agent root returns only that root's sessions" do
-    get root_url(agent_root: "agent-orchestrator")
+    get root_url(agent_root: "zimmer")
     assert_response :success
 
     # Both the metadata-keyed and the legacy URL+subdirectory session match; the
-    # "agents" session does not.
+    # session explicitly keyed to another root does not.
     assert_select "#sessions_grid turbo-frame", count: 2
     assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_session)}"
     assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_legacy_session)}"
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@agents_session)}", count: 0
+    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@other_root_session)}", count: 0
   end
 
-  test "filtering by a different agent root returns only its sessions" do
-    get root_url(agent_root: "agents")
+  test "filtering by a different agent root returns its sessions" do
+    get root_url(agent_root: "general-agent")
     assert_response :success
 
-    assert_select "#sessions_grid turbo-frame", count: 1
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@agents_session)}"
+    # Bounded, so an extra row leaking into this filter fails rather than passing
+    # the three per-row assertions below.
+    assert_select "#sessions_grid turbo-frame", count: 2
+    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@other_root_session)}"
+    # The `zimmer`-keyed session is excluded on its key. The key-LESS legacy row is
+    # not: since #67 every root shares one (url, subdirectory), so the fallback
+    # cannot tell which of them a row with no key belongs to, and it matches both.
+    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_session)}", count: 0
+    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_legacy_session)}"
   end
 
   test "filtering by an unknown agent root returns no sessions" do
@@ -75,7 +82,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
   end
 
   test "an active search renders the flat results list and hides the category grid" do
-    get root_url(agent_root: "agent-orchestrator")
+    get root_url(agent_root: "zimmer")
     assert_response :success
 
     # Flat results section present; category sections (Uncategorized + drag-and-drop) absent.
@@ -97,12 +104,12 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     @zimmer_legacy_session.update!(status: :archived)
 
     # Nothing ticked: the search spans every status, trash included.
-    get root_url(every_status_params(agent_root: "agent-orchestrator"))
+    get root_url(every_status_params(agent_root: "zimmer"))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 2
 
     # Naming one status narrows the same search to it.
-    get root_url(every_status_params(agent_root: "agent-orchestrator", status: [ @zimmer_session.status ]))
+    get root_url(every_status_params(agent_root: "zimmer", status: [ @zimmer_session.status ]))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 1
     assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_session)}"
@@ -110,13 +117,13 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
 
   test "a text query activates the flat list, and spans the trash when no status is ticked" do
     archived = Session.create!(
-      git_root: "https://github.com/tadasant/zimmer-catalog.git",
+      git_root: "https://github.com/tadasant/zimmer.git",
       prompt: "trashed match",
       title: "Findme Trashed"
     )
     archived.update!(status: :archived)
     Session.create!(
-      git_root: "https://github.com/tadasant/zimmer-catalog.git",
+      git_root: "https://github.com/tadasant/zimmer.git",
       prompt: "active match",
       title: "Findme Active",
       status: :needs_input
@@ -131,33 +138,24 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
   test "agent root filter and text query combine" do
     @zimmer_session.update!(title: "Special Zimmer")
 
-    get root_url(agent_root: "agent-orchestrator", q: "Special")
+    get root_url(agent_root: "zimmer", q: "Special")
     assert_response :success
 
     assert_select "#sessions_grid turbo-frame", count: 1
     assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@zimmer_session)}"
   end
 
-  test "an explicit metadata key wins over a mismatched git_root + subdirectory" do
-    # This session's URL + subdirectory match the agent-orchestrator root, but its
-    # metadata explicitly assigns it to "agents". It must resolve to "agents" only —
-    # the URL fallback is disabled when an explicit key is present (parity with
-    # AgentRootsConfig.find_for_session).
-    mismatched = Session.create!(
-      git_root: "https://github.com/tadasant/zimmer-catalog.git",
-      subdirectory: "agents/agent-orchestrator",
-      prompt: "Mismatched session",
-      title: "Mismatched Session",
-      status: :needs_input,
-      metadata: { "agent_root_key" => "agents" }
-    )
-
-    get root_url(agent_root: "agents")
+  test "an explicit metadata key wins over a matching git_root + subdirectory" do
+    # @other_root_session's URL and (absent) subdirectory match the `zimmer` root
+    # exactly, but its metadata explicitly assigns it to `general-agent`. It must
+    # resolve to `general-agent` only -- the URL fallback is disabled whenever an
+    # explicit key is present (parity with AgentRootsConfig.find_for_session).
+    get root_url(agent_root: "general-agent")
     assert_response :success
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(mismatched)}"
+    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@other_root_session)}"
 
-    get root_url(agent_root: "agent-orchestrator")
+    get root_url(agent_root: "zimmer")
     assert_response :success
-    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(mismatched)}", count: 0
+    assert_select "turbo-frame##{ActionView::RecordIdentifier.dom_id(@other_root_session)}", count: 0
   end
 end
