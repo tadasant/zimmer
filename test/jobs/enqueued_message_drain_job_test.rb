@@ -20,7 +20,7 @@ class EnqueuedMessageDrainJobTest < ActiveJob::TestCase
       EnqueuedMessageDrainJob.perform_now(session.id)
     end
 
-    assert session.reload.running?, "the session should be running again, not idling on its queue"
+    assert session.reload.waiting?, "the session should be running again, not idling on its queue"
     assert_not EnqueuedMessage.exists?(message.id), "the delivered message is consumed"
     assert_empty session.enqueued_messages.pending
   end
@@ -128,7 +128,7 @@ class EnqueuedMessageDrainJobTest < ActiveJob::TestCase
       EnqueuedMessageDrainJob.perform_now(session.id)
     end
 
-    assert session.reload.running?, "a sleeping session takes the message it was owed"
+    assert session.reload.waiting?, "a sleeping session takes the message it was owed"
     assert_not EnqueuedMessage.exists?(message.id)
   end
 
@@ -141,7 +141,7 @@ class EnqueuedMessageDrainJobTest < ActiveJob::TestCase
 
     EnqueuedMessageDrainJob.perform_now(session.id)
 
-    assert session.reload.running?,
+    assert session.reload.waiting?,
       "an armed self-wake is not a reason to leave the message it was waiting for undelivered"
   end
 

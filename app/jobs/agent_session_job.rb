@@ -564,7 +564,8 @@ class AgentSessionJob < ApplicationJob
       # `archived` is terminal, and until this guard existed nothing on the path
       # to the spot gate said so. The concurrency guard above passes, because a
       # held session carries no `running_job_id` — SpotSessionHold#return_to_queue!
-      # clears it — and the pause guard below is scoped to `waiting?`, so an
+      # clears it on every arrival state — and the pause guard below is scoped to
+      # `waiting?`, which since #1040 is where an ordinary turn arrives, so an
       # archived session walked straight into SpotSessionHold.hold_if_needed,
       # which gates only on `session.spot?`. That held it again, bumped
       # `spot_hold_count`, rewrote the hold metadata and enqueued the NEXT delayed

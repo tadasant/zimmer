@@ -3776,7 +3776,8 @@ class SessionsController < ApplicationController
 
         session.remove_metadata!(stale_keys)
 
-        # Update session status to running BEFORE enqueuing the job
+        # Hand the turn over BEFORE enqueuing the job (the session queues in
+        # `waiting`; a worker's `start` runs it)
         # This ensures the resume! callback clears custom_metadata MCP flags
         # before the job starts and potentially reads should_fail_session
         session.resume! if session.may_resume?

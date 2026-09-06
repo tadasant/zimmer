@@ -59,7 +59,7 @@ module AutomatedSessionMessage
     false
   end
 
-  # Send prompt directly to the session, transitioning it to running
+  # Send the prompt directly to the session, queuing its turn for a worker
   # Used when session is in needs_input state
   def send_prompt_immediately(session, prompt, event_description)
     session.logs.create!(

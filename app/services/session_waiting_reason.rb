@@ -132,9 +132,13 @@ class SessionWaitingReason
       candidates = [ hold(session), pause(session), park(session), queued_turn(session) ].compact
       return candidates if candidates.size <= 1
 
-      # Only ever the hold, and only when something else could carry the headline
+      # Only ever the hold, and only when another DORMANCY could carry the headline
       # instead — which is exactly the condition under which the sweep drops it.
-      candidates = candidates.map { |m| m.key == SPOT_HOLD && hold_overdue?(session) ? m.with(demoted: true) : m }
+      # `#rearm!` skips a session that is `dormant_for_another_reason?`, and a
+      # queued turn is not one of that predicate's arms, so a hold beside one is
+      # still the sweep's to repair and must keep its promise (#1040).
+      demote = hold_overdue?(session) && candidates.any? { |m| m.dormancy? && m.key != SPOT_HOLD }
+      candidates = candidates.map { |m| m.key == SPOT_HOLD && demote ? m.with(demoted: true) : m }
 
       # All-numeric sort keys: a nil timestamp cannot be compared against a Time,
       # and the index keeps the order stable for two mechanisms stamped the same

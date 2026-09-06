@@ -76,10 +76,21 @@ class Sessions::ParkUndeliveredTurnTest < ActiveSupport::TestCase
     assert_equal "running", @session.reload.status
   end
 
-  test "declines a session that is not running, since `pause` transitions from running only" do
+  # A turn that died during SETUP has not reached `start!` yet, so since #1040 the
+  # session is `waiting` at exactly the moment this class is asked. Parking it is
+  # the whole point — the alternative is the caller failing it into `failed`, where
+  # nobody looks.
+  test "parks a waiting session too, since a setup failure never reaches `start`" do
     @session.update!(status: :waiting)
+    assert park
+    assert_equal "needs_input", @session.reload.status
+  end
+
+  test "declines a session at rest, which has no turn to park" do
+    @session.update!(status: :needs_input)
     refute park
-    assert_equal "waiting", @session.reload.status
+    assert_equal "needs_input", @session.reload.status
+    assert_nil @session.reload.metadata["failure_reason"], "a declined park must write nothing at all"
   end
 
   test "declines a status-summary fork, which must never take a slot in the action queue" do

@@ -428,8 +428,12 @@ class Session < ApplicationRecord
   #
   # Any trouble reads as an empty fleet for the same reason the count above reads
   # as zero: this is on the path that decides whether a session may start, and a
-  # monitoring gap must never fail one. StandardError rather than the
-  # ActiveRecord family alone, because PendingAgentTurns is more than a query.
+  # monitoring gap must never fail one. That fails OPEN, and deliberately —
+  # against the direction the paragraph above argues for, because the two failures
+  # are not the same size. Pricing a queued turn at zero mis-states one session's
+  # spend; refusing to price the fleet at all would stop every spot session
+  # starting on a database blip. StandardError rather than the ActiveRecord family
+  # alone, because PendingAgentTurns is more than a query.
   def self.running_claude_code_burn_keys
     scope = where(agent_runtime: ClaudeAuthProvider::RUNTIME)
     candidates = scope.where(status: [ :running, :waiting ]).pluck("sessions.id")
@@ -1807,7 +1811,7 @@ class Session < ApplicationRecord
     merge_metadata!(updates) if updates.any?
 
     # Record running_job_id immediately rather than waiting for the job to record it
-    # itself. That closes the window where the session is "running" with no tracked job —
+    # itself. That closes the window where the session has a turn and no tracked job —
     # a window in which a delayed or dead job leaves the session stuck with no feedback,
     # and orphan detection has nothing to look at.
     job = AgentSessionJob.enqueue_with_prompt(id, prompt, images: images, files: files)

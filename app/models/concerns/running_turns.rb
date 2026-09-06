@@ -174,7 +174,7 @@ module RunningTurns
     # The in-flight rows in this scope, split by what the fleet is actually doing
     # with them. Only the first bucket is work in progress.
     #
-    # Four queries, and both callers memoise the result (SpotGateService#turns,
+    # Three queries, and both callers memoise the result (SpotGateService#turns,
     # FleetIdleMonitor#check!) because this sits on the spot gate's admission
     # path.
     #
@@ -187,11 +187,12 @@ module RunningTurns
       # behind it now live in different ones (#1040). `waiting` also holds every
       # dormant session in the deployment, which is why only its rows with a READY
       # `agents` job survive the split below.
-      ids = where(status: [ :running, :waiting ]).pluck("sessions.id")
-      return EMPTY if ids.empty?
+      rows = pluck_ids_by_status
+      return EMPTY if rows.empty?
 
-      running_ids = where(status: :running).pluck("sessions.id").to_set
-      turns = agent_turns_for(ids)
+      ids = rows.map(&:first)
+      running_ids = rows.select { |_id, running| running }.map(&:first).to_set
+      turns = agent_turns_for(ids, running_ids)
 
       # BOTH conditions, and the conjunction is the definition. A job with
       # `performed_at` set is on a worker thread; a session that also says
@@ -220,20 +221,36 @@ module RunningTurns
 
     private
 
+    # The two statuses in one pass, with each row's id and whether it is `running`.
+    # One query rather than two: this sits on the spot gate's admission path, and
+    # the population it reads is now the whole of `waiting` as well.
+    #
+    # Table-qualified and compared in Ruby rather than plucking the enum, because
+    # `.not_in_frozen_category` left-joins `categories` — which has its own `id` —
+    # and a raw `pluck("sessions.status")` skips ActiveRecord's enum casting.
+    def pluck_ids_by_status
+      running = Session.statuses[:running]
+      where(status: [ :running, :waiting ])
+        .pluck(Arel.sql("sessions.id"), Arel.sql("sessions.status = #{running.to_i}"))
+    end
+
     # Of these sessions, which have a turn a worker has started, which have one
     # ready in the queue, and which have one parked on a future `scheduled_at`.
     # See PendingAgentTurns.split.
     #
-    # Rescued toward "all of them are on a worker", which counts every row and
-    # leaves nothing for the asleep probe to drop. That over-reports rather than
-    # under-reports, which is the direction a monitoring gap has to fail in — see
-    # "Fail safe means COUNT it" above.
-    def agent_turns_for(ids)
+    # Rescued toward "every `running` row is executing", which is the most this
+    # concern can report and what these counts were before it existed. It is
+    # deliberately `running_ids` rather than every id read: since #1040 the read
+    # covers `waiting` too, and seeding the started set with those would report
+    # the entire spot queue and every sleeper as "waiting for one of the 8 worker
+    # slots" — a monitoring gap must never make the fleet look emptier than it is,
+    # and it must not invent a queue either. See "Fail safe means COUNT it" above.
+    def agent_turns_for(ids, running_ids)
       PendingAgentTurns.split(ids)
     rescue StandardError => e
       Rails.logger.warn("[RunningTurns] Could not read the agents queue (#{e.class}: #{e.message}) — " \
         "treating every running turn as executing")
-      PendingAgentTurns::Reading.new(on_a_worker: ids.to_set, queued: Set.new, scheduled: Set.new)
+      PendingAgentTurns::Reading.new(on_a_worker: running_ids, queued: Set.new, scheduled: Set.new)
     end
 
     # Of these session ids, the ones paused until a wall-clock time that has not

@@ -149,6 +149,31 @@ class QueuedTurnNotDoubleStartedTest < ActiveJob::TestCase
     end
   end
 
+  # === the queued-message drain ==============================================
+  #
+  # The drain reads `waiting` as "idle" (Session#idle_for_queued_delivery?) and
+  # stood down on `running_job_id` alone, which is BLANK for a queued turn: the
+  # three paths that resume through a claim all write `running_job_id: nil` and
+  # then enqueue without recording one. So a queued turn was invisible to it.
+
+  test "the drain does not deliver into a session whose turn is already queued" do
+    session = recovery_paused_session
+    session.remove_metadata!("paused_by")
+    session.enqueued_messages.create!(content: "a queued message", position: 1)
+    queue_a_turn_for(session)
+
+    assert_equal "a turn is already queued for a worker",
+      EnqueuedMessageDrainJob.new.send(:skip_reason, session.reload)
+  end
+
+  test "the drain does deliver into a session that is genuinely idle" do
+    session = recovery_paused_session
+    session.remove_metadata!("paused_by")
+    session.enqueued_messages.create!(content: "a queued message", position: 1)
+
+    assert_nil EnqueuedMessageDrainJob.new.send(:skip_reason, session.reload)
+  end
+
   # === the dispatch sweeps ===================================================
   #
   # These two read `waiting` directly and are the population most exposed by the

@@ -20,7 +20,7 @@ class HeartbeatSweepJobTest < ActiveJob::TestCase
     end
 
     session.reload
-    assert session.running?, "needs_input session should be resumed to running"
+    assert session.waiting?, "a nudged session leaves needs_input and queues its turn for a worker"
     assert_equal AutomatedPrompts::HEARTBEAT, session.prompt
     assert_not_nil session.heartbeat_last_beat_at
     assert session.logs.where("content LIKE ?", "%Heartbeat nudged%").exists?
@@ -99,7 +99,7 @@ class HeartbeatSweepJobTest < ActiveJob::TestCase
       HeartbeatSweepJob.perform_now
     end
 
-    assert session.reload.running?
+    assert session.reload.waiting?
   end
 
   test "ignores sessions with heartbeat disabled" do

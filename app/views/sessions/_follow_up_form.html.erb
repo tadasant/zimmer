@@ -1,7 +1,4 @@
 <% unless agent_session.archived? %>
-  <%# Check if there's a pending sent_message that should be preloaded into the textarea.
-      This happens when a follow-up was sent but the session transitioned to paused/failed
-      before the message appeared in the transcript. We preload it so the user doesn't lose their message. %>
   <%# Whether the composer queues rather than sends. `Sessions::LiveTurn.underway?`
       and not `agent_session.running?`: since #1040 a turn that has been handed
       over but is still waiting for one of the `agents` lane's worker threads reads
@@ -9,7 +6,25 @@
       The controller actions branch the same way, so the form's action and the
       server's decision cannot disagree. %>
   <% turn_underway = Sessions::LiveTurn.underway?(agent_session) %>
-  <% pending_sent_message = (!turn_underway && agent_session.metadata&.dig("sent_message").present?) ? agent_session.metadata["sent_message"] : nil %>
+  <%# A follow-up that was sent but never reached the transcript — the session
+      paused or failed first — is preloaded back into the textarea so the user does
+      not lose what they typed.
+
+      Gated on the UNDELIVERED-PROMPT marker as well as on the turn, and that
+      second condition is what stops it firing the moment the message is sent.
+      `running?` used to carry it: the submit left the session `running`, so the
+      preload could not run until the turn was over. Since #1040 the submit leaves
+      it `waiting`, and `underway?` alone would answer "no turn" for the instant
+      between the resume and the enqueue — refilling the composer with the message
+      the user just sent, which then gets saved as a draft and restored on the next
+      visit. `pending_follow_up_prompt` is stamped by every delivery route and
+      consumed by whichever one delivers it, so it is true for exactly the window
+      in which the message is not lost but merely not delivered yet. %>
+  <% pending_sent_message = if turn_underway || Sessions::LiveTurn.undelivered_prompt?(agent_session)
+       nil
+     else
+       agent_session.metadata&.dig("sent_message").presence
+     end %>
   <%# session_skills is passed in from the controller via locals, or we fetch it here for backwards compatibility %>
   <% session_skills ||= ClaudeSkillsCacheService.get_for_session(agent_session) %>
   <%# data-live-region="replace": the composer changes shape with the session's

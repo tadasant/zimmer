@@ -31,7 +31,7 @@ class RecoveryContinuationJobTest < ActiveJob::TestCase
     end
 
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert_nil @session.metadata["paused_by"], "resuming clears the marker the sweeps select on"
     assert @session.logs.any? { |l| l.content.include?("automatically continued after recovery retry") }
   end
