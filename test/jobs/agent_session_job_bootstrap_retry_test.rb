@@ -121,11 +121,77 @@ class AgentSessionJobBootstrapRetryTest < ActiveJob::TestCase
     assert_nil @session.metadata["working_directory"]
   end
 
+  # Every reaper's youngest age bar is two hours and the whole ladder fits inside
+  # it, so an abandoned clone would be unreclaimable for exactly the window in
+  # which more of them are being made.
+  test "the abandoned clone tree is deleted, not left for a reaper" do
+    removed = []
+    AtomicCloneRemoval.stubs(:remove).with { |path, **| removed << path; true }.returns(true)
+
+    run_start_that_dies_in_the_air_install
+
+    assert_equal [ CLONE_PATH ], removed,
+                 "five leaked clones per failing session is how a fleet-wide bootstrap fault fills the volume"
+  end
+
   test "the retry is counted, so the budget can be spent" do
     run_start_that_dies_in_the_air_install
 
     assert_equal 1, @session.reload.metadata["bootstrap_retry_count"]
     assert @session.metadata["last_bootstrap_retry_at"].present?
+  end
+
+  test "the replacement is scheduled into the future, not spun in a hot loop" do
+    run_start_that_dies_in_the_air_install
+
+    queued = enqueued_jobs.find { |job| job["job_class"] == "AgentSessionJob" }
+    assert_not_nil queued["scheduled_at"], "an un-delayed replacement is a hot loop against a sick host"
+    assert Time.zone.parse(queued["scheduled_at"].to_s) > Time.current,
+           "the first rung is 30s plus jitter, so the replacement must land in the future"
+  end
+
+  # The production first-start shape, which `AgentSessionJob.new(id, nil)` does
+  # not reproduce: `enqueue_new_session` puts a ruby2_keywords options hash in
+  # `arguments`, and `perform_later(*arguments)` has to round-trip it.
+  test "the replacement preserves the first turn's attachments" do
+    job = AgentSessionJob.enqueue_new_session(
+      @session.id, images: [ { "path" => "/tmp/shot.png", "media_type" => "image/png" } ]
+    )
+    clear_enqueued_jobs
+
+    run_start_that_dies_in_the_air_install(job: rebuild_job_from(job))
+
+    queued = enqueued_jobs.find { |j| j["job_class"] == "AgentSessionJob" }
+    replayed = queued["arguments"].last
+    assert_kind_of Hash, replayed, "the options hash has to survive the round trip"
+    assert_equal "/tmp/shot.png", replayed["images"].first["path"],
+                 "the replacement IS the original first turn; re-running it without the screenshot " \
+                 "re-runs a different task (#746)"
+  end
+
+  # Every other test jumps from 0 to MAX. This is the one that proves the budget
+  # is actually spent by running the replacement the previous attempt queued —
+  # the property that fails if anything on the retry path resets the counter.
+  test "the ladder walks and the budget really is spent" do
+    seen = []
+    (1..AgentSessionJob::MAX_BOOTSTRAP_RETRIES).each do |attempt|
+      if attempt == 1
+        run_start_that_dies_in_the_air_install
+      else
+        perform_the_queued_retry(@session)
+      end
+      seen << @session.reload.metadata["bootstrap_retry_count"]
+      assert_equal "waiting", @session.status, "attempt #{attempt} must leave the session startable"
+    end
+
+    assert_equal (1..AgentSessionJob::MAX_BOOTSTRAP_RETRIES).to_a, seen,
+                 "each replacement must count against the budget, not reset it"
+
+    perform_the_queued_retry(@session)
+
+    @session.reload
+    assert_equal "failed", @session.status
+    assert_equal "bootstrap_retries_exhausted", @session.metadata["failure_reason"]
   end
 
   # ---------------------------------------------------------------------------
@@ -169,6 +235,21 @@ class AgentSessionJobBootstrapRetryTest < ActiveJob::TestCase
   # construction it can only be stamped on a session before its first agent
   # turn — so the Restart button re-runs the whole pipeline instead of trying to
   # `--resume` a conversation that was never written (#401's wedge).
+  # `setup_complete?` is `session_id.present? && clone_root.present?`, so nulling
+  # the id alone is enough for the restart routing — and keeping `clone_path` is
+  # what makes the teardown line ("clone preserved for debugging") true and lets
+  # DeferredCloneCleanupJob find the tree when the session is archived.
+  test "the give-up path keeps the clone it tells a human is preserved" do
+    @session.merge_metadata!("bootstrap_retry_count" => AgentSessionJob::MAX_BOOTSTRAP_RETRIES)
+    AtomicCloneRemoval.expects(:remove).never
+
+    run_start_that_dies_in_the_air_install
+
+    @session.reload
+    assert_equal CLONE_PATH, @session.metadata["clone_path"]
+    assert_nil @session.session_id
+  end
+
   test "an exhausted session is restartable from scratch" do
     @session.merge_metadata!("bootstrap_retry_count" => AgentSessionJob::MAX_BOOTSTRAP_RETRIES)
     run_start_that_dies_in_the_air_install
@@ -203,9 +284,10 @@ class AgentSessionJobBootstrapRetryTest < ActiveJob::TestCase
     assert_includes Session::STALE_RETRY_METADATA_KEYS, AgentSessionJob::BOOTSTRAP_RETRY_AT
   end
 
-  test "a restart hands the session a fresh budget" do
+  test "a restart through the real door hands the session a fresh budget" do
     @session.merge_metadata!("bootstrap_retry_count" => 3)
-    @session.remove_metadata!(Session::STALE_RETRY_METADATA_KEYS)
+
+    assert Sessions::RestartFromScratch.call(@session, actor: :web).ok?
 
     assert_nil @session.reload.metadata["bootstrap_retry_count"],
                "a person restarting a session by hand is not attempt four of five"
@@ -259,19 +341,23 @@ class AgentSessionJobBootstrapRetryTest < ActiveJob::TestCase
                  "speak into it whatever the metadata says"
   end
 
-  # `retry_on` covers three transient classes and #perform re-raises, so a turn
-  # dying on one of them already has another attempt at it. A second ladder
-  # underneath that one would double-run the setup.
-  test "a turn whose exception is already going to be retried is not re-queued again" do
+  # The three classes `AgentSessionJob` declares a `retry_on` for are the ones
+  # most likely to BE a transient outage, so they must not be the ones this
+  # declines. Taking the retry suppresses the catch-all's `raise`, which is the
+  # only thing that would have scheduled a `retry_on` attempt — so exactly one
+  # replacement exists, not two.
+  test "a transient class retry_on also covers is retried here, and only once" do
     job = build_job(@session)
-    job.stubs(:another_attempt_queued?).returns(true)
+    AirPrepareService.any_instance.stubs(:prepare!).raises(Timeout::Error.new("clone timed out"))
 
-    assert_no_enqueued_jobs only: AgentSessionJob do
-      run_job(job, @session)
+    assert_enqueued_jobs 1, only: AgentSessionJob do
+      run_job(job, @session, expected_error: Timeout::Error)
     end
 
-    assert_equal "failed", @session.reload.status
-    assert_equal "exception", @session.metadata["failure_reason"]
+    @session.reload
+    assert_equal "waiting", @session.status,
+                 "a transient timeout during bootstrap is the archetype of a retryable failure"
+    assert_equal 1, @session.metadata["bootstrap_retry_count"]
   end
 
   # An undelivered prompt is Sessions::ParkUndeliveredTurn's case (#439) and has
@@ -302,15 +388,38 @@ class AgentSessionJobBootstrapRetryTest < ActiveJob::TestCase
   # `swap_staged_install!`'s `File.rename` raised in production. The conversion
   # to `AirPrepareError` at AirPrepareService's own rescue is NOT stubbed; that
   # is the code path under test.
-  def run_start_that_dies_in_the_air_install(session: @session, swallow: true)
+  def run_start_that_dies_in_the_air_install(session: @session, swallow: true, job: nil)
     exdev = Errno::EXDEV.new(EXDEV_MESSAGE)
 
     AirPrepareService.stubs(:air_marker_filename)
                      .returns(".air-version-absent-#{SecureRandom.hex(6)}")
     AirPrepareService.stubs(:install_air_cli!).raises(exdev)
 
-    run_job(build_job(session), session, swallow: swallow)
+    run_job(job || build_job(session), session, swallow: swallow)
     session.logs.reload
+  end
+
+  # The replacement `perform_later` this job queued, run for real.
+  def perform_the_queued_retry(session)
+    queued = enqueued_jobs.select { |job| job["job_class"] == "AgentSessionJob" }.last
+    assert_not_nil queued, "there is no replacement to run"
+    clear_enqueued_jobs
+
+    job = AgentSessionJob.new(*queued["arguments"])
+    job.process_manager = MockProcessManager.new
+    job.file_system = MockFileSystemAdapter.new
+    job.cli_adapter = MockClaudeCliAdapter.new
+    job.file_system.mkdir_p(CLONE_PATH)
+    run_start_that_dies_in_the_air_install(session: session, job: job)
+  end
+
+  def rebuild_job_from(enqueued)
+    job = AgentSessionJob.new(*enqueued.arguments)
+    job.process_manager = MockProcessManager.new
+    job.file_system = MockFileSystemAdapter.new
+    job.cli_adapter = MockClaudeCliAdapter.new
+    job.file_system.mkdir_p(CLONE_PATH)
+    job
   end
 
   def build_job(session, prompt = nil)
@@ -326,14 +435,16 @@ class AgentSessionJobBootstrapRetryTest < ActiveJob::TestCase
   # and most of these tests are about the state that raise leaves behind. The
   # retry path does not raise at all, so `assert_raises` cannot be used there —
   # the block below tolerates both.
-  def run_job(job, session, prompt: nil, swallow: true)
+  def run_job(job, session, prompt: nil, swallow: true, expected_error: AirPrepareService::AirPrepareError)
     cli = job.cli_adapter
 
     GitCloneService.stub(:create_clone, { clone_path: CLONE_PATH, working_directory: CLONE_PATH }) do
       begin
         job.perform(session.id, prompt)
       rescue StandardError => e
-        raise e unless swallow
+        # Narrow on purpose: swallowing everything would let a test that asserts
+        # "stays waiting" pass on a turn that died somewhere else entirely.
+        raise e unless swallow && e.is_a?(expected_error)
       end
     end
 
