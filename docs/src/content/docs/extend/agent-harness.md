@@ -30,9 +30,9 @@ Core code never says "Claude." It asks `RuntimeRegistry.for(runtime)`.
 | `retry_strategy_class` | `ClaudeRetryStrategy` | `CodexRetryStrategy` | `PiRetryStrategy` |
 | `transcript_source_class` | `ClaudeTranscriptSource` | `CodexTranscriptSource` | `PiTranscriptSource` |
 | `transcript_normalizer_class` | `ClaudeTranscriptNormalizer` | `CodexTranscriptNormalizer` | `PiTranscriptNormalizer` |
-| `mcp_status_detector_class` | `McpLogPollerService` | `CodexMcpStatusDetector` | `NullMcpStatusDetector` |
+| `mcp_status_detector_class` | `McpLogPollerService` | `CodexMcpStatusDetector` | `PiMcpStatusDetector` |
 | `config_post_processor_class` | `ClaudeMcpConfigPostProcessor` | `CodexConfigTomlPostProcessor` | `PiMcpConfigPostProcessor` |
-| `mcp_credential_writer_class` | `ClaudeMcpCredentialWriter` | `CodexMcpCredentialWriter` | `nil` |
+| `mcp_credential_writer_class` | `ClaudeMcpCredentialWriter` | `CodexMcpCredentialWriter` | `PiMcpCredentialWriter` |
 | `prompt_contribution_class` | `ClaudeRuntimePromptContribution` | `nil` | `PiRuntimePromptContribution` |
 | `auth_provider_class` | `nil` | `nil` | `nil` |
 | `config_preparer_class` | `nil` | `nil` | `nil` |
@@ -63,11 +63,17 @@ Two `pi` slots are worth reading in full — one because it is emphatically *not
 convention:
 
 - **`mcp_status_detector_class`** — Pi writes no per-server MCP log files, so
-  Claude's log poller has nothing to read, and unlike Codex it records no
-  `mcp__<server>__<tool>` calls to mine either: the `pi-mcp-adapter` extension
-  routes every server through one `mcp` proxy tool, so a transcript shows `mcp`
-  being called and never names the server behind it. There is no per-server
-  signal to detect — but the slot holds `NullMcpStatusDetector`, **not `nil`**.
+  Claude's log poller has nothing to read. It held `NullMcpStatusDetector` on the
+  further argument that `pi-mcp-adapter` "routes every server through one `mcp`
+  proxy tool, so a transcript shows `mcp` being called and never names the server
+  behind it". **That was true of an older adapter and is not true of the pinned
+  one.** 2.32.1 registers a namespace-proxy tool *per server*, `mcp__<server>`
+  (`namespaceProxyName`), and the bare `mcp` proxy takes the server verbatim in
+  its `connect` argument. `PiMcpStatusDetector` mines both. Until it did, every
+  Pi session's servers read `pending` forever while they were connected and
+  answering — which is how a working Pi session got reported as one whose MCP was
+  dead. **Re-derive a claim like this against the pinned version rather than
+  inheriting it**; the slot must still never be `nil`, for the reason below.
   `TranscriptPollerService#initialize` calls `.new` on this slot with no nil
   check, so a `nil` here raises `NoMethodError` on every poll of every session on
   the runtime, before any MCP-specific guard can run. That is the general rule:
@@ -89,7 +95,11 @@ convention:
   repeat it, and the contract test polls *and* persists for every runtime rather
   than only constructing.
 - **`mcp_credential_writer_class`** — Pi keeps MCP OAuth tokens inside the
-  `pi-mcp-adapter` extension's own state, which Zimmer does not write. This slot
+  `pi-mcp-adapter` extension's own state, and Zimmer held this slot `nil` on the
+  reading that it therefore could not deliver one. It can: the adapter documents
+  a plaintext entry it imports from `<oauth dir>/sha256-<server>/tokens.json`, and
+  `PiMcpCredentialWriter` stages exactly that, so **no registered runtime has a
+  `nil` writer today**. The `nil` case remains part of the seam, and the slot
   *may* be `nil` because every caller is guarded:
   `RuntimeRegistry.mcp_credential_writer_classes` compacts the list (the caller
   instantiates every class it returns, on the credential-retire path — i.e. while

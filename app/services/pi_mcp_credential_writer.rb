@@ -37,10 +37,19 @@ require "open3"
 #
 # So Zimmer writes that file. `<server-hash>` is SHA-256 of the `.mcp.json`
 # server key, and the JSON is the adapter's `AuthEntry`: `serverUrl`, `tokens`
-# (accessToken / refreshToken / expiresAt / scope) and `clientInfo` (clientId /
-# clientSecret). `McpOauthCredential` holds all of it, so nothing is synthesized.
+# (accessToken / refreshToken / expiresAt / scope) and `clientInfo` (clientId).
+# Every field is taken from `ResolvedMcpCredential`, so nothing is synthesized.
 # On the next read the adapter imports the file into the OS credential store and
 # deletes it, which is the intended lifecycle rather than a leftover.
+#
+# The client SECRET is deliberately absent, because `ResolvedMcpCredential` does
+# not carry one — the injector resolves it, uses it to refresh, and does not
+# publish it. For a confidential client on a `client_secret_post` provider that
+# means the adapter cannot perform its own refresh against the entry Zimmer
+# stages, and re-authorizing goes through Zimmer instead. Zimmer refreshing on
+# its own schedule and re-stamping at every spawn is what covers that; see
+# "Why #read_runtime_credentials returns {}" below, which is the same ownership
+# rule seen from the other side.
 #
 # == The ordering hazard, and why the keyring is cleared first ==
 #
@@ -97,9 +106,19 @@ class PiMcpCredentialWriter
   # Relative to the installed package, so it moves with a version bump.
   KEYRING_HELPER_RELATIVE = File.join("pi-mcp-adapter", "mcp-keyring-helper.cjs")
 
-  # The helper loads a native binding; a couple of seconds is generous and keeps
-  # a wedged store from holding up a spawn.
-  HELPER_TIMEOUT_SECONDS = 10
+  # The helper loads a native binding, which is fast; the budget is for a store
+  # that hangs rather than answering. Kept small on purpose: the credential-retire
+  # path (`McpOauthCredentialInjector#delete_runtime_credentials`) instantiates
+  # EVERY registered runtime's writer, not the session's, so this runs on Claude
+  # and Codex sessions too and its worst case is charged to them.
+  HELPER_TIMEOUT_SECONDS = 5
+
+  # The adapter validates a chunk manifest (`chunkCount` a safe integer,
+  # `chunkDigest` 16 lowercase hex) before trusting it; so does this, because a
+  # manifest claiming a large count would otherwise become that many sequential
+  # `node` spawns.
+  MAX_CHUNKS = 64
+  CHUNK_DIGEST = /\A[a-f0-9]{16}\z/
 
   def initialize(logger: nil, file_system: nil)
     @logger = logger || StructuredLogger.new({ service: "PiMcpCredentialWriter" })
@@ -186,18 +205,24 @@ class PiMcpCredentialWriter
     # Order matters: a credential-store entry SHADOWS the file and would make
     # this write a silent no-op. See the class comment.
     clear_keyring_entry(server_name)
-
-    path = pending_file_path(server_name)
-    @file_system.mkdir_p(File.dirname(path))
-    @file_system.write(path, JSON.pretty_generate(auth_entry(credential)))
-    # The file holds a bearer token in plaintext until the adapter imports it.
-    # Owner-only for the window in between.
-    @file_system.chmod(0o600, path)
+    write_one_file(credential)
     true
   rescue => e
     # A credential that cannot be handed over costs one server, never the spawn.
     @logger.warn("Could not stage Pi MCP OAuth credential", server: credential.server_name, error: e.message)
     false
+  end
+
+  # The file half of #write_one, split out so the ordering against
+  # #clear_keyring_entry is assertable — the two are only correct in that order,
+  # and nothing about the code shape says so.
+  def write_one_file(credential)
+    path = pending_file_path(credential.server_name.to_s)
+    @file_system.mkdir_p(File.dirname(path))
+    # The file holds a bearer token in plaintext until the adapter imports it, so
+    # it is created owner-only rather than created at the umask and narrowed after
+    # — the gap between the two is a readable token.
+    @file_system.write(path, JSON.pretty_generate(auth_entry(credential)), perm: 0o600)
   end
 
   # The adapter's AuthEntry shape (`toAuthEntry` in `mcp-auth.ts`). Only fields
@@ -265,8 +290,8 @@ class PiMcpCredentialWriter
     return [] unless manifest.is_a?(Hash) && manifest[CHUNK_MANIFEST_KEY] == 1
 
     count = manifest["chunkCount"].to_i
-    digest = manifest["chunkDigest"]
-    return [] if count <= 0 || digest.blank?
+    digest = manifest["chunkDigest"].to_s
+    return [] if count <= 0 || count > MAX_CHUNKS || !digest.match?(CHUNK_DIGEST)
 
     Array.new(count) { |index| "#{account}.chunk.#{digest}.#{index}" }
   rescue JSON::ParserError
@@ -283,6 +308,15 @@ class PiMcpCredentialWriter
   # here because it closes the child's stdin, and this helper's whole protocol is
   # a JSON request on stdin.
   def keyring_call(operation, account)
+    # The OS credential store is host-global and out of process: on a developer
+    # box that is the login keychain, and on a Zimmer droplet it is the running
+    # fleet's. The shared contract test constructs every writer and calls
+    # #delete_credentials on it, so without this guard a unit test would spawn
+    # `node` against the real store wherever the extension happens to be
+    # installed — which is exactly the class of accident that put a fixture token
+    # into a live store once already.
+    return nil if Rails.env.test?
+
     helper = helper_path
     return nil unless helper && @file_system.exists?(helper)
 
@@ -296,7 +330,7 @@ class PiMcpCredentialWriter
     JSON.parse(stdout.lines.last.to_s)
   end
 
-  # @return [Array(String, String, Process::Status, nil)] stdout, stderr, status
+  # @return [Array(String, String, Process::Status)] stdout, stderr, status
   def run_helper(helper, request)
     Open3.popen3("node", helper) do |stdin, stdout, stderr, wait_thr|
       stdin.write(request)
