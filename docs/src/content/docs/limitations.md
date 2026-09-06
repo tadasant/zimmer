@@ -2050,14 +2050,27 @@ on a clone already prepared many times. The unhandled error failed the whole job
 was Zimmer's orphan cleanup restarting the session ~20s later, at the cost of a full MCP reconnect
 mid-work — not anything the prepare path chose.
 
-### The environment configs describe a catalog that no longer exists
+### Catalog pinning is real code for a catalog this deployment does not run
 
-`production.rb` and `staging.rb` comments say `air.production.json` *"uses `github://` URIs to pull from
-tadasant/zimmer-catalog."* It doesn't — it's entirely local paths. All of `AirCatalogService`'s
-github-cache machinery (catalog pins, `resolved_sha_for`, `pinnable_catalogs`) is dormant
-infrastructure, and its tests skip themselves.
+Only a `github://` catalog can be pinned, and Zimmer's default catalog — in-image or mounted via
+`AIR_CONFIG` — is entirely local paths. So on this deployment `pinnable_catalogs` is empty,
+`resolved_sha_for` is never called, no `catalog_pins` row is ever written, and `AIR_CATALOG_REF` on
+staging rewrites nothing. The machinery is correct and exercised in CI; it is simply inert here, and
+becomes live the moment an operator points `AIR_CONFIG` at a catalog that declares `github://`
+sources.
 
-Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).
+Two things used to make that inertness worse than it needed to be, and both are fixed:
+
+- The settings page rendered an empty **Catalog Pins** card — prose, no rows, and a save button that
+  did nothing. It is now hidden unless at least one catalog is pinnable.
+- `AIR_CATALOG_REF` on staging pinned nothing, silently. It now warns at boot when the rewrite
+  matched no URI, so an operator does not trust a pin that was never applied.
+
+The `staging.rb` comment that described the in-image catalog as `github://`-backed has been
+corrected. (`production.rb`'s equivalent comment was already corrected, in
+[#125](https://github.com/tadasant/zimmer/pull/125).)
+
+Reported as [#69](https://github.com/tadasant/zimmer/issues/69).
 
 ### A background thread inside Puma, to fix a container mismatch
 
