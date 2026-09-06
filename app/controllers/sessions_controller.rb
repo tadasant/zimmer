@@ -3039,8 +3039,10 @@ class SessionsController < ApplicationController
     # disclosure where the default puts it.
     #
     # It is also what makes the deferred transcript frame load: a lazy frame in a
-    # closed <details> has no layout and is never fetched, so rendering the
-    # disclosure open is exactly the instruction to go and get the rows.
+    # closed <details> has no layout and is never fetched, and
+    # transcript-panel#frameTargetConnected switches an open one to `eager` — so
+    # rendering the disclosure open is exactly the instruction to go and get the
+    # rows, wherever on the page the panel has ended up.
     @transcript_open = params[:transcript] == "open"
 
     # Load MCP servers for the editable MCP selector, each carrying whether

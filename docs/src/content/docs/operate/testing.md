@@ -463,6 +463,57 @@ The two rules that keep this from mattering:
   is a question about the page; "did *this* element gain an attribute" is a question about a handle,
   and the page is entitled to throw the handle away.
 
+### The lazy frame that never appeared: a fetch pinned to the viewport
+
+The fourth one is the same shape as the third — a wait that cannot be satisfied — except that what
+the wait depended on was not an element but the *window size*, which no test had set.
+
+[Run 34060027053](https://github.com/tadasant/zimmer/actions/runs/34060027053) failed two
+`LostElicitationBannerTest` cases and nothing else, both on the shared wait inside
+`ApplicationSystemTestCase#open_transcript_panel`:
+
+```
+expected to find css "turbo-frame[id$='_transcript'][complete]" but there were no matches
+```
+
+The commit was a catalog-pin fix that touched no view, no controller and no test. The failure
+screenshots are of a page that rendered perfectly — and they are **780x437**, where every other
+screenshot the same run uploaded is 1400x757 or 375x812. That is the whole diagnosis, in the
+artifact:
+
+- **Nothing sized the window.** Rails applies a `screen_size` only to the drivers it registers
+  itself; `:selenium_chrome_headless` is this suite's own registration, and it sized nothing. Each
+  test got Chrome's headless default of 800x600, or whatever the last file to call `resize_to` left
+  behind — which of the two, and which size, was decided by the `--seed` shuffle.
+- **At 800x600 the Transcript disclosure starts below the fold.** The header alone fills a 437px
+  viewport at that width, and the composer is sticky over the bottom of it.
+- **`loading="lazy"` is an intersection trigger, not a layout one.** Turbo watches a lazy frame with
+  an `IntersectionObserver` and fetches when it *appears in the viewport*
+  (`AppearanceObserver#intersect` → `FrameController#elementAppearedInViewport`). Opening the
+  `<details>` by script gave the frame layout at a document position no one had scrolled to, so
+  nothing ever intersected, the frame never fetched, and it never gained `complete`. The helper then
+  spent its 10 seconds waiting for a request that was never made.
+
+Two changes, because there were two defects and only one of them was in the test:
+
+- **`transcript-panel#loadFrame` switches the frame to `loading="eager"` when the disclosure opens**,
+  so opening the panel is what fetches the rows — which is what
+  [the transcript page](/sessions/transcripts/#opening-the-transcript-is-what-loads-it) had claimed
+  all along. This is a product fix, not a test one: a `#message-N` link opened cold opens the panel
+  under a viewport still parked at the top of the page, and a panel the server rendered *already*
+  open — the `transcript=open` page the log-level filter re-fetches — fires no toggle at all, so it
+  is reached through `frameTargetConnected` instead.
+- **`ApplicationSystemTestCase` resizes to 1400x900 before every test.** That is the size the
+  twenty-odd files that resize for a phone already restore to, so it is the suite's desktop default
+  written down rather than a new one; a subclass that wants a phone still resizes in its own `setup`,
+  which runs after this one.
+
+The rule: **a browser test must not inherit its geometry.** A viewport nobody set is a hidden input
+to every layout, every click target and every `IntersectionObserver` on the page, and its value is
+whatever the shuffle chose. `SessionsTranscriptTest#test_opening_the_transcript_below_the_fold_still_loads_its_rows`
+pins the case at the window from that run, and asserts the panel really does start off screen before
+opening it — so the test cannot quietly stop covering the thing it is named for.
+
 ## The catalog coupling — read this before you debug
 
 :::danger[A broken catalog fails every session test at once]
