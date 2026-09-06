@@ -3774,6 +3774,64 @@ class SessionTest < ActiveSupport::TestCase
       "exit_status must be cleared on resume/restart to prevent stale quota error messages from persisting"
   end
 
+  # === the four reset policies (#508) ===
+  #
+  # The three variants used to be assembled at sixteen call sites, so a key added
+  # to STALE_RETRY_METADATA_KEYS reached each one only if somebody remembered it.
+  # These pin that the derived sets stay DERIVED: replace any of them with a
+  # literal list and the next key added above stops flowing into it silently,
+  # which is the failure mode the constants exist to close.
+
+  test "RESTART_FROM_SCRATCH_KEYS is the default reset plus the setup artifacts and the spot-hold ladder" do
+    assert_equal(
+      (Session::STALE_RETRY_METADATA_KEYS + Session::SETUP_ARTIFACT_KEYS + SpotSessionHold::METADATA_KEYS).uniq.sort,
+      Session::RESTART_FROM_SCRATCH_KEYS.sort
+    )
+    assert_empty Session::STALE_RETRY_METADATA_KEYS - Session::RESTART_FROM_SCRATCH_KEYS,
+      "a restart from scratch clears everything an ordinary restart clears, and more"
+  end
+
+  test "PRE_PROMPT_RESTART_KEYS is the default reset plus runtime_started" do
+    assert_equal [ "runtime_started" ],
+      Session::PRE_PROMPT_RESTART_KEYS - Session::STALE_RETRY_METADATA_KEYS
+    assert_empty Session::STALE_RETRY_METADATA_KEYS - Session::PRE_PROMPT_RESTART_KEYS
+  end
+
+  # The load-bearing one. `paused_by` is the marker both recovery sweeps select
+  # on, so SessionContinuation clears everything BUT it before handing a turn to
+  # EnqueuedMessageProcessorService, and drops it only once delivery has
+  # succeeded. Clearing it up front strands the session outside every later
+  # recovery pass — the one variant where a wrong key set loses a session rather
+  # than leaving a stale counter behind.
+  test "RECOVERY_CONTINUE_KEYS differs from the default reset by paused_by and nothing else" do
+    assert_not_includes Session::RECOVERY_CONTINUE_KEYS, "paused_by"
+    assert_includes Session::STALE_RETRY_METADATA_KEYS, "paused_by"
+    assert_equal [ "paused_by" ],
+      Session::STALE_RETRY_METADATA_KEYS - Session::RECOVERY_CONTINUE_KEYS
+    assert_empty Session::RECOVERY_CONTINUE_KEYS - Session::STALE_RETRY_METADATA_KEYS
+  end
+
+  # The error-scan positions are the keys every reset policy deliberately leaves
+  # alone: clearing one makes the scanner re-process errors it has already
+  # handled, which is how an old quota entry misclassifies a new transient one.
+  test "no reset policy clears an error-scan position" do
+    scan_positions = %w[api_error_last_checked_line auth_error_last_checked_line context_length_last_checked_line]
+    policies = {
+      "STALE_RETRY_METADATA_KEYS" => Session::STALE_RETRY_METADATA_KEYS,
+      "RESTART_FROM_SCRATCH_KEYS" => Session::RESTART_FROM_SCRATCH_KEYS,
+      "PRE_PROMPT_RESTART_KEYS" => Session::PRE_PROMPT_RESTART_KEYS,
+      "RECOVERY_CONTINUE_KEYS" => Session::RECOVERY_CONTINUE_KEYS
+    }
+
+    policies.each do |name, keys|
+      # context_length_last_checked_line is the deliberate exception, and it is on
+      # the default set rather than exempted from it — asserted here so the
+      # asymmetry is stated rather than assumed.
+      assert_empty (scan_positions & keys) - [ "context_length_last_checked_line" ],
+        "#{name} clears an error-scan position, which makes the scanner re-handle old errors"
+    end
+  end
+
   # === all_mcp_servers / injected_mcp_servers tests ===
 
   test "all_mcp_servers returns configured servers when no injected servers" do

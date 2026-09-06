@@ -34,6 +34,17 @@ class Api::V1::SessionsController < Api::BaseController
     database_unavailable: "Service unavailable"
   }.freeze
 
+  # The same split for `POST /api/v1/sessions/:id/restart`'s from-scratch branch,
+  # keyed by the code Sessions::RestartFromScratch returns. A dropped connection
+  # is a transport failure the caller should retry, not a rejected request — so it
+  # answers 503 rather than the 500 this endpoint used to raise before the retry
+  # moved into the service.
+  RESTART_FROM_SCRATCH_ERRORS = {
+    no_git_root: { title: "Cannot restart", status: :unprocessable_entity },
+    database_unavailable: { title: "Service unavailable", status: :service_unavailable },
+    failed: { title: "Cannot restart", status: :internal_server_error }
+  }.freeze
+
   before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :transcript, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat, :set_category ]
 
   # GET /api/v1/sessions
@@ -607,13 +618,12 @@ class Api::V1::SessionsController < Api::BaseController
     restart_prompt = use_initial_prompt ? @session.prompt : AutomatedPrompts::SYSTEM_RECOVERY
 
     ActiveRecord::Base.transaction do
-      # Clear stale retry and transcript polling metadata before resuming.
-      # See Session::STALE_RETRY_METADATA_KEYS for the full list of keys cleared.
-      stale_keys = Session::STALE_RETRY_METADATA_KEYS
-
-      # For pre-prompt failures, also clear runtime_started so the restart
-      # uses --session-id (with --mcp-config) instead of --resume.
-      stale_keys += [ "runtime_started" ] if use_initial_prompt
+      # Clear stale retry and transcript polling metadata before resuming. A
+      # pre-prompt failure also drops runtime_started so the restart uses
+      # --session-id (with --mcp-config) instead of --resume. Both key sets are
+      # declared on Session alongside the two others — see
+      # Session::PRE_PROMPT_RESTART_KEYS.
+      stale_keys = use_initial_prompt ? Session::PRE_PROMPT_RESTART_KEYS : Session::STALE_RETRY_METADATA_KEYS
 
       @session.remove_metadata!(stale_keys)
       @session.update!(running_job_id: nil)
@@ -1230,53 +1240,23 @@ class Api::V1::SessionsController < Api::BaseController
   end
 
   # Restart a session from scratch by re-running the full setup pipeline.
-  # Used when setup never completed (e.g., git clone failed).
+  # Used when setup never completed (e.g. the git clone failed).
+  #
+  # The operation is Sessions::RestartFromScratch's, shared with the web UI's
+  # Restart button and MCP `action_session` — including the `with_db_retry` this
+  # copy used to go without, so a dropped Postgres connection now comes back as a
+  # 503 the caller can retry rather than as a 500. This method keeps only the
+  # rendering.
   def restart_from_scratch(session)
-    unless session.git_root.present?
-      render_api_error("Cannot restart", "No git_root configured for restart from scratch", status: :unprocessable_entity)
+    result = Sessions::RestartFromScratch.call(session, actor: :api)
+
+    unless result.ok?
+      answer = RESTART_FROM_SCRATCH_ERRORS.fetch(result.error_code, RESTART_FROM_SCRATCH_ERRORS[:failed])
+      render_api_error(answer[:title], result.error, status: answer[:status])
       return
     end
 
-    # The replacement turn IS the original first turn — same prompt, new clone,
-    # new session_id — so it carries the attachments that turn was created with
-    # (Sessions::FirstTurnAttachments, which never raises). Replaying all of them
-    # is deliberate: this path is reached only when there is no conversation to
-    # prompt into — a pre-prompt failure with setup incomplete, or a session that
-    # never ran — and a restart from scratch discards the conversation any earlier
-    # delivery went to. Read outside the transaction.
-    images, files = Sessions::FirstTurnAttachments.for(session)
-    carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)
-
-    ActiveRecord::Base.transaction do
-      session.logs.create!(
-        content: "Restarting session from scratch: re-running full setup pipeline " \
-                 "(git clone, MCP config, process spawn)#{carrying}",
-        level: "info"
-      )
-
-      session.remove_metadata!(
-        Session::STALE_RETRY_METADATA_KEYS,
-        Session::SETUP_ARTIFACT_KEYS,
-        SpotSessionHold::METADATA_KEYS
-      )
-      session.update!(running_job_id: nil, session_id: nil)
-      session.resume! if session.may_resume?
-      AgentSessionJob.enqueue_new_session(session.id, images: images.presence, files: files.presence)
-
-      session.logs.create!(
-        content: "Session resumed - status changed to running, full setup will be re-attempted",
-        level: "info"
-      )
-    end
-
     render json: { session: session_json(session.reload), message: "Session restarted from scratch" }
-  rescue => e
-    Rails.logger.error "[Api::V1::SessionsController] Error restarting session #{session.id} from scratch: #{e.message}"
-    session.logs.create(
-      content: "Error restarting session from scratch: #{e.message}",
-      level: "error"
-    )
-    render_api_error("Cannot restart", e.message, status: :internal_server_error)
   end
 
   # Board visibility — the presentation-only axis — applied to a listing scope.
