@@ -164,7 +164,6 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
       prompt: "Test prompt",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {}  # No working_directory
     )
 

@@ -15,8 +15,7 @@ class RepairPurelyNumericSessionSlugsTest < ActiveSupport::TestCase
 
   def session(slug: nil, created_at: Time.zone.parse("2026-08-30 11:02"))
     record = Session.create!(prompt: "slug #{SecureRandom.hex(4)}", agent_runtime: "claude_code",
-                             status: :waiting, git_root: "https://github.com/test/repo.git", branch: "main",
-                             execution_provider: "local_filesystem")
+                             status: :waiting, git_root: "https://github.com/test/repo.git", branch: "main")
     # update_columns, because writing an all-digit slug is exactly what the model
     # now refuses — the rows this task exists for predate that validation.
     record.update_columns(slug: slug, created_at: created_at) if slug

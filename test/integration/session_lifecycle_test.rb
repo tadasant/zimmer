@@ -295,8 +295,7 @@ class SessionLifecycleTest < IntegrationTestCase
       status: "needs_input",
       agent_runtime: "claude_code",
       session_id: SecureRandom.uuid,
-      git_root: "https://github.com/test/repo.git",
-      execution_provider: "local_filesystem"
+      git_root: "https://github.com/test/repo.git"
     )
 
     # Create messages out of order to test position-based sorting

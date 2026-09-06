@@ -47,8 +47,7 @@ class JsonbDualWriteTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :waiting,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     }.merge(attrs))
   end
 

@@ -14,7 +14,6 @@ class Sessions::RecoverLostCloneTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "feature/x",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       status: :running,
       metadata: { "clone_path" => CLONE_PATH, "working_directory" => CLONE_PATH },

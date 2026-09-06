@@ -211,11 +211,13 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_includes json["messages"].join(" "), "must reference an existing session"
   end
 
-  # `execution_provider` is a permitted create param, so the REST surface has to reject a
-  # provider that cannot run — not just decline to advertise it, the way the MCP tool's enum
-  # does. Otherwise an API caller can still store a value no code path can honor.
-  test "should reject create with the stub remote_sandbox execution provider" do
-    assert_no_difference("Session.count") do
+  # `execution_provider` is retired (#172): not a permitted create param and not a
+  # column the model exposes. A caller that still sends it — the old enum was public,
+  # on this endpoint and on the MCP start_session tool — gets the param dropped by
+  # `params.permit` rather than a 422 or an UnknownAttributeError, so the create keeps
+  # working and simply stops carrying a value nothing read.
+  test "should ignore a legacy execution_provider create param" do
+    assert_difference("Session.count", 1) do
       post api_v1_sessions_path, params: {
         agent_runtime: "claude_code",
         git_root: "https://github.com/test/repo.git",
@@ -224,9 +226,8 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
       }, headers: @headers
     end
 
-    assert_response :unprocessable_entity
-    json = JSON.parse(response.body)
-    assert_includes json["messages"].join(" "), "remote_sandbox is not a valid execution provider"
+    assert_response :created
+    assert_not JSON.parse(response.body)["session"].key?("execution_provider")
   end
 
   test "should create session with prompt and queue job" do
@@ -2423,7 +2424,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     json = JSON.parse(response.body)["session"]
     expected_fields = %w[
       id slug title status agent_runtime prompt git_root branch subdirectory
-      execution_provider goal mcp_servers all_mcp_servers injected_mcp_servers
+      goal mcp_servers all_mcp_servers injected_mcp_servers
       config metadata custom_metadata session_id job_id running_job_id
       archived_at created_at updated_at
     ]
@@ -2431,6 +2432,10 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     expected_fields.each do |field|
       assert json.key?(field), "Expected field '#{field}' to be present"
     end
+
+    # Retired in #172 along with the unwired lib/execution/ layer it named. Every
+    # row carried the same constant, and no code path read it.
+    assert_not json.key?("execution_provider")
   end
 
   # Consumers (e.g. the Zimmer router) need an unambiguous answer to "which MCP

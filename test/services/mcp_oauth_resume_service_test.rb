@@ -19,7 +19,6 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {
         "failure_reason" => "oauth_required",
         "oauth_required_servers" => [
@@ -196,7 +195,6 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {}
     )
 
@@ -327,7 +325,6 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
         status: :needs_input,
         git_root: "https://github.com/test/repo.git",
         branch: "main",
-        execution_provider: "local_filesystem",
         session_id: SecureRandom.uuid,
         transcript: { "type" => "user", "message" => { "content" => "Do the original work" } }.to_json,
         metadata: {
@@ -364,7 +361,6 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
         status: :needs_input,
         git_root: "https://github.com/test/repo.git",
         branch: "main",
-        execution_provider: "local_filesystem",
         session_id: SecureRandom.uuid,
         transcript: { "type" => "user", "message" => { "content" => "Do the original work" } }.to_json,
         metadata: {
@@ -597,7 +593,6 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
       status: status,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       mcp_servers: mcp_servers
     )
   end

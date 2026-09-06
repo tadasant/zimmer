@@ -41,7 +41,6 @@ class AgentSessionJobUndeliveredTurnTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       status: :needs_input,
       # A session with at least one MCP server is the one that actually runs
@@ -175,7 +174,6 @@ class AgentSessionJobUndeliveredTurnTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       mcp_servers: [ "zimmer-self-session" ],
       status: :waiting
     )

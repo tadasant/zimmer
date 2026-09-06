@@ -23,7 +23,6 @@ class SessionScratchArchiveLifecycleTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       transcript: "{}\n",
       metadata: { "clone_path" => @clone_path, "working_directory" => @clone_path }

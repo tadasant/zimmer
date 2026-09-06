@@ -30,7 +30,6 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
       archived_at: 1.hour.ago,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       transcript: @transcript_content,
       mcp_servers: [ "context7" ],
@@ -431,7 +430,6 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
       archived_at: 1.hour.ago,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: nil,
       transcript: nil,
       metadata: { "paused_by" => "recovery" }

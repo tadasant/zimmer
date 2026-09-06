@@ -22,8 +22,7 @@ class SessionVisibilityTest < ActiveSupport::TestCase
       mcp_servers: [],
       config: {},
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     }.merge(attrs))
   end
 

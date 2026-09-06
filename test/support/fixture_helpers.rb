@@ -23,8 +23,7 @@ module FixtureHelpers
       status: :waiting,
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     }
 
     Session.create!(defaults.merge(attributes))

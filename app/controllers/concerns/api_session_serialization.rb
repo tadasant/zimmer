@@ -45,7 +45,6 @@ module ApiSessionSerialization
       git_root: session.git_root,
       branch: session.branch,
       subdirectory: session.subdirectory,
-      execution_provider: session.execution_provider,
       goal: session.goal,
       mcp_servers: session.mcp_servers,
       # `mcp_servers` is only the explicitly-selected list. Consumers asking

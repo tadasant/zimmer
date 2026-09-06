@@ -346,7 +346,6 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
       config: {},
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       transcript: transcript_entries.map(&:to_json).join("\n")
     )
   end
@@ -374,7 +373,6 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
       config: {},
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       transcript: transcript_entries.map(&:to_json).join("\n")
     )
 
@@ -405,7 +403,6 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
       config: {},
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       transcript: transcript_entries.map(&:to_json).join("\n")
     )
 
@@ -454,7 +451,6 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
       config: {},
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       transcript: transcript_entries.map(&:to_json).join("\n")
     )
   end
@@ -482,7 +478,6 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
       config: {},
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       transcript: transcript_entries.map(&:to_json).join("\n")
     )
   end
@@ -508,7 +503,6 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
       config: {},
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       transcript: transcript_entries.map(&:to_json).join("\n")
     )
 
@@ -550,7 +544,6 @@ class SessionsControllerInfiniteScrollTest < ActionDispatch::IntegrationTest
       config: {},
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       transcript: transcript_entries.map(&:to_json).join("\n")
     )
   end

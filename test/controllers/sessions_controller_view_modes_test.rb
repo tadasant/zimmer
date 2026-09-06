@@ -37,7 +37,6 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
       config: {},
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       favorited: favorited,
       category: category
     )

@@ -339,8 +339,8 @@ Three details are load-bearing:
 
 - **The global config, not the clone.** A session's working trees are not all clones Zimmer made:
   `GitCloneService` clones the session's own, `ForkSessionService` `git init`s a scaffold for a fork
-  with no source tree to copy, `Execution::Providers::LocalFilesystem` runs its own `git clone`, and
-  an agent freely makes worktrees and scratch repos. One `[user]` section covers all of them —
+  with no source tree to copy, and an agent freely makes worktrees and scratch repos. One `[user]`
+  section covers all of them —
   including whatever creates a working tree next — where a `git config --local` write covers exactly
   the call sites that remembered to make it.
 - **Boot, not build.** An identity is per-deployment; a credential helper is not. Baking a name and

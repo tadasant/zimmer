@@ -278,16 +278,6 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     assert_includes result, "## Session Started Successfully"
   end
 
-  # The tool schema is what an agent reads to decide what to send, so a value it offers has
-  # to be one the model accepts and a provider can run. Deriving the enum from the model
-  # constant rather than restating it is what holds that true without a second edit.
-  test "the execution_provider enum is exactly what the model accepts" do
-    enum = Mcp::Tools::StartSession.input_schema.to_h.dig(:properties, :execution_provider, :enum)
-
-    assert_equal Session::EXECUTION_PROVIDERS, enum
-    refute_includes enum, "remote_sandbox"
-  end
-
   # A router read "drop servers the task doesn't need" and wrote a fresh
   # one-element list; the root's other default went with it, and the skill that
   # needed that server was still attached and had nothing to call. The partial
@@ -313,25 +303,29 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     assert_includes description, "Every root default you did not name is dropped"
   end
 
-  test "the execution_provider description does not promise a sandbox" do
-    description = Mcp::Tools::StartSession.input_schema.to_h.dig(:properties, :execution_provider, :description)
-
-    refute_includes description, "remote_sandbox"
-    refute_includes description, "isolated sandbox"
-    assert_includes description, "unsandboxed"
+  # The tool schema is what an agent reads to decide what to send. `execution_provider`
+  # offered a choice the spawn path never made — it gated `lib/execution/`, which nothing
+  # under app/ called — so #172 removed the parameter rather than leaving a one-value enum
+  # standing in for a decision.
+  test "the tool no longer advertises an execution_provider" do
+    assert_not Mcp::Tools::StartSession.input_schema.to_h[:properties].key?(:execution_provider)
   end
 
-  test "a session cannot be started against the stub sandbox provider" do
-    assert_no_difference "Session.count" do
-      assert_raises(ActiveRecord::RecordInvalid) do
-        @tool.call(
-          "agent_root" => "zimmer",
-          "prompt" => "Fix the thing",
-          "title" => "Sandbox please",
-          "execution_provider" => "remote_sandbox"
-        )
-      end
+  # The enum was public on this tool, so an agent may still be composing a call from a
+  # stale schema. The SDK validates against the schema without `additionalProperties:
+  # false`, so an unknown argument is dropped: the spawn succeeds and the value goes
+  # nowhere, rather than failing a call that is right about everything else.
+  test "a legacy execution_provider argument is ignored rather than fatal" do
+    assert_difference "Session.count", 1 do
+      @tool.call(
+        "agent_root" => "zimmer",
+        "prompt" => "Fix the thing",
+        "title" => "Sandbox please",
+        "execution_provider" => "remote_sandbox"
+      )
     end
+
+    assert_not Session.last.respond_to?(:execution_provider)
   end
 
   # An explicit [] and an omitted key are two different requests, and only a root

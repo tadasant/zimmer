@@ -15,7 +15,6 @@ class AgentSessionJobTest < ActiveJob::TestCase
       status: :waiting,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       # These tests mock a process that runs and exits; a real one writes a
       # transcript while doing so, and the mocked filesystem does not. Since
       # handle_exit now treats a turn that left BOTH transcript stores empty as a
@@ -12298,8 +12297,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   def arm_wake_set(session)
     watched = Session.create!(
       prompt: "Child", agent_runtime: "claude_code", status: :running,
-      git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem"
+      git_root: "https://github.com/test/repo.git", branch: "main"
     )
 
     [
@@ -12408,7 +12406,6 @@ class AgentSessionJobTest < ActiveJob::TestCase
       status: :waiting,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       mcp_servers: [ "notion" ]
     )
     session.merge_metadata!(
@@ -12487,7 +12484,6 @@ class AgentSessionJobTest < ActiveJob::TestCase
       status: :waiting,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       mcp_servers: [ "notion" ]
     )
     session.merge_metadata!(

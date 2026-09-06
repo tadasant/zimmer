@@ -467,7 +467,6 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
       scheduling_class: scheduling_class,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       metadata: { "clone_path" => "/tmp/test-clone", "working_directory" => "/tmp/test-clone" }
     )
