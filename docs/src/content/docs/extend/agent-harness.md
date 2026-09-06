@@ -435,16 +435,19 @@ selected plugin bundles is subtracted, because `pi-plugins` dispatches those
 through its own runner and a hook reachable both ways would be spawned twice per
 event.
 
-**An AIR hook body has to speak both runtimes.** AIR is vendor-neutral and its
-hook bodies should be too, but the two runtimes disagree about both halves of the
-contract: Claude Code sends `{tool_name, tool_input}` on stdin and takes context
-back through `hookSpecificOutput.additionalContext`, while `@tadasant/pi-hooks`
-sends `{event, toolName, input, content}` and takes `{"content": ...}`, which
-*replaces* the tool result rather than appending to it. `@tadasant/pi-hooks` sets
-`PI_HOOK=1` on every hook process, which is the signal to answer in its dialect.
-The catalog's `git-push-ci-reminder` reads either shape and answers in the
-matching one; a body that only speaks Claude's loads cleanly on Pi, runs, and
-does nothing.
+**An AIR hook body may speak either runtime's dialect — from
+`@tadasant/pi-hooks@0.2.0`.** Claude Code sends `{tool_name, tool_input}` on stdin
+and takes context back through `hookSpecificOutput.additionalContext`;
+`@tadasant/pi-hooks` sends `{event, toolName, input, content}` and takes
+`{"content": ...}`, which *replaces* the tool result rather than appending to it.
+From 0.2.0 the extension sends both namings and honors both replies, so a body
+written for either runtime runs on Pi unmodified — which is why
+`PiExtensions::REGISTRY` pins 0.2.0 as a floor, not just as the current version.
+Below it, a body speaking only Claude's dialect loaded cleanly on Pi, ran, and did
+nothing, with `[pi-hooks] loaded N hook(s)` printed either way. `PI_HOOK=1` is
+still set on every hook process, and the catalog's `git-push-ci-reminder` still
+branches on it, because Pi's replacing `content` is the one difference no
+translation can paper over.
 
 **An extension's entrypoint is a TypeScript source file, and it comes from the
 package.** Pi loads `.ts` extensions directly, so a Pi package's entrypoint is a

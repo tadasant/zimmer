@@ -164,8 +164,8 @@ RUN set -eo pipefail; \
 # the pi_extensions_test asserts this install line and that registry agree.
 #
 # All three are installed in one `npm install`: it is all-or-nothing, so naming a
-# package that 404s would fail the whole base image, which is why the two
-# `@tadasant` ones waited for their 0.1.0 release.
+# package that 404s would fail the whole base image, which is why no `@tadasant`
+# package is named here before it is published.
 #
 # `@tadasant/pi-plugins` bundles its own copy of `@tadasant/pi-hooks` (a
 # `bundledDependencies` entry, because Pi requires a package to bundle another
@@ -186,7 +186,7 @@ RUN set -eo pipefail; \
 # compiled entrypoint. pi_extensions_test asserts these paths and versions match
 # PiExtensions::REGISTRY.
 RUN set -eo pipefail; \
-    for i in 1 2 3; do npm install --prefix /opt/pi-extensions pi-mcp-adapter@2.32.1 @tadasant/pi-hooks@0.1.0 @tadasant/pi-plugins@0.1.0 && break || { echo "pi-extensions install attempt $i failed, retrying in 5s..."; sleep 5; }; done; \
+    for i in 1 2 3; do npm install --prefix /opt/pi-extensions pi-mcp-adapter@2.32.1 @tadasant/pi-hooks@0.2.0 @tadasant/pi-plugins@0.2.0 && break || { echo "pi-extensions install attempt $i failed, retrying in 5s..."; sleep 5; }; done; \
     test -f /opt/pi-extensions/node_modules/pi-mcp-adapter/index.ts; \
     test -f /opt/pi-extensions/node_modules/@tadasant/pi-hooks/extensions/hooks.ts; \
     test -f /opt/pi-extensions/node_modules/@tadasant/pi-plugins/extensions/plugins.ts
