@@ -66,8 +66,14 @@ module Sessions
   #      touched for a week is the less involved.
   #   3. Fewest prior demotions of this kind, so the same session is not the
   #      answer every time.
-  #   4. Lowest precedence, then newest. The queue's own order, and then the
-  #      session with least waiting behind it.
+  #   4. HIGHEST precedence, then newest. Highest rather than lowest, and the
+  #      difference decides whether the exchange keeps working: among equally
+  #      uninvolved sessions the one to send down is the one currently jumping the
+  #      queue on nothing, and it is the only one whose demotion changes the ORDER
+  #      at all. Taking the lowest made this a permanent no-op after one round —
+  #      that session sinks to the bottom, is selected every time after, and
+  #      #demote! refuses because it is already there, while the promotion goes on
+  #      adding SLOT_GAP to the top forever.
   #
   # Three refusals bound it, and each of them can end in demoting NOBODY, which
   # is a perfectly good outcome:
