@@ -2,7 +2,7 @@ import { Controller } from "@hotwired/stimulus"
 
 // Connects to data-controller="log-level-filter"
 export default class extends Controller {
-  static targets = ["select", "timeline"]
+  static targets = ["select", "timeline", "transcript"]
   static values = {
     level: { type: String, default: "minimal" },
     serverFilter: { type: String, default: "minimal" }
@@ -101,6 +101,19 @@ export default class extends Controller {
   refetchAtLevel(level, origin = this.filterOrigin) {
     const { frame, url } = origin
     url.searchParams.set('filter', level)
+
+    // Carry the Transcript disclosure's state across the round trip. The server
+    // renders it collapsed on every ordinary load — on a long session it is
+    // thousands of rows — but changing the log level is a request ABOUT the
+    // transcript, made by someone who has it open. Re-rendering it shut takes the
+    // one thing they were reading off the screen and leaves the new level with
+    // nothing visible to apply to, which reads as "the filter did nothing" even
+    // though the body underneath was re-filtered correctly.
+    if (this.hasTranscriptTarget && this.transcriptTarget.open) {
+      url.searchParams.set('transcript', 'open')
+    } else {
+      url.searchParams.delete('transcript')
+    }
 
     if (frame) {
       // Setting `src` is a real Turbo Frame navigation: the response's matching

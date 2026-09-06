@@ -247,8 +247,17 @@
     <%# Opening the transcript scrolls it to the bottom: while closed, the
         auto-scroll controller's pinning has nothing to measure, so a session
         that streamed messages in the background would otherwise open at the top,
-        thousands of rows away from what just happened. %>
-    <details data-controller="transcript-panel" data-action="toggle->transcript-panel#toggled">
+        thousands of rows away from what just happened.
+
+        Collapsed by default, but NOT when this body was re-rendered to change
+        the log level. Changing the level is a request about the transcript, made
+        by someone who has it open and is reading it; re-rendering it shut throws
+        away the only thing they were looking at, and the new level looks like it
+        did nothing at all. `transcript=open` travels on the re-fetch address for
+        exactly that round trip (log_level_filter_controller.js), so the panel the
+        reader had open comes back open. %>
+    <details data-controller="transcript-panel" data-action="toggle->transcript-panel#toggled"
+             data-log-level-filter-target="transcript" <%= "open" if @transcript_open %>>
       <summary class="px-4 sm:px-6 py-3 cursor-pointer select-none flex items-center justify-between gap-3 hover:bg-gray-50">
         <span class="flex items-center gap-2 min-w-0">
           <svg class="h-4 w-4 flex-shrink-0 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
