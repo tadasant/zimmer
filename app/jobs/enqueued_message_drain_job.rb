@@ -255,10 +255,13 @@ class EnqueuedMessageDrainJob < ApplicationJob
     return "a job is already driving it" if session.running_job_id.present?
 
     # No runtime session id. A follow-up prompt into a session with none is
-    # reclassified by AgentSessionJob as a FRESH START, which runs the session's
-    # own prompt and DISCARDS the follow-up — so "delivering" here would destroy
-    # the message. It drains at the end of that first turn like any other,
-    # through AgentSessionJob's ordinary end-of-turn path.
+    # reclassified by AgentSessionJob as a FRESH START, which runs `session.prompt`
+    # — and AgentSessionJob#fresh_start_prompt gets the message there by MERGING it
+    # into that column, permanently, rather than delivering it as the turn the
+    # queue holds it as. A queued message is a turn with an origin and a position;
+    # spending it on a fresh start would rewrite the session's prompt with it and
+    # lose both. It drains at the end of that first turn like any other, through
+    # AgentSessionJob's ordinary end-of-turn path, where it runs as itself.
     #
     # `session_id.blank?`, deliberately, and NOT `never_ran?`. The two differ by
     # `transcript.blank?`, and the reclassification this guards against keys on
@@ -268,9 +271,9 @@ class EnqueuedMessageDrainJob < ApplicationJob
     # (AgentSessionJob's failed-resume recovery and
     # ProcessLifecycleManager#release_stale_runtime_session_id! both write
     # `session_id = nil` on a session with a full transcript). Such a session
-    # rests in `waiting` looking idle by every other test here, and draining
-    # into it spends the message on a turn that runs `session.prompt` instead
-    # and throws the message away — while the drain logs a delivery.
+    # rests in `waiting` looking idle by every other test here, and draining into
+    # it would fold the message into the prompt of a session with hours of work
+    # behind it — while the drain logs a delivery.
     return "has no runtime session id to resume" if session.session_id.blank?
 
     # Held or paused at the spot quota gate. Delivering would enqueue a turn that

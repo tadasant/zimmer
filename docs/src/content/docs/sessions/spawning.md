@@ -237,6 +237,52 @@ scoped to the nudge, why a turn has to be underway for the handoff to be safe, a
 happens to the session's armed wakes — is in
 [A queued message outranks an injected recovery nudge](/sessions/lifecycle/#a-queued-message-outranks-an-injected-recovery-nudge).
 
+### A turn into a session that never started
+
+The last guard in that preamble is about a session with **no runtime `session_id` at all**. A
+follow-up assumes a conversation to resume, and this session has never had one: it died in its very
+first spawn before an id was minted, or it was restored from the trash having never run
+([#557](https://github.com/tadasant/zimmer/issues/557)) and sits in `needs_input` with no job
+enqueued, which is exactly where a human continues it by typing into the follow-up box. Routed
+through the follow-up arm it would raise *"Cannot send follow-up prompt: session_id is missing"* and
+fail in a loop, so the job drops the follow-up classification and runs the whole new-session setup
+instead — clone, id, fresh spawn.
+
+That fresh spawn carries `session.prompt`, so the only question left is what that column should
+hold, and it turns on whether the arriving text **names work of its own**.
+
+| The turn is… | The fresh start runs |
+| --- | --- |
+| A nudge (`AutomatedPrompts.nudge?` — `SYSTEM_RECOVERY`, with or without its reason suffix, and `HEARTBEAT`) | The session's own prompt, unchanged. The nudge text is not carried. |
+| Anything else — a human's typed follow-up, a trigger's prompt, a poller's message, a child reporting to its parent | The session's own prompt **with the message appended**, inside a `<message-received-before-this-session-started>` block that says the prompt has not run either and that the message is the more recent of the two. |
+| Anything at all, on a session with no prompt of its own | The message, as the whole prompt. |
+
+The nudge row is the one every recovery and respawn caller takes, and for them re-running the
+session's own prompt *is* carrying on — the work never happened, so doing it is the correct
+continuation, and the nudge names nothing on its own. Their behaviour is unchanged.
+
+The other row is [#833](https://github.com/tadasant/zimmer/issues/833). The message used to be
+thrown away here whenever the session already had a prompt, leaving one `warning` line on the
+timeline and nothing anywhere else — a person typed into the follow-up box and watched the session
+re-run the prompt it was created with. It is appended rather than substituted because the prompt
+has not run either: replacing it would lose the task the session was created to do, and would leave
+a continuation-shaped message ("go ahead", "also add tests") standing alone in an empty conversation
+naming no work at all — the same emptiness the nudge downgrade below exists to avoid.
+
+The composition is written to the `prompt` column rather than held in memory, because the
+fresh-start spawn reads that column, the delivery marker this turn arrived with is dropped
+immediately afterwards, and a turn lost to a SIGTERM before the spawn must not take the message with
+it. It is idempotent — a message identical to the prompt, or already appended to it, is not appended
+again — so a recovery loop redelivering the same text cannot grow the prompt without bound. Every
+branch says which one it took on the session's own timeline.
+
+Two callers refuse to deliver here for that reason rather than in spite of it.
+`EnqueuedMessageDrainJob` will not drain a queued message into a session with no `session_id`: a
+queued message is a turn with an origin and a position, and merging it into somebody's prompt loses
+both, so it goes out on the end-of-turn drain instead. `Trigger#resuscitatable_session?` will not
+*reuse* a never-run session for the same reason — a fire folded into another prompt is not a fire —
+and spawns a new session instead.
+
 ## What gets spawned
 
 **Claude Code:**

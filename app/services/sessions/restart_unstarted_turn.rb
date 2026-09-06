@@ -203,10 +203,12 @@ module Sessions
     # spawning directly; this service delivers through a follow-up job, and that job
     # reclassifies a follow-up on a session with no `session_id` as a fresh start,
     # which spawns carrying `session.prompt`. That is exactly what we want when
-    # `session.prompt` is what we chose to replay — and would silently substitute the
-    # first prompt for a lost follow-up otherwise. So a mints-its-own-id runtime keeps
-    # its stale id in the follow-up case; the poller re-attaches on the next turn that
-    # captures an id, which is strictly better than replaying the wrong turn.
+    # `session.prompt` is what we chose to replay. For a lost FOLLOW-UP it is not:
+    # AgentSessionJob#fresh_start_prompt would fold that follow-up into the prompt
+    # column and replay the pair, rewriting the session's prompt with a turn that was
+    # only ever meant to be one turn. So a mints-its-own-id runtime keeps its stale id
+    # in the follow-up case; the poller re-attaches on the next turn that captures an
+    # id, which is strictly better than rewriting the session's own prompt.
     def reset_runtime_session_id!
       if TranscriptRuntime.normalizer_for(session).mints_own_session_id?
         return if session.session_id.blank?
