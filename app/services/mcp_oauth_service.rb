@@ -13,6 +13,13 @@
 #     # ... initiate OAuth flow
 #   end
 class McpOauthService
+  # Raised rather than putting an OAuth client secret on a cleartext connection.
+  # Both endpoints that carry one are guarded: the token endpoint (#post_form,
+  # which sends the secret) and the registration endpoint (#post_json, whose DCR
+  # response returns a freshly minted one). Both are named by the MCP server's own
+  # discovery document. See HttpsTokenEndpoint.
+  class InsecureEndpoint < StandardError; end
+
   # Request timeout in seconds
   REQUEST_TIMEOUT = 30
 
@@ -380,6 +387,18 @@ class McpOauthService
   # initial exchange, and it runs unattended from cron, so it must carry the same
   # bound.
   def post_form(uri, params)
+    # The last line of defence, and the only one that covers a caller holding a
+    # URI rather than a model. Both grants posted through here carry the OAuth
+    # client_secret as a form parameter, and `use_ssl` below is derived from this
+    # very URI — so without this check the method's own argument decides whether
+    # the secret is encrypted. Raising is the safe failure: the initial exchange
+    # already rescues into "token exchange error" and #refresh! is gated by
+    # McpOauthCredential#can_refresh?, so nothing reaches here in normal operation.
+    unless HttpsTokenEndpoint.secure?(uri)
+      raise InsecureEndpoint,
+        "refusing to post OAuth credentials to #{HttpsTokenEndpoint.describe(uri)} — the token endpoint must be https"
+    end
+
     request = Net::HTTP::Post.new(uri.request_uri)
     request.set_form_data(params)
     request.basic_auth(uri.user, uri.password) if uri.user
@@ -557,8 +576,27 @@ class McpOauthService
     nil
   end
 
-  # Posts JSON to a URL
+  # Posts JSON to a URL.
+  #
+  # Its only caller is #perform_dcr, and the URL it posts to is the
+  # `registration_endpoint` out of the MCP server's own discovery document — the
+  # same untrusted origin as the token endpoint. The DCR *response* carries a
+  # freshly minted client_id and client_secret, so a cleartext registration
+  # publishes a Zimmer client credential just as surely as a cleartext refresh
+  # publishes the one it already holds. This runs inside check_oauth_requirement,
+  # i.e. *before* McpOauthController#initiate's own check, so the guard has to
+  # live here (#892).
+  #
+  # The refusal is deliberately re-raised past the generic rescue below: swallowed
+  # into a debug line it would read as an ordinary network failure. #perform_dcr
+  # catches it, logs at warn, and returns nil, which the controller already
+  # renders as "Dynamic Client Registration failed".
   def post_json(url, body)
+    unless HttpsTokenEndpoint.secure?(url)
+      raise InsecureEndpoint,
+        "refusing to register an OAuth client at #{HttpsTokenEndpoint.describe(url)} — the registration endpoint must be https"
+    end
+
     uri = URI(url)
     http = Net::HTTP.new(uri.host, uri.port)
     http.use_ssl = uri.scheme == "https"
@@ -578,6 +616,8 @@ class McpOauthService
     end
 
     JSON.parse(response.body)
+  rescue InsecureEndpoint
+    raise
   rescue => e
     Rails.logger.debug "[McpOauthService] Failed to POST #{url}: #{e.message}"
     nil
