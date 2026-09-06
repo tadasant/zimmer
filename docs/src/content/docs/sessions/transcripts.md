@@ -376,7 +376,9 @@ Both halves of that middle box matter:
   lines is this session's. That is the evidence #1047 used to tie a branch to its session, and
   requiring it keeps this from decaying into "newest `.jsonl` wins" — the rule the pre-`session_id`
   fallback is deliberately narrow to avoid, because a working directory can hold a previous
-  occupant's transcript. It costs one line of one file: the read stops at the first answer.
+  occupant's transcript. Only a file written *more recently* than the recorded one can displace it,
+  so mtime prunes the candidates before any of them is opened: the ordinary session, where the
+  recorded file is also the newest, costs a glob and a stat per sibling and opens nothing.
 - **Not a fork.** A **fork's** transcript is copied verbatim from its source, so its early lines
   carry the *source* session's id — the same shape a re-key has. A uuid another `Session` row
   already holds is excluded outright, so a fork that ran in this working directory can never be
@@ -387,36 +389,50 @@ Both halves of that middle box matter:
 
 Following the branch is only half the repair, because the branch is **not** a superset of what
 Zimmer stored. The copy was taken at a point in the conversation; whatever the abandoned file
-recorded after that point exists nowhere else. So the poller keeps the stored transcript as an
-immutable prefix and takes only what lies past the copy point from the branch, recording two counts
-the first time it follows a given branch:
+recorded after that point exists nowhere else. `RekeyedTranscriptBranch` merges the two — the stored
+transcript, extended by whatever the branch adds — and reads as three terms in order:
 
-| Key | Meaning |
+| Term | What it is |
 | --- | --- |
-| `metadata["transcript_branch_session_id"]` | which branch the counts describe |
-| `metadata["transcript_branch_base_event_count"]` | N — stored lines kept as the prefix |
-| `metadata["transcript_branch_shared_event_count"]` | K — branch lines that prefix already holds |
+| `H` | the head the branch copied, shared with the stored transcript |
+| `A` | what the abandoned file recorded after the copy — held nowhere but `sessions.transcript` |
+| `T` | the branch's own tail |
 
-Every later poll rebuilds `stored.first(N) + branch.drop(K)`. Re-deriving K each time would
-re-append the tail contributed last time, because after the first splice the stored transcript and
-the branch diverge at the copy point rather than at the branch's tip — the same reason rotation
-records `transcript_carryover_event_count` instead of recomputing it.
+`stored` is `H + A` the first time and `H + A + T` on every pass after that, so the work is to find
+how much of `T` is already at the end of `stored` and append only the rest. **That is recomputed
+from the two texts every time, never remembered.** A remembered split point is wrong the moment the
+stored transcript stops being prefix-shaped — which is precisely what the first merge does to it —
+and the error compounds on each further re-key. Recomputing also absorbs the two things that go
+wrong in practice: a read taken mid-flush, whose trailing partial line is dropped and re-supplied
+from the branch, and a poll that could not open the branch at all.
 
-In the ordinary re-key the branch was seeded with the *whole* recorded file, N and K are equal, and
-the result is the branch verbatim. The bookkeeping is retired the moment `<session_id>.jsonl` is the
-file being written again, which is what a resume produces:
-`AgentSessionJob#restore_regressed_transcript_if_needed` re-materializes the stored transcript
-there — now including everything the branch contributed — before the runtime reads it.
+In the ordinary re-key the branch was seeded with the *whole* recorded file, so it already starts
+with everything stored and the merge is one string comparison.
+
+**Every writer of `sessions.transcript` goes through it**, not just the poller: both controllers'
+`refresh`, `bulk_refresh`, and the `action_session` MCP tool's two paths all start from
+`find_main_transcript` and then guard the write with `Session.transcript_regression?` — which
+compares line *counts*, so a branch longer than the stored transcript but missing its tail passes
+and takes `A` with it. One of them skipping the merge would undo it for all of them.
+
+`metadata["transcript_branch_session_id"]` records which file a session is being polled on. It is a
+breadcrumb rather than state the merge depends on — #1047's complaint is that the failure was
+invisible — and it is retired only on an affirmative "the recorded file is the one being read",
+which is what a resume produces: `AgentSessionJob#restore_regressed_transcript_if_needed`
+re-materializes the stored transcript at `<session_id>.jsonl`, now including everything the branch
+contributed, before the runtime reads it.
 
 :::caution
-This reaches a re-key inside the session's **own** transcript directory, which is where a runtime
-re-keying in place would put one. It does not reach a copy written from another cwd — a transcript
-directory is a pure function of the working directory Zimmer recorded, and enumerating every
-directory under `~/.claude/projects` on every poll is not a trade worth making. That is the shape
+Two things this does not reach. **A copy written from another cwd:** a transcript directory is a
+pure function of the working directory Zimmer recorded, and enumerating every directory under
+`~/.claude/projects` on every poll is not a trade worth making. That is the shape
 [#1047](https://github.com/tadasant/zimmer/issues/1047)'s own sighting had, and there it was a
 [status-summary fork](/sessions/status-summary/) taking a recovery nudge and continuing the
 conversation it had copied — a separate session, in its own clone, whose cause was removed by
-[#695](https://github.com/tadasant/zimmer/issues/695). See [limitations](/limitations/).
+[#695](https://github.com/tadasant/zimmer/issues/695). **And a re-key of a fork:** a fork's own file
+opens under its *source's* id, so a branch of a fork does too, and the head test asks for the
+fork's id. A fork is short-lived by construction, so this is a narrow gap rather than a live one.
+See [limitations](/limitations/).
 :::
 
 ## The regression guard
