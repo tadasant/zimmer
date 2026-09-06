@@ -982,8 +982,11 @@ the queue. Precedence ties (the default is 0 for everything nobody has ranked) b
    a conversation with is the last to lose its turn.
 3. **Newest**, which has least in flight to lose.
 
-Exactly **one** session yields per priority start: each priority session pays for the one slot it
-takes, so a fleet several over its cap converges a start at a time rather than emptying in one pass.
+Exactly **one** session yields per outstanding slot. A marked session keeps its turn — and therefore
+keeps counting toward the cap — for the whole grace window, so the cap comparison subtracts the marks
+already standing. Without that subtraction, the fact that the gate is a choke point on every *turn*
+rather than every session would bite hard: a priority session taking follow-up turns every couple of
+minutes would take a fresh victim for the same slot on each one until the spot fleet drained.
 
 #### The pause is graceful, and often free
 
@@ -991,14 +994,21 @@ A preemption does **not** kill the victim's process. It writes the pause record 
 while the session runs, and the session's own turn end carries it needs_input → waiting through the
 same `execute_pending_sleep` a deliberate park uses. No tool call is lost and no unflushed reasoning.
 
-`SpotCeilingSweepJob` resolves the mark on its five-minute pass, and there are only two outcomes:
+`SpotCeilingSweepJob` resolves the mark on its five-minute pass:
 
-| The fleet, on the next pass | What happens |
+| State on the next pass | What happens |
 | --- | --- |
-| Back **under** its cap | The mark is **released**. The priority session finished, or something else did; the preemption was never needed, the session keeps its turn, and nothing was lost at all. |
+| The session reached **`needs_input`** still marked | It is **slept into the queue**. Its turn already ended; the only thing that did not happen is the transition, and `execute_pending_sleep` alerts rather than raising when it fails. Without this net the session sits in the operator's action queue holding a record no sweep acts on. |
+| The mark is older than `STALE_MARK_AGE` (1 hour) | It is **released**, whatever the fleet says. A mark only survives past its grace while the fleet keeps reading at cap, so an hour-old one means its provenance broke rather than that the turn is long. |
+| The fleet is back **under** its cap | The mark is **released**. The preemption was never needed, the session keeps its turn, and nothing was lost at all — including the ledger, which is un-charged, so a released mark costs neither a recorded preemption nor a cooldown. |
 | Still **at or over** its cap, and the mark is older than `SpotPreemption::GRACE` (10 minutes) | The turn is **halted** where it stands, exactly as a budget pause halts one. This is the only path that costs anything, and it is paid only by turns that would otherwise make the ceiling mean nothing. |
 
-A mark inside its grace is left alone, and a mark with no readable timestamp is never escalated.
+A mark inside its grace is left alone, and a mark with no readable timestamp is neither escalated nor
+released — nothing is done on the strength of a record that cannot be read.
+
+A session that has **already asked to sleep** at the end of its turn — it armed a `wake_me_up_later`
+mid-turn, say — is never marked in the first place. Its slot is on its way back without anyone taking
+it, and marking it would overwrite a sleep intent this ceiling does not own.
 
 #### It joins the queue that already exists
 
@@ -1018,14 +1028,15 @@ A session already carrying any pause record is never a candidate either; its slo
 already.
 
 **When nothing is eligible, nothing happens** and the fleet stays one over its cap, which is what it
-did before preemption existed. Every error path lands there too: preemption is called from the gate
+did before preemption existed. The same is true of a slot already promised: with a mark outstanding
+the cap reads as satisfied, so a second priority start in the same window takes nobody. Every error path lands there too: preemption is called from the gate
 whose whole promise is that it only defers, so it never raises and never holds anything.
 
 #### Where you see it
 
 | Surface | What it says |
 | --- | --- |
-| The session page | A **Preempted by a priority session** banner, naming the slot it gave up and the free slot it is waiting for. No quota window is mentioned, because none is involved. |
+| The session page | A **Preempted by a priority session** banner, naming the slot it gave up and what it is waiting for — a free slot *and* a Claude account under both quota targets, because it waits in the same queue as the budget ceiling's sleepers and answers to the same resume decision. A spent window keeps it asleep even once a slot frees. |
 | The session log | The mark, and then either the release or the halt |
 | `/inference` | **Spot sessions preempted by priority work**, its own figure beside the paused and held ones |
 | `get_session` | The same lines, plus which session took the slot and how often this session has been preempted |
@@ -1197,19 +1208,26 @@ number rather than walking up `SLOT_GAP` on every message.
 Without a counterweight every intervention adds `SLOT_GAP` to the top of the queue forever and the
 numbers inflate away from anything an operator set by hand. So one session goes to the bottom —
 chosen by fewest human messages, then oldest last human message, then fewest prior demotions, then
-lowest precedence, then newest.
+**highest** precedence, then newest. Highest, not lowest: among equally-uninvolved sessions the one to
+send down is the one currently jumping the queue on nothing, and it is the only one whose demotion
+changes the order at all — picking the lowest instead makes the exchange a permanent no-op after a
+single round, because that session is already at the bottom and stays selected forever while the top
+goes on inflating.
 
 Three rules each end in demoting **nobody**, which is a perfectly good outcome:
 
 - **Nobody less involved.** The promoted session has just been spoken to, so a candidate has to be
   *strictly* below its count. A queue in which everything has had as much human attention as this one
   has nothing less wanted in it.
-- **The starvation exemption.** A session queued longer than
+- **The starvation exemption.** A session **created** longer ago than
   `Sessions::HumanInterventionPromotion::STARVATION_EXEMPTION` (24 hours) is never demoted, whatever
   its involvement. This is the anti-starvation rule stated as a rule rather than left to luck:
   "least human involvement" is a property that never changes on a session nobody talks to, so without
   it the same row would be demoted forever. An unattended session sinks at most until it is a day
-  old; from then on every promotion goes *past* it rather than over it.
+  old; from then on every promotion goes *past* it rather than over it. `created_at` rather than
+  time-in-queue, deliberately: queue time resets every time a session runs, so a session that keeps
+  almost-running would never accrue any, and being wrong in the "exempt too early" direction is the
+  right direction for a rule about starvation.
 - **Already at the bottom.** A session whose rank is already the lowest is left alone rather than
   walked down another `SLOT_GAP` for no change in the order.
 

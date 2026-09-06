@@ -53,6 +53,23 @@ class SpotPreemptionTest < ActiveSupport::TestCase
     running_session(scheduling_class: SessionGenesis::SPOT, **kwargs)
   end
 
+  # A real one-time schedule, so `paused_until_scheduled_time?` answers off the
+  # trigger rows the production path reads rather than off a stub.
+  def arm_wake_for(session)
+    trigger = Trigger.new(name: "wake-#{session.id}", prompt_template: "carry on",
+                          status: "enabled", agent_root_name: AgentRootsConfig.all.first.name,
+                          reuse_session: true, last_session_id: session.id)
+    trigger.trigger_conditions.build(
+      condition_type: "schedule",
+      configuration: { "scheduled_at" => 2.hours.from_now.strftime("%Y-%m-%dT%H:%M:%S"),
+                       "timezone" => "UTC" }
+    )
+    trigger.save!
+    session.reload
+    assert session.paused_until_scheduled_time?, "the wake has to actually be armed"
+    trigger
+  end
+
   # === Making room ===
 
   test "a priority session starting into a full fleet preempts a running spot session" do
@@ -183,14 +200,50 @@ class SpotPreemptionTest < ActiveSupport::TestCase
       parked.reload.metadata[SpotSessionPause::PAUSED_REASON], "its own story is not overwritten"
   end
 
-  test "one priority start takes exactly one slot" do
+  # The gate is a choke point on every TURN, not every session, and a marked
+  # victim keeps its turn — so it keeps counting toward the cap for the whole
+  # grace window. Comparing raw occupancy would let a priority session taking
+  # follow-up turns take a fresh victim for the same slot on each one until the
+  # spot fleet drained. TWO calls, because one passes whatever the arithmetic is.
+  test "a second priority turn in the same grace window takes nobody" do
     spot_session(precedence: -1)
     spot_session(precedence: 10)
+    incoming = incoming_priority_session
 
-    SpotPreemption.make_room_for(incoming_priority_session)
+    assert_not_nil SpotPreemption.make_room_for(incoming)
+    assert_nil SpotPreemption.make_room_for(incoming), "the slot was already promised"
+    assert_nil SpotPreemption.make_room_for(incoming_priority_session),
+      "and it stays promised for a different priority session too"
 
     assert_equal 1, Session.where("metadata->>? = ?", SpotSessionPause::PAUSED_REASON,
                                   SpotSessionPause::PREEMPTED_REASON).count
+  end
+
+  # The subtraction is per-slot rather than a blanket "one mark at a time": with
+  # three spot sessions running under a cap of two, the first two priority starts
+  # each take a victim and the third finds the effective fleet already inside the
+  # cap and takes nobody.
+  test "the subtraction is per slot, not one mark at a time" do
+    spot_session(precedence: -1)
+    spot_session(precedence: 10)
+    spot_session(precedence: 20)
+
+    assert_not_nil SpotPreemption.make_room_for(incoming_priority_session)
+    assert_not_nil SpotPreemption.make_room_for(incoming_priority_session)
+    assert_nil SpotPreemption.make_room_for(incoming_priority_session)
+  end
+
+  # A session that already asked to sleep is on its way out of the fleet without
+  # anyone taking its slot. Marking it would also overwrite a sleep intent this
+  # class does not own — and #release! would then strip a `pending_sleep` the
+  # session put there itself, landing it in the operator's action queue.
+  test "a session already sleeping at the end of its turn is not marked" do
+    sleeping = spot_session(precedence: -1, metadata: { "pending_sleep" => true })
+    other = spot_session(precedence: 10)
+
+    assert_equal other.id, SpotPreemption.make_room_for(incoming_priority_session)&.id
+    assert_nil sleeping.reload.metadata[SpotSessionPause::PAUSED_REASON]
+    assert_equal true, sleeping.metadata["pending_sleep"], "its own sleep intent is untouched"
   end
 
   # === Resolving a mark ===
@@ -210,6 +263,70 @@ class SpotPreemptionTest < ActiveSupport::TestCase
     assert victim.running?, "the victim never stopped"
     assert_nil victim.metadata[SpotSessionPause::PAUSED_REASON]
     assert_nil victim.metadata["pending_sleep"]
+    # The ledger is un-charged too: a released mark cost this session nothing, so
+    # counting it would over-report what priority work took AND put the session in
+    # a 30-minute cooldown for a preemption that never happened.
+    assert_nil victim.metadata[SpotPreemption::COUNT]
+    assert_nil victim.metadata[SpotPreemption::LAST_AT]
+    assert_nil victim.metadata[SpotSessionPause::PAUSED_COUNT]
+    refute SpotPreemption.cooling_down?(victim)
+  end
+
+  # A session that armed a wake AFTER it was marked keeps that wake's sleep: the
+  # release drops its own record and leaves `pending_sleep` alone, so the session
+  # sleeps on the wake it asked for rather than coming to rest in the operator's
+  # action queue.
+  test "a release leaves a sleep the session armed for itself" do
+    victim = spot_session(precedence: -1)
+    other = spot_session(precedence: 10)
+    SpotPreemption.make_room_for(incoming_priority_session)
+    # Armed AFTER the mark, which is the window #preemptable_sessions cannot
+    # close: the session called `wake_me_up_later` mid-turn.
+    arm_wake_for(victim)
+    other.update!(status: :needs_input) # the fleet falls under its cap
+
+    assert_equal 1, SpotPreemption.sweep!.released
+    victim.reload
+    assert_nil victim.metadata[SpotSessionPause::PAUSED_REASON], "the preemption record goes"
+    assert_equal true, victim.metadata["pending_sleep"], "the session's own sleep stays"
+  end
+
+  # `execute_pending_sleep` alerts rather than raising, so a marked session can
+  # come to rest in needs_input holding a record no sweep acts on — and, if it is
+  # later answered and runs again, present the sweep with a mark hours past grace.
+  test "a mark that reached needs_input is slept into the queue" do
+    victim = spot_session(precedence: -1)
+    spot_session(precedence: 10)
+    SpotPreemption.make_room_for(incoming_priority_session)
+    victim.update!(status: :needs_input)
+
+    SpotPreemption.sweep!
+
+    victim.reload
+    assert victim.waiting?, "the sweep carried the transition that did not fire"
+    assert_equal SpotSessionPause::PREEMPTED_REASON,
+      victim.metadata[SpotSessionPause::PAUSED_REASON], "and its record and resume owner are intact"
+    assert_nil victim.metadata["pending_sleep"]
+  end
+
+  # A mark only survives past its grace while the fleet keeps reading at cap, so
+  # an hour-old one means its provenance broke rather than that the turn is long.
+  # Released rather than halted, and released BEFORE the cap is consulted.
+  test "a mark older than the stale ceiling is released rather than halted" do
+    victim = spot_session(precedence: -1)
+    spot_session(precedence: 10)
+    SpotPreemption.make_room_for(incoming_priority_session)
+    victim.merge_metadata!(
+      SpotSessionPause::PREEMPT_MARKED_AT => (SpotPreemption::STALE_MARK_AGE + 1.minute).ago.utc.iso8601
+    )
+
+    result = SpotPreemption.sweep!
+
+    assert_equal 0, result.halted, "the fleet is still at cap, and it is still not halted"
+    assert_equal 1, result.released
+    victim.reload
+    assert victim.running?
+    assert_nil victim.metadata[SpotSessionPause::PAUSED_REASON]
   end
 
   test "a mark inside its grace is left alone while the fleet is still full" do
@@ -241,6 +358,13 @@ class SpotPreemptionTest < ActiveSupport::TestCase
     assert victim.waiting?, "the halt lands the session in the queue"
     assert_equal SpotSessionPause::PREEMPTED_REASON,
       victim.metadata[SpotSessionPause::PAUSED_REASON]
+    # The halt must not rewrite the mark's own provenance: a preempted session
+    # halted and one that slept gracefully are the same mechanism with the same
+    # resume owner, and #608 says a session that stops names its cause.
+    assert_equal Sessions::StopRecord::SPOT_PAUSE,
+      victim.metadata[Sessions::StopRecord::REASON]
+    assert victim.logs.any? { |l| l.content.include?("[Spot Queue]") },
+      "the timeline names the queue rather than an ordinary pause"
   end
 
   test "a mark with no timestamp is never escalated" do

@@ -6035,6 +6035,35 @@ on every read surface, `status: "parked"` to list the items, a **Parked on a per
 that a growing `parked` pile means go and merge rather than pull more. A ceiling on `parked` that
 halts pulling by itself would be the next step if the prose turns out not to be enough.
 
+## A preempted session is invisible until it goes dormant
+
+When a priority session [takes a slot](/sessions/spot-and-priority/#a-priority-session-takes-a-slot),
+the spot session it takes it from is *marked* and keeps running until its turn ends — up to
+`SpotPreemption::GRACE` (10 minutes), and longer if the fleet keeps falling under its cap and the
+mark keeps being released and re-taken.
+
+For that window the mark shows up nowhere but the session's own log. Every surface that explains a
+dormant session keys on the session actually being dormant: `SessionWaitingReason` reads
+`SpotSessionPause.paused?`, which requires `waiting`; the session page's spot banner is gated on that
+reading; and `/inference`'s **preempted by priority work** figure counts the `waiting` queue. So a
+human looking at a marked session sees an ordinary running session, and the count on `/inference` can
+be zero while three sessions are on their way into the queue.
+
+That is a deliberate trade rather than an oversight — the alternative is a fifth mechanism in
+`SessionWaitingReason`, which is a ranking over *dormancies*, for a state that is not one — but it is
+a real gap, and the sweep's own log lines are the only place to see it today.
+
+Two smaller edges around the same window:
+
+- `Session::STALE_RETRY_METADATA_KEYS` clears `spot_pause_reason` but not `pending_sleep`, so a
+  recovery path that runs against a marked-but-running session strips the record and leaves the sleep
+  intent. The session then sleeps into `waiting` with no park record and no wake armed. This is not
+  new — `pause_into_spot_queue` without `halt:` has exactly the same window — but preemption makes it
+  reachable without anyone asking for it.
+- If the fleet keeps flapping across its cap, a session can be marked and released repeatedly without
+  ever being preempted. Nothing is lost each time (the release un-charges the ledger), but the log
+  gets noisy.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

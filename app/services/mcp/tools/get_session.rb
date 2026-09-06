@@ -393,9 +393,11 @@ module Mcp
           "- **Slot went to:** session ##{session.metadata&.dig(SpotSessionPause::PREEMPT_FOR_SESSION) || 'unknown'}",
           "- **Times preempted:** #{session.metadata&.dig(SpotPreemption::COUNT).to_i}",
           "- **Queue position:** precedence #{session.precedence} (higher is handled sooner)",
-          "- **Resumes when:** the fleet is back under its concurrency limit and the spot queue " \
-          "reaches this session, highest precedence first. No quota window is involved, nothing is " \
-          "cancelled, and no action is needed."
+          "- **Resumes when:** the fleet is back under its concurrency limit, a Claude Code account " \
+          "is under both quota targets, and the spot queue reaches this session, highest precedence " \
+          "first. It shares that queue — and therefore that resume decision — with the sessions the " \
+          "budget ceiling paused, so a spent window keeps it asleep even once a slot frees. Nothing " \
+          "is cancelled and no action is needed."
         ]
       end
 

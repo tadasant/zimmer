@@ -123,6 +123,17 @@ class SpotPreemption
   # fleet does not run out of eligible victims.
   COOLDOWN = 30.minutes
 
+  # When a mark stops being trustworthy at all.
+  #
+  # A mark only survives past GRACE while the fleet keeps reading at its cap on
+  # every pass, so an hour-old one means something other than a long turn
+  # happened — the commonest being a session that came to rest in `needs_input`
+  # still carrying the record and was later answered, which #sweep! would
+  # otherwise read as a turn ten times past its grace and halt on the spot. A
+  # mark this old is RELEASED rather than acted on: the fleet stays as it is,
+  # which is the direction every uncertain case in this class falls.
+  STALE_MARK_AGE = 1.hour
+
   # How long a marked session is given to end its own turn before the mark is
   # escalated to a halt.
   #
@@ -139,13 +150,29 @@ class SpotPreemption
     "The fleet fell back under its concurrency limit before this turn ended, so the preemption was " \
     "not needed after all. The mark is dropped, nothing was lost, and this session carries on."
 
+  # What a mark carried into the queue by the sweep rather than by the turn's own
+  # end says. Nothing about the outcome differs — same queue, same resume — so
+  # this is about the record being complete rather than about the session.
+  SLEPT_MESSAGE =
+    "This session's turn ended while it was preempted, and the sleep that should have carried it into " \
+    "the spot queue did not fire — so Zimmer's spot ceiling sweep carried it. Nothing else changes: it " \
+    "resumes from the queue, highest precedence first, once the fleet has a free slot and a Claude " \
+    "account is under its quota targets."
+
+  # A mark old enough that nothing can honestly be done with it.
+  STALE_MESSAGE =
+    "The preemption mark on this session had stood for over #{STALE_MARK_AGE.inspect} without being " \
+    "resolved, which is longer than a turn this class waits for — so it was dropped rather than acted " \
+    "on. Nothing was lost, and this session carries on. A later priority session may preempt it again."
+
   # The expensive outcome, said in the same words SpotSessionPause uses for the
   # cost of a ceiling pause, because it is the same cost.
   HALTED_MESSAGE =
     "This turn was still running #{GRACE.inspect} after the session was preempted, with the fleet " \
     "still at its concurrency limit, so it was stopped where it stands. Whatever was written to disk " \
     "stays written; the tool call in flight is lost. The session is dormant in the spot queue and " \
-    "resumes automatically once the fleet has a free slot."
+    "resumes automatically once the fleet has a free slot and a Claude account is under both quota " \
+    "targets."
 
   # What a sweep pass did. `released` is the good outcome and `halted` is the
   # expensive one, so they are counted apart rather than as "resolved".
@@ -174,7 +201,18 @@ class SpotPreemption
       return nil unless eligible_beneficiary?(session)
 
       occupancy = SpotGateService.fleet_occupancy
-      return nil unless occupancy.at_cap?
+      # A slot that is already promised is not promised twice. A marked session
+      # keeps its turn — and therefore keeps counting in `on_a_worker` — for the
+      # whole grace window, so comparing raw occupancy against the cap would let
+      # every priority turn in that window take a fresh victim for the SAME slot.
+      # That is the failure the "one victim per priority start" rule is about, and
+      # the gate is a choke point on every turn rather than only on first starts,
+      # so a chatty priority session is not a hypothetical: it would drain the
+      # spot fleet a session at a time.
+      return nil if occupancy.cap.blank?
+
+      outstanding = marked_sessions.count
+      return nil unless occupancy.on_a_worker - outstanding >= occupancy.cap
 
       victim = choose_victim
       return nil if victim.nil?
@@ -202,7 +240,7 @@ class SpotPreemption
     # @return [Sweep]
     def sweep!(logger: nil)
       logger ||= StructuredLogger.new({ service: "SpotPreemption" })
-      marked = marked_sessions.to_a
+      marked = unresolved_marks.to_a
       return Sweep.new(released: 0, halted: 0, waiting: 0) if marked.empty?
 
       # ONE reading for the whole pass. Asking per session would let the fleet
@@ -210,32 +248,71 @@ class SpotPreemption
       # others on the strength of the same fleet.
       occupancy = SpotGateService.fleet_occupancy
 
+      # A mark that reached `needs_input` still carrying its record is resolved
+      # first and on every pass, whatever the fleet says: the session's turn HAS
+      # ended, so the thing the mark was waiting for already happened and the only
+      # question left is whether it lands in the queue. `execute_pending_sleep`
+      # normally does this and swallows its own failures, so without a net here
+      # such a session sits in the operator's action queue holding a record no
+      # sweep acts on — and, if it is later answered and runs again, presents
+      # #sweep! with a mark hours past its grace.
+      resting, marked = marked.partition { |victim| victim.needs_input? }
+      slept = resting.count { |victim| sleep_into_the_queue!(victim, logger) }
+
+      # A mark nothing could have acted on for an hour is not a long turn, it is
+      # a mark whose provenance broke. Released before the cap is consulted, so
+      # the at-cap branch below can never escalate one.
+      stale, marked = marked.partition { |victim| stale?(victim) }
+      released = stale.count { |victim| release!(victim, logger, stale: true) }
+
       unless occupancy.at_cap?
-        released = marked.count { |victim| release!(victim, logger) }
+        released += marked.count { |victim| release!(victim, logger) }
         logger.info("The fleet fell back under its cap — released preemption marks",
-          released: released, marked: marked.size, **occupancy.to_h)
-        return Sweep.new(released: released, halted: 0, waiting: marked.size - released)
+          released: released, slept: slept, marked: marked.size, **occupancy.to_h)
+        return Sweep.new(released: released, halted: 0, waiting: marked.size + resting.size - released - slept)
       end
 
       overdue, inside_grace = marked.partition { |victim| overdue?(victim) }
       halted = overdue.count { |victim| halt!(victim, logger) }
 
       logger.info("Preemption marks that outlasted their grace were halted",
-        halted: halted, overdue: overdue.size, inside_grace: inside_grace.size, **occupancy.to_h)
+        halted: halted, overdue: overdue.size, inside_grace: inside_grace.size,
+        slept: slept, released: released, **occupancy.to_h)
 
-      Sweep.new(released: 0, halted: halted, waiting: marked.size - halted)
+      Sweep.new(released: released, halted: halted,
+                waiting: marked.size + resting.size - halted - released - slept)
     rescue StandardError => e
       logger.warn("Spot preemption sweep failed", error: "#{e.class}: #{e.message}")
       Sweep.new(released: 0, halted: 0, waiting: 0)
     end
 
-    # Sessions marked to yield a slot that are still RUNNING — the mark has been
-    # written but the turn has not ended, so the session is neither in the queue
-    # nor out of the fleet. This is the only population #sweep! acts on; once a
-    # marked session goes dormant it belongs to SpotSessionPause's resume.
+    # Sessions marked to yield a slot that have not reached the queue yet — the
+    # mark is written but the session is neither dormant nor out of the fleet.
+    # This is the only population #sweep! acts on; once a marked session is
+    # `waiting` it belongs to SpotSessionPause's resume.
+    #
+    # BOTH `running` and `needs_input`. The second is the shape a mark takes when
+    # the turn ended and `execute_pending_sleep` did not carry the session over —
+    # it alerts rather than raising, so the session comes to rest holding a record
+    # whose owner never sees it. Reading only `running` left exactly that session
+    # invisible until it ran again, at which point its mark was hours past grace.
+    #
+    # `#count` is taken on this scope by .make_room_for as the number of slots
+    # already promised, which is why the `needs_input` half belongs in it: those
+    # sessions are out of `on_a_worker` already, and counting them would subtract
+    # a slot twice.
     def marked_sessions
       Session
         .where(status: :running)
+        .where("metadata->>? = ?", SpotSessionPause::PAUSED_REASON, SpotSessionPause::PREEMPTED_REASON)
+        .order(:id)
+    end
+
+    # The same population plus the ones whose turn has already ended. Only #sweep!
+    # wants this — see the note above about why the promise count does not.
+    def unresolved_marks
+      Session
+        .where(status: [ :running, :needs_input ])
         .where("metadata->>? = ?", SpotSessionPause::PAUSED_REASON, SpotSessionPause::PREEMPTED_REASON)
         .order(:id)
     end
@@ -251,6 +328,14 @@ class SpotPreemption
         .where(status: :running, agent_runtime: ClaudeAuthProvider::RUNTIME)
         .excluding_status_summary_forks
         .where("metadata->>? IS NULL", SpotSessionPause::PAUSED_REASON)
+        # A session that has ALREADY asked to sleep at the end of this turn — it
+        # armed a `wake_me_up_later` mid-turn, or something else parked it — is
+        # excluded for the same reason a pause record excludes one: its slot is on
+        # its way back without anyone taking it. Marking it would also overwrite a
+        # sleep intent that is not this class's to own, and #release! would then
+        # strip a `pending_sleep` the session put there itself, leaving it to come
+        # to rest in the operator's action queue instead of asleep.
+        .where("metadata->>'pending_sleep' IS DISTINCT FROM 'true'")
     end
 
     # How many times this session has yielded a slot to priority work, ever.
@@ -352,7 +437,8 @@ class SpotPreemption
         # marked by a second priority session starting in the same instant.
         raise ActiveRecord::Rollback unless victim.running? &&
           victim.spot? &&
-          !SpotSessionPause.pause_record?(victim)
+          !SpotSessionPause.pause_record?(victim) &&
+          (victim.metadata || {})["pending_sleep"] != true
 
         metadata = victim.metadata || {}
         victim.merge_metadata!(
@@ -402,27 +488,81 @@ class SpotPreemption
     # anyway. A session that has already gone dormant is skipped under the lock —
     # its record is the queue's now, and stripping it there would drop the
     # session out of the population its resume is keyed on.
-    def release!(victim, logger)
+    def release!(victim, logger, stale: false)
       released = false
 
       ActiveRecord::Base.transaction do
         victim.lock!
         raise ActiveRecord::Rollback unless victim.running? && SpotSessionPause.preempted?(victim)
 
-        victim.remove_metadata!(
-          SpotSessionPause::METADATA_KEYS, "paused_by", "pending_sleep",
-          SessionStateMachine::PENDING_SLEEP_REQUIRES_WAKE,
-          Sessions::StopRecord::PENDING_SLEEP_REASON
+        # `pending_sleep` goes only when nothing else is relying on it. The mark
+        # is never written over an existing one (see #preemptable_sessions), but a
+        # session can arm a wake in the minutes AFTER it was marked — and stripping
+        # the flag then would send it to rest in the operator's action queue
+        # instead of asleep on the wake it asked for.
+        sleep_keys = if victim.paused_until_scheduled_time?
+          []
+        else
+          [ "pending_sleep", SessionStateMachine::PENDING_SLEEP_REQUIRES_WAKE,
+            Sessions::StopRecord::PENDING_SLEEP_REASON ]
+        end
+
+        # The ledger is un-charged with the record. A released mark cost this
+        # session nothing — no turn, no tool call — so counting it as a preemption
+        # would over-report what priority work took (`get_session` prints the
+        # figure) and would put the session in a 30-minute cooldown for something
+        # that never happened, shrinking the eligible pool on a busy fleet.
+        # PAUSED_COUNT is the ceiling's own counter and is corrected for the same
+        # reason: it is what `get_session` reports as "Pauses so far".
+        metadata = victim.metadata || {}
+        restored = {}
+        count = metadata[COUNT].to_i - 1
+        restored[COUNT] = count if count.positive?
+        paused = metadata[SpotSessionPause::PAUSED_COUNT].to_i - 1
+        restored[SpotSessionPause::PAUSED_COUNT] = paused if paused.positive?
+
+        victim.merge_metadata!(
+          restored,
+          SpotSessionPause::METADATA_KEYS + [ "paused_by", COUNT, LAST_AT ] + sleep_keys
         )
         released = true
       end
       return false unless released
 
-      victim.logs.create!(level: "info", content: RELEASED_MESSAGE)
-      logger.info("Released a preemption mark — the fleet has room again", session_id: victim.id)
+      victim.logs.create!(level: "info", content: stale ? STALE_MESSAGE : RELEASED_MESSAGE)
+      logger.info("Released a preemption mark", session_id: victim.id, stale: stale)
       true
     rescue StandardError => e
       logger.warn("Could not release a preemption mark",
+        session_id: victim.id, error: "#{e.class}: #{e.message}")
+      false
+    end
+
+    # A mark whose turn ended without `execute_pending_sleep` carrying the session
+    # into the queue. Its record is correct and its resume owner is the right one
+    # — the only thing that did not happen is the transition, so that is all this
+    # does. `sleep!` rather than a re-pause: the session is already `needs_input`,
+    # which is the state the pause callback fires from.
+    def sleep_into_the_queue!(victim, logger)
+      slept = false
+
+      ActiveRecord::Base.transaction do
+        victim.lock!
+        raise ActiveRecord::Rollback unless victim.needs_input? &&
+          SpotSessionPause.preempted?(victim) && victim.may_sleep?
+
+        victim.update!(running_job_id: nil) if victim.running_job_id.present?
+        victim.sleep!
+        slept = true
+      end
+      return false unless slept
+
+      victim.remove_metadata!("pending_sleep", SessionStateMachine::PENDING_SLEEP_REQUIRES_WAKE)
+      victim.logs.create!(level: "info", content: SLEPT_MESSAGE)
+      logger.info("Carried a preempted session into the spot queue", session_id: victim.id)
+      true
+    rescue StandardError => e
+      logger.warn("Could not carry a preempted session into the spot queue",
         session_id: victim.id, error: "#{e.class}: #{e.message}")
       false
     end
@@ -436,6 +576,12 @@ class SpotPreemption
     # that only partly succeeds degrades to the deferral that was already there
     # rather than to a session dozing with nothing armed.
     def halt!(victim, logger)
+      # Asked again here rather than only in the partition: a turn that ended
+      # between the sweep's read and this call has already resolved itself, and
+      # HaltRunningTurn would report `not_running` rather than doing harm — but
+      # saying so costs nothing and keeps the log honest.
+      return false unless victim.reload.running?
+
       result = Sessions::HaltRunningTurn.call(session: victim, reason: :spot_preemption)
       unless result.halted
         logger.info("A preemption mark could not be halted this pass",
@@ -462,13 +608,25 @@ class SpotPreemption
       marked_at + GRACE < now
     end
 
+    # See STALE_MARK_AGE. An unreadable stamp is NOT stale — the same reasoning as
+    # above, in the same direction: nothing is done on the strength of a record
+    # that cannot be read.
+    def stale?(victim, now: Time.current)
+      marked_at = parse_time((victim.metadata || {})[SpotSessionPause::PREEMPT_MARKED_AT])
+      return false if marked_at.nil?
+
+      marked_at + STALE_MARK_AGE < now
+    end
+
     def detail_for(beneficiary, occupancy)
       "Preempted by a priority session. Session ##{beneficiary.id} is priority, and priority work is " \
         "never held by the concurrency limit — but it does count toward it, and the fleet was at " \
         "#{occupancy.on_a_worker} of #{occupancy.cap} session slots. This spot session was the " \
         "lowest-ranked one running (precedence-first, the spot queue's own order), so it yields the " \
         "slot. Nothing is cancelled: it sleeps in the spot queue and the ceiling sweep resumes it, " \
-        "highest precedence first, as soon as the fleet is back under its limit."
+        "highest precedence first, once the fleet is back under its limit AND a Claude account is " \
+        "under both quota targets — it waits in the same queue as the sessions the budget ceiling " \
+        "paused, on the same resume decision."
     end
 
     def mark_message(detail)
