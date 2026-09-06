@@ -1468,6 +1468,48 @@ class Session < ApplicationRecord
     self.follow_up_resume = false
   end
 
+  # The prompt an automated recovery resume should carry, given what this session
+  # is still holding.
+  #
+  # Four paths resume a session on `SYSTEM_RECOVERY` — `AgentSessionJob`'s
+  # post-interrupt auto-continue, both recovery sweeps through
+  # `SessionContinuation`, and `SessionRecoveryService`'s hung-process restart —
+  # and all four used to send the nudge unconditionally. When the session was
+  # holding a follow-up that had been accepted, acknowledged to its sender and
+  # never delivered, the nudge went in its place and the message was never seen by
+  # anyone: silent to the sender, who had a success result, and silent to the
+  # recipient, for whom a nudge is indistinguishable from an ordinary interruption
+  # (#1023).
+  #
+  # `pending_follow_up_prompt` means exactly "a prompt was accepted for a job that
+  # has not picked it up yet", so it is the right thing to send and the nudge —
+  # "you may have been interrupted, carry on" — has nothing to add to it. Every
+  # route that accepts a follow-up into an idle session stamps it, and whichever
+  # route eventually delivers it clears it, so a value here is by construction
+  # undelivered.
+  #
+  # Deliberately NOT cleared by the read. The caller enqueues a job with this
+  # prompt and that job's follow-up arm consumes the marker when it runs; clearing
+  # it here would lose the prompt if the enqueue then failed, which is the failure
+  # this method exists to end.
+  #
+  # A queued `EnqueuedMessage` still outranks both — `SessionContinuation` checks
+  # the queue before it gets here, and the queue is the user's most recent word.
+  #
+  # @param reason [String, nil] why this session is being resumed, for the nudge
+  # @return [String] the follow-up this session is holding, or the recovery nudge
+  def recovery_turn_prompt(reason: nil)
+    metadata&.dig("pending_follow_up_prompt").presence || AutomatedPrompts.system_recovery(reason: reason)
+  end
+
+  # Whether #recovery_turn_prompt would send a held follow-up rather than a nudge.
+  # For callers whose log line has to say which one the turn is carrying.
+  #
+  # @return [Boolean]
+  def holding_undelivered_follow_up?
+    metadata&.dig("pending_follow_up_prompt").present?
+  end
+
   # Claim a turn for an automated recovery sweep — under a row lock, against the
   # row as it actually stands.
   #

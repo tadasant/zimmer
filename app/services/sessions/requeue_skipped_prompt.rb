@@ -117,6 +117,7 @@ module Sessions
       return refuse(reason) if reason
 
       position = queue!
+      release_pending_marker
       add_log(
         "The prompt this job was carrying was NOT lost: it is queued at position #{position} and is " \
         "delivered when job #{@holder_job_id || "the one holding this session"} ends its turn. " \
@@ -241,6 +242,32 @@ module Sessions
     #   queue, UNDELIVERED_PROMPT_LOG_MAX_CHARS when this line is the only copy left.
     def quoted_prompt(max_chars = UNDELIVERED_PROMPT_LOG_MAX_CHARS)
       "The prompt was: #{@prompt.to_s.truncate(max_chars)}"
+    end
+
+    # The queue now owns this prompt, so the session must stop holding it too.
+    #
+    # `pending_follow_up_prompt` means "a prompt was accepted for a job that has not
+    # picked it up yet", and every route that accepts a follow-up into an idle
+    # session stamps it (#1023). The job that was just skipped is that job, so once
+    # its prompt is in the durable queue the marker names a delivery that is now
+    # somebody else's — and two live copies is two turns: the queue drains one, and
+    # the next recovery resume reads the marker and delivers the other.
+    #
+    # Only when the marker holds THIS prompt. A different value belongs to a
+    # different, still-undelivered turn, and dropping it would be the loss this
+    # class exists to prevent, arriving from the inside.
+    #
+    # Best-effort: the prompt is already durable in the queue, so a failure here
+    # costs at worst a duplicate turn — never a lost one.
+    def release_pending_marker
+      return unless @session.metadata&.dig("pending_follow_up_prompt") == @prompt
+
+      @session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
+    rescue => e
+      Rails.logger.warn(
+        "[Sessions::RequeueSkippedPrompt] Could not release the pending marker for session " \
+        "#{@session.id}: #{e.message}"
+      )
     end
 
     # Push the new row to the session page's queue panel, the way every other

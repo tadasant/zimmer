@@ -451,6 +451,15 @@ class Api::V1::SessionsController < Api::BaseController
       # Not `resume!`: a follow-up adds to whatever this session was waiting on,
       # so its own pending wake-ups survive it (#898).
       @session.resume_for_follow_up!
+      # Stamp the prompt where every resume path looks for it, exactly as
+      # Session#deliver_follow_up! does — and after the resume, whose callbacks
+      # rewrite `metadata` whole-column, so a reader who sees the marker is
+      # guaranteed to also see `running`. Until #1023 this branch left the accepted
+      # prompt living only as the argument of the job enqueued below, which a
+      # worker shutdown discards: the session was then resumed on a SYSTEM_RECOVERY
+      # nudge and the caller, already answered "Follow-up prompt sent", had no way
+      # to tell that from delivery.
+      @session.merge_metadata!("pending_follow_up_prompt" => prompt)
       # Before the enqueue, and in the same transaction: the job this line
       # creates builds the next prompt for the session, and it must see the edge
       # — a job that starts first renders a hierarchy missing exactly the human
