@@ -96,10 +96,12 @@ class Trigger < ApplicationRecord
   SPAWN_ADVISORY_LOCK_NAMESPACE = 0x415F_5447 # "A_TG" ASCII — Trigger spawn lock
 
   # How long a fire waits for another process's in-flight spawn decision for the
-  # same trigger. The protected section is a `SELECT … LIMIT 1` and, at most, one
-  # session INSERT plus a job enqueue — milliseconds — so a wait this long means
-  # the holder is wedged rather than busy, and the fire is better off proceeding
-  # unserialized than being dropped. See #spawn_unless_pending_session!.
+  # same trigger. The protected section is a `SELECT … LIMIT 1` and one spawn — a
+  # burst-slot reservation, a session INSERT, a catalog read and a job enqueue —
+  # which is a fraction of a second unless the catalog cache is cold. A wait this
+  # long therefore means the holder is wedged rather than busy, and the fire is
+  # better off proceeding unserialized than being dropped. See
+  # #spawn_unless_pending_session!.
   SPAWN_LOCK_WAIT = 15.seconds
 
   # Poll interval while waiting for the spawn lock. pg_try_advisory_lock has no
@@ -285,11 +287,16 @@ class Trigger < ApplicationRecord
   # trigger must survive the raise. A session-level lock opens no transaction, so
   # `with_lock` inside the block still gets its own and both properties hold.
   #
-  # Fails OPEN: the block always runs, and its argument says whether it ran
-  # serialized. Dropping a fire whose lock could not be taken would trade a rare
-  # duplicate session for a silently lost wake, and for the `quota_available`
-  # trigger a lost wake strands every parked spot session until the next
-  # recovery. Under-spawning is not the safe direction here.
+  # Fails OPEN in every direction: the block always runs, and its argument says
+  # whether it ran serialized. Dropping a fire whose lock could not be taken
+  # would trade a rare duplicate session for a silently lost wake, and for the
+  # `quota_available` trigger a lost wake strands every parked spot session until
+  # the next recovery. Under-spawning is not the safe direction here.
+  #
+  # A caller that has already opened a transaction gets `false` without the lock
+  # being attempted at all. .acquire_spawn_lock has the reasoning; the short
+  # version is that the lock could protect nothing from in there and could strand
+  # itself on a pooled connection.
   #
   # Nesting is safe for the same reason it is in ClaudeAccount.with_pool_lock:
   # with_connection hands back the connection the thread already holds, so an
@@ -301,38 +308,81 @@ class Trigger < ApplicationRecord
   # @yieldparam serialized [Boolean] false when the lock could not be taken
   # @return [Object] the block's return value
   def self.with_spawn_lock(trigger_id, wait: SPAWN_LOCK_WAIT)
-    deadline = Time.current + wait
-
     connection_pool.with_connection do |conn|
-      acquired = try_spawn_lock(conn, trigger_id)
-      until acquired || Time.current >= deadline
-        sleep(SPAWN_LOCK_POLL_INTERVAL)
-        acquired = try_spawn_lock(conn, trigger_id)
-      end
+      acquired = acquire_spawn_lock(conn, trigger_id, wait)
 
       begin
         yield(acquired)
       ensure
-        if acquired
-          # Swallow: if the connection died inside the block, raising here would
-          # replace the real error with a confusing one — and a dead connection
-          # has already released the lock.
-          begin
-            conn.execute(
-              sanitize_sql_array([ "SELECT pg_advisory_unlock(?, ?)", SPAWN_ADVISORY_LOCK_NAMESPACE, trigger_id ])
-            )
-          rescue => e
-            Rails.logger.warn "[Trigger] Could not release the spawn lock for trigger #{trigger_id}: #{e.message}"
-          end
-        end
+        release_spawn_lock(conn, trigger_id) if acquired
       end
     end
   end
 
-  def self.try_spawn_lock(conn, trigger_id)
+  # Take the lock, or report that it could not be taken. Never raises — every way
+  # of failing to acquire is the fail-open case.
+  def self.acquire_spawn_lock(conn, trigger_id, wait)
+    # A caller that opened its own transaction gets no lock, and that is the
+    # right answer rather than a missing one. A losing fire inside someone else's
+    # transaction reads a snapshot that cannot contain the winner's uncommitted
+    # session, so it spawns whatever the lock does — the serialization buys
+    # nothing. Taking it anyway would be actively worse: a session-level advisory
+    # lock is NOT released by a rollback, so a block that aborted that
+    # transaction would leave the UNLOCK rejected with the rest of it, and the
+    # lock would be held for the life of a pooled connection — disabling this
+    # guard for that trigger permanently and costing every later fire the full
+    # wait. SlackTriggerPollerJob is the one caller that wraps a fire this way.
+    if conn.transaction_open?
+      Rails.logger.info(
+        "[Trigger] Trigger #{trigger_id} is firing inside its caller's transaction — not taking the " \
+        "spawn lock, which could not see a committed sibling session from in here anyway"
+      )
+      return false
+    end
+
+    key = spawn_lock_key(trigger_id)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + wait.to_f
+
+    acquired = try_spawn_lock(conn, key)
+    until acquired || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      sleep(SPAWN_LOCK_POLL_INTERVAL)
+      acquired = try_spawn_lock(conn, key)
+    end
+
+    acquired
+  rescue => e
+    Rails.logger.warn "[Trigger] Could not take the spawn lock for trigger #{trigger_id}: #{e.message}"
+    false
+  end
+  private_class_method :acquire_spawn_lock
+
+  def self.release_spawn_lock(conn, trigger_id)
+    conn.execute(
+      sanitize_sql_array(
+        [ "SELECT pg_advisory_unlock(?, ?)", SPAWN_ADVISORY_LOCK_NAMESPACE, spawn_lock_key(trigger_id) ]
+      )
+    )
+  rescue => e
+    # Swallow: if the connection died inside the block, raising here would
+    # replace the real error with a confusing one — and a dead connection has
+    # already released the lock.
+    Rails.logger.warn "[Trigger] Could not release the spawn lock for trigger #{trigger_id}: #{e.message}"
+  end
+  private_class_method :release_spawn_lock
+
+  # Both `pg_advisory_lock(int4, int4)` arguments must fit in a signed int4, so
+  # the id is masked rather than passed raw — past 2^31 rows the statement would
+  # raise instead of locking. A collision beyond that point over-serializes two
+  # triggers, which is strictly better than not locking at all.
+  def self.spawn_lock_key(trigger_id)
+    trigger_id.to_i & 0x7FFF_FFFF
+  end
+  private_class_method :spawn_lock_key
+
+  def self.try_spawn_lock(conn, key)
     ActiveModel::Type::Boolean.new.cast(
       conn.select_value(
-        sanitize_sql_array([ "SELECT pg_try_advisory_lock(?, ?)", SPAWN_ADVISORY_LOCK_NAMESPACE, trigger_id ])
+        sanitize_sql_array([ "SELECT pg_try_advisory_lock(?, ?)", SPAWN_ADVISORY_LOCK_NAMESPACE, key ])
       )
     )
   end
@@ -1738,11 +1788,12 @@ class Trigger < ApplicationRecord
   #
   # The lock is a per-trigger Postgres ADVISORY lock, not the row lock this
   # deliberately declined before. A row lock would hold the trigger row across the
-  # spawn and pull #reserve_burst_slot! into the outer transaction, so a spawn that
+  # spawn and open a transaction around #reserve_burst_slot!, so a spawn that
   # raised would roll back both the attempt it is supposed to consume and the
   # burst-latch clear that keeps a failed notice from silently disabling the
-  # trigger. .with_spawn_lock opens no transaction, so those two properties are
-  # untouched and the burst gate still gets its own `with_lock`.
+  # trigger. .with_spawn_lock opens no transaction, so on every path that does not
+  # already have one those two properties are untouched and the burst gate still
+  # gets its own `with_lock`.
   #
   # It serializes; it never suppresses. Only the read and the spawn are inside it,
   # both measured in milliseconds, and the answer a serialized fire gets is the
@@ -1751,9 +1802,10 @@ class Trigger < ApplicationRecord
   # A fire that arrives once the earlier session has left `waiting`/`running`
   # spawns exactly as before, so a genuine second recovery is not suppressed.
   #
-  # A fire that cannot take the lock within SPAWN_LOCK_WAIT proceeds unserialized,
-  # which is today's behavior. See .with_spawn_lock for why under-spawning is the
-  # wrong direction to fail in.
+  # A fire that cannot take the lock — because the wait ran out, or because its
+  # caller opened a transaction the lock could not usefully be taken inside —
+  # proceeds unserialized rather than being dropped. See .with_spawn_lock for why
+  # under-spawning is the wrong direction to fail in.
   #
   # This closes the same-instant window only for triggers that opted into
   # `skip_if_pending_session`. Every other trigger is asking for one session per

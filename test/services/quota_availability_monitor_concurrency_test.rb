@@ -21,13 +21,20 @@ class QuotaAvailabilityMonitorConcurrencyTest < ActiveSupport::TestCase
   self.use_transactional_tests = false
 
   setup do
-    @app_setting_existed = AppSetting.exists?
+    existing = AppSetting.order(:id).first
+    # Restored verbatim in teardown: this class is non-transactional, so a value
+    # it writes and does not put back is a value every later test in this worker
+    # sees. `app_settings` has no fixture file, so the row is usually absent —
+    # but test/integration_test_helper.rb is non-transactional too, so an
+    # integration test can leave one behind.
+    @previous_setting = existing&.slice(:quota_pool_available, :quota_pool_available_changed_at)
+
     AppSetting.editable.update!(quota_pool_available: false, quota_pool_available_changed_at: 1.hour.ago)
   end
 
   teardown do
-    if @app_setting_existed
-      AppSetting.editable.update!(quota_pool_available: nil, quota_pool_available_changed_at: nil)
+    if @previous_setting
+      AppSetting.editable.update!(@previous_setting)
     else
       AppSetting.delete_all
     end
@@ -56,6 +63,9 @@ class QuotaAvailabilityMonitorConcurrencyTest < ActiveSupport::TestCase
     assert_equal [ false, true ], results.sort_by { |fired| fired ? 1 : 0 },
       "a check! and a request_wake! holding one recovery must not both spend it"
     assert_equal 1, enqueued_jobs.count { |job| job[:job] == SystemEventTriggerJob }
+    # Both callers swallow every exception and return false, so the level is what
+    # tells "lost the claim" apart from "raised on the way to it".
+    assert_equal true, AppSetting.editable.reload.quota_pool_available
   end
 
   # Over-tightening is the failure mode on the other side: a claim that outlived
