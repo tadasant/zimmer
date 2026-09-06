@@ -44,7 +44,12 @@ class CatalogsController < ApplicationController
   end
 
   def redirect_with_refresh_result(web_error, worker_result)
-    error = web_error || normalize_worker_error(worker_result.error_message)
+    # Scrubbed for the same reason the banner's message is (#319): this flash is
+    # `air update`'s own text, produced by a process holding AIR_GITHUB_TOKEN,
+    # and redirect_back lands it on /sessions/new — which has no Rails-layer
+    # authentication (#312). The worker-side string gets the same treatment: it
+    # is the same subprocess run in the other container.
+    error = AirCatalogService.redact_secrets(web_error || normalize_worker_error(worker_result.error_message))
 
     if error
       redirect_back(fallback_location: new_session_path,
