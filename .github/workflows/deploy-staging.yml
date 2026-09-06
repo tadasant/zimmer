@@ -314,6 +314,32 @@ jobs:
           gem install kamal -v "$v" --no-document
           kamal version
 
+      # `apt-daily-upgrade` upgrades a library sysbox-fs/sysbox-mgr link against, needrestart
+      # decides the sysbox units are outdated and restarts them, and the daemons come back with
+      # an EMPTY container registry. Every sysbox container already running is then orphaned
+      # permanently: `docker exec` into it fails with "unsafe procfs detected" while its own
+      # processes keep running, so it reports `Status=running, Restarts=0` and passes every
+      # check below while running nothing. That took out both hosts on 2026-09-02, twelve
+      # minutes apart, from one host-level event (#774).
+      #
+      # This declines the restart -- the upgrade still lands -- by dropping one snippet into
+      # /etc/needrestart/conf.d. Production converges the same override from the private deploy
+      # repo's sysbox provisioning; nothing in THIS repo provisions sysbox (the step below only
+      # preflights it), so staging needs its own convergence point and this is it (#775).
+      #
+      # Ordered here for two reasons. Before the preflight, so a host being repaired still gets
+      # the drop-in even if the preflight then refuses the deploy. And before the cutover, so the
+      # worker container this run is about to create is covered from the moment it exists.
+      #
+      # Unconditional, not gated on nested_docker, for the same reason the watchdog is not: the
+      # host has sysbox installed either way, and a deploy that happens to disarm the runtime
+      # should not also strip the box's protection from the next unattended upgrade. It is a
+      # converge, not a one-off -- the droplet is persistent and cloud-init only ever runs once.
+      - name: Keep needrestart from restarting sysbox (converge)
+        env:
+          STAGING_HOST: ${{ steps.host.outputs.staging_host }}
+        run: bash scripts/install-needrestart-sysbox-dropin.sh "$STAGING_HOST"
+
       # Staging deploys the worker under sysbox so agent sessions get their own Docker
       # daemon. That needs three things on the HOST, and each one missing fails in a
       # way that is miserable to diagnose from the app side:
