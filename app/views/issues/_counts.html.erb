@@ -1,8 +1,8 @@
-<%# The orientation strip: how much work is waiting, how much is running, and how
-    the queue splits by direction. Backlog counts are the WHOLE queue rather than
-    the filtered slice — a filter narrows what you are reading, it does not change
-    how much work there is. %>
-<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 mb-4">
+<%# The orientation strip: how much work is waiting, how much is running, how much
+    has stalled on a person, and how the queue splits by direction. Backlog counts
+    are the WHOLE queue rather than the filtered slice — a filter narrows what you
+    are reading, it does not change how much work there is. %>
+<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2 mb-4">
   <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
     <div class="text-[11px] uppercase tracking-wide text-gray-500">Queued</div>
     <div class="text-xl font-bold text-gray-900 tabular-nums"><%= number_with_delimiter(counts[:queued]) %></div>
@@ -10,6 +10,13 @@
   <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
     <div class="text-[11px] uppercase tracking-wide text-gray-500">In flight</div>
     <div class="text-xl font-bold text-gray-900 tabular-nums"><%= number_with_delimiter(counts[:in_flight]) %></div>
+  </div>
+  <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
+    <%# Beside "In flight" rather than folded into it: these are the items that
+        have stopped and are waiting on a person, and a queue that is not draining
+        is usually this number rather than the one to its left. %>
+    <div class="text-[11px] uppercase tracking-wide text-gray-500">Parked on a person</div>
+    <div class="text-xl font-bold text-amber-700 tabular-nums"><%= number_with_delimiter(counts[:parked]) %></div>
   </div>
   <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
     <div class="text-[11px] uppercase tracking-wide text-gray-500">Queued convergent</div>

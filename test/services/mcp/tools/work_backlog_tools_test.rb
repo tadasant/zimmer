@@ -31,6 +31,7 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
     assert_equal 3, output[:total_matching]
     assert_equal 3, output.dig(:counts, :queued)
     assert_equal 0, output.dig(:counts, :in_flight)
+    assert_equal 0, output.dig(:counts, :parked)
     assert_nil output[:next_offset]
     assert_equal 3, output.dig(:ranking, :bands).size
   end
@@ -140,7 +141,8 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
     assert_match %r{/sessions/#{session[:id]}\z}, session[:url]
     assert_equal @gate.id, output[:pulled_by_session_id]
     assert_equal 0, output.dig(:queue, :queued)
-    assert_equal 2, output.dig(:queue, :in_flight)
+    assert_equal 2, output.dig(:queue, :in_flight), "a freshly spawned session is `waiting`, which is in flight"
+    assert_equal 0, output.dig(:queue, :parked)
     assert_equal @gate.id, WorkBacklogItem.find_by(key: "zimmer#1").started_by_session_id
   end
 

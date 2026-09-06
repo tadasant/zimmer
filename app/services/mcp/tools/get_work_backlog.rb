@@ -15,13 +15,13 @@ module Mcp
 
         **Ranking, in one paragraph.** `precedence` is an absolute scale (higher is pulled sooner; sparse values; not a 1..N position). An unpinned item sits in a band chosen by its `estimated_cost` — small #{WorkBacklog::Ranking.describe_band("small")}, medium #{WorkBacklog::Ranking.describe_band("medium")}, large #{WorkBacklog::Ranking.describe_band("large")} — so the cheapest work floats to the top and, within a band, first-in is first-out. A `pinned: true` item is a human's hand-placement: it sits wherever they put it, can be anywhere on the scale, and is never moved by an agent. Do not re-rate, renumber or re-band anything; the server does the arithmetic on every append and every pull.
 
-        **Status.** Defaults to `queued`, which is the queue. `started` items are history — each names the `started_session_id` it became; `in_flight` in `counts` is how many of those sessions are still alive, which is the number the groomer's WIP ceiling counts (sessions THIS backlog produced, not the whole spot queue). `removed` items name a `removal_reason` and `removed_by`. Pass `status: "all"` for everything.
+        **Status.** Defaults to `queued`, which is the queue. `started` items are history — each names the `started_session_id` it became. In `counts`, `in_flight` is how many of those sessions an agent is still advancing (`running` or `waiting` — a turn on a worker, queued for one, or asleep on a self-wake), and that is the number the groomer's WIP ceiling counts: sessions THIS backlog produced, not the whole spot queue. `parked` is the rest of the unfinished ones — sessions stopped in `needs_input`, waiting on a person, typically holding a PR. A parked session is NOT in flight: nothing advances it without a human, it spends no compute, and counting it would ratchet the ceiling shut as parked items accumulate. `removed` items name a `removal_reason` and `removed_by`. Pass `status: "all"` for everything.
 
         **Filters** narrow the list; none of them changes the order. `limit` defaults to #{WorkBacklog::Filters::DEFAULT_LIMIT} and caps at #{WorkBacklog::Filters::MAX_LIMIT}; page with `offset`. A filter value outside the vocabulary is an error, not an empty result — an empty queue must never be a typo.
 
         **GitHub stays the source of truth for the issue.** An item is a pointer plus the gate's rating and rank; it does not mirror issue state. Re-check the issue is still open, unclaimed and trusted before you act on an item.
 
-        **Returns** JSON: `counts` (queued / started / removed / in_flight / pinned), `ranking` (the bands), `total_matching`, `items`, and `next_offset` when there are more.
+        **Returns** JSON: `counts` (queued / started / removed / in_flight / parked / pinned), `ranking` (the bands), `total_matching`, `items`, and `next_offset` when there are more.
       DESC
 
       input_schema({
@@ -78,6 +78,7 @@ module Mcp
           started: WorkBacklogItem.started.count,
           removed: WorkBacklogItem.removed.count,
           in_flight: WorkBacklogItem.in_flight.count,
+          parked: WorkBacklogItem.parked.count,
           pinned: WorkBacklogItem.queued.pinned_items.count
         }
       end
