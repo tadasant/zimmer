@@ -735,6 +735,22 @@ bakes in:
 `bundle install` (which catches Gemfile drift against the base), precompiles assets, drops to
 `USER 1000:1000`, and runs `bin/thrust bin/rails server`.
 
+### The app image knows which commit it is
+
+The app image carries the commit it was built from, so a log record can say which deploy it came
+from without anyone cross-referencing this workflow's job timings. `release-image.yml` (all three
+build attempts) and `deploy-staging.yml` pass `GIT_SHA=<commit>` to `docker/build-push-action`;
+`ARG GIT_SHA` / `ENV ZIMMER_GIT_SHA=${GIT_SHA}` in the `Dockerfile` carries it into the container;
+`OtelLogsExporter` ships it as the `service.version` resource attribute on every exported log
+record ([Observability](/operate/observability/#serviceversion-says-which-deploy-a-record-came-from)).
+
+Two details are deliberate. The `ARG` sits at the very **end** of the final stage: its value changes
+on every commit, so declaring it earlier would invalidate the build cache for every layer below it.
+And its default is the **empty string**, not a placeholder — a hand-run `docker build` bakes in
+nothing, and the exporter then omits `service.version` rather than shipping a blank one.
+`test/config/image_build_workflows_test.rb` asserts both ends of that wire, because renaming either
+one alone leaves every build green while the attribute silently stops shipping.
+
 ### Two paths rebuild the base image
 
 Nothing depends on a human remembering to rebuild the base, and a base image is not stale merely

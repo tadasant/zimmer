@@ -26,6 +26,17 @@ namespace :obs do
     "(unparseable)"
   end
 
+  # What ships as the `service.version` resource attribute, or why nothing does.
+  # Mirrors OtelLogsExporter#resolve_service_version, which is deliberately not
+  # reachable here: obs:status must answer this whether or not an exporter exists.
+  def service_version_label
+    version = ENV["OTEL_SERVICE_VERSION"].presence || ENV["ZIMMER_GIT_SHA"].presence
+    return version if version
+
+    "(unset -- this image was not built by release-image.yml/deploy-staging.yml, " \
+      "so records ship without service.version)"
+  end
+
   desc "Report which observability signals this instance is actually shipping (no secrets printed)."
   task status: :environment do
     exporter = OtelLogsExporter.instance
@@ -34,11 +45,19 @@ namespace :obs do
     puts "Zimmer observability status"
     puts "  deployment.environment : #{Rails.env}"
     puts "  service.name           : #{ENV.fetch("OTEL_SERVICE_NAME", "zimmer")}"
+    # The build identity every exported record carries. An image built outside CI
+    # has no GIT_SHA baked in, so the attribute is omitted entirely — say that
+    # here rather than leaving an operator to infer it from a missing field in
+    # Grafana.
+    puts "  service.version        : #{service_version_label}"
     puts ""
 
     if exporter
       d = exporter.describe
       puts "  [ON ] OTLP logs  -> #{d[:endpoint]}"
+      # instance.id identifies THIS process, which for `kamal app exec` is a
+      # throwaway container — not the web or worker container serving traffic.
+      puts "        service.instance.id=#{d[:instance_id]} (this process)"
       puts "        export thread running=#{d[:running]} pending=#{d[:pending]}"
     else
       puts "  [OFF] OTLP logs  -- OTEL_LOGS_EXPORTER_ENDPOINT=#{ENV["OTEL_LOGS_EXPORTER_ENDPOINT"].present? ? "set" : "UNSET"}" \

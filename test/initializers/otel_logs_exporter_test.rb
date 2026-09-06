@@ -15,6 +15,30 @@ class OtelLogsExporterTest < ActiveSupport::TestCase
     OtelLogsExporter.new(endpoint: "https://obs.example.test/otel/v1/logs", token: "test-token")
   end
 
+  # Resource attributes as {key => value-hash}, which is how every assertion
+  # below wants to read them. Duplicate keys would collapse silently, so assert
+  # there are none first.
+  def resource_attributes(exporter)
+    envelope = JSON.parse(exporter.send(:build_envelope, [ { severity: "ERROR", body: "x", attributes: {} } ]))
+    attrs = envelope["resourceLogs"].first["resource"]["attributes"]
+    keys = attrs.map { |a| a["key"] }
+    assert_equal keys.uniq, keys, "the resource block emitted a duplicate attribute key"
+    attrs.to_h { |a| [ a["key"], a["value"] ] }
+  end
+
+  # Set (or, with nil, unset) env vars for the block and restore exactly what was
+  # there before. Load-bearing rather than convenience: the suite itself runs
+  # inside a Zimmer image, which after this change carries ZIMMER_GIT_SHA — so a
+  # fallback test that merely assumed the variable was absent would pass on a
+  # developer laptop and fail in a container.
+  def with_env(vars)
+    original = vars.keys.to_h { |k| [ k, ENV.key?(k) ? ENV[k] : nil ] }
+    vars.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
+    yield
+  ensure
+    original.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
+  end
+
   def drain(exporter)
     queue = exporter.instance_variable_get(:@queue)
     records = []
@@ -44,6 +68,101 @@ class OtelLogsExporterTest < ActiveSupport::TestCase
     # In the test environment Rails.env is "test"; the attribute is always
     # present and is "production"/"staging" in deployed environments.
     assert_equal Rails.env.to_s, deployment_env["value"]["stringValue"]
+  end
+
+  # ---- Build and container identity --------------------------------------
+  # service.version answers "which deploy is this?" and service.instance.id
+  # answers "which container?". Before they existed a stored record's complete
+  # field set was ten keys, none of which identified the build or the process —
+  # so a job-claim query crashing seconds after a Kamal cutover could only be
+  # tied to the deploy that caused it by reading GitHub Actions job timings
+  # (tadasant/zimmer#736).
+
+  test "service.version carries the commit baked in by the image build" do
+    with_env("ZIMMER_GIT_SHA" => "0123456789abcdef0123456789abcdef01234567") do
+      attrs = resource_attributes(build_exporter)
+      assert_equal "0123456789abcdef0123456789abcdef01234567",
+        attrs.fetch("service.version")["stringValue"]
+    end
+  end
+
+  test "OTEL_SERVICE_VERSION overrides the baked-in commit" do
+    with_env("ZIMMER_GIT_SHA" => "0123456789abcdef", "OTEL_SERVICE_VERSION" => "0.1.42") do
+      assert_equal "0.1.42", resource_attributes(build_exporter).fetch("service.version")["stringValue"]
+    end
+  end
+
+  # The fallback path: local development, `rails console`, the test suite, and
+  # any image built outside release-image.yml/deploy-staging.yml. Omitting the
+  # attribute beats shipping an empty one, which would match a selector for
+  # service.version while identifying nothing.
+  test "service.version is omitted, not blank, when no build baked one in" do
+    with_env("ZIMMER_GIT_SHA" => nil, "OTEL_SERVICE_VERSION" => nil) do
+      attrs = resource_attributes(build_exporter)
+      assert_not_includes attrs.keys, "service.version"
+      # The rest of the resource block is unaffected — an unset build arg must
+      # not cost the attributes the alert selectors match on.
+      assert_equal %w[service.name deployment.environment service.instance.id], attrs.keys
+    end
+  end
+
+  # An unset Docker ARG renders to "", not to an absent variable: the Dockerfile
+  # sets ENV ZIMMER_GIT_SHA=${GIT_SHA} unconditionally, so every non-CI build
+  # arrives here with an empty string rather than with nothing.
+  test "an empty ZIMMER_GIT_SHA is treated as unset" do
+    with_env("ZIMMER_GIT_SHA" => "", "OTEL_SERVICE_VERSION" => nil) do
+      assert_not_includes resource_attributes(build_exporter).keys, "service.version"
+    end
+  end
+
+  test "service.instance.id defaults to hostname-pid and always ships" do
+    with_env("OTEL_SERVICE_INSTANCE_ID" => nil) do
+      instance_id = resource_attributes(build_exporter).fetch("service.instance.id")["stringValue"]
+      assert_equal "#{Socket.gethostname}-#{Process.pid}", instance_id
+    end
+  end
+
+  test "OTEL_SERVICE_INSTANCE_ID overrides the hostname-pid default" do
+    with_env("OTEL_SERVICE_INSTANCE_ID" => "zimmer-worker-1") do
+      assert_equal "zimmer-worker-1",
+        resource_attributes(build_exporter).fetch("service.instance.id")["stringValue"]
+    end
+  end
+
+  # Identity is resolved once, at construction, so a value that changed after
+  # boot cannot make two batches from one process disagree about which build
+  # and which container they came from.
+  test "identity is resolved at construction, not per envelope" do
+    exporter = with_env("ZIMMER_GIT_SHA" => "sha-at-boot") { build_exporter }
+    with_env("ZIMMER_GIT_SHA" => "sha-changed-later") do
+      assert_equal "sha-at-boot", resource_attributes(exporter).fetch("service.version")["stringValue"]
+    end
+  end
+
+  # These attributes ride on EVERY batch, so an invalid byte in one of them
+  # would raise out of JSON.generate on every export for the life of the
+  # process — not just on the batch carrying a bad record.
+  test "an invalid-UTF-8 identity value is scrubbed rather than wedging every export" do
+    with_env("OTEL_SERVICE_INSTANCE_ID" => "worker-\xC3(".dup.force_encoding("ASCII-8BIT")) do
+      exporter = build_exporter
+      envelope = nil
+      assert_nothing_raised do
+        envelope = exporter.send(:build_envelope, [ { severity: "ERROR", body: "x", attributes: {} } ])
+      end
+      instance_id = JSON.parse(envelope)["resourceLogs"].first["resource"]["attributes"]
+        .find { |a| a["key"] == "service.instance.id" }["value"]["stringValue"]
+      assert_includes instance_id, "\uFFFD"
+    end
+  end
+
+  test "describe exposes the build and instance identity for obs:status" do
+    with_env("ZIMMER_GIT_SHA" => "deadbeef", "OTEL_SERVICE_INSTANCE_ID" => "zimmer-web-7") do
+      described = build_exporter.describe
+      assert_equal "deadbeef", described[:service_version]
+      assert_equal "zimmer-web-7", described[:instance_id]
+      # Still no token, whatever else gets added here.
+      assert_not_includes described.values.map(&:to_s), "test-token"
+    end
   end
 
   test "OTEL_SERVICE_NAME overrides the default service.name" do
