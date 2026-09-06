@@ -445,7 +445,7 @@ class TranscriptPollerService
 
     runtime_id = @source.runtime_session_id(
       session: @session,
-      working_directory: @session.metadata&.dig("working_directory")
+      working_directory: @session.working_directory
     )
     persist_runtime_session_id!(runtime_id, source: "event stream")
   end
@@ -453,15 +453,34 @@ class TranscriptPollerService
   # Store a runtime-minted session id when it is new. Idempotent; uses
   # update_column to persist just this field without disturbing the surrounding
   # transcript/metadata update flow.
+  #
+  # `sessions.session_id` is uniquely indexed, and a runtime id that some other
+  # session already holds must not take this poll down with it. The stream-side
+  # capture runs as the FIRST statement of #poll_and_broadcast, so an exception
+  # here would escape as a `false` return — and AgentSessionJob counts
+  # consecutive false polls toward `transcript_unavailable`, which fails the
+  # session outright. Keeping the stored id and logging is the right answer for a
+  # collision that no retry can resolve: the transcript itself is fine.
+  #
+  # The write takes a savepoint so the refusal costs only itself. Postgres aborts
+  # the whole transaction on a failed statement, so without one this would poison
+  # any transaction the caller happened to be inside — every later query on that
+  # connection failing with `InFailedSqlTransaction`, which turns a benign refusal
+  # back into the poll failure the rescue exists to prevent.
   def persist_runtime_session_id!(runtime_id, source:)
     return if runtime_id.blank?
     return if runtime_id == @session.session_id
 
     with_db_retry do
       @session.reload
-      @session.update_column(:session_id, runtime_id)
+      @session.transaction(requires_new: true) { @session.update_column(:session_id, runtime_id) }
     end
     @logger.info("Captured runtime session id from #{source}", runtime_session_id: runtime_id)
+  rescue ActiveRecord::RecordNotUnique
+    @logger.warn(
+      "Refused a runtime session id another session already holds",
+      runtime_session_id: runtime_id, source: source, kept_session_id: @session.session_id
+    )
   end
 
   # Human-readable name of the runtime whose transcript we are waiting on. The

@@ -40,13 +40,11 @@ class CodexEventStreamTest < ActiveSupport::TestCase
     assert_nil stream.path
     refute_predicate stream, :available?
     assert_nil stream.thread_id
-    assert_empty stream.events
   end
 
   test "a stream whose log has not been created yet is not available" do
     refute_predicate @stream, :available?
     assert_nil @stream.thread_id
-    assert_empty @stream.events
   end
 
   # === thread_id: the whole point of consuming the stream ===
@@ -134,29 +132,16 @@ class CodexEventStreamTest < ActiveSupport::TestCase
     assert_nil @stream.thread_id
   end
 
-  # === events ===
+  test "thread_id survives a stream whose head is a blank line or a non-object record" do
+    @file_system.write(@path, "\n[1,2,3]\n" + %({"type":"thread.started","thread_id":"#{REAL_THREAD_ID}"}\n))
 
-  test "events parses every record of the real stream in order" do
-    @file_system.write(@path, REAL_STREAM)
-
-    events = @stream.events
-    assert_equal 6, events.length
-    assert_equal %w[thread.started turn.started error item.completed error turn.failed],
-      events.map { |e| e["type"] }
-    assert_equal REAL_THREAD_ID, events.first["thread_id"]
-    assert_equal "item_0", events[3].dig("item", "id")
-    assert_match(/401 Unauthorized/, events.last.dig("error", "message"))
+    assert_equal REAL_THREAD_ID, @stream.thread_id
   end
 
-  test "events drops a half-flushed final line without dropping the rest" do
+  test "thread_id is still found when the stream's tail is half-flushed" do
+    # The live-polling shape: the reader is asked while codex is mid-write.
     @file_system.write(@path, REAL_STREAM + %({"type":"turn.comp))
 
-    assert_equal 6, @stream.events.length
-  end
-
-  test "events drops blank lines and non-object records" do
-    @file_system.write(@path, "\n[1,2,3]\n" + %({"type":"turn.started"}\n) + "\n")
-
-    assert_equal [ { "type" => "turn.started" } ], @stream.events
+    assert_equal REAL_THREAD_ID, @stream.thread_id
   end
 end

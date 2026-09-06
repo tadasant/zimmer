@@ -84,10 +84,6 @@ class CodexRuntimeAdapter
     STDERR_LOG_FILENAME
   end
 
-  def self.event_log_filename
-    EVENT_LOG_FILENAME
-  end
-
   # The event log path for a working directory. Mirrors .stderr_log_path: nil
   # when there is no working directory to join onto, so callers never build a
   # relative path rooted at nothing.

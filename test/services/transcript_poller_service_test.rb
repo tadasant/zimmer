@@ -2105,6 +2105,31 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_equal "claude-own-uuid", @session.reload.session_id
   end
 
+  # sessions.session_id is uniquely indexed, and this capture is the FIRST
+  # statement of poll_and_broadcast — so an unhandled RecordNotUnique escapes as a
+  # `false` poll, and AgentSessionJob counts consecutive false polls toward
+  # `transcript_unavailable` and fails the session. A collision no retry can
+  # resolve must not take down a session whose transcript is perfectly fine.
+  test "a thread id another session already holds is refused, not raised, and the poll survives" do
+    clone = "/home/rails/.zimmer/clones/repo-main-OWN"
+    thread_id = "01a07412-4d9a-78f0-aad9-2cde1bf7586e"
+    sessions(:archived).update_column(:session_id, thread_id)
+    @session.update!(agent_runtime: "codex", metadata: { "working_directory" => clone })
+    @session.update_column(:session_id, "zimmer-supplied-uuid")
+    @mock_file_system.write(
+      CodexRuntimeAdapter.event_log_path(clone),
+      %({"type":"thread.started","thread_id":"#{thread_id}"}\n)
+    )
+
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+
+    assert_nothing_raised { service.send(:capture_runtime_session_id_from_stream!) }
+    assert_equal "zimmer-supplied-uuid", @session.reload.session_id,
+      "the stored id must survive a collision rather than being half-written"
+    assert_nil service.poll_and_broadcast,
+      "the poll must still report its ordinary waiting state, not a failure"
+  end
+
   test "the event-stream capture is a no-op when the stream has not named a thread yet" do
     clone = "/home/rails/.zimmer/clones/repo-main-OWN"
     @session.update!(agent_runtime: "codex", metadata: { "working_directory" => clone })

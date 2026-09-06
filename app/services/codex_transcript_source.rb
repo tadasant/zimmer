@@ -45,7 +45,7 @@ class CodexTranscriptSource < TranscriptSource
   # `codex exec resume` takes — so Zimmer knows it as soon as the process starts
   # talking, rather than only once a rollout has been found and read.
   def runtime_session_id(session:, working_directory: nil)
-    directory = working_directory.presence || session&.metadata&.dig("working_directory")
+    directory = working_directory.presence || session&.working_directory
     return nil if directory.blank?
 
     CodexEventStream.new(working_directory: directory, file_system: file_system).thread_id
