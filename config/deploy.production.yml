@@ -8,45 +8,43 @@
 # PRODUCTION_HOST is the droplet's tailnet address (resolved by the deploy workflow
 # from `tailscale status`). PRODUCTION_DB_HOST/PORT are the Managed Postgres private
 # host/port, fed from `terraform output`.
+#
+# Nested Docker is OFF by default here (staging is where the arrangement gets proven
+# first). Resolved once and read by all three settings that depend on it -- the
+# worker's runtime, its user, and the env var the entrypoint reads. They are only
+# safe together, so they must never be able to disagree, and a default expressed
+# three times is a default that eventually drifts twice. `ZIMMER_NESTED_DOCKER=1` in
+# the deploy environment arms all three; anything else leaves all three disarmed,
+# which is the rollback posture.
+<% nested_docker = ENV.fetch("ZIMMER_NESTED_DOCKER", "0") == "1" %>
+
+# The PRODUCTION catalog + its encrypted credentials, delivered to the host by
+# artifacts-sync-prod and bind-mounted read-only into BOTH roles. Persistent host
+# paths, so they survive Kamal deploys (unlike the old docker-cp-into-the-container
+# mechanism, which every deploy wiped). AIR_CONFIG (below) points the app at the
+# mounted catalog.
+#
+# Kamal's top-level `volumes:` is appended to every app role's `docker run`, so this
+# is written once and lands on both. It is deliberately NOT a `servers.<role>.options
+# .volume` entry: that key is an ARRAY, and Kamal's destination merge REPLACES arrays
+# rather than appending to them -- restating it here would override the durable
+# volume list in config/deploy.yml, and the next entry added there would silently
+# reach staging only.
+volumes:
+  - /opt/zimmer/catalog:/rails/catalog:ro
+  - /opt/zimmer/credentials:/rails/config/credentials:ro
+
+# init: true, the durable volume list, and the worker's cmd/proxy live in
+# config/deploy.yml -- they are identical in both destinations, and a list written
+# once is a list that cannot drift. Only what genuinely differs is below.
 servers:
   web:
     hosts:
       - <%= ENV["PRODUCTION_HOST"] %>
-    options:
-      init: true
-      volume:
-        # Durable named volumes shared by web + worker, surviving Kamal deploys.
-        # Every runtime's own conversation state belongs here: Claude Code keeps its
-        # transcripts under ~/.claude, Codex keeps its rollouts (plus auth.json and the
-        # thread store) under CODEX_HOME. A runtime home left on the container layer is
-        # destroyed by each deploy, which makes the next `resume` fail with "no rollout
-        # found" and restarts the conversation from zero.
-        #
-        # Pi is the exception that still gets a mount: its TRANSCRIPT lives inside the
-        # session's own clone (PiRuntimeAdapter passes --session-dir), so it is durable
-        # via zimmer_data above. PI_CODING_AGENT_DIR holds its credential and provider
-        # state instead — auth.json, models.json, settings.json — which is milder to
-        # lose but just as invisible, so it is mounted on the same terms.
-        - zimmer_data:/home/rails/.zimmer
-        - claude_home:/home/rails/.claude
-        - codex_home:/home/rails/.codex
-        - pi_home:/home/rails/.pi/agent
-        - gh_config:/home/rails/.config/gh
-        - claude_local:/home/rails/.local
-        # The PRODUCTION catalog + its encrypted credentials, delivered to the host by
-        # artifacts-sync-prod and bind-mounted read-only into BOTH roles. Persistent
-        # host paths, so they survive Kamal deploys (unlike the old docker-cp-into-the
-        # -container mechanism, which every deploy wiped). AIR_CONFIG (below) points
-        # the app at the mounted catalog.
-        - /opt/zimmer/catalog:/rails/catalog:ro
-        - /opt/zimmer/credentials:/rails/config/credentials:ro
   worker:
     hosts:
       - <%= ENV["PRODUCTION_HOST"] %>
-    cmd: bundle exec good_job start
-    proxy: false
     options:
-      init: true
       # Nested Docker, off by default. ZIMMER_NESTED_DOCKER=1 at deploy time runs this
       # role under sysbox, which gives the container its own user namespace, and starts
       # it as (namespaced) root so the entrypoint can bring up an inner dockerd before
@@ -56,11 +54,11 @@ servers:
       # The switch is deliberately one variable rather than three: a host with the
       # runtime but not the user, or the user but not the env, fails in ways that look
       # like an app bug. See docs/operate/nested-docker.md.
-      runtime: <%= ENV["ZIMMER_NESTED_DOCKER"] == "1" ? "sysbox-runc" : "runc" %>
+      runtime: <%= nested_docker ? "sysbox-runc" : "runc" %>
       # Quoted: YAML reads a bare 0:0 as a sexagesimal integer and hands Kamal `0`,
       # which is uid 0 with the image's default gid -- close enough to look right and
       # wrong in a way nothing would report.
-      user: "<%= ENV["ZIMMER_NESTED_DOCKER"] == "1" ? "0:0" : "1000:1000" %>"
+      user: "<%= nested_docker ? "0:0" : "1000:1000" %>"
       # The droplet is 16 GB with no swap, and this role is the only one that runs
       # arbitrary work: agent sessions, and jobs whose peak allocation is a function of
       # the data they touch rather than of anything this config knows. Uncapped, an
@@ -142,17 +140,6 @@ servers:
       # config/connection_budget.rb for the measurements and
       # docs/operate/nested-docker.md for the dev-stack accounting.
       memory: 10g
-      volume:
-        - zimmer_data:/home/rails/.zimmer
-        - claude_home:/home/rails/.claude
-        - codex_home:/home/rails/.codex
-        - pi_home:/home/rails/.pi/agent
-        - gh_config:/home/rails/.config/gh
-        - claude_local:/home/rails/.local
-        # Same catalog + credentials as web, so agent sessions (which run in the
-        # worker) resolve the real production roots/MCP servers and their mcp_secrets.
-        - /opt/zimmer/catalog:/rails/catalog:ro
-        - /opt/zimmer/credentials:/rails/config/credentials:ro
 
 ssh:
   user: root
@@ -163,7 +150,7 @@ env:
     # Armed only when the worker is running under sysbox (see the role's options
     # above). The entrypoint reads it to decide whether to start an inner dockerd,
     # and refuses if the container turns out not to be user-namespaced.
-    ZIMMER_NESTED_DOCKER: "<%= ENV.fetch("ZIMMER_NESTED_DOCKER", "0") %>"
+    ZIMMER_NESTED_DOCKER: "<%= nested_docker ? "1" : "0" %>"
     # Per-session memory bound, in MB (SessionMemoryCgroup). Each agent session gets its
     # own cgroup with this memory.max, so a runaway command exhausts its own budget and
     # the kernel's kill lands inside the session that caused it -- rather than inside the
@@ -242,10 +229,8 @@ env:
     # artifacts-sync-prod). production.rb falls back to the in-image catalog when this
     # file is not present yet (fresh box, before the first sync).
     AIR_CONFIG: /rails/catalog/air.production.json
-    # Point the injected self-session MCP server at THIS instance. Both names carry
-    # the same value through the AGENT_ORCHESTRATOR_* -> ZIMMER_* rename; the reader
-    # (SelfSessionInjector#self_target) now reads the ZIMMER_ name.
-    AGENT_ORCHESTRATOR_PROD_BASE_URL: https://zimmer.tadasant.com
+    # Point the injected self-session MCP server at THIS instance, never at some
+    # other orchestrator whose host might be carried in through ported credentials.
     ZIMMER_PROD_BASE_URL: https://zimmer.tadasant.com
     # Managed Postgres (off-droplet), reached over the private VPC. Host/port are
     # injected from `terraform output`; TLS is mandatory for Managed Postgres.
@@ -268,9 +253,7 @@ env:
     - API_KEYS
     - DATABASE_PASSWORD
     # The injected prod self-session MCP server calls this instance's own REST API.
-    # Both names, one value, for the in-flight ZIMMER_* rename; the reader uses the
-    # ZIMMER_ name now, and prod's encrypted mcp_secrets carries it too.
-    - AGENT_ORCHESTRATOR_PROD_API_KEY
+    # SelfSessionInjector reads this name; prod's encrypted mcp_secrets carries it too.
     - ZIMMER_PROD_API_KEY
     # Base64 of the operator SSH private key. OperatorSshKeyProvisioner decodes it into
     # ~/.ssh/zimmer_operator_ed25519 so agent sessions (and the ssh-* MCP servers they
