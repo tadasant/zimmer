@@ -283,6 +283,24 @@ One budget only buys one shot, though, so `pause` skips the call on a **recovery
 restarting its own interrupted process, where nothing about the session's PR work is settled — and
 makes it later if that recovery never comes. See
 [which pauses announce themselves](/sessions/lifecycle/#which-pauses-announce-themselves).
+
+A session that **never got an agent turn** is skipped outright, on every call site. `fail` and
+`archive` both transition straight out of `waiting`, so a session created with a PR-flavored goal
+and trashed before it started — or swept up by `HealthMonitorService`'s seven-day stale-session
+sweep, which bulk-archives every non-archived session untouched for a week, `waiting` ones that
+never spawned included — would otherwise be told its goal produced no PR when it never had a turn in
+which to produce one. True and useless, in exactly the place the warning is supposed to be a signal.
+
+The predicate is `Session#before_first_agent_turn?`, and it is the conservative half of the pair on
+purpose: `metadata["runtime_started"]` merely being *present* means a runtime was spawned here once,
+and a transcript alone means an agent spoke here whatever the metadata says. Either one and the
+warning still fires — suppressing more than never-ran sessions would re-open the opposite defect,
+and a diagnostic that fails to fire is far harder to notice than one that fires too often. One shape
+is left uncovered by that setting: a spawn that dies *after* its pid was recorded. Zimmer notices
+such a process wrote nothing and records the finding by setting `runtime_started` to **`false`** —
+which is a value, not an absence, so the warning still fires. Deliberate, on the same asymmetry: a
+warning too many is read and dismissed, a warning too few is never read at all.
+
 The goal match is a phrase match ("open a PR", "the PR is open", the `open-pr` skill), not a bare
 mention, because the catalog's read-only goal says *"do not create files, PRs, or branches"*.
 :::
