@@ -54,9 +54,18 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     # credentials, .for_session reads the session's own config dir instead.
     @original_session_config_dir = ENV["CLAUDE_SESSION_CONFIG_DIR"]
     ENV["CLAUDE_SESSION_CONFIG_DIR"] = File.join(dir, "session-config")
+
+    # Pi's store is not a constant — PiMcpCredentialWriter resolves it per call,
+    # honouring the adapter's own MCP_OAUTH_DIR override ahead of Pi's agent
+    # directory. Redirecting through that override is what keeps a Pi credential
+    # out of the box's REAL ~/.pi/agent/mcp-oauth; writing this file's Pi
+    # coverage put a fixture entry there once already.
+    @original_mcp_oauth_dir = ENV["MCP_OAUTH_DIR"]
+    ENV["MCP_OAUTH_DIR"] = File.join(dir, "pi-mcp-oauth")
   end
 
   def restore_runtime_credential_stores
+    ENV["MCP_OAUTH_DIR"] = @original_mcp_oauth_dir
     ENV["CLAUDE_SESSION_CONFIG_DIR"] = @original_session_config_dir
 
     @original_credential_store_paths&.each do |klass, path|
@@ -648,11 +657,11 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   # credential for one of its servers.
   test "inject_credentials! is a no-op for a runtime with no Zimmer-written credential store" do
     credential = mcp_oauth_credentials(:notion)
-    credential.update!(expires_at: 1.hour.from_now, credential_key: pi_notion_credential_key)
+    credential.update!(expires_at: 1.hour.from_now, credential_key: notion_credential_key)
 
-    mock_session = mock_pi_session([ "notion" ])
+    mock_session = mock_writerless_session([ "notion" ])
 
-    ServersConfig.stub(:find, ->(name) { name == "notion" ? pi_notion_server_config : nil }) do
+    ServersConfig.stub(:find, ->(name) { name == "notion" ? notion_server_config : nil }) do
       injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
 
       assert_nil injector.inject_credentials!
@@ -670,20 +679,20 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   # rotated. Guarding only the two write paths left this one dereferencing nil.
   test "check_credentials_status does not raise for a runtime with no Zimmer-written credential store" do
     credential = mcp_oauth_credentials(:notion)
-    credential.update!(expires_at: 1.hour.from_now, credential_key: pi_notion_credential_key)
+    credential.update!(expires_at: 1.hour.from_now, credential_key: notion_credential_key)
 
     injector = McpOauthCredentialInjector.new(
-      mock_pi_session([ "notion" ]), working_directory: @working_directory
+      mock_writerless_session([ "notion" ]), working_directory: @working_directory
     )
 
     status = nil
-    ServersConfig.stub(:find, ->(name) { name == "notion" ? pi_notion_server_config : nil }) do
+    ServersConfig.stub(:find, ->(name) { name == "notion" ? notion_server_config : nil }) do
       assert_nothing_raised { status = injector.check_credentials_status }
     end
 
-    # Degraded, not skipped: Pi has no store Zimmer writes, but the gate still
-    # has to report what Zimmer knows, or every Pi session would be blocked on
-    # an Authorize button for a credential it already holds.
+    # Degraded, not skipped: this runtime has no store Zimmer writes, but the
+    # gate still has to report what Zimmer knows, or every such session would be
+    # blocked on an Authorize button for a credential it already holds.
     assert status.key?("notion"), "the gate must still report on a server the runtime has no store for"
     assert status["notion"][:has_credential]
     assert status["notion"][:credential_valid]
@@ -695,13 +704,13 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   RuntimeRegistry.registered_runtimes.each do |runtime|
     test "the MCP OAuth spawn gate and injection survive a #{runtime} session holding a credential" do
       credential = mcp_oauth_credentials(:notion)
-      credential.update!(expires_at: 1.hour.from_now, credential_key: pi_notion_credential_key)
+      credential.update!(expires_at: 1.hour.from_now, credential_key: notion_credential_key)
 
       injector = McpOauthCredentialInjector.new(
         mock_session_on([ "notion" ], runtime: runtime), working_directory: @working_directory
       )
 
-      ServersConfig.stub(:find, ->(name) { name == "notion" ? pi_notion_server_config : nil }) do
+      ServersConfig.stub(:find, ->(name) { name == "notion" ? notion_server_config : nil }) do
         assert_nothing_raised do
           injector.check_credentials_status
           injector.inject_credentials!
@@ -1048,11 +1057,11 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   # A remote catalog server, and the credential key its config hashes to. Pairing
   # them is what makes a fixture credential actually resolve for that server —
   # without it the injector short-circuits long before it needs a runtime key.
-  def pi_notion_server_config
+  def notion_server_config
     mock_server_config(name: "notion", type: "streamable-http", url: "https://mcp.notion.com/mcp")
   end
 
-  def pi_notion_credential_key
+  def notion_credential_key
     McpOauthCredential.compute_credential_key(
       "notion", { type: "streamable-http", url: "https://mcp.notion.com/mcp", headers: {} }
     )
@@ -1068,6 +1077,23 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   # — the runtime the injector must degrade for rather than raise on.
   def mock_pi_session(servers)
     mock_session_on(servers, runtime: "pi")
+  end
+
+  # A session on a runtime whose bundle has NO credential writer.
+  #
+  # No registered runtime is in that state any more — Pi was, and
+  # PiMcpCredentialWriter ended it — but the nil case is still part of the
+  # RuntimeMcpCredentialWriter seam, and the guards that survive it are the ones
+  # whose absence killed every Pi session with an OAuth-credentialed server
+  # (GlitchTip issue 87). So the coverage moves onto a synthetic bundle rather
+  # than being deleted with the runtime that used to supply it.
+  def mock_writerless_session(servers)
+    session = mock_session_on(servers, runtime: "pi")
+    bundle = RuntimeRegistry::Bundle.new(
+      **RuntimeRegistry.for("pi").to_h.merge(mcp_credential_writer_class: nil)
+    )
+    session.define_singleton_method(:runtime) { bundle }
+    session
   end
 
   # The injector asks a session for three things: its MCP servers, its id, and

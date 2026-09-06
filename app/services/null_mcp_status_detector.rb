@@ -3,15 +3,18 @@
 # The MCP status detector for a runtime that exposes no per-server connection
 # signal at all.
 #
-# Claude Code writes per-server log files (McpLogPollerService reads them) and
-# Codex records `mcp__<server>__<tool>` calls in its rollout (CodexMcpStatusDetector
-# mines those). Pi exposes neither: it writes no MCP log files, and the
-# pi-mcp-adapter extension deliberately routes every server through a single
-# `mcp` proxy tool, so a Pi transcript shows `mcp` being called and never names
-# the server behind it. There is nothing per-server to detect.
+# Claude Code writes per-server log files (McpLogPollerService reads them), Codex
+# records `mcp__<server>__<tool>` calls in its rollout (CodexMcpStatusDetector
+# mines those), and Pi names the server in its own transcript two ways
+# (PiMcpStatusDetector). So NO REGISTERED RUNTIME USES THIS CLASS TODAY — Pi held
+# it until the pinned pi-mcp-adapter turned out to name the server after all.
 #
-# The honest answer is therefore "no status", and this class is how a runtime
-# says that. It is NOT a nil bundle slot: TranscriptPollerService dereferences
+# It stays because it is the seam's vocabulary for a runtime that genuinely has
+# no per-server signal, and because the alternative a new runtime would otherwise
+# reach for is `nil`, which is the bug described below. The honest answer to "no
+# signal" is "no status", and this class is how a runtime says that.
+#
+# It is NOT a nil bundle slot: TranscriptPollerService dereferences
 # `mcp_status_detector_class` unconditionally in its constructor, so a nil there
 # is a NoMethodError on every poll of every session on that runtime — before any
 # MCP-specific guard can run. A null object keeps "every bundle slot a caller
@@ -21,7 +24,7 @@
 # `update_session_mcp_status` is inherited from McpStatusPersisting rather than
 # stubbed, and that is deliberate: the persisting step seeds the `pending`
 # placeholders that keep a configured server visible in `mcp_servers_status`
-# instead of reading as "not configured". A Pi session's servers should still
+# instead of reading as "not configured". Such a runtime's servers should still
 # appear in the UI as configured-but-unknown; what is missing is only the
 # transition to connected/failed, which no signal supports.
 class NullMcpStatusDetector

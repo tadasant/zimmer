@@ -48,4 +48,14 @@ module PiHome
   def settings_json_path
     File.join(path, "settings.json")
   end
+
+  # Where `pi-mcp-adapter` looks for a pending plaintext MCP OAuth entry before
+  # importing it into the OS credential store — `getAgentPath('mcp-oauth')` in
+  # its `mcp-auth.ts`, which resolves under PI_CODING_AGENT_DIR exactly as #path
+  # does. PiMcpCredentialWriter writes here; the `MCP_OAUTH_DIR` override the
+  # adapter honours ahead of this is checked by that writer, not here, because
+  # this method answers "where does Pi's agent dir put it" and nothing else.
+  def mcp_oauth_dir_path
+    File.join(path, "mcp-oauth")
+  end
 end

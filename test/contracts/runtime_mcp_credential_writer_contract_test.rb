@@ -13,7 +13,7 @@ require "test_helper"
 # adding one entry to WRITERS.
 class RuntimeMcpCredentialWriterContractTest < ActiveSupport::TestCase
   # Writers under contract. Add new runtime writers here.
-  WRITERS = [ ClaudeMcpCredentialWriter, CodexMcpCredentialWriter ].freeze
+  WRITERS = [ ClaudeMcpCredentialWriter, CodexMcpCredentialWriter, PiMcpCredentialWriter ].freeze
 
   # Keyword arguments every writer's #write! must accept.
   WRITE_KEYWORDS = %i[working_directory credentials].freeze

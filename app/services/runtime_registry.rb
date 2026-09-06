@@ -115,16 +115,15 @@ module RuntimeRegistry
   #   * `config_post_processor_class` is PiMcpConfigPostProcessor, which SEEDS
   #     `.mcp.json` from Zimmer's catalog rather than merely adjusting a file AIR
   #     wrote — because for Pi, AIR writes none.
-  #   * `mcp_status_detector_class` is NullMcpStatusDetector. Pi writes no
-  #     per-server MCP log files (so the Claude log poller has nothing to read),
-  #     and unlike Codex it records no `mcp__<server>__<tool>` calls to mine
-  #     either: the pi-mcp-adapter extension routes every server through ONE
-  #     `mcp` proxy tool, so a transcript shows `mcp` being called and never
-  #     names the server behind it. There is no per-server signal to detect — but
-  #     the slot gets a null object rather than nil, because
-  #     TranscriptPollerService dereferences it unconditionally in its
-  #     constructor, so a nil here is a NoMethodError on every poll of every Pi
-  #     session.
+  #   * `mcp_status_detector_class` is PiMcpStatusDetector. Pi writes no
+  #     per-server MCP log files, so the Claude log poller has nothing to read —
+  #     but the pinned `pi-mcp-adapter` DOES name the server in the transcript,
+  #     which the NullMcpStatusDetector this slot used to hold assumed it did
+  #     not. It registers one namespace-proxy tool per server, `mcp__<server>`,
+  #     and the bare `mcp` proxy's `connect` argument names a server verbatim.
+  #     Both are per-server signals, and mining them is what stops every Pi
+  #     session's `mcp_servers_status` reading `pending` forever while its
+  #     servers are connected and answering.
   #   * `artifact_bridge_class` is PiAirBridge, which writes the AIR hooks and
   #     plugins config Pi's extensions read. `air prepare pi` writes none: the
   #     adapter ignores hook entries outright and honors a plugin only as
@@ -146,13 +145,13 @@ module RuntimeRegistry
     retry_strategy_class: PiRetryStrategy,
     transcript_source_class: PiTranscriptSource,
     transcript_normalizer_class: PiTranscriptNormalizer,
-    mcp_status_detector_class: NullMcpStatusDetector,
+    mcp_status_detector_class: PiMcpStatusDetector,
     prompt_contribution_class: PiRuntimePromptContribution,
     config_preparer_class: nil,
     config_post_processor_class: PiMcpConfigPostProcessor,
     artifact_bridge_class: PiAirBridge,
     auth_provider_class: nil,
-    mcp_credential_writer_class: nil
+    mcp_credential_writer_class: PiMcpCredentialWriter
   ).freeze
 
   BUNDLES = {
