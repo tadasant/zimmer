@@ -461,10 +461,11 @@ only once delivery has succeeded. A refused delivery then falls through to the a
 prompt with the session still detectable. Clearing it up front puts the session outside every later
 recovery pass.
 
-The error-scan positions — `api_error_last_checked_line` and `auth_error_last_checked_line` — are in
-none of the four. They record which transcript errors have already been handled, and clearing one
-makes the scanner re-read old entries, which is how a stale quota error misclassifies a new transient
-rate limit.
+The API and auth error-scan positions — `api_error_last_checked_line` and
+`auth_error_last_checked_line` — are in none of the four. They record which transcript errors have
+already been handled, and clearing one makes the scanner re-read old entries, which is how a stale
+quota error misclassifies a new transient rate limit. `context_length_last_checked_line` is the
+deliberate exception: it *is* on the default set, so every reset clears it.
 
 #### Restart from scratch is one operation behind three doors
 
