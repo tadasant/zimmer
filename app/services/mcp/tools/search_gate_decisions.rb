@@ -30,8 +30,9 @@ module Mcp
         - `{ gate: "pr_merge", surface: "zimmer", with_human_feedback: true }` — **the highest-signal read in the ledger.** Every decision a human later commented on, which is the only place the gate learns it was wrong. There are few of these; read all of them.
 
         **Other shapes:**
-        - `{ artifact_url: "https://github.com/tadasant/zimmer/pull/749" }` — has this PR been rated before? A re-rate should know what the first rating said.
-        - `{ query: "air_prepare_service.rb" }` — full-text over the whole entry: the reasoning, the ratings, the justifications, the verification notes. Case-insensitive substring, so file paths, issue numbers (`#722`) and phrases all work.
+        - `{ artifact_url: "https://github.com/tadasant/zimmer/pull/749" }` — has this PR been rated before? A re-rate should know what the first rating said. Matched exactly, so it takes the whole URL.
+        - `{ artifact_query: "pull/749" }` — the same column, matched as a case-insensitive substring. Use it when you have a fragment rather than the whole URL — a number, a path segment like `/issues/`, a repo name. It never reads the prose, only the URL — but a loose fragment matches several artifacts (`"781"` returns `issues/781` and `issues/7810` too), so when you mean one specific PR use `artifact_url`.
+        - `{ query: "air_prepare_service.rb" }` — full-text over the whole entry: the reasoning, the ratings, the justifications, the verification notes. Case-insensitive substring, so file paths, issue numbers (`#722`) and phrases all work. Looser than the two above — it also matches prose, so it returns decisions that merely *mention* a PR number as well as the ones made about it.
         - `{ gate: "pr_merge", from: "2026-08-01", to: "2026-08-31" }` — a date window over `decided_at`.
 
         **Two gates, two shapes.** `pr_merge` rates a pull request (`pr`, `problem`, `solution`, `ratings`, `decision`, `reason`, …); `issue_work` rates an issue (`issue`, `posture`, `kind`, `scope_direction`, `facets`, `staleness_check`, `ratings`, `decision`, …). The schemas are heterogeneous and still moving, so only the stable fields are columns you can filter on — everything else the gate wrote is in `payload`, returned verbatim by `include_payload: true`.
@@ -60,6 +61,10 @@ module Mcp
           artifact_url: {
             type: "string",
             description: "The exact PR or issue URL this decision was about. Use it to find every rating ever made on one artifact."
+          },
+          artifact_query: {
+            type: "string",
+            description: "Substring over the same artifact URL, case-insensitive — for a fragment rather than the whole URL (\"pull/749\", \"/issues/\", a repo name). Narrower than `query`, which also matches the prose of the entry; looser than `artifact_url`, since a short fragment matches more than one artifact."
           },
           query: {
             type: "string",
@@ -104,7 +109,8 @@ module Mcp
 
         if decisions.empty?
           return "No gate decisions match #{filters.describe}.\n\nThe ledger holds #{GateDecision.count} " \
-                 "decision(s) in total. Widen the filter — `decision` and `artifact_url` match exactly."
+                 "decision(s) in total. Widen the filter — `decision` and `artifact_url` match exactly, " \
+                 "and `artifact_query` takes a fragment of the URL where `artifact_url` wants all of it."
         end
 
         include_payload = truthy?(args["include_payload"])
