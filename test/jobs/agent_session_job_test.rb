@@ -391,6 +391,112 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_includes mock_cli_adapter.executed_commands.first[:prompt], "Do the original task now."
   end
 
+  # THE #833 REGRESSION. A session that never started has no conversation, so a turn
+  # delivered to it is reclassified as a fresh start — and until this, that fresh start
+  # kept the session's OWN prompt and threw the arriving text away, with nothing but a
+  # `warning` log to show for it. Reachable from the ordinary UI since #557: a
+  # never-started session can be restored from the trash, lands in `needs_input` with no
+  # job enqueued, and typing into the follow-up box is how a human continues it.
+  #
+  # The message names work of its own, so it is carried into the fresh start. It is
+  # carried ALONGSIDE the prompt rather than in place of it, because the prompt has not
+  # run either — replacing it would lose the task the session was created to do, and
+  # would leave a continuation-shaped message standing alone in an empty conversation.
+  test "a human follow-up to a never-started session that already has a prompt is not discarded" do
+    @session.update!(session_id: nil, prompt: "Fix the login bug", status: :waiting, metadata: {})
+
+    job = nil
+    perform_session_job(@session, "Also add a regression test while you are in there.") { |j| job = j }
+
+    @session.reload
+    assert_includes @session.prompt, "Fix the login bug",
+      "the session's own prompt must survive — it has never run"
+    assert_includes @session.prompt, "Also add a regression test while you are in there.",
+      "the message the caller sent must not be discarded"
+
+    assert_equal 1, job.cli_adapter.executed_commands.length, "should spawn fresh via execute"
+    assert_equal 0, job.cli_adapter.resumed_sessions.length, "should not attempt to resume"
+    spawned = job.cli_adapter.executed_commands.first[:prompt]
+    assert_includes spawned, "Fix the login bug"
+    assert_includes spawned, "Also add a regression test while you are in there."
+  end
+
+  # The regression this change is most likely to cause, so it is pinned from both ends.
+  # Every recovery and respawn caller sends a nudge, and for them re-running the
+  # session's own prompt IS carrying on: the work never happened. Their behaviour is
+  # unchanged, and the nudge's text — which names no work of its own and would be read
+  # as an instruction if it landed in the prompt — stays out of it.
+  test "a SYSTEM_RECOVERY nudge to a never-started session still runs the session's own prompt" do
+    @session.update!(session_id: nil, prompt: "Fix the login bug", status: :waiting, metadata: {})
+
+    job = nil
+    perform_session_job(@session, AutomatedPrompts::SYSTEM_RECOVERY) { |j| job = j }
+
+    @session.reload
+    assert_equal "Fix the login bug", @session.prompt, "a nudge must not rewrite the session's prompt"
+
+    spawned = job.cli_adapter.executed_commands.first[:prompt]
+    assert_includes spawned, "Fix the login bug"
+    refute_includes spawned, "AUTOMATED SYSTEM MESSAGE",
+      "the nudge itself must not be carried into a conversation it names no work for"
+  end
+
+  # `AutomatedPrompts.system_recovery(reason:)` appends a line naming the emitting path,
+  # so the respawn nudges the sweeps actually send are not `==` the bare constant. They
+  # are still nudges, and must be treated as such.
+  test "a reasoned respawn nudge to a never-started session still runs the session's own prompt" do
+    @session.update!(session_id: nil, prompt: "Fix the login bug", status: :waiting, metadata: {})
+
+    job = nil
+    nudge = AutomatedPrompts.system_recovery(reason: "the deploy sweep found no process")
+    perform_session_job(@session, nudge) { |j| job = j }
+
+    @session.reload
+    assert_equal "Fix the login bug", @session.prompt
+    refute_includes job.cli_adapter.executed_commands.first[:prompt], "the deploy sweep found no process"
+  end
+
+  test "a heartbeat beat to a never-started session still runs the session's own prompt" do
+    @session.update!(session_id: nil, prompt: "Fix the login bug", status: :waiting, metadata: {})
+
+    job = nil
+    perform_session_job(@session, AutomatedPrompts::HEARTBEAT) { |j| job = j }
+
+    @session.reload
+    assert_equal "Fix the login bug", @session.prompt
+    refute_includes job.cli_adapter.executed_commands.first[:prompt], "heartbeat monitoring"
+  end
+
+  # Sessions::RestartUnstartedTurn replays the session's OWN prompt through
+  # `deliver_follow_up!`, and on a runtime that mints its own session id it releases the
+  # id first — so the replay arrives here with `follow_up_prompt == session.prompt`.
+  # Carrying it would append the prompt to itself.
+  test "replaying a never-started session's own prompt does not duplicate it" do
+    @session.update!(session_id: nil, prompt: "Fix the login bug", status: :waiting, metadata: {})
+
+    perform_session_job(@session, "Fix the login bug")
+
+    @session.reload
+    assert_equal "Fix the login bug", @session.prompt
+  end
+
+  # A recovery loop can redeliver the same text, and a sweep and a human can land on the
+  # same turn. The message must not stack up in the prompt column.
+  test "the same message delivered twice to a never-started session is carried once" do
+    @session.update!(session_id: nil, prompt: "Fix the login bug", status: :waiting, metadata: {})
+
+    perform_session_job(@session, "Also add a regression test.")
+    @session.reload
+    after_first = @session.prompt
+
+    @session.update!(session_id: nil, status: :waiting, metadata: {})
+    perform_session_job(@session, "Also add a regression test.")
+
+    @session.reload
+    assert_equal after_first, @session.prompt, "the same message must not be appended twice"
+    assert_equal 1, @session.prompt.scan("Also add a regression test.").length
+  end
+
   test "should create initial log entry for new session" do
     job = AgentSessionJob.new
 
