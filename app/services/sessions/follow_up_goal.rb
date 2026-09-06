@@ -27,6 +27,12 @@ module Sessions
   # was involved" (no `:goal` key at all — the controller substitutes the session's
   # existing goal before calling here). Callers that can make that distinction pass
   # `clear_when_blank: true`; the API, MCP and queue paths cannot, and do not.
+  #
+  # Stateless class methods rather than the `self.call` -> `new(...).call` shape most
+  # of app/services/sessions/ uses, and deliberately so: this is three independent
+  # operations a caller reaches for at three different moments — parse, refuse, apply
+  # — not one operation with collaborators worth holding in an instance.
+  # Sessions::AttachmentDescriptors is the same shape for the same reason.
   class FollowUpGoal
     # What each surface calls the thing the goal arrived on, spliced into the log
     # line. The wording is per-source on purpose — a reader of a session's log wants
