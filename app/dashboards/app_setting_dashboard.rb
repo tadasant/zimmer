@@ -14,6 +14,9 @@ class AppSettingDashboard < Administrate::BaseDashboard
     # SpotPoliciesController is the purpose-built surface for these.
     spot_gating_enabled: Field::Boolean,
     spot_max_concurrent_sessions: Field::Number,
+    # Whether a priority session may take a slot off a running spot session when
+    # the fleet is at that limit — SpotPreemption.
+    spot_preemption_enabled: Field::Boolean,
     spot_reserve_five_hour_pct: Field::Number,
     spot_reserve_weekly_pct: Field::Number,
     # The quota pool's cached verdict, and when it last flipped.

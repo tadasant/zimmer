@@ -112,6 +112,31 @@
         </div>
       </div>
 
+      <%# The ACTIVE half of "Max sessions at once", and the only control on this
+          card that stops work already underway. A checkbox rather than a second
+          switch row, because it qualifies the limit above rather than standing
+          beside it — and full width rather than inside the grid, because the
+          sentence it has to say does not fit in a third of a column. The hidden
+          `0` is what lets an unticked box post a value at all. %>
+      <label class="mt-4 flex items-start gap-2 text-xs text-gray-700" for="app_setting_spot_preemption_enabled">
+        <input type="hidden" name="app_setting[spot_preemption_enabled]" value="0">
+        <input type="checkbox"
+               name="app_setting[spot_preemption_enabled]"
+               id="app_setting_spot_preemption_enabled"
+               value="1"
+               class="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+               <%= "checked" if @app_setting.spot_preemption_enabled %>>
+        <span>
+          <span class="font-medium text-gray-900">Let priority work take a slot.</span>
+          A priority session starting into a full fleet takes the slot off the lowest-ranked running
+          spot session, which sleeps in the spot queue and is resumed — highest precedence first — as
+          soon as a slot frees. The spot session finishes its current turn first; it is only stopped
+          mid-turn if that turn is still running <%= SpotPreemption::GRACE.inspect %> later with the
+          fleet still full. Turn this off and a priority session runs one <em>over</em> the limit
+          instead, which is what happened before this existed.
+        </span>
+      </label>
+
       <p class="mt-3 text-xs text-gray-500">
         You set the reserve as a percentage; the dollar figure beside it is derived from what each
         window is estimated to be worth — see the capacity model above. Every figure is an
@@ -169,6 +194,17 @@
         <strong id="spot-paused-count"><%= @spot_paused_count %></strong>.
         <%= @spot_hold_explanation.sessions_asleep %>
         Priority sessions are never paused.
+      </p>
+
+      <%# The third dormant population, and the one that makes "priority work
+          crowds spot work out" true of work already underway rather than only of
+          the next start. It shares the paused queue above — same record, same
+          resume sweep, same precedence order — but not its cause, so it gets its
+          own number rather than inflating the budget ceiling's. %>
+      <p class="mt-2 text-sm text-gray-600" id="spot-gate-preempted-decision">
+        Spot sessions preempted by priority work:
+        <strong id="spot-preempted-count"><%= @spot_preempted_count %></strong>.
+        <%= @spot_hold_explanation.sessions_preempted %>
       </p>
 
       <%# The other dormant population. A session HELD at the door is dormant in

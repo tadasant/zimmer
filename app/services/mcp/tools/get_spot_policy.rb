@@ -150,11 +150,17 @@ module Mcp
         # deployment holding session 7507 (tadasant/zimmer#648).
         held_count = SpotSessionHold.held_count
         overdue_hold_count = SpotSessionHold.overdue_count
+        # The third dormant population: spot sessions a PRIORITY session took the
+        # slot of. Same queue and same resume owner as `paused_count`, different
+        # cause — so it is reported apart rather than charged to the budget
+        # ceiling.
+        preempted_count = SpotSessionPause.preempted_count
         explanation = SpotHoldExplanation.new(
           decision,
           paused_count: paused_count,
           held_count: held_count,
-          overdue_hold_count: overdue_hold_count
+          overdue_hold_count: overdue_hold_count,
+          preempted_count: preempted_count
         )
         # The same reading the /inference top-up card renders, from the same
         # object, so a human on the page and an agent on this tool are told the
@@ -172,6 +178,8 @@ module Mcp
           "- **Max sessions at once:** #{setting.spot_max_concurrent_sessions} " \
           "(every session a worker is running counts, priority included; a turn merely queued for a worker does not; only spot sessions wait for a slot)" \
           "#{worker_pool_note(setting.spot_max_concurrent_sessions)}",
+          "- **Priority preemption:** #{setting.spot_preemption_enabled ? "on" : "off"} — " \
+          "#{setting.spot_preemption_enabled ? "a priority session starting into a full fleet takes the slot off the lowest-ranked running spot session, which sleeps in the spot queue and is resumed when a slot frees" : "a priority session starting into a full fleet runs one over the limit instead of taking a slot off a running spot session"}",
           "",
           "### Current decision",
           "",
@@ -196,6 +204,7 @@ module Mcp
           # this figure has nothing to do with the concurrency limit and is
           # regularly larger than it. Same number the /inference card shows.
           "- **Spot sessions paused mid-run by the ceiling:** #{paused_count}. #{explanation.sessions_asleep}",
+          "- **Spot sessions preempted by priority work:** #{preempted_count}. #{explanation.sessions_preempted}",
           # Same two figures the /inference card renders, from the same object, so a
           # human reading the page and an agent reading this tool are told the
           # same thing about who is asleep and whose ladder has stopped.

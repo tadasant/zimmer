@@ -44,6 +44,15 @@ module Mcp
           RUNNING counts toward it, priority included, but only spot sessions are held by it. A turn
           merely queued behind the `agents` pool does not count, so a cap above that pool's size can
           never be reached. With gating off, spot sessions start like any other.
+
+          `preemption_enabled` is the ACTIVE half of that cap. With it on (the default), a priority
+          session starting into a full fleet takes the slot off the lowest-ranked running spot
+          session, which sleeps in the spot queue and is resumed when a slot frees. The spot session
+          finishes its current turn first; it is only stopped mid-turn if that turn is still running
+          ten minutes later with the fleet still full. With it off, a priority session runs one OVER
+          the cap instead. It is separate from `enabled` so the one part of the policy that stops work
+          already underway can be turned off without turning the gate off and letting the fleet run
+          unpaced.
         - **set_top_up**: Tune when the `no_sessions_in_progress` trigger event fires — the event that
           hands a fleet with spare capacity more work. Any of `max_running_sessions`, `idle_minutes` and
           `min_fire_interval_minutes` may be given; omitted ones are left alone.
@@ -119,6 +128,13 @@ module Mcp
             description: "set_gating: most sessions allowed to run at once, 1-100 (10 by default). Counts " \
                          "every running session, priority included; holds only spot ones."
           },
+          preemption_enabled: {
+            type: "boolean",
+            description: "set_gating: whether a priority session starting into a full fleet takes a slot " \
+                         "off the lowest-ranked running spot session (on by default). Off, it runs one over " \
+                         "max_concurrent_sessions instead. Separate from `enabled`: this is the only part " \
+                         "of the policy that stops work already underway for the CONCURRENCY limit."
+          },
           max_running_sessions: {
             type: "integer",
             minimum: 1,
@@ -183,10 +199,16 @@ module Mcp
           setting.spot_max_concurrent_sessions = args["max_concurrent_sessions"]
           changes << "max #{setting.spot_max_concurrent_sessions} sessions at once"
         end
+        # `.nil?` again: `false` is the whole point of this argument, and
+        # truthiness would silently ignore the only value anybody sends it for.
+        unless args["preemption_enabled"].nil?
+          setting.spot_preemption_enabled = ActiveModel::Type::Boolean.new.cast(args["preemption_enabled"])
+          changes << "priority preemption #{setting.spot_preemption_enabled ? 'enabled' : 'disabled'}"
+        end
 
         if changes.empty?
-          raise ToolError, "Nothing to change: pass enabled, five_hour_reserve_pct, weekly_reserve_pct " \
-                           "or max_concurrent_sessions"
+          raise ToolError, "Nothing to change: pass enabled, five_hour_reserve_pct, weekly_reserve_pct, " \
+                           "max_concurrent_sessions or preemption_enabled"
         end
 
         # Surface a bad reserve as a message the caller can act on rather than

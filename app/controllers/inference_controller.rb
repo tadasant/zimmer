@@ -380,13 +380,20 @@ class InferenceController < ApplicationController
     # How many of those ladders have stalled — a hold whose own re-check time has
     # passed is waiting on nothing until SpotHoldSweepJob puts it back.
     @spot_overdue_hold_count = SpotSessionHold.overdue_count
+    # The THIRD dormant population: spot sessions a priority session took the
+    # slot of. It shares the paused queue and its resume owner, so it is not a
+    # separate mechanism — but it is a separate CAUSE, and printing it inside
+    # `@spot_paused_count` would report the concurrency limit's cost under the
+    # budget ceiling's label.
+    @spot_preempted_count = SpotSessionPause.preempted_count
     # Which of the three ceilings is holding spot work and what lifts it, in the
     # words `get_spot_policy` uses for the same decision.
     @spot_hold_explanation = SpotHoldExplanation.new(
       @spot_decision,
       paused_count: @spot_paused_count,
       held_count: @spot_held_count,
-      overdue_hold_count: @spot_overdue_hold_count
+      overdue_hold_count: @spot_overdue_hold_count,
+      preempted_count: @spot_preempted_count
     )
     # The capacity model behind the reserve controls: the form types a
     # percentage and prints the dollars that percentage carves out, and both

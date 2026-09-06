@@ -161,7 +161,17 @@ class SessionWaitingReason
       return nil unless SpotSessionPause.paused?(session)
       return nil if session.metadata&.dig(SpotSessionPause::PAUSED_DETAIL).blank?
 
-      label = SpotSessionPause.queued_by_user?(session) ? "a deliberate spot-queue park" : "a spot ceiling pause"
+      label = if SpotSessionPause.queued_by_user?(session)
+        "a deliberate spot-queue park"
+      elsif SpotSessionPause.preempted?(session)
+        # Named apart from the ceiling pause it shares a record with: the two have
+        # the same resume owner and completely different causes, and a reader sent
+        # to "a quota window" for a slot a priority session took looks at the
+        # wrong number.
+        "a preemption by a priority session"
+      else
+        "a spot ceiling pause"
+      end
       Mechanism.new(key: SPOT_PAUSE, at: parse_time(session.metadata&.dig(SpotSessionPause::PAUSED_AT)),
                     label: label, demoted: false)
     end

@@ -34,6 +34,9 @@ class SpotPoliciesController < ApplicationController
     if spot_params.key?(:spot_max_concurrent_sessions)
       setting.spot_max_concurrent_sessions = spot_params[:spot_max_concurrent_sessions]
     end
+    if spot_params.key?(:spot_preemption_enabled)
+      setting.spot_preemption_enabled = ActiveModel::Type::Boolean.new.cast(spot_params[:spot_preemption_enabled])
+    end
 
     if setting.save
       redirect_to inference_path(anchor: "spot-gate"), notice: "Spot policy updated."
