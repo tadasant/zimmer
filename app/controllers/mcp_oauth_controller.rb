@@ -190,6 +190,34 @@ class McpOauthController < ApplicationController
       return
     end
 
+    # The token endpoint above came out of the server's own discovery metadata
+    # (or, on the pre-registered branch, the catalog), and the exchange that
+    # follows consent posts the client secret to it in a form body. Refuse the
+    # server here rather than after the user has consented: McpOauthPendingFlow
+    # refuses to store a cleartext endpoint, so without this the flow would raise
+    # RecordInvalid instead of saying anything useful, and refusing before the
+    # redirect means no authorization code is ever minted for an endpoint we will
+    # not talk to. The endpoint is rendered scheme://host:port/path — it is
+    # untrusted input, and it may carry userinfo (#892).
+    unless HttpsTokenEndpoint.secure?(oauth_metadata[:token_endpoint])
+      # Two different refusals wear the same guard. A blank endpoint means the
+      # discovery document named none at all — reachable, because McpOauthService
+      # accepts metadata carrying only an authorization_endpoint — and saying
+      # "not https" about a value that does not exist would send someone looking
+      # for a scheme to fix. (That case used to be a RecordInvalid 500 from
+      # McpOauthPendingFlow's presence validation.)
+      described = HttpsTokenEndpoint.describe(oauth_metadata[:token_endpoint])
+      flash[:error] = if oauth_metadata[:token_endpoint].blank?
+        "#{server_name} advertises no OAuth token endpoint, so there is nothing to exchange the authorization code with."
+      else
+        "#{server_name} advertises an OAuth token endpoint Zimmer will not use (#{described}): " \
+        "it must be an https:// URL with a host, because Zimmer's client secret is sent to it."
+      end
+      Rails.logger.warn "[McpOauthController] Refusing OAuth for #{server_name}: unusable token endpoint #{described}"
+      redirect_to oauth_return_path(@session)
+      return
+    end
+
     # Delete any existing pending flow for this session/server (user is re-initiating).
     # for_session(nil) scopes this to the session-less flows, so a Connectors-page
     # re-click replaces its own previous flow and leaves in-session ones alone.
