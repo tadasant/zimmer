@@ -123,8 +123,19 @@ env:
     # per-session bound on purpose: one session may use its whole 1024, two sessions share
     # it, and the remaining ~1g of the 2g cap is the Rails worker's -- which is the point,
     # since the worker is what #981 killed. It also means two concurrent staging sessions
-    # exercise the aggregate cap, which production would take eight to reach.
+    # exercise the aggregate cap, which production takes several sessions to reach.
     ZIMMER_SESSIONS_MEMORY_MAX_MB: "<%= ENV.fetch("ZIMMER_SESSIONS_MEMORY_MAX_MB", "1024") %>"
+    # Pinned rather than inherited. ConnectionBudget's default is sized for production's
+    # 10g worker and 6144 MB session pool; staging has a 2g worker and a 1024 MB pool, so
+    # the production number is meaningless here and silently followed it every time it
+    # moved. 8 is what staging effectively ran before that default became 12, so pinning
+    # it holds staging's behaviour still while production's changes -- and the next
+    # production bump cannot drag a quarter-sized box along with it.
+    #
+    # Staging is deliberately over-admitted against its pool, which is the same trade the
+    # bounds above make: a box that can never reach its own caps never exercises them
+    # before production does.
+    GOOD_JOB_AGENTS_THREADS: "<%= ENV.fetch("GOOD_JOB_AGENTS_THREADS", "8") %>"
     # PARALLEL_WORKERS for every agent session. Same value as production: the number is
     # about how many sessions share the droplet's vCPUs, not about the memory cap.
     ZIMMER_SESSION_PARALLEL_WORKERS: "<%= ENV.fetch("ZIMMER_SESSION_PARALLEL_WORKERS", "2") %>"

@@ -152,8 +152,8 @@ module ConnectionBudget
       # NEITHER gives the sessions a separate budget. Do not read either as
       # headroom: the pool's cap is carved OUT of the 10 GiB, not added to it.
       #
-      # Measured on production over the 24h to 2026-09-05T14:16Z, at this value
-      # of 8 (VictoriaMetrics, `role="worker"`), strongest evidence first:
+      # Measured on production over the 24h to 2026-09-05T14:16Z, at an `agents`
+      # value of 8 (VictoriaMetrics, `role="worker"`), strongest evidence first:
       #
       #   memory.stat     anon peak 9.07 GiB against a 10 GiB memory.max;
       #                   p95 5.68 GiB. Anonymous memory is unreclaimable, so
@@ -170,43 +170,61 @@ module ConnectionBudget
       #   memory.events   `max` (allocation stalled into reclaim) 133,791. Same
       #                   caveat: cache-driven reclaim fires this too.
       #
-      # So EIGHT already reaches the ceiling. tadasant/zimmer#981 is the incident
-      # for it: on 2026-09-05T09:20:24Z eight in-budget sessions -- no runaway,
-      # largest process 943 MB -- summed to 8.7 GB of anon and the kernel
-      # OOM-killed the GoodJob worker itself, taking every in-flight
-      # AgentSessionJob with it.
+      # Those measurements were taken at 8 and BEFORE tadasant/zimmer#981's fix.
+      # They are the reason 8 was the number, and they are why the fix came first:
+      # on 2026-09-05T09:20:24Z eight in-budget sessions -- no runaway, largest
+      # process 943 MB -- summed to 8.7 GB of anon and the kernel OOM-killed the
+      # GoodJob worker itself, taking every in-flight AgentSessionJob with it.
       #
-      # WHAT #981 CHANGED, AND WHAT IT DID NOT. Session cgroups now live in a
-      # `sessions` POOL carrying its own memory.max (ZIMMER_SESSIONS_MEMORY_MAX_MB,
-      # 6144), and the pool does NOT contain the Rails worker -- so a pile-up now
-      # declares its OOM in a cgroup the worker is outside of, and the victim is a
-      # session process rather than the worker that runs all of them. That is a
-      # blast-radius bound, not a demand reduction: the pile-up still happens and a
-      # session still dies. The per-session PARALLEL_WORKERS cap (2) cuts the
-      # dominant term, but it is a mitigation and not a bound either.
+      # #981's fix moved the VICTIM, which is what makes this number a throughput
+      # decision rather than the only thing standing between a busy lane and a dead
+      # worker. Session cgroups live in a `sessions` POOL carrying its own
+      # memory.max (ZIMMER_SESSIONS_MEMORY_MAX_MB), and the pool does not contain
+      # the Rails worker: zimmer.sessions/sessions carries the cap and
+      # zimmer.sessions/app, where `bundle exec good_job start` sits, is its
+      # sibling. Overshoot costs one session, which GoodJob retries, instead of
+      # every session on the box plus the worker.
       #
-      # So THIS number is still the admission control, and the measurements above
-      # are still the reason it is 8. They also predate the fix, which is the next
-      # thing to do rather than a reason to move the number now: re-measure `anon`
-      # under the pool and the parallelism cap before raising this.
+      # READ THAT NARROWLY. It covers memory charged INSIDE the pool, which is the
+      # session process and its descendants -- SessionMemoryCgroup's `sh` wrapper
+      # puts them there. It does NOT cover what a session starts through the inner
+      # dockerd: bin/docker-entrypoint runs the delegation AFTER the dockerd block
+      # on purpose, so the daemon and the `.agent-containers` dev stacks it manages
+      # stay in the CONTAINER cgroup, alongside the worker. That path is bounded by
+      # this number and nothing else, and it is the residual risk in raising it.
       #
-      # And the connection budget is not roomy either: 15 derives 97
-      # required_backends, which is the ENTIRE capacity of a db-s-2vcpu-4gb
-      # cluster (97), so that side has zero margin and the production cluster's
-      # plan slug has not been confirmed. Check `terraform output
-      # managed_db_usable_backends` before relying on it.
+      # THE POOL IS NOT SIZED FROM THIS NUMBER, which is the trap. It is sized from
+      # what must survive a pile-up -- see config/deploy.production.yml. Raising
+      # this spends pool headroom; it does not create any. The arithmetic at 12
+      # against the shipped 6144 MB pool:
       #
-      # Eight is not a number that has been shown to fit. It is the number that
-      # has been measured, and the measurement says it is at the edge: excess
-      # sessions stay durable queued rows, which resume, rather than becoming a
-      # worker kill, which does not. A higher number here buys no throughput,
-      # because it trades queued rows for the loss of the sessions already
-      # running.
+      #   per session   ~382 MB idle at #981's peak dump -- 214 MB `claude`, ~118 MB
+      #                 MCP `node`, ~50 MB Playwright (averaged over sessions that
+      #                 mostly did not run it; a real Chromium is 300-500 MB, so a
+      #                 fleet leaning on Playwright needs this re-measured). Live at
+      #                 12 session cgroups the same figure reads ~263 MB.
+      #   12 sessions   ~4.6 GB of baseline conservatively, ~3.2 GB as observed
+      #   left to work  ~1.5 GB conservatively, ~3.0 GB as observed
       #
-      # To go above 8: re-measure the peak above under #981's fix, raise this, and
-      # move infra/terraform/main.tf's app_required_backends with it
-      # (test/config/connection_budget_test.rb fails the build otherwise).
-      agents: int_env("GOOD_JOB_AGENTS_THREADS", 8),
+      # A capped suite is 2 Rails processes at 215-350 MB, so that headroom is two
+      # to five concurrent suites depending on which baseline holds. The band is not
+      # pinned down. This rides on sessions not all doing heavy work at once, which
+      # is a statistical bet and is stated as one; when it loses, the pool kills a
+      # session. 15 is not this number because the same arithmetic leaves ~110 MB
+      # each conservatively -- under a single test process.
+      #
+      # The connection side has room but not much: 12 derives 91 required_backends
+      # against the 97 a db-s-2vcpu-4gb cluster serves -- confirmed via the DO API,
+      # `zimmer-production-pg` is on that plan. Six to spare. 15 would derive
+      # exactly 97, the entire plan, which is the other reason it is not this
+      # number.
+      #
+      # To go above 12: re-measure the POOL's own `anon` against its cap (that, not
+      # the container's, is what binds session work), re-derive the dev-stack bound
+      # in docs/operate/nested-docker.md, and move infra/terraform/main.tf's
+      # app_required_backends with this (test/config/connection_budget_test.rb fails
+      # the build otherwise). Past ~12-13 the database plan is the next wall.
+      agents: int_env("GOOD_JOB_AGENTS_THREADS", 12),
       pollers: int_env("GOOD_JOB_POLLERS_THREADS", 3),
       triggers: int_env("GOOD_JOB_TRIGGERS_THREADS", 2),
       auth: int_env("GOOD_JOB_AUTH_THREADS", 2),
@@ -225,7 +243,7 @@ module ConnectionBudget
     }
   end
 
-  # The `agents:8;pollers:3;...` string GoodJob wants.
+  # The `agents:12;pollers:3;...` string GoodJob wants.
   def good_job_queues
     good_job_queue_threads.map { |queue, threads| "#{queue}:#{threads}" }.join(";")
   end
@@ -280,7 +298,7 @@ module ConnectionBudget
   # autotrim, a SKIP-LOCKED delete of at most 100 rows in a transaction
   # (SolidCable::TrimJob, trim_chance / trim_batch_size). Call it a couple of
   # milliseconds. For a 3-wide pool to hit ActiveRecord's 5s checkout timeout, the worker
-  # would have to sustain thousands of broadcasts a second; eight agent sessions
+  # would have to sustain thousands of broadcasts a second; twelve agent sessions
   # streaming transcript updates produce single or double digits.
   #
   # Worth knowing if that estimate is ever wrong: BroadcastService rescues and does not

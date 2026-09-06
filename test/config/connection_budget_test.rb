@@ -100,7 +100,7 @@ class ConnectionBudgetTest < ActiveSupport::TestCase
     baseline = as_worker { ConnectionBudget.primary_pool }
     raised = as_worker("GOOD_JOB_AGENTS_THREADS" => 20) { ConnectionBudget.primary_pool }
 
-    assert_equal baseline + 12, raised
+    assert_equal baseline + 8, raised
   end
 
   test "the queue string GoodJob is configured with is the one the budget counted" do
@@ -114,13 +114,13 @@ class ConnectionBudgetTest < ActiveSupport::TestCase
     as_worker do
       threads = ConnectionBudget.good_job_queue_threads
 
-      assert_equal 8, threads.fetch(:agents)
+      assert_equal 12, threads.fetch(:agents)
       assert_equal 2, threads.fetch(:inference)
       assert_equal 2, threads.fetch(:maintenance)
       assert_equal 2, threads.fetch(:default)
       assert_includes ConnectionBudget.good_job_queues, "inference:2"
       assert_includes ConnectionBudget.good_job_queues, "maintenance:2"
-      assert_equal 21, ConnectionBudget.good_job_scheduler_threads
+      assert_equal 25, ConnectionBudget.good_job_scheduler_threads
     end
 
     baseline = as_worker { ConnectionBudget.required_backends }
@@ -168,7 +168,7 @@ class ConnectionBudgetTest < ActiveSupport::TestCase
     # it cannot boot. Kamal renders an unset `env: clear:` value to "", and Integer("")
     # raises.
     as_worker("GOOD_JOB_AGENTS_THREADS" => "", "RAILS_MAX_THREADS" => "") do
-      assert_equal 8, ConnectionBudget.good_job_queue_threads.fetch(:agents)
+      assert_equal 12, ConnectionBudget.good_job_queue_threads.fetch(:agents)
       assert_nothing_raised { ConnectionBudget.primary_pool }
     end
   end

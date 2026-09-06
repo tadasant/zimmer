@@ -98,7 +98,7 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     result = @tool.call({})
 
     assert_includes result, "- **In flight by queue:** agents 8, inference 2, default 2 " \
-                            "(threads: agents 8, pollers 3, triggers 2, auth 2, inference 2, maintenance 2, default 2)",
+                            "(threads: agents 12, pollers 3, triggers 2, auth 2, inference 2, maintenance 2, default 2)",
                     "a hold is only readable beside the pool it is filling"
     assert_includes result, "- **Oldest execution by queue:** inference 1h 17m, default 1h 1m, agents 1m"
     assert_includes result, "- **Youngest execution by queue:** inference 1h 16m, default 1h 0m, agents 12s",

@@ -368,7 +368,7 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     end
     SystemHealthMonitorJob.perform_now
 
-    assert_includes details, "In flight by queue: inference 2 (threads: agents 8,"
+    assert_includes details, "In flight by queue: inference 2 (threads: agents 12,"
     assert_includes details, "Oldest execution by queue: inference 1h 17m"
     assert_includes details, "Youngest execution by queue: inference 1h 17m"
   end

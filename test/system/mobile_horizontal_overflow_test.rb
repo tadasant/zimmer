@@ -288,7 +288,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       SpotSessionHold::HELD_AT => 11.hours.ago.utc.iso8601,
       SpotSessionHold::HELD_REASON => "fleet_at_cap",
       SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 5 of 5 session slots taken (17 more turns " \
-                                      "waiting for one of the 8 worker slots, not counted). Every session " \
+                                      "waiting for one of the 12 worker slots, not counted). Every session " \
                                       "a worker is running counts, priority included — priority work is " \
                                       "meant to crowd spot work out. Raise the limit on /inference to widen it.",
       SpotSessionHold::HELD_RETRY_AT => 10.hours.ago.utc.iso8601,

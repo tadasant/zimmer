@@ -330,18 +330,38 @@ What production still needs:
 3. **A bound on how many sessions may hold a dev stack at once.** This is load-bearing
    because the droplet is not being resized. Measured on staging: one `.agent-containers`
    stack sits around 700 MB anon and fits; a *second* concurrent stack produced a cgroup
-   OOM kill at `anon-rss:1244540kB`. Production therefore runs eight `agents` scheduler
-   threads (`GOOD_JOB_AGENTS_THREADS`), rather than the sixteen it once admitted. More
-   sessions remain durable queued jobs and start as one of those eight slots becomes free.
+   OOM kill at `anon-rss:1244540kB`. Production runs twelve `agents` scheduler threads
+   (`GOOD_JOB_AGENTS_THREADS`). More sessions remain durable queued jobs and start as one
+   of those twelve slots becomes free.
 
-   Read eight as *the number that has been measured*, not as a number shown to fit. On
-   production at eight, the worker cgroup's unreclaimable `anon` peaks at 9.07 GiB against
-   its 10 GiB `memory.max`, and eight in-budget sessions have already summed over the cap
-   and had the kernel OOM-kill the GoodJob worker
-   ([#981](https://github.com/tadasant/zimmer/issues/981)). Neither cgroup bound changes
-   that arithmetic — cgroup v2 is hierarchical, so both the per-session cgroups and the
-   `sessions` pool above them charge the same 10 GiB. The pool decides *who* the kernel
-   kills when the sum is reached, not whether it is reached.
+   That number was 8 while a pile-up could kill the worker. Since
+   [#981](https://github.com/tadasant/zimmer/issues/981) the session cgroups sit in a
+   `sessions` pool with its own `memory.max` and the Rails worker sits in an `app` sibling
+   *outside* it, so the pool decides *who* the kernel kills when the sum is reached — one
+   session, not the worker that runs all of them. That is what let the number move.
+
+   **The dev stacks are outside the sessions pool, and this number is the only thing that
+   bounds them.** dockerd starts before the cgroup delegation — `bin/docker-entrypoint` says
+   so explicitly — so it and the `.agent-containers` stacks it runs are charged to the
+   container cgroup, alongside the Rails worker, in the victim set the container cap selects
+   from. [#981](https://github.com/tadasant/zimmer/issues/981)'s pool does not cover this
+   path. So while session *process* memory is now contained, a session that holds a dev stack
+   still spends the container's residual, and twelve threads means up to twelve of them.
+
+   Two consequences, and the second is the one that gets this backwards:
+
+   - The residual has to cover the worker (~1.6 GiB) plus dockerd and its stacks (~1.5 GiB
+     measured at 8 threads) — ~3.1 GiB. At `ZIMMER_SESSIONS_MEMORY_MAX_MB` 6144 the residual
+     is 4096 MB and covers it; at 7168 it would be 3072 MB and would not, so the *container*
+     cap would fire and take the worker. That is why the pool did **not** move with the
+     threads.
+   - Scaling only the stack term to 12 threads gives ~1.6–2.25 GiB, so ~3.2–3.85 GiB against
+     that 4096 MB residual — positive margin, but thinner than at 8. Measured live it is far
+     smaller (dockerd plus stacks at 63 MB, because few sessions hold one), which is what
+     makes 12 defensible rather than proven. **A fleet that leans on nested Docker should
+     re-derive this before raising the threads again.** The staging measurement above — one
+     stack ≈ 700 MB, a second concurrent stack OOM-killing — was taken against staging's
+     2g cap and does not transfer to production's 10g.
 
 Do it as its own change, after staging has run on it. The blast radius is not comparable:
 production is where agent sessions actually execute, and the failure mode of arming the
