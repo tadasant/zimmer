@@ -1896,6 +1896,45 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert old_session.archived?
   end
 
+  # The sweep archives every non-archived session untouched for seven days,
+  # `waiting` ones that never spawned included — and `archive` runs
+  # `warn_if_pr_goal_captured_no_url` last. A session created with a PR-flavored
+  # goal and swept up before it ever got a turn had no chance to open a PR, so
+  # the backstop has nothing to report about it (#356). The session beside it
+  # that DID run and recorded nothing still gets the warning, which is what keeps
+  # the backstop a signal rather than a suppression (#313).
+  test "archive_old_sessions warns only about swept sessions that actually ran" do
+    never_ran = Session.create!(
+      prompt: "Never started",
+      agent_runtime: "claude_code",
+      status: :waiting,
+      goal: "Open a PR, confirm CI is green, and stop.",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem"
+    )
+    ran = Session.create!(
+      prompt: "Ran and recorded nothing",
+      agent_runtime: "claude_code",
+      status: :needs_input,
+      goal: "Open a PR, confirm CI is green, and stop.",
+      metadata: { "runtime_started" => true },
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem"
+    )
+    [ never_ran, ran ].each { |session| session.update_column(:updated_at, 10.days.ago) }
+
+    @service.archive_old_sessions(older_than: 7.days)
+
+    marker = TranscriptHooks::GithubPrUrlHook::MISSING_PR_URL_WARNING_MARKER
+    warned = ->(session) { session.logs.where(level: "warning").any? { |log| log.content.include?(marker) } }
+
+    assert never_ran.reload.archived?
+    assert_not warned.call(never_ran), "a swept session that never ran must not be warned about a PR it never had a turn to open"
+    assert warned.call(ran.reload), "a swept session that ran and recorded nothing must still be warned about"
+  end
+
   # 2026-08-29: the stranded-queue alert dedups per session on purpose, so a
   # sweep that catches N sessions with queues posted N separate pages in one
   # tick — and every page in `#alerts` spawns its own triage session. The sweep

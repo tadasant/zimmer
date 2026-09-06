@@ -1577,8 +1577,14 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
   # === Tests for warn_if_pr_goal_captured_no_url (pause/fail/archive callback) ===
 
-  # A session for the backstop tests: PR-flavored goal, nothing recorded.
-  def pr_goal_session(custom_metadata: {})
+  # A session for the backstop tests: PR-flavored goal, nothing recorded, and —
+  # unless a test says otherwise — a runtime that has been spawned at least once.
+  # That last part is not decoration. The warning is carved out for a session
+  # that never got an agent turn (#356), and `runtime_started` is what
+  # `AgentSessionJob` stamps the instant it records a spawned pid, so a session
+  # standing in for one that ran has to carry it. `start!` alone does not: in
+  # production the metadata write comes first, immediately before the transition.
+  def pr_goal_session(custom_metadata: {}, ran: true)
     Session.create!(
       git_root: "https://github.com/test/repo.git",
       agent_runtime: "claude_code",
@@ -1586,7 +1592,8 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       session_id: SecureRandom.uuid,
       status: :waiting,
       goal: "Open a PR, confirm CI is green, and stop.",
-      custom_metadata: custom_metadata
+      custom_metadata: custom_metadata,
+      metadata: ran ? { "runtime_started" => true } : {}
     )
   end
 
@@ -1597,14 +1604,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
   end
 
   test "pause warns when a session with a pull-request goal recorded no PR URL" do
-    session = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      agent_runtime: "claude_code",
-      branch: "main",
-      session_id: SecureRandom.uuid,
-      status: :waiting,
-      goal: "Open a PR, confirm CI is green, and stop."
-    )
+    session = pr_goal_session
     session.start!
 
     session.pause!
@@ -1614,15 +1614,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
   end
 
   test "pause does not warn when the session recorded a PR URL" do
-    session = Session.create!(
-      git_root: "https://github.com/test/repo.git",
-      agent_runtime: "claude_code",
-      branch: "main",
-      session_id: SecureRandom.uuid,
-      status: :waiting,
-      goal: "Open a PR, confirm CI is green, and stop.",
-      custom_metadata: { "github_pull_request_urls" => [ "https://github.com/test/repo/pull/1" ] }
-    )
+    session = pr_goal_session(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/test/repo/pull/1" ] })
     session.start!
 
     session.pause!
@@ -1669,6 +1661,64 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.archive!
 
     assert_empty missing_pr_url_warnings(session)
+  end
+
+  # A session that never ran a turn never had the chance to open a PR, so there
+  # is nothing for the backstop to have caught. Both `fail` and `archive`
+  # transition directly from `waiting`, which is how such a session reaches the
+  # call site at all (#356).
+
+  test "archive straight from waiting does not warn about a session that never ran" do
+    session = pr_goal_session(ran: false)
+
+    session.archive!
+
+    assert_empty missing_pr_url_warnings(session),
+                 "a session trashed before it started never had a turn in which to open a PR"
+  end
+
+  test "fail straight from waiting does not warn about a session that never ran" do
+    session = pr_goal_session(ran: false)
+
+    session.fail!
+
+    assert_empty missing_pr_url_warnings(session)
+  end
+
+  # The other direction, and the one #313 is about. Suppressing more than
+  # never-ran sessions turns the backstop back into the silent failure it exists
+  # to end, so the ran-but-recorded-nothing case has to keep firing on both
+  # terminal transitions.
+
+  test "archive still warns about a session that ran and recorded no PR URL" do
+    session = pr_goal_session
+    session.start!
+    session.pause!
+    session.logs.destroy_all # isolate archive from the pause that preceded it
+
+    session.archive!
+
+    assert_equal 1, missing_pr_url_warnings(session).size
+  end
+
+  test "fail still warns about a session that ran and recorded no PR URL" do
+    session = pr_goal_session
+    session.start!
+
+    session.fail!
+
+    assert_equal 1, missing_pr_url_warnings(session).size
+  end
+
+  # A session that never recorded `runtime_started` but whose transcript the
+  # poller did fill has had an agent speak into it, whatever the metadata says.
+  test "archive still warns about a never-started session that nonetheless has a transcript" do
+    session = pr_goal_session(ran: false)
+    session.update!(transcript: { type: "assistant", message: { role: "assistant", content: "hi" } }.to_json)
+
+    session.archive!
+
+    assert_equal 1, missing_pr_url_warnings(session).size
   end
 
   # The dedup guard is on the warning log itself, so all three call sites share
