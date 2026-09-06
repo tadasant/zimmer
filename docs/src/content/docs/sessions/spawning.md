@@ -211,6 +211,16 @@ declares a `retry_on` for are excluded while an attempt is still queued, since t
 what schedules it. Everything else about the loud path is unchanged, the re-raise included. See
 [A turn that never started parks instead of failing](/sessions/lifecycle/#a-turn-that-never-started-parks-instead-of-failing).
 
+A turn that raised before any process was spawned and was carrying **no** prompt is a session's
+first one, and it is *retried* rather than parked: `AgentSessionJob#retry_bootstrap_failure` leaves
+the session `waiting` with its configuration intact and re-queues the whole start on a bounded
+30s/2m/5m/15m/30m ladder, then fails loudly under `failure_reason: "bootstrap_retries_exhausted"`
+once that budget is spent. The gate is *when* the failure happened —
+`Session#before_first_agent_turn?` — not what raised, because an allowlist of exception classes only
+ever knows about the outages that already happened
+([#785](https://github.com/tadasant/zimmer/issues/785)). See
+[A failure before the first agent turn is retried, not failed](/sessions/lifecycle/#a-failure-before-the-first-agent-turn-is-retried-not-failed).
+
 :::caution[Other resumers lock by hand, or not at all]
 `SpotSessionPause.resume!`, `AuthOutageParkService.resume_parked!` and `SpotSessionHold.rearm!` are
 not part of this family: each takes its own row lock and re-checks under it rather than routing
