@@ -14,19 +14,22 @@ class OrchestratorSystemPromptBuilder
   # Build the system prompt for a session
   #
   # @param session [Session] The session to build context for
-  # @param clone_path [String, nil] The path to the git clone (if available)
+  # @param working_directory [String, nil] Where this session's agent runs — the
+  #   clone root, or a subdirectory of it for an agent-root session. Rendered as
+  #   the prompt's "Working directory" line, so it must be the directory the CLI
+  #   is spawned in, not the clone root it sits under (Session#working_directory).
   # @param runtime [String, Symbol, nil] The agent runtime driving the session
   #   (e.g. "claude"). Selects the per-runtime prompt contribution. nil defaults
   #   to Claude — Zimmer's only runtime today — so the prompt is unchanged when no
   #   runtime is specified.
   # @return [String] The system prompt to append
-  def self.build(session:, clone_path: nil, runtime: nil)
-    new(session: session, clone_path: clone_path, runtime: runtime).build
+  def self.build(session:, working_directory: nil, runtime: nil)
+    new(session: session, working_directory: working_directory, runtime: runtime).build
   end
 
-  def initialize(session:, clone_path: nil, runtime: nil)
+  def initialize(session:, working_directory: nil, runtime: nil)
     @session = session
-    @clone_path = clone_path
+    @working_directory = working_directory
     @runtime_contribution = RuntimePromptContribution.for(runtime)
   end
 
@@ -62,7 +65,7 @@ class OrchestratorSystemPromptBuilder
     parts << "- Session URL: #{session_url}"
     parts << "- Repository: #{@session.repository_name}" if @session.repository_name.present?
     parts << "- Branch: #{@session.branch}" if @session.branch.present?
-    parts << "- Working directory: #{@clone_path}" if @clone_path.present?
+    parts << "- Working directory: #{@working_directory}" if @working_directory.present?
 
     if @session.subdirectory.present?
       parts << "- Subdirectory: #{@session.subdirectory}"

@@ -450,7 +450,7 @@ class AuthRecoveryService
 
     system_prompt = OrchestratorSystemPromptBuilder.build(
       session: session,
-      clone_path: session.metadata&.dig("clone_path")
+      working_directory: session.working_directory
     )
 
     spawn_result = cli_adapter.resume(

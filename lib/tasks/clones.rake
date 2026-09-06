@@ -36,7 +36,9 @@ namespace :clones do
     FileUtils.mkdir_p(dest_base) unless dry_run
 
     # Metadata keys that may embed the clone base path and must be rewritten in lockstep.
-    path_keys = %w[clone_path working_directory full_clone_path]
+    # `full_clone_path` is not among them: nothing writes or reads it any more, so a
+    # legacy row that still carries one carries a value no code will consult.
+    path_keys = %w[clone_path working_directory]
 
     scope = Session.where("metadata->>'clone_path' IS NOT NULL")
     total = scope.count
@@ -116,7 +118,7 @@ namespace :clones do
         # clone path. Anchoring on the full clone path — not just its parent base —
         # means a value that doesn't actually point into this clone is left
         # untouched rather than silently mangled. working_directory (clone_path +
-        # subdir) and full_clone_path are handled by the same prefix rewrite.
+        # subdir) is handled by the same prefix rewrite.
         new_meta = (session.reload.metadata || {}).dup
         path_keys.each do |key|
           val = new_meta[key]

@@ -211,7 +211,7 @@ class McpOauthResumeService
   def reinject_credentials
     McpOauthCredentialInjector.new(
       session,
-      working_directory: session.metadata&.dig("working_directory")
+      working_directory: session.working_directory
     ).inject_credentials!
   rescue => e
     Rails.logger.warn(

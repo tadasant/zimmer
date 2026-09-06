@@ -193,7 +193,7 @@ module Sessions
     def conversation_persisted?
       RuntimeConversationPresence.persisted?(
         session: session,
-        working_directory: session.metadata&.dig("working_directory")
+        working_directory: session.working_directory
       )
     end
 

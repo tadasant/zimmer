@@ -35,7 +35,7 @@ class AgentsMdWriter
   def content
     OrchestratorSystemPromptBuilder.build(
       session: session,
-      clone_path: working_directory,
+      working_directory: working_directory,
       runtime: session.agent_runtime
     )
   end

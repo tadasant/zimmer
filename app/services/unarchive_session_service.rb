@@ -130,10 +130,13 @@ class UnarchiveSessionService
 
     # Check if clone and working directory both exist (quick unarchive within undo window)
     # Must check BOTH paths because for sessions with subdirectories, they differ:
-    # - clone_path: /home/rails/.zimmer/clones/repo-main-12345-abcd
-    # - working_directory: /home/rails/.zimmer/clones/repo-main-12345-abcd/subdir
-    clone_path = session.metadata&.dig("clone_path")
-    working_directory = session.metadata&.dig("working_directory")
+    # - clone root:         /home/rails/.zimmer/clones/repo-main-12345-abcd
+    # - working directory:  /home/rails/.zimmer/clones/repo-main-12345-abcd/subdir
+    # For a session that has a clone but was never spawned in, the accessor
+    # answers the clone root for both, and the pair collapses to one stat — which
+    # is the right check for a session whose agent never ran anywhere else.
+    clone_path = session.clone_root
+    working_directory = session.working_directory
     clone_fully_exists = clone_path.present? &&
                          file_system.directory?(clone_path) &&
                          working_directory.present? &&
@@ -233,10 +236,10 @@ class UnarchiveSessionService
 
   # Fast path: clone still exists, just restore transcript file
   def restore_transcript_only
-    working_directory = session.metadata&.dig("working_directory")
+    working_directory = session.working_directory
 
     unless working_directory.present?
-      return Result.new(success?: false, error: "Session has no working_directory in metadata")
+      return Result.new(success?: false, error: "Session has no recorded directory in metadata")
     end
 
     # Verify working_directory actually exists on disk (clone_path may exist but
@@ -478,7 +481,6 @@ class UnarchiveSessionService
         {
           "clone_path" => clone_path,
           "working_directory" => working_directory,
-          "full_clone_path" => working_directory,
           "unarchived_at" => Time.current.iso8601,
           "clone_recreated" => true
         },

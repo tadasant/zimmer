@@ -71,10 +71,10 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     end
   end
 
-  test "includes working directory when clone_path provided" do
+  test "includes working directory when working_directory provided" do
     prompt = OrchestratorSystemPromptBuilder.build(
       session: @session,
-      clone_path: "/tmp/test-clone-path"
+      working_directory: "/tmp/test-clone-path"
     )
 
     assert_includes prompt, "Working directory: /tmp/test-clone-path"
@@ -623,9 +623,9 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
   end
 
   test "class method delegates to instance" do
-    prompt1 = OrchestratorSystemPromptBuilder.build(session: @session, clone_path: "/test")
+    prompt1 = OrchestratorSystemPromptBuilder.build(session: @session, working_directory: "/test")
 
-    builder = OrchestratorSystemPromptBuilder.new(session: @session, clone_path: "/test")
+    builder = OrchestratorSystemPromptBuilder.new(session: @session, working_directory: "/test")
     prompt2 = builder.build
 
     assert_equal prompt1, prompt2
@@ -660,7 +660,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
 
     prompt = OrchestratorSystemPromptBuilder.build(
       session: deterministic_session,
-      clone_path: "/home/rails/clone/path"
+      working_directory: "/home/rails/clone/path"
     )
 
     assert_equal golden.bytesize, prompt.bytesize,
@@ -675,7 +675,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
 
     prompt = OrchestratorSystemPromptBuilder.build(
       session: deterministic_session,
-      clone_path: "/home/rails/clone/path",
+      working_directory: "/home/rails/clone/path",
       runtime: "claude"
     )
 
@@ -685,7 +685,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
   test "codex runtime drops Claude-specific tool guidance" do
     prompt = OrchestratorSystemPromptBuilder.build(
       session: deterministic_session,
-      clone_path: "/home/rails/clone/path",
+      working_directory: "/home/rails/clone/path",
       runtime: "codex"
     )
 
@@ -701,7 +701,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
   test "codex runtime still includes the shared Zimmer principles" do
     prompt = OrchestratorSystemPromptBuilder.build(
       session: deterministic_session,
-      clone_path: "/home/rails/clone/path",
+      working_directory: "/home/rails/clone/path",
       runtime: "codex"
     )
 
@@ -721,7 +721,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
   test "codex runtime swaps CLAUDE.md references for AGENTS.md" do
     prompt = OrchestratorSystemPromptBuilder.build(
       session: deterministic_session,
-      clone_path: "/home/rails/clone/path",
+      working_directory: "/home/rails/clone/path",
       runtime: "codex"
     )
 
@@ -734,7 +734,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
   test "codex runtime includes its sandbox guidance and native resource paths" do
     prompt = OrchestratorSystemPromptBuilder.build(
       session: deterministic_session,
-      clone_path: "/home/rails/clone/path",
+      working_directory: "/home/rails/clone/path",
       runtime: "codex"
     )
 
@@ -751,7 +751,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
 
     prompt = OrchestratorSystemPromptBuilder.build(
       session: codex_deterministic_session,
-      clone_path: "/home/rails/clone/path",
+      working_directory: "/home/rails/clone/path",
       runtime: "codex"
     )
 
@@ -776,7 +776,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
   test "MCP section explains that a redacted value is the gate's answer" do
     ElicitationEndpoint.stubs(:unreachable?).returns(false)
 
-    prompt = OrchestratorSystemPromptBuilder.build(session: @session, clone_path: "/home/rails/clone/path")
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session, working_directory: "/home/rails/clone/path")
 
     assert_includes prompt, "that is the gate's answer"
     refute_includes prompt, "The MCP approval gate is currently broken"
@@ -791,7 +791,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
       "checked_at" => "2026-07-31T12:00:00Z"
     })
 
-    prompt = OrchestratorSystemPromptBuilder.build(session: @session, clone_path: "/home/rails/clone/path")
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session, working_directory: "/home/rails/clone/path")
 
     assert_includes prompt, "The MCP approval gate is currently broken"
     assert_includes prompt, "http://zimmer/api/v1/elicitations"
@@ -805,7 +805,7 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     ElicitationEndpoint.stubs(:status).returns({ "reachable" => false, "detail" => "d", "url" => "u", "checked_at" => "t" })
     @session.update!(mcp_servers: [])
 
-    prompt = OrchestratorSystemPromptBuilder.build(session: @session, clone_path: "/home/rails/clone/path")
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session, working_directory: "/home/rails/clone/path")
 
     refute_includes prompt, "approval gate"
   end

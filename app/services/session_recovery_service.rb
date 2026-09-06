@@ -381,7 +381,7 @@ class SessionRecoveryService
       return
     end
 
-    working_directory = session.metadata&.dig("working_directory")
+    working_directory = session.working_directory
     unless working_directory.present? && Dir.exist?(working_directory)
       add_log("Cannot auto-restart after hung process: working directory not found", level: "warning")
       @logger.info("Skipped auto-restart - working directory missing", process_pid: process_pid)

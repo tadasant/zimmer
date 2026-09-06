@@ -50,7 +50,7 @@ module SessionClonePath
   # @return [String, nil] the previous clone path when it is free to reuse, or
   #   nil to let GitCloneService generate a fresh one
   def for_recreate(session, file_system: RealFileSystemAdapter.new)
-    previous = session&.metadata&.dig("clone_path")
+    previous = session&.clone_root
     return nil unless previous.is_a?(String) && previous.present?
     return nil unless direct_child_of_clones_base?(previous)
 

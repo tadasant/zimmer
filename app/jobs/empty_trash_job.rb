@@ -139,7 +139,7 @@ class EmptyTrashJob < ApplicationJob
     end
 
     # Also clean up clone if it somehow still exists (belt-and-suspenders)
-    clone_path = session.metadata&.dig("clone_path")
+    clone_path = session.clone_root
     if clone_path && File.directory?(clone_path)
       docker_cleaned = begin
         DockerComposeCleanupService.cleanup(clone_path)

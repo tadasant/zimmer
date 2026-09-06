@@ -557,12 +557,14 @@ class TranscriptPollerService
   end
 
   # Get the transcript directory from the session.
-  # Delegates the path computation to the runtime source; the working_directory
-  # comes from the session metadata (set when the agent process is spawned).
+  # Delegates the path computation to the runtime source; the working directory
+  # comes from Session#working_directory (recorded when the agent process is
+  # spawned, and the clone root for a session that has a clone but has not been
+  # spawned in yet).
   def get_transcript_directory
     # Use working_directory because the runtime creates the transcript directory
     # based on where the agent command is spawned from (chdir in Process.spawn)
-    working_directory = @session.metadata&.dig("working_directory")
+    working_directory = @session.working_directory
 
     unless working_directory
       log_missing_working_directory
@@ -625,7 +627,7 @@ class TranscriptPollerService
   # These are created by nested Claude agents spawned via the Task tool
   # Returns array of updated subagents for broadcasting
   def poll_subagent_transcripts
-    working_directory = @session.metadata&.dig("working_directory")
+    working_directory = @session.working_directory
     agent_files = @source.discover_subagent_files(working_directory: working_directory, session_id: @session.session_id)
     return [] if agent_files.empty?
 
