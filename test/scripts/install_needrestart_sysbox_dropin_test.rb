@@ -104,10 +104,21 @@ class InstallNeedrestartSysboxDropinTest < ActiveSupport::TestCase
       File.chmod(0o755, path)
     end
 
-    # `needrestart --version` is the only invocation the installer makes of the real
-    # binary, and it is the presence of the command on PATH that selects the branch.
+    # `needrestart --version` is the only invocation the installer makes of the real binary,
+    # and it is the presence of the command on PATH that selects the branch.
     def install_needrestart = stub("needrestart", "echo 'needrestart 3.6 - Restart daemons after library updates.'")
-    def uninstall_needrestart = FileUtils.rm_f(File.join(bin, "needrestart"))
+
+    # Dropping the stub is not enough to make the command absent: needrestart is
+    # preinstalled on Ubuntu, so a CI image built from one has a real /usr/sbin/needrestart
+    # that `command -v` finds the moment the stub goes. (It is absent from the dev
+    # container, which is why this passed locally and failed on the runner.) So take out
+    # every directory on PATH that carries one, and let the test say what it means: this
+    # box does not have needrestart.
+    def uninstall_needrestart
+      FileUtils.rm_f(File.join(bin, "needrestart"))
+      @hidden_dirs = ENV["PATH"].to_s.split(File::PATH_SEPARATOR)
+                                .select { |d| File.executable?(File.join(d, "needrestart")) }
+    end
 
     def abs(remote_path) = File.join(@root, remote_path.delete_prefix("/"))
     def read(remote_path) = File.read(abs(remote_path))
@@ -125,7 +136,9 @@ class InstallNeedrestartSysboxDropinTest < ActiveSupport::TestCase
     end
 
     def converge(host: "testhost", script: SCRIPT.to_s)
-      env = { "PATH" => "#{bin}:#{ENV['PATH']}", "FAKEROOT" => @root, "ARGV_LOG" => @argv_log }
+      path = ([ bin ] + ENV["PATH"].to_s.split(File::PATH_SEPARATOR) - Array(@hidden_dirs))
+             .join(File::PATH_SEPARATOR)
+      env = { "PATH" => path, "FAKEROOT" => @root, "ARGV_LOG" => @argv_log }
       stdout, stderr, status = Open3.capture3(env, "bash", script, host)
       [ status.exitstatus, stdout + stderr ]
     end
@@ -248,6 +261,7 @@ class InstallNeedrestartSysboxDropinTest < ActiveSupport::TestCase
       assert_equal 0, code, out
       assert host.exist?(DROPIN)
       assert_match(/needrestart is not installed/, out)
+      refute_match(/needrestart evaluates/, out, "the installed branch ran; needrestart was still on PATH")
       assert_match(/takes effect if needrestart is ever installed/, out)
       refute_match(/will not auto-restart sysbox/, out,
                    "claiming the host is protected by a package it does not have")
