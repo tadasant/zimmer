@@ -149,8 +149,8 @@ class BuildBaseImageWorkflowTest < ActiveSupport::TestCase
       @earendil-works/pi-coding-agent@0.84.4
       @pulsemcp/air-adapter-pi@0.13.0
       pi-mcp-adapter@2.32.1
-      @tadasant/pi-hooks@0.1.0
-      @tadasant/pi-plugins@0.1.0
+      @tadasant/pi-hooks@0.2.0
+      @tadasant/pi-plugins@0.2.0
     ].each do |pin|
       assert_includes pins, pin,
         "the extraction must still find #{pin} in Dockerfile.base's install lines"

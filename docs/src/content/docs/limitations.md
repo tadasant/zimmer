@@ -1059,25 +1059,38 @@ after the servers have already been wired for that run.
 
 ## Agent harness
 
-### An AIR hook body written for Claude Code loads on Pi and does nothing
+### An AIR hook body on Pi has one line of defence: the `@tadasant/pi-hooks` version floor
 
-🟡 AIR is vendor-neutral, and a `HOOK.json` really is portable — but the *body* it names is
-not, because the two runtimes disagree about both halves of the contract:
+🟡 AIR is vendor-neutral and a `HOOK.json` really is portable, but AIR specifies no schema
+for what a hook body reads on stdin or writes back. In practice a portable body is written
+against whatever AIR's reference adapter registers it with — Claude Code:
 
 | | stdin payload | how context reaches the model |
 | --- | --- | --- |
 | Claude Code (`PostToolUse`) | `{tool_name, tool_input, tool_response}` | `hookSpecificOutput.additionalContext` |
-| Pi (`@tadasant/pi-hooks`) | `{event, toolName, input, content}` | `{"content": …}`, which **replaces** the tool result |
+| Pi-native (`@tadasant/pi-hooks`) | `{event, toolName, input, content}` | `{"content": …}`, which **replaces** the tool result |
 
-A body that reads `tool_name` gets `undefined` on Pi and returns early; one that writes
-`hookSpecificOutput` has its output ignored, because `parseControl` only acts on keys it
-knows. Both are silent — the hook loads, matches, spawns, exits 0, and changes nothing.
+**Below `@tadasant/pi-hooks@0.2.0` only the second column existed**, so a body written for the
+first read `undefined` from every field and had everything it wrote discarded — while loading,
+matching, spawning and exiting 0. `[pi-hooks] loaded 1 hook(s)` was printed either way, which
+is what made it invisible.
 
-`@tadasant/pi-hooks` sets `PI_HOOK=1` on every hook process, so a body *can* tell which
-runtime it is on; the catalog's `git-push-ci-reminder` reads either shape and answers in the
-matching dialect. **A hook adopted from elsewhere will not have been written that way**, and
-nothing checks. Note also that Pi's `content` replaces rather than appends, so a body that
-returns only its own text silently discards the command's real output.
+From 0.2.0 the extension sends **both** namings on every event and honors **both** replies, so
+either body works unmodified. Zimmer therefore pins 0.2.0 as a floor rather than a
+current-version, and `PiExtensions::REGISTRY` says so; the floor is held by a live test
+(`test/integration/pi_hooks_and_plugins_live_test.rb`) that drives a real `pi` with a hook body
+speaking only Claude's dialect, and which fails against 0.1.0. Run it by hand with `PI_E2E=1` —
+CI has no `pi` binary and skips it, so the floor is documented and reproducible rather than gated.
+
+Two differences survive the fix and are worth knowing when writing a body:
+
+- **`content` replaces; `additionalContext` appends.** A Pi-dialect body that returns only its
+  own text silently discards the command's real output — which is why the catalog's
+  `git-push-ci-reminder` echoes the original back ahead of its reminder. A Claude-dialect body
+  needs no such care.
+- **A body can still tell where it is.** `@tadasant/pi-hooks` sets `PI_HOOK=1` on every hook
+  process. `git-push-ci-reminder` branches on it and answers in the matching dialect; a body
+  adopted from elsewhere does not have to.
 
 ### What actually works on the Pi runtime — the harness matrix
 
@@ -1110,41 +1123,33 @@ every server `pending` for that turn, correctly: nothing connected, because noth
 | MCP — OAuth-credentialed | ⚠️ works, with a caveat | Token verified on the wire as `Authorization: Bearer`; Zimmer cannot adopt one Pi refreshes (below) |
 | Per-server MCP status (`mcp_servers_status`) | ✅ works, green-or-grey | `PiMcpStatusDetector` mines the transcript; was permanently `pending` before it. Never reports red (below) |
 | Skills | ✅ works | `air prepare pi` installs them into `.pi/skills/` — the one artifact `adapter-pi` handles natively |
-| AIR hooks | ❌ do not fire | Loaded and never dispatched — not Zimmer's layer (below) |
+| AIR hooks | ✅ works | Live `pi 0.84.4` + `@tadasant/pi-hooks@0.2.0`: the reminder hook rewrote a `bash` tool result the model then read, and so did a hook speaking only Claude Code's dialect (below) |
 | AIR plugins | ✅ works | `screenshots-videos` activated; its two bundled MCP servers reached the session |
 | Token-usage / cost ingestion | ⚠️ tokens work, cost works on the Anthropic models | `PiTokenUsageIngestionService` reads `sessions.transcript`; 12 calls / $0.582929 across the three sessions above, matching Pi's own figure exactly. Pi's OpenAI and Google models are unpriced (below) |
 | Status summary by forking the session | ❌ does not work | `PiAuthProvider` pools no accounts (below) |
 | Retrying a failed model call | ❌ does not work | Pi reports the failure but exposes no retry (below) |
 
-### A selected AIR hook loads on Pi and never fires
+### AIR hooks on Pi: what the earlier "they never fire" verdict actually was
 
-🔴 Every layer Zimmer owns works, and the hook still does not run. Measured end to end on a
-staging Pi session with `git-push-ci-reminder` selected:
+🟢 Resolved, and recorded because the way it was wrong is reusable. An earlier QA pass
+concluded that a selected AIR hook loads on Pi and is never dispatched. It is not so: the
+catalog's `git-push-ci-reminder` fires on Pi, rewrites the tool result, and did so on the
+version that pass was run against.
 
-- `PiAirBridge` generates the index, and it is correct — one entry, pointing at the installed
-  hook directory.
-- The hook body is on disk at that path, with its `HOOK.json`.
-- `@tadasant/pi-hooks` loads it: `[pi-hooks] loaded 1 hook(s) from …/.pi/zimmer-air/hooks.json`.
-- Pi 0.84.4 emits the event the hook is bound to. Subscribing a debug extension to `tool_result`
-  shows `toolName: "bash"` with `input` and `content` populated — exactly the payload shape the
-  extension expects, and the shape its AIR mapping (`post_tool_call` → `tool_result`) and its
-  matcher (`Bash`, aliased to `bash`) are written against.
-- The hook body works when handed that payload directly: piping the event JSON into it with
-  `PI_HOOK=1` returns the reminder.
+The probe was `echo "git push origin main"`, and it came back verbatim. The hook fired; its own
+pattern declined the quote — `git` preceded by `"` did not sit on a separator the matcher
+recognised, so the body returned early and wrote nothing, which is byte-for-byte what a hook
+that is never dispatched looks like from outside. The matcher now treats a quote as a boundary
+like any other, and the live test drives that exact probe so the verdict is not reachable again.
 
-But running `echo "git push origin main"` inside the session returns the command's output
-verbatim, with nothing appended — on the first attempt and on a retry designed to rule out the
-body's own `--dry-run` suppression.
+Two lessons, both cheap:
 
-**This is not Zimmer's to fix.** The gap is between "loaded" and "dispatched", inside
-`@tadasant/pi-hooks`, which belongs to the `pi-extensions` root and ships from
-`tadasant/pi-extensions`. Zimmer's side of the seam is verified correct above, so a fix there
-should need no change here.
-
-Note what this does *not* say: AIR hooks are still selected, generated and installed for a Pi
-session, and the [dialect mismatch above](#an-air-hook-body-written-for-claude-code-loads-on-pi-and-does-nothing)
-remains true and separate. A body that fires on Claude Code is silently inert on Pi *twice
-over* today — once for the payload shape, and once because nothing dispatches it at all.
+- **A hook that writes nothing and a hook that never ran are the same observation.** Distinguish
+  them by making the hook write unconditionally, not by re-running the same negative probe.
+- **`[pi-hooks] loaded N hook(s)` proves loading and nothing else.** It was printed throughout,
+  and it was printed throughout the genuine
+  [dialect no-op above](#an-air-hook-body-on-pi-has-one-line-of-defence-the-tadasantpi-hooks-version-floor)
+  too.
 
 ### A Pi session's MCP status pills go green or stay grey — never red
 
