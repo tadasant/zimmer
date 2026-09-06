@@ -39,12 +39,7 @@
 #
 # WHY IT DELETES BY PRIMARY KEY
 # -----------------------------
-# There is no index on `logs.created_at`, and adding one is not free here: it is
-# built during `db:prepare` at container boot, which kamal-proxy health-gates on a
-# `deploy_timeout` of 120 seconds, so a CREATE INDEX over 124M rows would fail the
-# very deploy that ships the fix.
-#
-# So each pass computes a **ceiling** — an id it is worth scanning up to — and
+# Each pass computes a **ceiling** — an id it is worth scanning up to — and
 # drives the delete off `id <= ceiling`, which is a primary-key range scan. The
 # cutoff stays a predicate on the delete itself, so the ceiling only ever decides
 # how much of the table one tick looks at. It can never widen what is deleted, and
@@ -71,14 +66,50 @@
 #     unexpired rows sitting below EVERY expired row. The window never reaches past
 #     them and the pass stalls for as long as that holds. It takes a renumbered
 #     sequence or a restore to produce, nothing in Zimmer writes `logs` that way,
-#     and the exact remedy is an index on `created_at` — which is the one thing
-#     this deploy cannot afford to build. Written up in docs/limitations.md.
+#     and the remedy would be a `created_at` index the ceiling could be read off
+#     directly. The index this job now has is not that one — see below — so the
+#     stall stands as written up in docs/limitations.md.
 #
 # Each pass then walks DOWNWARD from its ceiling, carrying the last id it took as
 # the next batch's ceiling. Restarting each batch at the bottom instead would
 # re-walk everything the previous batches already stepped over — quadratic within
 # a tick, and in the verbose pass's steady state a scan of every non-verbose row
 # between the two windows before reaching the first row it can actually delete.
+#
+# WHAT THE BATCH SELECTOR IS INDEXED FOR
+# --------------------------------------
+# `index_logs_on_level_and_id_and_created_at` exists for one query — the verbose
+# pass's batch selector, `level = 'verbose' AND created_at < $1 AND id <= $2
+# ORDER BY id DESC LIMIT BATCH_SIZE`. All three columns, in that order, because
+# what makes it fast is an INDEX-ONLY scan: `level` is the equality, `id` is the
+# ordered range the LIMIT stops on, and `created_at` rides along so the cutoff is
+# applied without touching a heap this deployment has grown to ~15 GB.
+#
+# Before it, the planner had nothing that could order by id and drove the query
+# off `logs_pkey`, discarding every row that was not an expired verbose one until
+# it had collected BATCH_SIZE. That is not a fixed cost, and the reason is the
+# paragraph above turned inside out: the walk is linear *within* a tick, but the
+# ceiling resets to the top on the *next* tick, and the region just below it is
+# precisely what earlier ticks already emptied of verbose rows. The emptied
+# prefix only ever grows, so the first batch of every tick got more expensive
+# than the last one's — 26 s at 06:00 and 50 s at 15:14 on 2026-09-06, one of
+# them finishing 45 seconds before the MCP approval gate's 5-second probe timed
+# out and paged #alerts (tadasant/zimmer#329).
+#
+# It does not end when the backlog does. Once the expired verbose rows are gone
+# the selector walks the whole span below the ceiling to find the thin sliver
+# that has crossed the window since the last tick, returns fewer than BATCH_SIZE,
+# and stops — a full walk every ten minutes, forever. Measured on a 570k-row
+# reproduction of that terminal state: 508 ms and 52,752 buffers to return four
+# rows, against 0.1 ms and 4 buffers with the index. It was never a backlog that
+# would drain its way out of the problem.
+#
+# `prune` itself is unchanged, and deliberately. The descending walk was already
+# the right shape — the index makes it an index-only scan over just the rows the
+# pass can delete, so the work per tick is now proportional to what it deletes
+# rather than to what it has already deleted. The ceiling machinery stays for the
+# reason it was written, which was never speed: it bounds a tick's work and keeps
+# the pass making progress on a table whose ids and timestamps disagree.
 class LogRetentionJob < ApplicationJob
   include DatabaseRetry
   include SingletonSweep
