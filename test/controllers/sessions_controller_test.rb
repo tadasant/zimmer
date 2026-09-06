@@ -908,9 +908,14 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     # JS contract: the editable Stimulus controllers toggle these spans, so they
     # must still exist in the inherited-defaults branch or live edits silently break.
-    assert_select '[data-role="catalog-tags"]', minimum: 3
-    assert_select '[data-role="catalog-selected"]', minimum: 3
-    assert_select '[data-role="catalog-empty"]', minimum: 3
+    # Per accent, not a bare count: skills + hooks alone would satisfy `minimum: 3`
+    # while the plugins widget had vanished entirely, which is the case this guards.
+    %w[green amber purple].each do |accent|
+      scope = "[data-catalog-multiselect-accent-value='#{accent}']"
+      assert_select "#{scope} [data-role='catalog-tags']"
+      assert_select "#{scope} [data-role='catalog-selected']"
+      assert_select "#{scope} [data-role='catalog-empty']"
+    end
   end
 
   # A populated column wins — its captured badges render and the inherited

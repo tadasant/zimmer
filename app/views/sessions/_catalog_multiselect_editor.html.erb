@@ -33,11 +33,9 @@
   <div class="relative <%= "mt-1" if inline %>">
     <input type="text"
            data-catalog-multiselect-target="input"
-           <%# `click` as well as `focus`: opening the editor focuses this input, and the
-               same click then bubbles to the document handler, which reads a click on the
-               display region's Edit button as "outside" and closes the dropdown again. A
-               second click on an already-focused input fires no `focus` event, so without
-               this the only way back to the list is to type. %>
+           <%# `click` as well as `focus`, so a click on an already-focused input reopens
+               the list. A second `focus` never fires, so `focus` alone leaves no way back
+               after Escape but to type. %>
            data-action="focus->catalog-multiselect#showDropdown click->catalog-multiselect#showDropdown input->catalog-multiselect#filter keydown->catalog-multiselect#handleKeydown"
            placeholder="<%= placeholder %>"
            aria-label="<%= aria_label %>"

@@ -100,7 +100,9 @@ class CatalogMultiselectTest < ApplicationSystemTestCase
       input.fill_in with: wanted
       find("#{root(catalog[:accent])} .catalog-multiselect-item[data-key='#{wanted}']").click
 
-      assert_selector "#{chips(catalog[:accent])} span", minimum: 1
+      # By key, not by `span`: MCP's injected read-only chips are spans in the same
+      # container, so a bare count can pass without the click having added anything.
+      assert_selector "#{chips(catalog[:accent])} button[data-key='#{wanted}']"
       # Picking re-opens the dropdown over the button row, exactly as it does for
       # a person; Escape is how both of us get to Save.
       dismiss_dropdown(catalog[:accent], input)
@@ -119,6 +121,34 @@ class CatalogMultiselectTest < ApplicationSystemTestCase
     # accent. Kept as PR evidence that the static class table survived Tailwind.
     FileUtils.mkdir_p(Rails.root.join("tmp/screenshots"))
     page.save_screenshot(Rails.root.join("tmp/screenshots/catalog-multiselect-saved-desktop.png").to_s)
+  end
+
+  # `group_by_category` and `show_description` are the two values that differ per
+  # type, which makes them the two most likely to be silently mis-wired by a
+  # parameterisation refactor — and neither shows up in any other assertion.
+  test "only skills group by category, and only plugins show a description" do
+    visit session_path(@session)
+
+    open_editor("green")
+    editor_input("green").click
+    assert_selector "#{root("green")} [data-role='catalog-category']", minimum: 1
+    assert_no_selector "#{root("green")} .catalog-multiselect-item [data-role='catalog-description']"
+    close_editor("green", editor_input("green"))
+
+    open_editor("purple")
+    editor_input("purple").click
+    assert_no_selector "#{root("purple")} [data-role='catalog-category']"
+    assert_selector "#{root("purple")} .catalog-multiselect-item [data-role='catalog-description']", minimum: 1
+    close_editor("purple", editor_input("purple"))
+
+    %w[indigo amber].each do |accent|
+      open_editor(accent)
+      editor_input(accent).click
+      assert_selector "#{root(accent)} .catalog-multiselect-item", minimum: 1
+      assert_no_selector "#{root(accent)} [data-role='catalog-category']"
+      assert_no_selector "#{root(accent)} .catalog-multiselect-item [data-role='catalog-description']"
+      close_editor(accent, editor_input(accent))
+    end
   end
 
   # The chips the server renders behind the editor have to follow a save, or the

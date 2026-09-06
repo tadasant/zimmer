@@ -12,7 +12,8 @@
 #   * `catalog_multiselect_accent` resolves an accent token to complete Tailwind
 #     class strings. Same rule as the JS table it mirrors: every class name is
 #     written out in full so Tailwind's scanner can see it (`@source
-#     "../../helpers/**/*.rb"`). Never interpolate a colour into a class name.
+#     "../../helpers/**/*.rb"` in app/assets/tailwind/application.css). Never
+#     interpolate a colour into a class name.
 module CatalogMultiselectHelper
   ACCENT_CLASSES = {
     "green" => {
@@ -64,6 +65,11 @@ module CatalogMultiselectHelper
   # @param persist_url [String] the PATCH endpoint for this artifact type
   # @param payload_key [String] the key the endpoint expects the array under
   # @param variant [Symbol] `:inline` (desktop meta row) or `:stacked` (mobile card)
+  #
+  # `display_chip_class` goes unread when `turbo_stream:` is true: MCP servers
+  # re-render their display region server-side, so the controller never rewrites
+  # a chip there. Emitted anyway rather than special-cased, so every widget
+  # carries the same attributes.
   def catalog_multiselect_attributes(items:, selected:, accent:, persist_url:, payload_key:,
                                      variant:, injected: [], group_by_category: false,
                                      show_description: false, turbo_stream: false)

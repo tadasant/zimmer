@@ -247,7 +247,7 @@ export default class extends Controller {
       for (const category of Object.keys(grouped).sort()) {
         if (shown >= max) break
         // A header is not a `.catalog-multiselect-item`, so keyboard nav skips it.
-        html += `<div class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider border-b ${this.accent.categoryHeader}">${this.escapeHtml(category)}</div>`
+        html += `<div data-role="catalog-category" class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider border-b ${this.accent.categoryHeader}">${this.escapeHtml(category)}</div>`
         for (const item of grouped[category]) {
           if (shown >= max) break
           html += this.rowMarkup(item, shown++)
@@ -276,7 +276,7 @@ export default class extends Controller {
           <span class="text-sm font-medium ${item.unavailable ? "text-gray-500" : "text-gray-900"} truncate">${this.escapeHtml(item.title)}</span>
           <span class="text-xs text-gray-500 font-mono flex-shrink-0">${this.escapeHtml(item.key)}</span>
         </div>${unavailableRowMarkup(item)}${this.showDescriptionValue && item.description ? `
-        <div class="text-xs text-gray-500 mt-0.5 truncate">${this.escapeHtml(item.description)}</div>` : ""}
+        <div data-role="catalog-description" class="text-xs text-gray-500 mt-0.5 truncate">${this.escapeHtml(item.description)}</div>` : ""}
       </div>`
   }
 
@@ -302,6 +302,12 @@ export default class extends Controller {
   }
 
   handleScroll() {
+    // The dashboard and index render this controller read-only — no `*_for_select`,
+    // so the editor partial and its dropdown are never emitted. Without the guard
+    // the first scroll throws `Missing target element "dropdown"` once per widget
+    // per event. (The four controllers this replaces all had the same hole.)
+    if (!this.hasDropdownTarget) return
+
     if (!this.dropdownTarget.classList.contains("hidden")) this.repositionDropdown()
   }
 
@@ -389,9 +395,12 @@ export default class extends Controller {
   handleClickOutside(event) {
     if (!this.isEditing) return
 
-    if (!this.editorTarget.contains(event.target) && !this.dropdownTarget.contains(event.target)) {
-      this.hideDropdown()
-    }
+    // "Outside" means outside the WIDGET, not outside the editor. Testing the
+    // editor alone read the display region's own Edit button as outside — so the
+    // click that opened the editor immediately closed the dropdown that opening it
+    // had just shown, and the list only appeared once you typed. The display region
+    // is hidden while editing, so widening the test costs nothing.
+    if (!this.element.contains(event.target)) this.hideDropdown()
   }
 
   // --- Editor chips ---------------------------------------------------------
