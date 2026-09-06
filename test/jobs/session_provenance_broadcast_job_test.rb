@@ -138,8 +138,14 @@ class SessionProvenanceBroadcastJobTest < ActiveSupport::TestCase
     10.times { |i| create_session(title: "Child #{i}", parent_session_id: router.id) }
     child = create_session(title: "Newest", parent_session_id: router.id)
 
-    offenders = session_selects_during { SessionProvenanceBroadcastJob.perform_now(child.id) }
-                  .select { |sql| sql.match?(/SELECT\s+"sessions"\.\*/) || sql.include?('"sessions"."transcript"') }
+    statements = session_selects_during { SessionProvenanceBroadcastJob.perform_now(child.id) }
+    offenders = statements.select { |sql| sql.match?(/SELECT\s+"sessions"\.\*/) || sql.include?('"sessions"."transcript"') }
+
+    # A negative assertion alone would pass on a job that queried nothing at all —
+    # a nil seed, an early return, a refactor that no-ops the fan-out — and the
+    # guard would stop guarding silently. Establish it ran first.
+    assert statements.any? { |sql| sql.include?('"sessions"."title"') },
+           "the fan-out issued no projected session query, so the assertion below was never exercised"
 
     assert_empty offenders,
                  "the provenance fan-out loaded whole session rows — each one detoasts a " \
@@ -163,9 +169,16 @@ class SessionProvenanceBroadcastJobTest < ActiveSupport::TestCase
   # what reading Struct fields does not: `human_message_record`,
   # SessionHumanMessages#entries, and every attribute the ERB touches.
   test "the projection carries every attribute the rendered panel reads" do
-    router = create_session(title: "Router", genesis: "web_ui", scheduling_class: "priority")
-    child = create_session(title: "Child", parent_session_id: router.id)
-    SessionUncleLink.create!(session: child, uncle_session: create_session(title: "Senior"))
+    # A git_root the catalog actually carries, which is what makes this cover
+    # `subdirectory`. AgentRootsConfig.find_for_session matches on
+    # `ar.url == git_root && ar.subdirectory.to_s == subdirectory.to_s`, and `&&`
+    # short-circuits: against a git_root no root matches, `subdirectory` is never
+    # read and dropping it from COLUMNS would leave this green while production
+    # — where the URL does match — raised into BroadcastService's rescue.
+    in_catalog = { git_root: AgentRootsConfig.all.first.url }
+    router = create_session(title: "Router", genesis: "web_ui", scheduling_class: "priority", **in_catalog)
+    child = create_session(title: "Child", parent_session_id: router.id, **in_catalog)
+    SessionUncleLink.create!(session: child, uncle_session: create_session(title: "Senior", **in_catalog))
     child.human_messages.create!(
       author: "tadasant", channel: HumanMessage::WEB_UI, content: "ship it", occurred_at: Time.current
     )
@@ -182,11 +195,18 @@ class SessionProvenanceBroadcastJobTest < ActiveSupport::TestCase
     html = SessionsController.render(partial: "sessions/session_hierarchy", locals: { agent_session: projected })
 
     # Rendered, not merely non-raising: an empty or degraded panel would satisfy
-    # assert_nothing_raised on its own.
+    # a "did not raise" check on its own.
     assert_includes html, "Session hierarchy"
     assert_includes html, "Router"
     assert_includes html, "also senior"
     assert_includes html, "ship it"
+    # Every agent-root pill resolved to a real root rather than falling back to
+    # Node#agent_root_label's em dash — which is what proves `metadata`,
+    # `git_root` and `subdirectory` were all readable off the projection. Read
+    # out of the pill specifically, since the panel's explanatory prose is itself
+    # full of em dashes.
+    pills = html.scan(%r{title="Agent root">\s*(.*?)\s*</span>}m).flatten
+    assert_equal [ AgentRootsConfig.all.first.name ], pills.uniq
   end
 
   private
