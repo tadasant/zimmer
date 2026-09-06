@@ -57,6 +57,7 @@ class CostAnalytics
         by_agent_root: by_agent_root,
         by_model: by_model,
         by_thread_kind: by_thread_kind,
+        by_runtime: by_runtime,
         by_adhoc_source: by_adhoc_source,
         by_feature: by_feature,
         by_experiment: by_experiment,
@@ -72,7 +73,7 @@ class CostAnalytics
   # added, which moves no maximum.
   def cache_key
     [
-      "cost-analytics/v3", from.to_i, to.to_i,
+      "cost-analytics/v4", from.to_i, to.to_i,
       SessionTokenUsage.maximum(:id).to_i, AdhocTokenUsage.maximum(:id).to_i,
       TokenUsageFeature.maximum(:id).to_i,
       # `updated_at`, not `id`: a session's SECOND observation is an update, so a
@@ -199,6 +200,20 @@ class CostAnalytics
   def by_thread_kind
     rows = grouped(session_scope, "CASE WHEN subagent THEN 'subagent' ELSE 'main' END")
     rows.map { |kind, v| v.merge(kind: kind) }.sort_by { |r| -r[:cost_usd] }
+  end
+
+  # Spend by agent runtime — which is spend by BILLING RELATIONSHIP, and that is
+  # why it is worth a row of its own rather than being left implicit in the
+  # by-model table.
+  #
+  # A `claude_code` row is subscription spend: a list-price figure, comparable
+  # across models, and not money owed. A `pi` row is a metered OpenRouter
+  # invoice, which is. Every other total on this page adds the two together —
+  # correctly, since both are spend — so without this split a reader has no way
+  # to tell what share of a number is an actual bill.
+  def by_runtime
+    rows = grouped(session_scope, "agent_runtime")
+    rows.map { |runtime, v| v.merge(runtime: runtime) }.sort_by { |r| -r[:cost_usd] }
   end
 
   # Top individual sessions. The join is left so a row whose session was deleted

@@ -83,7 +83,7 @@ class CostAnalyticsTest < ActiveSupport::TestCase
     snapshot = CostAnalytics.new(from: 7.days.ago).snapshot
 
     assert_equal %i[totals cost_breakdown by_day by_agent_root by_model
-                    by_thread_kind by_adhoc_source by_feature by_experiment
+                    by_thread_kind by_runtime by_adhoc_source by_feature by_experiment
                     top_sessions unpriced_models].sort,
       snapshot.keys.sort
   end
@@ -152,6 +152,24 @@ class CostAnalyticsTest < ActiveSupport::TestCase
     assert_in_delta 75_000, breakdown[:residual_tokens], 1
     # And the spend tables are NOT filtered — the Pi row is money Zimmer spent.
     assert_in_delta 200_000, CostAnalytics.new(from: 1.day.ago).totals[:total_tokens], 1
+  end
+
+  # Spend by runtime is spend by billing relationship, and it is the one split
+  # every other total on the page hides: subscription dollars and a metered
+  # OpenRouter invoice add together everywhere else.
+  test "by_runtime separates the two billing relationships" do
+    usage(output_tokens: 1_000_000, input_tokens: 0, cache_read_tokens: 0,
+          cache_creation_tokens: 0, cache_creation_1h_tokens: 0)
+    usage(agent_runtime: "pi", model: "openrouter/anthropic/claude-opus-4.6",
+          output_tokens: 1_000_000, input_tokens: 0, cache_read_tokens: 0,
+          cache_creation_tokens: 0, cache_creation_1h_tokens: 0)
+
+    rows = CostAnalytics.new(from: 1.day.ago).by_runtime
+
+    assert_equal %w[claude_code pi], rows.map { |r| r[:runtime] }.sort
+    # 1M Opus output tokens is $25 on either side — the point is that they are
+    # reported apart, not that they differ.
+    rows.each { |r| assert_in_delta 25.0, r[:cost_usd], 0.001 }
   end
 
   test "the feature breakdown states the share it could not account for" do
