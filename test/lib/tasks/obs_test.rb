@@ -76,6 +76,34 @@ class ObsTasksTest < ActiveSupport::TestCase
     assert_not_includes output, "test-token"
   end
 
+  test "status reports the build identity every exported record carries" do
+    install_exporter
+    original = ENV["ZIMMER_GIT_SHA"]
+    ENV["ZIMMER_GIT_SHA"] = "0123456789abcdef0123456789abcdef01234567"
+
+    output = invoke("obs:status")
+
+    assert_match(/service\.version\s+: 0123456789abcdef0123456789abcdef01234567/, output)
+    assert_match(/service\.instance\.id=\S+ \(this process\)/, output)
+  ensure
+    original.nil? ? ENV.delete("ZIMMER_GIT_SHA") : ENV["ZIMMER_GIT_SHA"] = original
+  end
+
+  # An image built outside release-image.yml/deploy-staging.yml ships records with
+  # no service.version at all. Saying so here is the point of the task: from inside
+  # Grafana a missing attribute is indistinguishable from a broken pipeline.
+  test "status says why service.version is missing when no build baked one in" do
+    install_exporter
+    original = ENV.delete("ZIMMER_GIT_SHA")
+
+    output = invoke("obs:status")
+
+    assert_match(/service\.version\s+: \(unset --/, output)
+    assert_match(/records ship without service\.version/, output)
+  ensure
+    ENV["ZIMMER_GIT_SHA"] = original if original
+  end
+
   test "status states plainly that metrics and traces are not shipped" do
     disable_exporter
 
