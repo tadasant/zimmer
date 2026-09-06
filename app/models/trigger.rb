@@ -88,6 +88,24 @@ class Trigger < ApplicationRecord
   # How much of the event that tipped the cap to quote in the notice prompt.
   BURST_NOTICE_PROMPT_EXCERPT = 500
 
+  # Postgres advisory lock namespace for serializing one trigger's spawn
+  # decision. Distinct from Session::SESSION_ADVISORY_LOCK_NAMESPACE and
+  # ClaudeAccount::POOL_ADVISORY_LOCK_NAMESPACE so the three subsystems can never
+  # collide in the shared bigint key space. Fixed value — changing it would let an
+  # old and a new deployment hold "the same" lock independently.
+  SPAWN_ADVISORY_LOCK_NAMESPACE = 0x415F_5447 # "A_TG" ASCII — Trigger spawn lock
+
+  # How long a fire waits for another process's in-flight spawn decision for the
+  # same trigger. The protected section is a `SELECT … LIMIT 1` and, at most, one
+  # session INSERT plus a job enqueue — milliseconds — so a wait this long means
+  # the holder is wedged rather than busy, and the fire is better off proceeding
+  # unserialized than being dropped. See #spawn_unless_pending_session!.
+  SPAWN_LOCK_WAIT = 15.seconds
+
+  # Poll interval while waiting for the spawn lock. pg_try_advisory_lock has no
+  # blocking-with-timeout form, so the wait is a bounded poll.
+  SPAWN_LOCK_POLL_INTERVAL = 0.05
+
   # --- Burst coalescing ----------------------------------------------------
   #
   # `coalesce_window_seconds` says how close together two Slack messages have to
@@ -254,6 +272,71 @@ class Trigger < ApplicationRecord
   scope :with_schedule_conditions, -> { joins(:trigger_conditions).where(trigger_conditions: { condition_type: "schedule" }).distinct }
   scope :with_ao_event_conditions, -> { joins(:trigger_conditions).where(trigger_conditions: { condition_type: "ao_event" }).distinct }
   scope :with_github_conditions, -> { joins(:trigger_conditions).where(trigger_conditions: { condition_type: TriggerCondition::GITHUB_CONDITION_TYPES }).distinct }
+
+  # Serialize a block against every other spawn decision for the same trigger,
+  # across every process in the deployment.
+  #
+  # A session-level (not transaction-level) Postgres advisory lock, deliberately.
+  # A transaction-scoped lock — or the row lock #spawn_unless_pending_session!
+  # first considered and declined — would enlist #reserve_burst_slot! into an
+  # outer transaction, and that would cost two properties the burst gate depends
+  # on: a spawn that raises must still consume the attempt it reserved, and the
+  # burst-latch clear that keeps a failed notice from silently disabling the
+  # trigger must survive the raise. A session-level lock opens no transaction, so
+  # `with_lock` inside the block still gets its own and both properties hold.
+  #
+  # Fails OPEN: the block always runs, and its argument says whether it ran
+  # serialized. Dropping a fire whose lock could not be taken would trade a rare
+  # duplicate session for a silently lost wake, and for the `quota_available`
+  # trigger a lost wake strands every parked spot session until the next
+  # recovery. Under-spawning is not the safe direction here.
+  #
+  # Nesting is safe for the same reason it is in ClaudeAccount.with_pool_lock:
+  # with_connection hands back the connection the thread already holds, so an
+  # inner acquire lands on the same backend and Postgres counts advisory locks
+  # per session.
+  #
+  # @param trigger_id [Integer] the trigger whose spawn decision is serialized
+  # @param wait [ActiveSupport::Duration, Numeric] how long to wait for the lock
+  # @yieldparam serialized [Boolean] false when the lock could not be taken
+  # @return [Object] the block's return value
+  def self.with_spawn_lock(trigger_id, wait: SPAWN_LOCK_WAIT)
+    deadline = Time.current + wait
+
+    connection_pool.with_connection do |conn|
+      acquired = try_spawn_lock(conn, trigger_id)
+      until acquired || Time.current >= deadline
+        sleep(SPAWN_LOCK_POLL_INTERVAL)
+        acquired = try_spawn_lock(conn, trigger_id)
+      end
+
+      begin
+        yield(acquired)
+      ensure
+        if acquired
+          # Swallow: if the connection died inside the block, raising here would
+          # replace the real error with a confusing one — and a dead connection
+          # has already released the lock.
+          begin
+            conn.execute(
+              sanitize_sql_array([ "SELECT pg_advisory_unlock(?, ?)", SPAWN_ADVISORY_LOCK_NAMESPACE, trigger_id ])
+            )
+          rescue => e
+            Rails.logger.warn "[Trigger] Could not release the spawn lock for trigger #{trigger_id}: #{e.message}"
+          end
+        end
+      end
+    end
+  end
+
+  def self.try_spawn_lock(conn, trigger_id)
+    ActiveModel::Type::Boolean.new.cast(
+      conn.select_value(
+        sanitize_sql_array([ "SELECT pg_try_advisory_lock(?, ?)", SPAWN_ADVISORY_LOCK_NAMESPACE, trigger_id ])
+      )
+    )
+  end
+  private_class_method :try_spawn_lock
 
   def enabled?
     status == "enabled"
@@ -1643,31 +1726,63 @@ class Trigger < ApplicationRecord
   # should consume no burst budget and leave no trace, exactly as if the event
   # had not arrived.
   #
-  # Deliberately NOT under a row lock, and the residual race is worth naming: two
-  # fires landing in the same instant can both read "nothing pending" and both
-  # spawn. Holding a lock across the spawn would close that, and would cost more
-  # than it buys — #reserve_burst_slot! would join the outer transaction, so a
-  # spawn that raises would roll back the attempt it is supposed to consume AND
-  # the burst-latch clear that keeps a failed notice from silently disabling the
-  # trigger. Those two properties guard against runaway spawning; a same-instant
-  # duplicate is the pre-existing behavior of every trigger, and unchanged here.
-  # What this setting bounds is the backlog ACROSS fires, which is where the
-  # duplicates actually came from — fires minutes or quarter-hours apart.
+  # The check and the spawn are one decision, so they run under one lock. Without
+  # it this is a plain check-then-act: two fires landing in the same instant both
+  # read "nothing pending" and both spawn, which is #606 — one `quota_available`
+  # recovery edge producing two fleet-maintenance sessions in the same second,
+  # each applying the wake policy's caps to the same waiting queue and so doubling
+  # the effective ceiling for that recovery. The setting's own two-minute
+  # idempotence guard cannot catch it either: it assumes a PREVIOUS run spaced in
+  # time, and two runs starting in the same second both see every candidate as
+  # untouched.
+  #
+  # The lock is a per-trigger Postgres ADVISORY lock, not the row lock this
+  # deliberately declined before. A row lock would hold the trigger row across the
+  # spawn and pull #reserve_burst_slot! into the outer transaction, so a spawn that
+  # raised would roll back both the attempt it is supposed to consume and the
+  # burst-latch clear that keeps a failed notice from silently disabling the
+  # trigger. .with_spawn_lock opens no transaction, so those two properties are
+  # untouched and the burst gate still gets its own `with_lock`.
+  #
+  # It serializes; it never suppresses. Only the read and the spawn are inside it,
+  # both measured in milliseconds, and the answer a serialized fire gets is the
+  # same answer it would have got on its own — the second fire simply sees a
+  # session that now really is committed instead of one that was still in flight.
+  # A fire that arrives once the earlier session has left `waiting`/`running`
+  # spawns exactly as before, so a genuine second recovery is not suppressed.
+  #
+  # A fire that cannot take the lock within SPAWN_LOCK_WAIT proceeds unserialized,
+  # which is today's behavior. See .with_spawn_lock for why under-spawning is the
+  # wrong direction to fail in.
+  #
+  # This closes the same-instant window only for triggers that opted into
+  # `skip_if_pending_session`. Every other trigger is asking for one session per
+  # fire, and two simultaneous fires are two fires.
   def spawn_unless_pending_session!(prompt:)
     return spawn_with_burst_control!(prompt: prompt) unless skip_if_pending_session?
 
-    pending = pending_intent_session
+    Trigger.with_spawn_lock(id) do |serialized|
+      unless serialized
+        Rails.logger.warn(
+          "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) could not take its spawn lock " \
+          "within #{SPAWN_LOCK_WAIT.inspect} — deduplicating unserialized. A fire landing in the " \
+          "same instant as this one may spawn a second session."
+        )
+      end
 
-    if pending
-      @last_fire_pending_session = pending
-      Rails.logger.info(
-        "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) skipped this fire — session " \
-        "#{pending.id} (#{pending.status}) is still pending and already carries this intent"
-      )
-      return nil
+      pending = pending_intent_session
+
+      if pending
+        @last_fire_pending_session = pending
+        Rails.logger.info(
+          "[Trigger#create_session!] Trigger '#{name}' (ID: #{id}) skipped this fire — session " \
+          "#{pending.id} (#{pending.status}) is still pending and already carries this intent"
+        )
+        next nil
+      end
+
+      spawn_with_burst_control!(prompt: prompt)
     end
-
-    spawn_with_burst_control!(prompt: prompt)
   end
 
   # The burst-control gate. Every path that would SPAWN a session funnels

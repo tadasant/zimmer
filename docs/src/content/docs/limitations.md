@@ -3153,6 +3153,29 @@ and it is an accurate one.
 
 ## Triggers
 
+### The spawn lock is a Postgres advisory lock, so two cases still slip past it
+
+🟡 `skip_if_pending_session` runs its check and its spawn under a per-trigger Postgres **advisory**
+lock (`Trigger.with_spawn_lock`), which is what stops two fires landing in the same instant from both
+reading "nothing pending" and both spawning
+([#606](https://github.com/tadasant/zimmer/issues/606)). Advisory rather than a row lock, because a
+row lock would drag [burst control](/sessions/triggers/#burst-control)'s slot reservation into the
+same transaction. Two narrow cases remain, and both are deliberate:
+
+- **A fire that cannot take the lock within 15 seconds proceeds unserialized**, logging at `warn`.
+  The protected section is one `SELECT` and at most one session INSERT, so a wait that long means the
+  holder is wedged rather than busy — and dropping the fire instead would trade a rare duplicate
+  session for a lost wake, which for the `quota_available` trigger strands every parked spot session
+  until the next recovery. Under-spawning is the wrong direction to fail in here.
+- **A caller that wraps the fire in its own transaction gets serialization without visibility.**
+  `SlackTriggerPollerJob` wraps `Trigger#create_session!` in a transaction so the session and the
+  human-message record commit together, and the lock is released while that transaction is still
+  open — so a concurrent fire reads a snapshot without the session and spawns anyway. It is narrow:
+  the Slack and GitHub pollers are each capped at one running copy, so the race needs a Slack fire
+  concurrent with a *different* condition type on the same trigger, or with a hand-fired **Invoke**.
+
+The dedup across fires — the thing the setting is mostly for — is unaffected by either.
+
 ### Agent-posted comments are only recognized when a known command posted them
 
 `TranscriptHooks::GithubCommentAuthorshipHook` is what keeps Zimmer from routing its own agents'
