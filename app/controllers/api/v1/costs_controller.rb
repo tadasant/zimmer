@@ -110,6 +110,12 @@ class Api::V1::CostsController < Api::BaseController
     else
       scope = scope.where(session_id: params[:session_id]) if params[:session_id].present?
       scope = scope.where(agent_root: params[:agent_root]) if params[:agent_root].present?
+      # The ledger holds more than one billing relationship: a `claude_code` row
+      # is subscription spend against an Anthropic quota window, a `pi` row is a
+      # metered OpenRouter invoice. Without this filter a consumer reconciling
+      # against one provider's bill has the other's dollars mixed in with no way
+      # to subtract them.
+      scope = scope.where(agent_runtime: params[:agent_runtime]) if params[:agent_runtime].present?
       scope = scope.where(subagent: ActiveModel::Type::Boolean.new.cast(params[:subagent])) unless params[:subagent].nil?
     end
     scope
@@ -179,7 +185,8 @@ class Api::V1::CostsController < Api::BaseController
     }
 
     if record.is_a?(SessionTokenUsage)
-      json.merge(session_id: record.session_id, agent_root: record.agent_root, subagent: record.subagent)
+      json.merge(session_id: record.session_id, agent_root: record.agent_root,
+                 agent_runtime: record.agent_runtime, subagent: record.subagent)
     else
       json.merge(source: record.source, subject_session_id: record.subject_session_id, metadata: record.metadata)
     end

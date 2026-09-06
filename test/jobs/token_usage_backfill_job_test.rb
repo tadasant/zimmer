@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "json"
 require "mocha/minitest"
 require "tmpdir"
 
@@ -27,6 +28,32 @@ class TokenUsageBackfillJobTest < ActiveJob::TestCase
     assert_equal "automatic", run.trigger
     assert_equal @root, run.transcript_root
     assert run.complete?, "a small corpus is covered in one slice"
+  end
+
+  # "Re-scan history" is a request about the LEDGER, not about the Claude corpus.
+  # The post-deploy task that shipped Pi's ingestor is terminal, and the recurring
+  # job only looks two hours back, so this is the only surface that can recover
+  # Pi spend from a gap wider than that window.
+  test "a run also sweeps every other runtime's whole history, once, at its head" do
+    uuid = SecureRandom.uuid
+    Session.create!(
+      prompt: "pi", agent_runtime: "pi", status: :archived,
+      git_root: "https://github.com/tadasant/zimmer.git", branch: "main",
+      execution_provider: "local_filesystem", session_id: uuid,
+      metadata: { "agent_root_key" => "zimmer" },
+      transcript: [
+        { "type" => "session", "version" => 3, "id" => uuid, "timestamp" => "2026-01-01T00:00:00.000Z" },
+        { "type" => "message", "id" => "feedface", "timestamp" => "2026-01-01T00:00:01.000Z",
+          "message" => { "role" => "assistant", "content" => [], "provider" => "openrouter",
+                         "model" => "anthropic/claude-haiku-4.5", "stopReason" => "stop",
+                         "usage" => { "input" => 1, "output" => 9, "cacheRead" => 0, "cacheWrite" => 0 } } }
+      ].map { |e| JSON.generate(e) }.join("\n") + "\n"
+    ).update_column(:updated_at, 30.days.ago)
+
+    TokenUsageBackfillJob.perform_now
+
+    # Written despite being far outside TokenUsageIngestionJob's two-hour lookback.
+    assert_equal [ "pi:#{uuid}:feedface" ], SessionTokenUsage.pluck(:request_id)
   end
 
   test "does nothing at all once a sweep has completed — every deploy after the first" do

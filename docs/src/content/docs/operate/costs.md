@@ -93,6 +93,10 @@ the runtime. `RuntimeRegistry::Bundle#usage_ingestor_class` is the slot that say
 | `pi` | `PiTokenUsageIngestionService` | `sessions.transcript`, for `agent_runtime = 'pi'` |
 | `codex` | — | nothing yet; Codex spend is not in the ledger ([#1077](https://github.com/tadasant/zimmer/issues/1077)) |
 
+`session_token_usages.agent_runtime` records which, and `GET /api/v1/costs/records` both returns
+it and filters on it — a consumer reconciling against one provider's bill needs to be able to
+subtract the other's.
+
 Pi is the odd one, and it is the runtime that forces the seam. It is the only runtime whose
 conversation is not in its home — `PiRuntimeAdapter` points `--session-dir` at
 `<clone>/.pi/sessions`, so the transcript is reaped with the clone. Reading it off disk would
@@ -238,13 +242,18 @@ behaviour for a model with no rate, not a Pi-specific bug; pricing them needs `R
 explicit cache rates, which is a separate change.
 :::
 
-History is covered by a one-time
+History is covered twice over, and it needs both. A one-time
 [post-deploy task](/operate/deploying/#one-time-post-deploy-tasks),
-`20260906190000_ingest_pi_session_token_usage`, rather than by `TokenUsageBackfillJob` — that
-job walks a filesystem corpus with a directory cursor, and Pi's corpus is a table. The task
-sweeps every Pi session in id order, 25 at a time, and is a no-op on a second run for the same
-reason every ingestion run is: rows are keyed on `request_id` and written with
-`insert_all ... unique_by`.
+`20260906190000_ingest_pi_session_token_usage`, sweeps every Pi session that existed when the
+ingestor shipped — in id order, 25 at a time, resumable from its cursor. That task is terminal
+by design, so **`TokenUsageBackfillJob` also sweeps Pi's whole corpus at the head of every run
+it works**: without that, any gap wider than the recurring job's two-hour lookback — a worker
+outage, an ingestor bug found a day later — would lose that spend permanently with no surface
+to ask for it back. So *Re-scan history* on the Costs page, `POST /api/v1/costs/backfill` and
+`action_health`'s `backfill_token_usage` all recover Pi spend, exactly as they do Claude Code's.
+
+Both are no-ops on a second run for the same reason every ingestion run is: rows are keyed on
+`request_id` and written with `insert_all ... unique_by`.
 
 ## Picking a window
 

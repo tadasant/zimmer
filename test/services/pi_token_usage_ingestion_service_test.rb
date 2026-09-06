@@ -208,6 +208,58 @@ class PiTokenUsageIngestionServiceTest < ActiveSupport::TestCase
     assert_equal [ "pi:#{uuid}:99999999" ], SessionTokenUsage.pluck(:request_id)
   end
 
+  # A transcript is data, not a schema. One entry whose `usage` holds objects
+  # where numbers belong must cost one entry — not every remaining session in the
+  # run, which is what an exception escaping the per-line parse rescue would do.
+  test "a malformed usage object costs one entry, not the sweep" do
+    uuid = SecureRandom.uuid
+    broken = assistant(id: "deadbeef")
+    broken["message"]["usage"] = { "input" => { "nested" => 1 }, "output" => [ 2 ],
+                                   "cacheRead" => "seven", "cacheWrite" => -5 }
+    pi_session(
+      session_uuid: uuid,
+      transcript: transcript(header(uuid), broken, assistant(id: "cafebabe", input: 1, output: 1))
+    )
+
+    result = ingest
+
+    # The broken entry's volumes all coerce to zero, so it is dropped as
+    # zero-volume rather than raising — and the entry after it still lands.
+    assert_equal 1, result.session_rows
+    assert_equal [ "pi:#{uuid}:cafebabe" ], SessionTokenUsage.pluck(:request_id)
+  end
+
+  # `cacheWrite1h.clamp(0, cacheWrite)` inverts its own range on a negative
+  # `cacheWrite`, which is an ArgumentError rather than a wrong number.
+  test "a negative cache write is floored rather than raising" do
+    uuid = SecureRandom.uuid
+    entry = assistant(id: "aaaabbbb", input: 5, output: 5, cache_write: -100)
+    pi_session(session_uuid: uuid, transcript: transcript(header(uuid), entry))
+
+    ingest
+
+    row = SessionTokenUsage.find_by!(request_id: "pi:#{uuid}:aaaabbbb")
+    assert_equal 0, row.cache_creation_tokens
+    assert_equal 0, row.cache_creation_5m_tokens
+    assert_equal 0, row.cache_creation_1h_tokens
+  end
+
+  # An 8-hex entry id is nowhere near unique on its own, and `sessions.session_id`
+  # IS nullable — AgentSessionJob clears it on recovery paths. A key with an empty
+  # namespace would collapse every such session into one 32-bit space, which is
+  # the collision the composite key exists to prevent.
+  test "refuses a row it cannot namespace rather than writing a colliding key" do
+    session = pi_session(session_uuid: SecureRandom.uuid,
+                         transcript: transcript(assistant(id: "aaaaaaaa")))
+    session.update_column(:session_id, nil)
+
+    result = ingest
+
+    assert_equal 0, result.session_rows
+    assert_equal 1, result.skipped_entries
+    assert_equal 0, SessionTokenUsage.count
+  end
+
   test "leaves the other runtimes alone" do
     Session.create!(title: "claude", prompt: "x", agent_runtime: "claude_code",
                     git_root: "https://github.com/tadasant/zimmer.git", branch: "main",
@@ -283,6 +335,18 @@ class PiTokenUsageIngestionServiceTest < ActiveSupport::TestCase
     assert_includes RuntimeRegistry.usage_ingestor_classes, PiTokenUsageIngestionService
     # Codex has no ingestor yet, and the registry is where that is said.
     assert_nil RuntimeRegistry.for("codex").usage_ingestor_class
+  end
+
+  # ApplicationJob registers `discard_interrupt_quietly` and `retry_on
+  # ActiveRecord::StatementTimeout`; a `rescue StandardError` inside `perform`
+  # sees both first. Swallowing the interrupt would put an ERROR line — which
+  # pages — on every deploy that lands mid-sweep.
+  test "the job re-raises a deploy interrupt and a statement timeout rather than logging them" do
+    [ GoodJob::InterruptError, ActiveRecord::StatementTimeout ].each do |error_class|
+      TokenUsageIngestionService.stub(:new, ->(**) { raise error_class }) do
+        assert_raises(error_class) { TokenUsageIngestionJob.new.perform }
+      end
+    end
   end
 
   test "the job sweeps Pi as well as Claude Code, and one failure does not stop the other" do

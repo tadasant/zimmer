@@ -131,6 +131,29 @@ class CostAnalyticsTest < ActiveSupport::TestCase
     }.merge(volumes))
   end
 
+  # ContextFeatureAttributor reads a CLAUDE transcript, so only Claude Code rows
+  # can ever have a feature row to be attributed by. Leaving another runtime's
+  # tokens in the denominator would make coverage fall and the residual grow
+  # purely as a function of that runtime's volume — which the page reads as
+  # "attribution is degrading" when nothing about attribution changed.
+  test "feature coverage is measured against the rows that can be attributed at all" do
+    record = usage(cache_read_tokens: 100_000, cache_creation_tokens: 0,
+                   cache_creation_1h_tokens: 0, input_tokens: 0, output_tokens: 0)
+    feature_row(record, "goal", cache_read_tokens: 25_000)
+    # A Pi row of the same size, which writes no feature row and must not halve
+    # the coverage figure.
+    usage(agent_runtime: "pi", model: "openrouter/anthropic/claude-opus-4.6",
+          cache_read_tokens: 100_000, cache_creation_tokens: 0,
+          cache_creation_1h_tokens: 0, input_tokens: 0, output_tokens: 0)
+
+    breakdown = CostAnalytics.new(from: 1.day.ago).by_feature
+
+    assert_in_delta 0.25, breakdown[:coverage], 0.001
+    assert_in_delta 75_000, breakdown[:residual_tokens], 1
+    # And the spend tables are NOT filtered — the Pi row is money Zimmer spent.
+    assert_in_delta 200_000, CostAnalytics.new(from: 1.day.ago).totals[:total_tokens], 1
+  end
+
   test "the feature breakdown states the share it could not account for" do
     # The residual is the point of the shape. Without it a 40%-covered estimate
     # reads as a complete one, and a feature gets cut on a number that was never

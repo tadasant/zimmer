@@ -77,9 +77,12 @@ module Mcp
         - Establish the cost side of a cost-vs-performance comparison
         - Notice app-internal inference that should not be running at all
 
-        **A caveat worth passing on:** list price is not a bill. These accounts are
-        subscription-billed, so treat the dollar figures as a comparable unit across models rather
-        than money owed.
+        **A caveat worth passing on:** list price is not a bill, and it is not one in two
+        different ways. Claude Code and Codex spend is subscription-billed, so treat its dollars as
+        a comparable unit across models rather than money owed. Pi spend is metered by OpenRouter
+        and IS money owed — priced here at the same rates OpenRouter publishes for the Anthropic
+        models, and at zero for the OpenAI and Google ones, which appear in the unpriced list
+        below.
       DESC
 
       MAX_DAYS = CostWindow::MAX_DAYS
@@ -190,7 +193,8 @@ module Mcp
       # Not scoped to the requested window: these are the CURRENT rates as
       # BurnRateRecomputeJob last computed them, over a fixed sample of recent
       # sessions per combination. Saying so beats silently answering a different
-      # question from the tables above.
+      # question from the tables above — and the same goes for the runtime split,
+      # since the sample is `quota_bearing` while the spend tables above are not.
       def burn_rate_lines
         rates = HarnessModelBurnRate.fresh.by_rate.limit(BURN_RATE_LIMIT).to_a
         total = HarnessModelBurnRate.fresh.count
@@ -218,7 +222,9 @@ module Mcp
           "within #{HarnessModelBurnRate::SAMPLE_LOOKBACK.inspect}, at the same list prices as every " \
           "figure above. A combination with no sample is priced at the fleet average of " \
           "#{default ? "#{money(default)}/min" : "— (nothing sampled yet)"}. Current rates, not rates " \
-          "for the window this report covers._"
+          "for the window this report covers. **Claude Code only** — the window these price against is " \
+          "an Anthropic one, so a runtime billed elsewhere (Pi, via OpenRouter) is sampled out here " \
+          "while appearing in every table above._"
         ]
       end
 
