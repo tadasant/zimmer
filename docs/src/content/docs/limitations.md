@@ -4570,9 +4570,9 @@ residual case, not the common one.
 
 ---
 
-## Nothing revives a `devdb` accessory that stops
+## On production, nothing revives a `devdb` accessory that stops
 
-([#419](https://github.com/tadasant/zimmer/issues/419))
+([#419](https://github.com/tadasant/zimmer/issues/419) — fixed on staging, still open on production)
 
 First, the thing that is **not** a limitation, because it keeps being written down as one: no manual
 `kamal accessory boot devdb -d production` is owed. Bare `kamal deploy` does not boot accessories,
@@ -4585,12 +4585,24 @@ The real gap is what happens after that. `kamal accessory boot` is idempotent by
 health: it runs `docker ps -a` per host and skips any host where a container is already there, and a
 **stopped** container is still there. Docker's own `--restart unless-stopped`, which is what Kamal
 boots accessories with, covers a crash or a daemon restart. A container that is stopped and stays
-stopped is covered by nothing — no health check, and every later deploy skips right over it.
+stopped is covered by nothing — no health check, and a deploy that only *boots* skips right over it.
 
 A session cannot repair that itself: the Docker socket is mounted into the worker but the worker is
 not in its group ([#409](https://github.com/tadasant/zimmer/issues/409)), and there is no root. So
-the only signal is a session reporting that `bin/agent-dev` found no Postgres, and the only recovery
-is an operator running `kamal accessory reboot devdb -d <dest>`.
+the only signal is a session reporting that `bin/agent-dev` found no Postgres.
+
+**Staging closed this**: `deploy-staging.yml` now runs `kamal accessory reboot devdb -d staging`
+after `accessory boot all`, so re-running the deploy is the recovery path. `reboot` is stop +
+`docker container prune --filter label=service=zimmer-devdb` + boot, which is destructive by design
+and therefore scoped to `devdb` alone — the one accessory declared with no `volumes:` key, holding
+nothing but scratch `zimmer_dev_<clone>` databases. `test/config/devdb_accessory_test.rb` fails the
+build if that line ever names an accessory that declares a volume.
+
+**Production has not followed.** `zimmer-deploy-prod.yml` lives in the private companion repo, which
+is a different repository and a different agent root, so it still runs `accessory boot all` alone and
+a stopped production `devdb` still needs an operator running `kamal accessory reboot devdb -d
+production`. Neither destination has a health check on the accessory, so on both a `devdb` that stops
+mid-session stays down until the next deploy (staging) or an operator (production).
 
 ---
 

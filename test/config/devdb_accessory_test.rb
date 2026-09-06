@@ -97,6 +97,53 @@ class DevdbAccessoryTest < ActiveSupport::TestCase
     assert_nil accessories.dig("devdb", "volumes")
   end
 
+  # --- The deploy is the recovery path (#419) -----------------------------------------
+  #
+  # `kamal accessory boot` is idempotent by EXISTENCE, not by health: it runs `docker ps -a`
+  # and skips any host that already has a container, stopped ones included. So once `devdb`
+  # stops, no later deploy revives it, and a session cannot revive it either -- the Docker
+  # socket is mounted into the worker but the worker is not in its group (#409). The staging
+  # deploy therefore REBOOTS devdb rather than booting it.
+  #
+  # `reboot` is stop + `docker container prune` + boot. On `db` or `redis` that is data loss.
+  # These assertions are the reason a reader can trust the workflow line: they fail the build
+  # if the rebooted name is ever an accessory that declares a volume.
+  STAGING_DEPLOY_WORKFLOW = Rails.root.join(".github/workflows/deploy-staging.yml")
+
+  # `kamal accessory <verb> NAME... -d staging`, as written in the workflow's run scripts.
+  def staging_accessory_names(verb)
+    STAGING_DEPLOY_WORKFLOW.read
+      .scan(/^\s*kamal accessory #{verb}\s+(.+?)\s+-d\s+staging\b/)
+      .flatten.flat_map(&:split)
+  end
+
+  test "the staging deploy reboots devdb, so a deploy revives one that stopped" do
+    assert_equal [ "devdb" ], staging_accessory_names("reboot"),
+      "deploy-staging.yml must reboot devdb (and nothing else): `accessory boot` skips a " \
+      "stopped container, so without this line nothing on the box revives devdb and a " \
+      "session is left with no Postgres and no way to fix it (#419)"
+  end
+
+  test "the staging deploy still boots every declared accessory" do
+    assert_includes staging_accessory_names("boot"), "all",
+      "the reboot line covers devdb only; `accessory boot all` is what creates a NEWLY " \
+      "declared accessory on the host for the first time"
+  end
+
+  test "nothing data-bearing is ever rebooted by the staging deploy" do
+    accessories = deploy_config("staging").fetch("accessories")
+
+    staging_accessory_names("reboot").each do |name|
+      refute_equal "all", name,
+        "`accessory reboot all` would stop and prune staging's db and redis containers"
+
+      assert accessories.key?(name), "deploy-staging.yml reboots an accessory staging does not declare: #{name}"
+      assert_nil accessories.dig(name, "volumes"),
+        "deploy-staging.yml reboots `#{name}`, which declares a volume. `reboot` prunes the " \
+        "container; only a volume-less, disposable accessory may be rebooted on every deploy"
+    end
+  end
+
   # Production's real database is the off-droplet Managed cluster. The scratch accessory
   # must never become what the app itself connects to.
   test "production's app still points at the managed database, not at devdb" do
