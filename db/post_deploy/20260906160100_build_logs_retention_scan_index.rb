@@ -54,6 +54,18 @@ class BuildLogsRetentionScanIndex < PostDeployTask
   ADVISORY_LOCK_KEY = 82_060_906_160_100
 
   def up
+    # `CREATE INDEX CONCURRENTLY` is illegal inside a transaction — Postgres
+    # refuses it outright — so yielding is the only correct answer, and it is a
+    # real answer rather than a guard for tests: a caller that wrapped a pass in
+    # a transaction would otherwise get an aborted one and a task recorded as
+    # failed. `PostDeployTask::Runner` opens none, so production reaches this
+    # check open-coded false and goes straight on. Checked before the advisory
+    # lock, so a deferral does not take a lock it would then have to unwind.
+    if connection.transaction_open?
+      logger.info("[#{self.class.name}] a transaction is open, which CONCURRENTLY forbids; will resume")
+      return CONTINUE
+    end
+
     return CONTINUE unless try_lock
 
     begin

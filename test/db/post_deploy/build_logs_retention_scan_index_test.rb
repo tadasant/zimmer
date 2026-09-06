@@ -93,6 +93,23 @@ class BuildLogsRetentionScanIndexTest < ActiveSupport::TestCase
     end
   end
 
+  test "yields instead of raising when a caller has a transaction open" do
+    # `PostDeployTask::Runner` opens no transaction, but a caller can — and
+    # `test/services/post_deploy_task/runner_test.rb` is one: it drives
+    # `PostDeployTaskJob#perform` over the REAL registry inside the suite's own
+    # transaction, deliberately, so that the job is asserted against the tasks
+    # that actually ship. Postgres refuses CONCURRENTLY there, and without this
+    # the refusal poisons the whole transaction rather than deferring one task.
+    outcome = nil
+    ActiveRecord::Base.transaction do
+      outcome = build_task.up
+    end
+
+    assert_equal PostDeployTask::CONTINUE, outcome
+    assert_nil logs_index_validity(INDEX_NAME)
+    assert_includes logs_index_names, SUPERSEDED_INDEX_NAME
+  end
+
   test "leaves the superseded index in place when the replacement did not get built" do
     task = build_task
 
