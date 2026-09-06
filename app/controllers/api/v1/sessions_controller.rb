@@ -413,10 +413,14 @@ class Api::V1::SessionsController < Api::BaseController
       return
     end
 
-    # When session is running, queue the message instead of rejecting.
+    # When a turn is already underway, queue the message instead of rejecting.
     # This prevents message loss when the caller doesn't know the exact session state
     # (e.g., race condition between session completing a turn and the API call arriving).
-    if @session.running?
+    #
+    # `Sessions::LiveTurn.underway?` and not `@session.running?`: since #1040 a turn
+    # handed over but still queued for a worker reads `waiting`, and delivering into
+    # that would start a second turn against one clone.
+    if Sessions::LiveTurn.underway?(@session)
       max_position = @session.enqueued_messages.maximum(:position) || 0
       enqueued_message = @session.enqueued_messages.create!(
         content: prompt,
@@ -425,7 +429,7 @@ class Api::V1::SessionsController < Api::BaseController
         status: "pending"
       )
       @session.logs.create!(
-        content: "Message queued at position #{enqueued_message.position} (session is running)",
+        content: "Message queued at position #{enqueued_message.position} (a turn is already underway)",
         level: "info"
       )
       record_uncle_edge(@session, "api_v1:sessions.follow_up")

@@ -374,7 +374,7 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
 
     assert_includes result, "## Follow-up Sent"
     assert_includes result, "- **Message:** Follow-up prompt sent"
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
     assert_equal "Keep going", session.prompt
   end
 
@@ -1770,7 +1770,7 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     end
 
     assert_includes output, "Session restarted from scratch"
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
   end
 
   # --- a session that never ran (zimmer#557) ----------------------------------
@@ -1798,7 +1798,7 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     end
 
     assert_includes output, "Session restarted from scratch"
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
     assert_equal "Investigate the flaky test", session.prompt
   end
 

@@ -54,7 +54,7 @@ class Sessions::MessageParentTest < ActiveSupport::TestCase
 
     assert result.success?
     assert_equal :sent, result.delivery
-    assert_equal "running", parent.reload.status
+    assert_equal "waiting", parent.reload.status
     assert_match(/the deploy scripts live in another root/, parent.metadata["pending_follow_up_prompt"])
     assert_empty parent.enqueued_messages
   end
@@ -64,7 +64,7 @@ class Sessions::MessageParentTest < ActiveSupport::TestCase
     child = create_session(parent: parent)
 
     assert_equal :sent, report(child).delivery
-    assert_equal "running", parent.reload.status
+    assert_equal "waiting", parent.reload.status
   end
 
   test "a running parent takes the report on its queue, and is not interrupted" do

@@ -297,7 +297,11 @@ module Mcp
           force_immediate_follow_up(session, prompt, goal).tap do
             record_uncle_edge(session, args, FOLLOW_UP_EDGE_SOURCE)
           end
-        elsif session.running?
+        elsif Sessions::LiveTurn.underway?(session)
+          # `underway?` and not `session.running?`: since #1040 a turn that has been
+          # handed over but is still queued for one of the `agents` lane's worker
+          # threads reads `waiting`, and sending it down the direct branch would
+          # enqueue a rival job against one clone (#400).
           queue_follow_up(session, prompt, goal).tap do
             record_uncle_edge(session, args, FOLLOW_UP_EDGE_SOURCE)
           end
@@ -336,7 +340,8 @@ module Mcp
           # Session#deliver_follow_up! does — and AFTER the resume, for the reason
           # that method gives: the resume's callbacks rewrite `metadata`
           # whole-column, and a reader who sees the marker must be guaranteed to
-          # also see `running`.
+          # also see the state the resume left behind (`waiting`, with the turn
+          # queued for a worker).
           #
           # Without this the accepted prompt existed only as the argument of the
           # job enqueued below: one copy, in the one place a deploy destroys. A

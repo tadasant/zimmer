@@ -700,7 +700,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Follow-up prompt sent. Agent is processing...", flash[:notice]
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
   end
 
   # Test show action
@@ -1826,7 +1826,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_redirected_to session_path(session)
     assert_equal "Follow-up prompt sent. Agent is processing...", flash[:notice]
   end
@@ -1839,7 +1839,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     }
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_redirected_to session_path(session)
   end
 
@@ -2075,7 +2075,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/session_#{session.id}_follow_up_form/, response.body)
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
   end
 
   test "follow_up error should return turbo_stream with error message for empty prompt" do
@@ -2143,7 +2143,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_nil session.metadata["quota_limit_count"]
     # Non-stale metadata should be preserved
     assert_equal "/tmp/test-clone", session.metadata["clone_path"]
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_redirected_to session_path(session)
   end
 
@@ -2162,7 +2162,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Metadata should be unchanged (except potentially for auto-added fields)
     assert_equal "/tmp/test-clone", session.metadata["clone_path"]
     assert_equal "/tmp/test-clone", session.metadata["working_directory"]
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
   end
 
   test "should store pending_follow_up_prompt in metadata on follow_up" do
@@ -2180,7 +2180,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     session.reload
     # Verify the pending follow-up prompt was stored in metadata
     assert_equal "Please fix the bug", session.metadata["pending_follow_up_prompt"]
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_redirected_to session_path(session)
   end
 
@@ -2201,7 +2201,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       # Verify the sent_message was stored in metadata for recovery
       assert_equal "Please implement the feature", session.metadata["sent_message"]
       assert_equal Time.current.iso8601, session.metadata["sent_message_at"]
-      assert_equal "running", session.status
+      assert_equal "waiting", session.status
     end
   end
 
@@ -2217,7 +2217,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     }
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     # running_job_id must be set immediately by the controller, not deferred to the job.
     # This prevents a window where the session is "running" with no tracked job.
     assert_not_nil session.running_job_id, "running_job_id should be set by the controller on follow-up"
@@ -2277,7 +2277,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Message should be sent immediately, not queued
     assert_equal 0, session.enqueued_messages.count, "Message should not be queued"
     # Session should be running now (job was enqueued)
-    assert session.running?, "Session should be running after follow-up"
+    assert session.waiting?, "the follow-up queues the turn for a worker; `start` runs it"
   end
 
   # Routes tests for new actions
@@ -2628,7 +2628,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match /Attempting to resume failed session/, flash[:notice]
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     # Note: running_job_id is set by the job itself when it starts executing,
     # not immediately when enqueued, so we don't test for it here
 
@@ -2771,7 +2771,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
 
     # Reset to failed for second attempt
     session.update!(status: :failed)
@@ -2814,7 +2814,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     # runtime_started should be cleared for pre-prompt failures
     assert_nil session.metadata["runtime_started"]
     # Other metadata should be preserved
@@ -2848,7 +2848,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     # runtime_started should be preserved for post-prompt failures
     assert_equal true, session.metadata["runtime_started"]
 
@@ -3126,7 +3126,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match /Attempting to restart failed session/, flash[:notice]
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
 
     # Verify logs were created
     assert session.logs.where("content LIKE ?", "%Restarting failed session: sending automated recovery prompt%").exists?
@@ -3166,7 +3166,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match /Attempting to restart failed session/, flash[:notice]
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
 
     # Verify logs indicate re-sending initial prompt
     assert session.logs.where("content LIKE ?", "%re-sending initial prompt%").exists?
@@ -3212,7 +3212,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to session_path(session)
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
 
     # Verify logs indicate automated recovery prompt
     assert session.logs.where("content LIKE ?", "%sending automated recovery prompt%").exists?
@@ -3250,7 +3250,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert session.logs.where("content LIKE ?", "%re-sending initial prompt%").exists?
 
     # Cleanup
@@ -3282,7 +3282,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert session.logs.where("content LIKE ?", "%sending automated recovery prompt%").exists?
 
     # Cleanup
@@ -3329,7 +3329,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match /Reconnected to running process/, flash[:notice]
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert session.logs.where("content LIKE ?", "%reconnecting to running process%").exists?
 
     # Cleanup
@@ -3420,7 +3420,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_equal "Investigate the flaky test", session.prompt
     assert_match /Attempting to restart failed session/, flash[:notice]
     assert session.logs.where("content LIKE ?", "%Restarting session from scratch%").exists?
@@ -3442,7 +3442,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_match /Attempting to restart failed session/, flash[:notice]
   end
 
@@ -3471,7 +3471,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match /Attempting to restart failed session/, flash[:notice]
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
 
     # session_id should be nil (will be regenerated by the job during setup)
     assert_nil session.session_id
@@ -3505,7 +3505,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_nil session.session_id
     assert session.logs.where("content LIKE ?", "%Restarting session from scratch%").exists?
   end
@@ -3532,7 +3532,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
 
     # session_id should be nil (will be regenerated by the job during setup)
     assert_nil session.session_id
@@ -3624,7 +3624,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_redirected_to session_path(session)
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
   end
 
   # The banner is the only place a person sees WHY a session is sitting in
@@ -3903,7 +3903,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
 
     # session_id should be PRESERVED for normal restart
     assert_not_nil session.session_id
@@ -3963,7 +3963,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
 
     # session_id should be PRESERVED (not cleared) for normal restart
     assert_not_nil session.session_id
@@ -4273,7 +4273,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to root_path
     assert_match /Restarted 1 failed session/, flash[:notice]
     # Target category's failed session was restarted; the other category was untouched.
-    assert_equal "running", target_failed.reload.status
+    assert_equal "waiting", target_failed.reload.status
     assert_equal "failed", other_failed.reload.status
   end
 
@@ -4306,7 +4306,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     post refresh_category_sessions_url, params: { category_id: "uncategorized" }
 
     assert_redirected_to root_path
-    assert_equal "running", uncategorized_failed.reload.status
+    assert_equal "waiting", uncategorized_failed.reload.status
     assert_equal "failed", categorized_failed.reload.status
   end
 
@@ -4383,11 +4383,11 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     post refresh_all_sessions_url
 
-    # Both sessions should be transitioned to running
+    # Both sessions should have their turn handed over and queued for a worker
     failed1.reload
     failed2.reload
-    assert_equal "running", failed1.status
-    assert_equal "running", failed2.status
+    assert_equal "waiting", failed1.status
+    assert_equal "waiting", failed2.status
     assert_redirected_to root_path
     assert_match /Restarted 2 failed session/, flash[:notice]
   end
@@ -4483,7 +4483,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     # Failed session should be restarted (transitioned to running)
     failed_session.reload
-    assert_equal "running", failed_session.status
+    assert_equal "waiting", failed_session.status
 
     assert_redirected_to root_path
     # Notice should mention both refreshed and restarted sessions
@@ -4515,7 +4515,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     post refresh_all_sessions_url
 
     # Only 50 sessions should be restarted
-    restarted_count = Session.where(status: :running).count
+    restarted_count = Session.where(status: :waiting).count
     assert_equal 50, restarted_count
 
     # 5 sessions should remain failed
@@ -4554,8 +4554,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Both sessions should be transitioned to running
     needs_input1.reload
     needs_input2.reload
-    assert_equal "running", needs_input1.status
-    assert_equal "running", needs_input2.status
+    assert_equal "waiting", needs_input1.status
+    assert_equal "waiting", needs_input2.status
     assert_redirected_to root_path
     assert_match /Continued 2 paused session/, flash[:notice]
   end
@@ -4586,8 +4586,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     failed_session.reload
     needs_input_session.reload
-    assert_equal "running", failed_session.status
-    assert_equal "running", needs_input_session.status
+    assert_equal "waiting", failed_session.status
+    assert_equal "waiting", needs_input_session.status
     assert_redirected_to root_path
     assert_match /Restarted 1 failed session/, flash[:notice]
     assert_match /Continued 1 paused session/, flash[:notice]
@@ -4623,8 +4623,10 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     post refresh_all_sessions_url
 
-    # All 30 failed sessions should be restarted (prioritized)
-    restarted_count = Session.where(status: :running).count
+    # All 30 failed sessions should be restarted (prioritized). A restarted session
+    # queues for a worker rather than going straight to `running` (#1040), so the
+    # population to count is `waiting`.
+    restarted_count = Session.where(status: :waiting).count
     assert_equal 50, restarted_count
 
     # 20 needs_input sessions should have been continued (50 - 30 = 20 remaining limit)
@@ -4678,8 +4680,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "needs_input", user_paused.status
 
     # Recovery-paused and legacy (no paused_by) sessions should be continued
-    assert_equal "running", recovery_paused.status
-    assert_equal "running", legacy_paused.status
+    assert_equal "waiting", recovery_paused.status
+    assert_equal "waiting", legacy_paused.status
 
     assert_redirected_to root_path
     assert_match /Continued 2 paused session/, flash[:notice]
@@ -4703,7 +4705,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     post refresh_all_sessions_url
 
     recovery_paused.reload
-    assert_equal "running", recovery_paused.status
+    assert_equal "waiting", recovery_paused.status
     # paused_by should be cleared after restart
     assert_nil recovery_paused.metadata["paused_by"]
     # working_directory should be preserved
@@ -4760,7 +4762,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       assert_equal :resumed, McpOauthResumeService.new(session).call
 
       assert_enqueued_with(job: AgentSessionJob, args: [ session.id, "Now check the deploy logs" ])
-      assert session.reload.running?
+      assert session.reload.waiting?, "the resume queues the held turn for a worker"
     end
   end
 
@@ -6592,7 +6594,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to root_path
     assert_match(/Restarted 1 failed session/, flash[:notice])
-    assert_equal "running", starred_failed.reload.status
+    assert_equal "waiting", starred_failed.reload.status
     assert_equal "failed", unstarred_failed.reload.status
   end
 
@@ -6619,7 +6621,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to root_path
     assert_match(/Restarted 1 failed session/, flash[:notice])
-    assert_equal "running", starred_frozen.reload.status
+    assert_equal "waiting", starred_frozen.reload.status
   end
 
   test "refresh_starred with no starred sessions reports nothing to do" do
@@ -6658,7 +6660,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to session_path(session)
     assert_match(/Continuing waiting session/, flash[:notice])
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
   end
 
   # A waiting session with an unfired one-time wake-up is asleep on purpose. Refreshing
@@ -6756,7 +6758,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to root_path
     assert_match(/Continued 1 waiting session/, flash[:notice])
-    assert_equal "running", stalled.reload.status
+    assert_equal "waiting", stalled.reload.status
     assert_equal "waiting", sleeping.reload.status
   end
 

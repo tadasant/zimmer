@@ -298,7 +298,7 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
     QuotaResetCheckerJob.perform_now
 
     parked.reload
-    assert_equal "running", parked.status
+    assert_equal "waiting", parked.status
     assert_nil parked.metadata["auth_outage_reason"]
   end
 
@@ -314,7 +314,7 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
     QuotaResetCheckerJob.perform_now
 
     assert claude_accounts(:exceeded).reload.active?
-    assert_equal "running", parked.reload.status
+    assert_equal "waiting", parked.reload.status
     assert_nil parked.metadata["auth_outage_reason"]
   end
 
@@ -398,7 +398,7 @@ class QuotaResetCheckerJobTest < ActiveSupport::TestCase
 
     QuotaResetCheckerJob.perform_now
 
-    assert_equal "running", parked.reload.status
+    assert_equal "waiting", parked.reload.status
     assert_nil parked.reload.metadata["auth_outage_reason"]
   end
 

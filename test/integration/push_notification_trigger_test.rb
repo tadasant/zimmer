@@ -153,6 +153,7 @@ class PushNotificationTriggerTest < IntegrationTestCase
 
     session.pause!   # marker = 1, schedules job 1
     session.resume!
+    session.start!   # a worker takes the queued turn (#1040)
     session.pause!   # marker = 2, schedules job 2
     session.resume!
 
@@ -175,6 +176,7 @@ class PushNotificationTriggerTest < IntegrationTestCase
 
     session.pause!   # job 1 scheduled with marker = 1
     session.resume!
+    session.start!   # a worker takes the queued turn (#1040)
     session.pause!   # job 2 scheduled with marker = 2; session stays in needs_input
 
     perform_enqueued_jobs(only: SendPushNotificationJob)

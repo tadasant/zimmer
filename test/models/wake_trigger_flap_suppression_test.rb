@@ -107,7 +107,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
 
     assert @watched.reload.needs_input?
     assert_wake_delivered trigger, "the wake must be delivered, not dropped"
-    assert @watcher.reload.running?
+    assert @watcher.reload.waiting?  # the wake queued its turn: `needs_input` -> `waiting` (#1040)
   end
 
   test "a session left holding an unexecuted pending_sleep still wakes its watcher" do
@@ -123,7 +123,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     assert @watched.reload.needs_input?
     assert_equal true, @watched.metadata["pending_sleep"]
     assert_wake_delivered trigger, "the wake must be delivered, not dropped"
-    assert @watcher.reload.running?
+    assert @watcher.reload.waiting?
   end
 
   test "an elicitation the user answers inside the window does not wake the watcher" do
@@ -153,7 +153,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     pause_and_settle_on(@watched) { create_blocking_elicitation(@watched) }
 
     assert_wake_delivered trigger, "the child is asking a human something — that is a real rest"
-    assert @watcher.reload.running?
+    assert @watcher.reload.waiting?
   end
 
   test "a session deleted before the window closes is stale, not a fire" do
@@ -184,7 +184,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     end
 
     assert_wake_delivered trigger, "Trigger#fire_ao_event_immediately_if_state_matches delivered it"
-    assert @watcher.reload.running?
+    assert @watcher.reload.waiting?
   end
 
   test "the immediate-fire path is subject to the same check and drops a session that has moved on" do
@@ -272,7 +272,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     end
 
     assert_wake_delivered trigger, "the armed wake was delivered, not stranded"
-    assert @watcher.reload.running?, "the watcher was resumed once the child became a human's problem"
+    assert @watcher.reload.waiting?, "the watcher was resumed once the child became a human's problem"
   end
 
   test "arming a watcher on a recovery pause in a frozen category fires at once" do
@@ -293,7 +293,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     end
 
     assert_wake_delivered trigger, "no sweep is coming — this wake is owed now"
-    assert @watcher.reload.running?
+    assert @watcher.reload.waiting?
   end
 
   test "arming a watcher on a session a human paused still fires immediately" do
@@ -308,7 +308,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     end
 
     assert_wake_delivered trigger, "a human holding the session is a rest a watcher wants to know about"
-    assert @watcher.reload.running?
+    assert @watcher.reload.waiting?
   end
 
   test "a session_failed watcher fires immediately even on a session carrying the recovery marker" do
@@ -325,7 +325,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     end
 
     assert_wake_delivered trigger, "session_failed has no deferral behind it and must deliver"
-    assert @watcher.reload.running?
+    assert @watcher.reload.waiting?
   end
 
   test "a session that churns past the settle window supersedes the earlier event" do
@@ -336,7 +336,8 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     # It resumed and paused again inside the window. The second pause emits its
     # own event; the first is about a rest that is no longer the current one.
     @watched.reload.resume!
-    @watched.reload.pause!
+    @watched.start!
+    @watched.pause!
 
     AoEventTriggerJob.perform_now(*job_args)
 
@@ -354,7 +355,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
     assert @watched.reload.needs_input?
     assert_wake_delivered trigger,
       "a delivered one-time wake is held for the turn it woke — this is the wake we wanted"
-    assert @watcher.reload.running?, "the watcher was resumed"
+    assert @watcher.reload.waiting?, "the watcher was resumed"
   end
 
   test "the terminal events are not settled and fire on the transition itself" do
@@ -369,7 +370,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
       end
 
       assert_wake_delivered trigger, "#{event_name} must still deliver immediately"
-      assert watcher.reload.running?, "#{event_name} must still resume the watcher"
+      assert watcher.reload.waiting?, "#{event_name} must still resume the watcher"
     end
   end
 
@@ -383,7 +384,7 @@ class WakeTriggerFlapSuppressionTest < ActiveJob::TestCase
 
     assert_wake_delivered trigger,
       "the session_archived condition fires on this very archival, and the fire hands the trigger to the woken turn"
-    assert @watcher.reload.running?, "the watcher was woken by the archival"
+    assert @watcher.reload.waiting?, "the watcher was woken by the archival"
   end
 
   test "archiving a watched session destroys a multi-condition wake that cannot fire on it" do

@@ -13,14 +13,57 @@ are as important as the state change itself.
 
 | State | DB value | Meaning |
 | --- | --- | --- |
-| `waiting` | 1 | Queued, or dormant awaiting a scheduled wake-up. The initial state. |
-| `running` | 0 | An agent process is alive and a monitoring job owns it. |
+| `waiting` | 1 | Not executing. Either a turn has been handed over and is queued for one of the `agents` lane's worker threads, or the session is dormant — a spot hold, a ceiling pause, a quota park, or asleep on its own wake. The initial state. |
+| `running` | 0 | One of the `agents` lane's worker threads is executing a turn: an agent process is alive and a monitoring job owns it. |
 | `needs_input` | 2 | The agent's turn ended, or it's blocked on an elicitation. This is your to-do list: agents archive themselves on completion, and a session waiting on its own PR archives when that PR merges, so what stays here is meant to need you. See [goals](/sessions/goals/). |
 | `failed` | 4 | Terminal error. Resumable. |
 | `archived` | 3 | In the trash. Restorable until the clone is reaped. |
 
 The integer values are load-bearing (they're the existing ActiveRecord enum). A sixth state,
 `corrupted` (5), was removed — sessions now go to `failed` instead.
+
+## `running` means a worker thread has the turn
+
+Zimmer executes agent turns on the GoodJob `agents` lane, and that lane is
+`ConnectionBudget.good_job_queue_threads[:agents]` threads deep — **8** on the Tadasant production
+deployment. Everything above that number is a durable row waiting for a thread.
+
+`resume` used to land in `running`, stamped by whoever *handed* the session a turn. The `agents`
+queue sits between that hand-over and any worker picking the job up, so `running` routinely held a
+large population of turns nothing was executing: the dashboard would read "20 running" while
+`/inference` correctly said the pool runs 8 turns at once, and both were right about different
+things ([#957](https://github.com/tadasant/zimmer/issues/957),
+[#1040](https://github.com/tadasant/zimmer/pull/1040)).
+
+So the split is now in the status column:
+
+| The turn is… | The session reads |
+| --- | --- |
+| queued in the `agents` lane, waiting for a thread | `waiting` |
+| held by a worker that is making the clone and spawning the CLI | `waiting` |
+| executing — an agent process is alive and monitored | `running` |
+
+Two consequences are worth carrying around.
+
+**`waiting` has a fourth meaning.** `SessionWaitingReason` used to rank three dormancy mechanisms —
+a spot start-hold, a spot ceiling pause, an auth-outage quota park — each with a named resume owner.
+"Queued for a worker" is a fourth, and its owner is GoodJob's own poller rather than a Zimmer sweep.
+It is read off the **job row**, never off a metadata marker, so it cannot outlive a worker that
+died: a session whose turn is gone stops claiming one and falls to `StrandedSleepRescue` like any
+other stranded sleeper. The session page draws a banner for it and `get_session` prints a line.
+
+**`running?` is no longer the "a turn is already in flight" guard.** Every caller that used it to
+decide *"queue this prompt rather than starting a second turn"* — the web, REST and MCP follow-up
+routes, `Trigger#follow_up_session!`, `EnqueuedMessageDrainJob`, `Sessions::MessageParent` — asks
+`Sessions::LiveTurn.underway?` instead, which reads the `agents` job rows and fails closed. So does
+`Session#claim_system_recovery_turn!`, which is what stops a recovery sweep enqueuing a second turn
+against a session that already has one queued.
+
+**What did not change is any ceiling's denominator.** `RunningTurns#on_a_worker` counted `running`
+rows whose job had a `performed_at`, and it still does — the pre-spawn window is reported as
+*awaiting* a worker, exactly as a first start was before the change. What moved is which status the
+uncounted turns wear. `SpotGateService`'s projected burn still prices the queue too, because a
+queued turn will spend as soon as a thread frees up; it now reads the job rows to find it.
 
 ## The full machine
 
@@ -30,9 +73,9 @@ stateDiagram-v2
 
     waiting --> running: start<br/>(guard: git_root present)
     running --> needs_input: pause
-    needs_input --> running: resume
-    waiting --> running: resume
-    failed --> running: resume
+    needs_input --> waiting: resume<br/>(a turn is handed over)
+    waiting --> waiting: resume
+    failed --> waiting: resume
     needs_input --> waiting: sleep
 
     running --> needs_input: block_on_elicitation
@@ -66,6 +109,11 @@ a stuck session).
 
 Guarded on `git_root` being present. Resets the elapsed-time counter, records the session's
 experimental-setting flags, and logs.
+
+**This is the only way into `running`, and it is fired from inside `AgentSessionJob#perform`** —
+on the worker thread, once the turn's process has been spawned. Everything that merely *hands* a
+turn to a session fires `resume`, which lands in `waiting`. See
+[`running` means a worker thread has the turn](#running-means-a-worker-thread-has-the-turn).
 
 #### Experimental-setting flags
 
@@ -476,7 +524,18 @@ message the agent already acted on), an earlier undelivered prompt already in th
 already in the queue — and every refusal is written to the session's timeline with the prompt text,
 because a drop that is written down is not this bug.
 
-### `resume` — `waiting | needs_input | failed → running`
+### `resume` — `waiting | needs_input | failed → waiting`
+
+**Handing a turn over, not starting one.** `resume` is what every delivery path fires — a fired
+wake, a web or API follow-up, a poller's comment, a recovery sweep, an un-park — and it leaves the
+session in `waiting`, queued for one of the `agents` lane's worker threads. The `start` fired by
+`AgentSessionJob#perform` is what makes it `running`. `waiting → waiting` is a real transition
+rather than a no-op: the side effects below are the whole point of firing it.
+
+It is still refused from `running`, and that refusal is load-bearing — `may_resume?` is half of how
+`Session#claim_system_recovery_turn!` tells "nobody is driving this session" from "somebody already
+is". The other half is now the job rows, because a queued turn no longer shows up in the status
+column. See [`running` means a worker thread has the turn](#running-means-a-worker-thread-has-the-turn).
 
 Unguarded, deliberately. The preconditions for resuming — a clone on disk, a runtime
 session id to resume into, a live process to reattach to — are established or validated by

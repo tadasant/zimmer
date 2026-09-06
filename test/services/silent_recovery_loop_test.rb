@@ -65,7 +65,10 @@ class SilentRecoveryLoopTest < ActiveJob::TestCase
     TranscriptPollerService.stub(:new, poller) { service.recover }
 
     @session.reload
-    return @session unless @session.running?
+    # The restart hands the turn over, which since #1040 leaves the session in
+    # `waiting` — queued for a worker — rather than `running`. Either state means
+    # the cycle restarted it; `failed` or `needs_input` means it did not.
+    return @session unless @session.waiting? || @session.running?
 
     # What the restarted AgentSessionJob does before it wedges.
     @session.merge_metadata!("job_started_at" => "2026-09-05T1#{index}:00:00Z") if starts_turn
@@ -140,7 +143,8 @@ class SilentRecoveryLoopTest < ActiveJob::TestCase
       RecoveryContinuationJob.perform_now(@session.id)
 
       @session.reload
-      next unless @session.running?
+      # The continue hands the turn over, which lands in `waiting` (#1040).
+      next unless @session.waiting? || @session.running?
 
       @session.merge_metadata!("job_started_at" => "2026-09-05T1#{i}:00:00Z")
     end
@@ -178,7 +182,7 @@ class SilentRecoveryLoopTest < ActiveJob::TestCase
     (BUDGET.max + 3).times { |i| recovery_cycle!(i, produces_output: true) }
 
     @session.reload
-    assert_equal "running", @session.status,
+    assert_equal "waiting", @session.status,
       "a session that answers every restart must never be failed by this bound"
     assert_nil @session.metadata[BUDGET.key]
     assert_nil @session.metadata["failure_reason"]
@@ -191,7 +195,7 @@ class SilentRecoveryLoopTest < ActiveJob::TestCase
     (BUDGET.max + 3).times { |i| recovery_cycle!(i, starts_turn: false) }
 
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert_nil @session.metadata[BUDGET.key],
       "quota depletion is budget pacing, not a failure signal (production invariant 6)"
   end
@@ -204,7 +208,7 @@ class SilentRecoveryLoopTest < ActiveJob::TestCase
     # Three silent restarts take the counter all the way to its maximum.
     (BUDGET.max + 1).times { |i| recovery_cycle!(i) }
     assert_equal BUDGET.max, @session.reload.metadata[BUDGET.key]
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
 
     # Then the session answers — one transcript event is enough.
     @session.update!(transcript: { "type" => "assistant" }.to_json)
@@ -212,7 +216,7 @@ class SilentRecoveryLoopTest < ActiveJob::TestCase
     recovery_cycle!(BUDGET.max + 1)
 
     @session.reload
-    assert_equal "running", @session.status,
+    assert_equal "waiting", @session.status,
       "a session that is producing output again must never be failed by a spent counter"
     assert_nil @session.metadata[BUDGET.key], "output since the last restart ends the incident"
     assert_nil @session.metadata["failure_reason"]
@@ -221,6 +225,6 @@ class SilentRecoveryLoopTest < ActiveJob::TestCase
     # than resuming where it left off.
     recovery_cycle!(BUDGET.max + 2)
     assert_equal 1, @session.reload.metadata[BUDGET.key]
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
   end
 end

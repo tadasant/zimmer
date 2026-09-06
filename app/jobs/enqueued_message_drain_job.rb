@@ -211,6 +211,22 @@ class EnqueuedMessageDrainJob < ApplicationJob
   # moved on is retired rather than delivered, so a wake is only ever spent on a
   # message that still says something.
   def dormant_by_design_reason(session)
+    # A TURN IS ALREADY COMING. This is the guard `running_job_id` used to be the
+    # whole of, and since #1040 it cannot be: a turn that has been handed over
+    # reads `waiting`, and its `running_job_id` is blank — `deliver_follow_up!`
+    # records one, but the three paths that resume through a claim
+    # (EnqueuedMessageProcessorService, SessionContinuation, SpotSessionPause#resume!)
+    # all write `running_job_id: nil` and then enqueue without recording. So a
+    # session whose turn is sitting in the `agents` lane passes every other test
+    # here — it has a session id, it is not held, nothing is parked — and the
+    # drain would resume it into a SECOND AgentSessionJob against one clone.
+    #
+    # `Sessions::LiveTurn.underway?` reads the job rows, which is the durable fact
+    # (see PendingAgentTurns). It fails closed, and closed here means "leave the
+    # message in the queue", which is the recoverable direction: it drains at the
+    # next turn boundary.
+    return "a turn is already queued for a worker" if Sessions::LiveTurn.underway?(session)
+
     # A job is already driving it. `waiting` is not only a resting state: it is
     # also where a session sits for the whole of its FIRST START, from the moment
     # AgentSessionJob claims `running_job_id` through the clone, the session-id

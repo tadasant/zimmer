@@ -582,7 +582,7 @@ module Github
       "skipped:dispatch_error"
     end
 
-    # Send prompt directly to the session, transitioning it to running
+    # Send the prompt directly to the session, queuing its turn for a worker
     # Used when session is in needs_input state
     #
     # Note: This method must be called within a transaction that has already

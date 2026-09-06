@@ -97,7 +97,10 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
 
     assert_equal 1, result.rescued
     assert_equal 1, result.found
-    assert_equal "running", session.reload.status
+    # Still `waiting` — the rescue hands a turn over and it queues for a worker
+    # (#1040), so the rescue count and the enqueued job above are what say it
+    # happened, not the status column.
+    assert_equal "waiting", session.reload.status
     assert_equal 1, session.metadata[StrandedSleepRescue::RESCUE_COUNT]
   end
 
@@ -121,7 +124,7 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     result = StrandedSleepRescue.sweep!
 
     assert_equal 1, result.rescued, "an unfireable-but-enabled wake must not count as sleeping on purpose"
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
   end
 
   test "a session asleep on an ao_event wake whose watched session no longer exists is resumed" do
@@ -215,7 +218,7 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     travel_to(due_at + 18.seconds) { ScheduleTriggerJob.perform_now }
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status, "the woken turn is queued for a worker, not yet on one"
     assert_equal "you were watching something", session.metadata["pending_follow_up_prompt"],
       "the wake's own prompt must be what resumes the session, not a recovery nudge"
   end
@@ -231,7 +234,7 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
 
     travel_to(due_at + SessionStateMachine::SCHEDULE_FIRE_SETTLE + 1.minute) do
       assert_equal 1, StrandedSleepRescue.sweep!.rescued
-      assert_equal "running", session.reload.status
+      assert_equal "waiting", session.reload.status
     end
   end
 
@@ -409,7 +412,7 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     assert_equal 1, StrandedSleepRescue.sweep!.rescued
     assert_equal 1, session.reload.metadata[StrandedSleepRescue::RESCUE_COUNT],
       "the counter must survive the STALE_RETRY_METADATA_KEYS clear inside the claim"
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
   end
 
   # The budget check must not fire ahead of the re-check: a session that armed a
@@ -437,7 +440,7 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     result = StrandedSleepRescue.sweep!
 
     assert_equal 1, result.rescued, "the turn was enqueued; a Slack failure must not misreport that"
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
   end
 
   test "a session in a frozen category is left alone" do
@@ -522,7 +525,7 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     result = StrandedSleepRescue.sweep!
 
     assert_equal 1, result.rescued
-    assert_equal "running", stranded.reload.status
+    assert_equal "waiting", stranded.reload.status
   end
 
   # page_after's cursor is a (updated_at, id) PAIR because updated_at alone is not
@@ -547,7 +550,7 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     result = StrandedSleepRescue.sweep!
 
     assert_equal 1, result.rescued
-    assert_equal "running", stranded.reload.status
+    assert_equal "waiting", stranded.reload.status
   end
 
   # A rescue that raises rolls its budget increment back with the transaction, so

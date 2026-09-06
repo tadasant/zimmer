@@ -34,7 +34,7 @@ the row this job loaded, and by the time the job runs the row can already say `r
 a recovery sweep put it there. Every sweep decides from a session object it read earlier
 (`CleanupOrphanedSessionsJob` and `DeploymentRecoveryJob` iterate `paused_by = 'recovery'`;
 `SessionRecoveryService` has been holding its session since before it started killing a hung pid),
-so a session archived in the meantime still looked resumable and `resume!` wrote `running` straight
+so a session archived in the meantime still looked resumable and `resume!` wrote straight
 over the archived row. Session 6335 was archived at 07:35:34 and had a fresh agent process,
 injected credentials and five connected MCP servers two seconds later
 ([#554](https://github.com/tadasant/zimmer/issues/554)).
@@ -42,9 +42,16 @@ injected credentials and five connected MCP servers two seconds later
 So there is a **selection-time** half too: `Session#claim_system_recovery_turn!`. It re-reads the
 row `FOR UPDATE` before deciding — inside the caller's transaction, so the lock is still held when
 the job is enqueued and no archive can land in between. It answers `:archived` (terminal),
-`:not_resumable` (the session is already `running`; somebody else is driving it, and a second agent
-process is its own defect), `:superseded` (another session took this session's work over — below)
-or `:claimed`, and the enqueuer starts a turn only on `:claimed`. Every refusal is decided *before*
+`:not_resumable` (somebody else is already driving the session, and a second agent process is its
+own defect), `:superseded` (another session took this session's work over — below) or `:claimed`,
+and the enqueuer starts a turn only on `:claimed`.
+
+`:not_resumable` has two halves since [#1040](https://github.com/tadasant/zimmer/pull/1040). The
+state machine refuses `resume` from `running`, which catches a session with a process alive — and
+because a turn that has merely been *handed over* now reads `waiting` rather than `running`, the
+claim also asks the `agents` job rows through `Sessions::LiveTurn.underway?`. Without that second
+half a sweep would read "waiting, nothing driving it" for a session whose turn was already sitting
+in the queue, and enqueue a rival. Every refusal is decided *before*
 the caller's block runs, so a refused claim writes nothing at all — which is what lets a caller skip
 the enqueue without needing a rollback to be correct. The refusal is recorded on the session's own
 timeline, where "why did nothing happen to this session" is asked from.
@@ -216,7 +223,7 @@ and `EnqueuedMessageProcessorService` takes its own lock and refuses an archived
 and above the point where the job records itself as started: a turn being resumed with an
 `AutomatedPrompts::SYSTEM_RECOVERY` nudge is handed to the session's queued message instead, when it
 has one. It is the choke point every automated resume funnels through, and the reasoning — why it is
-scoped to the nudge, why the session has to be `running` for the handoff to be safe, and what
+scoped to the nudge, why a turn has to be underway for the handoff to be safe, and what
 happens to the session's armed wakes — is in
 [A queued message outranks an injected recovery nudge](/sessions/lifecycle/#a-queued-message-outranks-an-injected-recovery-nudge).
 
@@ -1320,7 +1327,7 @@ logged at `error` for the same reason, carrying the whole prompt so it can be re
 
 One interaction is worth naming, because it points back at the same subsystem. `Trigger#follow_up_session!`
 treats *any* pending queue row as already representing a fire — it coalesces a recurring fire onto one,
-and on its `running?` branch it answers `:skipped_pending_exists`, which counts as a success and lets the
+and on its turn-underway branch it answers `:skipped_pending_exists`, which counts as a success and lets the
 wake group be held. So for the one turn a parked prompt sits in the queue, a wake or scheduled fire
 landing in that window is coalesced into it rather than delivered on its own. The window is a single turn
 boundary, the same property already held for the two other writers of this queue, and `record_missed_fire!`

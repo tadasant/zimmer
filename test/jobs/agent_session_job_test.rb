@@ -1014,7 +1014,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal [ @session.id, "Now check the deploy logs" ],
       ActiveJob::Arguments.deserialize(enqueued.first["arguments"]),
       "the resume delivers the follow-up, not the session's original prompt"
-    assert @session.reload.running?
+    assert @session.reload.waiting?, "the delivered turn queues for a worker (#1040)"
   end
 
   # The other half of #887: a nudge is not a message anybody is waiting on.
@@ -2197,11 +2197,12 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.send(:handle_interrupt_error, error)
 
     @session.reload
-    # Session should have been paused (and possibly auto-continued to running).
-    # Either state is acceptable — the key is it's not stuck in running with no job.
-    assert @session.needs_input? || @session.running?,
-      "Expected session to be needs_input or running, got #{@session.status}"
-    assert_nil @session.running_job_id unless @session.running?
+    # Paused, and then auto-continued — which since #1040 lands in `waiting` with
+    # the recovery turn queued rather than in `running`. Either resting state is
+    # acceptable; the one that would be wrong is `running` with no job.
+    assert @session.needs_input? || @session.waiting?,
+      "Expected session to be needs_input or waiting, got #{@session.status}"
+    assert_nil @session.running_job_id
 
     warning_logs = @session.logs.where(level: "warning")
     assert warning_logs.any? { |log| log.content.include?("Job interrupted before it finished") },
@@ -2314,7 +2315,10 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.send(:handle_interrupt_error, error)
 
     @session.reload
-    assert @session.running?, "a recovery-parked session must still be auto-continued, got #{@session.status}"
+    assert @session.waiting?,
+      "a recovery-parked session must still be auto-continued, got #{@session.status}"
+    assert_nil @session.metadata["paused_by"],
+      "and the auto-continue must have cleared the recovery marker rather than leaving it parked"
     assert @session.logs.any? { |log| log.content.include?("Job interrupted before it finished") },
       "the recovery path should have run"
   end
@@ -2833,17 +2837,28 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_nil @session.metadata["runtime_started"], "precondition: the CLI never spawned"
 
     error = GoodJob::InterruptError.new("Interrupted after starting perform at '2026-02-21 10:00:00 UTC'")
-    job.send(:handle_interrupt_error, error)
+    # The auto-continue is what must happen here, and since #1040 it DOES happen
+    # for this shape: `pause` transitions from `running` only, so an interrupt
+    # before the spawn leaves the session in `waiting` — which
+    # #auto_continue_after_interrupt used to refuse, handing the whole population
+    # to the five-minute cron. The enqueue is the evidence, because the resume
+    # that precedes it clears `paused_by` and lands in `waiting` rather than
+    # `running`.
+    assert_enqueued_with(job: AgentSessionJob) do
+      job.send(:handle_interrupt_error, error)
+    end
 
     @session.reload
     assert_not @session.logs.any? { |log| log.content.include?("already asleep") },
       "a session mid-start is not asleep and must not be stood down"
     assert_nil @session.metadata[AgentSessionJob::INTERRUPTED_START_REQUEUE_COUNT],
       "a session that already has a session_id must not be replayed as a fresh start"
-    # It took the recovery path: either auto-continue already resumed it, or it is
-    # parked with the marker both sweeps select on. Both are recoverable states;
-    # bare `waiting` with no marker is the one that would strand it.
-    assert @session.running? || @session.metadata["paused_by"] == "recovery",
+    # It took the recovery path: either the auto-continue already claimed it — in
+    # which case a turn is queued and `paused_by` is gone — or it is parked with
+    # the marker both sweeps select on. Both are recoverable; bare `waiting` with
+    # no marker and nothing queued is the one that would strand it.
+    assert @session.logs.any? { |log| log.content.include?("automatically continued") } ||
+             @session.metadata["paused_by"] == "recovery",
       "expected recovery to claim the session, got status=#{@session.status} " \
       "paused_by=#{@session.metadata['paused_by'].inspect}"
   end
@@ -2907,7 +2922,8 @@ class AgentSessionJobTest < ActiveJob::TestCase
     end
 
     @session.reload
-    assert @session.running?, "Expected session to be running after auto-continue, got #{@session.status}"
+    assert @session.waiting?,
+      "Expected the auto-continued session to be queued for a worker, got #{@session.status}"
 
     info_logs = @session.logs.where(level: "info")
     assert info_logs.any? { |log| log.content.include?("automatically continued after job") },
@@ -8181,9 +8197,10 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # Verify message was deleted (marked as sent and destroyed)
     assert_nil EnqueuedMessage.find_by(id: message.id), "Expected message to be destroyed after processing"
 
-    # Verify session transitioned to running
+    # The message was delivered: the session left `needs_input` and its turn is
+    # queued for a worker, which is what `waiting` means here (#1040).
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
 
     # Verify a job was enqueued with the message content
     assert_enqueued_with(job: AgentSessionJob, args: [ @session.id, "Test follow-up prompt" ])
@@ -8228,9 +8245,10 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # Verify result
     assert result, "Expected handoff to succeed when session is running"
 
-    # Session should still be running (no pause flap)
+    # No pause flap: the session goes straight back to the queue for its next turn
+    # rather than through `needs_input` (#1040).
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
 
     # Message should be deleted (claimed by the new job)
     refute EnqueuedMessage.exists?(message.id)
@@ -8322,7 +8340,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # Verify it processed successfully
     assert result, "Expected method to succeed even with AASM dirty state"
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
   end
 
   test "process_next_enqueued_message_if_available preserves session goal when message has none" do
@@ -8439,8 +8457,8 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     @session.reload
 
-    # Session should be running (resumed to process message)
-    assert_equal "running", @session.status
+    # Resumed to process the message, with the turn queued for a worker
+    assert_equal "waiting", @session.status
 
     # First message should be deleted (processed), second should remain
     assert_equal 1, @session.enqueued_messages.pending.count
@@ -12071,7 +12089,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       :resume_for_recovery_prompt, @session.reload, AutomatedPrompts::SYSTEM_RECOVERY
     )
 
-    assert @session.reload.running?
+    assert @session.reload.waiting?
     conditions.each do |condition|
       assert_nil condition.reload.last_triggered_at,
         "the recovery prompt's re-resume must not consume wake condition #{condition.id}"
@@ -12094,7 +12112,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     AgentSessionJob.new.send(:resume_for_recovery_prompt, @session.reload, reasoned)
 
-    assert @session.reload.running?
+    assert @session.reload.waiting?
     conditions.each do |condition|
       assert_nil condition.reload.last_triggered_at,
         "a reasoned recovery prompt must not consume wake condition #{condition.id}"
@@ -12112,7 +12130,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     AgentSessionJob.new.send(:resume_for_recovery_prompt, @session.reload, "Please continue")
 
-    assert @session.reload.running?
+    assert @session.reload.waiting?
     conditions.each do |condition|
       assert_nil condition.reload.last_triggered_at,
         "a follow-up must not consume wake condition #{condition.id}"

@@ -1,0 +1,46 @@
+<%# A session whose turn has been handed over and is sitting in GoodJob's `agents`
+    lane waiting for one of its worker threads.
+
+    Before #1040 this session read `running` and needed no banner, because the
+    status itself was the (false) explanation. Now it reads `waiting` — which is
+    the truth, and which is also what a spot hold, a ceiling pause, an auth-outage
+    park and an ordinary sleep read. Without a line saying which of those it is, a
+    session about to run looks exactly like one nobody is coming for.
+
+    Gated on SessionWaitingReason's ranking rather than on the job row directly,
+    so this box and `get_session` cannot name different mechanisms — and so a
+    session that is ALSO carrying an older hold or park shows the box for whichever
+    of them is actually why it is waiting. %>
+<%# The caller passes the ranking in when it has already computed one for the
+    spot banner beside this one, so a session page asks `good_jobs` once rather
+    than once per banner per breakpoint. %>
+<% waiting_reason = local_assigns.fetch(:waiting_reason) { SessionWaitingReason.for(agent_session) } %>
+<% queued = waiting_reason&.current %>
+<% if queued&.key == SessionWaitingReason::TURN_QUEUED %>
+  <%# A data attribute rather than an id: this partial renders twice per page —
+      once in the mobile block, once in the desktop header — and two elements
+      cannot share one id. %>
+  <div class="mb-4 rounded-md border border-sky-200 bg-sky-50 p-4" data-queued-turn-banner>
+    <div class="flex items-start gap-3">
+      <svg class="h-5 w-5 text-sky-500 shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v4a1 1 0 00.293.707l2 2a1 1 0 001.414-1.414L11 10.586V7z" clip-rule="evenodd" />
+      </svg>
+      <div class="min-w-0">
+        <h3 class="text-sm font-medium text-sky-900">
+          Queued for a worker
+        </h3>
+        <p class="mt-1 text-sm text-sky-800">
+          This session has been handed a turn and is waiting for
+          <span class="font-medium"><%= queued.label %></span>.
+        </p>
+        <p class="mt-2 text-xs text-sky-700">
+          Nothing is stuck and nobody needs to act. Zimmer runs
+          <span class="font-medium"><%= RunningTurns.worker_slots %></span>
+          agent turns at once, and this one starts as soon as a thread frees up.
+          <span class="font-medium">Running</span> means a worker is executing a turn, so a
+          session queued behind the pool reads <span class="font-medium">Waiting</span>.
+        </p>
+      </div>
+    </div>
+  </div>
+<% end %>

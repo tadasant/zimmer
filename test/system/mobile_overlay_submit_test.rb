@@ -103,12 +103,13 @@ class MobileOverlaySubmitTest < ApplicationSystemTestCase
     # The optimistic message should appear in the timeline
     assert_text "Mobile follow-up message"
 
-    # Session should transition to running
-    assert_text "Agent is running"
-
-    # Session status should be updated in the database
+    # `waiting`, not `running`: since #1040 the follow-up hands the turn to the
+    # `agents` queue, and a worker's `start` is what makes the session `running`.
+    # The running indicator follows the turn rather than the submit, so what this
+    # asserts is the hand-over.
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
+    assert_equal "Mobile follow-up message", session.metadata["pending_follow_up_prompt"]
   end
 
   test "mobile overlay shows queue mode for running session" do

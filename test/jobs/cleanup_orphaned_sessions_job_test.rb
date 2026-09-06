@@ -633,7 +633,7 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     end
 
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert @session.logs.any? { |log| log.content.include?("automatically continued") }
   ensure
     FileUtils.rm_rf(working_dir) if working_dir
@@ -662,7 +662,7 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     end
 
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert_nil @session.metadata["paused_by"]
     assert_equal 0, @session.enqueued_messages.pending.count
     assert @session.logs.any? { |log| log.content.include?("delivering queued user message") }
@@ -693,7 +693,7 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     end
 
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert @session.logs.any? { |log| log.content.include?("automatically continued") }
   ensure
     FileUtils.rm_rf(working_dir) if working_dir
@@ -1090,7 +1090,7 @@ class CleanupOrphanedSessionsJobTest < ActiveJob::TestCase
     end
 
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     # InterruptError metadata should be cleaned up
     assert_nil @session.metadata["exception_class"]
     assert_nil @session.metadata["exception_message"]

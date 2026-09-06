@@ -30,7 +30,7 @@
     why the session is waiting AT ALL — an auth-outage park recorded later has a
     different owner (the pool's recovery), and the box above is then the real
     reason. See SessionWaitingReason and tadasant/zimmer#642. %>
-<% waiting_reason = SessionWaitingReason.for(agent_session) %>
+<% waiting_reason = local_assigns.fetch(:waiting_reason) { SessionWaitingReason.for(agent_session) } %>
 <% spot_reason = waiting_reason&.spot %>
 <%# Gated on the ranking, not on the metadata keys: a box drawn without a ranked
     mechanism would be a box that bypassed the precedence, which is the bug. Both
@@ -39,7 +39,15 @@
     with one and not the other for this to lock out. %>
 <% if spot_reason && (hold_detail.present? || pause_detail.present?) %>
   <% paused_mid_run = spot_reason.key == SessionWaitingReason::SPOT_PAUSE || hold_detail.blank? %>
-  <% superseded_by_park = !waiting_reason.current?(spot_reason) %>
+  <%# Only a DORMANCY can supersede this box's prose, and the three branches gated
+    on this all say "auth-outage park" in so many words. Since #1040 the
+    highest-ranked mechanism can also be a turn queued for a worker, which is not a
+    dormancy and does not change who owns this hold — so it must not turn those
+    sentences on, or the page would tell a human about an outage that does not
+    exist and hide the re-check that does. `queued_turn_supersedes` is the
+    milder fact and gets its own line. %>
+<% superseded_by_park = !waiting_reason.current?(spot_reason) && waiting_reason.current.dormancy? %>
+<% queued_turn_supersedes = waiting_reason.current&.key == SessionWaitingReason::TURN_QUEUED %>
   <%# A third case shares the pause record: a session parked in the queue
       deliberately. Nothing interrupted it and no turn was lost, so it gets its
       own sentence rather than being described as a casualty of the ceiling. %>
@@ -74,6 +82,13 @@
         <p class="mt-1 text-sm text-amber-800"><%= paused_mid_run ? pause_detail : hold_detail %></p>
         <%# Said before the resume prose below, which describes THIS mechanism's
             owner and would otherwise send the reader to the wrong one. %>
+        <% if queued_turn_supersedes %>
+          <p class="mt-1 text-sm font-medium text-amber-900" data-spot-hold-queued-turn>
+            This is not why the session is waiting right now: its turn has been handed over and is
+            queued for a worker, so it runs as soon as a thread frees up. The hold below is the
+            record of how it got here.
+          </p>
+        <% end %>
         <% if superseded_by_park %>
           <p class="mt-1 text-sm font-medium text-amber-900" data-spot-hold-superseded>
             <% if spot_reason.demoted? %>

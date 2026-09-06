@@ -1447,22 +1447,21 @@ that does it has known limits:
   with a different worker cap has a different number, arrived at the same way. Connections are not
   what binds first, but they are not roomy either: 15 threads derive 97 required backends, which is
   the *entire* capacity of a `db-s-2vcpu-4gb` cluster — zero margin.
-- **A turn queued behind the worker pool still reads as a running session on the dashboard.**
-  `sessions.status = running` is stamped when a turn is *handed to* a session, not when a worker
-  starts it, so on a busy deployment a real share of the `running` rows are turns waiting for a slot.
-  They are excluded from both ceilings, and `RunningTurns` reports them so `/inference` can print
-  "17 more waiting for one of the 8 worker slots · not counted" — but every other status query,
-  including the session list, still calls them `running`
-  ([#957](https://github.com/tadasant/zimmer/issues/957)). So the ceiling figure on `/inference` is
-  legitimately smaller than the number of `running` sessions elsewhere in the UI, and the split is
-  the only thing that explains the gap.
+- **A turn is queued for a worker for as long as the `agents` lane is deep, and only the session
+  page says so.** Since [#1040](https://github.com/tadasant/zimmer/pull/1040) that turn reads
+  `waiting` rather than `running`, so the dashboard count and `/inference`'s ceiling agree — but
+  `waiting` is a state with four meanings (a spot hold, a ceiling pause, a quota park, a queued
+  turn), and only the session detail page and `get_session` name which one. A session list showing
+  forty `waiting` rows does not distinguish the ones about to run from the ones parked for hours.
 - **A `running` row asleep on its own wake is dropped from both ceilings, and nothing puts it back
   into `waiting`.** When a turn ends with something already in flight for the session — a queued
-  message the handoff path picks up, or a recovery job — the row stays `running` while the session
+  message the handoff path picks up, or a recovery job — the row can stay `running` while the session
   sleeps. Once nothing is left queued for it the ceilings stop counting it, which is the fix in #957,
   but the row itself still reads `running` on the dashboard and in every status query until its wake
-  fires. The counting is right;
-  the status is still misleading, and repairing it is a lifecycle change this did not make.
+  fires. #1040 narrowed this — the enqueued-message handoff now returns the session to `waiting`
+  when it hands the next turn to the queue — without closing it: a turn that ends with a *recovery*
+  job already in flight still leaves the row `running`. The counting is right; the status is still
+  misleading in that residue.
 - **The cooldown is the real cap on top-up frequency, and it is a blunt one.**
   `fleet_idle_min_fire_interval_minutes` exists because the session the event spawns re-arms the latch
   by running, so without it a quiet deployment would get one spawn every stretch, forever. With a

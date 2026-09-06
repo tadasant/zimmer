@@ -206,7 +206,13 @@ class FollowUpDraftPersistenceTest < ApplicationSystemTestCase
     # Wait on something the direct response guarantees rather than on the
     # optimistic message, which arrives over ActionCable and can be dropped if
     # the broadcast beats the subscription handshake.
-    assert_button "Queue Message"
+    #
+    # The composer's mode follows the TURN, not the submit: since #1040 a
+    # handed-over turn queues for a worker, and under the ActiveJob test adapter
+    # no `agents` job row exists for `Sessions::LiveTurn.underway?` to find — so
+    # the button stays "Send Message" and the emptied textarea is what the
+    # response guarantees.
+    assert_composer_value ""
 
     # Nothing should be left behind for the next load to restore.
     assert_empty stored_draft_keys_eventually,

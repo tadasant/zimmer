@@ -68,8 +68,8 @@ module Mcp
         **Rows are compact by default.** Each result carries what a listing is read for — status, runtime, pause, board visibility, genesis and scheduling class, precedence, and both timestamps — and omits six per-session fields: slug, category, repository, branch, the prompt preview and the MCP server list. That is what makes the advertised `per_page: 100` actually return: the full row is roughly twice the size, and a full page of them exceeds the tool-result limit. The omission is stated in every response, never silent. Pass `verbose: true` for the full rows, or `get_session` for one session in full — where the **Prompt** line is a preview of the first #{MAX_PROMPT_DISPLAY_LENGTH} characters.
 
         **Session statuses:**
-        - waiting: Session created, waiting to start
-        - running: Agent is actively executing
+        - waiting: Not executing. Either its turn has been handed over and is queued for one of Zimmer's agent worker threads (it starts on its own, usually within minutes), or it is dormant — held at the spot gate, paused for quota headroom, parked on an auth outage, or asleep on a wake it armed. `get_session` names which. A `waiting` session is still in flight; it is not waiting on you.
+        - running: An agent worker thread is executing a turn — the process is alive
         - needs_input: The agent's turn ended and the session is idle. Agents are instructed to archive themselves when they run to completion, so a session resting here is meant to be one that needs a human — it lacked the scope or tools to finish, it is holding a PR whose merge disposition is unsettled, a human invoked it to explore or ask something, or it hit a dangerous irreversible ambiguity. Check the session transcript, since a session can also land here having simply stopped.
         - failed: Session encountered an error
         - archived: Session completed and archived

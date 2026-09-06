@@ -262,8 +262,9 @@ class SessionRecoveryServiceTest < ActiveJob::TestCase
 
     @session.reload
 
-    # Session should be running now (resumed to process message)
-    assert_equal "running", @session.status
+    # Resumed to process the message: the turn is queued for a worker, which is
+    # what `waiting` means for a session that has just been handed one (#1040).
+    assert_equal "waiting", @session.status
 
     # First message should be deleted (processed)
     assert_equal 1, @session.enqueued_messages.pending.count
@@ -548,9 +549,10 @@ class SessionRecoveryServiceTest < ActiveJob::TestCase
       end
     end
 
-    # Verify session was auto-restarted (running, not needs_input)
+    # Verify session was auto-restarted (its turn queued for a worker, not left
+    # in needs_input)
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
 
     # Verify termination was attempted
     assert termination_called, "Expected process termination to be called"
@@ -848,8 +850,9 @@ class SessionRecoveryServiceTest < ActiveJob::TestCase
     end
 
     @session.reload
-    # Session should be running now (resumed to process message)
-    assert_equal "running", @session.status
+    # Resumed to process the message: the turn is queued for a worker, which is
+    # what `waiting` means for a session that has just been handed one (#1040).
+    assert_equal "waiting", @session.status
 
     # Pending message should be consumed
     assert_equal 0, @session.enqueued_messages.pending.count

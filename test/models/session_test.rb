@@ -4432,10 +4432,11 @@ class SessionTest < ActiveSupport::TestCase
     end
 
     session.reload
-    assert session.running?, "an idle session must be running before the job picks up the prompt"
+    assert session.waiting?,
+      "an idle session leaves needs_input and queues for a worker; `start` is what makes it running"
     assert_equal "please continue", session.metadata["pending_follow_up_prompt"]
     assert_equal job.job_id, session.running_job_id,
-      "running_job_id closes the window where a session is running with no tracked job"
+      "running_job_id closes the window where a session has a turn and no tracked job"
   end
 
   test "deliver_follow_up! clears the stale keys and leaves everything else alone" do
@@ -4490,7 +4491,7 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal sent_at, session.metadata["sent_message_at"]
   end
 
-  test "deliver_follow_up! stamps the prompt only after the session is running" do
+  test "deliver_follow_up! stamps the prompt only after the session has left needs_input" do
     session = sessions(:needs_input)
     seen_status = nil
 
@@ -4502,8 +4503,8 @@ class SessionTest < ActiveSupport::TestCase
       session.deliver_follow_up!("please continue")
     end
 
-    assert_equal [ "running", "please continue" ], seen_status,
-      "a reader that sees pending_follow_up_prompt must also see the session running"
+    assert_equal [ "waiting", "please continue" ], seen_status,
+      "a reader that sees pending_follow_up_prompt must also see the state the resume left behind"
   end
 
   test "deliver_follow_up! skips the pending stamp for the heartbeat drumbeat" do
@@ -4512,7 +4513,7 @@ class SessionTest < ActiveSupport::TestCase
     session.deliver_follow_up!("beat", stamp_pending_prompt: false)
 
     session.reload
-    assert session.running?
+    assert session.waiting?
     assert_nil session.metadata["pending_follow_up_prompt"],
       "a heartbeat must not be resurrected by SIGTERM recovery after its moment has passed"
   end
