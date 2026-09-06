@@ -403,8 +403,8 @@ that never existed — one legal value, `local_filesystem`, and no code path tha
 removed in [#172](https://github.com/tadasant/zimmer/issues/172) along with the unwired execution
 layer behind it. A create that still sends the key has it dropped by the permitted-params filter
 rather than rejected, so an older client keeps working. Every agent runs on the Zimmer host itself,
-unsandboxed; see [Agents run unsandboxed on the app
-host](/limitations/#agents-run-unsandboxed-on-the-app-host).
+unsandboxed — see
+[Agents run unsandboxed on the app host](/limitations/#agents-run-unsandboxed-on-the-app-host).
 
 The `AgentSessionJob` is enqueued only if `prompt` is present.
 

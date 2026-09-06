@@ -919,12 +919,12 @@ picked it. [#49](https://github.com/tadasant/zimmer/issues/49) removed the adver
 
 [#172](https://github.com/tadasant/zimmer/issues/172) finished the job by deleting the thing being
 advertised. `lib/execution/` — a Strategy-pattern execution layer with a `SessionExecutor`, a
-`Context`, a `Result`, a `CommandBuilder` and three providers — was a parallel implementation of the
-spawn path that nothing under `app/` ever called, and had drifted from the live path it mirrored
-(it archived a finished session; a live session that finishes a turn parks in `needs_input`). The
-layer is gone, and with it the `execution_provider` field: not a permitted create param, not in
-`session_json`, not in the MCP `start_session` schema, not on the Administrate panel. The column
-itself comes out in a follow-up deploy, per the two-phase drop rule.
+`Context`, a `Result`, a `CommandBuilder` and two providers behind an abstract base — was a parallel
+implementation of the spawn path that nothing under `app/` ever called, and had drifted from the
+live path it mirrored (it archived a finished session; a live session that finishes a turn parks in
+`needs_input`). The layer is gone, and with it the `execution_provider` field: not a permitted
+create param, not in `session_json`, not in the MCP `start_session` schema, not on the Administrate
+panel. The column itself comes out in a follow-up deploy, per the two-phase drop rule.
 
 None of that adds a sandbox, and nothing in the product offers one. Building one is a real project —
 a new runner, new images, credential brokering, cloud provisioning — and it is not in flight. If it

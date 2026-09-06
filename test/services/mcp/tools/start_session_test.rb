@@ -312,12 +312,21 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
   end
 
   # The enum was public on this tool, so an agent may still be composing a call from a
-  # stale schema. The SDK validates against the schema without `additionalProperties:
-  # false`, so an unknown argument is dropped: the spawn succeeds and the value goes
-  # nowhere, rather than failing a call that is right about everything else.
+  # stale schema. What decides whether that call survives is the SDK's schema validation
+  # (MCP::Server -> InputSchema#validate_arguments), which rejects an unknown argument
+  # only when the schema says `additionalProperties: false`. This one does not, and that
+  # is the whole compatibility promise — so it is asserted directly rather than inferred
+  # from the tool's own key-whitelisting, which is true by construction and would keep
+  # passing after someone tightened the schema.
+  test "the schema does not forbid additional properties, so a stale argument survives validation" do
+    assert_not Mcp::Tools::StartSession.input_schema.to_h.key?(:additionalProperties)
+  end
+
   test "a legacy execution_provider argument is ignored rather than fatal" do
+    result = nil
+
     assert_difference "Session.count", 1 do
-      @tool.call(
+      result = @tool.call(
         "agent_root" => "zimmer",
         "prompt" => "Fix the thing",
         "title" => "Sandbox please",
@@ -325,7 +334,7 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
       )
     end
 
-    assert_not Session.last.respond_to?(:execution_provider)
+    assert_includes result, "## Session Started Successfully"
   end
 
   # An explicit [] and an omitted key are two different requests, and only a root

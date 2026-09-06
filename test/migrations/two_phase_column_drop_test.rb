@@ -54,8 +54,9 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
       "deploy 2 of a two-phase drop removes it along with the column:\n  #{stale.join("\n  ")}"
   end
 
-  # Nothing in the repo sets `ignored_columns` yet, so the assertion above is
-  # vacuous and would stay vacuous even if the detection were broken.
+  # The assertion above went live when `Session` ignored `execution_provider` for
+  # phase 1 of #172, and goes vacuous again the moment that entry comes out. So the
+  # detection is pinned here against a stub instead, where it holds either way.
   test "stale_ignored_columns reports an entry whose column is gone, and not one mid-phase-1" do
     model = Struct.new(:name, :ignored_columns).new("Session", %w[blocked_by_session_id])
 
