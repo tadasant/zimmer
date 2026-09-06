@@ -179,16 +179,30 @@ between classes — a rewrite that resolves to the same class is not counted, be
 A session the change **promotes** is then started, rather than left to wait out a re-check the
 promotion made moot. Each one goes through
 [`Sessions::StartNow`](#starting-a-queued-session-now) — the same owner every other promotion path
-uses — once the trigger's save has committed, so a session held behind a deferred `AgentSessionJob`
-scheduled up to an hour out has that job pulled forward instead. `StartNow` **moves the queued job
-rather than enqueuing a second one**, which is what keeps one session to one turn. Until this, the
-change landed the class and nothing else, and the backlog an operator had just promoted went on
-waiting exactly as long as before
-([#423](https://github.com/tadasant/zimmer/issues/423)).
+uses — so a session held behind a deferred `AgentSessionJob` scheduled up to an hour out has that job
+pulled forward instead of a second one being enqueued beside it. Until this, the change landed the
+class and nothing else, and the backlog an operator had just promoted went on waiting exactly as long
+as before ([#423](https://github.com/tadasant/zimmer/issues/423)).
 
-A demotion starts nothing, and neither does a rewrite that resolves to the class the sessions already
-had. One session that cannot be started — it started on its own between the write and the release, or
-its queue could not be read — does not abandon the rest of the backlog.
+The release runs in `TriggerPromotionReleaseJob`, off the operator's request and after the trigger's
+save has committed. Both halves matter. Releasing is not a set operation the way the reclassification
+above is — each session needs its own queue read and its own reschedule — so a long backlog inside a
+`PATCH` would time out halfway through, leaving the operator unable to tell a failed release from a
+failed save. And the class has to be *visible* before any job is pulled forward, or the worker reads
+the session as still spot and holds it straight back.
+
+Four populations are left alone, and each is re-read at release time rather than trusted from the
+write:
+
+- **A demotion, or a rewrite that resolves to the class the sessions already had.** Nothing moved.
+- **A session that is no longer `waiting`, or whose class did not end up priority.** It started, was
+  moved by hand, or its promotion rolled back in between.
+- **A session carrying a spot-ceiling pause or an auth-outage park.** Each has its own resume owner,
+  and a `pause_into_spot_queue` park is a per-session choice a trigger-wide one must not override —
+  the same rule that leaves a hand-moved session's class where somebody put it.
+- **A session in a frozen category**, which is opted out of every bulk start.
+
+One session that cannot be started does not abandon the rest of the backlog.
 
 To move a session this does not reach — one that has started, or one from a different trigger — move
 that session: the **Make this session priority** button on its hold banner, the **Scheduling class**

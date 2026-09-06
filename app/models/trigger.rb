@@ -231,13 +231,15 @@ class Trigger < ApplicationRecord
 
   # …and then STARTS the ones that change released, rather than leaving them to
   # wait out a re-check the promotion made moot. See
-  # #start_promoted_spawned_sessions.
+  # #start_promoted_spawned_sessions and TriggerPromotionReleaseJob.
   #
-  # after_commit rather than after_update, and that is load-bearing: the release
-  # pulls each session's deferred job to `scheduled_at = now`, so a worker can
-  # pick it up the instant the row is visible. Inside the trigger's transaction
-  # the new class is not visible yet, and the job would read the session as still
-  # spot and hold it straight back — the promotion racing its own effect.
+  # after_commit rather than after_update, and that is load-bearing twice over.
+  # The release pulls each session's deferred job to `scheduled_at = now`, so a
+  # worker can pick it up the instant the row is visible — inside the trigger's
+  # transaction the new class is not visible yet, and the job would read the
+  # session as still spot and hold it straight back, the promotion racing its own
+  # effect. And the enqueue itself must not survive a rollback: a save that
+  # failed promoted nobody.
   after_commit :start_promoted_spawned_sessions, on: :update
 
   # A schedule that was switched off when its slot came round did not miss that
@@ -1051,62 +1053,29 @@ class Trigger < ApplicationRecord
     log_reclassification(written_ids, was: was, now: now)
   end
 
-  # Start the sessions this trigger's selector change just promoted, instead of
-  # leaving them to wait out a re-check the promotion made moot.
+  # Hand the sessions this trigger's selector change just promoted to the job
+  # that starts them.
   #
-  # #480 gave the selector reach: an operator flipping a trigger to priority
-  # during a quota backlog moves the backlog with it. It stopped one step short —
-  # the class landed and nothing else changed, so a session already HELD by the
-  # spot gate went on sitting behind a deferred `AgentSessionJob` scheduled up to
-  # an hour out. That is #423 on the last path still carrying it: the promotion is
-  # the advertised remedy, and until this it was a remedy that took an hour.
-  #
-  # Sessions::StartNow is the owner, not a second implementation of one. Every
-  # other promotion path — the Ranked view's Promote, `action_session`'s
-  # `change_scheduling_class`, `PATCH /api/v1/sessions/:id` — goes through it, and
-  # it is where the DOUBLE-START hazard is already answered: a held session's turn
-  # is already queued, so the job is RESCHEDULED to now (GoodJob's own
-  # `reschedule_job`, which takes the row lock) rather than a second one being
-  # enqueued alongside it. Two jobs against one session means two runtimes against
-  # one clone, and the concurrency guard only covers the window in which the first
-  # still holds `running_job_id`.
-  #
-  # Row at a time, where the reclassification itself is set operations. The cost
-  # is real — a handful of queries per session, in the operator's own request —
-  # and it is the price of not reimplementing the queue read and the reschedule
-  # here, where a second implementation would be the thing that eventually
-  # disagrees with StartNow about what a duplicate is. The population is this
-  # trigger's own un-started sessions, which is what #480 already enumerates and
-  # writes a log row for.
-  #
-  # Each call is rescued on its own: one session that cannot be read says nothing
-  # about the next, and a rescue around the loop would abandon the rest of a
-  # backlog the operator asked to release.
+  # Everything about WHICH sessions actually get started, and what the release
+  # refuses, lives in TriggerPromotionReleaseJob — including why the release is a
+  # job rather than the rest of this callback. This end is only responsible for
+  # not enqueuing when nothing moved, and for not taking a queue failure out on a
+  # save that already committed.
   def start_promoted_spawned_sessions
     ids = @promoted_spawned_session_ids
     @promoted_spawned_session_ids = []
     return if ids.blank?
 
-    # Re-read rather than trusted. A save that ROLLED BACK leaves its ids on this
-    # instance with no after_commit to drain them, so a later successful save
-    # would inherit them — and the `priority?` guard below is what makes that
-    # harmless: a session the rollback returned to spot is skipped.
-
-    Session.where(id: ids, status: "waiting").find_each do |session|
-      next unless session.priority?
-
-      result = Sessions::StartNow.call(session, actor: "a change to trigger \"#{name}\"")
-      next unless result.refused?
-
-      Rails.logger.info(
-        "[Trigger] Session #{session.id} was promoted by trigger #{id} but not started: #{result.message}"
-      )
-    rescue StandardError => e
-      Rails.logger.warn(
-        "[Trigger] Could not start session #{session.id} after trigger #{id} promoted it: " \
-        "#{e.class}: #{e.message}"
-      )
-    end
+    TriggerPromotionReleaseJob.perform_later(id, ids)
+  rescue StandardError => e
+    # The trigger's write is committed and correct; a queue that would not take
+    # the follow-up must not turn that into a 500 for the operator. The sessions
+    # keep the class and fall back to the behaviour before this existed — they
+    # start on their own next re-check.
+    Rails.logger.warn(
+      "[Trigger] Could not enqueue the release for trigger #{id}'s promoted sessions: " \
+      "#{e.class}: #{e.message}"
+    )
   end
 
   # An audit line on every session the sweep wrote, in one INSERT — including the

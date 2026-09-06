@@ -73,13 +73,17 @@
             Waiting in the spot queue
           <% elsif paused_mid_run %>
             Paused mid-run for quota headroom
-          <% elsif promoted %>
-            Spot hold no longer applies — this session is priority
+          <%# BELOW the overdue headline, not above it. A promoted session whose
+              re-check was lost is BOTH, and "the gate no longer applies" is the
+              lesser fact: the session is not waiting on the gate, it is waiting
+              on a job that never ran, and only the sweep is coming for it. %>
           <% elsif hold&.overdue? %>
             <%# The headline stops claiming a live ceiling once the re-check it
                 rests on has come and gone: at that point the session is not
                 being held by anything, it is waiting on a job that never ran. %>
             Spot hold stalled — its re-check never fired
+          <% elsif promoted %>
+            Spot hold no longer applies — this session is priority
           <% elsif hold_reason == "fleet_at_cap" %>
             Held for a free session slot
           <% elsif held_turn == SpotSessionHold::TURN_RESUME %>
@@ -150,9 +154,15 @@
           <% elsif paused_mid_run %>
             it was already running when a window reached its target, and it resumes on its own
             once utilization falls <%= SpotGateService::RESUME_MARGIN_PCT %> points below it.
+          <% elsif promoted && hold&.overdue? %>
+            <%# The gate is done with it AND its turn is gone. Naming only the
+                first half would promise a run that nothing is going to perform. %>
+            the gate is done with it, but the re-check that was carrying its turn never
+            fired — so it is waiting on Zimmer's spot-hold sweep to put a turn back on it,
+            not on the gate.
           <% elsif promoted %>
-            the gate is done with it: its queued turn runs without being asked again, and
-            this record is cleared the moment it does.
+            the gate is done with it: the turn it already has queued runs without being
+            asked again, and this record is cleared the moment it does.
           <% elsif held_turn == SpotSessionHold::TURN_RESUME %>
             the turn it was woken for is queued and runs on its own once the gate lets it.
           <% else %>
