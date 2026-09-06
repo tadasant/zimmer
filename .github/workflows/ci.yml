@@ -42,9 +42,11 @@ jobs:
         run: bin/rubocop -f github --parallel
       # The two-phase-drop guard is Rails-free by design, so it runs here as
       # well as inside `bin/rails test` — this job has no Postgres and no Redis,
-      # and answers in seconds instead of after a full suite boot. See
-      # docs/operate/deploying.md, "Dropping a column takes two deploys".
-      - name: Two-phase column drop guard
+      # and answers in seconds instead of after a full suite boot. It covers
+      # forward column drops, column and table renames, and table drops. See
+      # docs/operate/deploying.md, "Dropping a column takes two deploys" and
+      # "Renames and table drops expand before they contract".
+      - name: Migration drop/rename guard
         run: |
           bundle exec ruby -r./test/support/two_phase_column_drop_guard \
             -e 'report = TwoPhaseColumnDropGuard.report; abort(report) unless report.empty?'
