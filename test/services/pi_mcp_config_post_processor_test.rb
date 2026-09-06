@@ -14,7 +14,7 @@ class PiMcpConfigPostProcessorTest < ActiveSupport::TestCase
     @session = sessions(:active_session)
     @session.update!(
       mcp_servers: [ "playwright-custom" ],
-      metadata: { "agent_root_key" => "agent-orchestrator" }
+      metadata: { "agent_root_key" => "general-agent" }
     )
     @working_dir = Dir.mktmpdir("pi-mcp-config")
     @mock_fs = MockFileSystemAdapter.new

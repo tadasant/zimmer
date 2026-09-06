@@ -1,6 +1,6 @@
 ---
 title: Agent roots
-description: What a root is, the twelve that ship, subagent roots, and how a root's defaults seed a session.
+description: What a root is, the ten that ship, subagent roots, and how a root's defaults seed a session.
 sidebar:
   order: 3
 ---
@@ -81,7 +81,7 @@ Two things are deliberately outside that rule:
   declare `default_subagent_roots`) are added by `SelfSessionInjector`, not by this resolution. A
   session spawned with `mcp_servers: []` still receives them, by design.
 
-## The twelve roots that ship
+## The ten roots that ship
 
 | Root | Invocable | Repo | Notes |
 | --- | --- | --- | --- |
@@ -90,9 +90,7 @@ Two things are deliberately outside that rule:
 | `zimmer-router` | ❌ | `tadasant/zimmer` | Deprecated alias of `zimmer-orchestrator`, kept so sessions created before the rename still resolve their root ([how](#the-router-roots-two-names)). Nothing new is created against it. |
 | `general-agent` | ✅ | `tadasant/zimmer` | The catch-all. `AgentRootsConfig::DEFAULT_ROOT`. |
 | `fleet-maintenance` | ❌ | `tadasant/zimmer` | The deployment's own scheduler. The `quota_available` trigger dispatches it; it runs `awaken-waiting-sessions` and starts parked spot work in precedence order. Defaults to the `zimmer-fleet` server, which is the only thing that gives it the tools that skill calls. |
-| `agent-orchestrator` | ✅ | `tadasant/zimmer-catalog` | Scoped to `agents/agent-orchestrator` |
-| `agents` | ✅ | `tadasant/zimmer-catalog` | Scoped to `agents` — the catalog artifacts |
-| `catalog-management` | ❌ | `tadasant/zimmer-catalog` | Lead root; fans out to the four below |
+| `catalog-management` | ❌ | `tadasant/zimmer` | Lead root; fans out to the four below. Maintains this repo's own AIR catalog, and is the catalog's worked example of `default_subagent_roots`. |
 | `catalog-mgmt-research` | ❌ | ↳ subagent phase | `default_in_roots: [catalog-management]`, model `sonnet` |
 | `catalog-mgmt-configs` | ❌ | ↳ subagent phase | same |
 | `catalog-mgmt-proctor` | ❌ | ↳ subagent phase | same |
@@ -102,26 +100,23 @@ That count, this table's rows, and the Invocable column are asserted against a l
 `test/docs/roots_docs_catalog_test.rb`, so adding a root to `roots.json` without updating them fails
 CI rather than leaving the page quietly stale.
 
-:::danger[Seven roots point at a repository that does not exist]
-`agent-orchestrator`, `agents`, `catalog-management`, and the four `catalog-mgmt-*` phases all
-have `"url": "https://github.com/tadasant/zimmer-catalog.git"`. **That repository does not
-exist** (`gh repo view` 404s). Selecting any of them can only ever fail at
-`GitCloneService.create_clone`.
+:::note[Every root here clones]
+Until [#67](https://github.com/tadasant/zimmer/issues/67), seven of these pointed at
+`https://github.com/tadasant/zimmer-catalog.git` — a repository that does not exist, so selecting
+one could only ever fail at `GitCloneService.create_clone`. They were a leftover from the monorepo
+split, when Zimmer's Rails app lived at `agents/agent-orchestrator` in a larger catalog repo and the
+AIR artifacts lived at `agents/`.
 
-They are a leftover from the monorepo split. Fixing them is not a matter of repointing the URL:
-`AgentRootsConfig#find_for_session` resolves a root *backwards* from `(url, subdirectory)`, so
-giving them all the same real URL with no subdirectory would make every one of them
-indistinguishable from the roots already at that URL — and `Trigger#heal_stale_agent_root!` and `Session#resolved_agent_root` would
-then silently resolve every one of them to `zimmer`. They need to be **removed** (with their
-tests and the two plugins whose `default_in_roots` names `agent-orchestrator`), or given genuinely
-distinct locations. That is its own change.
+Two of the seven — `agent-orchestrator` and `agents` — were `zimmer` under its pre-rename name and
+were removed; `agent-orchestrator` is also where the duplicate `display_name` "Zimmer" came from.
+The other five kept their names and moved to `tadasant/zimmer`, which is where the catalog they
+describe maintaining actually lives.
 
-`roots.json` also gives `agent-orchestrator` the `display_name` "Zimmer" — the *same* display name
-as the `zimmer` root — so the two are already indistinguishable in a picker.
-
-**The roots that actually work today:** `zimmer`, `zimmer-orchestrator` (the quick-router target)
-and its `zimmer-router` alias, and `general-agent` (the default).
-Tracked in [#67](https://github.com/tadasant/zimmer/issues/67).
+One consequence to know about: `AgentRootsConfig#find_for_session` resolves a root *backwards* from
+`(url, subdirectory)`, and the ten roots that ship occupy only two distinct locations. That fallback
+is first-match, so it cannot tell `catalog-management` from `zimmer`. It is only reached by rows that
+never stored an `agent_root_key` — everything created through `create_from_agent_root!` carries the
+key, and the key wins.
 :::
 
 ## The router root's two names

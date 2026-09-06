@@ -2196,7 +2196,7 @@ registered hook or skill with no body resolves clean, slips past Zimmer's stderr
 silently skipped by the adapter with a warning nobody reads.
 
 `git-push-ci-reminder` sat that way for a while — registered in `hooks/hooks.json`, bundled into the
-`ci-workflow` plugin, `default_in_roots: ["agent-orchestrator"]`, and with no directory behind it
+`ci-workflow` plugin, `default_in_roots: ["zimmer"]`, and with no directory behind it
 ([#65](https://github.com/tadasant/zimmer/issues/65)). The body exists now, and the test suites for
 `SkillsConfig` and `HooksConfig` assert every registered artifact really has one — but that is a
 Zimmer-side test, not something AIR enforces.
@@ -2304,14 +2304,22 @@ fresh container throw away its baked-in AIR install and re-download the CLI on a
 Fixed in [#68](https://github.com/tadasant/zimmer/issues/68), which added that parity test. The
 duplication above is what the test guards rather than removes.
 
-### Five roots point at a different repository
+### Seven roots pointed at a repository that does not exist
 
-`agent-orchestrator`, `agents`, `catalog-management`, and the four `catalog-mgmt-*` phases all have
-`"url": "https://github.com/tadasant/zimmer-catalog.git"` — a separate repo not part of this project.
-`agent-orchestrator` also has `display_name: "Zimmer"`, the same as the `zimmer` root, making them
-indistinguishable in a picker. That looks like a bug.
+`agent-orchestrator`, `agents`, `catalog-management`, and the four `catalog-mgmt-*` phases all carried
+`"url": "https://github.com/tadasant/zimmer-catalog.git"`. That repository does not exist — `gh repo
+view` 404s it even for the account that owns this one — so picking any of them could only fail at
+`GitCloneService.create_clone`. `agent-orchestrator` also carried `display_name: "Zimmer"`, the same
+as the `zimmer` root, making the two indistinguishable in the new-session picker.
 
-Tracked in [#67](https://github.com/tadasant/zimmer/issues/67).
+All seven were leftovers from the monorepo split, when the Rails app lived at
+`agents/agent-orchestrator` and the AIR artifacts at `agents/` inside a larger catalog repo.
+
+Fixed in [#67](https://github.com/tadasant/zimmer/issues/67): `agent-orchestrator` and `agents` were
+`zimmer` under its pre-rename name and were removed, which also retired the duplicate display name;
+`catalog-management` and its four phases kept their names and moved to `tadasant/zimmer`, the repo
+that actually holds the catalog they maintain. The catalog now ships ten roots and every one of them
+clones. What the fix did *not* remove is the reverse-lookup ambiguity below — it widened it.
 
 ### The baseline orchestrator root can't spawn downstream sessions out of the box
 
@@ -2356,12 +2364,19 @@ That is the deliberate price of not rewriting rows. Backfilling `token_usages` a
 `sessions.metadata` would collapse the two, but it would also erase the record of which name a
 session was actually created under, and the alias exists precisely so that record stays resolvable.
 
-### `zimmer`, `general-agent`, and the orchestrator root are indistinguishable to the reverse lookup
+### Every root is indistinguishable to the reverse lookup
 
-Five roots have `"url": "https://github.com/tadasant/zimmer.git"` and no `subdirectory`: `zimmer`,
-`general-agent`, `fleet-maintenance`, `zimmer-orchestrator` and its `zimmer-router` alias. The last
-two are separate catalog entries with byte-identical coordinates, which is what makes the alias work
-— and also what makes them, like the other three, indistinguishable to the reverse lookup.
+All ten roots have `"url": "https://github.com/tadasant/zimmer.git"` and no `subdirectory`: `zimmer`,
+`general-agent`, `fleet-maintenance`, `zimmer-orchestrator` and its `zimmer-router` alias,
+`catalog-management`, and the four `catalog-mgmt-*` phases. The alias pair are separate catalog
+entries with byte-identical coordinates, which is what makes the alias work — and also what makes
+them, like the rest, indistinguishable to the reverse lookup.
+
+It was five of twelve before [#67](https://github.com/tadasant/zimmer/issues/67); repointing the
+`catalog-mgmt-*` family off the repository that does not exist and onto this one made it ten of ten.
+That is a wider blast radius for the same latent fallback, and it was the accepted price of every
+root being clonable — a root at a real URL that resolves ambiguously beats a root at a URL that
+resolves to nothing.
 
 `AgentRootsConfig#find_for_session` prefers `metadata["agent_root_key"]`, but its fallback matches on
 `(url, subdirectory)` and returns the first hit — `zimmer`. Sessions created through
@@ -6202,8 +6217,6 @@ Things the code doesn't answer, flagged here rather than guessed at:
   it or may fall back to db 0. ([#20](https://github.com/tadasant/zimmer/issues/20))
 - Does any real MCP server accept the fallback `client_id: "zimmer"`? It looks like it would only work
   against a server that ignores `client_id` entirely. ([#64](https://github.com/tadasant/zimmer/issues/64))
-- What is `tadasant/zimmer-catalog`, and are the five roots pointing at it still live? It's a separate
-  repo this documentation can't see. ([#67](https://github.com/tadasant/zimmer/issues/67))
 - Is `config_preparer_class` (a `RuntimeRegistry::Bundle` slot) meant to do something? It's `nil` for
   every runtime and nothing reads it. ([#97](https://github.com/tadasant/zimmer/issues/97))
 - Does the macOS Keychain path in `CodexMcpCredentialWriter` work? It has never been runtime-verified
