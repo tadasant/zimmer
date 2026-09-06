@@ -690,4 +690,59 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     end
     assert_match(/Invalid spot policy/, error.message)
   end
+
+  # --- the audit line ---------------------------------------------------------
+
+  # The counterpart of the controller tests: a change an agent makes has to be
+  # recorded and attributed too, or "who moved the cap" is answerable for a human
+  # and not for a session.
+  test "set_gating records the change, naming the tool and the action" do
+    action(action: "set_gating", max_concurrent_sessions: 12)
+
+    entries = capture_log_entries { action(action: "set_gating", max_concurrent_sessions: 8) }
+
+    line = entries.map(&:last).find { |message| message.include?("[FleetPolicy]") }
+    assert line, "the tool moved the cap and nothing recorded it"
+    assert_includes line, "spot_max_concurrent_sessions 12 -> 8"
+    assert_includes line, "#{Mcp::Tools::ActionSpotPolicy::CHANGE_SOURCE} set_gating"
+  end
+
+  test "set_top_up records the change, naming the tool and the action" do
+    action(action: "set_top_up", max_running_sessions: 12)
+
+    entries = capture_log_entries { action(action: "set_top_up", max_running_sessions: 8) }
+
+    line = entries.map(&:last).find { |message| message.include?("[FleetPolicy]") }
+    assert line, "the tool moved the top-up ceiling and nothing recorded it"
+    assert_includes line, "fleet_idle_max_sessions 12 -> 8"
+    assert_includes line, "#{Mcp::Tools::ActionSpotPolicy::CHANGE_SOURCE} set_top_up"
+  end
+
+  test "each genesis action records the change under its own name" do
+    demote = capture_log_entries { action(action: "demote_genesis", genesis: "web_ui") }
+    promote = capture_log_entries { action(action: "promote_genesis", genesis: "web_ui") }
+
+    demoted = demote.map(&:last).find { |message| message.include?("[FleetPolicy]") }
+    promoted = promote.map(&:last).find { |message| message.include?("[FleetPolicy]") }
+    assert demoted, "the tool reclassified a genesis and nothing recorded it"
+    assert promoted, "the tool put a genesis back and nothing recorded it"
+    assert_includes demoted, "genesis_class_overrides"
+    assert_includes demoted, "#{Mcp::Tools::ActionSpotPolicy::CHANGE_SOURCE} demote_genesis"
+    assert_includes promoted, "#{Mcp::Tools::ActionSpotPolicy::CHANGE_SOURCE} promote_genesis"
+  end
+
+  # One API key is shared by the whole fleet, so the tool name alone narrows a
+  # change to "some agent" — which is the search this record exists to replace.
+  test "a write from a session names that session" do
+    tool = Mcp::Tools::ActionSpotPolicy.new(
+      context: Mcp::Context.new(base_url: "http://test.host", session_id: 4242)
+    )
+
+    entries = capture_log_entries do
+      tool.call({ "action" => "set_gating", "max_concurrent_sessions" => 7 })
+    end
+
+    line = entries.map(&:last).find { |message| message.include?("[FleetPolicy]") }
+    assert_includes line, "session #4242"
+  end
 end
