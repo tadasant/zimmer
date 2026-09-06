@@ -57,15 +57,17 @@ class Mcp::Tools::GateDecisionToolsTest < ActiveSupport::TestCase
     assert_includes output, "**Id:** #{pr.id}"
     assert_includes output, "**Id:** #{issue.id}"
     assert_includes output, "2 match(es)"
-    assert_includes output, "artifact_url~781"
 
     narrower = @search.call("artifact_query" => "pull/781")
     assert_includes narrower, "**Id:** #{pr.id}"
     assert_not_includes narrower, "**Id:** #{issue.id}"
 
+    # The schema promises "case-insensitive", so the promise is what is pinned.
+    assert_includes @search.call("artifact_query" => "PULL/781"), "**Id:** #{pr.id}"
+
     schema = Mcp::Tools::SearchGateDecisions.input_schema.to_h.deep_stringify_keys
     assert_equal "string", schema.dig("properties", "artifact_query", "type")
-    assert_includes Mcp::Tools::SearchGateDecisions.description, "artifact_query"
+    assert_includes Mcp::Tools::SearchGateDecisions.description, "{ artifact_query:"
   end
 
   test "search summarises by default and returns the whole entry on request" do
