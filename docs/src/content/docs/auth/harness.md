@@ -1058,14 +1058,20 @@ Three exits mean Zimmer has no runway left: a quota hit with no rotation target
 recovery whose rotation finds the same thing, and an auth recovery that exhausts its retry budget.
 All route to `AuthOutageParkService`, which:
 
-1. Writes a session log naming the outage.
-2. Sends a push notification.
-3. Records `auth_outage_reason` / `auth_outage_parked_at` on the session, which renders the amber
-   outage banner on the session page.
-4. Puts the session to sleep. A session still `running` is marked `pending_sleep` and carried
-   `needs_input` → `waiting` by the pause callback; one already at rest is slept outright. Either
-   way it lands in `waiting` rather than `needs_input`, so the heartbeat sweep anchors its cadence
-   instead of nudging it back into the same wall.
+1. Records `auth_outage_reason` / `auth_outage_parked_at` on the session — which renders the amber
+   outage banner on the session page — **and puts it to sleep, in the same write**. A session still
+   `running` is marked `pending_sleep` and carried `needs_input` → `waiting` by the pause callback;
+   one already at rest is slept outright, inside one transaction with the record. Either way it
+   lands in `waiting` rather than `needs_input`, so the heartbeat sweep anchors its cadence instead
+   of nudging it back into the same wall.
+2. Writes a session log naming the outage.
+3. Sends a push notification.
+
+The dormancy and the record of it are one statement because a park that marked a session to sleep
+and then failed to say why produced a session dormant in `waiting` with no `exit_status` and no park
+reason — [#608](https://github.com/tadasant/zimmer/issues/608). The announcement in (2) and (3) runs
+after the park is committed and is separately rescued, so a failure there cannot report a parked
+session as unparked.
 
 ### One predicate for "is the pool drained"
 

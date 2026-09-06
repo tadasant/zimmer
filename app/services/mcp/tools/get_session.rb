@@ -185,11 +185,11 @@ module Mcp
       end
 
       # The fallback for a dormant session none of the three park mechanisms
-      # claims. Most of those are ordinary — an agent asleep on a wake it armed —
-      # and the line is short. The one that matters is `unattributed`: a session
-      # that left `running` with nothing on the record naming a cause used to
-      # render NOTHING here, which is exactly what made tadasant/zimmer#608
-      # invisible to the caller that had just woken it.
+      # claims. Most are ordinary — an agent asleep on a wake it armed — and get one
+      # short line. The one that matters is `unattributed`: without it a session that
+      # left `running` with nothing on the record naming a cause renders no
+      # waiting-reason line at all, which is what makes a bounced wake invisible to
+      # the caller that just issued it (tadasant/zimmer#608).
       def stop_record_lines(session)
         return [] unless session.waiting?
 
@@ -202,9 +202,9 @@ module Mcp
 
         if reason == Sessions::StopRecord::UNATTRIBUTED
           [
-            "- **Went dormant with no attributable cause#{" at #{at}" if at}.** #{detail} " \
-            "Treat a wake of this session as unconfirmed until it is re-read: this is the signature " \
-            "of a start that un-did itself."
+            "- **Went dormant with no attributable cause#{" at #{at}" if at}.** " \
+            "#{"#{detail} " if detail}Treat a wake of this session as unconfirmed until it is " \
+            "re-read: this is the signature of a start that un-did itself."
           ]
         else
           [ "- **Dormant because:** `#{reason}`#{" (recorded #{at})" if at}. #{detail}".rstrip ]

@@ -780,9 +780,7 @@ module SessionStateMachine
   # a session that is stuck, not one that is resting — and that is exactly the
   # session a refresh, and StrandedSleepRescue, exist to rescue.
   def awaiting_scheduled_wake?
-    conditions = pending_one_time_wake_conditions.to_a
-    watched = self.class.watched_session_states(conditions)
-    conditions.any? { |condition| self.class.one_time_wake_pending?(condition, watched_states: watched) }
+    armed_scheduled_wake?
   rescue ActiveRecord::ActiveRecordError => e
     Rails.logger.error(
       "[SessionStateMachine] Failed to check pending wake-up triggers for session #{id}: #{e.message}"
@@ -790,6 +788,18 @@ module SessionStateMachine
     # Fail safe: treat an unreadable trigger table as "asleep on purpose" so a
     # refresh never wakes a sleeping session on the strength of a DB error.
     true
+  end
+
+  # The same question as #awaiting_scheduled_wake?, asked WITHOUT its fail-safe.
+  #
+  # The fail-safe above exists because acting on a DB error must never wake a
+  # sleeping session. A DIAGNOSTIC caller wants the opposite bias: attributing a
+  # stop to a wake nobody could read is exactly the borrowed explanation
+  # Sessions::StopRecord refuses to write. So this raises, and the caller chooses.
+  def armed_scheduled_wake?
+    conditions = pending_one_time_wake_conditions.to_a
+    watched = self.class.watched_session_states(conditions)
+    conditions.any? { |condition| self.class.one_time_wake_pending?(condition, watched_states: watched) }
   end
 
   # Whether this session is paused until a wall-clock time it has not reached.
@@ -2180,7 +2190,12 @@ module SessionStateMachine
   # Clearing on resume makes the user's explicit "keep this active" action
   # win over any stale auto-sleep intent.
   def clear_pending_sleep
-    return unless metadata&.dig("pending_sleep") == true
+    # The stamp is dropped whenever it is present, not only alongside a live flag.
+    # SessionRecoveryService strips `pending_sleep` on its own, so a resume that
+    # keyed on the flag would leave the stamp on a RUNNING session — where it would
+    # then name the cause of some later, unrelated stop.
+    return unless metadata&.dig("pending_sleep") == true ||
+                  metadata&.key?(Sessions::StopRecord::PENDING_SLEEP_REASON)
 
     remove_metadata!("pending_sleep", Sessions::StopRecord::PENDING_SLEEP_REASON)
     Rails.logger.info "[SessionStateMachine] Cleared pending_sleep on resume for session #{id}"
