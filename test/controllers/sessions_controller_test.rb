@@ -1312,7 +1312,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   # Undo archive action tests
-  test "should undo archive within 5-second window" do
+  test "should undo archive within the undo window" do
     session = sessions(:failed)
     session.update!(status: :archived, archived_at: 1.second.ago)
 
@@ -1325,9 +1325,11 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Session restored from trash.", flash[:notice]
   end
 
-  test "should reject undo archive after 5-second window" do
+  # The window is read from the constant on purpose: this test is about the
+  # window closing at all, not about the number it closes at.
+  test "should reject undo archive after the undo window" do
     session = sessions(:failed)
-    session.update!(status: :archived, archived_at: 6.seconds.ago)
+    session.update!(status: :archived, archived_at: (SessionStateMachine::UNDO_ARCHIVE_WINDOW + 1.second).ago)
 
     post undo_archive_session_url(session)
     session.reload
@@ -1451,7 +1453,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "undo_archive turbo_stream streams the expiry alert instead of redirecting" do
     session = sessions(:failed)
-    session.update!(status: :archived, archived_at: 6.seconds.ago)
+    session.update!(status: :archived, archived_at: (SessionStateMachine::UNDO_ARCHIVE_WINDOW + 1.second).ago)
 
     post undo_archive_session_url(session), as: :turbo_stream
 
@@ -1459,6 +1461,37 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert session.reload.archived?
     assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
     assert_match(/The undo window has expired/, response.body)
+  end
+
+  # === The toast and the window it offers are one fact ===
+  #
+  # #1036: the toast carrying the Undo button lived 30 seconds while the
+  # controller accepted the click for 5, so Undo was already refusing for 25 of
+  # the 30 seconds it was on screen. A test that pinned the controller's window
+  # to a number would not have caught that. This one reads the duration off the
+  # rendered toast and asks the controller to honor a click at the last instant
+  # that toast is still up — so the two cannot drift apart again in silence.
+  test "undo_archive still honors the click at the instant the Undo toast disappears" do
+    session = sessions(:failed)
+
+    post archive_session_url(session), as: :turbo_stream
+    assert_response :success
+    toast_ms = response.body[/data-flash-duration-value="(\d+)"/, 1].to_i
+    assert_match(/>Undo</, response.body, "the archive toast should carry the Undo button")
+    assert toast_ms.positive?, "the archive toast carried no flash duration"
+
+    archived_at = session.reload.archived_at
+    assert_not_nil archived_at
+
+    # `undo_archive` rejects strictly *after* the window, so the click landing at
+    # exactly `toast_ms` is honored only while the toast outlives nothing.
+    travel_to archived_at + toast_ms.fdiv(1000).seconds, with_usec: true do
+      post undo_archive_session_url(session), as: :turbo_stream
+    end
+
+    assert_response :success
+    assert_not session.reload.archived?, "Undo was refused while its own button was still on screen"
+    assert_match(/Session restored from trash\./, response.body)
   end
 
   test "bulk_archive turbo_stream streams the count into the flash target" do

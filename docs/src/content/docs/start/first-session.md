@@ -114,8 +114,7 @@ one. See [MCP server OAuth](/auth/mcp-oauth/).
 | **Heartbeat** | Auto-nudge this session every N seconds while it's in `needs_input` |
 | **Archive** | Move to trash; the clone is reaped after an undo window |
 
-:::caution[The Undo toast doesn't render]
-[Issue #12](https://github.com/tadasant/zimmer/issues/12). The archive response never renders the
-flash, so there's no Undo button — even though the endpoint works. The undo window is unusable from
-the UI.
-:::
+Archiving leaves a toast with an **Undo** button on it. The button works for as long as the toast is
+up — 30 seconds — and the two are the same number by construction, so one cannot outlive the other
+(see [the undo window](/sessions/lifecycle/#the-undo-window-is-one-number)). After that, **Restore**
+does the same thing with no time limit.

@@ -45,7 +45,7 @@
 # looking at, and standing a fork up for one is the waste those two refusals
 # exist to prevent. A FORCED generation needs no clone at all and asks neither
 # question — DeferredCloneCleanupJob deletes an archived session's clone once the
-# undo window (10 seconds) closes, and an archived session is exactly the one
+# undo window closes, and an archived session is exactly the one
 # someone opens later to ask what happened.
 class SessionStatusSummaryGenerator
   # Marks a session as a summary fork. Read by SessionStateMachine (to route the
