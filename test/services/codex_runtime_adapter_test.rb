@@ -542,14 +542,91 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     assert_equal "exec", spawned[:command][1]
   end
 
-  test "spawn uses a process group and detaches stdin/stdout" do
+  test "spawn uses a process group and detaches stdin" do
     @adapter.execute(prompt: "go", session_id: "uuid", working_dir: @test_dir)
 
     spawned = @mock_process_manager.spawned_processes.last
     assert_equal true, spawned[:options][:pgroup]
     assert_equal @test_dir, spawned[:options][:chdir]
     assert_equal File::NULL, spawned[:options][:in]
-    assert_equal File::NULL, spawned[:options][:out]
+  end
+
+  # ===== --json EVENT STREAM CAPTURE (#109) =====
+
+  test "spawn captures stdout instead of discarding it" do
+    # The regression this guards: `out: File::NULL` threw away the --json event
+    # stream Codex was already being asked to print, leaving the transcript
+    # pipeline to infer from the shared rollout tree which file was ours.
+    @adapter.execute(prompt: "go", session_id: "uuid", working_dir: @test_dir)
+
+    out = @mock_process_manager.spawned_processes.last[:options][:out]
+    refute_equal File::NULL, out, "stdout must no longer be discarded"
+    assert_kind_of IO, out
+  end
+
+  test "spawn registers the event log in the working directory" do
+    @adapter.execute(prompt: "go", session_id: "uuid", working_dir: @test_dir)
+
+    assert @mock_file_system.exists?(File.join(@test_dir, "codex_events.jsonl")),
+      "the --json event log should be created alongside codex_stderr.log"
+  end
+
+  test "resume captures stdout too" do
+    @adapter.resume(session_id: "uuid", working_dir: @test_dir, prompt: "more")
+
+    out = @mock_process_manager.spawned_processes.last[:options][:out]
+    refute_equal File::NULL, out
+    assert @mock_file_system.exists?(File.join(@test_dir, "codex_events.jsonl"))
+  end
+
+  test "event_log_path joins the working directory and refuses a blank one" do
+    assert_equal File.join("/clone/dir", "codex_events.jsonl"),
+      CodexRuntimeAdapter.event_log_path("/clone/dir")
+    assert_nil CodexRuntimeAdapter.event_log_path(nil)
+    assert_nil CodexRuntimeAdapter.event_log_path("")
+  end
+
+  test "spawn_artifact_paths names both the stderr log and the event log" do
+    # ForkSessionService sheds these so a fork does not inherit the source
+    # session's Codex thread and resume the wrong conversation.
+    assert_equal [
+      File.join("/clone/dir", "codex_stderr.log"),
+      File.join("/clone/dir", "codex_events.jsonl")
+    ], CodexRuntimeAdapter.spawn_artifact_paths("/clone/dir")
+  end
+
+  # End-to-end through the REAL process manager and the REAL file system: a
+  # child process's stdout has to actually land in codex_events.jsonl, and
+  # CodexEventStream has to read the thread id back out of it. Everything above
+  # runs against the mocked spawn seam, which cannot show that the redirect
+  # works — only that it was requested.
+  test "a spawned process's JSONL stdout lands in the event log and yields its thread id" do
+    thread_id = "01a07412-4d9a-78f0-aad9-2cde1bf7586e"
+    # The first two lines of a real `codex exec --json` run (codex-cli 0.146.0).
+    stream = %({"type":"thread.started","thread_id":"#{thread_id}"}\n{"type":"turn.started"}\n)
+
+    spawn_real_process_printing(stream)
+
+    event_log = File.join(@test_dir, "codex_events.jsonl")
+    assert File.exist?(event_log), "the child's stdout should have been written to #{event_log}"
+    assert_equal stream, File.read(event_log)
+
+    read_back = CodexEventStream.new(working_directory: @test_dir)
+    assert_equal thread_id, read_back.thread_id
+    assert_equal %w[thread.started turn.started], read_back.events.map { |e| e["type"] }
+  end
+
+  test "each spawn truncates the event log so a stale thread id is never read back" do
+    File.write(
+      File.join(@test_dir, "codex_events.jsonl"),
+      %({"type":"thread.started","thread_id":"11111111-1111-1111-1111-111111111111"}\n)
+    )
+
+    fresh = "01a07412-4d9a-78f0-aad9-2cde1bf7586e"
+    spawn_real_process_printing(%({"type":"thread.started","thread_id":"#{fresh}"}\n))
+
+    assert_equal fresh, CodexEventStream.new(working_directory: @test_dir).thread_id,
+      "a new spawn must not leave the previous run's thread id readable"
   end
 
   test "spawn clears inherited database and bundler env vars" do
@@ -775,6 +852,23 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
   end
 
   private
+
+  # Spawn a REAL child through the REAL process manager and file system, standing
+  # a shell in for `codex`: the subject is the stdout plumbing, not the CLI. Blocks
+  # until the child has exited, so the event log is complete on return.
+  def spawn_real_process_printing(stdout)
+    adapter = CodexRuntimeAdapter.new
+    adapter.process_manager = SystemProcessManager.new
+    adapter.file_system = RealFileSystemAdapter.new
+
+    # Not merely unstubbed: the delegated parent has to be absent, or the command
+    # is wrapped in a cgroup entry that the printf below is not.
+    without_delegated_cgroup_parent do
+      result = adapter.send(:spawn_process, [ "printf", "%s", stdout ], working_dir: @test_dir)
+      Process.waitpid(result[:pid])
+      result
+    end
+  end
 
   # Assert that `subsequence` appears as consecutive elements within `array`.
   def assert_includes_subsequence(array, subsequence)

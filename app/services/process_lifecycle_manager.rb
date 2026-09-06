@@ -1520,11 +1520,16 @@ class ProcessLifecycleManager
   #
   # Leaving it in place deadlocks transcript polling: CodexTranscriptSource#
   # find_main_transcript prefers the rollout whose filename carries the stored
-  # id, so the poller keeps reading the abandoned file, and the only code that
-  # would learn the new UUID (TranscriptPollerService#capture_runtime_session_id!)
-  # reads it from a file the locator will never hand it. Clearing the id makes the
-  # locator fall back to matching on this session's clone path, which finds the
-  # live rollout and re-attaches within one poll.
+  # id, so the poller keeps reading the abandoned file, and the transcript-side
+  # capture (TranscriptPollerService#capture_runtime_session_id!) reads the new
+  # UUID from a file the locator will never hand it. Clearing the id lets the
+  # locator find the live rollout and re-attach within one poll.
+  #
+  # This runs AFTER the fresh spawn on purpose. That spawn truncates and reopens
+  # the `--json` event log, so by the time the id is released the stream already
+  # names — or is about to name — the NEW thread, and the poller's stream-side
+  # capture (#capture_runtime_session_id_from_stream!) supplies it directly
+  # rather than leaving the locator to infer it from the clone path.
   #
   # A no-op for Claude Code, which honors the supplied `--session-id`, so its
   # stored id stays authoritative across a fresh start.

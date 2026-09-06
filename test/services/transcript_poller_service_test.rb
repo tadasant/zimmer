@@ -2050,4 +2050,71 @@ class TranscriptPollerServiceTest < ActiveSupport::TestCase
     assert_equal "fork-own-uuid", @session.reload.session_id,
       "Claude fork's authoritative session_id must not be overwritten from copied source transcript lines"
   end
+
+  # === Runtime session id capture from the --json event stream (#109) ===
+  #
+  # Codex announces its thread UUID on the first line of the stdout stream the
+  # adapter now captures. The poller reads it BEFORE looking for a transcript,
+  # because for Codex that UUID is what identifies the transcript.
+
+  test "the poller captures a Codex thread id from the event stream before any rollout exists" do
+    clone = "/home/rails/.zimmer/clones/repo-main-OWN"
+    thread_id = "01a07412-4d9a-78f0-aad9-2cde1bf7586e"
+    @session.update!(agent_runtime: "codex", metadata: { "working_directory" => clone })
+    @session.update_column(:session_id, "zimmer-supplied-uuid")
+    @mock_file_system.write(
+      CodexRuntimeAdapter.event_log_path(clone),
+      %({"type":"thread.started","thread_id":"#{thread_id}"}\n)
+    )
+
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+    service.send(:capture_runtime_session_id_from_stream!)
+
+    assert_equal thread_id, @session.reload.session_id
+  end
+
+  test "poll_and_broadcast captures the thread id even while it is still waiting for a rollout" do
+    # The end-to-end shape: no Codex sessions directory yet, so the poll returns
+    # its "waiting" nil — and the resume target is nonetheless already recorded.
+    clone = "/home/rails/.zimmer/clones/repo-main-OWN"
+    thread_id = "01a07412-4d9a-78f0-aad9-2cde1bf7586e"
+    @session.update!(agent_runtime: "codex", metadata: { "working_directory" => clone })
+    @session.update_column(:session_id, "zimmer-supplied-uuid")
+    @mock_file_system.write(
+      CodexRuntimeAdapter.event_log_path(clone),
+      %({"type":"thread.started","thread_id":"#{thread_id}"}\n{"type":"turn.started"}\n)
+    )
+
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+
+    assert_nil service.poll_and_broadcast, "no rollout tree yet, so the poll is still waiting"
+    assert_equal thread_id, @session.reload.session_id
+  end
+
+  test "the event-stream capture never rewrites a Claude session id" do
+    # Claude honors the Zimmer-supplied id. The gate is the same trait the
+    # transcript capture uses, and ClaudeTranscriptSource declares no side
+    # channel, so this is doubly a no-op.
+    @session.update!(agent_runtime: "claude_code", metadata: { "working_directory" => "/clone" })
+    @session.update_column(:session_id, "claude-own-uuid")
+
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+    Session.any_instance.expects(:update_column).never
+    service.send(:capture_runtime_session_id_from_stream!)
+
+    assert_equal "claude-own-uuid", @session.reload.session_id
+  end
+
+  test "the event-stream capture is a no-op when the stream has not named a thread yet" do
+    clone = "/home/rails/.zimmer/clones/repo-main-OWN"
+    @session.update!(agent_runtime: "codex", metadata: { "working_directory" => clone })
+    @session.update_column(:session_id, "keep-me")
+    @mock_file_system.write(CodexRuntimeAdapter.event_log_path(clone), "")
+
+    service = TranscriptPollerService.new(@session, file_system: @mock_file_system)
+    Session.any_instance.expects(:update_column).never
+    service.send(:capture_runtime_session_id_from_stream!)
+
+    assert_equal "keep-me", @session.reload.session_id
+  end
 end

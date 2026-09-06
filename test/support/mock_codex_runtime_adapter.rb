@@ -23,6 +23,13 @@ class MockCodexRuntimeAdapter
     CodexRuntimeAdapter.spawn_error_class
   end
 
+  # Codex sheds its `--json` event log on fork as well as its stderr log; the
+  # double must name the same files or ForkSessionService, which asks the
+  # adapter class, would leave one behind under test but not in production.
+  def self.spawn_artifact_paths(working_dir)
+    CodexRuntimeAdapter.spawn_artifact_paths(working_dir)
+  end
+
   def self.cli_label
     CodexRuntimeAdapter.cli_label
   end

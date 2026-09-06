@@ -66,6 +66,14 @@ class TranscriptPollerService
   #   - false: Error occurred (exception or missing working_directory)
   #   - nil: Waiting state (transcript directory or files not yet created)
   def poll_and_broadcast
+    # Ask the runtime's side channel for its own session id BEFORE looking for a
+    # transcript. Codex announces its thread UUID on the first line of the
+    # `--json` stream it prints to stdout, and that UUID names the rollout — so
+    # learning it here is what lets the locate below ask for this session's
+    # rollout by name instead of inferring which of the shared tree's rollouts is
+    # ours (#109). A no-op for runtimes with no such channel.
+    capture_runtime_session_id_from_stream!
+
     # Get the transcript directory
     transcript_dir = get_transcript_directory
 
@@ -406,9 +414,12 @@ class TranscriptPollerService
   # session-metadata line — is the one resume must target. We read it from the
   # parsed events via the normalizer and store it when it changes. Gated on the
   # runtime's mints_own_session_id? trait so it is an outright no-op for runtimes
-  # (Claude) whose stored session_id is already authoritative. Idempotent. Uses
-  # update_column to persist just this field without disturbing the surrounding
-  # transcript/metadata update flow.
+  # (Claude) whose stored session_id is already authoritative.
+  #
+  # This is the second of two capture points and the backstop for the first:
+  # #capture_runtime_session_id_from_stream! normally has the id already, but a
+  # rollout Zimmer adopted without having spawned it — or a Codex build whose
+  # stream does not name the thread — is still read here.
   def capture_runtime_session_id!(raw_events)
     # Only runtimes that mint their own session id (Codex) learn it from the
     # transcript. Claude honors the Zimmer-supplied id, so its stored session_id is
@@ -417,6 +428,32 @@ class TranscriptPollerService
     return unless @normalizer.mints_own_session_id?
 
     runtime_id = raw_events.filter_map { |event| @normalizer.extract_session_id(event) }.first
+    persist_runtime_session_id!(runtime_id, source: "transcript")
+  end
+
+  # The same capture, from the runtime's own event stream rather than from its
+  # transcript. Gated on the identical runtime trait, so it is an outright no-op
+  # for Claude and Pi — and for any runtime whose source declares no side
+  # channel, since TranscriptSource#runtime_session_id defaults to nil.
+  #
+  # Runs before the transcript is located, which is the point: for Codex the id
+  # is what identifies the transcript. Getting it here also means a follow-up
+  # turn has a valid `codex exec resume` target even on a poll cycle where no
+  # rollout was found at all.
+  def capture_runtime_session_id_from_stream!
+    return unless @normalizer.mints_own_session_id?
+
+    runtime_id = @source.runtime_session_id(
+      session: @session,
+      working_directory: @session.metadata&.dig("working_directory")
+    )
+    persist_runtime_session_id!(runtime_id, source: "event stream")
+  end
+
+  # Store a runtime-minted session id when it is new. Idempotent; uses
+  # update_column to persist just this field without disturbing the surrounding
+  # transcript/metadata update flow.
+  def persist_runtime_session_id!(runtime_id, source:)
     return if runtime_id.blank?
     return if runtime_id == @session.session_id
 
@@ -424,7 +461,7 @@ class TranscriptPollerService
       @session.reload
       @session.update_column(:session_id, runtime_id)
     end
-    @logger.info("Captured runtime session id from transcript", runtime_session_id: runtime_id)
+    @logger.info("Captured runtime session id from #{source}", runtime_session_id: runtime_id)
   end
 
   # Human-readable name of the runtime whose transcript we are waiting on. The

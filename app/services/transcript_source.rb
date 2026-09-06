@@ -74,6 +74,27 @@ class TranscriptSource
     nil
   end
 
+  # The runtime's own session id for the process running right now, read from a
+  # side channel rather than from the transcript.
+  #
+  # Runtimes that mint their own id (Codex) publish it before the transcript is
+  # findable: `codex exec --json` prints `thread.started` with the thread UUID on
+  # the first line of stdout, and that UUID is what names the rollout file. Being
+  # told it means #locate can ask for the right file instead of inferring which
+  # of the shared tree's rollouts belongs to this session, and means resume has a
+  # target even if the rollout is never located at all.
+  #
+  # nil — the default, and the answer for every runtime whose stored session_id
+  # is already authoritative (Claude, Pi) — means "no side channel, use the
+  # transcript", which is what TranscriptPollerService did before there was one.
+  #
+  # @param session [Session] the session whose runtime id we want
+  # @param working_directory [String, nil] the cwd the runtime was spawned from
+  # @return [String, nil] the runtime session id, or nil when unknowable here
+  def runtime_session_id(session:, working_directory: nil)
+    nil
+  end
+
   # Locate the main transcript file for the session.
   #
   # @param session [Session] the session whose transcript we want
