@@ -3163,16 +3163,20 @@ row lock would drag [burst control](/sessions/triggers/#burst-control)'s slot re
 same transaction. Two narrow cases remain, and both are deliberate:
 
 - **A fire that cannot take the lock within 15 seconds proceeds unserialized**, logging at `warn`.
-  The protected section is one `SELECT` and at most one session INSERT, so a wait that long means the
-  holder is wedged rather than busy — and dropping the fire instead would trade a rare duplicate
-  session for a lost wake, which for the `quota_available` trigger strands every parked spot session
-  until the next recovery. Under-spawning is the wrong direction to fail in here.
-- **A caller that wraps the fire in its own transaction gets serialization without visibility.**
-  `SlackTriggerPollerJob` wraps `Trigger#create_session!` in a transaction so the session and the
-  human-message record commit together, and the lock is released while that transaction is still
-  open — so a concurrent fire reads a snapshot without the session and spawns anyway. It is narrow:
-  the Slack and GitHub pollers are each capped at one running copy, so the race needs a Slack fire
-  concurrent with a *different* condition type on the same trigger, or with a hand-fired **Invoke**.
+  The protected section is one `SELECT` and one spawn, so a wait that long means the holder is wedged
+  rather than busy — and dropping the fire instead would trade a rare duplicate session for a lost
+  wake, which for the `quota_available` trigger strands every parked spot session until the next
+  recovery. Under-spawning is the wrong direction to fail in here.
+- **A caller that opened its own transaction gets no lock at all.** `SlackTriggerPollerJob` wraps
+  `Trigger#create_session!` in a transaction so the session and the human-message record commit
+  together. Taking the lock in there would serialize without protecting anything — a concurrent fire
+  reads a snapshot that cannot contain the winner's uncommitted session, so it spawns regardless —
+  and it would be actively unsafe, because a session-level advisory lock is not released by a
+  rollback: a block that aborted that transaction would have its `UNLOCK` rejected along with the
+  rest of it, stranding the lock on a pooled connection and disabling the guard for that trigger for
+  good. So the lock is skipped and the fire says so at `info`. The exposure is narrow: the Slack and
+  GitHub pollers are each capped at one running copy, so a duplicate needs a Slack fire concurrent
+  with a *different* condition type on the same trigger, or with a hand-fired **Invoke**.
 
 The dedup across fires — the thing the setting is mostly for — is unaffected by either.
 

@@ -53,12 +53,18 @@ class TriggerSpawnConcurrencyTest < ActiveSupport::TestCase
 
     assert_equal true, holder_took_lock.pop, "the holder must actually take the lock"
 
+    loser_started = Queue.new
     loser = Thread.new do
       ActiveRecord::Base.connection_pool.with_connection do
-        loser_returned << Trigger.find(trigger.id).create_session!(prompt: "wake the fleet")&.id
+        fire = Trigger.find(trigger.id)
+        loser_started << true
+        loser_returned << fire.create_session!(prompt: "wake the fleet")&.id
       end
     end
 
+    # Wait for the loser to be inside the fire before asserting it is stuck, so
+    # the assertion cannot pass merely because the thread had not started.
+    loser_started.pop
     sleep 0.3
     assert_raises(ThreadError, "the second fire must block while another process holds the spawn lock") do
       loser_returned.pop(true)
@@ -117,15 +123,105 @@ class TriggerSpawnConcurrencyTest < ActiveSupport::TestCase
 
   # The lock is opt-in with the setting it protects: a trigger that never asked
   # to dedup is asking for one session per fire, and two fires are two sessions.
-  test "a trigger without the setting is untouched by the lock" do
+  # The lock is never taken on that path — asserted by holding it throughout, so
+  # a fire that tried to take it would stall for SPAWN_LOCK_WAIT instead.
+  test "a trigger without the setting takes no lock and spawns per fire" do
     trigger = build_trigger(skip_if_pending_session: false)
+    first = nil
+    second = nil
 
-    first = trigger.create_session!(prompt: "wake the fleet")
-    second = trigger.create_session!(prompt: "wake the fleet")
+    ActiveRecord::Base.connection_pool.with_connection do
+      Trigger.with_spawn_lock(trigger.id) do |serialized|
+        assert_equal true, serialized
+
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        first = Thread.new { ActiveRecord::Base.connection_pool.with_connection { trigger.create_session!(prompt: "wake the fleet") } }.value
+        second = Thread.new { ActiveRecord::Base.connection_pool.with_connection { trigger.create_session!(prompt: "wake the fleet") } }.value
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+        assert_operator elapsed, :<, Trigger::SPAWN_LOCK_WAIT.to_f,
+          "a trigger without the setting must not wait on the spawn lock at all"
+      end
+    end
 
     assert_not_nil first
     assert_not_nil second
     assert_not_equal first.id, second.id
+  end
+
+  # The fail-open contract: a fire that cannot take the lock within its wait
+  # still spawns. Dropping it would trade a rare duplicate for a lost wake.
+  test "a fire that cannot take the lock in time proceeds unserialized" do
+    trigger = build_trigger
+    holder_took_lock = Queue.new
+    release_holder = Queue.new
+
+    holder = Thread.new do
+      ActiveRecord::Base.connection_pool.with_connection do
+        Trigger.with_spawn_lock(trigger.id) do |serialized|
+          holder_took_lock << serialized
+          release_holder.pop
+        end
+      end
+    end
+    assert_equal true, holder_took_lock.pop
+
+    serialized = nil
+    session = nil
+    ActiveRecord::Base.connection_pool.with_connection do
+      Trigger.with_spawn_lock(trigger.id, wait: 0.1) do |acquired|
+        serialized = acquired
+        session = trigger.create_session!(prompt: "wake the fleet")
+      end
+    end
+
+    assert_equal false, serialized, "the lock was held, so this fire must know it ran unserialized"
+    assert_not_nil session, "an unserialized fire must still spawn — a dropped wake is the worse failure"
+
+    release_holder << true
+    holder.join(10)
+  end
+
+  # An advisory lock is session-level, so a leaked one would be held for the life
+  # of a pooled connection and every later fire of that trigger would stall for
+  # the full wait before failing open.
+  test "the lock is released when the block raises" do
+    trigger = build_trigger
+
+    assert_raises(RuntimeError) do
+      ActiveRecord::Base.connection_pool.with_connection do
+        Trigger.with_spawn_lock(trigger.id) { raise "spawn blew up" }
+      end
+    end
+
+    ActiveRecord::Base.connection_pool.with_connection do
+      Trigger.with_spawn_lock(trigger.id, wait: 0.1) do |serialized|
+        assert_equal true, serialized, "the raise must not have left the lock held"
+      end
+    end
+  end
+
+  # A caller that opened its own transaction gets no lock, deliberately: it could
+  # not see a committed sibling from inside that snapshot, and a session-level
+  # lock survives the rollback of a block that aborted the transaction — so
+  # taking it would strand the lock on a pooled connection for good.
+  test "a fire inside a caller's transaction takes no lock" do
+    trigger = build_trigger
+    serialized = nil
+
+    ActiveRecord::Base.transaction do
+      Trigger.with_spawn_lock(trigger.id) { |acquired| serialized = acquired }
+      raise ActiveRecord::Rollback
+    end
+
+    assert_equal false, serialized
+
+    # And the lock really was never taken, so it is free immediately afterwards.
+    ActiveRecord::Base.connection_pool.with_connection do
+      Trigger.with_spawn_lock(trigger.id, wait: 0.1) do |acquired|
+        assert_equal true, acquired
+      end
+    end
   end
 
   private

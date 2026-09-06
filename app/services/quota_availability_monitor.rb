@@ -343,8 +343,13 @@ class QuotaAvailabilityMonitor
     # a `nil` level too — a deployment that has never recorded one still has to be
     # able to wake a parked spot session.
     def claim_announcement!(setting)
-      # No settings row exists yet, so there is nothing to claim against. Only
-      # reachable before the singleton row has ever been written.
+      # No settings row exists yet, so there is nothing to claim against and this
+      # one arm is a read-then-insert rather than a claim. Only #request_wake!
+      # reaches it — `check!` returns at the `previous.nil?` baseline first — and
+      # only on a deployment that has never written the row, so the residual is
+      # two `request_wake!` calls in that one instant. Left as it is rather than
+      # given a unique index: `only_one_row` already validates the singleton, and
+      # the window closes for good the moment the row exists.
       unless setting.persisted?
         record_level!(setting, true)
         return true

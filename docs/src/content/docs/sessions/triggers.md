@@ -1602,9 +1602,11 @@ transaction, so a spawn that raised would roll back the attempt it is meant to c
 It serializes; it does not suppress. Only the read and the spawn are inside it, and the answer a
 serialized fire gets is the answer it would have got anyway — the second fire simply sees a session
 that is really committed rather than one still in flight. A fire that arrives once the earlier
-session has left `waiting`/`running` spawns exactly as before. A fire that cannot take the lock
-within 15 seconds proceeds unserialized and says so at `warn`: a dropped wake would strand every
-parked session until the next recovery, so under-spawning is the wrong direction to fail in.
+session has left `waiting`/`running` spawns exactly as before. A fire that cannot take the lock —
+the wait ran out, or its caller had already opened a transaction the lock could not usefully be
+taken inside — proceeds unserialized and says so in the log: a dropped wake would strand every
+parked session until the next recovery, so under-spawning is the wrong direction to fail in. Both
+cases are in [limitations](/limitations/#the-spawn-lock-is-a-postgres-advisory-lock-so-two-cases-still-slip-past-it).
 
 Only triggers with the setting on take the lock. A trigger without it is asking for one session per
 fire, and two simultaneous fires are two fires.
