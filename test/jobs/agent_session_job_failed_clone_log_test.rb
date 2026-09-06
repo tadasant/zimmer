@@ -68,9 +68,15 @@ class AgentSessionJobFailedCloneLogTest < ActiveJob::TestCase
 
   # ---------------------------------------------------------------------------
   # Clone gone — the observed case
+  #
+  # A missing clone is no longer terminal on its first sighting: Zimmer rebuilds
+  # the tree and resumes (#817). It IS terminal once RetryBudget::LOST_CLONE is
+  # spent, which is the state these pin — a clone that will not stay on disk,
+  # which is exactly session 12280's ending seen through the new branch.
   # ---------------------------------------------------------------------------
 
   test "a failure whose clone is gone is not told the clone was preserved" do
+    spend_lost_clone_budget
     run_failing_resume(clone_on_disk: false)
 
     assert_equal "failed", @session.reload.status
@@ -82,6 +88,7 @@ class AgentSessionJobFailedCloneLogTest < ActiveJob::TestCase
   end
 
   test "a failure whose clone is gone says what actually remains, and asks for no cleanup" do
+    spend_lost_clone_budget
     run_failing_resume(clone_on_disk: false)
 
     log = failed_clone_log
@@ -116,6 +123,7 @@ class AgentSessionJobFailedCloneLogTest < ActiveJob::TestCase
   # ---------------------------------------------------------------------------
 
   test "the failure teardown raises in neither case" do
+    spend_lost_clone_budget
     assert_nothing_raised { run_failing_resume(clone_on_disk: false) }
     assert_equal "failed", @session.reload.status
 
@@ -183,6 +191,12 @@ class AgentSessionJobFailedCloneLogTest < ActiveJob::TestCase
   end
 
   private
+
+  # Put the lost-clone rebuild budget beyond its maximum, so a missing clone is the
+  # terminal failure these tests are about rather than a rebuild-and-resume.
+  def spend_lost_clone_budget
+    @session.merge_metadata!(RetryBudget::LOST_CLONE.key => RetryBudget::LOST_CLONE.max)
+  end
 
   # Drive the real job down the resume-monitoring validation failure — the path
   # the observed case (#808's session 12280) took — with the filesystem, the
