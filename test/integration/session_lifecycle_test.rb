@@ -63,7 +63,9 @@ class SessionLifecycleTest < IntegrationTestCase
     assert_response :redirect
     session.reload
 
-    assert_equal "running", session.status
+    # `waiting`: the follow-up hands the turn to the `agents` queue, and a worker's
+    # `start` is what makes the session `running` (#1036).
+    assert_equal "waiting", session.status
 
     # Verify job is enqueued
     assert_enqueued_jobs 1, only: AgentSessionJob
@@ -252,9 +254,9 @@ class SessionLifecycleTest < IntegrationTestCase
     assert result, "Expected enqueued message to be processed"
     assert_nil EnqueuedMessage.find_by(id: message.id), "Message should be deleted after processing"
 
-    # Verify session transitioned back to running
+    # Verify the session went back to the queue for its next turn
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
 
     # Verify a new job was enqueued for the message
     assert_enqueued_jobs 1, only: AgentSessionJob

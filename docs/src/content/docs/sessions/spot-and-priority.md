@@ -254,16 +254,23 @@ holds the next start; it never interrupts work already underway.
 
 #### What the ceiling counts, and what it does not
 
-`sessions.status = running` is stamped when a turn is **handed to** a session — by a fired wake
-trigger, a follow-up, a poller, or the end-of-turn handoff to a queued message — not when a worker
-starts executing it. Between the two sits the `agents` GoodJob queue, which is only
-`GOOD_JOB_AGENTS_THREADS` (default 8) deep. On a busy deployment that gap runs to minutes, so
-`running` holds two populations at once:
+A turn is **handed to** a session — by a fired wake trigger, a follow-up, a poller, or the end-of-turn
+handoff to a queued message — well before a worker starts executing it. Between the two sits the
+`agents` GoodJob queue, which is only `GOOD_JOB_AGENTS_THREADS` (default 8) deep, and on a busy
+deployment that gap runs to minutes.
+
+Since [#1036](https://github.com/tadasant/zimmer/issues/1036) that queue reads `waiting` rather than
+`running` — see [`running` means a worker thread has the
+turn](/sessions/lifecycle/#running-means-a-worker-thread-has-the-turn) — so the status column and the
+ceiling now agree about the common case. The ceiling still computes its population rather than
+counting the column, because neither status is a clean answer on its own:
 
 | Population | Counts? | Why |
 | --- | --- | --- |
-| A turn a worker is executing | Yes | It is the fleet doing work, and it is the only population that is. |
-| A turn queued for a worker, or a row between jobs | **No** | It has taken nothing yet. What it is waiting for is a worker, so counting it makes the ceiling a limit on how much work is *waiting* rather than on how much is *running*. |
+| A turn a worker is executing (`running`, with a live job) | Yes | It is the fleet doing work, and it is the only population that is. |
+| A turn queued for a worker (`waiting`, with a ready `agents` job), or a `running` row between jobs | **No** | It has taken nothing yet. What it is waiting for is a worker, so counting it makes the ceiling a limit on how much work is *waiting* rather than on how much is *running*. |
+| A turn whose worker is still making its clone and spawning the CLI (`waiting`, with a job that has a `performed_at`) | **No** | No agent process exists yet and no quota is being spent. This is exactly how a first start behaved before #1036, so no denominator moved. |
+| A dormant `waiting` row — a spot hold, a ceiling pause, a quota park, a session asleep on its own wake | **No** | It has no ready job in the lane at all, which is how it is excluded. A held session's re-check job is parked on a future `scheduled_at`, and its owner is the spot ladder rather than the worker pool. |
 | A `running` row asleep on its own **future wake** with **no AgentSessionJob at all** — none running, none queued | **No** | Nothing will happen to that session until its wake fires, so it is not even waiting for a worker. |
 
 The two uncounted rows are still told apart, and both halves of the sleeper rule are load-bearing —

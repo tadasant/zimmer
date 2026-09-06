@@ -706,23 +706,26 @@ has least room for it — so three questions all have to answer no:
 | Any session parked on an auth outage, **either class**? | A park is the clearest statement Zimmer makes that work exists and cannot run. Deliberately **not** a threshold and not scoped to spot: an outage parks priority sessions too, `QuotaResetCheckerJob` resumes those on its own schedule, and one parked session is evidence about the *pool* rather than about how busy the fleet is |
 | Can the account pool serve anything? | Asked of the pool directly, via `QuotaAvailabilityMonitor.pool_available?`. An empty pool makes a quiet fleet a symptom rather than an opportunity. Deliberately **not** `AppSetting#quota_pool_available`: that column is an *announcement latch*, held at `false` through a recovery whose event has not fired yet, and a recovery deferred at the spot gate says nothing about whether the pool can serve |
 
-##### Why a `running` row is not always a session running
+##### Why the ceiling computes its population instead of counting a column
 
-`running` is stamped when a turn is **handed to** a session, not when a worker starts executing it,
-and the `agents` queue (default 8 threads) sits between the two. So the column holds turns being
-executed and turns waiting for a worker at once, plus a third population asleep on its own future
-wake with no `AgentSessionJob` at all, running or queued.
+A turn is **handed to** a session well before a worker starts executing it, and the `agents` queue
+(default 8 threads) sits between the two. Since
+[#1036](https://github.com/tadasant/zimmer/issues/1036) that queue reads `waiting` rather than
+`running`, so the two no longer share a status — but neither status is a clean count on its own.
+`waiting` also holds every dormant session in the deployment, and `running` still holds rows between
+jobs and rows asleep on their own future wake with no `AgentSessionJob` at all.
 
-**Only the first counts.** A queued turn is occupying nothing — what it is waiting for is a worker —
-so a ceiling that counted it would measure the depth of the queue rather than the size of the fleet,
-and a sleeper is not even waiting. Both uncounted populations are printed beside the number on
-`/inference` rather than folded into it.
+**Only a turn a worker is executing counts.** A queued turn is occupying nothing — what it is
+waiting for is a worker — so a ceiling that counted it would measure the depth of the queue rather
+than the size of the fleet, and a sleeper is not even waiting. The uncounted populations are printed
+beside the number on `/inference` rather than folded into it.
 
 [#957](https://github.com/tadasant/zimmer/issues/957) is what named this. A fleet reporting 15
 sessions at a ceiling of 7 had 8 agent processes alive; the rest were turns queued behind the pool,
 and three of them were routers that had already gone back to sleep. Counting the queue was what then
 pinned the spot gate at "25 of 10 session slots taken (8 on a worker, 17 waiting for one)" with every
-spot session held and eight workers busy. `RunningTurns` is the one place the rule lives.
+spot session held and eight workers busy. #1036 then moved the queue out of `running` so the session
+list stops calling it running work either. `RunningTurns` is the one place the rule lives.
 
 ##### Why `waiting` sessions do not count
 

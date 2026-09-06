@@ -2,7 +2,14 @@
   <%# Check if there's a pending sent_message that should be preloaded into the textarea.
       This happens when a follow-up was sent but the session transitioned to paused/failed
       before the message appeared in the transcript. We preload it so the user doesn't lose their message. %>
-  <% pending_sent_message = (!agent_session.running? && agent_session.metadata&.dig("sent_message").present?) ? agent_session.metadata["sent_message"] : nil %>
+  <%# Whether the composer queues rather than sends. `Sessions::LiveTurn.underway?`
+      and not `agent_session.running?`: since #1036 a turn that has been handed
+      over but is still waiting for one of the `agents` lane's worker threads reads
+      `waiting`, and sending into it would start a second turn against one clone.
+      The controller actions branch the same way, so the form's action and the
+      server's decision cannot disagree. %>
+  <% turn_underway = Sessions::LiveTurn.underway?(agent_session) %>
+  <% pending_sent_message = (!turn_underway && agent_session.metadata&.dig("sent_message").present?) ? agent_session.metadata["sent_message"] : nil %>
   <%# session_skills is passed in from the controller via locals, or we fetch it here for backwards compatibility %>
   <% session_skills ||= ClaudeSkillsCacheService.get_for_session(agent_session) %>
   <%# data-live-region="replace": the composer changes shape with the session's
@@ -17,7 +24,7 @@
        data-controller="follow-up-prompt character-counter bottom-panel-padding bottom-drawer image-attachment file-attachment slash-command"
        data-character-counter-max-value="<%= Session::PROMPT_MAX_LENGTH %>"
        data-follow-up-prompt-prompt-max-length-value="<%= Session::PROMPT_MAX_LENGTH %>"
-       data-follow-up-prompt-session-running-value="<%= agent_session.running? %>"
+       data-follow-up-prompt-turn-underway-value="<%= turn_underway %>"
        data-follow-up-prompt-session-id-value="<%= agent_session.id %>"
        data-follow-up-prompt-pending-sent-message-value="<%= pending_sent_message %>"
        data-image-attachment-session-id-value="<%= agent_session.id %>"
@@ -70,8 +77,8 @@
               lost. The controller swaps this text for a preview of the draft. %>
           <span class="text-sm font-medium text-gray-700 truncate"
                 data-follow-up-prompt-target="draftIndicator"
-                data-placeholder="<%= agent_session.running? ? "Queue a message..." : "Send a follow-up..." %>">
-            <% if agent_session.running? %>
+                data-placeholder="<%= turn_underway ? "Queue a message..." : "Send a follow-up..." %>">
+            <% if turn_underway %>
               Queue a message...
             <% else %>
               Send a follow-up...
@@ -89,7 +96,7 @@
       <!-- Mobile close button -->
       <div class="sm:hidden flex items-center justify-between px-4 py-2 border-b border-gray-100">
         <span class="text-sm font-medium text-gray-700">
-          <% if agent_session.running? %>
+          <% if turn_underway %>
             Queue Message
           <% else %>
             Follow-up Prompt
@@ -112,7 +119,7 @@
             When running, messages are queued; when needs_input/waiting, messages are sent directly.
             JavaScript also updates the form action dynamically, but server-side default ensures
             correct behavior even before JS initializes or if JS fails. %>
-        <%= form_with url: agent_session.running? ? session_enqueued_messages_path(agent_session) : follow_up_session_path(agent_session), method: :post, data: { follow_up_prompt_target: "form", enqueue_mode: agent_session.running? } do |form| %>
+        <%= form_with url: turn_underway ? session_enqueued_messages_path(agent_session) : follow_up_session_path(agent_session), method: :post, data: { follow_up_prompt_target: "form", enqueue_mode: turn_underway } do |form| %>
           <div class="space-y-3">
             <!-- Main prompt area -->
             <!-- Desktop: horizontal layout -->
@@ -122,7 +129,7 @@
                   <label for="follow_up_prompt" class="block text-sm font-medium text-gray-700">
                     Follow-up Prompt
                     <span class="text-xs text-gray-500">(Cmd+Enter to submit, Ctrl+V to paste images)</span>
-                    <% if agent_session.running? %>
+                    <% if turn_underway %>
                       <span class="text-xs text-indigo-600 font-medium ml-2">(will be queued)</span>
                     <% end %>
                   </label>
@@ -268,7 +275,7 @@
                 class="w-full inline-flex items-center justify-center px-4 py-3 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
                 data-follow-up-prompt-target="submitButtonMobile"
                 data-action="click->follow-up-prompt#submitForm">
-                <% if agent_session.running? %>
+                <% if turn_underway %>
                   Queue Message
                 <% else %>
                   Send Message

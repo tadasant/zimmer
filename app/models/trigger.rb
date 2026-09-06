@@ -1327,7 +1327,7 @@ class Trigger < ApplicationRecord
         # The previous beat is still sitting in the queue undelivered, so this
         # one would stack a second copy of the same drumbeat behind it. Skip.
         #
-        # This case used to be reachable ONLY through the `running?` branch
+        # This case used to be reachable ONLY through the turn-underway branch
         # below, which is why it went unnoticed for so long: an IDLE session
         # (`waiting` / `needs_input`) took the delivery branch instead, and that
         # branch had no duplicate guard at all. That is not a theoretical gap —
@@ -1348,22 +1348,20 @@ class Trigger < ApplicationRecord
           "undelivered prompt(s); not stacking another copy"
         )
         @last_follow_up_status = :skipped_pending_exists
-      elsif session.needs_input? || session.waiting?
-        # Tell the resume that a WAKE is what woke this session, so its
-        # cancel_pending_one_time_wake_triggers callback holds the rest of the
-        # wake group instead of consuming it. Consuming it there is right for a
-        # deliberate resume — a human follow-up, a restart — and wrong here: the
-        # requester has been resumed but has not yet DONE anything, and until its
-        # turn ends the wait it set up is the only thing that will wake it again.
-        # See SessionStateMachine#hold_pending_one_time_wakes.
-        session.wake_fire_resume = one_time_reuse_trigger?
-        begin
-          session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
-        ensure
-          session.wake_fire_resume = false
-        end
-        @last_follow_up_status = :delivered
-      elsif session.running?
+      elsif Sessions::LiveTurn.underway?(session)
+        # A turn is already on a worker, or ready in the `agents` queue with a
+        # worker coming for it. Delivering here would start a second turn against
+        # one clone, so this fire goes into the durable queue and drains at the
+        # next turn boundary.
+        #
+        # `Sessions::LiveTurn.underway?` and NOT `session.running?`, which is what
+        # this branch tested until #1036. A turn that has been handed over but is
+        # still queued reads `waiting` now, so `running?` would send it down the
+        # delivery branch below and enqueue a rival job — the #400 defect. The
+        # branches are also in the opposite order for the same reason: "is a turn
+        # underway" has to be asked before "is it idle", because a `waiting`
+        # session can be either.
+        #
         # Wake-up triggers (one_time_reuse_trigger?) must deliver durably across
         # the race window between "watched session transitions" and "requester's
         # current turn ends". Without queuing here, a wake that fires while the
@@ -1375,7 +1373,7 @@ class Trigger < ApplicationRecord
         should_enqueue = enqueue_messages || one_time_reuse_trigger?
 
         if !should_enqueue
-          Rails.logger.info "[Trigger#follow_up_session!] Skipping enqueue for trigger #{id} - enqueue_messages is disabled and session #{session.id} is still running"
+          Rails.logger.info "[Trigger#follow_up_session!] Skipping enqueue for trigger #{id} - enqueue_messages is disabled and session #{session.id} already has a turn underway"
           # :dropped (set above)
         elsif session.enqueued_messages.pending.exists?
           Rails.logger.info "[Trigger#follow_up_session!] Skipping enqueue for trigger #{id} - session #{session.id} already has pending enqueued messages"
@@ -1393,6 +1391,21 @@ class Trigger < ApplicationRecord
           )
           @last_follow_up_status = :queued
         end
+      elsif session.needs_input? || session.waiting?
+        # Tell the resume that a WAKE is what woke this session, so its
+        # cancel_pending_one_time_wake_triggers callback holds the rest of the
+        # wake group instead of consuming it. Consuming it there is right for a
+        # deliberate resume — a human follow-up, a restart — and wrong here: the
+        # requester has been resumed but has not yet DONE anything, and until its
+        # turn ends the wait it set up is the only thing that will wake it again.
+        # See SessionStateMachine#hold_pending_one_time_wakes.
+        session.wake_fire_resume = one_time_reuse_trigger?
+        begin
+          session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS)
+        ensure
+          session.wake_fire_resume = false
+        end
+        @last_follow_up_status = :delivered
       end
 
       # Bookkeeping-only write: skip validations/callbacks. This advances
@@ -1426,8 +1439,8 @@ class Trigger < ApplicationRecord
   # duplication, and the queue is the wrong place to accumulate a backlog of
   # them. A one-shot signal is the opposite — it must deliver durably across the
   # race window #follow_up_session! documents — so it is exempt here and keeps
-  # the narrower guard on the `running?` branch, which treats an existing pending
-  # message as already representing the watched event.
+  # the narrower guard on the turn-underway branch, which treats an existing
+  # pending message as already representing the watched event.
   #
   # The test is #purely_recurring?, NOT `!one_time_reuse_trigger?`, and the
   # difference is load-bearing. `one_time_reuse_trigger?` requires *every*

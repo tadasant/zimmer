@@ -25,36 +25,62 @@ module PendingAgentTurns
   # @param ids [Array<Integer>] session ids to ask about
   # @return [Set<Integer>] the subset that has an unfinished AgentSessionJob
   def for(ids)
-    started, queued = split(ids)
-    started | queued
+    reading = split(ids)
+    reading.on_a_worker | reading.queued | reading.scheduled
   end
 
+  # One reading of the `agents` queue for a set of sessions, split by what is
+  # actually happening to each turn.
+  #
+  # `scheduled` is deliberately its own bucket rather than part of `queued`. A job
+  # with a future `scheduled_at` is a spot-gate re-check or a clone-retry backoff:
+  # a turn somebody deliberately parked, whose owner is the thing that parked it,
+  # not the worker pool. Counting it as "queued for a worker" would put every
+  # spot-held session into the /inference queue figure and name GoodJob as the
+  # resume owner of a session the spot ladder owns.
+  Reading = Data.define(:on_a_worker, :queued, :scheduled)
+
   # The same population, told apart by whether a worker has actually PICKED THE
-  # TURN UP — `performed_at` — or the job is still sitting in the `agents` queue
-  # waiting for a free thread.
+  # TURN UP — `performed_at` — the job is sitting ready in the `agents` queue
+  # waiting for a free thread, or it is parked on a future `scheduled_at`.
   #
   # The sweeps do not care about that difference: a turn is coming either way,
-  # and enqueuing a second one is the mistake. RunningTurns does, because it is
-  # measuring how much of the fleet's capacity is in use, and the `agents` lane
-  # is only ConnectionBudget.good_job_queue_threads[:agents] deep — so on a busy
-  # deployment a real share of `sessions.status = running` is turns that no
-  # worker has started. See tadasant/zimmer#957.
+  # and enqueuing a second one is the mistake — which is why {.for} unions all
+  # three. RunningTurns does care, because it is measuring how much of the
+  # fleet's capacity is in use, and the `agents` lane is only
+  # ConnectionBudget.good_job_queue_threads[:agents] deep. See
+  # tadasant/zimmer#957.
   #
   # @param ids [Array<Integer>] session ids to ask about
-  # @return [Array(Set<Integer>, Set<Integer>)] [on a worker, queued for one]
-  def split(ids)
-    return [ Set.new, Set.new ] if ids.empty?
+  # @param now [Time] the instant a `scheduled_at` is judged future against
+  # @return [Reading]
+  def split(ids, now: Time.current)
+    return Reading.new(on_a_worker: Set.new, queued: Set.new, scheduled: Set.new) if ids.empty?
 
     rows = GoodJob::Job
       .where(job_class: AgentSessionJob.name, finished_at: nil)
       .where("serialized_params -> 'arguments' ->> 0 IN (?)", ids.map(&:to_s))
-      .pluck(Arel.sql("serialized_params -> 'arguments' ->> 0"), :performed_at)
+      .pluck(Arel.sql("serialized_params -> 'arguments' ->> 0"), :performed_at, :scheduled_at)
 
-    started, queued = rows.partition { |_session_id, performed_at| performed_at.present? }
+    started = Set.new
+    queued = Set.new
+    scheduled = Set.new
+    rows.each do |session_id, performed_at, scheduled_at|
+      id = session_id.to_i
+      if performed_at.present?
+        started << id
+      elsif scheduled_at.present? && scheduled_at > now
+        scheduled << id
+      else
+        queued << id
+      end
+    end
+
     # A session with two unfinished jobs — a re-check racing a recovery — is on a
-    # worker if either of them is, so the started set wins the overlap.
-    started_ids = started.map { |session_id, _| session_id.to_i }.to_set
-    [ started_ids, queued.map { |session_id, _| session_id.to_i }.to_set - started_ids ]
+    # worker if either of them is, and ready-queued beats parked for the same
+    # reason: the buckets are ranked by how close the turn is to running.
+    Reading.new(on_a_worker: started, queued: queued - started,
+                scheduled: scheduled - started - queued)
   end
 
   # The same question as an anti-join, for a caller that wants the sessions with

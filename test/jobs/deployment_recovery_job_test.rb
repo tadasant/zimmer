@@ -18,7 +18,10 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
     end
 
     session.reload
-    assert_equal "running", session.status
+    # `waiting`, not `running`: the recovery resume hands the turn to the `agents`
+    # queue and a worker's `start` is what makes the session `running` (#1036).
+    # `paused_by` going away is what distinguishes it from the pause it was in.
+    assert_equal "waiting", session.status
     assert_nil session.metadata["paused_by"]
     assert session.logs.any? { |log| log.content.include?("automatically continued") }
   end
@@ -34,7 +37,7 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_nil session.metadata["paused_by"]
     assert session.logs.any? { |log| log.content.include?("automatically continued") }
   end
@@ -247,8 +250,8 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
     session2.reload
     session3.reload
 
-    assert_equal "running", session1.status
-    assert_equal "running", session2.status
+    assert_equal "waiting", session1.status
+    assert_equal "waiting", session2.status
     assert_equal "needs_input", session3.status
   end
 
@@ -278,7 +281,7 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     # InterruptError metadata should be cleaned up
     assert_nil session.metadata["exception_class"]
     assert_nil session.metadata["exception_message"]
@@ -324,8 +327,8 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
     session2.reload
     session3.reload
 
-    assert_equal "running", session1.status
-    assert_equal "running", session2.status
+    assert_equal "waiting", session1.status
+    assert_equal "waiting", session2.status
     assert_equal "needs_input", session3.status
   end
 
@@ -338,7 +341,7 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_nil session.metadata["paused_by"]
     # The user's queued message was consumed, not leapfrogged.
     assert_equal 0, session.enqueued_messages.pending.count
@@ -356,7 +359,7 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_nil session.metadata["paused_by"]
     assert_equal 0, session.enqueued_messages.pending.count
   end
@@ -387,7 +390,7 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert session.logs.any? { |log| log.content.include?("automatically continued") }
   end
 
@@ -407,7 +410,7 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     # The message survived the fall-through.
     assert_equal 1, session.enqueued_messages.pending.count
     assert_equal "Held for next turn", session.enqueued_messages.pending.ordered.first.content
@@ -441,7 +444,7 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
     DeploymentRecoveryJob.perform_now
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_equal true, session.metadata["pending_sleep"],
       "a recovered session holding a scheduled backstop must be told to sleep again after its turn"
     conditions.each do |condition|
@@ -449,7 +452,8 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
         "recovery must not consume wake condition #{condition.id}"
     end
 
-    # The recovery turn completes.
+    # A worker takes the queued turn, and the recovery turn completes.
+    session.start!
     session.pause!
 
     assert session.reload.waiting?,
@@ -468,8 +472,9 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
     session = create_recoverable_session(status: :needs_input, paused_by: "recovery")
 
     DeploymentRecoveryJob.perform_now
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
 
+    session.start!
     session.pause!
     conditions = arm_wake_set(session)
 

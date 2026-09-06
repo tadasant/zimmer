@@ -2,14 +2,16 @@
 
 require "test_helper"
 
-# What `sessions.status = running` is worth as a measure of how busy the fleet is.
+# How busy the fleet is, split into what is executing and what is stacked up
+# behind it.
 #
-# A row lands in `running` the moment a turn is HANDED to a session, so the
-# column holds turns being executed and turns queued behind the `agents` worker
-# pool at the same time — plus, when a turn ends with something else already in
-# flight, rows asleep on their own wake with nothing left to run them. Only the
-# first of those three occupies the fleet, so `on_a_worker` is what both ceilings
-# read and the other two are reported beside it.
+# Since #1036 a turn handed to a session lands in `waiting` and only
+# `AgentSessionJob#perform` stamps `running`, so the two populations live in two
+# statuses — but neither one is a `COUNT(*)`: `waiting` also holds every dormant
+# session in the deployment, and a `running` row can be between jobs or asleep on
+# its own wake. Only a turn a worker is executing occupies the fleet, so
+# `on_a_worker` is what both ceilings read and the other two are reported beside
+# it.
 class RunningTurnsTest < ActiveSupport::TestCase
   setup do
     # The fixtures ship sessions in every status, and every case here states its
@@ -48,8 +50,60 @@ class RunningTurnsTest < ActiveSupport::TestCase
     assert_equal 0, reading.rows
   end
 
-  test "only running rows are read" do
-    [ :waiting, :needs_input, :failed ].each { |status| enqueue_turn!(session(status: status)) }
+  # `needs_input` and `failed` are rest states: a job row against one is a corpse
+  # or a race, and neither is fleet capacity. `waiting` is NOT in that list any
+  # more — since #1036 it is where a turn queued for a worker sits, and reading it
+  # is the whole point of the split.
+  test "rest states are not read, whatever job rows they carry" do
+    [ :needs_input, :failed ].each { |status| enqueue_turn!(session(status: status)) }
+
+    assert_equal 0, Session.running_turns.rows
+  end
+
+  # THE #1036 CHANGE, at the level the ceilings see it. A turn handed over and
+  # sitting in the `agents` lane reads `waiting`, and it has to appear in the
+  # queue figure — otherwise /inference would report an empty deployment while
+  # dozens of turns were stacked up behind the pool.
+  test "a waiting session with a ready turn is counted as awaiting a worker" do
+    enqueue_turn!(session(status: :waiting))
+
+    reading = Session.running_turns
+
+    assert_equal 0, reading.on_a_worker, "nothing is executing"
+    assert_equal 1, reading.awaiting_a_worker
+  end
+
+  # The pre-spawn window: a worker holds the job while it makes the clone and
+  # starts the CLI, and the session does not read `running` until the process
+  # exists. No agent is executing there, so the ceilings must not count it —
+  # which is also exactly how a first start behaved before #1036, so no
+  # denominator moved.
+  test "a waiting session whose worker is still setting it up does not occupy a slot" do
+    on_a_worker!(session(status: :waiting))
+
+    reading = Session.running_turns
+
+    assert_equal 0, reading.on_a_worker
+    assert_equal 1, reading.awaiting_a_worker
+  end
+
+  # A dormant `waiting` row — a spot hold, a quota park, a session asleep on its
+  # own wake — has no ready job in the lane, and must not be reported as a turn
+  # that is coming.
+  test "a dormant waiting session is not in the reading at all" do
+    session(status: :waiting)
+
+    assert_equal 0, Session.running_turns.rows
+  end
+
+  # A spot-held session's re-check job is parked on a future `scheduled_at`. Its
+  # owner is the spot ladder, not the worker pool, so it is not queue depth.
+  test "a waiting session whose turn is deferred to the future is not queue depth" do
+    held = session(status: :waiting)
+    GoodJob::Job.create!(
+      active_job_id: SecureRandom.uuid, queue_name: "agents", job_class: "AgentSessionJob",
+      serialized_params: { "arguments" => [ held.id ] }, scheduled_at: 10.minutes.from_now
+    )
 
     assert_equal 0, Session.running_turns.rows
   end

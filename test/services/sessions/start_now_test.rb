@@ -290,7 +290,10 @@ class Sessions::StartNowTest < ActiveSupport::TestCase
 
     assert result.started?, result.message
     session.reload
-    assert session.running?, "the resume is what gives a paused session its turn back"
+    # `waiting` and no longer paused: the resume hands the turn to the `agents`
+    # queue and a worker's `start` runs it (#1036), so the pause record going away
+    # is what tells the two `waiting`s apart.
+    assert session.waiting?
     assert_nil session.metadata[SpotSessionPause::PAUSED_REASON], "the pause record goes with the pause"
   end
 

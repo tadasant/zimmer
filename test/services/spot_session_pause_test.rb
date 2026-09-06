@@ -54,6 +54,18 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     record
   end
 
+  # The `good_jobs` row a real enqueue writes, which the test adapter does not.
+  # `RunningTurns` and `Sessions::LiveTurn` read that row rather than the status
+  # column (since #1036 a handed-over turn reads `waiting`, so the column cannot
+  # answer "is a turn coming"), so a test asserting on the split has to put it
+  # there. Ready, not deferred: `scheduled_at` in the past is what an ordinary
+  # `perform_later` writes.
+  def queue_a_turn_for(session)
+    GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
+      job_class: "AgentSessionJob", serialized_params: { "arguments" => [ session.id ] },
+      scheduled_at: 1.minute.ago)
+  end
+
   def paused_session(paused_at: 1.hour.ago, genesis: SessionGenesis::GITHUB_ISSUE)
     Session.create!(
       git_root: "https://github.com/t/r.git", prompt: "work", genesis: genesis,
@@ -181,7 +193,11 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
 
     assert_equal 1, result.resumed
     session.reload
-    assert session.running?
+    # `waiting`, and no longer paused: the resume hands the turn to the `agents`
+    # queue and a worker's `start` is what makes it `running` (#1036). The pause
+    # record going away is what tells the two `waiting`s apart.
+    assert session.waiting?
+    assert_not SpotSessionPause.paused?(session)
     assert_nil session.metadata[SpotSessionPause::PAUSED_REASON], "the pause record goes with the pause"
     assert_nil session.metadata["paused_by"]
     assert session.logs.any? { |log| log.content.include?("The window has room again") }
@@ -229,8 +245,11 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     first = SpotSessionPause.sweep!
     assert_equal 1, first.resumed, "one worker busy against a cap of 2 leaves one slot"
 
-    # The session just resumed is `running` with its job enqueued — in flight, not
+    # The session just resumed is `waiting` with its job enqueued — in flight, not
     # on a worker. The fleet is at its cap even though only one turn is executing.
+    resumed = Session.where(status: :waiting).find { |s| s.metadata[SpotSessionPause::PAUSED_REASON].nil? }
+    queue_a_turn_for(resumed)
+
     assert_equal 1, Session.running_claude_code_turns.on_a_worker
     assert_equal 1, Session.running_claude_code_turns.awaiting_a_worker
 
@@ -278,7 +297,8 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
 
     assert_equal 1, result.resumed
     session.reload
-    assert session.running?
+    assert session.waiting?
+    assert_not SpotSessionPause.paused?(session)
     assert_nil session.metadata[SpotSessionPause::PAUSED_REASON], "the queue record goes with the resume"
     assert_equal 1, enqueued_jobs.count { |job| job[:job] == AgentSessionJob }
   end
@@ -365,8 +385,8 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
 
     SpotSessionPause.sweep!
 
-    assert ranked.reload.running?, "precedence 500 goes before an unranked sleeper"
-    assert older_but_lower.reload.waiting?
+    assert_not SpotSessionPause.paused?(ranked.reload), "precedence 500 goes before an unranked sleeper"
+    assert SpotSessionPause.paused?(older_but_lower.reload)
   end
 
   # The budget is smaller than the population this usually holds, so the order
@@ -383,8 +403,9 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
 
     SpotSessionPause.sweep!
 
-    assert ranked.reload.running?, "the operator's ordering decides, not how long a session has been asleep"
-    assert older_but_lower.reload.waiting?
+    assert_not SpotSessionPause.paused?(ranked.reload),
+      "the operator's ordering decides, not how long a session has been asleep"
+    assert SpotSessionPause.paused?(older_but_lower.reload)
   end
 
   test "the oldest pause is resumed first within a tie" do
@@ -395,8 +416,8 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
 
     SpotSessionPause.sweep!
 
-    assert oldest.reload.running?, "equal-ranked sessions still take turns"
-    assert newest.reload.waiting?
+    assert_not SpotSessionPause.paused?(oldest.reload), "equal-ranked sessions still take turns"
+    assert SpotSessionPause.paused?(newest.reload)
   end
 
   # The escape hatch the pause banner offers: promotion is not gated on quota, so
@@ -409,7 +430,7 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     result = SpotSessionPause.sweep!
 
     assert_equal 1, result.resumed
-    assert session.reload.running?
+    assert_not SpotSessionPause.paused?(session.reload)
   end
 
   # The same button, pressed at the moment it matters most: while the ceiling is
@@ -426,7 +447,8 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     assert_equal 1, result.paused
     assert_equal 1, result.resumed
     assert running.reload.waiting?, "the running spot session is paused by the same sweep"
-    assert promoted.reload.running?
+    assert SpotSessionPause.paused?(running)
+    assert_not SpotSessionPause.paused?(promoted.reload), "the promoted session is out of the queue"
   end
 
   # The two halves of the policy have to agree. The sweep resumes a paused session
@@ -442,13 +464,13 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
     session = paused_session
 
     assert_equal 1, SpotSessionPause.sweep!.resumed
-    assert session.reload.running?
+    assert_not SpotSessionPause.paused?(session.reload)
 
     refute SpotSessionHold.hold_if_needed(
       session,
       follow_up_prompt: AutomatedPrompts.system_recovery(reason: "the ceiling resumed it")
     ), "the gate must not undo the resume the ceiling just decided on"
-    assert session.reload.running?
+    assert_not SpotSessionHold.held?(session.reload), "and it must not re-hold it either"
   end
 
   # A stand-in for the real manager, which would go looking for a live process.

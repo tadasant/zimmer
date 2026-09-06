@@ -30,7 +30,7 @@
     why the session is waiting AT ALL — an auth-outage park recorded later has a
     different owner (the pool's recovery), and the box above is then the real
     reason. See SessionWaitingReason and tadasant/zimmer#642. %>
-<% waiting_reason = SessionWaitingReason.for(agent_session) %>
+<% waiting_reason = local_assigns.fetch(:waiting_reason) { SessionWaitingReason.for(agent_session) } %>
 <% spot_reason = waiting_reason&.spot %>
 <%# Gated on the ranking, not on the metadata keys: a box drawn without a ranked
     mechanism would be a box that bypassed the precedence, which is the bug. Both

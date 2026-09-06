@@ -146,13 +146,13 @@ module Sessions
       claim_running_job(job)
 
       @session.logs.create!(
-        content: "Session resumed - status changed to running, full setup will be re-attempted",
+        content: "Session resumed - its turn is queued for a worker, full setup will be re-attempted",
         level: "info"
       )
     end
 
-    # Record the enqueued job's id so the session is never `running` with nothing
-    # for orphan detection to look at. See the class comment.
+    # Record the enqueued job's id so the session never sits in flight with
+    # nothing for orphan detection to look at. See the class comment.
     def claim_running_job(job)
       job_id = job.try(:job_id)
 
@@ -162,12 +162,12 @@ module Sessions
         # ActiveJob's contract lets `perform_later` return false when a callback
         # aborts the enqueue. No job registers such a callback today, so this is
         # unreachable rather than tolerated — but if it ever fires, the session is
-        # left `running` with no job and nothing for orphan detection to find. Say
+        # left `waiting` with no job and nothing for orphan detection to find. Say
         # so loudly; the restart itself still happened, so it is not an error the
         # caller can act on.
         Rails.logger.error(
           "[Sessions::RestartFromScratch] Session #{@session.id} was resumed but " \
-          "AgentSessionJob.enqueue_new_session returned no job id — the session is running " \
+          "AgentSessionJob.enqueue_new_session returned no job id — the session is queued " \
           "with no tracked job"
         )
       end

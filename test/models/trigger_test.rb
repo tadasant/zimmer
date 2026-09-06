@@ -702,7 +702,8 @@ class TriggerTest < ActiveSupport::TestCase
 
     # Session should have been transitioned to running (like the controller does)
     session.reload
-    assert session.running?, "Expected session to be in running state after follow-up, but was #{session.status}"
+    assert session.waiting?,
+      "Expected the session's turn to be queued for a worker after follow-up, but was #{session.status}"
   end
 
   test "create_session! enqueues follow-up prompt when reusing needs_input session" do
@@ -2191,7 +2192,11 @@ class TriggerTest < ActiveSupport::TestCase
     @trigger.create_session!(prompt: "Follow-up prompt")
 
     session.reload
-    assert session.running?, "Expected session to be running after follow-up from waiting, but was #{session.status}"
+    # `waiting` either way, so the delivery is read off the trigger's own answer:
+    # a handed-over turn queues for a worker rather than flipping to `running`.
+    assert_equal :delivered, @trigger.last_follow_up_status,
+      "Expected the follow-up to be delivered from waiting, got #{@trigger.last_follow_up_status.inspect}"
+    assert_equal "Follow-up prompt", session.metadata["pending_follow_up_prompt"]
   end
 
   # === Tests for one_time_reuse_trigger? ===
@@ -4159,22 +4164,23 @@ class TriggerTest < ActiveSupport::TestCase
 
   # One production night, end to end.
   #
-  # The trigger fires. If it DELIVERED, `deliver_follow_up!` resumed the session
-  # (`waiting` -> `running`) and handed a prompt to a job — and for a spot session
-  # held at the quota gate that job is refused: SpotSessionHold files the prompt
-  # in `enqueued_messages` behind the turn already deferred and returns the
-  # session to `waiting` (#queue_behind_scheduled_turn). Replaying that
-  # conversion here is the whole point. A test that stubs
-  # `AgentSessionJob.enqueue_with_prompt` and stops there removes the very
-  # mechanism the queue grew through, and would pass just as well unfixed.
+  # The trigger fires. If it DELIVERED, `deliver_follow_up!` handed a prompt to a
+  # job — and for a spot session held at the quota gate that job is refused:
+  # SpotSessionHold files the prompt in `enqueued_messages` behind the turn
+  # already deferred and returns the session to `waiting`
+  # (#queue_behind_scheduled_turn). Replaying that conversion here is the whole
+  # point. A test that stubs `AgentSessionJob.enqueue_with_prompt` and stops there
+  # removes the very mechanism the queue grew through, and would pass just as well
+  # unfixed.
   #
-  # The resume is what marks a delivery: a coalesced fire does not resume, so the
-  # session is still `waiting` afterwards and no row is filed.
+  # `last_follow_up_status` is what marks a delivery, NOT a status flip: since
+  # #1036 a delivered turn leaves the session in `waiting` — queued for a worker —
+  # which is the same status a coalesced fire leaves it in. The trigger's own
+  # answer is the only thing that still tells the two apart.
   def fire_one_night!(trigger, session, prompt)
-    was_idle = session.reload.waiting?
     trigger.create_session!(prompt: prompt)
 
-    if was_idle && session.reload.running?
+    if trigger.last_follow_up_status == :delivered
       position = (session.enqueued_messages.maximum(:position) || 0) + 1
       session.enqueued_messages.create!(content: prompt, position: position, status: "pending")
       session.update_column(:status, Session.statuses[:waiting])
