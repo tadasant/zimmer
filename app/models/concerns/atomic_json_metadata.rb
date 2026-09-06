@@ -102,6 +102,15 @@ module AtomicJsonMetadata
     send(:clear_attribute_change, name)
     send(:clear_attribute_change, "updated_at")
 
+    # The same treatment for the jsonb shadow the UPDATE also wrote, so the
+    # in-memory object keeps telling the truth about both columns and a later
+    # `save` on this instance cannot push a stale shadow value back over it.
+    # Temporary — see JsonbDualWrite, which PR 2 of #847 deletes.
+    if (twin = JsonbDualWrite.twin_for(self.class, name))
+      write_attribute(twin, merged)
+      send(:clear_attribute_change, twin)
+    end
+
     broadcast_json_merge(column, before, merged)
     merged
   end
@@ -114,16 +123,38 @@ module AtomicJsonMetadata
     # One placeholder per removed key. `ARRAY[]::text[]` is the valid empty case, so no
     # branch is needed — and every key is a bind, not an interpolated SQL fragment.
     removals = remove.map { "?" }.join(", ")
+    merge_expression = "(COALESCE(#{name}, '{}')::jsonb - ARRAY[#{removals}]::text[]) || ?::jsonb"
+    merge_binds = [ *remove, updates.to_json ]
+
+    assignments = [ "#{name} = (#{merge_expression})::#{column_type}" ]
+    binds = merge_binds.dup
+
+    # While #847's conversion is in flight, the same merged value also lands in the
+    # jsonb shadow column, in this statement — a merge that reached only one of the
+    # two would diverge silently, and this is the one writer that never sees a
+    # callback. See JsonbDualWrite; PR 2 deletes this branch with it.
+    #
+    # The expression is REPEATED rather than lifted into a CTE or a `FROM
+    # (SELECT …)`, which is what it looks like it wants. Both of those would break
+    # the atomicity this whole concern exists for: under READ COMMITTED an UPDATE
+    # that blocks on a concurrent writer re-evaluates its SET expressions against
+    # the row version that writer committed, but a CTE or a join source is
+    # evaluated once, from the original snapshot. Lifting the read out of the SET
+    # clause is exactly how the lost update comes back.
+    if (twin = JsonbDualWrite.twin_for(self.class, name))
+      assignments << "#{twin} = (#{merge_expression})"
+      binds.concat(merge_binds)
+    end
 
     sql = self.class.sanitize_sql_array([
       <<~SQL.squish,
         UPDATE #{self.class.quoted_table_name}
-        SET #{name} = ((COALESCE(#{name}, '{}')::jsonb - ARRAY[#{removals}]::text[]) || ?::jsonb)::#{column_type},
+        SET #{assignments.join(', ')},
             updated_at = ?
         WHERE id = ?
         RETURNING #{name}
       SQL
-      *remove, updates.to_json, touched_at, id
+      *binds, touched_at, id
     ])
 
     row = self.class.with_connection { |connection| connection.exec_query(sql, "#{self.class.name} Atomic JSON Merge") }.first

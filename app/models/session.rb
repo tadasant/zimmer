@@ -3,6 +3,9 @@ class Session < ApplicationRecord
   include BroadcastsThroughService
   include SessionStateMachine
   include AtomicJsonMetadata
+  # Temporary, for the duration of #847's `json` → `jsonb` conversion. PR 2
+  # deletes both the concern and this line.
+  include JsonbDualWrite
   include SessionGenesisClassification
   include SessionPrecedence
   include SessionVisibility
