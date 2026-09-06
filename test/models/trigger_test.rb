@@ -39,6 +39,80 @@ class TriggerTest < ActiveSupport::TestCase
     assert_includes @trigger.errors[:prompt_template], "can't be blank"
   end
 
+  # --- agent_root_name against the catalog (zimmer#448) ---------------------
+  #
+  # The one catalog reference a trigger may name before it exists. Every test
+  # here stubs AgentRootsConfig.names, which is what
+  # Trigger.catalog_agent_root_names reads.
+
+  test "a known agent root reports nothing" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+    @trigger.agent_root_name = "zimmer"
+
+    assert_not @trigger.agent_root_missing_from_catalog?
+    assert_nil @trigger.agent_root_catalog_warning
+  end
+
+  test "an agent root the catalog does not carry is reported, and names itself" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+    @trigger.agent_root_name = "not-in-the-catalog-yet"
+
+    assert @trigger.agent_root_missing_from_catalog?
+    warning = @trigger.agent_root_catalog_warning
+    assert_includes warning, "not-in-the-catalog-yet"
+    assert_includes warning, "is not in this deployment's catalog"
+  end
+
+  test "an agent root the catalog does not carry still SAVES — the create-ahead workflow" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+
+    trigger = Trigger.new(
+      name: "Written before its root exists",
+      status: "enabled",
+      agent_root_name: "root-that-lands-tomorrow",
+      prompt_template: "Do the thing",
+      trigger_conditions: [ TriggerCondition.new(condition_type: "schedule",
+                                                 configuration: { "interval" => 1, "unit" => "days", "time" => "03:00" }) ]
+    )
+
+    assert trigger.valid?, trigger.errors.full_messages.join(", ")
+    assert trigger.save
+    assert_equal "root-that-lands-tomorrow", trigger.reload.agent_root_name
+    assert trigger.enabled?
+    assert_not_nil trigger.agent_root_catalog_warning
+  end
+
+  test "a catalog that could not be read reports nothing and blocks no write" do
+    # AgentRootsConfig rescues a failed resolve to [], at which point every name
+    # looks missing. Reporting on that reading would warn on every trigger save
+    # during an outage that has nothing to do with any of them.
+    AgentRootsConfig.stubs(:names).returns([])
+    @trigger.agent_root_name = "anything-at-all"
+
+    assert_not @trigger.agent_root_missing_from_catalog?
+    assert_nil @trigger.agent_root_catalog_warning
+    assert @trigger.valid?, @trigger.errors.full_messages.join(", ")
+    assert_nil Trigger.catalog_agent_root_names
+  end
+
+  test "a blank agent root reports nothing — presence owns that error" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer])
+    @trigger.agent_root_name = nil
+
+    assert_not @trigger.agent_root_missing_from_catalog?
+    assert_nil @trigger.agent_root_catalog_warning
+    assert_not @trigger.valid?
+    assert_includes @trigger.errors[:agent_root_name], "can't be blank"
+  end
+
+  test "a precomputed name set is honored, so a list view can read the catalog once" do
+    AgentRootsConfig.expects(:names).never
+    @trigger.agent_root_name = "zimmer"
+
+    assert_not @trigger.agent_root_missing_from_catalog?(Set["zimmer"])
+    assert @trigger.agent_root_missing_from_catalog?(Set["general-agent"])
+  end
+
   test "requires status" do
     @trigger.status = nil
     assert_not @trigger.valid?

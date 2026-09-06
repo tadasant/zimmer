@@ -431,9 +431,22 @@ module Mcp
           - **Coalescing Window:** #{coalesce_window_summary(trigger)}
           - **Scheduling Class:** #{scheduling_class_summary(trigger)}
           - **Precedence:** #{precedence_summary(trigger)}
-
+          #{agent_root_warning_line(trigger)}
           #{condition_detail(trigger)}
         TEXT
+      end
+
+      # The one condition `action_trigger` stores rather than refuses: a root the
+      # catalog does not carry. Creating a trigger ahead of the catalog entry
+      # that defines its root is allowed, so the model saves it — and this is
+      # what stops the caller walking away believing the trigger works. Without
+      # it the first anyone hears is the fire raising, which for a daily schedule
+      # is the next 03:00. See zimmer#448.
+      def agent_root_warning_line(trigger)
+        warning = trigger.agent_root_catalog_warning
+        return "" unless warning
+
+        "\n⚠️ **#{warning}**\n"
       end
 
       # An explicit value always wins, including an explicit null for "no cap".
@@ -531,7 +544,7 @@ module Mcp
           - **Coalescing Window:** #{coalesce_window_summary(trigger)}
           - **Scheduling Class:** #{scheduling_class_summary(trigger)}#{" #{reclassified}" if reclassified}
           - **Precedence:** #{precedence_summary(trigger)}
-
+          #{agent_root_warning_line(trigger)}
           #{condition_detail(trigger)}
         TEXT
       end
@@ -552,12 +565,18 @@ module Mcp
 
         trigger.toggle!
 
+        # The warning belongs on `toggle` too, and this is the surface where it
+        # matters most: re-arming is what an agent does to a trigger the 03:00
+        # fire parked `failed`, and without it the re-arm hands back a clean
+        # "New Status: enabled" for a trigger that will fail at the next 03:00
+        # for the same reason. That is the loop zimmer#448 is about.
         <<~TEXT.strip
           ## Trigger Toggled
 
           - **ID:** #{trigger.id}
           - **Name:** #{trigger.name}
           - **New Status:** #{trigger.status}
+          #{agent_root_warning_line(trigger)}
         TEXT
       end
 

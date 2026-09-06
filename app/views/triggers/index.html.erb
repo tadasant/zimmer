@@ -44,7 +44,7 @@
       <div class="bg-white shadow rounded-lg overflow-hidden">
         <ul class="divide-y divide-gray-200">
           <% @triggers.each do |trigger| %>
-            <%= render partial: "trigger", locals: { trigger: trigger } %>
+            <%= render partial: "trigger", locals: { trigger: trigger, catalog_agent_root_names: @catalog_agent_root_names } %>
           <% end %>
         </ul>
       </div>

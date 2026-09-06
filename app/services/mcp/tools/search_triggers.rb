@@ -137,7 +137,7 @@ module Mcp
           "- **ID:** #{trigger.id}",
           "- **Conditions:** #{condition_types_summary(trigger)}",
           "- **Status:** #{trigger.status}",
-          "- **Agent Root:** #{trigger.agent_root_name}",
+          "- **Agent Root:** #{agent_root_summary(trigger)}",
           "- **Reuse Session:** #{trigger.reuse_session ? 'Yes' : 'No'}",
           "- **Skip While Pending:** #{skip_if_pending_summary(trigger)}",
           "- **Max Sessions/Minute:** #{burst_limit_summary(trigger)}",
@@ -270,6 +270,17 @@ module Mcp
       def mcp_servers_summary(trigger)
         names = catalog_names_with_unresolvable_marked(trigger, :mcp_servers)
         names.presence&.join(", ") || "(none)"
+      end
+
+      # The root as configured, marked when the catalog does not carry it. A
+      # trigger is ALLOWED to name a root before the catalog entry that defines
+      # it exists (zimmer#448), so a name that resolves to nothing reads here
+      # exactly like a working one — and this is the view an audit scans. The
+      # by-id view only, so one catalog read per call.
+      def agent_root_summary(trigger)
+        return trigger.agent_root_name unless trigger.agent_root_missing_from_catalog?
+
+        "#{trigger.agent_root_name} (⚠ not in catalog — every fire that has to spawn a session will fail)"
       end
 
       # The names as configured, with the ones a fire has found the catalog
