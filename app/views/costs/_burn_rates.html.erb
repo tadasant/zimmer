@@ -20,6 +20,11 @@
       inside the quota window's remaining non-reserved capacity. Current rates, not rates for the
       window selected above.
     </p>
+    <p class="mt-1 text-xs text-gray-500">
+      <span class="font-medium">Claude Code only.</span> The window is an Anthropic one, and the gate prices
+      the Claude fleet against it, so a runtime billed elsewhere is sampled out — Pi spend appears in every
+      table above this one and in none of the rates below.
+    </p>
   </div>
   <% if rates.blank? %>
     <p class="px-4 py-6 text-sm text-gray-500">

@@ -97,6 +97,25 @@ class Api::V1::CostsControllerTest < ActionDispatch::IntegrationTest
     assert_equal 1, JSON.parse(response.body)["records"].size
   end
 
+  # The ledger carries two billing relationships now — a `claude_code` row is
+  # subscription spend against an Anthropic window, a `pi` row a metered
+  # OpenRouter invoice. A consumer reconciling against one provider's bill needs
+  # to be able to subtract the other's.
+  test "records name and filter by agent_runtime" do
+    usage
+    usage(agent_runtime: "pi", model: "openrouter/anthropic/claude-opus-4.6",
+          request_id: "pi:#{SecureRandom.uuid}:deadbeef")
+
+    get "/api/v1/costs/records", headers: @headers
+    runtimes = JSON.parse(response.body)["records"].map { |r| r["agent_runtime"] }
+    assert_equal %w[claude_code pi], runtimes.sort
+
+    get "/api/v1/costs/records", params: { agent_runtime: "pi" }, headers: @headers
+    rows = JSON.parse(response.body)["records"]
+    assert_equal 1, rows.size
+    assert_equal "openrouter/anthropic/claude-opus-4.6", rows.first["model"]
+  end
+
   test "records serves the ad hoc table on request" do
     AdhocTokenUsage.create!(
       request_id: "req_adhoc", source: "cli_status_probe", model: "claude-opus-5",

@@ -33,8 +33,12 @@
 # that renders it labels it an estimate, and the gate degrades to reasoning in
 # percentages when there is no usable estimate at all rather than pretending.
 class QuotaCapacityCalibrator
-  # Ledger tables that count against a Claude quota window. Codex spend does not
-  # touch these windows and has no table here.
+  # Ledger tables that can hold spend against a Claude quota window.
+  #
+  # Naming the tables is no longer enough on its own — `session_token_usages`
+  # holds Pi rows too, billed by OpenRouter and counted by Anthropic not at all —
+  # so every read below goes through each table's `quota_bearing` scope. Codex
+  # spend still has no table here at all (zimmer#1077).
   QUOTA_BEARING_TABLES = [ SessionTokenUsage, AdhocTokenUsage ].freeze
 
   Observation = Data.define(:window_key, :cost_usd, :utilization, :capacity_usd, :usable, :reason) do
@@ -104,10 +108,18 @@ class QuotaCapacityCalibrator
     # agent session's calls and the ad hoc ones Zimmer's own code makes (session
     # titles, the CLI status probe) come out of the same allowance.
     #
+    # `quota_bearing` is what keeps that sentence true now that a second billing
+    # relationship shares the table. This figure is divided by Anthropic's
+    # reported utilization to derive what a full window is worth, so a dollar
+    # Anthropic never counted does not merely add noise — it inflates the
+    # capacity estimate in proportion, and the spot gate admits work the window
+    # cannot afford.
+    #
     # @return [Float]
     def opus_denominated_spend(from, to)
       QUOTA_BEARING_TABLES.sum do |klass|
         klass
+          .quota_bearing
           .in_window(from, to)
           .pick(Arel.sql("COALESCE(SUM(#{TokenPricing.cost_sql(klass.table_name, as_family: TokenPricing::QUOTA_DENOMINATION_FAMILY)}), 0)"))
           .to_f

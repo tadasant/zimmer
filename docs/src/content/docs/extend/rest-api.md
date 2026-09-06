@@ -852,13 +852,19 @@ unthrottled. `GET /health` is unaffected. See
 `unpriced_models`. Window is `days` (default 7, clamped 1–365) or explicit `from`/`to`.
 
 `GET /api/v1/costs/records` → the underlying rows, paginated. `kind` selects the table
-(`session`, the default, or `adhoc`); filter with `session_id`, `agent_root`, `model`, `subagent`,
-or `source`. This is the export path for cost-versus-performance analysis — the app deliberately
-does not try to do that analysis itself.
+(`session`, the default, or `adhoc`); filter with `session_id`, `agent_root`, `agent_runtime`,
+`model`, `subagent`, or `source`. This is the export path for cost-versus-performance analysis —
+the app deliberately does not try to do that analysis itself.
 
-`POST /api/v1/costs/backfill` → queue a sweep of every transcript on disk into the ledger. This is
-an **ops action with an endpoint rather than a shell**: getting history into the ledger must not
-require SSH onto the production box. Idempotent — it returns the run already in flight rather than
+Session rows carry `agent_runtime`, and it is worth filtering on rather than ignoring: the ledger
+holds **two billing relationships**. A `claude_code` row is subscription spend against an Anthropic
+quota window; a `pi` row is a metered OpenRouter invoice. Reconciling against either provider's bill
+means subtracting the other's rows. See [Token spend](/operate/costs/#how-usage-gets-in).
+
+`POST /api/v1/costs/backfill` → queue a sweep of the ledger's whole history — every Claude Code
+transcript on disk, and every other runtime's corpus in whatever form it takes (for Pi, the stored
+transcripts of every Pi session). This is an **ops action with an endpoint rather than a shell**:
+getting history into the ledger must not require SSH onto the production box. Idempotent — it returns the run already in flight rather than
 starting a second one, and ingestion upserts on `request_id`, so a re-read directory writes no
 duplicate rows. The same sweep starts itself after a deploy; this is for a re-scan.
 

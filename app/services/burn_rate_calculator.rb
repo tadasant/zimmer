@@ -109,10 +109,20 @@ class BurnRateCalculator
     # Rows with no `session_id` are excluded — spend the transcript-to-session
     # join could not attribute has no session to be a rate PER. Rows with no
     # `agent_root` are excluded for the same reason on the other axis.
+    #
+    # And `quota_bearing`, which is the non-obvious one: these rates exist to let
+    # SpotGateService price the running CLAUDE fleet against a Claude quota
+    # window. A Pi row's own rate could never be looked up — its model reads
+    # `openrouter/anthropic/claude-opus-4.6` where a Claude session's config
+    # reads `opus` — but it would still land in
+    # HarnessModelBurnRate.fleet_default_usd_per_minute, which is a cost-weighted
+    # average over every stored row and is exactly what prices a Claude
+    # combination the sampler has never seen.
     def session_spans(now)
       since = now - HarnessModelBurnRate::SAMPLE_LOOKBACK
 
       SessionTokenUsage
+        .quota_bearing
         .in_window(since, now)
         .where.not(session_id: nil)
         .where.not(agent_root: [ nil, "" ])

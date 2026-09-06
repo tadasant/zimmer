@@ -25,6 +25,15 @@ class AdhocTokenUsage < ApplicationRecord
 
   scope :for_source, ->(source) { where(source: source) }
 
+  # Every row, because every row already is Claude Code: this table holds only
+  # `claude -p` calls and the CLI probe, both of which spend against the same
+  # Anthropic windows an agent session does. Defined anyway so that
+  # QuotaCapacityCalibrator can ask both of its ledger tables the same question
+  # rather than special-casing one of them — and so a future ad hoc call on
+  # another provider has an obvious place to be excluded.
+  # See SessionTokenUsage.quota_bearing for what the scope means.
+  scope :quota_bearing, -> { all }
+
   # The session the call was ABOUT (titling session N), not the session that made
   # it — there isn't one. Provenance, not ownership, so no foreign key.
   belongs_to :subject_session, class_name: "Session", optional: true,

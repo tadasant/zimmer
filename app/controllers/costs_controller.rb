@@ -23,6 +23,7 @@ class CostsController < ApplicationController
     @by_agent_root = snapshot[:by_agent_root]
     @by_model = snapshot[:by_model]
     @by_thread_kind = snapshot[:by_thread_kind]
+    @by_runtime = snapshot[:by_runtime]
     @by_adhoc_source = snapshot[:by_adhoc_source]
     @by_feature = snapshot[:by_feature]
     @by_experiment = snapshot[:by_experiment]

@@ -15,6 +15,13 @@
 # re-swept directory writes nothing. A slice that dies mid-chunk loses at most
 # that chunk's progress, because the cursor only advances on a committed chunk.
 #
+# EVERY RUNTIME, not just Claude Code. The sliced, cursored machinery below is
+# Claude-shaped — it walks a filesystem corpus by directory — but "re-scan
+# history" is a request about the LEDGER, and a ledger with two runtimes in it
+# has to answer it for both or the button quietly means less than it says. Pi's
+# whole corpus is a table, so it is swept in one pass on a run's first slice; see
+# #sweep_other_runtimes.
+#
 # QUEUE PLACEMENT — `default`, deliberately not `pollers`. This is bulk work that
 # holds its thread for minutes, and `pollers` has three threads shared by every
 # latency-sensitive singleton poller (Slack, GitHub, the health probes). Parking
@@ -44,6 +51,41 @@ class TokenUsageBackfillJob < ApplicationJob
 
     return nil if run.nil?
 
+    sweep_other_runtimes if run.started_at.nil?
+
     TokenUsageBackfillService.new(run: run, budget: budget).call
+  end
+
+  private
+
+  # Every non-Claude runtime's whole history, once per requested run.
+  #
+  # Gated on `started_at` — which TokenUsageBackfillService sets on its first
+  # slice — so this happens once at the head of a run rather than on each of its
+  # two-minute ticks. A slice that dies before that write simply does it again
+  # next tick, which costs time and nothing else.
+  #
+  # This is what makes the ledger's history RE-ENTRANT for those runtimes. The
+  # post-deploy task that shipped Pi's ingestor covers history once and is
+  # terminal by design, and the recurring job only ever looks two hours back — so
+  # without this, any gap longer than that window (a worker outage, an ingestor
+  # bug found a day later) would lose that spend permanently, with no surface to
+  # ask for it back. Now the Costs page button, `POST /api/v1/costs/backfill` and
+  # `action_health`'s `backfill_token_usage` all recover it.
+  #
+  # `modified_since: nil` is the whole point: the corpus, not a window.
+  def sweep_other_runtimes
+    RuntimeRegistry.usage_ingestor_classes.each do |ingestor|
+      next if ingestor == TokenUsageIngestionService
+
+      result = ingestor.new(modified_since: nil).call
+      Rails.logger.info("[TokenUsageBackfillJob] #{ingestor.name}: #{result}")
+    rescue GoodJob::InterruptError, ActiveRecord::StatementTimeout
+      raise
+    rescue StandardError => e
+      # Never at the cost of the Claude sweep this job exists for. Logged at
+      # `error` because that is what reaches a human.
+      Rails.logger.error("[TokenUsageBackfillJob] #{ingestor.name} failed: #{e.class}: #{e.message}")
+    end
   end
 end
