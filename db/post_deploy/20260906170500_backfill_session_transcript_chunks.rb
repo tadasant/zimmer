@@ -11,8 +11,15 @@
 # post-deploy task it is sliced by `sweep`, resumes from its cursor on the next
 # tick, and answers for itself in `post_deploy_task_runs` — on /health, in
 # `GET /api/v1/health`, from `get_system_health`, at
-# /supervisor/post_deploy_task_runs. **Phase 2 must not drop `sessions.transcript`
-# until this run reads `succeeded` there.**
+# /supervisor/post_deploy_task_runs.
+#
+# **PHASE 2 MUST NOT DROP `sessions.transcript` UNTIL THIS RUN READS `succeeded`
+# THERE *AND* `verification_failures` IS ZERO.** `succeeded` on its own is not the
+# gate, and the difference is the whole safety property: a row this task could not
+# copy keeps its column and is skipped, `sweep` never revisits it, and the run
+# still finishes clean. So the failing rows are named individually in
+# `unmigrated_session_ids` — a bounded list on the same panel — and phase 2 has to
+# see that empty, not merely see this green.
 #
 # NOTHING IS WAITING ON IT. `Session#transcript` reads the legacy column for any
 # row this has not reached yet, so the system is whole from the moment the deploy
@@ -35,6 +42,10 @@
 class BackfillSessionTranscriptChunks < PostDeployTask
   BATCH_SIZE = 200
 
+  # How many failing session ids to carry on the ledger row. A cap, because `stats`
+  # is rendered verbatim on the health panel; the count is exact either way.
+  MAX_REPORTED_IDS = 50
+
   def up
     # Read the counters back out of the ledger before the first batch, so a slice
     # resumed after the budget ran out carries on from the totals it recorded
@@ -42,18 +53,36 @@ class BackfillSessionTranscriptChunks < PostDeployTask
     @migrated = stats.fetch("migrated", 0)
     @already_chunked = stats.fetch("already_chunked", 0)
     @failures = stats.fetch("verification_failures", 0)
-    checkpoint!(migrated: @migrated, already_chunked: @already_chunked, verification_failures: @failures)
+    @unmigrated = stats.fetch("unmigrated_session_ids", [])
+    record_progress!
 
     # `select(:id)` rather than whole rows: a bare batch would instantiate 200
     # transcripts at once, which is the OOM this task exists to make less likely
     # (#495), not one to reproduce.
     sweep(Session.select(:id).where.not(transcript: nil), batch_size: BATCH_SIZE) do |batch|
       batch.each { |row| migrate_one(row.id) }
-      checkpoint!(migrated: @migrated, already_chunked: @already_chunked, verification_failures: @failures)
+      record_progress!
     end
   end
 
   private
+
+  def record_progress!
+    checkpoint!(
+      migrated: @migrated,
+      already_chunked: @already_chunked,
+      verification_failures: @failures,
+      unmigrated_session_ids: @unmigrated
+    )
+  end
+
+  # A row that did not migrate keeps its legacy column and goes on reading from it,
+  # so nothing is broken — but it is the one thing phase 2 must not step on, and a
+  # bare count would leave whoever checks with no way to find it without a shell.
+  def record_failure!(session_id)
+    @failures += 1
+    @unmigrated << session_id if @unmigrated.size < MAX_REPORTED_IDS
+  end
 
   def migrate_one(session_id)
     Session.transaction do
@@ -91,7 +120,7 @@ class BackfillSessionTranscriptChunks < PostDeployTask
 
       unless verified?(session_id: session_id, content: content, legacy: legacy)
         SessionTranscriptChunk.where(session_id: session_id).delete_all
-        @failures += 1
+        record_failure!(session_id)
         next
       end
 
@@ -110,7 +139,7 @@ class BackfillSessionTranscriptChunks < PostDeployTask
   rescue StandardError => e
     # One unreadable row must not stop the sweep: the column is untouched, so that
     # session keeps rendering from it, and the counter says how many need a look.
-    @failures += 1
+    record_failure!(session_id)
     logger.error("[BackfillSessionTranscriptChunks] session #{session_id}: #{e.class}: #{e.message}")
     ErrorReporter.report_exception(e, context: { session_id: session_id, task: self.class.name })
   end

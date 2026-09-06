@@ -92,6 +92,69 @@ class ChunkedTranscriptTest < ActiveSupport::TestCase
     assert_equal 4, Session.find(@session.id).transcript_line_count
   end
 
+  test "a raw NUL byte is stripped rather than raising" do
+    # The old `json` column encoded 0x00 as the escape `\u0000` and Postgres never
+    # saw the byte; `text` does, and rejects it. An agent that prints one would
+    # otherwise raise inside the poll's own transaction and freeze this session's
+    # transcript for good.
+    content = "#{jsonl(2)}{\"type\":\"assistant\",\"text\":\"before\u0000after\"}\n"
+
+    assert_nothing_raised { @session.update!(transcript: content) }
+
+    fresh = Session.find(@session.id)
+    assert_equal content.delete("\u0000"), fresh.transcript
+    assert_not_includes fresh.transcript, "\u0000"
+    assert_equal 3, fresh.transcript_line_count, "stripping a NUL must not change the event count"
+    assert_equal fresh.transcript.bytesize, fresh.transcript_byte_size
+    assert_equal Digest::SHA256.hexdigest(fresh.transcript), fresh.read_attribute(:transcript_digest)
+  end
+
+  test "a transcript that is only a blank line is stored, not discarded" do
+    # `String#presence` would swallow this. A poll can genuinely read one blank line
+    # off a file the runtime has just started writing, and that is a transcript of
+    # one event, not the absence of one.
+    @session.update!(transcript: "\n")
+
+    fresh = Session.find(@session.id)
+    assert_equal "\n", fresh.transcript, "the bytes must survive the round trip"
+    # 0, not 1, and deliberately: `Session.transcript_line_count` has always counted
+    # a blank value as zero events, which is what the regression guard compares. The
+    # claim here is that the CONTENT is preserved, exactly as the old `json` column
+    # preserved it — not that a blank line became an event.
+    assert_equal 0, fresh.transcript_line_count
+  end
+
+  test "an empty string is the absence of a transcript" do
+    @session.update!(transcript: jsonl(3))
+    @session.update!(transcript: "")
+
+    assert_nil Session.find(@session.id).transcript
+    assert_empty chunks_of(@session)
+  end
+
+  test "an append whose tail no longer matches the store falls back to a replace" do
+    # A writer working from a base another writer superseded between its read and
+    # its lock. The length check cannot see a same-length replacement, so the tail
+    # chunk is compared against the same range of the incoming value.
+    base = jsonl(5)
+    @session.update!(transcript: base)
+    stale = Session.find(@session.id)
+
+    # Same length, different bytes — invisible to `SUM(byte_size)`.
+    superseded = base.sub("\"text\":\"event\"", "\"text\":\"EVENT\"")
+    assert_equal base.bytesize, superseded.bytesize
+    SessionTranscriptChunk.where(session_id: @session.id).order(:seq).first
+      .update!(content: superseded, byte_size: superseded.bytesize,
+               line_count: SessionTranscriptChunk.line_count_for(superseded))
+
+    stale.update!(transcript: base + jsonl(1, start: 5))
+
+    # The append declined, so the chunk set was rebuilt from the incoming value
+    # whole rather than splicing its tail onto a document it never saw.
+    assert_equal base + jsonl(1, start: 5), stored_bytes(@session)
+    assert_equal base + jsonl(1, start: 5), Session.find(@session.id).transcript
+  end
+
   test "an empty write clears the chunk set" do
     @session.update!(transcript: jsonl(3))
     @session.update!(transcript: nil)

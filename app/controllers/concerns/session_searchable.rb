@@ -42,10 +42,15 @@ module SessionSearchable
   # in Api::V1::SessionsControllerTest and for the transcript in
   # SessionContentSearchTest.
   #
-  # What `transcript::text` matches is the stored JSON, not the rendered
-  # conversation: a phrase broken across a line break is `\n` in that text and does
-  # not match, and a hit can land in a tool argument or a file path rather than in
-  # anything anybody said.
+  # What the transcript half matches is the stored JSONL, not the rendered
+  # conversation: a hit can land in a tool argument or a file path rather than in
+  # anything anybody said. The two storages differ in one way worth knowing, and it
+  # is the `json` column's doing rather than the chunk table's: `transcript::text`
+  # renders the column as a JSON *string literal*, so the document arrives quoted
+  # and escaped and a query containing a `"` matches the `\"` in it. The chunk half
+  # is the raw JSONL, where a `"` is a `"`. That makes the chunk half the more
+  # truthful of the two, and it stops being a difference at all once
+  # `BackfillSessionTranscriptChunks` has emptied the column.
   #
   # Both JSON columns are read through `::jsonb::text`, never `::text` directly.
   # `metadata` is a `json` column and `custom_metadata` a `jsonb` one, and on `json`
