@@ -24,7 +24,7 @@ sequenceDiagram
     participant S as Session
     participant U as You (browser)
 
-    Note over P,M: spawn: ELICITATION_REQUEST_URL + POLL_URL + PREFER_HTTP_FALLBACK<br/>+ TTL_MS + SESSION_ID — CliSpawnEnv (agent process) + the<br/>server's own env table in the generated MCP config (both runtimes)
+    Note over P,M: spawn: ELICITATION_REQUEST_URL + POLL_URL + PREFER_HTTP_FALLBACK<br/>+ TTL_MS + SESSION_ID — CliSpawnEnv (agent process) + the<br/>server's own env table in the generated MCP config (all three runtimes)
     P->>M: tool call
     M->>Z: POST /api/v1/elicitations (UNAUTHENTICATED)<br/>_meta["com.pulsemcp/request-id"] + message
     Z->>S: create Elicitation (pending, expires per the configured window)

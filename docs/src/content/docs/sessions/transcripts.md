@@ -533,8 +533,8 @@ session row instead of loading the conversation to count newlines in it.
 
 The guard above assumes one canonical transcript file per session, which is true for Claude Code
 and for Pi, and false for Codex. Codex rollouts are append-only and immutable, and `codex exec`
-mints a **new** rollout UUID for every run that is not a resume — so when a resume fails and Zimmer fresh-starts
-the turn, the conversation continues in a brand-new, initially tiny file.
+mints a **new** rollout UUID for every run that is not a resume — so when a resume fails and Zimmer
+fresh-starts the turn, the conversation continues in a brand-new, initially tiny file.
 
 `TranscriptSource#rotates_transcript_files?` is what tells them apart: `false` for Claude and Pi
 (shorter means *lost*, refuse and repair), `true` for Codex (shorter means *next file*, carry

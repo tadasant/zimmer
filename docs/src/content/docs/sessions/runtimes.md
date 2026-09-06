@@ -1,8 +1,6 @@
 ---
 title: Runtimes
 description: The three agent harnesses a session can run on — Claude Code, Codex and Pi — what each needs, which models each offers, and where they behave differently.
-sidebar:
-  order: 3
 ---
 
 A session runs one headless coding-agent CLI, and there are three to pick from. Which one a
@@ -12,7 +10,7 @@ session gets is the `sessions.agent_runtime` column, and the choice is per sessi
 | --- | --- | --- | --- |
 | CLI | `claude` | `codex exec` | `pi -p` |
 | Vendor | Anthropic | OpenAI | Pi coding agent (`@earendil-works/pi-coding-agent`, pinned to 0.84.4 in `Dockerfile.base`) |
-| Credential | pooled OAuth subscription account | pooled OAuth subscription account | `OPENROUTER_API_KEY` in the session environment |
+| Credential | pooled OAuth subscription account | pooled OAuth subscription account | `OPENROUTER_API_KEY`, put in Pi's process environment at spawn |
 | Default model | `opus` | `gpt-5.6-terra` | `openrouter/anthropic/claude-opus-4.6` |
 | MCP, hooks, plugins | all three native | MCP native; no hook lifecycle for AIR to translate into | none native — all three come from [pinned Pi extensions](#pi-brings-no-mcp-hooks-or-plugins-of-its-own) |
 
@@ -35,12 +33,13 @@ Three places set it, most specific first:
 
 Below all three is the database column default, `claude_code`.
 
-:::caution[The global default is ignored by the API unless you pass an `agent_root`]
-`Api::V1::SessionsController#create` reaches `AppSetting.default_runtime` only through
-`AgentRootsConfig`. With no `agent_root` param it returns early and you get the column default.
-This applies to `pi` exactly as it does to `codex` — set the global default to `pi`, create a
-session via the API with no `agent_root`, and you get Claude Code. See
-[Configuration reference](/start/configuration/#settings-you-change-in-the-ui).
+:::caution[`start_session` skips the global default when you name no agent root]
+The REST API honors the chain in full: `Api::V1::SessionsController#resolve_agent_root_defaults!`
+runs whether or not `agent_root` was given, so a rootless `POST /api/v1/sessions` still picks up
+Settings → Default runtime. The MCP `start_session` tool does not — it reaches
+`apply_agent_root_defaults!` only `if agent_root_name`, so a rootless MCP spawn falls through to the
+column default. Set the global default to `pi`, start a session over MCP with no `agent_root`, and
+you get Claude Code.
 :::
 
 ## Models
@@ -70,8 +69,8 @@ trap in it: `pi --list-models` only prints providers whose credential currently 
 running it without `OPENROUTER_API_KEY` set silently omits every `openrouter` row and makes the
 catalog look far smaller than it is.
 
-`requires_oauth` is set on the Codex models that only work with a ChatGPT login. Nothing in
-Claude Code's or Pi's catalog carries it.
+`requires_oauth` marks the Codex models that only work with a ChatGPT login. No Claude Code or Pi
+model sets it true.
 
 ## Credentials
 
@@ -81,7 +80,7 @@ written to a host-global file, and rotation when one hits a quota wall. That is
 
 **Pi is not in that pool, and nothing about it rotates.** Pi resolves a provider credential per
 request from its own process environment, so `PiAuthProvider` pools nothing and every one of its
-methods is a documented no-op — `#accounts` returns an always-empty relation rather than `nil`
+pooling methods is a documented no-op — `#accounts` returns an always-empty relation rather than `nil`
 precisely because callers chain `.available.exists?` onto it. There is no Pi identity to mark
 current, nothing to refresh, and no Pi entry in `RuntimeAuthProvider::RUNTIMES` (the constant that
 drives the token-refresh sweep and the auth warm-up fan-out).
@@ -96,7 +95,7 @@ logged rather than fatal: the session spawns and Pi reports its own `not_ready`.
 
 `CliStatusService` is the observable answer to "can a Pi session run" — it shells
 `pi auth check --provider openrouter`, which prints `ready` and exits 0 when the key resolves.
-It is served by `GET /api/v1/clis` and `get_system_health(include_cli_status: true)`, so a session
+It is served by `GET /api/v1/clis/status` and `get_system_health(include_cli_status: true)`, so a session
 can learn whether the key is set without any surface being able to tell it what the key is.
 
 ## What differs at spawn
@@ -143,8 +142,8 @@ away, with logs indistinguishable from a hook that worked.
 Two consequences follow for the reader rather than the implementer.
 
 **MCP tools are not individually callable on Pi.** `pi-mcp-adapter` exposes one `mcp` proxy tool
-that the agent searches and calls through, so a dozen servers cost roughly 200 tokens of context
-instead of thousands. `PiRuntimePromptContribution` tells the agent so, because one that expects
+that the agent searches and calls through, so a dozen servers do not consume the context window
+before the session starts. `PiRuntimePromptContribution` tells the agent so, because one that expects
 `mcp__server__tool` to exist will otherwise conclude its servers are missing. It also means a Pi
 transcript names MCP tools differently from a Claude Code one — see [Transcript
 hooks](/extend/transcript-hooks/).
@@ -161,8 +160,8 @@ nothing](/extend/agent-harness/#pi-is-the-runtime-that-supplies-nothing).
 
 ## Where Pi is partial today
 
-None of these is a temporary omission waiting on a version bump; each one follows from something
-about the runtime, and each is worth knowing before you route real work to Pi.
+Some of these follow from the runtime itself; others are Zimmer wiring that has not been done.
+Either way each is worth knowing before you route real work to Pi.
 
 - **No subagents.** Claude Code has `Task`/`Agent` and Codex has `spawn_agent`. Pi has neither, so
   the orchestrator prompt points a Pi session's self-review at the `/code-review` skill instead.
@@ -182,15 +181,24 @@ about the runtime, and each is worth knowing before you route real work to Pi.
 - **Cost is priced on the Anthropic models only.** Token counts are ingested for every Pi model;
   `Rate` carries no entry for the OpenAI and Google ids, so a Pi session on one of those lands
   with correct tokens and a zero cost. See [Token spend](/operate/costs/#pis-token-usage).
+- **A transcript hook cannot see a Pi session's MCP tool calls.** `pi-mcp-adapter` routes every
+  call through one proxy tool rather than naming the server, so a Pi transcript carries no
+  `mcp__<server>__<tool>` for a hook to key on — a PR opened through an MCP `create_pull_request`
+  goes unrecorded. See [Transcript hooks](/extend/transcript-hooks/).
+- **A Pi session's MCP status pills go green or stay grey, never red.** `PiMcpStatusDetector` mines
+  the transcript for proxy-tool signals, and an absent signal is indistinguishable from a server
+  nothing called. See [Known
+  limitations](/limitations/#a-pi-sessions-mcp-status-pills-go-green-or-stay-grey--never-red).
 - **Zimmer cannot adopt an MCP OAuth token Pi refreshed.** Zimmer hands Pi a token it already
   holds; the reverse direction does not exist. See [MCP server OAuth](/auth/mcp-oauth/).
 - **Extension env contributions do not reach Pi.** `Zimmer::ExtensionRegistry.spawn_env_contributions`
   is called by `ClaudeSpawnEnv` and by nothing else, so the mount point is unreachable from a Pi
   session exactly as it is from a Codex one. See [Extensions](/extend/extensions/).
-- **The spot gate does not count Pi.** Every spot ceiling, pause and preemption path filters on
-  `agent_runtime = 'claude_code'`, because they price a running fleet against an Anthropic quota
-  window. A Pi session spends against an OpenRouter key instead, so it neither takes a slot nor
-  gets paused. See [Spot and priority](/sessions/spot-and-priority/).
+- **The spot concurrency ceiling does not count Pi, and never pauses it.** That ceiling, and every
+  pause and preemption path, filter on `agent_runtime = 'claude_code'`, because they price a running
+  fleet against an Anthropic quota window — a Pi session spends against an OpenRouter key instead.
+  The *top-up* ceiling is the exception and counts every runtime, Pi included. See [Spot and
+  priority](/sessions/spot-and-priority/#what-the-ceiling-counts-and-what-it-does-not).
 
 ## Where Pi is easier
 
