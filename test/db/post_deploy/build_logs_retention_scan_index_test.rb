@@ -58,22 +58,19 @@ class BuildLogsRetentionScanIndexTest < ActiveSupport::TestCase
     # `indisvalid = false`: never used by the planner, never repaired on its own,
     # and skipped forever by a plain IF NOT EXISTS. Reported here the way
     # Postgres reports it, because the alternative is flipping a catalog bit.
-    connection.execute("CREATE INDEX IF NOT EXISTS #{INDEX_NAME} ON logs (level, id, created_at)")
+    leave_invalid_index!
     wreckage = index_relfilenode(INDEX_NAME)
 
-    # Reported invalid the way Postgres reports it after an interrupted build,
-    # rather than produced: producing a genuinely invalid index means writing to
-    # `pg_index` as a superuser, which is a worse thing for a test to depend on
-    # than the one reading the task makes.
-    build_task.stub(:invalid_index?, true) { |task| task.send(:drop_invalid_index) }
+    assert_equal false, logs_index_validity(INDEX_NAME),
+      "the setup has to leave a genuinely invalid index or this test proves nothing"
 
-    assert_nil logs_index_validity(INDEX_NAME), "the invalid index must be dropped, not skipped over"
+    _run, outcome = run_task
 
-    # And the task then converges on a valid index that is not the one it found.
-    run_task
-
-    assert_equal true, logs_index_validity(INDEX_NAME)
-    assert_not_equal wreckage, index_relfilenode(INDEX_NAME)
+    assert_nil outcome
+    assert_equal true, logs_index_validity(INDEX_NAME),
+      "a plain IF NOT EXISTS would have skipped the wreckage and left it invalid forever"
+    assert_not_equal wreckage, index_relfilenode(INDEX_NAME), "the index must be rebuilt, not adopted"
+    assert_not_includes logs_index_names, SUPERSEDED_INDEX_NAME
   end
 
   test "yields instead of building while another connection holds the advisory lock" do
@@ -115,6 +112,38 @@ class BuildLogsRetentionScanIndexTest < ActiveSupport::TestCase
   def connection = ActiveRecord::Base.connection
 
   def real_index_state = logs_index_validity(INDEX_NAME)
+
+  # A real interrupted `CREATE INDEX CONCURRENTLY`, not a stubbed reading of one.
+  # CONCURRENTLY commits the catalog entry first and then waits for every
+  # transaction holding a lock that conflicts with SHARE to finish, so an open
+  # transaction holding ROW EXCLUSIVE on `logs` — what any writer holds — plus a
+  # short `statement_timeout` cancels it in that wait, leaving exactly the
+  # `indisvalid = false` index a killed container leaves.
+  #
+  # The lock, rather than a plain `SELECT`: under READ COMMITTED a finished
+  # `SELECT` releases its snapshot and holds only ACCESS SHARE, which conflicts
+  # with nothing CONCURRENTLY waits on, so it does not block the build at all.
+  def leave_invalid_index!
+    blocker = ActiveRecord::Base.connection_pool.checkout
+
+    begin
+      blocker.execute("BEGIN")
+      blocker.execute("LOCK TABLE logs IN ROW EXCLUSIVE MODE")
+
+      connection.execute("SET statement_timeout = '1s'")
+      assert_raises(ActiveRecord::QueryCanceled) do
+        connection.execute("CREATE INDEX CONCURRENTLY #{INDEX_NAME} ON logs (level, id, created_at)")
+      end
+    ensure
+      connection.execute("RESET statement_timeout")
+      begin
+        blocker.execute("ROLLBACK")
+      rescue StandardError
+        nil
+      end
+      ActiveRecord::Base.connection_pool.checkin(blocker)
+    end
+  end
 
   def index_relfilenode(name)
     connection.select_value("SELECT relfilenode FROM pg_class WHERE relname = #{connection.quote(name)}")

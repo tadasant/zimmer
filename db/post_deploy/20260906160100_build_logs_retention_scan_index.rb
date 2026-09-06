@@ -33,6 +33,15 @@
 #     first, under the lock that proves nobody is building it.
 #   * The drop of the superseded index runs only after the new one exists and is
 #     valid, so no failure ordering leaves `logs` with neither.
+#
+# WHAT BOUNDS IT is the lease, not `PostDeployTaskJob::SLICE_BUDGET` — `up` never
+# consults `out_of_time?`, because `CREATE INDEX CONCURRENTLY` is one statement
+# that cannot be resumed from a cursor. So a build holds a `default` worker thread
+# to completion, and one that outran `PostDeployTaskRun::LEASE` (20 minutes) would
+# be reaped to `failed` while still succeeding. That converges rather than
+# corrupts: the next tick claims the reaped row, the advisory lock sends it
+# straight back with CONTINUE, and the original slice records its own success. The
+# visible cost is a spurious `failed` on the health panel in between.
 class BuildLogsRetentionScanIndex < PostDeployTask
   # Spelled out rather than read from the migration class: a task file has to
   # keep loading long after the migration that motivated it has been squashed
