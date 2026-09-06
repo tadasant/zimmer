@@ -53,6 +53,62 @@ class SessionHierarchy
   # chain and can fan out just as widely as "down".
   MAX_NODES = 150
 
+  # The only columns this service reads off a session, and therefore the only
+  # ones it may ask Postgres for.
+  #
+  # THE POINT IS WHAT IS NOT HERE. `sessions.transcript` is a `json` column
+  # holding a whole agent transcript — megabytes on a session that ran for hours
+  # — and `prompt` runs to PROMPT_MAX_LENGTH beside it. A bare `Session.where(…)`
+  # selects both, TOAST-detoasts both, and ships both over the wire, to read a
+  # title and two integers off each row. That is not a rounding error at this
+  # scale: the walk instantiates a level at a time and SessionProvenanceBroadcastJob
+  # runs the whole walk once per viewer, so a 47-session lineage loaded 2,452 full
+  # rows and shipped 2.5 GB of transcript nobody looked at — enough to hold both
+  # `default` threads for 17 minutes and starve every other lane behind a saturated
+  # database ([#1063](https://github.com/tadasant/zimmer/issues/1063)).
+  #
+  # `parent_ids_of` already plucked for this reason, and its comment named
+  # `prompt` as the thing to avoid dragging up. It was right and it was too
+  # narrow — `transcript` is the larger column, and the six loaders that
+  # instantiate records rather than plucking never got the treatment at all.
+  # This constant is that fix, applied once, in a place a new loader has to go
+  # through.
+  #
+  # Every name here is read somewhere below or in `node_for`:
+  #   id, title, status         — the Node's own fields
+  #   parent_session_id         — the spawn edge
+  #   custom_metadata           — `router_session_id`, the derived spawn edge
+  #   genesis, scheduling_class — `genesis_key` and `priority_class`
+  #   metadata, git_root, subdirectory
+  #                             — `agent_root_key`, via AgentRootsConfig.find_for_session
+  #
+  # ADDING A FIELD TO `Node` MEANS ADDING ITS COLUMN HERE, AND THE GUARD FOR THAT
+  # IS IN CI RATHER THAN AT RUNTIME — deliberately, because at runtime there is
+  # no guard at all. A missing column raises `ActiveModel::MissingAttributeError`,
+  # which is a `StandardError`, and the render that would raise it happens inside
+  # the block `BroadcastService#broadcast_with_retry` runs under a bare `rescue`.
+  # So the panel would not blow up; it would silently stop repainting, and the
+  # five swallowed failures would open the service's circuit breaker and pause
+  # live updates for every user in the app.
+  #
+  # Hence `session_provenance_broadcast_job_test.rb` renders the real partial
+  # from a projected record, through the same `SessionsController.render` call
+  # the fan-out uses. That is the assertion that a column left out of this list
+  # is caught by the build instead of by a user noticing a panel went quiet.
+  COLUMNS = %w[
+    id title status parent_session_id custom_metadata
+    genesis scheduling_class metadata git_root subdirectory
+  ].freeze
+
+  # Sessions as this service loads them: the projection above, never whole rows.
+  #
+  # Read-only by construction. Nothing in the graph writes — it renders — and a
+  # projected record whose unselected attributes are simply absent has no business
+  # being saved, so the mistake raises here instead of somewhere downstream.
+  def self.graph_scope
+    Session.select(*COLUMNS).readonly
+  end
+
   # One session in the tree, with everything a renderer needs and nothing more.
   #
   # `parent_id` is the spawn parent and stays exactly what it was.
@@ -134,7 +190,7 @@ class SessionHierarchy
       parent_id = current.lineage_parent_id
       break if parent_id.blank? || seen.include?(parent_id)
 
-      parent = Session.find_by(id: parent_id)
+      parent = graph_scope.find_by(id: parent_id)
       break if parent.nil?
 
       seen << parent.id
@@ -258,11 +314,11 @@ class SessionHierarchy
     above = parent_ids.to_set
     reached = {}
 
-    Session.where(parent_session_id: parent_ids).each do |child|
+    graph_scope.where(parent_session_id: parent_ids).each do |child|
       reached[child.id] ||= [ child, child.parent_session_id, false ]
     end
 
-    Session.where("custom_metadata->>'router_session_id' IN (?)", parent_ids.map(&:to_s)).each do |child|
+    graph_scope.where("custom_metadata->>'router_session_id' IN (?)", parent_ids.map(&:to_s)).each do |child|
       via = child.lineage_parent_candidate_ids.find { |id| above.include?(id) }
       reached[child.id] ||= [ child, via, false ] if via
     end
@@ -275,7 +331,7 @@ class SessionHierarchy
                     .pluck(:session_id, :uncle_session_id)
                     .each { |child_id, uncle_id| uncle_of[child_id] ||= uncle_id }
 
-    Session.where(id: uncle_of.keys - reached.keys).each do |child|
+    graph_scope.where(id: uncle_of.keys - reached.keys).each do |child|
       reached[child.id] = [ child, uncle_of[child.id], true ]
     end
 
@@ -314,6 +370,11 @@ class SessionHierarchy
 
   private
 
+  # The class-level projection, reachable from the instance walk. Named rather
+  # than spelled `self.class.graph_scope` at each call site so that every loader
+  # in this file reads the same way whether it sits on the class or the instance.
+  def graph_scope = self.class.graph_scope
+
   # Walk up over BOTH edge kinds, breadth-first, collecting every session that
   # has no seniors of its own. The spawn origin is computed separately (and
   # first) so it can lead the list and so its own truncation flag is preserved.
@@ -347,7 +408,7 @@ class SessionHierarchy
       end
 
       seen.merge(senior_ids)
-      level = Session.where(id: senior_ids).to_a
+      level = graph_scope.where(id: senior_ids).to_a
       # A senior id that does not resolve is a DEAD POINTER, not a walk that ran
       # out of budget — `custom_metadata["router_session_id"]` is never cleaned
       # up when the router is deleted, unlike the column, which is nullified.
@@ -358,7 +419,7 @@ class SessionHierarchy
       frontier = level.map(&:id)
     end
 
-    anchors = topmost(ancestors + [ session ]) + Session.where(id: stalled).to_a
+    anchors = topmost(ancestors + [ session ]) + graph_scope.where(id: stalled).to_a
 
     # The spawn origin leads, so the ordinary single-parent case renders exactly
     # as it did before uncle edges existed. A session with no seniors at all is

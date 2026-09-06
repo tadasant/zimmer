@@ -3152,7 +3152,14 @@ class Session < ApplicationRecord
         # database blip partway through used to be swallowed with the rest. nil
         # means the session went away between the hierarchy read and here, and
         # the block returning nil is how the service is told to send nothing.
-        viewer = Session.find_by(id: viewer_id)
+        #
+        # Loaded through the hierarchy's own projection, not as a whole row. The
+        # partial reads exactly two things off this record — its id, and the
+        # human-message record it builds from its lineage — while a bare
+        # `Session.find_by` would detoast this viewer's whole `transcript` for
+        # every session in the lineage, once per session in the lineage. That is
+        # the quadratic in this method's own docstring, denominated in megabytes.
+        viewer = SessionHierarchy.graph_scope.find_by(id: viewer_id)
         viewer && SessionsController.render(partial: "sessions/session_hierarchy", locals: { agent_session: viewer })
       end
     end
