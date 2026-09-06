@@ -97,9 +97,15 @@ jobs:
         id: img
         run: |
           set -euo pipefail
+          # Assigned first, not interpolated straight into `echo`: a failing
+          # rev-parse inside an echo argument still exits 0, so `set -e` would
+          # not bite and the step would emit `tag=staging-` and an empty
+          # GIT_SHA -- a garbage image tag and a build with no identity.
+          short_sha=$(git rev-parse --short HEAD)
+          full_sha=$(git rev-parse HEAD)
           {
-            echo "tag=staging-$(git rev-parse --short HEAD)"
-            echo "sha=$(git rev-parse HEAD)"
+            echo "tag=staging-${short_sha}"
+            echo "sha=${full_sha}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR

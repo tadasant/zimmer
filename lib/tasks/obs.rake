@@ -27,10 +27,14 @@ namespace :obs do
   end
 
   # What ships as the `service.version` resource attribute, or why nothing does.
-  # Mirrors OtelLogsExporter#resolve_service_version, which is deliberately not
-  # reachable here: obs:status must answer this whether or not an exporter exists.
-  def service_version_label
-    version = ENV["OTEL_SERVICE_VERSION"].presence || ENV["ZIMMER_GIT_SHA"].presence
+  #
+  # Ask the exporter whenever there is one, rather than re-deriving from ENV. It
+  # resolves its identity ONCE at construction, so a variable that changed after
+  # boot would make a re-derived answer report a value that is not being shipped
+  # -- the exact "guess what Grafana is missing" this task exists to remove. The
+  # ENV fallback is only for the OFF case, where there is nothing to ask.
+  def service_version_label(exporter)
+    version = exporter ? exporter.describe[:service_version] : (ENV["OTEL_SERVICE_VERSION"].presence || ENV["ZIMMER_GIT_SHA"].presence)
     return version if version
 
     "(unset -- this image was not built by release-image.yml/deploy-staging.yml, " \
@@ -49,7 +53,7 @@ namespace :obs do
     # has no GIT_SHA baked in, so the attribute is omitted entirely — say that
     # here rather than leaving an operator to infer it from a missing field in
     # Grafana.
-    puts "  service.version        : #{service_version_label}"
+    puts "  service.version        : #{service_version_label(exporter)}"
     puts ""
 
     if exporter

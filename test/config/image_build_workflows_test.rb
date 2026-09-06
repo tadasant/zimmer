@@ -346,9 +346,12 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
     app_builds = self.class.image_build_jobs.flat_map do |workflow, job_name, job|
       (job["steps"] || [])
         .select { |s| s["uses"].to_s.start_with?("#{BUILD_ACTION}@") }
-        # `file:` is only set for the base image; the app image builds the
-        # default ./Dockerfile, which is the one carrying ARG GIT_SHA.
-        .reject { |s| s.dig("with", "file").to_s.include?("Dockerfile.base") }
+        # Exactly the steps that build ./Dockerfile — the one carrying ARG
+        # GIT_SHA. Keyed on `file:` being ABSENT rather than on it not being
+        # Dockerfile.base, so a future build of some other Dockerfile (the
+        # audit images in ci.yml already do this) is not wrongly required to
+        # carry a build arg that means nothing to it.
+        .reject { |s| s.dig("with", "file").present? }
         .map { |s| [ "#{workflow} job '#{job_name}' step '#{s['name']}'", s ] }
     end
 
@@ -362,9 +365,9 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
         "#{where}: must pass a non-empty `GIT_SHA=` build arg. Without it the published " \
         "image ships log records with no service.version, and an error burst cannot be " \
         "tied to the deploy that caused it.")
-      assert_not_includes build_args, "GIT_SHA=${{ inputs.",
+      assert_no_match(/^GIT_SHA=\$\{\{\s*inputs\./, build_args,
         "#{where}: GIT_SHA must come from the commit actually checked out, not from a " \
-        "dispatch input that may be a branch name or an abbreviated SHA"
+        "dispatch input that may be a branch name or an abbreviated SHA")
     end
   end
 
@@ -383,6 +386,16 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
     assert_match(/^ENV ZIMMER_GIT_SHA=\$\{GIT_SHA\}$/, dockerfile,
       "Dockerfile must export the arg as ZIMMER_GIT_SHA; an ARG alone does not survive " \
       "into the running container")
+
+    # An ARG produces no layer, so the cache miss lands on its first USE. The ENV
+    # is that use, and its value changes on every commit — placed above the RUN
+    # steps it would rebuild every one of them on every build, silently, with
+    # nothing failing to say so.
+    env_line = dockerfile.lines.index { |l| l.start_with?("ENV ZIMMER_GIT_SHA=") }
+    last_run = dockerfile.lines.rindex { |l| l.start_with?("RUN ") }
+    assert_operator last_run, :<, env_line,
+      "Dockerfile: `ENV ZIMMER_GIT_SHA` must come after the last RUN in the final stage. " \
+      "Its value changes on every commit, so anything below it is rebuilt every time."
     assert_includes exporter, 'ENV["ZIMMER_GIT_SHA"]',
       "the exporter must read the same variable name the Dockerfile writes"
   end
