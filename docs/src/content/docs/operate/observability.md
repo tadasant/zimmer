@@ -204,13 +204,15 @@ Only the ERROR moves. The caller, `TranscriptPollerService#poll_and_broadcast`, 
 own WARN for the same poll and still returns `false` — a pre-spawn poll leaves a record in
 VictoriaLogs either way. WARN does not page, which is the whole difference.
 
-## How environments are told apart
+## How environments, builds and containers are told apart
 
-Every batch carries two resource attributes:
+Every batch carries four resource attributes:
 
 ```
-service.name           = zimmer          (or $OTEL_SERVICE_NAME)
-deployment.environment = <Rails.env>     (production / staging)
+service.name           = zimmer                 (or $OTEL_SERVICE_NAME)
+deployment.environment = <Rails.env>            (production / staging)
+service.version        = <commit SHA>           (omitted if the build baked none in)
+service.instance.id    = <hostname>-<pid>       (or $OTEL_SERVICE_INSTANCE_ID)
 ```
 
 **`deployment.environment` is the only thing separating staging from production.** Both
@@ -232,6 +234,56 @@ Errors are separated a second way, and a stronger one: staging and production po
 per-project with no environment filter — so sharing one DSN across both environments would
 make every staging error page the production alert channel, forever. Give staging its own
 project and its own DSN.
+
+### `service.version` says which deploy a record came from
+
+`service.version` is the commit the running image was built from. Without it a burst of
+errors carries no build identity at all, and pinning it to the deploy that caused it means
+reading GitHub Actions job timings by hand — which is exactly what a job-claim query
+crashing seconds after a Kamal cutover once cost
+([#736](https://github.com/tadasant/zimmer/issues/736)).
+
+It is baked in at build time, not read from the deploy environment:
+
+1. `.github/workflows/release-image.yml` (all three build attempts) and
+   `.github/workflows/deploy-staging.yml` pass `GIT_SHA=<commit>` to
+   `docker/build-push-action`.
+2. The `Dockerfile`'s `ARG GIT_SHA` / `ENV ZIMMER_GIT_SHA=${GIT_SHA}` carries it into the
+   running container.
+3. `OtelLogsExporter` reads `ZIMMER_GIT_SHA` at boot. `OTEL_SERVICE_VERSION` overrides it.
+
+**An image built any other way — a hand-run `docker build`, a dev machine, `rails console`,
+the test suite — has no commit baked in, and the attribute is then omitted entirely rather
+than shipped empty.** A blank `service.version` would match a selector for the attribute
+while identifying nothing. `bin/rails obs:status` prints which of the two states this
+instance is in, so a missing field in Grafana does not have to be guessed at.
+
+```logsql
+{service.name="zimmer"} deployment.environment:=production severity_text:="ERROR"
+  | stats by (service.version) count()
+```
+
+### `service.instance.id` says which container
+
+Production runs the `web` and `worker` roles as separate containers under one
+`service.name`, so without an instance identifier a burst confined to the workers reads
+exactly like one affecting everything. `service.instance.id` defaults to `<hostname>-<pid>`
+and `OTEL_SERVICE_INSTANCE_ID` overrides it.
+
+The hostname is not the container id: Kamal boots each container with
+`--hostname "<deploy host, truncated>-<6 random bytes>"`, regenerated on every boot. So the
+value is unique per running container and changes when that container is replaced — which is
+what makes it usable for "is this burst one instance or all of them?":
+
+```logsql
+{service.name="zimmer"} deployment.environment:=production severity_text:="ERROR"
+  | stats by (service.instance.id) count()
+```
+
+**It identifies the container, not its role.** One instance standing out tells you the burst
+is confined; it does not tell you that instance is the worker. Answering *that* would need an
+attribute carrying the role, and there isn't one — cross-reference `scope.name`
+(`rails.activejob` records only come from a worker) or the job attributes on the record.
 
 ## Only production and staging may report
 
@@ -376,7 +428,9 @@ bin/rails obs:status
 ```
 
 Reports whether each signal is ON or OFF, where it points, and the labels everything is
-stamped with.
+stamped with — including whether this image has a `service.version` baked in, and the
+`service.instance.id` of the process the task itself is running in. That last one is the
+throwaway `kamal app exec` container, not the web or worker container serving traffic.
 
 ```bash
 bin/rails obs:smoke

@@ -219,6 +219,11 @@ alert rules scope to `deployment.environment=production` — so this is noise an
 not false alerting. Scrubbing them too would stop agent-session log export outright, which is a
 bigger decision than it looks; it has not been made.
 
+`ZIMMER_GIT_SHA` is not scrubbed either, so those clone-run records carry a `service.version` that
+is true of the **image** and false of the code that emitted them: an agent session works in a clone
+at some other commit, and nothing in the record says so. `deployment.environment` is still the thing
+that tells them apart from a real deployment's records — read it before reading `service.version`.
+
 ### A real bug found from an interactive `rails runner` is not recorded anywhere
 
 `config/initializers/sentry.rb` drops any event tagged `source: runner` when the process has a

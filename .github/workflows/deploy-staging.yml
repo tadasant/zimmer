@@ -88,9 +88,25 @@ jobs:
           mkdir -p "$cfg"
           echo "DOCKER_CONFIG=$cfg" >> "$GITHUB_ENV"
 
+      # Both outputs come from the SECOND checkout's HEAD rather than from
+      # `github.sha` or the dispatch input, because that is the only value
+      # guaranteed to be the commit actually being built: the input may be a
+      # branch name or an abbreviated SHA, and github.sha is the commit the
+      # workflow was dispatched from.
       - name: Resolve image tag
         id: img
-        run: echo "tag=staging-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          # Assigned first, not interpolated straight into `echo`: a failing
+          # rev-parse inside an echo argument still exits 0, so `set -e` would
+          # not bite and the step would emit `tag=staging-` and an empty
+          # GIT_SHA -- a garbage image tag and a build with no identity.
+          short_sha=$(git rev-parse --short HEAD)
+          full_sha=$(git rev-parse HEAD)
+          {
+            echo "tag=staging-${short_sha}"
+            echo "sha=${full_sha}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -128,8 +144,12 @@ jobs:
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: .
+          # GIT_SHA is baked in as ZIMMER_GIT_SHA and shipped as the
+          # `service.version` resource attribute on every OTLP log record, so a
+          # staging error burst names the build it came from.
           build-args: |
             BASE_IMAGE=ghcr.io/tadasant/zimmer-base:staging
+            GIT_SHA=${{ steps.img.outputs.sha }}
           push: true
           tags: |
             ghcr.io/tadasant/zimmer:${{ steps.img.outputs.tag }}

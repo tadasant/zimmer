@@ -26,6 +26,21 @@ namespace :obs do
     "(unparseable)"
   end
 
+  # What ships as the `service.version` resource attribute, or why nothing does.
+  #
+  # Ask the exporter whenever there is one, rather than re-deriving from ENV. It
+  # resolves its identity ONCE at construction, so a variable that changed after
+  # boot would make a re-derived answer report a value that is not being shipped
+  # -- the exact "guess what Grafana is missing" this task exists to remove. The
+  # ENV fallback is only for the OFF case, where there is nothing to ask.
+  def service_version_label(exporter)
+    version = exporter ? exporter.describe[:service_version] : (ENV["OTEL_SERVICE_VERSION"].presence || ENV["ZIMMER_GIT_SHA"].presence)
+    return version if version
+
+    "(unset -- this image was not built by release-image.yml/deploy-staging.yml, " \
+      "so records ship without service.version)"
+  end
+
   desc "Report which observability signals this instance is actually shipping (no secrets printed)."
   task status: :environment do
     exporter = OtelLogsExporter.instance
@@ -34,11 +49,19 @@ namespace :obs do
     puts "Zimmer observability status"
     puts "  deployment.environment : #{Rails.env}"
     puts "  service.name           : #{ENV.fetch("OTEL_SERVICE_NAME", "zimmer")}"
+    # The build identity every exported record carries. An image built outside CI
+    # has no GIT_SHA baked in, so the attribute is omitted entirely — say that
+    # here rather than leaving an operator to infer it from a missing field in
+    # Grafana.
+    puts "  service.version        : #{service_version_label(exporter)}"
     puts ""
 
     if exporter
       d = exporter.describe
       puts "  [ON ] OTLP logs  -> #{d[:endpoint]}"
+      # instance.id identifies THIS process, which for `kamal app exec` is a
+      # throwaway container — not the web or worker container serving traffic.
+      puts "        service.instance.id=#{d[:instance_id]} (this process)"
       puts "        export thread running=#{d[:running]} pending=#{d[:pending]}"
     else
       puts "  [OFF] OTLP logs  -- OTEL_LOGS_EXPORTER_ENDPOINT=#{ENV["OTEL_LOGS_EXPORTER_ENDPOINT"].present? ? "set" : "UNSET"}" \

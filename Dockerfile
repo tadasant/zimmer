@@ -148,6 +148,24 @@ USER 1000:1000
 # covers everything that never runs the entrypoint.
 ENV HOME=/home/rails
 
+# The commit this image was built from, as `service.version` on every log record
+# the OTLP exporter ships (config/initializers/otel_logs_exporter.rb). Without it
+# a burst of production errors carries no build identity at all, and pinning the
+# burst to the deploy that caused it means cross-referencing GitHub Actions job
+# timings by hand.
+#
+# `.github/workflows/release-image.yml` passes the commit being released and
+# `.github/workflows/deploy-staging.yml` the commit it checked out; every other
+# build path — a hand-run `docker build`, a dev machine — leaves it at the empty
+# default, and the exporter omits the attribute rather than shipping a blank one.
+#
+# The ENV sits at the very end of the stage on purpose. An ARG produces no layer,
+# so a changed value invalidates the cache at its first USE, not at its
+# declaration -- and this value changes on every commit. Moving the ENV above the
+# RUN steps would rebuild all of them on every single build. Keep it last.
+ARG GIT_SHA=""
+ENV ZIMMER_GIT_SHA=${GIT_SHA}
+
 # Entrypoint prepares the database.
 ENTRYPOINT ["/rails/bin/docker-entrypoint"]
 
