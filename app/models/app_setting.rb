@@ -83,6 +83,36 @@ class AppSetting < ApplicationRecord
   # FleetIdleMonitor, "Why a cooldown as well as a latch".
   DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES = 60
 
+  # The knobs an OPERATOR sets: the spot gate, the concurrency limit, the backlog
+  # top-up thresholds and the genesis class overrides. Every one of them is a
+  # fleet-scheduling decision somebody made deliberately, and every change to one
+  # is recorded by #log_fleet_policy_change.
+  #
+  # Deliberately NOT the whole row. `fleet_idle_since`, `fleet_idle_event_fired_at`
+  # and `quota_pool_available*` live on the same record but are written by the
+  # pollers on their own sweep, several times an hour — folding them in would bury
+  # the handful of lines that matter under a running commentary and make
+  # `updated_at` useless as "when did the policy last move". `default_runtime`,
+  # `default_model`, `extension_states` and `uncategorized_position` are settings
+  # too, but they are not fleet scheduling and they are not what silently halves
+  # throughput.
+  FLEET_POLICY_ATTRIBUTES = %w[
+    spot_gating_enabled
+    spot_reserve_five_hour_pct
+    spot_reserve_weekly_pct
+    spot_max_concurrent_sessions
+    spot_preemption_enabled
+    fleet_idle_max_sessions
+    fleet_idle_threshold_minutes
+    fleet_idle_min_fire_interval_minutes
+    genesis_class_overrides
+  ].freeze
+
+  # What #policy_change_source says when nobody set one. A write with no named
+  # surface is still recorded — an unattributed change is the one you most want
+  # to know about.
+  UNATTRIBUTED_SOURCE = "unattributed"
+
   # Null-object stand-in used only when the table can't be read (e.g. during a
   # migration run before the table exists, or in a DB-less boot path). It answers
   # the same read interface as a blank record so AgentRootsConfig never crashes on
@@ -205,6 +235,29 @@ class AppSetting < ApplicationRecord
   validates :fleet_idle_min_fire_interval_minutes,
     numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 10_080 }
   validate :genesis_class_overrides_well_formed
+
+  # Which surface is making this write, for the audit line below. Set by the
+  # controller or the MCP tool doing the writing; never persisted. An
+  # `attr_accessor` rather than a thread-local because the writer and the record
+  # are always in the same call, and a global would go stale exactly when two
+  # requests overlap.
+  attr_accessor :policy_change_source
+
+  # Record every change to the fleet-scheduling policy, old value → new value,
+  # naming the surface that made it.
+  #
+  # This exists because these numbers can be moved from three different places —
+  # two forms on `/inference`, the `action_spot_policy` MCP tool, a console — and
+  # until this callback NOTHING recorded any of them. A cap silently going back
+  # down halves fleet throughput and looks exactly like a quiet day, and the only
+  # way to reconstruct what happened was to read every agent transcript in the
+  # window and rule the rest out by elimination.
+  #
+  # WARN, not INFO, and that is the whole point: the OTel exporter ships WARN and
+  # above, so an INFO line reaches container stdout and nothing else — and there
+  # is no shell on the production box to read stdout with. WARN does not page.
+  # See docs/src/content/docs/operate/observability.md.
+  after_save :log_fleet_policy_change
 
   class << self
     # The singleton row for reads. Returns a blank, unsaved record when no row
@@ -371,6 +424,16 @@ class AppSetting < ApplicationRecord
   end
 
   private
+
+  def log_fleet_policy_change
+    moved = saved_changes.slice(*FLEET_POLICY_ATTRIBUTES)
+    return if moved.empty?
+
+    summary = moved.map { |attribute, (before, after)| "#{attribute} #{before.inspect} -> #{after.inspect}" }
+    Rails.logger.warn(
+      "[FleetPolicy] changed via #{policy_change_source.presence || UNATTRIBUTED_SOURCE}: #{summary.join(', ')}"
+    )
+  end
 
   def genesis_class_overrides_well_formed
     overrides = genesis_class_overrides

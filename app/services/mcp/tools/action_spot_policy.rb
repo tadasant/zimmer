@@ -18,6 +18,12 @@ module Mcp
         reset_genesis_classes
       ].freeze
 
+      # Named on the audit line AppSetting writes for every policy change, so a
+      # change an agent made through this tool is distinguishable from one a human
+      # made on /inference. The action is appended, because "which of the five"
+      # is the first thing anyone reading the line wants.
+      CHANGE_SOURCE = "mcp:action_spot_policy"
+
       # The three numbers FleetIdleMonitor fires on, as tool argument → column.
       # One list, so the schema, the dispatch and the echo cannot drift apart.
       TOP_UP_FIELDS = {
@@ -179,6 +185,7 @@ module Mcp
 
       def set_gating(args)
         setting = AppSetting.editable
+        setting.policy_change_source = "#{CHANGE_SOURCE} set_gating"
         changes = []
 
         unless args["enabled"].nil?
@@ -223,6 +230,7 @@ module Mcp
       # empty edit.
       def set_top_up(args)
         setting = AppSetting.editable
+        setting.policy_change_source = "#{CHANGE_SOURCE} set_top_up"
         changes = []
 
         TOP_UP_FIELDS.each do |arg, column|
@@ -255,6 +263,7 @@ module Mcp
         end
 
         setting = AppSetting.editable
+        setting.policy_change_source = "#{CHANGE_SOURCE} #{klass == SessionGenesis::PRIORITY ? 'promote_genesis' : 'demote_genesis'}"
         setting.set_genesis_class(genesis, klass)
         setting.save!
 
@@ -265,6 +274,7 @@ module Mcp
 
       def reset_genesis_classes
         setting = AppSetting.editable
+        setting.policy_change_source = "#{CHANGE_SOURCE} reset_genesis_classes"
         setting.reset_genesis_classes
         setting.save!
 

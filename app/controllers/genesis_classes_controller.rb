@@ -19,8 +19,12 @@
 # with its own route, not a form of many fields — and because a promotion should
 # never be able to ride along with an unrelated settings submit.
 class GenesisClassesController < ApplicationController
+  # Named on the audit line AppSetting writes for every genesis-class change.
+  CHANGE_SOURCE = "web:/inference genesis buttons"
+
   def update
     setting = AppSetting.editable
+    setting.policy_change_source = CHANGE_SOURCE
     genesis = params[:genesis].to_s
     klass = params[:priority_class].to_s
 
@@ -52,6 +56,7 @@ class GenesisClassesController < ApplicationController
   # Return every genesis to its shipped default.
   def destroy
     setting = AppSetting.editable
+    setting.policy_change_source = CHANGE_SOURCE
     setting.reset_genesis_classes
 
     if setting.save

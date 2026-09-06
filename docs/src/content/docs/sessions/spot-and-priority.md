@@ -396,6 +396,42 @@ band and is not pinned down. The connection budget is not what binds first, and 
 12 threads derive 91 required backends against the 97 a `db-s-2vcpu-4gb` cluster serves, and 15 would
 derive exactly 97 — the whole plan, zero margin, which is the other reason 12 rather than 15.
 
+### Every change to these numbers is recorded
+
+These numbers can be moved from three separate surfaces — the two forms on `/inference`, the
+`action_spot_policy` MCP tool, and a Rails console — and a change to one is invisible from the
+outside. A cap that quietly goes back down does not fail anything: spot work is *deferred*, never
+cancelled, so the only symptom is a fleet running slower than it is paid for, which looks exactly
+like a quiet day.
+
+So every persisted change to the operator-set scheduling policy writes one line, naming the surface
+that made it and every value that moved:
+
+```text
+[FleetPolicy] changed via web:/inference spot gate form: spot_max_concurrent_sessions 12 -> 8
+[FleetPolicy] changed via mcp:action_spot_policy set_top_up: fleet_idle_max_sessions 3 -> 12
+```
+
+The covered columns are `AppSetting::FLEET_POLICY_ATTRIBUTES`: the gate switch, both reserves, the
+concurrency limit, the preemption switch, the three top-up thresholds and the genesis class
+overrides. The state the pollers write on their own sweep — `fleet_idle_since`,
+`fleet_idle_event_fired_at`, `quota_pool_available` — is deliberately outside it, because a running
+commentary several times an hour would bury the handful of lines that matter.
+
+Two things worth knowing about the line:
+
+- **It is WARN, and that is deliberate.** The OTel exporter ships WARN and above, so an INFO record
+  reaches container stdout and nothing else — and there is no shell on the production box to read
+  stdout with. See [Observability](/operate/observability/). WARN does not page, so a legitimate
+  operator change records itself without waking anyone.
+- **It records; it does not alert.** Nothing counts these lines, and no health check compares the
+  live policy against an intended one. A silent revert is now *reconstructible* in one VictoriaLogs
+  query rather than by reading agent transcripts, but it is still not *announced*.
+
+`update_column` and `update_all` skip the callback, as they skip every callback. Nothing in Zimmer
+writes these columns that way — the pollers use them only for their own state columns — but a
+console session reaching for either would move the policy without a record.
+
 ### Its sibling: the backlog top-up ceiling
 
 **Max sessions at once** says how much work may run. The **Backlog top-up** card directly below it on
