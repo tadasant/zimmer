@@ -22,7 +22,9 @@ module Mcp
       # it as the reference point for computing relative wake-ups.
       def self.rendered_description
         <<~DESC
-          Schedule this session to be woken up at a specific time. The session will be put to sleep (waiting status) and a one-time trigger will fire at the specified time to resume it with the given prompt. If the session is manually resumed before the scheduled time, the trigger will be silently dropped.
+          Schedule this session to be woken up at a specific time. The session will be put to sleep (waiting status) and a one-time trigger will fire at the specified time to resume it with the given prompt.
+
+          **A follow-up does not cancel your wake.** If somebody sends this session a prompt before the scheduled time — a router's `follow_up`, a human's message, a queued message draining, a Slack or GitHub trigger — the session takes that turn and the wake stays armed, then fires on its own schedule (or is queued onto the turn if its moment arrives mid-turn). You do not need to re-register it. What DOES end the wake is a takeover: `restart`, a restart from scratch, or archiving the session — those replace the wait rather than adding to it.
 
           **IMPORTANT — Use this tool instead of workarounds.** When this tool is available, it is the correct way to schedule a delayed wake-up in a Zimmer context. Do NOT use these alternatives:
           - **Bash `sleep`**: Blocks the process and wastes compute resources for the entire sleep duration. The session remains "running" and cannot be reclaimed.

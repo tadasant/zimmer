@@ -3501,11 +3501,19 @@ class AgentSessionJob < ApplicationJob
 
   # Re-transition a session to running for a prompt this job is already carrying.
   #
-  # The prompt says which kind of resume this is. A session being re-resumed to
-  # deliver SYSTEM_RECOVERY never chose to wake — it is the tail of a recovery
-  # that already decided to preserve its wake-ups — so consuming them here would
-  # undo that decision and strand it. Any other prompt is somebody deliberately
-  # driving the session, where consuming the now-moot wake-ups is correct.
+  # Neither branch consumes the session's pending wake-ups, and the prompt says
+  # which reason applies. A session being re-resumed to deliver SYSTEM_RECOVERY
+  # never chose to wake — it is the tail of a recovery that already decided to
+  # preserve its wake-ups. Any other prompt is a follow-up somebody sent, which
+  # adds to whatever the session was waiting on rather than replacing it
+  # (#898). A takeover, the one kind that does consume, never reaches here: it
+  # resumes the session at its own call site before enqueueing this job.
+  #
+  # The follow-up branch is not theoretical. A follow-up delivered to a sleeping
+  # session resumes it and enqueues this job; SpotSessionHold can then defer the
+  # turn and return the session to `waiting` carrying the same prompt, and the
+  # re-check job arrives here. Consuming there would drop the wake one layer
+  # below the resume that deliberately kept it.
   #
   # @param session [Session] the session to re-transition
   # @param prompt [String, nil] the follow-up prompt this job is delivering
@@ -3513,7 +3521,7 @@ class AgentSessionJob < ApplicationJob
   def resume_for_recovery_prompt(session, prompt)
     return session.resume_for_system_recovery! if AutomatedPrompts.system_recovery?(prompt)
 
-    session.resume!
+    session.resume_for_follow_up!
     true
   end
 

@@ -12098,7 +12098,12 @@ class AgentSessionJobTest < ActiveJob::TestCase
     end
   end
 
-  test "re-resuming to deliver an ordinary follow-up still consumes the wake set" do
+  # The other branch preserves too, for its own reason (#898): a follow-up adds a
+  # turn to whatever the session was waiting on rather than replacing it. This
+  # path is how a follow-up that was deferred by the spot gate and re-checked
+  # later comes back — one layer below the resume that deliberately kept the wake,
+  # and the layer that used to drop it.
+  test "re-resuming to deliver an ordinary follow-up preserves the wake set too" do
     @session.update!(status: :needs_input)
     conditions = arm_wake_set(@session)
 
@@ -12106,8 +12111,8 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     assert @session.reload.running?
     conditions.each do |condition|
-      assert_not_nil condition.reload.last_triggered_at,
-        "a deliberate follow-up must still consume wake condition #{condition.id}"
+      assert_nil condition.reload.last_triggered_at,
+        "a follow-up must not consume wake condition #{condition.id}"
     end
   end
 

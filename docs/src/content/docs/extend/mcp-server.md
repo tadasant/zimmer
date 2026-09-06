@@ -469,7 +469,7 @@ the only ways to put a session to sleep until a time or a quota opening — the 
 that does it, and neither does the REST API (`POST /api/v1/sessions/:id/sleep` sleeps a session with
 no wake and no queue record, which is a different thing).
 
-A human's levers on a sleeping session are narrower than they look, and worth stating exactly. **Start now** (the Ranked view's ⋮) resumes a session parked in the **spot queue**, which arms nothing — but it *refuses* one asleep on a wall-clock wake, because `Sessions::StartNow` treats an armed wake as outranking the queue. For that session a human has two routes, both of which consume the pause because both mean *I am taking this session over*: send it a **follow-up** from its session page, or cancel the wake at **/triggers**, where it is listed as `Wake session #<id> at <time>`. The **Restart** button is not one of them — it refuses anything that is not `failed`.
+A human's levers on a sleeping session are narrower than they look, and worth stating exactly. **Start now** (the Ranked view's ⋮) resumes a session parked in the **spot queue**, which arms nothing — but it *refuses* one asleep on a wall-clock wake, because `Sessions::StartNow` treats an armed wake as outranking the queue. For that session a human has two routes and they do different things. A **follow-up** from its session page is delivered and the session takes a turn, but it leaves the wake armed — the message adds to the wait rather than ending it, so the session sleeps again on its own schedule afterwards. Genuinely taking the session over means cancelling the wake at **/triggers**, where it is listed as `Wake session #<id> at <time>`. The **Restart** button is neither — it refuses anything that is not `failed`.
 
 `start_session` and `action_session` also take the web UI's *symbolic* queue placement, not just the
 integer behind it: `place: "top_of_spot"` is the same server-side resolution the Ranked view's
@@ -630,6 +630,13 @@ Two things about them are worth stating because they shape how much a wait costs
 And `session_needs_input` no longer fires on a turn boundary the watched session leaves again at
 once. Zimmer settles it first, so a wake that reaches you is a session that actually came to rest →
 [a turn boundary is not a rest](/sessions/lifecycle/#a-turn-boundary-is-not-a-rest).
+
+**A follow-up does not cancel either wake.** If somebody prompts a sleeping session before its wake
+is due — a router's `follow_up`, a human's message, a queued message draining — the session takes
+that turn and the wake stays armed to fire afterwards. Only a takeover ends it: `restart`, a restart
+from scratch, or archiving the session. `follow_up`'s own result says so, with an **Its own wake-up**
+line naming the time, so a router redirecting a sleeper can see it does not have to wake it →
+[A follow-up does not cancel a wake](/sessions/lifecycle/#a-follow-up-does-not-cancel-a-wake).
 
 ### `get_costs`
 
