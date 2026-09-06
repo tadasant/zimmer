@@ -52,6 +52,13 @@
       deliberately. Nothing interrupted it and no turn was lost, so it gets its
       own sentence rather than being described as a casualty of the ceiling. %>
   <% queued_by_user = SpotSessionPause.queued_by_user?(agent_session) %>
+  <%# A hold record the session's own CLASS has overtaken. The gate holds spot
+      sessions only, so a priority session carrying one is reading back a
+      sentence — "Priority sessions are unaffected" — that describes a session it
+      no longer is. Ranked ahead of every other qualifier below because it is the
+      only one that says the mechanism does not apply at all rather than that
+      something else applies more (#423). %>
+  <% promoted = !paused_mid_run && SpotSessionHold.superseded_by_promotion?(agent_session) %>
   <%# A data attribute rather than an id: this partial renders twice per page —
       once in the mobile block, once in the desktop header, mirroring
       auth_outage_banner — and two elements cannot share one id. %>
@@ -66,6 +73,8 @@
             Waiting in the spot queue
           <% elsif paused_mid_run %>
             Paused mid-run for quota headroom
+          <% elsif promoted %>
+            Spot hold no longer applies — this session is priority
           <% elsif hold&.overdue? %>
             <%# The headline stops claiming a live ceiling once the re-check it
                 rests on has come and gone: at that point the session is not
@@ -80,6 +89,14 @@
           <% end %>
         </h3>
         <p class="mt-1 text-sm text-amber-800"><%= paused_mid_run ? pause_detail : hold_detail %></p>
+        <%# Immediately under the frozen sentence it contradicts, and in the same
+            words `get_session` uses, so the reader never has the two claims side
+            by side without the one that settles them. %>
+        <% if promoted %>
+          <p class="mt-1 text-sm font-medium text-amber-900" data-spot-hold-promoted>
+            <%= SpotSessionHold::PROMOTED_SENTENCE %>
+          </p>
+        <% end %>
         <%# Said before the resume prose below, which describes THIS mechanism's
             owner and would otherwise send the reader to the wrong one. %>
         <% if queued_turn_supersedes %>
@@ -110,12 +127,20 @@
           </p>
         <% end %>
         <p class="mt-2 text-xs text-amber-700">
-          This is a <span class="font-medium">spot</span> session
+          <%# The class as it is NOW, not the class the hold was taken under. A box
+              that opened "This is a spot session" over a row reading `priority` was
+              the same contradiction as the frozen sentence above it. %>
+          This is a <span class="font-medium"><%= agent_session.priority_class %></span> session
           (genesis <span class="font-mono"><%= agent_session.genesis_key %></span>,
           <%= agent_session.scheduling_class_source %>). It has not been cancelled —
           <%# Every clause below names what THIS mechanism's owner will do, so a
               superseded box must not reach them: they would send the reader to the
               spot gate for a session the account pool is holding. %>
+          <%# `promoted` sits BELOW the park and the deliberate park, not above them.
+              The headline and the sentence above answer "is this record still
+              true"; this clause answers "what happens next", and a mechanism with
+              its own resume owner answers that even when the gate no longer
+              applies. %>
           <% if superseded_by_park %>
             it resumes from the outage above, once the account pool recovers.
           <% elsif queued_by_user %>
@@ -125,6 +150,9 @@
           <% elsif paused_mid_run %>
             it was already running when a window reached its target, and it resumes on its own
             once utilization falls <%= SpotGateService::RESUME_MARGIN_PCT %> points below it.
+          <% elsif promoted %>
+            the gate is done with it: its queued turn runs without being asked again, and
+            this record is cleared the moment it does.
           <% elsif held_turn == SpotSessionHold::TURN_RESUME %>
             the turn it was woken for is queued and runs on its own once the gate lets it.
           <% else %>
@@ -144,12 +172,17 @@
         <% end %>
         <%# Moves this session alone. The genesis-wide lever on /inference would
             move every other session that shares its origin, which is exactly the
-            blast radius that made it the wrong tool for one held session. %>
+            blast radius that made it the wrong tool for one held session.
+            Withheld once the session IS priority: the button's whole promise is
+            "start it now", and offering it to a session that has already taken
+            that route is offering a remedy it has already used. %>
+        <% unless promoted %>
         <%= button_to "Make this session priority",
               update_scheduling_class_session_path(agent_session, scheduling_class: SessionGenesis::PRIORITY),
               method: :patch,
               form: { data: { turbo: false }, class: "mt-2" },
               class: "inline-flex items-center rounded-md border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-medium text-amber-900 shadow-sm hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-1" %>
+        <% end %>
       </div>
     </div>
   </div>

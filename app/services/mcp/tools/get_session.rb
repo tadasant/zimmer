@@ -325,6 +325,7 @@ module Mcp
         return [] if hold.nil?
 
         what = hold.resuming? ? "next turn held" : "start held"
+        promoted = SpotSessionHold.superseded_by_promotion?(session)
         [
           "- **Spot gate: #{what}#{hold.reason.present? ? " (`#{hold.reason}`)" : ''}:**" \
           "#{hold.detail.present? ? " #{hold.detail}" : ' the gate recorded no sentence for this hold.'}",
@@ -333,11 +334,20 @@ module Mcp
           # session page renders. Session 7507 read back "5 of 5 session slots
           # taken" eleven hours after the gate had returned to `within_limits`.
           ("- **As of:** #{hold.as_of_sentence}" if hold.as_of_sentence),
+          # An agent parsing this dump is exactly the reader the contradiction
+          # costs most: the gate's own sentence ends "Priority sessions are
+          # unaffected" while the class line above says `priority`. Said in the
+          # same words the session page renders, so the two surfaces cannot
+          # drift (#423).
+          ("- **Superseded by this session's class:** #{SpotSessionHold::PROMOTED_SENTENCE}" if promoted),
           "- **Hold re-check:** #{hold.recheck_sentence}",
           "- **Holds so far:** #{hold.count}",
+          # The remedy is named only while it is still available. Telling an agent
+          # to promote a session that IS priority is the advertised-remedy defect
+          # this issue is about, restated one line lower down (#423).
           ("- **The prompt that woke it is not lost:** it is recorded with the hold and " \
-           "delivered when the gate lets the turn through. Promote this session to " \
-           "priority to run it now." if hold.resuming?)
+           "delivered when the gate lets the turn through." \
+           "#{' Promote this session to priority to run it now.' unless promoted}" if hold.resuming?)
         ].compact
       end
 
