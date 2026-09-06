@@ -14,7 +14,11 @@
   <div id="session_<%= agent_session.id %>_follow_up_form"
        data-live-region="replace"
        class="fixed bottom-0 left-0 right-0 z-20 bg-white border-t border-gray-200 shadow-lg"
-       data-controller="follow-up-prompt character-counter bottom-panel-padding bottom-drawer image-attachment file-attachment slash-command"
+       data-controller="follow-up-prompt character-counter bottom-panel-padding bottom-drawer composer-drop image-attachment file-attachment slash-command"
+       <%# bottom-drawer#open is on this list because on a narrow viewport the composer
+           is behind the collapsed drawer, and so are both attachment previews — a drop
+           that staged a file without opening it would look like nothing happened. %>
+       data-action="composer-drop:files->image-attachment#handleComposerDrop composer-drop:files->file-attachment#handleComposerDrop composer-drop:files->bottom-drawer#open"
        data-character-counter-max-value="<%= Session::PROMPT_MAX_LENGTH %>"
        data-follow-up-prompt-prompt-max-length-value="<%= Session::PROMPT_MAX_LENGTH %>"
        data-follow-up-prompt-session-running-value="<%= agent_session.running? %>"
@@ -27,6 +31,13 @@
        data-slash-command-skills-value="<%= session_skills.to_json %>"
        data-bottom-panel-padding-target="panel"
        data-bottom-drawer-target="drawer">
+    <%# Sits directly under the fixed panel, not inside the form's container, so it
+        covers everything a user reads as the composer: the queued messages list, and
+        on a phone the collapsed drawer trigger. The panel is `fixed`, which is already
+        a containing block for an absolutely positioned child. %>
+    <%= render "shared/composer_drop_overlay",
+        message: "Drop images or files to attach them to your message" %>
+
     <%# Enqueued messages list - shown above the form %>
     <%= render "enqueued_messages/enqueued_messages_list", agent_session: agent_session %>
 
@@ -137,7 +148,7 @@
                     the parent form is replaced via Turbo Stream. This prevents losing user input
                     when status changes or transcript updates trigger form replacement. The element
                     must have a unique ID for this to work. %>
-                <div data-image-attachment-target="dropZone" data-file-attachment-target="dropZone" class="relative border-2 border-transparent rounded-md transition-colors">
+                <div class="relative">
                   <%= text_area_tag :follow_up_prompt, nil,
                     id: "session_#{agent_session.id}_follow_up_textarea",
                     class: "block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm px-3 py-2",
