@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-# Which of the three dormancy mechanisms is why a `waiting` session is waiting
-# RIGHT NOW, and which are merely still on its row.
+# Which of the four mechanisms is why a `waiting` session is waiting RIGHT NOW,
+# and which are merely still on its row.
 #
 # == Why this exists
 #
@@ -20,6 +20,33 @@
 # and an outage park by AuthOutageParkService.wake_parked_sessions! when the pool
 # recovers. Naming the wrong mechanism points the reader at an owner that is not
 # coming.
+#
+# == The fourth mechanism: queued for a worker
+#
+# The three above are dormancies — a session parked until something changes.
+# Since #1040 `waiting` also holds the session whose turn has been HANDED OVER
+# and is sitting in the `agents` GoodJob lane waiting for one of its
+# `RunningTurns.worker_slots` threads. That is not a dormancy at all: nothing is
+# wrong, nobody has to act, and the resume owner is GoodJob's own poller rather
+# than a Zimmer sweep. It still has to be named here, because a surface that
+# answers "why is this waiting" with silence — or with a stale spot hold — is
+# lying about a session that is about to run.
+#
+# It is read off the JOB ROW, never off a metadata marker, and that is the whole
+# reason it cannot go stale: a marker would survive a worker dying mid-turn and
+# claim forever that a turn was coming. `JobLiveness` classifies the row, and
+# only two of its verdicts count:
+#
+#   * `:queued` — ready, unclaimed, a worker takes it on its next poll.
+#   * `:running` — a worker has it and has not stamped `running` yet, which is
+#     the window in which the clone is made and the process spawned.
+#
+# `:scheduled` is deliberately excluded: a job parked on a future `scheduled_at`
+# is a spot-gate re-check or a clone backoff, whose owner is the thing that
+# parked it — naming GoodJob there would point the reader at the wrong sweep,
+# which is the exact failure #642 was about. `:abandoned`, `:dead_worker` and
+# `:interrupted` are corpses; a session behind one of those is stranded, and
+# StrandedSleepRescue is its owner.
 #
 # == The rule
 #
@@ -45,6 +72,17 @@ class SessionWaitingReason
   SPOT_HOLD = :spot_hold
   SPOT_PAUSE = :spot_pause
   AUTH_OUTAGE_PARK = :auth_outage_park
+  TURN_QUEUED = :turn_queued
+
+  # The three mechanisms that mean "parked until something changes". TURN_QUEUED
+  # is deliberately not one of them: a caller asking which dormancy a session is
+  # under (Sessions::StopRecord) must not be handed a turn that is simply on its
+  # way to a worker.
+  DORMANCIES = [ SPOT_HOLD, SPOT_PAUSE, AUTH_OUTAGE_PARK ].freeze
+
+  # The two mechanisms the spot ladder owns, which the session page's spot banner
+  # picks between.
+  SPOT_MECHANISMS = [ SPOT_HOLD, SPOT_PAUSE ].freeze
 
   # One mechanism found on the session. `label` is the noun phrase a surface uses
   # when it names this mechanism as something OTHER than the current reason, so
@@ -55,7 +93,8 @@ class SessionWaitingReason
   # mechanism is merely older, whereas a demoted hold has nothing coming for it.
   Mechanism = Data.define(:key, :at, :label, :demoted) do
     def demoted? = demoted
-    def spot? = key != AUTH_OUTAGE_PARK
+    def spot? = SPOT_MECHANISMS.include?(key)
+    def dormancy? = DORMANCIES.include?(key)
   end
 
   # The ranking, split into the one mechanism that answers the question and the
@@ -68,12 +107,17 @@ class SessionWaitingReason
     # has to pick between a hold and a pause when the row carries both.
     def spot = all.find(&:spot?)
 
+    # The highest-ranked mechanism that means "parked until something changes",
+    # skipping a queued turn. For the caller that is classifying a DORMANCY and
+    # would otherwise read a turn on its way to a worker as one.
+    def dormancy = all.find(&:dormancy?)
+
     def current?(mechanism) = mechanism == current
   end
 
   class << self
     # @param session [Session, nil]
-    # @return [Reading, nil] nil when the session is dormant on none of the three.
+    # @return [Reading, nil] nil when none of the four mechanisms applies.
     def for(session)
       ranked = ranked(session)
       return nil if ranked.empty?
@@ -85,12 +129,16 @@ class SessionWaitingReason
     def ranked(session)
       return [] if session.nil?
 
-      candidates = [ hold(session), pause(session), park(session) ].compact
+      candidates = [ hold(session), pause(session), park(session), queued_turn(session) ].compact
       return candidates if candidates.size <= 1
 
-      # Only ever the hold, and only when something else could carry the headline
+      # Only ever the hold, and only when another DORMANCY could carry the headline
       # instead — which is exactly the condition under which the sweep drops it.
-      candidates = candidates.map { |m| m.key == SPOT_HOLD && hold_overdue?(session) ? m.with(demoted: true) : m }
+      # `#rearm!` skips a session that is `dormant_for_another_reason?`, and a
+      # queued turn is not one of that predicate's arms, so a hold beside one is
+      # still the sweep's to repair and must keep its promise (#1040).
+      demote = hold_overdue?(session) && candidates.any? { |m| m.dormancy? && m.key != SPOT_HOLD }
+      candidates = candidates.map { |m| m.key == SPOT_HOLD && demote ? m.with(demoted: true) : m }
 
       # All-numeric sort keys: a nil timestamp cannot be compared against a Time,
       # and the index keeps the order stable for two mechanisms stamped the same
@@ -116,6 +164,44 @@ class SessionWaitingReason
       label = SpotSessionPause.queued_by_user?(session) ? "a deliberate spot-queue park" : "a spot ceiling pause"
       Mechanism.new(key: SPOT_PAUSE, at: parse_time(session.metadata&.dig(SpotSessionPause::PAUSED_AT)),
                     label: label, demoted: false)
+    end
+
+    # The turn this session has been handed, sitting in the `agents` lane.
+    #
+    # Rescued to nil rather than fabricated: this is the one mechanism that
+    # reaches outside the `sessions` row, and every caller is a surface rendering
+    # an explanation. A `good_jobs` read that fails should drop back to whatever
+    # the row itself says, not invent a turn or blank the other three.
+    def queued_turn(session)
+      return nil unless session.waiting?
+
+      jobs = Sessions::LiveTurn.unfinished_turns(session)
+      return nil if jobs.empty?
+
+      classified = jobs.map { |job| [ job, JobLiveness.status(job) ] }
+      # Ready-and-unclaimed beats "a worker already has it" only in age; the
+      # worker's own turn is the more advanced state, so it is preferred as the
+      # answer when a session somehow has both.
+      job, status = classified.find { |_job, st| st == :running } ||
+                    classified.find { |_job, st| st == :queued }
+      return nil if job.nil?
+
+      label = if status == :running
+        "a worker executing its turn's setup (its clone and process are being made)"
+      else
+        # No backticks: this label is rendered as prose by the session page's HTML
+        # banner as well as by `get_session`'s markdown, and a literal backtick in
+        # the browser reads as a typo. The markdown surface names the queue in
+        # code style in its own sentence.
+        "a place in the agents queue, behind the #{RunningTurns.worker_slots} worker threads " \
+        "that run turns"
+      end
+
+      Mechanism.new(key: TURN_QUEUED, at: job.created_at, label: label, demoted: false)
+    rescue StandardError => e
+      Rails.logger.warn("[SessionWaitingReason] Could not read the agents queue for session " \
+                        "#{session&.id} (#{e.class}: #{e.message}) — not naming a queued turn")
+      nil
     end
 
     def park(session)

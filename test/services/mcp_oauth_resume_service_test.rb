@@ -250,7 +250,7 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
       "the resume must deliver the follow-up the session was blocked on"
 
     @session.reload
-    assert @session.running?, "delivering a follow-up resumes the session to running"
+    assert @session.waiting?, "delivering a follow-up queues its turn for a worker"
     assert_equal "Do the original work", @session.prompt, "the stored prompt is untouched, just not replayed"
     assert_equal true, @session.metadata["oauth_complete"]
     assert_nil @session.metadata["failure_reason"]
@@ -352,7 +352,7 @@ class McpOauthResumeServiceTest < ActiveJob::TestCase
 
       assert_equal :resumed, McpOauthResumeService.new(session).call
       assert_equal [ session.id, "Now check the deploy logs" ], enqueued_agent_session_args
-      assert session.reload.running?
+      assert session.reload.waiting?
     end
   end
 

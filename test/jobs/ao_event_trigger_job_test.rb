@@ -593,8 +593,9 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     assert_not_nil one_time_trigger.reload.wake_held_at,
       "and it is marked as owed a retirement by the woken turn"
 
-    # The retirement: the turn comes to rest.
-    target_session.reload.pause!
+    # The retirement: a worker takes the queued turn and it comes to rest.
+    target_session.reload.start!
+    target_session.pause!
     assert_not Trigger.where(id: one_time_trigger.id).exists?,
       "a spent wake must not outlive the turn it woke"
   end
@@ -682,7 +683,8 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     assert_nil deadline_backstop.trigger_conditions.first.last_triggered_at,
       "and the backstop is still unfired, so it can still rescue an interrupted turn"
 
-    target_session.reload.pause!
+    target_session.reload.start!
+    target_session.pause!
 
     [ needs_input_wake, failed_wake, archived_wake, deadline_backstop ].each do |wake|
       assert_not Trigger.exists?(wake.id), "#{wake.name} must be retired once the turn comes to rest"
@@ -735,7 +737,8 @@ class AoEventTriggerJobTest < ActiveJob::TestCase
     assert_nil unrelated_wake_for_b.reload.wake_held_at,
       "wake aimed at a different requester must be left alone"
 
-    target_a.reload.pause!
+    target_a.reload.start!
+    target_a.pause!
     assert_not Trigger.exists?(wake_for_a.id), "the held wake is retired with target A's turn"
     assert Trigger.exists?(unrelated_wake_for_b.id), "and target B's wake is still untouched"
   end

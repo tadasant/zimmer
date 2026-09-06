@@ -7,19 +7,51 @@ require "aasm"
 # invalid state changes that could lead to data corruption or orphaned processes.
 #
 # State Definitions:
-# - waiting: Initial state, session is queued but not yet running
-# - running: Agent is actively executing
+# - waiting: Not executing. Either dormant, or a turn has been handed over and is
+#   queued for one of the `agents` lane's worker threads.
+# - running: An `agents`-lane worker thread is executing a turn for this session.
 # - needs_input: Agent has paused and is waiting for user input (follow-up prompt)
 # - failed: Session encountered an error and cannot proceed
 # - archived: Session has been archived by user (terminal state)
 #
 # Valid Transitions:
-# - start: waiting -> running (when job begins execution and process is spawned)
+# - start: waiting -> running (when a worker has the turn and the process is spawned)
 # - sleep: needs_input -> waiting (when session defers work for later wake-up)
 # - pause: running -> needs_input (when agent completes a turn)
-# - resume: needs_input -> running (when follow-up prompt is sent)
+# - resume: waiting/needs_input/failed -> waiting (when a turn is handed over)
 # - fail: waiting/running/needs_input -> failed (when error occurs)
 # - archive: needs_input/failed -> archived (when user archives session)
+#
+# == `running` means a worker thread has the turn — nothing weaker
+#
+# `resume` used to land in `running`, stamped by whoever HANDED the session a
+# turn: a fired wake, a web or API follow-up, a poller's comment, a recovery
+# sweep. The `agents` GoodJob lane sits between that hand-over and any worker
+# actually picking the job up, and the lane is only
+# `ConnectionBudget.good_job_queue_threads[:agents]` threads deep — so `running`
+# routinely held a large population of turns no worker had started. The
+# dashboard read "20 running" while /inference correctly said the pool runs 8
+# turns at once, and the two were both right about different things
+# (tadasant/zimmer#957, #1040).
+#
+# So `resume` now lands in `waiting` — the state a session queued for compute has
+# always been in — and `start` is the only way into `running`. `start` is fired
+# from inside `AgentSessionJob#perform`, on the worker thread, at the point the
+# turn's process is spawned. A first start already worked exactly this way; every
+# other turn now does too.
+#
+# Two consequences worth carrying:
+#
+#   * **`waiting` acquires a fourth meaning.** The three dormancy mechanisms
+#     SessionWaitingReason ranks (a spot start-hold, a spot ceiling pause, an
+#     auth-outage quota park) are joined by "queued for a worker", whose resume
+#     owner is GoodJob's `agents` lane rather than a Zimmer sweep. That mechanism
+#     is read off the job row, never off a metadata marker — see
+#     SessionWaitingReason::TURN_QUEUED.
+#   * **`running?` stopped being the "a turn is already in flight" guard.** The
+#     honest test is the job row, which is what `Sessions::LiveTurn` reads. Every
+#     caller that used `running?` to mean "do not start a second turn" now asks
+#     `Sessions::LiveTurn.coming?` instead.
 #
 # Guards and Callbacks:
 # - Guards prevent transitions when preconditions aren't met
@@ -188,14 +220,18 @@ module SessionStateMachine
       state :archived        # 3
       state :failed          # 4
 
-      # Start execution from waiting state
+      # A worker thread has this session's turn and is spawning its process.
+      #
+      # This is the ONLY way into `running`, and it is fired from inside
+      # `AgentSessionJob#perform` — see the class comment above. Everything that
+      # merely hands a turn over fires `resume`, which lands in `waiting`.
       event :start do
         transitions from: :waiting, to: :running, guard: :can_start?
         after do
           clear_stop_record
           reset_elapsed_time_counter
           record_experimental_setting_flags
-          log_state_change("Session started")
+          log_state_change(session_id.present? ? "Turn started on a worker" : "Session started")
         end
       end
 
@@ -278,16 +314,33 @@ module SessionStateMachine
         end
       end
 
-      # Resume execution with follow-up prompt or restart
-      # Also allows resuming from waiting state (for clone-only sessions receiving first prompt)
+      # Hand a turn to this session: it is queued for one of the `agents` lane's
+      # worker threads, and stays `waiting` until one picks it up and fires
+      # `start`.
+      #
+      # It lands in `waiting` rather than `running` because that is what is
+      # actually true at this moment — nothing is executing, and the thing the
+      # session is waiting for is a worker slot. See the class comment.
+      #
+      # `waiting -> waiting` is a real transition, not a no-op: the after block
+      # below is the whole point of firing this, and the two populations that
+      # reach it that way are the ones queued behind the pool (a spot session the
+      # gate released, a recovery sweep's second pass) and a clone-only session
+      # receiving its first prompt.
       #
       # Deliberately unguarded: the preconditions for resuming (a clone that
       # exists, a runtime session id to resume, a live process) are established or
       # validated by AgentSessionJob, which resumes what it can and fails the
       # session with a specific failure_reason when it cannot. Re-checking them
       # here would only strand sessions the job knows how to recover.
+      #
+      # It is still refused from `running`, and that refusal is load-bearing:
+      # `may_resume?` is how Session#claim_system_recovery_turn! tells "nobody is
+      # driving this session" from "somebody already is". Since a QUEUED turn now
+      # reads `waiting`, that check alone is no longer sufficient — the claim also
+      # asks the job rows. See Session#claim_system_recovery_turn!.
       event :resume do
-        transitions from: [ :waiting, :needs_input, :failed ], to: :running
+        transitions from: [ :waiting, :needs_input, :failed ], to: :waiting
         after do
           clear_stale_mcp_failure_metadata
           clear_undelivered_turn_park
@@ -301,7 +354,7 @@ module SessionStateMachine
           record_experimental_setting_flags
           mark_notifications_stale
           cancel_pending_one_time_wake_triggers
-          log_state_change("Session resumed")
+          log_state_change("Session resumed — its turn is queued for a worker")
         end
       end
 
@@ -447,11 +500,13 @@ module SessionStateMachine
     # Re-arm the `no_sessions_in_progress` system event: the fleet is demonstrably
     # not idle.
     #
-    # An after_commit on the status column rather than a hook on `start` and
-    # `resume`, because the fact FleetIdleMonitor needs is "a session is running",
-    # and every path that produces it has to count — both AASM events, an
-    # elicitation unblocking, a session created directly in `running`. Missing one
-    # would leave the latch spent against a fleet that had gone back to work.
+    # An after_commit on the status column rather than a hook on `start`, because
+    # the fact FleetIdleMonitor needs is "a session is running", and every path
+    # that produces it has to count — `start`, an elicitation unblocking, a
+    # session created directly in `running`. Missing one would leave the latch
+    # spent against a fleet that had gone back to work. (`resume` used to be one
+    # of those paths; since #1040 it lands in `waiting` and the worker's `start`
+    # is what re-arms.)
     #
     # It does NOT cover `update_column`/`update_all`, which skip callbacks; no
     # caller writes `status` that way, and the sweep re-arms on its next tick

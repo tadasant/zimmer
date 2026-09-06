@@ -47,7 +47,7 @@ class Sessions::InterruptServiceTest < ActiveJob::TestCase
 
     assert result.success?, "Expected success but got: #{result.error}"
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert_nil EnqueuedMessage.find_by(id: message.id), "Message should be destroyed after dispatch"
   end
 
@@ -93,7 +93,7 @@ class Sessions::InterruptServiceTest < ActiveJob::TestCase
 
     assert result.success?
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
   end
 
   test "interrupt on running session pauses, terminates process, and dispatches" do
@@ -111,7 +111,7 @@ class Sessions::InterruptServiceTest < ActiveJob::TestCase
 
     assert result.success?, "Expected success but got: #{result.error}"
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert_nil EnqueuedMessage.find_by(id: message.id)
   end
 
@@ -187,7 +187,7 @@ class Sessions::InterruptServiceTest < ActiveJob::TestCase
 
     @session.reload
     # The interrupt still lands: message dispatched, session resumed to running.
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert_nil EnqueuedMessage.find_by(id: message.id), "Message should be dispatched, not dropped"
     # A durable, pid-scoped termination request is left for the worker's loop.
     assert_equal 424_242, @session.metadata["interrupt_terminate_pid"],
@@ -215,7 +215,7 @@ class Sessions::InterruptServiceTest < ActiveJob::TestCase
     @session.reload
     assert_nil @session.metadata["interrupt_terminate_pid"],
       "No worker-side request should be left when the process was terminated directly"
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert_nil EnqueuedMessage.find_by(id: message.id)
   end
 
@@ -376,7 +376,7 @@ class Sessions::InterruptServiceTest < ActiveJob::TestCase
 
       # Session ended up running — no half-resumed flap.
       @session.reload
-      assert_equal "running", @session.status
+      assert_equal "waiting", @session.status
     ensure
       ActiveJob::Base.queue_adapter = original_adapter
     end

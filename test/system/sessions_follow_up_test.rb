@@ -91,15 +91,20 @@ class SessionsFollowUpTest < ApplicationSystemTestCase
     # Click submit button
     click_button "Send Message"
 
-    # The optimistic message should appear in the timeline (via Turbo Stream, no page reload)
-    # and the form should update to running mode
+    # The optimistic message should appear in the timeline (via Turbo Stream, no
+    # page reload).
     assert_text "Please continue with the implementation"
-    assert_text "Agent is running"
-    assert_selector "button", text: "Queue Message"
 
-    # Session status should be updated
+    # `waiting`, not `running`: since #1040 the follow-up hands the turn to the
+    # `agents` queue and a worker's `start` is what makes the session `running`.
+    # The running indicator and the composer's queue mode both follow the turn
+    # rather than the submit, so neither is asserted here — this test is about the
+    # optimistic message and the hand-over.
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
+    assert_equal "Please continue with the implementation",
+      session.metadata["pending_follow_up_prompt"],
+      "the accepted prompt has to be on the row for the turn that picks it up"
   end
 
   test "cannot submit empty follow-up prompt" do
@@ -148,11 +153,12 @@ class SessionsFollowUpTest < ApplicationSystemTestCase
 
     click_button "Send Message"
 
-    # The multi-line message should appear in the timeline and form should update
+    # The multi-line message should appear in the timeline
     assert_text "Line 1"
     assert_text "Line 2"
     assert_text "Line 3"
-    assert_text "Agent is running"
+    assert_equal "waiting", session.reload.status,
+      "the follow-up queues the turn for a worker (#1040)"
   end
 
   test "follow-up input has helpful label and instructions" do
@@ -218,16 +224,15 @@ class SessionsFollowUpTest < ApplicationSystemTestCase
     # This verifies the fix for the disappearing optimistic message bug
     assert_text "Now add password reset functionality"
 
-    # The running indicator should be visible and form should update to queue mode
-    assert_text "Agent is running"
-    assert_selector "button", text: "Queue Message"
-
     # Should still be on the session page (no redirect with Turbo Stream)
     assert_current_path session_path(session)
 
-    # Session should now be in running status
+    # The turn is handed over and queued for a worker (#1040); `running` waits for
+    # a worker to spawn its process, which no system test has.
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
+    assert_equal "Now add password reset functionality",
+      session.metadata["pending_follow_up_prompt"]
   end
 
   # Test undo functionality for follow-up prompts via keyboard shortcut

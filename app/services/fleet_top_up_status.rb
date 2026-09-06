@@ -49,11 +49,12 @@ class FleetTopUpStatus
     [ max_sessions - running_sessions, 0 ].max
   end
 
-  # The `running` rows #running_sessions leaves out, reported beside it rather
-  # than folded into it. `running` is stamped when a turn is handed to a session
-  # and the `agents` queue sits between that and a worker picking it up, so the
-  # column holds turns waiting for a slot as well as turns on one — see
-  # RunningTurns. Reported because a queue that is not in the ceiling is still
+  # The in-flight turns #running_sessions leaves out, reported beside it rather
+  # than folded into it. Since #1040 a turn handed to a session sits in `waiting`
+  # until a worker picks it up, so the queue is a different STATUS rather than a
+  # share of `running` — but it is just as real and just as uncounted, and
+  # RunningTurns is still the one place the split is computed. Reported because a
+  # queue that is not in the ceiling is still
   # the answer to "why is nothing of mine moving".
   def awaiting_sessions = turns.awaiting_a_worker
 

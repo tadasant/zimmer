@@ -44,6 +44,33 @@ class AgentJobIntent
       false
     end
 
+    # Was this job enqueued to prepare a CLONE and nothing else?
+    #
+    # A `clone_only` job makes the clone and returns without spawning an agent and
+    # without draining the queued-message backlog, so it is not a turn: reading it
+    # as one is how the first prompt into a still-cloning session gets parked in a
+    # queue nothing at that job's end will drain (#1040).
+    #
+    # Takes the serialized arguments rather than an ActiveJob id, because the one
+    # caller already holds the `good_jobs` row and reading the id back out of it
+    # only to look the same row up again would be a second query for nothing.
+    #
+    # @param arguments [Array, nil] `serialized_params["arguments"]`
+    # @return [Boolean] false for anything unreadable, which preserves the
+    #   pre-existing behaviour of every caller
+    def clone_only?(job)
+      arguments = job.try(:serialized_params)&.dig("arguments")
+      return false unless arguments.is_a?(Array)
+
+      options = arguments[2]
+      return false unless options.is_a?(Hash)
+
+      options["clone_only"] == true || options[:clone_only] == true
+    rescue StandardError => e
+      Rails.logger.warn("[AgentJobIntent] Could not read clone-only intent: #{e.class}: #{e.message}")
+      false
+    end
+
     private
 
     # AgentSessionJob's enqueue helpers all pass options as the third positional

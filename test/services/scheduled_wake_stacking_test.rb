@@ -136,10 +136,15 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
       refute session.reload.paused_until_scheduled_time?,
         "a wake whose moment has passed is not a pause the session is still under"
 
-      assert_nothing_raised do
-        action_session_tool.call({ "action" => "restart", "session_id" => session.id })
+      assert_enqueued_with(job: AgentSessionJob) do
+        assert_nothing_raised do
+          action_session_tool.call({ "action" => "restart", "session_id" => session.id })
+        end
       end
-      assert session.reload.running?, "expected an expired pause to let a restart through"
+      # The enqueue above IS the start: since #1040 a handed-over turn queues for a
+      # worker and the session stays `waiting` until one picks it up, so the status
+      # column cannot tell a started session from a dormant one here.
+      assert session.reload.waiting?, "expected an expired pause to let a restart through"
     end
   end
 
@@ -163,7 +168,7 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
       end
     end
 
-    assert session.reload.running?, "expected the wake to start the session, got #{session.status}"
+    assert session.reload.waiting?, "the woken turn is queued for a worker; the enqueue above is the start"
     # The wake is held rather than destroyed, and its schedule is spent, so it
     # cannot fire again and cannot re-sleep the session mid-work. Session#pause
     # retires it when the turn it woke comes to rest.
@@ -171,7 +176,8 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
     assert_not_nil trigger.trigger_conditions.first.last_triggered_at,
       "the schedule is spent, so nothing can re-sleep the session mid-work"
 
-    session.reload.pause!
+    session.reload.start!
+    session.pause!
     refute Trigger.exists?(trigger.id), "and the held wake is retired with the turn"
   end
 
@@ -192,9 +198,10 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
       ScheduleTriggerJob.perform_now
     end
 
-    # The wake delivered its prompt rather than being stood down on: the session
-    # left `waiting`, which only the delivery does.
-    refute session.reload.waiting?,
+    # The wake delivered its prompt rather than being stood down on. Since #1040
+    # the session stays `waiting` while its turn queues for a worker, so the
+    # delivered prompt — not the status — is what says the guard yielded.
+    assert_equal "Resume after the pause", session.reload.metadata["pending_follow_up_prompt"],
       "the wake's own turn must not be refused by the pause guard"
   end
 
@@ -217,7 +224,7 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
     result = SpotSessionPause.sweep!
 
     assert_equal 1, result.resumed, "the spot queue is the scheduler for this park — it must resume it"
-    assert session.reload.running?
+    assert_not SpotSessionPause.paused?(session.reload), "the park record goes with the resume"
   end
 
   # An `ao_event` watcher has no time component: if the watched session fails or is
@@ -242,10 +249,12 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
     assert session.reload.awaiting_scheduled_wake?, "it IS resting on purpose — a refresh must not nudge it"
     refute session.paused_until_scheduled_time?, "but it is not paused until a time, so a start is allowed"
 
-    assert_nothing_raised do
-      action_session_tool.call({ "action" => "restart", "session_id" => session.id })
+    assert_enqueued_with(job: AgentSessionJob) do
+      assert_nothing_raised do
+        action_session_tool.call({ "action" => "restart", "session_id" => session.id })
+      end
     end
-    assert session.reload.running?
+    assert session.reload.waiting?, "the restart queued a turn; a worker's `start` runs it"
   end
 
   # === pending_wake_at, the value every refusal message quotes ===
@@ -300,9 +309,11 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
       metadata: { "runtime_started" => true }
     )
 
-    action_session_tool.call({ "action" => "restart", "session_id" => session.id })
+    assert_enqueued_with(job: AgentSessionJob) do
+      action_session_tool.call({ "action" => "restart", "session_id" => session.id })
+    end
 
-    assert session.reload.running?, "an unpaused parked session must still be startable"
+    assert session.reload.waiting?, "an unpaused parked session must still be startable"
   end
 
   # The deliberate exception: the guards above refuse a caller working a QUEUE, and
@@ -315,11 +326,14 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
     session = dormant_session(genesis: SessionGenesis::GITHUB_ISSUE, precedence: 100_000)
     trigger = schedule_wake!(session)
 
-    action_session_tool.call(
-      { "action" => "follow_up", "session_id" => session.id, "prompt" => "Actually, do it now" }
-    )
+    assert_enqueued_with(job: AgentSessionJob) do
+      action_session_tool.call(
+        { "action" => "follow_up", "session_id" => session.id, "prompt" => "Actually, do it now" }
+      )
+    end
 
-    assert session.reload.running?, "a direct follow-up must not be refused, got #{session.status}"
+    assert_equal "Actually, do it now", session.reload.metadata["pending_follow_up_prompt"],
+      "a direct follow-up must not be refused, got #{session.status}"
     assert_nil trigger.reload.trigger_conditions.sole.last_triggered_at,
       "the follow-up added a turn to the session's wait; it must not consume the wake"
     assert session.paused_until_scheduled_time?,

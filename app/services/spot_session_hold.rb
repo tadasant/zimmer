@@ -71,19 +71,25 @@
 #     Holding it would orphan that process rather than save a token.
 #
 # One hold reason does not apply to a session that is ALREADY `running` when the
-# gate runs: `fleet_at_cap`. Such a session has been flipped to `running` by
-# whoever delivered the turn, so it is counted in
+# gate runs: `fleet_at_cap`. Such a session is counted in
 # `Session.running_claude_code_count` itself — refusing it for a full fleet would
-# refuse it on the strength of its own slot, and would refuse every session
-# SpotSessionPause resumes, which are flipped to `running` before their jobs run.
-# The utilization reading has no such problem: the pool's windows are measured
-# independently of this session.
+# refuse it on the strength of its own slot. The utilization reading has no such
+# problem: the pool's windows are measured independently of this session.
 #
 # That exemption is keyed on the session's STATUS, never on "this turn carries a
-# prompt". A resume the gate has already deferred is sitting in `waiting` and
-# holds no slot, so its re-check is an admission like any other — keying on the
-# prompt would have exempted the entire population this class creates, and the
-# cap would go unenforced for exactly the sessions it was holding.
+# prompt" — keying on the prompt would have exempted the entire population this
+# class creates, and the cap would go unenforced for exactly the sessions it was
+# holding.
+#
+# **Since #1040 the exemption is residual, and the fleet cap applies to every
+# ordinary turn.** `running` is now stamped by `AgentSessionJob#perform` after the
+# process spawns, which is downstream of this gate, so a resume arriving here
+# reads `waiting` exactly as a first start always did — and is not counted in the
+# occupancy either, because `RunningTurns` counts `running` rows alone. The two
+# facts move together, so the exemption still means what it says; it simply
+# stopped applying to resumes, which used to be flipped to `running` by their
+# deliverer and so slipped past the cap. A full fleet now defers them with the
+# same re-check ladder it gives a first start.
 #
 # == A deferral must not lose the turn, even when a second one arrives
 #
@@ -211,14 +217,14 @@ class SpotSessionHold
   UTILIZATION_REASON = "at_utilization_limit"
 
   # The hold reasons that apply to a turn taken by a session that ALREADY HOLDS A
-  # SLOT — one whose deliverer has flipped it to `running`. See the class
-  # comment: it is counted in `Session.running_claude_code_count` itself, so only
-  # the utilization reading can honestly refuse it.
+  # SLOT — one that reads `running` when the gate runs. See the class comment: it
+  # is counted in `Session.running_claude_code_count` itself, so only the
+  # utilization reading can honestly refuse it.
   #
-  # Not "a resume". A resume the gate has already deferred once sits in `waiting`
-  # and holds nothing, so its re-check is an admission like any other and the
-  # fleet cap applies to it in full. Keying this on the prompt rather than on the
-  # session's status would exempt exactly the population this class creates.
+  # Residual since #1040: an ordinary turn reaches this gate `waiting`, because
+  # `running` is stamped after the process spawns and this gate runs before that.
+  # Keying this on the prompt rather than on the session's status would exempt
+  # exactly the population this class creates.
   RUNNING_HOLD_REASONS = [ UTILIZATION_REASON ].freeze
 
   # How far past its own re-check time a hold has to be before #sweep! treats the
@@ -753,8 +759,9 @@ class SpotSessionHold
     end
 
     # Whether this decision refuses this turn. Every hold reason refuses a session
-    # that holds no slot; a session already counted in the running fleet is
-    # refused only by the utilization reading.
+    # that holds no slot; a session already counted in the running fleet — one
+    # reading `running` here, which since #1040 is a residual case — is refused
+    # only by the utilization reading.
     def applies_to?(decision, session)
       return true unless session.running?
 
@@ -787,7 +794,7 @@ class SpotSessionHold
     # overrun a cap.
     #
     # `return_to_queue!` first, for the same reason `hold!` calls it: the fork
-    # was flipped to `running` by whoever delivered its turn, and archiving
+    # had its turn handed over by whoever delivered it, and archiving
     # straight from there would leave the fleet reading a slot that never ran.
     #
     # Returns true — the turn is refused, so AgentSessionJob stands down.
@@ -999,19 +1006,22 @@ class SpotSessionHold
     end
 
     # Put a session whose turn was refused into the dormant `waiting` state a held
-    # session sits in. A no-op for the ordinary first start, which is already
-    # there.
+    # session sits in — and, whichever state it arrives in, strip the job pointer
+    # the refused turn was carrying and write down why it stopped.
     #
-    # It is not always there. A resume's deliverer has already flipped the session
-    # to `running`, and so has every "restart from scratch" path — the Restart
-    # button, `action_session`, `POST /api/v1/sessions/:id/restart` — all three of
-    # which run `Sessions::RestartFromScratch`, which calls `resume!` and only then
-    # enqueues the job. Leaving it in `running` is a lie with consequences: it
-    # counts against the fleet cap, the session card claims work is happening, and
-    # `CleanupOrphanedSessionsJob` reaps a session whose recorded job is gone on
-    # its next five-minute pass, long before the ten-minute re-check the hold
-    # scheduled (issue #589). `waiting` makes a deferred turn indistinguishable
-    # from a hold at the starting line, which is exactly what it is.
+    # Since #1040 the common arrival is `waiting`: a hand-over lands there and only
+    # `AgentSessionJob#perform` stamps `running`, which is downstream of this gate.
+    # That branch has no transition to make, but it has both of the other two jobs
+    # to do, so it is a branch rather than a fall-through.
+    #
+    # The `running` branch is still needed for anything that reaches the gate
+    # already `running` (a re-entrant job, a turn re-checked after the process came
+    # up). Left there, `running` counts against the fleet cap, the session card
+    # claims work is happening, and `CleanupOrphanedSessionsJob` reaps a session
+    # whose recorded job is gone on its next five-minute pass, long before the
+    # ten-minute re-check the hold scheduled (issue #589). `waiting` makes a
+    # deferred turn indistinguishable from a hold at the starting line, which is
+    # exactly what it is.
     #
     # Deliberately NOT `pause!`. That event means "a turn ended and the session
     # wants a human": it fires the `session_needs_input` event triggers — waking
@@ -1020,7 +1030,20 @@ class SpotSessionHold
     # announcing one would wake an orchestrator and page a person about work that
     # never happened.
     def return_to_queue!(session)
-      if session.running?
+      if session.waiting?
+        # THE ORDINARY PATH since #1040, and it is not a no-op: a deferred turn
+        # arrives here with a `running_job_id` its deliverer recorded
+        # (Session#deliver_follow_up!, Sessions::RestartFromScratch#claim_running_job,
+        # AuthOutageParkService.resume_parked!), and leaving that pointer behind
+        # falsifies the invariant AgentSessionJob#perform's archived guard states as
+        # fact — that a held session carries no `running_job_id`. The stop record is
+        # owed for the same reason it is on the `running` branch: a session that
+        # stops says why (#608).
+        ActiveRecord::Base.transaction do
+          Sessions::StopRecord.record!(session, reason: Sessions::StopRecord::SPOT_HOLD)
+          session.update!(running_job_id: nil) if session.running_job_id.present?
+        end
+      elsif session.running?
         # The one `running -> waiting` that does not pass through the state
         # machine, so it records its own reason rather than inheriting the `sleep`
         # callback's (#608). Both in one transaction, and the record first: a reader

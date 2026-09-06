@@ -14,7 +14,11 @@ export default class extends Controller {
   static targets = ["form", "textarea", "textareaMobile", "submitButton", "submitButtonMobile", "modeIndicator", "draftIndicator"]
   static values = {
     promptMaxLength: { type: Number, default: 500000 },
-    sessionRunning: { type: Boolean, default: false },
+    // True when a turn is already underway for this session — on a worker, or
+    // ready in the `agents` queue with a worker coming for it. Since #1040 that is
+    // NOT the same as `status == running`: a handed-over turn reads `waiting`
+    // until a worker spawns its process, and the composer must still queue.
+    turnUnderway: { type: Boolean, default: false },
     sessionId: Number,
     pendingSentMessage: { type: String, default: "" }
   }
@@ -397,7 +401,7 @@ export default class extends Controller {
   // Handle pendingSentMessage value changes (e.g., from Turbo Stream replacement)
   pendingSentMessageValueChanged() {
     // Only preload if we have a pending message and the session is not running
-    if (this.pendingSentMessageValue && this.pendingSentMessageValue.trim() !== "" && !this.sessionRunningValue) {
+    if (this.pendingSentMessageValue && this.pendingSentMessageValue.trim() !== "" && !this.turnUnderwayValue) {
       this.preloadPendingSentMessage()
     }
   }
@@ -504,7 +508,7 @@ export default class extends Controller {
 
   // Update the form mode based on session running status
   updateMode() {
-    const isRunning = this.sessionRunningValue
+    const isRunning = this.turnUnderwayValue
 
     // Update form action based on mode
     if (isRunning) {
@@ -528,8 +532,8 @@ export default class extends Controller {
     }
   }
 
-  // Called when sessionRunning value changes
-  sessionRunningValueChanged() {
+  // Called when turnUnderway value changes
+  turnUnderwayValueChanged() {
     this.updateMode()
   }
 
@@ -571,7 +575,7 @@ export default class extends Controller {
     }
 
     // Validate that textarea is not empty
-    const promptText = this.sessionRunningValue ? "message" : "follow-up prompt"
+    const promptText = this.turnUnderwayValue ? "message" : "follow-up prompt"
     if (activeTextarea.value.trim() === "") {
       alert(`Please enter a ${promptText}`)
       return
@@ -592,11 +596,11 @@ export default class extends Controller {
     // Disable all submit buttons to prevent double-submission
     if (this.hasSubmitButtonTarget) {
       this.submitButtonTarget.disabled = true
-      this.submitButtonTarget.textContent = this.sessionRunningValue ? "Queueing..." : "Submitting..."
+      this.submitButtonTarget.textContent = this.turnUnderwayValue ? "Queueing..." : "Submitting..."
     }
     if (this.hasSubmitButtonMobileTarget) {
       this.submitButtonMobileTarget.disabled = true
-      this.submitButtonMobileTarget.textContent = this.sessionRunningValue ? "Queueing..." : "Submitting..."
+      this.submitButtonMobileTarget.textContent = this.turnUnderwayValue ? "Queueing..." : "Submitting..."
     }
 
     // Mark that we just submitted - this prevents saveBeforeStreamRender from

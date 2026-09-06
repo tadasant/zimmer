@@ -151,7 +151,9 @@ module Sessions
       #    caused THIS stop, and it is the only source that survives when the
       #    mechanism's own follow-up write did not land.
       # 2. The three park mechanisms, ranked by SessionWaitingReason so this cannot
-      #    disagree with what `get_session` and the session page render.
+      #    disagree with what `get_session` and the session page render. Only the
+      #    parks: a turn queued for a worker is the fourth thing that reading can
+      #    name, and it is not a reason a session stopped.
       # 3. The remaining dormancy markers, each of which is written by exactly one
       #    path.
       # 4. An armed one-time wake — the ordinary "the agent asked to be woken later"
@@ -167,7 +169,10 @@ module Sessions
         stamped = metadata[PENDING_SLEEP_REASON].presence
         return stamped if stamped
 
-        mechanism = SessionWaitingReason.for(session)&.current
+        # `.dormancy`, not `.current`: since #1040 the highest-ranked mechanism can
+        # be a turn queued for a worker, which is not a stop at all — reading it
+        # here would hide the spot hold or the quota park underneath it.
+        mechanism = SessionWaitingReason.for(session)&.dormancy
         case mechanism&.key
         when SessionWaitingReason::AUTH_OUTAGE_PARK then return AUTH_OUTAGE_PARK
         when SessionWaitingReason::SPOT_PAUSE then return SPOT_PAUSE

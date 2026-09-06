@@ -352,9 +352,10 @@ class McpOauthResumeService
   end
 
   # Resume by delivering the turn the session was blocked on, through the one
-  # shared delivery path — which resumes the session to `running`, re-stamps the
-  # prompt as pending so the recovery paths can still find it, enqueues the job
-  # and records `running_job_id`.
+  # shared delivery path — which hands the turn over (the session queues in
+  # `waiting` until a worker starts it), re-stamps the prompt as pending so the
+  # recovery paths can still find it, enqueues the job and records
+  # `running_job_id`.
   #
   # Raw text, deliberately: `deliver_follow_up!`'s job wraps the goal block around
   # whatever it is given, so replaying `active_follow_up_prompt` — the expanded

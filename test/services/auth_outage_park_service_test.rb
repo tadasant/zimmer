@@ -266,7 +266,10 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
 
     assert_equal 1, resumed
     @session.reload
-    assert_equal "running", @session.status
+    # `waiting`, not `running`: the un-park hands the turn to the `agents` queue and
+    # a worker's `start` is what runs it (#1040). The cleared keys below are what
+    # tell a woken session from one still parked.
+    assert_equal "waiting", @session.status
     AuthOutageParkService::OUTAGE_METADATA_KEYS.each do |key|
       assert_nil @session.metadata[key], "#{key} must be cleared when the session resumes"
     end
@@ -295,7 +298,7 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     park!
 
     assert_equal 1, AuthOutageParkService.wake_parked_sessions!
-    assert_equal "running", @session.reload.status
+    assert_equal "waiting", @session.reload.status
   end
 
   # A quota-parked spot session is woken by the POOL's own rising edge, which
@@ -383,7 +386,7 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     # Oldest park first, so the sessions held back are the ones parked most
     # recently — nothing starves across sweeps.
     assert_equal cohort.first(AuthOutageParkService::MAX_WAKES_PER_SWEEP).map(&:id).sort,
-      cohort.select { |s| s.reload.running? }.map(&:id).sort
+      cohort.reject { |s| AuthOutageParkService.parked?(s.reload) }.map(&:id).sort
 
     assert_equal 3, AuthOutageParkService.wake_parked_sessions!,
       "the next sweep takes the ones that were held"
@@ -410,7 +413,7 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
 
     AuthOutageParkService.wake_parked_sessions!
 
-    assert codex.reload.running?,
+    assert_not AuthOutageParkService.parked?(codex.reload),
       "a codex park must not be held by a claude_code pool's batch"
   end
 
@@ -455,7 +458,7 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     end
 
     assert_equal 1, resumed
-    assert_equal "running", @session.reload.status
+    assert_equal "waiting", @session.reload.status
     assert_includes @session.logs.where(level: "warning").last.content, "The login pool changed"
   end
 
@@ -470,7 +473,7 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     account.update!(oauth_config: { "credentials_json" => { "claudeAiOauth" => { "accessToken" => "fresh" } } })
 
     assert_equal 1, AuthOutageParkService.wake_parked_sessions!
-    assert_equal "running", @session.reload.status
+    assert_equal "waiting", @session.reload.status
   end
 
   # A restored quota_exceeded account changes the set of identities that can
@@ -485,7 +488,7 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     account.update!(status: :active)
 
     assert_equal 1, AuthOutageParkService.wake_parked_sessions!
-    assert_equal "running", @session.reload.status
+    assert_equal "waiting", @session.reload.status
   end
 
   # The loop the old `reason:` scoping existed to prevent: nothing about the
@@ -543,7 +546,7 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     @session.update!(metadata: @session.metadata.except(AuthOutageParkService::POOL_FINGERPRINT_KEY))
 
     assert_equal 1, AuthOutageParkService.wake_parked_sessions!
-    assert_equal "running", @session.reload.status
+    assert_equal "waiting", @session.reload.status
   end
 
   test "a fingerprintless auth park still spends its early-wake budget" do
@@ -571,7 +574,7 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     create_account(email: "first-login@example.com", status: :active)
 
     assert_equal 1, AuthOutageParkService.wake_parked_sessions!
-    assert_equal "running", @session.reload.status
+    assert_equal "waiting", @session.reload.status
   end
 
   # A park that could not read the pool records no fingerprint, and the sweep
@@ -832,7 +835,7 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
       "The wake must resume the parked session, not create a goalless new one alongside it"
 
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert_equal "Investigate the flaky payment webhook test", @session.prompt,
       "The original task stays the session's prompt — the boilerplate is a follow-up, not a goal"
     stamped = @session.metadata["pending_follow_up_prompt"]
@@ -984,7 +987,7 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     ClaudeAccount.find_by(email: "out@example.com").update!(status: :active)
 
     assert_equal 1, AuthOutageParkService.wake_parked_sessions!
-    assert_equal "running", @session.reload.status
+    assert_equal "waiting", @session.reload.status
   end
 
   # ===========================================================================
@@ -1005,7 +1008,7 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     AuthOutageParkService.wake_parked_sessions!
 
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert @session.metadata["pending_follow_up_prompt"].present?,
       "The recovery prompt must be visible the moment the session is running"
     assert @session.running_job_id.present?,

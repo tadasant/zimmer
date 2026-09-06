@@ -29,7 +29,9 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
     end
 
     @session.reload
-    assert_equal "running", @session.status
+    # `waiting`: the resume hands the turn to the `agents` queue and a worker's
+    # `start` is what makes the session `running` (#1040).
+    assert_equal "waiting", @session.status
     assert_not EnqueuedMessage.exists?(message.id), "Message should be deleted"
   end
 
@@ -60,7 +62,10 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
     end
 
     @session.reload
-    assert_equal "running", @session.status, "Session should remain running (no flap)"
+    # The handoff branch: the outgoing turn's process has exited and the next turn
+    # is a row in the `agents` queue, so the session goes back to `waiting` — with
+    # no pause flap, which is what this path exists to avoid.
+    assert_equal "waiting", @session.status, "Session goes back to the queue, not through needs_input"
     assert_not EnqueuedMessage.exists?(message.id), "Message should be deleted"
   end
 
@@ -150,7 +155,7 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
     end
 
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert_nil @session.running_job_id
   end
 
@@ -340,7 +345,7 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
 
     # Session should have been reloaded and processed correctly
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
   end
 
   test "process_next_message handles error gracefully with transaction rollback" do
@@ -480,7 +485,7 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
 
     assert_equal message.content, captured_prompt
     refute EnqueuedMessage.exists?(message.id), "a delivered message is destroyed, not retired"
-    assert_equal "running", @session.reload.status
+    assert_equal "waiting", @session.reload.status
   end
 
   test "a conflict notice is delivered when mergeability cannot be re-read" do
@@ -489,7 +494,7 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
 
     assert EnqueuedMessageProcessorService.new(@session).process_next_message
     refute EnqueuedMessage.exists?(message.id)
-    assert_equal "running", @session.reload.status
+    assert_equal "waiting", @session.reload.status
   end
 
   test "a re-read that raises does not cost the session its message" do

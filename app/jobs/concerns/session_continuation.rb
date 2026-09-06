@@ -61,7 +61,8 @@ module SessionContinuation
   # Continue a session that was paused by recovery.
   #
   # Validates the session has the required metadata (session_id, working_directory),
-  # clears stale retry metadata, transitions to running, and enqueues a job to resume.
+  # clears stale retry metadata, hands the turn over (the session queues in
+  # `waiting`), and enqueues a job to resume.
   #
   # Two things outrank the automated recovery prompt, in this order. A message the
   # user queued while the session was running or orphaned is delivered instead —

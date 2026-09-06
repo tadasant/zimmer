@@ -262,7 +262,7 @@ class Github::PrStatusEvaluatorTest < ActiveSupport::TestCase
     evaluate(@session_with_pr, "merged", evaluator: NoChecks.new)
 
     @session_with_pr.reload
-    assert_equal "running", @session_with_pr.status,
+    assert_equal "waiting", @session_with_pr.status,
       "A parked session should be woken by the merge rather than left in needs_input"
     assert @session_with_pr.logs.where("content LIKE ?", "%PR merged: #{MERGED_PR_URL}%sent immediately%").exists?
     refute @session_with_pr.enqueued_messages.pending.exists?,

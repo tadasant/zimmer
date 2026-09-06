@@ -102,7 +102,7 @@ class RestartFromScratchParityTest < ActionDispatch::IntegrationTest
     observations = SURFACES.index_with { |surface| observe_restart_through(surface) }
 
     reference = observations.fetch(:web)
-    assert_equal "running", reference[:status]
+    assert_equal "waiting", reference[:status]
 
     observations.each do |surface, observed|
       assert_equal reference, observed,
@@ -116,7 +116,7 @@ class RestartFromScratchParityTest < ActionDispatch::IntegrationTest
     SURFACES.each do |surface|
       observed = observe_restart_through(surface)
 
-      assert_equal "running", observed[:status], "#{surface} did not resume the session"
+      assert_equal "waiting", observed[:status], "#{surface} did not resume the session"
       assert_nil observed[:session_id], "#{surface} left a session_id behind"
       assert_equal [ [ :the_session ] ], observed[:enqueued],
         "#{surface} did not enqueue exactly one fresh first turn"
@@ -143,7 +143,7 @@ class RestartFromScratchParityTest < ActionDispatch::IntegrationTest
 
       assert_includes contents, "Restarting session from scratch: re-running full setup pipeline " \
                                 "(git clone, MCP config, process spawn)"
-      assert_includes contents, "Session resumed - status changed to running, full setup will be re-attempted"
+      assert_includes contents, "Session resumed - its turn is queued for a worker, full setup will be re-attempted"
     end
   end
 

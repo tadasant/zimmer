@@ -166,4 +166,75 @@ class SessionWaitingReasonTest < ActiveSupport::TestCase
 
     assert_nil SessionWaitingReason.for(session.reload)
   end
+
+  # === the fourth mechanism: queued for a worker (#1040) =====================
+
+  def queue_a_turn_for(session, **attrs)
+    GoodJob::Job.create!({
+      active_job_id: SecureRandom.uuid, queue_name: "agents", job_class: "AgentSessionJob",
+      serialized_params: { "arguments" => [ session.id ] }, scheduled_at: 1.minute.ago
+    }.merge(attrs))
+  end
+
+  test "a session whose turn is queued for a worker names GoodJob's queue as the owner" do
+    session = waiting_session({})
+    queue_a_turn_for(session)
+
+    reading = SessionWaitingReason.for(session)
+
+    assert_equal SessionWaitingReason::TURN_QUEUED, reading.current.key
+    assert_includes reading.current.label, "agents queue"
+    assert_includes reading.current.label, RunningTurns.worker_slots.to_s
+    assert_not reading.current.dormancy?, "a queued turn is not a dormancy — nothing is parked"
+  end
+
+  test "a session whose worker is setting its turn up says so" do
+    session = waiting_session({})
+    # What GoodJob writes when a capsule picks a job up: `performed_at`, plus the
+    # lock that makes `JobLiveness` call it `:running` rather than a corpse.
+    capsule = GoodJob::Process.create!(state: { "hostname" => "worker-1" })
+    queue_a_turn_for(session, performed_at: 30.seconds.ago,
+                     locked_at: 30.seconds.ago, locked_by_id: capsule.id)
+
+    reading = SessionWaitingReason.for(session)
+
+    assert_equal SessionWaitingReason::TURN_QUEUED, reading.current.key
+    assert_includes reading.current.label, "clone"
+  end
+
+  # A spot-held session's re-check job is parked on a future `scheduled_at`. Its
+  # owner is the spot ladder, and naming GoodJob would point the reader at a sweep
+  # that is not coming for it — the exact failure #642 was about.
+  test "a turn deferred to a future scheduled_at does not claim to be queued for a worker" do
+    session = waiting_session(hold(at: 1.minute.ago.utc.iso8601, retry_at: 20.minutes.from_now.utc.iso8601))
+    queue_a_turn_for(session, scheduled_at: 20.minutes.from_now)
+
+    reading = SessionWaitingReason.for(session)
+
+    assert_equal SessionWaitingReason::SPOT_HOLD, reading.current.key
+    assert_empty reading.all.select { |m| m.key == SessionWaitingReason::TURN_QUEUED }
+  end
+
+  # It is read off the JOB ROW, never off a marker, which is what stops it
+  # outliving the worker that died holding it.
+  test "a stranded sleeper with no job row claims no queued turn" do
+    assert_nil SessionWaitingReason.for(waiting_session({}))
+  end
+
+  # Newest wins, as for every other mechanism: a turn handed over just now is why
+  # the session is waiting, and the stale hold beside it is superseded rather than
+  # dropped.
+  test "a freshly queued turn outranks an older hold still on the row" do
+    session = waiting_session(hold(at: 2.hours.ago.utc.iso8601, retry_at: 20.minutes.from_now.utc.iso8601))
+    queue_a_turn_for(session)
+
+    reading = SessionWaitingReason.for(session)
+
+    assert_equal SessionWaitingReason::TURN_QUEUED, reading.current.key
+    assert_equal [ SessionWaitingReason::SPOT_HOLD ], reading.superseded.map(&:key)
+    # Sessions::StopRecord classifies a DORMANCY and must not read the queued turn
+    # as one, or it would hide the hold underneath it.
+    assert_equal SessionWaitingReason::SPOT_HOLD, reading.dormancy.key
+    assert_equal SessionWaitingReason::SPOT_HOLD, reading.spot.key
+  end
 end

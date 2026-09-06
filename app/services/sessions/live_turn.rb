@@ -34,6 +34,18 @@ module Sessions
   # PendingAgentTurns documents why — `running_job_id` is written from INSIDE
   # `AgentSessionJob#perform`, so a turn still queued has a blank one and reads
   # as no turn at all.
+  #
+  # == This module is now the "a turn is already in flight" guard
+  #
+  # It used to be enough to ask `session.running?`. Since #1040 a turn that has
+  # been handed over and is queued for one of the `agents` lane's worker threads
+  # reads `waiting` — so `running?` answers "no turn" for a session that has one
+  # coming, and every caller that used it to decide "do not start a second turn"
+  # would start one. Those callers ask #underway? instead: the web, REST and MCP
+  # follow-up routes, `Trigger#follow_up_session!`, `EnqueuedMessageDrainJob`,
+  # `Sessions::MessageParent`, `Session#claim_system_recovery_turn!` and the
+  # follow-up composer. The status gate below is correspondingly
+  # `running? || waiting?` on every predicate here.
   module LiveTurn
     module_function
 
@@ -70,13 +82,93 @@ module Sessions
     # @param session [Session]
     # @return [Boolean]
     def in_flight?(session)
-      return false unless session&.running?
+      return false unless session_may_hold_a_turn?(session)
 
       unfinished_turns(session).any? { |job| JobLiveness.status(job) == :running }
     rescue StandardError => e
       Rails.logger.warn("[Sessions::LiveTurn] Could not read the agents queue for session #{session&.id} " \
                         "(#{e.class}: #{e.message}) — treating the turn as in flight")
       true
+    end
+
+    # Is a turn underway for this session — on a worker thread right now, or
+    # ready in the `agents` queue with a worker coming for it?
+    #
+    # THE GUARD `running?` USED TO BE. Every caller that has to decide "is a turn
+    # already in flight, so hand this prompt to the queue rather than starting a
+    # second one" asks this: the follow-up routes (web, REST, MCP), the wake and
+    # poller deliveries in Trigger, EnqueuedMessageDrainJob's dormancy check, and
+    # Sessions::MessageParent. Reading `session.running?` for that became wrong
+    # the moment a queued turn started reading `waiting` (#1040).
+    #
+    # NARROWER than #coming? for a `waiting` session, and the difference is
+    # deliberate. #coming? counts
+    # `JobLiveness::LIVE_STATUSES`, which includes a job parked on a future
+    # `scheduled_at` — a spot-gate re-check, a clone-retry backoff. Those are
+    # turns that will run *later*, and a follow-up sent to a session in that state
+    # is supposed to be DELIVERED, not queued behind a re-check that may be
+    # minutes away. Only `:running` (a live worker holds it) and `:queued` (ready,
+    # unclaimed, a worker will take it on its next poll) mean a turn is underway
+    # now.
+    #
+    # A `clone_only` job is excluded, because it spends no turn: it makes the clone
+    # and returns without spawning an agent and without draining the queue. Reading
+    # it as a turn would send the first prompt into a cloning session to the queue,
+    # where nothing at that job's end picks it up.
+    #
+    # Fails CLOSED, like #in_flight?: an unreadable `good_jobs` reads as "a turn
+    # is underway", which routes the prompt into the durable queue. A queued
+    # message drains at the next turn boundary; a second concurrent turn is #400.
+    #
+    # @param session [Session]
+    # @return [Boolean]
+    def underway?(session)
+      return false unless session_may_hold_a_turn?(session)
+      # A `running` row answers yes without a query, and that is deliberate
+      # rather than an optimisation: it is exactly what `session.running?` used
+      # to mean at these call sites, so keeping it makes this a pure WIDENING of
+      # the old guard. A `running` session whose job row has gone is an orphan a
+      # recovery sweep owns, and a follow-up into it should still queue behind the
+      # turn the sweep is about to restart rather than race it.
+      return true if session.running?
+
+      unfinished_turns(session).reject { |job| AgentJobIntent.clone_only?(job) }
+        .any? { |job| UNDERWAY_STATUSES.include?(JobLiveness.status(job)) }
+    rescue StandardError => e
+      Rails.logger.warn("[Sessions::LiveTurn] Could not read the agents queue for session #{session&.id} " \
+                        "(#{e.class}: #{e.message}) — treating a turn as underway")
+      true
+    end
+
+    # The statuses in which a worker either has this turn or is about to.
+    #
+    # `:abandoned` is in here and `:scheduled` is not, and the asymmetry is the
+    # point. `JobLiveness` calls a ready, unclaimed job `:abandoned` once it is
+    # older than ABANDONED_QUEUED_JOB_AGE — a horizon its own comment calls
+    # "deliberately far longer than any plausible queue delay", which was true
+    # when only a wedged job could reach it. Since #1040 the queue behind an
+    # 8-thread pool is a real population that a busy deployment holds for minutes,
+    # and a turn that has waited 31 of them is still a turn a worker will run. Its
+    # absence here would open EVERY guard at once, at exactly the moment the queue
+    # is deepest. A `:scheduled` job is different in kind rather than in age: it is
+    # parked to a future time by an owner that is not the worker pool.
+    UNDERWAY_STATUSES = %i[running queued abandoned].freeze
+
+    # The cheap status gate every predicate here takes before touching
+    # `good_jobs`.
+    #
+    # `running` and `waiting` are the two states a session with a turn can be in
+    # since #1040: `running` once a worker has spawned its process, `waiting`
+    # while the turn sits in the `agents` queue. `needs_input`, `failed` and
+    # `archived` are rest states — a job row against one of those is a corpse or
+    # a race the callers here deliberately do not act on.
+    #
+    # @param session [Session, nil]
+    # @return [Boolean]
+    def session_may_hold_a_turn?(session)
+      return false if session.nil?
+
+      session.running? || session.waiting?
     end
 
     # This session's unfinished AgentSessionJob rows.
@@ -137,7 +229,7 @@ module Sessions
     # @param session [Session]
     # @return [Boolean]
     def coming?(session)
-      return false unless session&.running?
+      return false unless session_may_hold_a_turn?(session)
 
       unfinished_turns(session).any? { |job| JobLiveness.alive?(job) }
     rescue StandardError => e
@@ -173,7 +265,7 @@ module Sessions
     # @param session [Session]
     # @return [String, nil]
     def turn_phrase(session)
-      return nil unless session&.running?
+      return nil unless session_may_hold_a_turn?(session)
 
       turns = unfinished_turns(session)
       return "a turn is in flight on it" if turns.any? { |job| JobLiveness.status(job) == :running }

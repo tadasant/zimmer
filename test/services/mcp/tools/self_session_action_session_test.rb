@@ -212,7 +212,7 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     assert_includes result, "## Report Sent to Parent Session"
     assert_includes result, "- **Parent Session ID:** #{parent.id}"
     assert_includes result, "- **Reported by:** session ##{child.id}"
-    assert_equal "running", parent.reload.status
+    assert_equal "waiting", parent.reload.status
     assert_match(/the deploy scripts live in the infra root/, parent.metadata["pending_follow_up_prompt"])
 
     properties = Mcp::Tools::SelfSessionActionSession.input_schema.to_h.deep_symbolize_keys[:properties]

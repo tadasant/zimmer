@@ -141,7 +141,9 @@
           users can read the actual error instead of a hidden, desktop-only block. %>
       <div class="md:hidden">
         <%= render "sessions/auth_outage_banner", agent_session: @session %>
-        <%= render "sessions/spot_hold_banner", agent_session: @session %>
+        <% waiting_reason = SessionWaitingReason.for(@session) %>
+        <%= render "sessions/spot_hold_banner", agent_session: @session, waiting_reason: waiting_reason %>
+        <%= render "sessions/queued_turn_banner", agent_session: @session, waiting_reason: waiting_reason %>
         <%= render "sessions/mcp_oauth_reconnect_banner", agent_session: @session %>
         <%= render "sessions/failure_details", agent_session: @session %>
       </div>
