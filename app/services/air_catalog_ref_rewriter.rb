@@ -4,9 +4,12 @@
 #
 #   - `rewrite` pins each matching `github://owner/repo/...` catalog URI to a ref.
 #   - `absolutize_sources` turns the document's relative local source paths into
-#     absolute ones, so the copy still resolves from wherever it is written.
+#     absolute ones, so the copy still resolves from wherever it is written. It
+#     mirrors AIR's own resolution rules (`getScheme` for the path-or-provider
+#     split, `path.resolve` semantics for the anchoring) rather than guessing at
+#     them, because "resolves identically from anywhere" is the whole property.
 #
-# Two callers:
+# `relocated` composes the two for the callers that write a copy. Two callers:
 #   - staging.rb, when AIR_CATALOG_REF is set, to pin tadasant/zimmer-catalog for a
 #     deploy that tests catalog changes from a branch before merging.
 #   - AirCatalogService, to apply the UI-configured CatalogPin set (any of the
@@ -28,16 +31,30 @@
 class AirCatalogRefRewriter
   CATALOG_PREFIX = "github://tadasant/zimmer-catalog"
 
-  # The air.json keys whose array entries are always local index paths (the six
-  # artifact types AIR resolves from `./<type>/<type>.json` siblings).
+  # The air.json keys whose array entries are always local index paths — the six
+  # artifact types AIR resolves from `./<type>/<type>.json` siblings. Held here
+  # rather than read from AirCatalogService::ARTIFACT_TYPES because staging.rb
+  # `require_relative`s this file at boot, before autoloading; a test keeps the
+  # two lists in step.
   LOCAL_SOURCE_KEYS = %w[skills mcp roots references hooks plugins].freeze
 
-  # Keys whose entries are local paths *or* something else — `catalogs` may hold
-  # a `github://` URI, `extensions` may hold an npm package specifier. Only
-  # explicitly-relative entries (`./x`, `../x`) are absolutized here.
-  MIXED_SOURCE_KEYS = %w[catalogs extensions].freeze
+  # Every key AIR resolves against the config file's own directory. `catalogs`
+  # belongs here too: AIR's `resolveCatalogRoot` is
+  # `getScheme(c) ? provider.resolveCatalogDir(c) : resolve(baseDir, c)`, so a
+  # `catalogs` entry with no provider scheme — `"."`, `"vendor/shared"` — is an
+  # ordinary path, and one left relative in a relocated copy discovers nothing
+  # (`discoverCatalogIndexes` returns `[]` for a directory that isn't there).
+  PATH_KEYS = (LOCAL_SOURCE_KEYS + %w[catalogs]).freeze
 
-  URI_SCHEME = %r{\A[a-zA-Z][a-zA-Z0-9+.\-]*://}
+  # `extensions` is the one key that is not path-or-URI. AIR's extension loader
+  # treats an entry as a local path only when it starts with `./`, `../` or `/`,
+  # and as an npm package specifier otherwise.
+  EXTENSIONS_KEY = "extensions"
+
+  # AIR's `getScheme`: a `scheme://` prefix routes an entry to a catalog
+  # provider instead of the filesystem — except `file://`, which AIR explicitly
+  # treats as local. Everything `getScheme` calls local gets anchored.
+  PROVIDER_SCHEME = %r{\A(?!file://)[a-zA-Z][a-zA-Z0-9+.\-]*://}i
 
   class << self
     # @param json_string [String] an air.json document
@@ -71,42 +88,65 @@ class AirCatalogRefRewriter
       parsed = JSON.parse(json_string)
       base = File.expand_path(base_dir)
 
-      LOCAL_SOURCE_KEYS.each do |key|
+      PATH_KEYS.each do |key|
         next unless parsed[key].is_a?(Array)
 
-        parsed[key] = parsed[key].map { |entry| absolutize(entry, base) }
+        parsed[key] = parsed[key].map { |entry| anchor_if_local(entry, base) }
       end
 
-      MIXED_SOURCE_KEYS.each do |key|
-        next unless parsed[key].is_a?(Array)
-
-        parsed[key] = parsed[key].map do |entry|
-          explicitly_relative?(entry) ? absolutize(entry, base) : entry
+      if parsed[EXTENSIONS_KEY].is_a?(Array)
+        parsed[EXTENSIONS_KEY] = parsed[EXTENSIONS_KEY].map do |entry|
+          local_extension?(entry) ? anchor(entry, base) : entry
         end
       end
 
       JSON.pretty_generate(parsed)
     end
 
-    private
+    # Apply the pins and, if that changed anything, hand back a document whose
+    # local source paths still resolve from wherever the caller writes it. The
+    # two callers both need exactly this, in exactly this order, so they share
+    # it rather than each spelling out the sequence.
+    #
+    # @param json_string [String] an air.json document
+    # @param pins [Hash{String => String}] { "github://owner/repo" => "ref" }
+    # @param base_dir [String] the directory the document's relative paths are
+    #   currently anchored at
+    # @return [String, nil] the relocatable document, or nil when the pins
+    #   matched nothing this config declares and there is nothing to write.
+    #   Compared on the parsed documents, because `rewrite` re-serializes with
+    #   JSON.pretty_generate whether or not it matched anything, so the source
+    #   text is never the baseline.
+    def relocated(json_string, pins:, base_dir:)
+      rewritten = rewrite(json_string, pins: pins)
+      return nil if JSON.parse(rewritten) == JSON.parse(json_string)
 
-    # Anchor one relative path at `base`. Entries that are not relative
-    # filesystem paths pass through untouched: a URI (`github://`, `https://`),
-    # an already-absolute path, and a `~`-prefixed path — AIR, not Ruby, owns
-    # whether `~` expands, so expanding it here would change the meaning of the
-    # document rather than preserve it.
-    def absolutize(entry, base)
-      return entry unless entry.is_a?(String)
-      return entry if entry.empty? || entry.start_with?("/", "~") || entry.match?(URI_SCHEME)
-
-      File.expand_path(entry, base)
+      absolutize_sources(rewritten, base_dir: base_dir)
     end
 
-    # `./x` and `../x` are unambiguously filesystem paths. A bare `x` in
-    # `catalogs` or `extensions` may be a package specifier or a provider URI
-    # shorthand, so it is left alone.
-    def explicitly_relative?(entry)
-      entry.is_a?(String) && (entry.start_with?("./") || entry.start_with?("../"))
+    private
+
+    # Anchor an entry AIR would resolve against the config's own directory;
+    # leave a provider URI (`github://…`) for its provider to resolve.
+    def anchor_if_local(entry, base)
+      return entry unless entry.is_a?(String)
+      return entry if entry.empty? || entry.match?(PROVIDER_SCHEME)
+
+      anchor(entry, base)
+    end
+
+    def local_extension?(entry)
+      entry.is_a?(String) && (entry.start_with?("./") || entry.start_with?("../") || entry.start_with?("/"))
+    end
+
+    # The Ruby equivalent of AIR's `path.resolve(baseDir, entry)`. The two agree
+    # on everything — including leaving an absolute path alone and collapsing
+    # `..` — except a leading `~`, which File.expand_path expands to this
+    # process's home directory where path.resolve treats it as an ordinary path
+    # segment. Joining first keeps AIR's reading of the document rather than
+    # substituting Ruby's.
+    def anchor(entry, base)
+      entry.start_with?("~") ? File.expand_path(File.join(base, entry)) : File.expand_path(entry, base)
     end
 
     # Drop blank refs and order by descending prefix length for longest-match.

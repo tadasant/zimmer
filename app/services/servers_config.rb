@@ -267,8 +267,15 @@ class ServersConfig
       all
     end
 
+    # Degrades the same way `all` does. This is the settings page's read
+    # (DeploymentInfoService), and /settings is where an operator goes to clear
+    # a bad catalog pin — so a resolve failure with no last-known-good fallback
+    # must render an empty catalog there, not a 500 on the page holding the fix.
     def config
       AirCatalogService.entries_for(:mcp)
+    rescue AirCatalogService::CatalogError => e
+      Rails.logger.warn "[ServersConfig] catalog unavailable: #{e.message}"
+      {}
     end
 
     private
