@@ -274,6 +274,69 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # The round-trip schema check: migrate a scratch database from zero and dump it,
+  # load the committed db/schema.rb into another and dump that, then diff. Every
+  # other job here *loads* the schema (`bin/rails db:test:prepare`) and none of them
+  # migrates, so without this job a schema.rb that disagrees with db/migrate/ is
+  # green all the way to whoever next runs `db:migrate` against an empty database.
+  # That is not hypothetical: it is how #311 shipped two `sessions` columns no
+  # migration created, and how `logs.session_id` was a `bigint` in the migrations
+  # and an `integer` in every database that exists.
+  #
+  # A separate job rather than a step in test-unit: it drops and recreates the
+  # databases several times, which would destroy the suite's own. Its Postgres
+  # service is therefore its own scratch container, on a dynamic host port like
+  # every other job on this shared runner. No Redis — the test environment does not
+  # use it (config/environments/test.rb), and nothing here boots a cache store.
+  #
+  # Deliberately does NOT set CI=true, unlike test-unit and test-system. That
+  # variable only turns on eager loading in the test environment, and eager loading
+  # the app while migrating from zero means model code meeting a half-built schema.
+  # This job reproduces exactly what a developer runs locally.
+  #
+  # See docs/operate/testing.md and lib/tasks/schema_verify.rake.
+  schema_verify:
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: self-hosted
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: zimmer_test
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      RAILS_ENV: test
+      DATABASE_HOST: localhost
+      DATABASE_USERNAME: postgres
+      DATABASE_PASSWORD: postgres
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve dynamic service ports
+        run: echo "DATABASE_PORT=${{ job.services.postgres.ports[5432] }}" >> "$GITHUB_ENV"
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4.6"
+          bundler-cache: false
+          self-hosted: true
+      - name: Install gems (per-runner path)
+        run: |
+          RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
+          bundle config set --local path "/home/runner/.bundles/zimmer-runner-${RUNNER_NUM}"
+          bundle install --jobs 4 --retry 3
+      - name: Round-trip db/schema.rb against db/migrate
+        run: bin/rails db:schema:verify
+
   # Builds the Astro Starlight documentation site in docs/. Keeps the site from
   # silently rotting: a broken link, bad frontmatter, or a page missing from the
   # sidebar fails here rather than at deploy time. No Ruby needed — this is the
@@ -514,6 +577,7 @@ jobs:
       - verify_lockfile
       - test-unit
       - test-system
+      - schema_verify
       - docs_site
       - image_excludes_docs
       - image_includes_extensions

@@ -3924,32 +3924,42 @@ noted as having turned `main` red), [#5](https://github.com/tadasant/zimmer/issu
 
 Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).
 
-### CI never runs the migrations
+### `logs.session_id` is an `integer` referencing a `bigint` primary key
 
-🟡 Both test jobs build the database with `bin/rails db:test:prepare`, which *loads* `db/schema.rb`
-and never runs a migration. So a `schema.rb` that disagrees with `db/migrate/` passes CI and diverges
-from production, which does run them.
+🟡 `sessions.id` is a `bigint`. `logs.session_id`, the foreign key pointing at it, is an `integer`
+— it predates this repo, came across in the first `db/schema.rb` dump, and every database since was
+built by loading that dump. `20251112023554_create_logs` declares `t.references :session`, which is
+`bigint`, so the migrations and every deployed database disagreed about the column's width.
 
-`bin/rails db:schema:verify` (`lib/tasks/schema_verify.rake`) is the check: it migrates a scratch
-database from zero, loads the committed schema into another, dumps both, and diffs. It drops and
-recreates databases, so it refuses to run outside `RAILS_ENV=test` and is deliberately not wired into
-the merge gate. What *does* run in CI is the cheap half, `test/migrations/schema_dump_test.rb`: the
-dumps are in the running Active Record version's format, and `schema.rb` is at the newest migration
-on disk.
+The `schema_verify` CI job found that the day it was wired in
+([#318](https://github.com/tadasant/zimmer/issues/318)), and
+`20260906120000_align_logs_session_id_type_for_migration_replay` settled it toward `integer` — the
+type production already has, so it is a no-op on every existing database. The two paths now produce
+the same table, which is what the check is for.
 
-**It found one real drift case.** `db/migrate/` was not replayable from zero because two
-`sessions` columns existed in `db/schema.rb` without a migration. `sessions.transcript` made
-`20260613193000_add_session_maintenance_indexes` fail with `PG::UndefinedColumn` when it built its
-partial index, while `sessions.repository_name` was a quieter divergence: from-zero databases simply
-lacked a column that prompt-building code reads. `20260613192900_add_missing_session_columns_for_migration_replay`
-adds both columns idempotently before that index migration, so existing schema-loaded databases no-op
-and fresh migration replays create the columns in time.
+**What is left is the width itself.** Once `sessions.id` passes 2,147,483,647 no row can be written
+to `logs` at all. That is far off at the current rate, and closing it is not free: widening the
+column is a full table rewrite under an `ACCESS EXCLUSIVE` lock on the highest-write table in the
+app, taken during `db:prepare` at container boot. It wants to be a deliberate change with its own
+plan, not a side effect of a CI job.
 
-The format half is fixed. `db/schema.rb` was an `ActiveRecord::Schema[8.0]` dump under Rails 8.1, so
-every `db:migrate` reformatted all ~450 lines (the 8.1 dumper alphabetizes) and every migration PR
-carried an unreviewable whole-file diff. It is an 8.1 dump now.
+No issue — this is a recorded ceiling, not work in flight.
 
-Tracked in [#182](https://github.com/tadasant/zimmer/issues/182).
+### The `cable` database's schema is not replay-checked
+
+🟡 `db:schema:verify`'s replay half is scoped to databases that have migrations. solid_cable's
+`cable` database has none: the gem ships `db/cable_schema.rb` and no migration, and the
+`migrations_paths` its config names (`db/cable_migrate`) is not a directory in this repo. A from-zero
+`db:migrate` therefore dumps it empty, which is the design and not drift, so comparing it against
+the committed file would fail forever.
+
+`db/cable_schema.rb` is still covered by the load-and-dump half — it must be in the running Active
+Record version's canonical dump format — which is the only comparison that means anything for a
+schema-only database. What nothing checks is that its *contents* still match what solid_cable
+expects after a gem upgrade. `test/migrations/schema_dump_test.rb` scopes its version assertion the
+same way, for the same reason.
+
+No issue — the check is scoped correctly, and the residue is a gem-upgrade review step.
 
 ### Nothing checks the committed icons still match the master artwork
 
