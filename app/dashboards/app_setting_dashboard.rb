@@ -33,7 +33,8 @@ class AppSettingDashboard < Administrate::BaseDashboard
     # A JSONB map of session genesis => scheduling class, overriding the default
     # classification. Validated by the model, so a bad edit here is rejected.
     genesis_class_overrides: Field::String.with_options(searchable: false),
-    # The fleet-idle detector's thresholds and its live state.
+    # The fleet-idle detector's thresholds and its two clocks: when the fleet
+    # crossed below its ceiling, and when top-up last fired.
     fleet_idle_threshold_minutes: Field::Number,
     fleet_idle_max_sessions: Field::Number,
     fleet_idle_min_fire_interval_minutes: Field::Number,

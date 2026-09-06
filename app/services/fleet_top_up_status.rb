@@ -4,18 +4,18 @@
 # and `get_spot_policy` describe the same fleet in the same words rather than
 # taking two readings a moment apart.
 #
-# Four states look identical from outside — "it has not fired" — and clear in four
-# different ways: the fleet is over its ceiling, the stretch is inside the
-# threshold, this stretch is latched, or the cooldown is unspent. This names which
-# one the monitor is in, and when the next fire is due.
+# Three states look identical from outside — "it has not fired" — and clear in
+# three different ways: the fleet is over its ceiling, the stretch is inside the
+# threshold, or the cooldown is unspent. This names which one the monitor is in,
+# and when the next fire is due.
 #
 # Read-only. It never advances a clock and never fires anything; the monitor owns
 # both, and a page render must not be able to spawn a session.
 class FleetTopUpStatus
   # Ordered the way `check!` reaches them, which is also the order they resolve
   # in: a fleet over its ceiling has not started a clock, a clock that has not
-  # crossed the threshold has not reached the latch, and so on.
-  STATES = %i[at_ceiling clock_not_started inside_threshold latched cooling_down due].freeze
+  # crossed the threshold has not reached the cooldown, and so on.
+  STATES = %i[at_ceiling clock_not_started inside_threshold cooling_down due].freeze
 
   attr_reader :setting, :running_sessions, :max_sessions, :threshold, :min_fire_interval,
     :idle_since, :last_fired_at, :now, :turns
@@ -80,34 +80,40 @@ class FleetTopUpStatus
   # the pool can run.
   def effective_ceiling = RunningTurns.effective_ceiling(max_sessions)
 
+  # The clock the threshold is measured against, or nil when no stretch is
+  # running — which is what `fleet_idle_since` holds, EXCEPT in the window
+  # between the fleet reaching its ceiling and the next observation of it. In
+  # that window the stored value is a stretch that is already over, and the two
+  # surfaces would otherwise print "under its ceiling since 3 hours ago" beside a
+  # badge reading "at its work ceiling". Report what the next sweep will store
+  # rather than what the last one did.
+  def under_ceiling_since
+    idle_since if under_ceiling?
+  end
+
   def state
     return :at_ceiling unless under_ceiling?
     return :clock_not_started if idle_since.nil?
     return :inside_threshold if now - idle_since < threshold
-    # The latch: this stretch has already had its fire, and only the fleet
-    # reaching its ceiling again moves `fleet_idle_since` past it.
-    return :latched if last_fired_at.present? && last_fired_at >= idle_since
     return :cooling_down if last_fired_at.present? && now - last_fired_at < min_fire_interval
 
     :due
   end
 
   # The earliest moment the event could fire, or nil when no clock is running
-  # toward one — because the fleet is over its ceiling, or because this stretch
-  # is latched and needs the fleet to get busy before it counts again.
+  # toward one — which happens only when the fleet is at or over its ceiling.
   #
   # Both clocks are consulted in every branch that has them. The threshold alone
-  # is the wrong answer for most of the interval after a fire: `record_busy!`
-  # clears `fleet_idle_since` when the spawned session runs but deliberately
-  # leaves `fleet_idle_event_fired_at` alone, so `clock_not_started` with an
-  # unspent cooldown is the ORDINARY state for the rest of that hour, not an
-  # exotic one — and answering "5 minutes" there under-reports by up to 55.
+  # is the wrong answer for the whole interval after a fire: the stretch runs
+  # straight THROUGH the fire, since only the fleet reaching its ceiling ends one,
+  # so `cooling_down` is the ORDINARY state for the rest of that hour and
+  # answering "5 minutes" there would under-report by up to 55.
   #
   # An estimate by construction: the fleet can reach its ceiling at any moment
-  # and put every clock back.
+  # and put the idle clock back.
   def next_fire_at
     case state
-    when :at_ceiling, :latched then nil
+    when :at_ceiling then nil
     when :due then now
     when :clock_not_started then [ now + threshold, cooldown_ends_at ].compact.max
     else [ idle_since + threshold, cooldown_ends_at ].compact.max
@@ -157,16 +163,15 @@ class FleetTopUpStatus
     when :inside_threshold
       "The fleet has been under its ceiling of #{max_sessions} for " \
         "#{distance_words(now - idle_since)} of the #{threshold.inspect} it needs.#{cooldown_clause}"
-    when :latched
-      "This quiet stretch has already fired. The next one starts when the fleet reaches its ceiling of " \
-        "#{max_sessions} again, and can fire #{min_fire_interval.inspect} after the last fire at the earliest."
     when :cooling_down
-      "Past the threshold and waiting out the #{min_fire_interval.inspect} cooldown — " \
-        "#{distance_words(last_fired_at + min_fire_interval - now)} left."
+      "The fleet has been under its ceiling of #{max_sessions} for #{distance_words(now - idle_since)}, " \
+        "past the #{threshold.inspect} it needs — now waiting out the #{min_fire_interval.inspect} cooldown " \
+        "since the last fire, #{distance_words(cooldown_ends_at - now)} left."
     when :due
-      "The fleet has #{sessions} on a worker#{split_clause} and has been under its ceiling past the " \
-        "threshold: the event fires at the next check, unless something is parked on an auth outage or " \
-        "the account pool is empty."
+      "The fleet has #{sessions} on a worker#{split_clause} and has been under its ceiling of " \
+        "#{max_sessions} for #{distance_words(now - idle_since)}, past the #{threshold.inspect} it needs: " \
+        "the event fires at the next check, unless something is parked on an auth outage or the account " \
+        "pool is empty."
     end
   end
 

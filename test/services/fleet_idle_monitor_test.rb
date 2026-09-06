@@ -2,11 +2,12 @@
 
 require "test_helper"
 
-# The latch that keeps "the fleet is quiet" from firing on every sweep.
+# The two clocks that keep "the fleet is quiet" from firing on every sweep.
 #
-# Idleness is a LEVEL, unlike the quota pool's rising edge, so the property these
-# tests exist to pin is that the event fires ONCE per quiet stretch and cannot
-# fire again until the fleet has work.
+# Idleness is a LEVEL, unlike the quota pool's rising edge, so there are two
+# properties to pin. `fleet_idle_since` is the moment the fleet crossed BELOW its
+# ceiling and nothing under the ceiling disturbs it; `fleet_idle_event_fired_at`
+# is the cooldown, and on a fleet that stays quiet it is the whole of the cadence.
 class FleetIdleMonitorTest < ActiveSupport::TestCase
   # Not included globally by test_helper — the enqueued SystemEventTriggerJob is
   # the whole observable outcome here.
@@ -102,8 +103,9 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
 
   # The regression this class exists for. A level-triggered implementation would
   # fire on this second check, and on every one after it, for as long as the
-  # deployment stayed quiet.
-  test "does not fire twice across consecutive checks with no session in between" do
+  # deployment stayed quiet. The cooldown is what stops it, and it is the only
+  # thing that does — the stretch above stays past its threshold.
+  test "does not fire again inside the cooldown, with no session in between" do
     freeze_time do
       FleetIdleMonitor.check!
       travel FleetIdleMonitor.idle_threshold
@@ -114,9 +116,9 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
         assert_not FleetIdleMonitor.check!
       end
 
-      travel 1.hour
+      travel FleetIdleMonitor.min_fire_interval - 2.minutes
       assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
-        assert_not FleetIdleMonitor.check!
+        assert_not FleetIdleMonitor.check!, "still a minute short of the floor between two fires"
       end
     end
   end
@@ -141,7 +143,7 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
       assert_not FleetIdleMonitor.check!
       assert_nil setting.fleet_idle_since, "a fleet at its ceiling clears the idle clock"
       assert_not_nil setting.fleet_idle_event_fired_at,
-        "the last-fire timestamp survives — it is the cooldown clock, not just the latch"
+        "the last-fire timestamp survives — it is the cooldown clock, and nothing clears it"
 
       running.each { |s| s.update_columns(status: Session.statuses[:archived]) }
       travel 1.minute
@@ -257,17 +259,18 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     end
   end
 
-  # A session that starts and finishes between two sweeps is invisible to
-  # sampling, so the state machine writes the fact directly. Without this the
-  # latch would stay spent against a fleet that had gone back to work.
-  test "a session entering running re-arms the latch through the state machine" do
+  # A fleet that fills up and empties again between two sweeps is invisible to
+  # sampling, so the state machine writes the fact directly. Without it a stretch
+  # would run straight through the moment the fleet was full.
+  test "a session filling the fleet ends the stretch through the state machine" do
+    ceiling(1)
+
     freeze_time do
       FleetIdleMonitor.check!
-      travel FleetIdleMonitor.idle_threshold
-      assert FleetIdleMonitor.check!
-      assert_not_nil setting.fleet_idle_event_fired_at
+      assert_not_nil setting.fleet_idle_since
 
       waiting = session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY)
+      on_a_worker!(waiting)
       waiting.update!(status: :running)
 
       assert_nil setting.fleet_idle_since, "the idle clock is cleared, so the stretch is over"
@@ -275,8 +278,9 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
   end
 
   # The circular failure the cooldown exists for: the session this event spawns
-  # runs, which re-arms the latch, which lets the event fire again five minutes
-  # after it finishes — forever, on a deployment quiet for any other reason.
+  # is itself work on the fleet, so a cadence that read the fleet would let the
+  # event fire again five minutes after that session finishes — forever, on a
+  # deployment quiet for any other reason.
   test "the cooldown holds even when a session ran in between" do
     freeze_time do
       FleetIdleMonitor.check!
@@ -304,7 +308,7 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
 
   # An empty pool makes a quiet fleet a symptom, not an opportunity — and the
   # session this would spawn is priority, so it would start, find nothing to
-  # serve, park, and have re-armed the latch on the way through.
+  # serve, park, and have spent the cooldown on the way there.
   test "an account pool with nothing to serve holds the event off" do
     ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).update_all(status: :quota_exceeded)
 
@@ -437,24 +441,93 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
   end
 
   # What absorbs churn, and the reason a count of running sessions alone is safe
-  # to fire on: the fleet has to stay under the ceiling for the WHOLE stretch,
-  # and `record_busy!` restarts the clock on any session entering `running`. A
-  # fleet that flaps never accumulates one.
-  test "a session starting inside the stretch restarts the clock, however few are running" do
+  # to fire on: the fleet has to stay under the ceiling for the WHOLE stretch, and
+  # a session start that takes it back TO the ceiling ends that stretch.
+  test "a session starting the fleet back onto its ceiling restarts the clock" do
     freeze_time do
       FleetIdleMonitor.check!
       travel FleetIdleMonitor.idle_threshold - 1.minute
 
-      # One session, well under the ceiling of three — the ceiling is not what
-      # holds the fire off here, the dwell is.
-      session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY).update!(status: :running)
-      assert_nil setting.fleet_idle_since, "the stretch is over the moment something runs"
+      # Two already running, and the third takes the fleet to its ceiling of
+      # three — a genuine crossing, which is the only thing that ends a stretch.
+      2.times { session(status: :running) }
+      session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY).tap do |s|
+        on_a_worker!(s)
+        s.update!(status: :running)
+      end
+      assert_nil setting.fleet_idle_since, "the stretch is over once the fleet is full"
 
       travel 1.minute
       assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
-        assert_not FleetIdleMonitor.check!, "the clock starts again rather than firing"
+        assert_not FleetIdleMonitor.check!, "the fleet is at its ceiling, so nothing fires"
       end
-      assert_not_nil setting.fleet_idle_since
+    end
+  end
+
+  # THE BUG THIS PAIR EXISTS FOR. `fleet_idle_since` used to be cleared on ANY
+  # session entering `running`, without consulting the ceiling, which made the
+  # column mean "when a session last started". /inference then told an operator
+  # the fleet had "been under its ceiling of 12 for 1 minute" when it had been
+  # under 12 for hours — and a deployment with any steady trickle of session
+  # starts could never accumulate a threshold.
+  test "a session starting well under the ceiling leaves the clock exactly where it was" do
+    freeze_time do
+      FleetIdleMonitor.check!
+      crossing = setting.fleet_idle_since
+      assert_not_nil crossing
+
+      travel FleetIdleMonitor.idle_threshold - 1.minute
+      # One session, on a worker so the ceiling actually counts it, and still
+      # well under the ceiling of three. Nothing about the fleet's quiet changed.
+      session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY).tap do |s|
+        on_a_worker!(s)
+        s.update!(status: :running)
+      end
+      assert_equal 1, FleetIdleMonitor.running_sessions, "the start has to be one the ceiling counts"
+
+      assert_equal crossing.to_i, setting.fleet_idle_since.to_i,
+        "a start under the ceiling is not a ceiling crossing"
+
+      travel 1.minute
+      assert_enqueued_with(job: SystemEventTriggerJob, args: [ "no_sessions_in_progress" ]) do
+        assert FleetIdleMonitor.check!, "the stretch accumulated across the start"
+      end
+    end
+  end
+
+  # The reported scenario, played out: a ceiling of 12, a fleet steady at four
+  # turns on a worker, and sessions entering `running` all the way through. The
+  # clock must stay anchored to the original crossing and the threshold must
+  # accumulate across every one of those starts.
+  test "a steady trickle of session starts well under a high ceiling never moves the clock" do
+    ceiling(12)
+    4.times { session(status: :running) }
+
+    freeze_time do
+      FleetIdleMonitor.check!
+      crossing = setting.fleet_idle_since
+      assert_not_nil crossing
+
+      # A start a minute for the whole stretch, each one replacing a session that
+      # finished, so the fleet stays at four on a worker throughout.
+      churn = Session.where(status: :running).to_a
+      (FleetIdleMonitor.idle_threshold.to_i / 60).times do |i|
+        travel 1.minute
+        churn[i % churn.size].update!(status: :archived)
+        session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY).tap do |s|
+          on_a_worker!(s)
+          s.update!(status: :running)
+          churn[i % churn.size] = s
+        end
+
+        assert_equal crossing.to_i, setting.fleet_idle_since.to_i,
+          "minute #{i + 1}: a fleet of four under a ceiling of twelve has not stopped being quiet"
+      end
+
+      assert_equal 4, FleetIdleMonitor.running_sessions
+      assert_enqueued_with(job: SystemEventTriggerJob, args: [ "no_sessions_in_progress" ]) do
+        assert FleetIdleMonitor.check!, "the whole threshold accumulated across the churn"
+      end
     end
   end
 
@@ -475,15 +548,17 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
   end
 
   # ---------------------------------------------------------------------------
-  # The latch and the cooldown under a ceiling
+  # The cooldown under a ceiling
   # ---------------------------------------------------------------------------
 
-  # The reason the cooldown gets more load-bearing, not less, once the ceiling is
-  # above 1: the session the fire spawns no longer takes the fleet out of its own
-  # idle window, so the stretch does not end when it starts running.
+  # The reason the cooldown is the whole of the cadence once the ceiling is above
+  # 1: the session the fire spawns does not take the fleet out of its own idle
+  # window, so the stretch runs straight on through the fire and the threshold
+  # has nothing left to say.
   test "the cooldown holds while the session the fire spawned is still running" do
     freeze_time do
       FleetIdleMonitor.check!
+      crossing = setting.fleet_idle_since
       travel FleetIdleMonitor.idle_threshold
       assert FleetIdleMonitor.check!
 
@@ -491,13 +566,13 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
       # one running session leaves the fleet under a ceiling of three.
       spawned = session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY)
       spawned.update!(status: :running)
-      assert_nil setting.fleet_idle_since,
-        "the state-machine hook ends the stretch even though the fleet is still under its ceiling"
+      assert_equal crossing.to_i, setting.fleet_idle_since.to_i,
+        "the fleet is still under its ceiling, so the stretch it is in has not ended"
 
       travel FleetIdleMonitor.idle_threshold + 1.minute
       assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
         assert_not FleetIdleMonitor.check!,
-          "the fleet is idle enough again, but the cooldown has not been spent"
+          "well past the threshold, but the cooldown has not been spent"
       end
 
       travel FleetIdleMonitor.min_fire_interval
@@ -507,24 +582,32 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
     end
   end
 
-  # Without a re-arm the latch would hold forever on a fleet that never climbs
-  # above its ceiling, and the event would fire exactly once in the deployment's
-  # life. `record_busy!` is unconditional for this reason.
-  test "the latch is re-armed by a session running even when the fleet stays under its ceiling" do
+  # THE HAZARD THE OLD LATCH GUARDED AGAINST, and the one a ceiling-aware clock
+  # must not reintroduce. A fleet that never climbs above its ceiling never
+  # crosses it, so nothing ever moves `fleet_idle_since` — under a
+  # `fired_at >= idle_since` latch that fleet would have fired exactly once in
+  # the deployment's life. The cooldown is what re-arms instead, and it does it
+  # on the configured cadence, forever.
+  test "a fleet permanently under its ceiling keeps firing on the cooldown cadence" do
     freeze_time do
       FleetIdleMonitor.check!
+      crossing = setting.fleet_idle_since
       travel FleetIdleMonitor.idle_threshold
-      assert FleetIdleMonitor.check!
-      fired_at = setting.fleet_idle_event_fired_at
+      assert FleetIdleMonitor.check!, "the first fire"
 
-      travel 1.minute
-      session(status: :waiting, scheduling_class: SessionGenesis::PRIORITY).update!(status: :running)
-      assert_nil setting.fleet_idle_since
+      # Four more hours of a fleet that never gets busy: one fire an hour, on the
+      # cooldown, with the same crossing underneath all of them.
+      4.times do |i|
+        travel FleetIdleMonitor.min_fire_interval - 1.minute
+        assert_not FleetIdleMonitor.check!, "hour #{i + 2}: a minute short of the cooldown"
 
-      travel 1.minute
-      assert_not FleetIdleMonitor.check!
-      assert setting.fleet_idle_since > fired_at,
-        "the new stretch starts after the last fire, so the latch is open and the cooldown decides"
+        travel 1.minute
+        assert_enqueued_with(job: SystemEventTriggerJob, args: [ "no_sessions_in_progress" ]) do
+          assert FleetIdleMonitor.check!, "hour #{i + 2}: the cooldown is spent, so it fires again"
+        end
+        assert_equal crossing.to_i, setting.fleet_idle_since.to_i,
+          "the fire does not disturb the stretch it fired inside"
+      end
     end
   end
 
@@ -668,5 +751,122 @@ class FleetIdleMonitorTest < ActiveSupport::TestCase
       end
       assert_nil setting.fleet_idle_since
     end
+  end
+
+  # The worst case the whole design now rests on: with the latch gone, the
+  # cooldown is the only thing between a permanently quiet fleet and a fire on
+  # every sweep. At the finest setting both knobs allow — a minute each, which is
+  # also the sweep cadence — "a fire per sweep" is exactly what the operator
+  # asked for, and it must be no more than that.
+  test "at the finest legal settings the cadence is still one fire per cooldown" do
+    AppSetting.editable.update!(fleet_idle_threshold_minutes: 1,
+                                fleet_idle_min_fire_interval_minutes: 1)
+
+    freeze_time do
+      assert_not FleetIdleMonitor.check!, "the first observation only starts the clock"
+
+      travel 1.minute
+      assert FleetIdleMonitor.check!, "one minute of dwell, nothing fired yet"
+
+      # Five more sweeps at the cron's own cadence: one fire each, never two.
+      5.times do |i|
+        travel 30.seconds
+        assert_not FleetIdleMonitor.check!, "sweep #{i + 1}: half a minute is inside the cooldown"
+
+        travel 30.seconds
+        assert FleetIdleMonitor.check!, "sweep #{i + 1}: the cooldown is spent"
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # record_session_started!
+  # ---------------------------------------------------------------------------
+
+  test "record_session_started! clears the clock only once the fleet is at its ceiling" do
+    ceiling(3)
+    FleetIdleMonitor.check!
+    crossing = setting.fleet_idle_since
+    assert_not_nil crossing
+
+    2.times { session(status: :running) }
+    assert_not FleetIdleMonitor.record_session_started!, "two of three is still under the ceiling"
+    assert_equal crossing.to_i, setting.fleet_idle_since.to_i
+
+    session(status: :running)
+    assert FleetIdleMonitor.record_session_started!, "the third one fills the fleet"
+    assert_nil setting.fleet_idle_since
+  end
+
+  # The cheap path, and the one that runs on every session start of a busy
+  # deployment: with no stretch running there is nothing to end, so the fleet is
+  # never read at all.
+  test "record_session_started! does not read the fleet when no clock is running" do
+    AppSetting.editable.update!(fleet_idle_since: nil)
+
+    Session.stub(:not_in_frozen_category, ->(*) { flunk "the fleet must not be read" }) do
+      assert_not FleetIdleMonitor.record_session_started!
+    end
+  end
+
+  # A ceiling the `agents` pool cannot reach is one `on_a_worker` can never meet,
+  # so the fleet read below it would ask a question already answered. That is the
+  # shape of the deployment that reported this bug, where the clock runs for
+  # weeks, so the guard is the common path rather than a corner case.
+  test "record_session_started! does not read the fleet when the ceiling is out of reach" do
+    ceiling(RunningTurns.worker_slots + 1)
+    FleetIdleMonitor.check!
+    crossing = setting.fleet_idle_since
+    assert_not_nil crossing
+
+    Session.stub(:not_in_frozen_category, ->(*) { flunk "the fleet must not be read" }) do
+      assert_not FleetIdleMonitor.record_session_started!
+    end
+    assert_equal crossing.to_i, setting.fleet_idle_since.to_i
+  end
+
+  # Fails toward LEAVING THE CLOCK ALONE, the opposite of `check!`'s fail-quiet
+  # and deliberately so: the hook cannot fire anything, and `check!` takes its
+  # own reading before it does. The worst a missed clear costs is a stretch that
+  # skipped part of its dwell.
+  # The guarded write, and the only thing standing between a fleet that reaches
+  # its ceiling mid-decision and a fire it must not get. With the latch gone this
+  # CAS is the sole protection against firing on a stale reading, so it is worth
+  # driving directly: clear the clock between `check!`'s read and its write.
+  test "a clear landing mid-decision loses the guarded write and fires nothing" do
+    freeze_time do
+      FleetIdleMonitor.check!
+      # A spent cooldown, so the decision reaches `min_fire_interval` — the last
+      # read `check!` makes before the guarded write, and therefore the way to
+      # land a clear inside the window the write is guarding.
+      travel FleetIdleMonitor.idle_threshold
+      AppSetting.editable.update!(fleet_idle_event_fired_at: 2.hours.ago)
+      last_fired = setting.fleet_idle_event_fired_at
+
+      interrupt = lambda do |setting_arg|
+        AppSetting.editable.update!(fleet_idle_since: nil)
+        setting_arg.fleet_idle_min_fire_interval_minutes.minutes
+      end
+
+      assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+        FleetIdleMonitor.stub(:min_fire_interval, interrupt) do
+          assert_not FleetIdleMonitor.check!, "the fleet reached its ceiling while we were deciding"
+        end
+      end
+
+      assert_equal last_fired.to_i, setting.fleet_idle_event_fired_at.to_i,
+        "the claim was lost, so the cooldown clock did not move"
+    end
+  end
+
+  test "record_session_started! leaves the clock alone when the fleet cannot be read" do
+    FleetIdleMonitor.check!
+    crossing = setting.fleet_idle_since
+
+    Session.stub(:not_in_frozen_category, ->(*) { raise ActiveRecord::StatementInvalid, "boom" }) do
+      assert_not FleetIdleMonitor.record_session_started!
+    end
+
+    assert_equal crossing.to_i, setting.fleet_idle_since.to_i
   end
 end
