@@ -37,16 +37,23 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
     Mocha::Mockery.instance.teardown
   end
 
+  # The panel group is one card whether or not its two deferred members have
+  # arrived, so the provenance panel is asserted by the frame that stands in its
+  # place — the slot is in the group from the first paint, the content lands in it.
   test "the four panels render in one group, Status first and always expanded" do
     get session_url(@session)
 
     assert_response :success
     assert_select "#session_#{@session.id}_panels" do
       assert_select "#session_#{@session.id}_status_panel"
-      assert_select "#session_#{@session.id}_provenance"
+      assert_select "turbo-frame#session_#{@session.id}_provenance_panel"
       assert_select "details summary", text: /Transcript/
     end
     assert_select "#session_#{@session.id}_status_panel details", 0, "Status is not a disclosure"
+
+    get provenance_panel_session_url(@session)
+    assert_response :success
+    assert_select "#session_#{@session.id}_provenance"
   end
 
   test "the transcript is a details disclosure that is closed by default" do
@@ -59,8 +66,11 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
     assert_select "details[data-controller='transcript-panel'][open]", 0
   end
 
+  # The anchors the summary's #message-N links land on. They live in the
+  # transcript panel, which the page defers — transcript_panel_controller opens
+  # the disclosure, waits for the frame, and only then scrolls.
   test "transcript messages carry stable anchor ids for the summary to link to" do
-    get session_url(@session)
+    get transcript_panel_session_url(@session)
 
     assert_response :success
     assert_select "#message-0"

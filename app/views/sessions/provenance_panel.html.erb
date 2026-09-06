@@ -1,0 +1,5 @@
+<%# The Session hierarchy and Human messages panels, on their own path so they
+    can be a lazy frame. See SessionsController#provenance_panel. %>
+<%= turbo_frame_tag "session_#{@session.id}_provenance_panel" do %>
+  <%= render "sessions/session_hierarchy", agent_session: @session %>
+<% end %>

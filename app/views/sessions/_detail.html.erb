@@ -199,7 +199,11 @@
             <% end %>
             <div class="flex items-center gap-4 mb-3">
               <%= render "sessions/status_badge", agent_session: @session %>
-              <!-- Log Level Filter and Item Count (lifted to sticky header) -->
+              <%# Log level filter (lifted to sticky header). The item count that
+                  used to sit beside it is now inside the transcript panel: it
+                  cost a full normalize of the transcript to produce, and it was
+                  never live here anyway — infinite-scroll only updates an
+                  itemsCount target within its own element. %>
               <div class="flex items-center gap-4 ml-4 border-l border-gray-300 pl-4">
                 <label class="flex items-center text-sm text-gray-600">
                   <span class="mr-2">Log Level:</span>
@@ -210,13 +214,6 @@
                     <option value="verbose" <%= 'selected' if @filter_level == 'verbose' %>>Verbose</option>
                   </select>
                 </label>
-                <span class="text-sm text-gray-500" data-infinite-scroll-target="itemsCount">
-                  <% if @has_more_items %>
-                    Showing <%= @timeline_items.count %> of <%= @total_timeline_items_count %> items
-                  <% else %>
-                    <%= @total_timeline_items_count %> <%= @total_timeline_items_count == 1 ? 'item' : 'items' %>
-                  <% end %>
-                </span>
               </div>
             </div>
 
@@ -242,105 +239,76 @@
         it are what a returning reader wants first. %>
     <div class="bg-white shadow rounded-lg mb-4 divide-y divide-gray-200" id="session_<%= @session.id %>_panels" data-session-panels>
     <%= render "sessions/status_panel", agent_session: @session %>
-    <%= render "sessions/session_hierarchy", agent_session: @session %>
 
-    <%# Opening the transcript scrolls it to the bottom: while closed, the
-        auto-scroll controller's pinning has nothing to measure, so a session
-        that streamed messages in the background would otherwise open at the top,
-        thousands of rows away from what just happened.
+    <%# Deferred: SessionHierarchy walks the family breadth-first, one query per
+        level in each direction, and that walk is the majority of the queries a
+        detail response would otherwise issue before it could paint. The frame is
+        visible on load, so Turbo fetches it the moment the page is on screen —
+        the reader gets the identity of the session immediately and the tree a
+        beat later, against a skeleton the same size. %>
+    <%= turbo_frame_tag "session_#{@session.id}_provenance_panel",
+                        src: provenance_panel_session_path(@session),
+                        loading: "lazy",
+                        data: { deferred_panel: true } do %>
+      <%= render "sessions/provenance_skeleton" %>
+    <% end %>
 
-        Collapsed by default, and open only for the log-level filter's own
-        re-fetch, which carries `transcript=open` so the panel the reader had open
-        comes back open. Why that round trip is the exception:
-        log_level_filter_controller.js#refetchAtLevel. %>
+    <%# Opening the transcript is what LOADS it. The disclosure starts closed, and
+        a <turbo-frame loading="lazy"> inside a closed <details> has no layout, so
+        Turbo does not fetch it until the reader opens the panel. On a long
+        session that batch of rows is the bulk of this response and the only part
+        whose size grows without bound — deferring it is the difference between a
+        page that paints and one that waits.
+
+        `transcript=open` is therefore two instructions in one: render the
+        disclosure open, and — because that gives the frame layout — go and fetch
+        the rows. The one address that sends it is the log-level filter's own
+        re-fetch, so the panel the reader had open comes back open, at the level
+        they just picked. Why that round trip is the exception:
+        log_level_filter_controller.js#refetchAtLevel.
+
+        Opening also scrolls to the bottom: while closed, the auto-scroll
+        controller's pinning has nothing to measure, so a session that streamed
+        messages in the background would otherwise open at the top, thousands of
+        rows away from what just happened. The controller waits for the frame
+        before it measures — see transcript_panel_controller.js. %>
     <details data-controller="transcript-panel" data-action="toggle->transcript-panel#toggled"
-             data-log-level-filter-target="transcript" <%= 'open' if @transcript_open %>>
+             data-log-level-filter-target="transcript"
+             data-transcript-panel-deferred-value="true" <%= 'open' if @transcript_open %>>
       <summary class="px-4 sm:px-6 py-3 cursor-pointer select-none flex items-center justify-between gap-3 hover:bg-gray-50">
         <span class="flex items-center gap-2 min-w-0">
           <svg class="h-4 w-4 flex-shrink-0 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
           </svg>
           <span class="text-sm font-semibold text-gray-900">Transcript</span>
-          <span class="text-xs text-gray-500 truncate">
-            <% if @total_timeline_items_count.to_i.zero? %>
-              nothing recorded yet
-            <% else %>
-              <%= pluralize(@total_timeline_items_count, "item") %><%= ", #{@timeline_items.count} loaded" if @has_more_items %>
-            <% end %>
-          </span>
         </span>
         <span class="text-xs text-gray-400 flex-shrink-0">conversation and activity</span>
       </summary>
 
     <div class="border-t border-gray-200" id="timeline-container" data-session-scroll-target="timeline"
-         data-transcript-panel-target="body"
-         data-controller="infinite-scroll"
-         data-infinite-scroll-url-value="<%= timeline_items_session_path(@session) %>"
-         data-infinite-scroll-before-index-value="<%= @oldest_displayed_index %>"
-         data-infinite-scroll-before-timestamp-value="<%= @oldest_displayed_timestamp %>"
-         data-infinite-scroll-has-more-value="<%= @has_more_items %>"
-         data-infinite-scroll-total-count-value="<%= @total_timeline_items_count %>"
-         data-infinite-scroll-displayed-count-value="<%= @timeline_items.count %>"
-         data-infinite-scroll-filter-level-value="<%= @filter_level %>">
+         data-transcript-panel-target="body">
       <div class="divide-y divide-gray-200" data-auto-scroll-target="timelineContainer" data-log-level-filter-target="timeline">
-        <!-- Always render the timeline target div for Turbo Streams -->
-        <%# data-live-region="append": broadcasts only ever append here, so a
-            reopen after a dead socket backfills the items it missed rather than
-            re-rendering the page. Older pages pulled in by infinite scroll are
-            not in the server's tail render and are deliberately left alone. %>
-        <div id="session_<%= @session.id %>_timeline" data-controller="timeline" data-infinite-scroll-target="timelineContent"
+        <%= turbo_frame_tag "session_#{@session.id}_transcript",
+                            src: transcript_panel_session_path(@session, filter: @filter_level),
+                            loading: "lazy",
+                            data: { deferred_panel: true, transcript_panel_target: "frame" } do %>
+          <%= render "sessions/transcript_skeleton" %>
+        <% end %>
+
+        <%# Always rendered, always outside the frame, always empty on first
+            paint. Turbo Stream appends target this id (BroadcastService), so a
+            message broadcast while the panel is closed — or while its frame is
+            still in flight — still has somewhere to land, and lands below the
+            batch the frame brings, which is where the newest items belong.
+
+            data-live-region="append": a reopen after a dead socket backfills the
+            items it missed rather than re-rendering the page. It reconciles
+            against the same region in a freshly fetched copy of this page, whose
+            frame is unloaded and whose copy of this div is therefore empty — so
+            the backfill for a loaded panel is the frame reload that
+            stream-visibility-recovery does instead (see data-deferred-panel). %>
+        <div id="session_<%= @session.id %>_timeline" data-controller="timeline"
              data-live-region="append">
-          <%# Load more indicator at the top - shown when there are more items to load %>
-          <% if @has_more_items %>
-            <div data-infinite-scroll-target="loadMoreTrigger" class="px-6 py-3 text-center border-b border-gray-100">
-              <button type="button"
-                      data-action="click->infinite-scroll#loadMoreClicked"
-                      data-infinite-scroll-target="loadMoreButton"
-                      class="inline-flex items-center px-3 py-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">
-                <svg class="mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                  <path fill-rule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clip-rule="evenodd" />
-                </svg>
-                Load earlier messages (<%= @oldest_displayed_index %> more)
-              </button>
-            </div>
-            <div data-infinite-scroll-target="loadingIndicator"
-                 class="hidden px-6 py-3 text-center border-b border-gray-100"
-                 role="status"
-                 aria-live="polite">
-              <svg class="animate-spin inline-block h-5 w-5 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-              <span class="ml-2 text-sm text-gray-600">Loading earlier messages...</span>
-            </div>
-          <% end %>
-
-          <% if @timeline_items.empty? %>
-            <!-- Empty state message inside timeline div so Turbo Streams can replace it -->
-            <%# data-live-transient: a broadcast removes this the moment the
-                first item lands, so a backfill that appends items has to drop it
-                too or it sits above them. %>
-            <div id="empty-timeline-message" class="px-6 py-12 text-center" data-live-transient>
-              <% if @session.running? %>
-                <svg class="animate-spin mx-auto h-12 w-12 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                <h3 class="mt-4 text-sm font-medium text-gray-900">Agent is running...</h3>
-                <p class="mt-1 text-sm text-gray-500">The conversation and activity will appear here as the agent progresses.</p>
-              <% else %>
-                <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                </svg>
-                <h3 class="mt-2 text-sm font-medium text-gray-900">No activity yet</h3>
-                <p class="mt-1 text-sm text-gray-500">The conversation and activity logs will appear here as the agent session progresses.</p>
-              <% end %>
-            </div>
-          <% end %>
-
-          <% @timeline_items.each do |item| %>
-            <%= render "timeline_items/item", item: item, session: @session %>
-          <% end %>
         </div>
       </div>
     </div>
