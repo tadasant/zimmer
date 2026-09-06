@@ -20,7 +20,7 @@ require "kamal"
 # These tests assert the MERGED result, role by role. `runtime_home_volumes_test.rb`
 # covers the runtime homes on the same footing (driven off `RuntimeRegistry`), and
 # `nested_docker_switch_test.rb` covers the runtime/user/env switch; what is here is the
-# rest of what the base file now owns.
+# rest of what the base file owns.
 class KamalDeployConfigTest < ActiveSupport::TestCase
   include KamalConfigHelpers
 

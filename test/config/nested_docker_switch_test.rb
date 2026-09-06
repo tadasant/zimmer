@@ -22,8 +22,8 @@ class NestedDockerSwitchTest < ActiveSupport::TestCase
   DESTINATIONS = DEFAULTS.keys.freeze
 
   # The MERGED config, not the destination file alone: `init: true` and the volume list
-  # live in config/deploy.yml now, and the switch's own three settings only mean
-  # anything alongside them.
+  # live in config/deploy.yml, and the switch's own three settings only mean anything
+  # alongside them.
   def deploy_config(destination, nested: nil)
     kamal_raw_config(destination, nested_docker: nested)
   end
