@@ -58,6 +58,18 @@
 #   []. Best-effort — a missing store means "nothing suppressing it", never an
 #   error. Returns the names actually cleared.
 #
+# == A runtime with no writer ==
+#
+# RuntimeRegistry's `mcp_credential_writer_class` slot is deliberately nil for a
+# runtime that keeps its MCP OAuth tokens somewhere Zimmer does not write — Pi,
+# whose pi-mcp-adapter extension owns its own. That nil is part of the seam
+# rather than a hole in it, and it holds only while EVERY path through
+# McpOauthCredentialInjector that needs a writer asks #credential_store? first.
+# That is a wider set than the paths that write: #credential_key_for is the
+# runtime's, so *resolving* a credential needs a writer as much as storing one
+# does, and the pre-spawn OAuth gate — which writes nothing — needs it to read
+# the runtime's store back.
+#
 # The shared contract is exercised by
 # test/contracts/runtime_mcp_credential_writer_contract_test.rb against every
 # writer.

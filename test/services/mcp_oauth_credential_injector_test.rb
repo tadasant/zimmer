@@ -19,8 +19,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     credential = mcp_oauth_credentials(:expired_with_refresh)
 
     # Use a mock session that returns our test server without validation
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "refreshable-server" ] }
+    mock_session = mock_claude_session([ "refreshable-server" ])
 
     server_config = mock_server_config(
       name: "refreshable-server",
@@ -71,8 +70,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   test "check_credentials_status marks credential as invalid when refresh fails" do
     credential = mcp_oauth_credentials(:expired_with_refresh)
 
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "refreshable-server" ] }
+    mock_session = mock_claude_session([ "refreshable-server" ])
 
     server_config = mock_server_config(
       name: "refreshable-server",
@@ -108,8 +106,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   test "check_credentials_status does not attempt refresh for expired token without refresh_token" do
     credential = mcp_oauth_credentials(:expired)
 
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "expired-server" ] }
+    mock_session = mock_claude_session([ "expired-server" ])
 
     server_config = mock_server_config(
       name: "expired-server",
@@ -141,8 +138,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   test "check_credentials_status skips refresh for active (non-expired) tokens" do
     credential = mcp_oauth_credentials(:notion)
 
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "notion" ] }
+    mock_session = mock_claude_session([ "notion" ])
 
     server_config = mock_server_config(
       name: "notion",
@@ -172,8 +168,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   end
 
   test "check_credentials_status returns empty hash when no mcp_servers configured" do
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { nil }
+    mock_session = mock_claude_session(nil)
 
     injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
     status = injector.check_credentials_status
@@ -182,8 +177,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   end
 
   test "check_credentials_status only checks remote server types" do
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "local-server" ] }
+    mock_session = mock_claude_session([ "local-server" ])
 
     server_config = mock_server_config(
       name: "local-server",
@@ -204,8 +198,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     credential = mcp_oauth_credentials(:expired_with_refresh)
     original_refresh_token = credential.refresh_token
 
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "refreshable-server" ] }
+    mock_session = mock_claude_session([ "refreshable-server" ])
 
     server_config = mock_server_config(
       name: "refreshable-server",
@@ -245,8 +238,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   test "check_credentials_status handles network timeout gracefully" do
     credential = mcp_oauth_credentials(:expired_with_refresh)
 
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "refreshable-server" ] }
+    mock_session = mock_claude_session([ "refreshable-server" ])
 
     server_config = mock_server_config(
       name: "refreshable-server",
@@ -280,8 +272,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   test "check_credentials_status sets requires_reauth when refresh is permanently invalid" do
     credential = mcp_oauth_credentials(:expired_with_refresh)
 
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "refreshable-server" ] }
+    mock_session = mock_claude_session([ "refreshable-server" ])
 
     server_config = mock_server_config(
       name: "refreshable-server",
@@ -320,8 +311,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   test "check_credentials_status does not set refresh_failed for active tokens" do
     credential = mcp_oauth_credentials(:notion)
 
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "notion" ] }
+    mock_session = mock_claude_session([ "notion" ])
 
     server_config = mock_server_config(
       name: "notion",
@@ -354,8 +344,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   test "check_credentials_status does not set refresh_failed for expired token without refresh capability" do
     credential = mcp_oauth_credentials(:expired)
 
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "expired-server" ] }
+    mock_session = mock_claude_session([ "expired-server" ])
 
     server_config = mock_server_config(
       name: "expired-server",
@@ -389,8 +378,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     credential = mcp_oauth_credentials(:expired_with_refresh)
     credential.update!(token_endpoint: nil)
 
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "refreshable-server" ] }
+    mock_session = mock_claude_session([ "refreshable-server" ])
 
     server_config = mock_server_config(
       name: "refreshable-server",
@@ -421,8 +409,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   end
 
   test "check_credentials_status skips servers with a static Authorization header" do
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "static-bearer-server" ] }
+    mock_session = mock_claude_session([ "static-bearer-server" ])
 
     server_config = mock_server_config(
       name: "static-bearer-server",
@@ -445,8 +432,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   end
 
   test "check_credentials_status matches Authorization header case-insensitively" do
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "lowercase-auth-server" ] }
+    mock_session = mock_claude_session([ "lowercase-auth-server" ])
 
     server_config = mock_server_config(
       name: "lowercase-auth-server",
@@ -465,8 +451,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   end
 
   test "check_credentials_status does not skip servers with empty Authorization header value" do
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "empty-auth-server" ] }
+    mock_session = mock_claude_session([ "empty-auth-server" ])
 
     server_config = mock_server_config(
       name: "empty-auth-server",
@@ -494,8 +479,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     # OAuth gate and would raise on missing env vars, so an unresolved placeholder
     # reaching this code means the operator configured one and we should respect
     # their intent, not fall through to OAuth discovery.
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "placeholder-server" ] }
+    mock_session = mock_claude_session([ "placeholder-server" ])
 
     server_config = mock_server_config(
       name: "placeholder-server",
@@ -516,8 +500,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   end
 
   test "check_credentials_status still gates servers without an Authorization header" do
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "no-auth-server" ] }
+    mock_session = mock_claude_session([ "no-auth-server" ])
 
     server_config = mock_server_config(
       name: "no-auth-server",
@@ -544,8 +527,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   test "inject_credentials! resolves active credentials and routes them through the runtime writer" do
     credential = mcp_oauth_credentials(:notion)
 
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "notion" ] }
+    mock_session = mock_claude_session([ "notion" ])
 
     server_config = mock_server_config(
       name: "notion",
@@ -586,8 +568,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   end
 
   test "inject_credentials! returns nil when no active credentials resolve" do
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "no-credential-server" ] }
+    mock_session = mock_claude_session([ "no-credential-server" ])
 
     server_config = mock_server_config(
       name: "no-credential-server",
@@ -606,21 +587,20 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   # raise. McpOauthController#reinject_and_resume calls injection and the resume
   # service inside one `rescue`, so a raise here would skip the resume and leave
   # a session parked on an OAuth gate permanently un-resumable.
+  #
+  # The credential is deliberately one that RESOLVES — its key matches what the
+  # server config hashes to. An earlier version of this test left the fixture's
+  # own key in place, so nothing ever resolved, `collect_credentials` returned
+  # before it needed a runtime key, and the writer was never touched: the test
+  # passed against code that raised the moment a Pi session actually had a
+  # credential for one of its servers.
   test "inject_credentials! is a no-op for a runtime with no Zimmer-written credential store" do
     credential = mcp_oauth_credentials(:notion)
-    credential.update!(expires_at: 1.hour.from_now)
+    credential.update!(expires_at: 1.hour.from_now, credential_key: pi_notion_credential_key)
 
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "notion" ] }
-    mock_session.define_singleton_method(:id) { 4242 }
-    mock_session.define_singleton_method(:agent_runtime) { "pi" }
-    mock_session.define_singleton_method(:runtime) { RuntimeRegistry.for("pi") }
+    mock_session = mock_pi_session([ "notion" ])
 
-    server_config = mock_server_config(
-      name: "notion", type: "streamable-http", url: "https://mcp.notion.com/mcp"
-    )
-
-    ServersConfig.stub(:find, ->(name) { name == "notion" ? server_config : nil }) do
+    ServersConfig.stub(:find, ->(name) { name == "notion" ? pi_notion_server_config : nil }) do
       injector = McpOauthCredentialInjector.new(mock_session, working_directory: @working_directory)
 
       assert_nil injector.inject_credentials!
@@ -628,11 +608,60 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     end
   end
 
+  # The exact production failure (GlitchTip issue 87): a Pi session with one
+  # OAuth-credentialed MCP server raised `NoMethodError: undefined method
+  # 'credential_key_for' for nil` out of AgentSessionJob's spawn gate and died
+  # nine seconds in, before producing a line of output.
+  #
+  # The gate calls #check_credentials_status, not #inject_credentials!, and that
+  # path needs the runtime key too — to read back a token the runtime may have
+  # rotated. Guarding only the two write paths left this one dereferencing nil.
+  test "check_credentials_status does not raise for a runtime with no Zimmer-written credential store" do
+    credential = mcp_oauth_credentials(:notion)
+    credential.update!(expires_at: 1.hour.from_now, credential_key: pi_notion_credential_key)
+
+    injector = McpOauthCredentialInjector.new(
+      mock_pi_session([ "notion" ]), working_directory: @working_directory
+    )
+
+    status = nil
+    ServersConfig.stub(:find, ->(name) { name == "notion" ? pi_notion_server_config : nil }) do
+      assert_nothing_raised { status = injector.check_credentials_status }
+    end
+
+    # Degraded, not skipped: Pi has no store Zimmer writes, but the gate still
+    # has to report what Zimmer knows, or every Pi session would be blocked on
+    # an Authorize button for a credential it already holds.
+    assert status.key?("notion"), "the gate must still report on a server the runtime has no store for"
+    assert status["notion"][:has_credential]
+    assert status["notion"][:credential_valid]
+  end
+
+  # Neither of the two paths above may raise for ANY registered runtime — the
+  # generalization of the bug, so a runtime added later with a nil
+  # mcp_credential_writer_class fails here rather than in production.
+  RuntimeRegistry.registered_runtimes.each do |runtime|
+    test "the MCP OAuth spawn gate and injection survive a #{runtime} session holding a credential" do
+      credential = mcp_oauth_credentials(:notion)
+      credential.update!(expires_at: 1.hour.from_now, credential_key: pi_notion_credential_key)
+
+      injector = McpOauthCredentialInjector.new(
+        mock_session_on([ "notion" ], runtime: runtime), working_directory: @working_directory
+      )
+
+      ServersConfig.stub(:find, ->(name) { name == "notion" ? pi_notion_server_config : nil }) do
+        assert_nothing_raised do
+          injector.check_credentials_status
+          injector.inject_credentials!
+        end
+      end
+    end
+  end
+
   test "inject_credentials! clears the runtime needs-auth cache for the injected servers" do
     credential = mcp_oauth_credentials(:notion)
 
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "notion" ] }
+    mock_session = mock_claude_session([ "notion" ])
 
     server_config = mock_server_config(name: "notion", type: "streamable-http", url: "https://mcp.notion.com/v1/mcp")
 
@@ -658,8 +687,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   test "inject_credentials! is unaffected when clearing the needs-auth cache raises" do
     credential = mcp_oauth_credentials(:notion)
 
-    mock_session = Object.new
-    mock_session.define_singleton_method(:mcp_servers) { [ "notion" ] }
+    mock_session = mock_claude_session([ "notion" ])
 
     server_config = mock_server_config(name: "notion", type: "streamable-http", url: "https://mcp.notion.com/v1/mcp")
 
@@ -965,16 +993,43 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     end
   end
 
+  # A remote catalog server, and the credential key its config hashes to. Pairing
+  # them is what makes a fixture credential actually resolve for that server —
+  # without it the injector short-circuits long before it needs a runtime key.
+  def pi_notion_server_config
+    mock_server_config(name: "notion", type: "streamable-http", url: "https://mcp.notion.com/mcp")
+  end
+
+  def pi_notion_credential_key
+    McpOauthCredential.compute_credential_key(
+      "notion", { type: "streamable-http", url: "https://mcp.notion.com/mcp", headers: {} }
+    )
+  end
+
   # A session stub that resolves to the Claude runtime credential writer, so the
   # injector's reconciler reads Claude Code's on-disk store.
   def mock_claude_session(servers)
-    runtime = Object.new
-    runtime.define_singleton_method(:mcp_credential_writer_class) { ClaudeMcpCredentialWriter }
+    mock_session_on(servers, runtime: "claude_code")
+  end
+
+  # A session stub on Pi, whose bundle has no mcp_credential_writer_class at all
+  # — the runtime the injector must degrade for rather than raise on.
+  def mock_pi_session(servers)
+    mock_session_on(servers, runtime: "pi")
+  end
+
+  # The injector asks a session for three things: its MCP servers, its id, and
+  # its runtime — which is how it resolves the credential writer, on every path
+  # that needs a runtime credential key. A double that omits the runtime is not
+  # Session-shaped, and a test built on one cannot see a writer bug at all.
+  def mock_session_on(servers, runtime:)
+    bundle = RuntimeRegistry.for(runtime)
 
     session = Object.new
     session.define_singleton_method(:id) { 4_242 }
     session.define_singleton_method(:mcp_servers) { servers }
-    session.define_singleton_method(:runtime) { runtime }
+    session.define_singleton_method(:agent_runtime) { runtime }
+    session.define_singleton_method(:runtime) { bundle }
     session
   end
 
@@ -1010,9 +1065,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   end
 
   def injector_for(*server_names)
-    session = Object.new
-    session.define_singleton_method(:mcp_servers) { server_names }
-    McpOauthCredentialInjector.new(session, working_directory: @working_directory)
+    McpOauthCredentialInjector.new(mock_claude_session(server_names), working_directory: @working_directory)
   end
 
   def mock_server_config(name:, type:, url:, headers: {})

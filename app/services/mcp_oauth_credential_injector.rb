@@ -109,13 +109,14 @@ class McpOauthCredentialInjector
   def inject_credentials!
     return nil if mcp_servers.blank?
 
+    # Asked before anything is resolved, not after: resolving a credential needs
+    # the writer too — the key each ResolvedMcpCredential carries is the writer's
+    # own (#credential_key_for) — so there is nothing a runtime with no store can
+    # usefully do here, and asking later only means reaching the nil writer first.
+    return nil unless credential_store?
+
     credentials = collect_credentials
     return nil if credentials.empty?
-
-    # Asked only once there is something to write, so a runtime with no store
-    # keeps the same cheap early-outs as every other one and the "no store" log
-    # line means what it says.
-    return nil unless credential_store?
 
     path = credential_writer.write!(working_directory: working_directory, credentials: credentials)
 
@@ -372,6 +373,15 @@ class McpOauthCredentialInjector
   # `session.runtime`, so exactly one place knows how the writer is obtained and
   # a caller that substitutes a writer gets a consistent answer.
   #
+  # **Every path that needs the writer asks this first** — injection, needs-auth
+  # cache clearing, and credential *resolution*, which needs it just as much
+  # because the runtime key on a ResolvedMcpCredential and the one the reconciler
+  # reads the on-disk store under both come from #credential_key_for. Guarding
+  # only the two write paths is what let a Pi session with an OAuth-credentialed
+  # MCP server raise `NoMethodError: undefined method 'credential_key_for' for
+  # nil` out of the spawn gate — every such session died before producing a line
+  # of output.
+  #
   # Answering this at all, rather than letting the nil surface as a
   # NoMethodError, is what keeps the *callers* correct.
   # McpOauthController#reinject_and_resume calls `inject_credentials!` and then
@@ -381,21 +391,35 @@ class McpOauthCredentialInjector
   # feature.
   #
   # Logged at info, not warn: for a runtime with no store this is the designed
-  # behavior on every injection, and a warn on every spawn is noise.
+  # behavior on every injection, and a warn on every spawn is noise. Memoized so
+  # the line appears once per injector rather than once per server — the
+  # per-server loops in #check_credentials_status and #collect_credentials ask it
+  # too.
   def credential_store?
-    return true if credential_writer
+    return @credential_store if defined?(@credential_store)
 
-    Rails.logger.info(
-      "[McpOauthCredentialInjector] Runtime #{session.agent_runtime} has no " \
-      "Zimmer-written MCP credential store; skipping injection for session #{session.id}"
-    )
-    false
+    @credential_store = !credential_writer.nil?
+
+    unless @credential_store
+      Rails.logger.info(
+        "[McpOauthCredentialInjector] Runtime #{session.agent_runtime} has no " \
+        "Zimmer-written MCP credential store; skipping injection for session #{session.id}"
+      )
+    end
+
+    @credential_store
   end
 
   # Collects all active credentials for the session's MCP servers as
   # runtime-agnostic ResolvedMcpCredential value objects, refreshing any that
   # need it first.
+  #
+  # Requires a credential store: every credential carries the key the runtime
+  # writer would store it under, so there is no such object to build for a
+  # runtime that has no writer.
   def collect_credentials
+    return [] unless credential_store?
+
     credentials = []
 
     mcp_servers.each do |server_name|
@@ -443,7 +467,14 @@ class McpOauthCredentialInjector
   # evaluate or refresh this credential. Best-effort: a read/lock failure must
   # never block a spawn, so the reconciler swallows its own errors and a runtime
   # that can't be resolved just leaves the DB copy in place.
+  #
+  # A runtime with no store has nothing to adopt from and no key to look it up
+  # under, so it short-circuits here rather than at the reconciler: this is the
+  # call that was reaching the nil writer from the spawn gate, through
+  # #check_credentials_status.
   def reconcile_from_runtime!(credential, server_name, server_config)
+    return unless credential_store?
+
     reconciler = runtime_reconciler
     return unless reconciler
 
@@ -457,8 +488,14 @@ class McpOauthCredentialInjector
   # reuses that snapshot across every server on the session. Returns nil (and
   # skips reconciliation) if the session's runtime credential writer can't be
   # resolved — reconciliation is an optimization, never a spawn prerequisite.
+  #
+  # The no-store case is answered here rather than left to the reconciler's own
+  # rescue: constructing one over a nil reader "works", by swallowing the
+  # NoMethodError into a warn that blames the store for a writer that was never
+  # there.
   def runtime_reconciler
     return @runtime_reconciler if defined?(@runtime_reconciler)
+    return @runtime_reconciler = nil unless credential_store?
 
     @runtime_reconciler = McpOauthRuntimeReconciler.new(credential_writer)
   rescue StandardError => e
