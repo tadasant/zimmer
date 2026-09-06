@@ -737,7 +737,7 @@ class SessionsController < ApplicationController
   # The body of the detail page's Transcript disclosure, on its own path so the
   # panel can be a lazy frame.
   #
-  # This is the expensive half of the old #show: the tail of the transcript and
+  # This is the expensive half of the detail body: the tail of the transcript and
   # the logs merged and filtered, plus a total count that has to normalize every
   # transcript entry to be exact. The disclosure is CLOSED on first paint, and a
   # lazy frame inside a closed <details> has no layout, so none of that work
@@ -754,8 +754,9 @@ class SessionsController < ApplicationController
 
   # GET /sessions/:id/provenance_panel
   # The spawn hierarchy and human-message panels, on their own path for the same
-  # reason. SessionHierarchy walks up to MAX_NODES sessions breadth-first, which
-  # is the bulk of the queries a detail page used to issue before it painted.
+  # reason. SessionHierarchy walks up to MAX_NODES sessions breadth-first, one
+  # query per level in each direction — the bulk of the queries the detail body
+  # would otherwise issue before it could paint.
   def provenance_panel
     @session = find_session
     render layout: false
@@ -3072,8 +3073,8 @@ class SessionsController < ApplicationController
   # The total is the one part that cannot be a tail: an exact count of what the
   # active filter would show means normalizing every transcript entry. That is
   # why this whole method lives behind the lazy frame rather than in
-  # load_session_detail — it is linear in transcript size, and it used to run on
-  # every page load and every drawer open for a panel that starts closed.
+  # load_session_detail — it is linear in transcript size, and the panel it
+  # labels starts closed.
   def load_timeline_tail
     @filter_level = resolved_filter_level
 

@@ -22,7 +22,7 @@ import { Controller } from "@hotwired/stimulus"
 // querying then would land on the skeleton. `whenLoaded` is the one place that
 // waits, and both paths go through it.
 export default class extends Controller {
-  static targets = ["body", "frame"]
+  static targets = ["body", "frame", "streamed"]
 
   // Whether this panel's rows are deferred into a frame at all.
   //
@@ -72,9 +72,12 @@ export default class extends Controller {
 
   toggled() {
     // Closing clears the reveal: the next open is the reader's own, and wants
-    // the newest row again.
+    // the newest row again. It also drops anything still waiting on the frame —
+    // a scroll-to-bottom that lands after the reader has closed the panel jumps
+    // a page they are no longer looking at.
     if (!this.element.open) {
       this.revealing = false
+      this.pending = []
       return
     }
 
@@ -117,22 +120,47 @@ export default class extends Controller {
   }
 
   // Every queued caller runs, rather than one displacing another: a toggle and a
-  // reveal can be waiting on the same load, and both have work to do.
+  // reveal can be waiting on the same load, and both have work to do. Dropping
+  // the streamed duplicates comes first, so a caller that measures the panel
+  // measures its final height.
   frameLoaded() {
+    this.dropStreamedDuplicates()
+
     const waiting = this.pending
     this.pending = []
     waiting.forEach((callback) => callback())
   }
 
+  // Drop rows from the append target that the frame has just brought its own
+  // copy of.
+  //
+  // Both containers are live at once and neither dedupes against the other:
+  // Turbo's `append` only compares direct children of its target, and a frame
+  // swap does no id reconciliation at all. So a message broadcast into the
+  // append target while the panel was closed is rendered a second time by the
+  // frame's tail — same row, same id, twice on screen.
+  //
+  // Keyed on the id being present INSIDE the frame, which is what makes the
+  // in-flight case safe: a row broadcast after the server rendered its response
+  // is not in the batch, so it is not a duplicate and stays where it landed.
+  dropStreamedDuplicates() {
+    if (!this.hasStreamedTarget || !this.hasFrameTarget) return
+
+    for (const row of Array.from(this.streamedTarget.children)) {
+      if (row.id && this.frameTarget.querySelector(`#${CSS.escape(row.id)}`)) row.remove()
+    }
+  }
+
   // Open the panel and bring the anchored message into view. Called on hash
   // change, and directly by the status-panel controller so a click on a
   // same-page anchor never has to go through the URL.
-  // Opening comes BEFORE looking for the row, which is the opposite of the old
-  // order and the point of it: the row does not exist until the panel's frame
-  // has loaded, and the frame does not load until the panel is open. A fragment
-  // that matches no row once the panel is loaded (a stale #message-N, an index
-  // past the tail) leaves the panel open and does nothing further, which is what
-  // it did before as well.
+  //
+  // Opening precedes looking for the row, and has to: the row does not exist
+  // until the panel's frame has loaded, and the frame does not load until the
+  // panel is open. A fragment matching no row once it has (a stale #message-N,
+  // an index older than the tail) therefore leaves the panel open — so it lands
+  // on the newest row instead, which is the same place opening the panel by hand
+  // lands, rather than at the top of a hundred rows the reader did not ask for.
   reveal(fragment) {
     if (!this.constructor.MESSAGE_FRAGMENT.test(fragment || "")) return
 
@@ -142,7 +170,10 @@ export default class extends Controller {
 
     this.whenLoaded(() => {
       const target = this.element.querySelector(fragment)
-      if (!target) return
+      if (!target) {
+        requestAnimationFrame(() => this.scrollToBottom())
+        return
+      }
 
       requestAnimationFrame(() => {
         target.scrollIntoView({ block: "center" })

@@ -207,6 +207,7 @@ export default class extends Controller {
         const panel = new DOMParser().parseFromString(await response.text(), "text/html")
         this.graftAppendTargets(panel)
         changed += backfillLiveRegions(panel)
+        changed += this.dropStaleTransients(frame, panel)
       } catch (_e) {
         // Skip this panel; the reopened socket carries its next update.
       }
@@ -229,9 +230,32 @@ export default class extends Controller {
       // Never overwrite an id the panel already renders under that name.
       if (!id || panelDocument.getElementById(id)) continue
 
+      // The id is the whole of it: backfillLiveRegions reads the STRATEGY off
+      // the live element it is reconciling, never off the source, so setting
+      // data-live-region here would be a line that looks load-bearing and is not.
+
       container.id = id
-      container.setAttribute("data-live-region", "append")
     }
+  }
+
+  // Drop a placeholder inside the frame that the server has stopped rendering.
+  //
+  // backfillLiveRegions sweeps `data-live-transient` children of the region it
+  // reconciles, and the transcript's empty state ("No activity yet") is not one:
+  // it sits inside the frame, a sibling of the append target rather than a child.
+  // Left alone it would stay above the rows the backfill just recovered — which
+  // is exactly what a broadcast removes it for.
+  dropStaleTransients(frame, panelDocument) {
+    let changed = 0
+
+    for (const transient of Array.from(frame.querySelectorAll("[data-live-transient][id]"))) {
+      if (panelDocument.getElementById(transient.id)) continue
+
+      transient.remove()
+      changed += 1
+    }
+
+    return changed
   }
 
   // Recovers everything and costs the reader their place, so it is reached only

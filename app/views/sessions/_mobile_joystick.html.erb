@@ -297,7 +297,7 @@
           <option value="show-logs" <%= 'selected' if @filter_level == 'show-logs' %>>Show Logs</option>
           <option value="verbose" <%= 'selected' if @filter_level == 'verbose' %>>Verbose</option>
         </select>
-        <%# The item count that used to sit here now lives in the transcript
+        <%# The item count this filter applies to is stated in the transcript
             panel, which is where it is affordable: producing it means
             normalizing every entry in the transcript, and this sheet is
             rendered on every page load whether or not anyone opens it. %>

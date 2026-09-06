@@ -24,10 +24,14 @@
       <div class="h-3 w-44 rounded bg-gray-100 hidden sm:block"></div>
     </div>
     <div class="border-t border-gray-200 px-4 sm:px-6 py-3 space-y-2">
-      <% [ 0, 1, 2, 2 ].each do |depth| %>
+      <%# Depth and width are separate columns rather than one indexed by the
+          other: two rows share a depth, and indexing the widths by it would give
+          them the same bar — the column of identical bars a skeleton is trying
+          not to be. %>
+      <% [ [ 0, "w-2/5" ], [ 1, "w-1/3" ], [ 2, "w-1/2" ], [ 2, "w-1/4" ] ].each do |depth, width| %>
         <div class="flex items-center gap-2" style="padding-left: <%= depth * 20 %>px">
           <div class="h-3 w-10 rounded bg-gray-200 flex-shrink-0"></div>
-          <div class="h-3 <%= [ "w-2/5", "w-1/3", "w-1/2", "w-2/5" ][depth] %> rounded bg-gray-100"></div>
+          <div class="h-3 <%= width %> rounded bg-gray-100"></div>
         </div>
       <% end %>
     </div>
