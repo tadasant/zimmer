@@ -36,6 +36,16 @@ module RuntimeRegistry
   # RUN the session's AIR hooks and plugins after `air prepare` has been and gone —
   # a null object for the runtimes whose AIR adapter already does it, PiAirBridge
   # for Pi, whose adapter is skills-only.
+  # `usage_ingestor_class` sweeps this runtime's transcripts into the token-spend
+  # ledger. It exists as a slot because "where a runtime records what it spent"
+  # is a per-runtime fact with no common answer: Claude Code writes a host-global
+  # `~/.claude/projects` tree, Pi writes into the clone (and so is read back out
+  # of `sessions.transcript`), and Codex reports cumulative per-turn totals with
+  # no per-call id at all. The contract is `.new(modified_since:)` — a `logger:`
+  # is accepted too — and `#call`, returning something that responds to
+  # `#session_rows` and `#to_s`;
+  # `nil` means this runtime's spend is not ingested yet, and says so in one
+  # place instead of in a conditional somewhere downstream.
   Bundle = Struct.new(
     :runtime,
     :air_adapter_name,
@@ -50,6 +60,7 @@ module RuntimeRegistry
     :artifact_bridge_class,
     :auth_provider_class,
     :mcp_credential_writer_class,
+    :usage_ingestor_class,
     keyword_init: true
   )
 
@@ -68,6 +79,7 @@ module RuntimeRegistry
     # materializes plugin content itself, so there is nothing left to bridge.
     artifact_bridge_class: NullRuntimeArtifactBridge,
     mcp_credential_writer_class: ClaudeMcpCredentialWriter,
+    usage_ingestor_class: TokenUsageIngestionService,
     # Populated by forthcoming Phase-1 issues (pulsemcp/pulsemcp#3773 config
     # preparer, pulsemcp/pulsemcp#3774 auth provider). nil until those classes
     # exist.
@@ -104,7 +116,18 @@ module RuntimeRegistry
     # nothing for Zimmer to write after prepare either.
     artifact_bridge_class: NullRuntimeArtifactBridge,
     auth_provider_class: nil,
-    mcp_credential_writer_class: CodexMcpCredentialWriter
+    mcp_credential_writer_class: CodexMcpCredentialWriter,
+    # nil, and the honest reading of a gap rather than an oversight. Codex writes
+    # rollouts to `~/.codex/sessions/YYYY/MM/DD/`, which the Claude scanner's glob
+    # and clone-directory attribution never reach, so Codex spend is as invisible
+    # today as Pi's was. Closing it is not this slot away: a rollout records token
+    # counts as a `token_count` event carrying CUMULATIVE `total_token_usage` and
+    # the turn's `last_token_usage`, with no per-call identifier and no model on
+    # the event (the model is on `turn_context`). So the dedup key and the model
+    # attribution both have to be built rather than read, which is a different
+    # piece of work from Pi's — tracked in
+    # [#1077](https://github.com/tadasant/zimmer/issues/1077).
+    usage_ingestor_class: nil
   ).freeze
 
   # Pi coding agent runtime. Pi is the first runtime Zimmer supports that arrives
@@ -135,6 +158,13 @@ module RuntimeRegistry
   # dead weight today (nothing reads it), but leaving it nil while the class
   # exists is exactly the inconsistency zimmer#97 tracks, so Pi fills it.
   #
+  #   * `usage_ingestor_class` is PiTokenUsageIngestionService, and it is the one
+  #     slot Pi fills with something that reads no file at all. Pi is the only
+  #     runtime whose conversation is not in its home — PiRuntimeAdapter points
+  #     `--session-dir` at `<clone>/.pi/sessions` — so the transcript is reaped
+  #     with the clone, and the durable copy is `sessions.transcript`. That is
+  #     what the ingestor reads.
+  #
   # `auth_provider_class` follows the established convention and stays nil: auth
   # resolves through RuntimeAuthProvider.for, where PiAuthProvider is registered.
   # `config_preparer_class` is nil everywhere and nothing reads it.
@@ -151,7 +181,8 @@ module RuntimeRegistry
     config_post_processor_class: PiMcpConfigPostProcessor,
     artifact_bridge_class: PiAirBridge,
     auth_provider_class: nil,
-    mcp_credential_writer_class: PiMcpCredentialWriter
+    mcp_credential_writer_class: PiMcpCredentialWriter,
+    usage_ingestor_class: PiTokenUsageIngestionService
   ).freeze
 
   BUNDLES = {
@@ -228,6 +259,19 @@ module RuntimeRegistry
   # @return [Array<String>] the registered runtime identifiers
   def registered_runtimes
     BUNDLES.keys
+  end
+
+  # Every registered runtime's token-usage ingestor class, deduplicated.
+  #
+  # What TokenUsageIngestionJob sweeps. `filter_map` drops the runtimes whose
+  # spend is not ingested yet, which is the point of reading the slot rather than
+  # naming the services: adding a runtime to BUNDLES with an ingestor puts its
+  # spend in the ledger, and adding one without leaves a visible nil rather than
+  # a silently missing sweep.
+  #
+  # @return [Array<Class>]
+  def usage_ingestor_classes
+    BUNDLES.values.filter_map(&:usage_ingestor_class).uniq
   end
 
   # Every registered runtime's MCP credential writer class, deduplicated.

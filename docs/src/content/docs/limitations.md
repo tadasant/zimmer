@@ -1106,7 +1106,7 @@ every server `pending` for that turn, correctly: nothing connected, because noth
 | Skills | ✅ works | `air prepare pi` installs them into `.pi/skills/` — the one artifact `adapter-pi` handles natively |
 | AIR hooks | ❌ do not fire | Loaded and never dispatched — not Zimmer's layer (below) |
 | AIR plugins | ✅ works | `screenshots-videos` activated; its two bundled MCP servers reached the session |
-| Token-usage / cost ingestion | ❌ does not work | `TokenUsageIngestionService` reads `~/.claude/projects` (below) |
+| Token-usage / cost ingestion | ⚠️ tokens work, cost works on the Anthropic models | `PiTokenUsageIngestionService` reads `sessions.transcript`; 12 calls / $0.582929 across the three sessions above, matching Pi's own figure exactly. Pi's OpenAI and Google models are unpriced (below) |
 | Status summary by forking the session | ❌ does not work | `PiAuthProvider` pools no accounts (below) |
 | Retrying a failed model call | ❌ does not work | Pi reports the failure but exposes no retry (below) |
 
@@ -1188,11 +1188,33 @@ through the adapter's own keyring helper. If that helper cannot run — an image
 extension, or a credential store that will not answer — the clear is skipped with a warning and
 the spawn continues, and in that window the runtime may keep using the older token.
 
-### A Pi session contributes nothing to token-usage or cost tracking
+### A Pi session on a non-Anthropic model records its tokens and no cost
 
-🟡 `TokenUsageIngestionService` reads `~/.claude/projects`, which is Claude Code's own
-transcript tree. Pi writes its session JSONL into the clone instead, so a Pi session's tokens
-are invisible to spend tracking: its cost reads as zero rather than as unknown.
+🟡 Pi spend **is** in the ledger. `PiTokenUsageIngestionService`
+([costs](/operate/costs/#pis-token-usage)) reads the durable copy of the transcript in
+`sessions.transcript` rather than a file, which is what Pi being the one runtime whose
+conversation lives in the clone — and is reaped with it — forces. Volumes, model, agent root
+and timestamps all land, and for the Anthropic models on OpenRouter the money lands too: the
+list rates `TokenPricing` already carries *are* the rates OpenRouter publishes for them, so
+Zimmer's figure reproduces the cost Pi recorded beside the volumes to the cent.
+
+What does not work is the other half of Pi's model catalog. `openrouter/openai/gpt-5.4`,
+`…/gpt-5.4-mini` and `openrouter/google/gemini-3.5-flash` have no rate in `TokenPricing`, so a
+Pi session on one of them lands with correct tokens and **zero cost**, and appears in the
+Costs page's unpriced-models list. `TokenPricing` derives a model's three cache rates from its
+input rate by a multiplier relationship that is uniform across Anthropic's line and simply
+false elsewhere — OpenAI charges nothing for a cache write, Gemini charges a storage rate — so
+pricing them means teaching `Rate` to carry explicit cache rates rather than adding two
+numbers. The deployment's default Pi model is `openrouter/anthropic/claude-opus-4.6`, so this
+is the tail rather than the common case, and an unpriced model is *visibly* unpriced rather
+than silently under-counted.
+
+Codex is in the same position Pi was, and worse: `RuntimeRegistry` gives it no ingestor at
+all. Its rollouts live in `~/.codex/sessions/YYYY/MM/DD/`, which the Claude scanner never
+reaches, and a rollout records tokens as a `token_count` event carrying cumulative totals with
+no per-call identifier and no model on the event — so the dedup key and the model attribution
+both have to be built rather than read. Tracked in
+[#1077](https://github.com/tadasant/zimmer/issues/1077).
 
 ### A Pi session's status summary always takes the cheap path
 

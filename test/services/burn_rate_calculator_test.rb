@@ -43,6 +43,29 @@ class BurnRateCalculatorTest < ActiveSupport::TestCase
     assert_equal 1, sample.sessions
   end
 
+  # These rates price the running CLAUDE fleet against a Claude quota window, and
+  # `fleet_default_usd_per_minute` is a cost-weighted average over every stored
+  # row — so a Pi sample would never be looked up by its own key and would still
+  # move the number that prices a Claude combination nobody has sampled.
+  test "Pi spend is not sampled: these rates price a Claude quota window" do
+    spend(session: @session, minutes: 10, output_tokens: 1_000_000)
+
+    pi = other_session("pi")
+    pi.update!(agent_runtime: "pi")
+    SessionTokenUsage.create!(
+      request_id: "pi:#{SecureRandom.uuid}:abcd1234",
+      model: "openrouter/anthropic/claude-opus-4.6", agent_runtime: "pi",
+      agent_root: "zimmer", session_id: pi.id, called_at: 1.hour.ago,
+      input_tokens: 0, output_tokens: 1_000_000, cache_read_tokens: 0, cache_creation_tokens: 0
+    )
+
+    sample = BurnRateCalculator.compute_samples.sole
+
+    assert_equal "claude-opus-5", sample.model
+    assert_in_delta 25.0, sample.cost_usd, 0.0001
+    assert_equal 1, sample.sessions
+  end
+
   # Costs and minutes are summed across the sample before dividing. Averaging
   # per-session rates instead would give a two-call, one-second session the same
   # weight as a two-hour one.

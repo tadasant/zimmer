@@ -30,7 +30,10 @@ class RuntimeBundleSlotContractTest < ActiveSupport::TestCase
   # nil through #credential_key_for and killed every Pi session with an
   # OAuth-credentialed MCP server. McpOauthCredentialInjectorTest asserts the
   # gate and injection for every registered runtime now, which is where a fourth
-  # caller would be caught.
+  # caller would be caught. `usage_ingestor_class` is the newest deliberate nil:
+  # its only reader is RuntimeRegistry.usage_ingestor_classes, which `filter_map`s
+  # it away, and nil there carries meaning — "this runtime's spend is not in the
+  # ledger yet" (Codex, zimmer#1077).
   UNCONDITIONALLY_DEREFERENCED_SLOTS = {
     cli_adapter_class: "RuntimeRegistry.cli_adapter_class_for / ProcessLifecycleManager",
     retry_strategy_class: "the runtime's own #retry_strategy factory",
