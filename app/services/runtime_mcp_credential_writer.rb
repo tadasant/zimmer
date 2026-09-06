@@ -60,10 +60,12 @@
 #
 # == A runtime with no writer ==
 #
-# RuntimeRegistry's `mcp_credential_writer_class` slot is deliberately nil for a
-# runtime that keeps its MCP OAuth tokens somewhere Zimmer does not write — Pi,
-# whose pi-mcp-adapter extension owns its own. That nil is part of the seam
-# rather than a hole in it, and it holds only while EVERY path through
+# RuntimeRegistry's `mcp_credential_writer_class` slot may be nil for a runtime
+# that keeps its MCP OAuth tokens somewhere Zimmer cannot write. No registered
+# runtime is in that state today: Pi held the slot open on that argument until
+# PiMcpCredentialWriter, which writes the plaintext entry pi-mcp-adapter
+# documents itself as importing. The nil case is still part of the seam rather
+# than a hole in it, and it holds only while EVERY path through
 # McpOauthCredentialInjector that needs a writer asks #credential_store? first.
 # That is a wider set than the paths that write: #credential_key_for is the
 # runtime's, so *resolving* a credential needs a writer as much as storing one
