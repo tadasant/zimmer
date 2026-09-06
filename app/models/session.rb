@@ -2114,11 +2114,16 @@ class Session < ApplicationRecord
   # Is this session still on the near side of its first agent turn?
   #
   # This is the *when* that decides whether a failure raised inside
-  # `AgentSessionJob` is retryable (#785). A turn that dies before an agent has
-  # ever spoken destroyed nothing — no conversation, no half-applied edit, no
-  # pushed branch — so running the whole setup pipeline again is free of the
-  # only hazard a retry has. A turn that dies after one is a runtime fault with
-  # a transcript to read, and re-running it would replay work.
+  # `AgentSessionJob` is retryable (#785), and — the same fact read the other
+  # way — whether there was ever an agent here that could have opened a pull
+  # request, which is the carve-out
+  # `TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url` takes so
+  # a never-run session is not warned about work it never had a turn to do
+  # (#356). A turn that dies before an agent has ever spoken destroyed nothing —
+  # no conversation, no half-applied edit, no pushed branch — so running the
+  # whole setup pipeline again is free of the only hazard a retry has. A turn
+  # that dies after one is a runtime fault with a transcript to read, and
+  # re-running it would replay work.
   #
   # Deliberately keyed on the row rather than on the exception class. An
   # allowlist of "retryable" errors is the thing that rots: the 2026-09-02

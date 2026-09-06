@@ -304,6 +304,15 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # ("no PR URL yet") and is never retracted if the session is revived and does
   # open one.
   #
+  # Reaching those two states from `waiting` is the one shape that is not a miss.
+  # `fail` and `archive` both transition directly from it, so a session created
+  # and trashed before it started — or swept up by
+  # `HealthMonitorService#archive_old_sessions`, which bulk-archives every
+  # non-archived session untouched for seven days — would otherwise be told its
+  # PR-flavored goal produced no PR when it never ran a turn to produce one
+  # with. True and useless, in exactly the place the warning is meant to be a
+  # signal. `Session#before_first_agent_turn?` is the carve-out (#356).
+  #
   # Repeats are the dedup guard's job; *which* rest state spends the budget is
   # the call site's. The guard below looks for an existing
   # MISSING_PR_URL_WARNING_MARKER log on the session, so every call site shares
@@ -331,6 +340,39 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
     return unless PR_GOAL_PATTERNS.any? { |pattern| pattern.match?(session.goal) }
 
     return if session.custom_metadata&.dig("github_pull_request_urls").present?
+    # A session that never got an agent turn had no chance to open anything, so
+    # there is no miss to report — see the `waiting` paragraph above (#356).
+    #
+    # `before_first_agent_turn?` rather than "is the transcript empty", for two
+    # reasons. It reads `metadata["runtime_started"]` first, so a session that
+    # ran short-circuits before `transcript` is touched at all — no query, no
+    # large-column read, on either branch. And it is the conservative half of
+    # the pair: `runtime_started` merely being *present* means a runtime was
+    # spawned here once, and the warning still fires. Suppressing more than
+    # never-ran sessions would re-open #313, whose failure is a diagnostic that
+    # stays silent.
+    #
+    # That conservatism has a cost, and it is deliberate rather than overlooked.
+    # `runtime_started` is written `false` — not removed — by the paths that
+    # keep a session's history: `ProcessLifecycleManager#fresh_start!`,
+    # `Sessions::RestartUnstartedTurn`, `ForkSessionService`, and
+    # `AgentSessionJob#clear_runtime_started_if_nothing_persisted`. That last
+    # one is Zimmer's own finding that a killed process wrote no conversation,
+    # so a spawn that died AFTER its pid was recorded is still warned about
+    # here. Left that way on the #313 asymmetry: a warning too many is read and
+    # dismissed, a warning too few is never read at all.
+    #
+    # The paths that *remove* the key outright — `SETUP_ARTIFACT_KEYS` and
+    # `PRE_PROMPT_RESTART_KEYS`, i.e. restarting the whole setup pipeline — are
+    # each gated on a session with no conversation to lose, which is what keeps
+    # this guard honest across them. A restart reason that could fire mid-
+    # conversation would break that, and would take the backstop's voice with it.
+    #
+    # Assumes a fully loaded row: the blanket rescue below would turn an
+    # `ActiveModel::MissingAttributeError` from a `transcript`-less `select`
+    # into a silently skipped warning rather than a crash. No call path does
+    # that today.
+    return if session.before_first_agent_turn?
     return if session.logs.where(level: "warning").where("content LIKE ?", "#{MISSING_PR_URL_WARNING_MARKER}%").exists?
 
     Rails.logger.warn(
