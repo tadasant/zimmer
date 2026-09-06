@@ -30,8 +30,11 @@ class Api::V1::TriggersController < Api::BaseController
 
     result = paginate(scope)
 
+    # Read once for the page rather than per row — see Trigger.catalog_agent_root_names.
+    catalog_root_names = Trigger.catalog_agent_root_names
+
     render json: {
-      triggers: result[:records].map { |t| trigger_json(t) },
+      triggers: result[:records].map { |t| trigger_json(t, catalog_root_names: catalog_root_names) },
       pagination: result[:pagination]
     }
   end
@@ -106,7 +109,8 @@ class Api::V1::TriggersController < Api::BaseController
     @trigger = Trigger.new(trigger_params)
 
     if @trigger.save
-      render json: { trigger: trigger_json(@trigger) }, status: :created
+      render json: { trigger: trigger_json(@trigger), warnings: write_warnings(@trigger) }.compact,
+             status: :created
     else
       render_api_error("Validation failed", @trigger.errors.full_messages, status: :unprocessable_entity)
     end
@@ -121,7 +125,8 @@ class Api::V1::TriggersController < Api::BaseController
       # sessions the change moved. Omitted otherwise, so its absence means "the
       # class was not touched" rather than "nothing moved".
       render json: { trigger: trigger_json(@trigger),
-                     reclassified_waiting_sessions: @trigger.reclassified_session_count }.compact
+                     reclassified_waiting_sessions: @trigger.reclassified_session_count,
+                     warnings: write_warnings(@trigger) }.compact
     else
       render_api_error("Validation failed", @trigger.errors.full_messages, status: :unprocessable_entity)
     end
@@ -264,7 +269,21 @@ class Api::V1::TriggersController < Api::BaseController
     permitted
   end
 
-  def trigger_json(trigger)
+  # Conditions a write was ALLOWED to store and the caller still has to know
+  # about. Distinct from `errors`, which come back 422 with nothing persisted:
+  # the trigger here exists, is enabled, and will not work. Omitted from the
+  # payload entirely when there is nothing to say, so `warnings` present is
+  # itself the signal.
+  #
+  # @return [Array<String>, nil]
+  def write_warnings(trigger)
+    [ trigger.agent_root_catalog_warning ].compact.presence
+  end
+
+  # `catalog_root_names` is passed only by #index, which has many rows to answer
+  # for. Omitted — every other action renders one trigger — the default reads
+  # the catalog once, here, which is the same cost.
+  def trigger_json(trigger, catalog_root_names: Trigger.catalog_agent_root_names)
     {
       id: trigger.id,
       name: trigger.name,
@@ -272,6 +291,11 @@ class Api::V1::TriggersController < Api::BaseController
       failed_at: trigger.failed_at&.iso8601,
       last_error: trigger.last_error,
       agent_root_name: trigger.agent_root_name,
+      # True when the catalog has no root under that name — the trigger is saved
+      # and enabled, and every fire that has to spawn will raise until the name
+      # resolves. False when the catalog itself could not be read, because then
+      # nothing is known about any name. See zimmer#448.
+      agent_root_missing_from_catalog: trigger.agent_root_missing_from_catalog?(catalog_root_names),
       prompt_template: trigger.prompt_template,
       goal: trigger.goal,
       reuse_session: trigger.reuse_session,

@@ -671,6 +671,25 @@ references](/sessions/triggers/#stale-catalog-references)), so this field is how
 caller tells a configured artifact from a broken one. It reflects what fires have found: a trigger
 that has not fired since the rename reports `{}`.
 
+A trigger payload also carries **`agent_root_missing_from_catalog`**, read-only: true when the
+catalog has no agent root under this trigger's `agent_root_name`. Unlike the four artifact lists,
+`agent_root_name` is **not** rejected at save when the catalog does not know it — naming a root
+before the catalog entry that defines it exists is a legitimate ordering, so the write succeeds and
+`POST`/`PATCH` come back `201`/`200` carrying a **`warnings`** array instead:
+
+```json
+{
+  "trigger": { "id": 12, "agent_root_name": "root-that-lands-tomorrow",
+               "agent_root_missing_from_catalog": true, "status": "enabled" },
+  "warnings": ["Agent root 'root-that-lands-tomorrow' is not in this deployment's catalog. …"]
+}
+```
+
+`warnings` is **omitted entirely** when there is nothing to say, so its presence is the signal.
+Both fields report `false`/absent when the catalog itself could not be read, because then nothing is
+known about any name. See [An agent root the catalog does not carry
+yet](/sessions/triggers/#an-agent-root-the-catalog-does-not-carry-yet).
+
 `POST /triggers/:id/invoke` fires the trigger now, without waiting for one of its conditions to
 match — the same fire the Invoke button on the trigger page performs, through the same code path. The
 session is linked to the trigger, counts toward `sessions_created_count`, and a reuse trigger follows

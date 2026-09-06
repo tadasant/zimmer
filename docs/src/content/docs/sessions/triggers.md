@@ -1227,10 +1227,11 @@ different questions:
 | Skills | `catalog_skills` | ✅ | ✅ |
 | Hooks | `catalog_hooks` | ✅ | ✅ |
 | Plugins | `catalog_plugins` | ✅ | ✅ |
-| Agent root | `agent_root_name` | presence only | ✅ — [and differently](#the-agent-root-is-resolved-only-where-it-is-used) |
+| Agent root | `agent_root_name` | presence, plus a [non-fatal warning](#an-agent-root-the-catalog-does-not-carry-yet) | ✅ — [and differently](#the-agent-root-is-resolved-only-where-it-is-used) |
 
 **Validated at save** rejects a name the catalog does not know *now*, on the form, the REST payload
-and the `action_trigger` MCP tool alike. The check is scoped to the column that changed, so a row
+and the `action_trigger` MCP tool alike — for the four *lists*. `agent_root_name` is the exception,
+and [it warns instead of rejecting](#an-agent-root-the-catalog-does-not-carry-yet). The check is scoped to the column that changed, so a row
 persisted before a name went stale still saves when the edit is to some other column — otherwise the
 catalog moving would lock an operator out of editing anything else about the trigger.
 
@@ -1309,6 +1310,47 @@ The four columns are declared once each, on both `Trigger` and `Session`, by the
 `CatalogArtifactReferences` concern; the validators and the heal are generated from those
 declarations rather than written out per column. `agent_root_name` is deliberately not one of them —
 it is a single name rather than a list, and its heal looks up a successor root and can raise.
+
+### An agent root the catalog does not carry yet
+
+`agent_root_name` is the one catalog reference a trigger is allowed to name **before it exists**,
+and it is validated for presence only. A trigger and the catalog entry that defines its root land
+through different systems, so writing the trigger first is a legitimate ordering — a hard
+`inclusion:` validation would break it, and that is why there is not one.
+
+What was wrong before [#448](https://github.com/tadasant/zimmer/issues/448) is that the write looked
+*clean*. The trigger saved, the list showed it `Enabled`, and nothing anywhere said the name did not
+resolve. The first anyone heard was the fire raising
+`AgentRootsConfig::AgentRootNotFoundError` out of `#heal_stale_agent_root!` — which for a daily
+schedule is the next 03:00, and produced exactly that page from two triggers written against a root
+that had not landed.
+
+So the condition is **visible rather than fatal**, and it is visible to the actor who wrote it, at
+write time:
+
+| Surface | What it does |
+| --- | --- |
+| `POST`/`PATCH /api/v1/triggers` | `201`/`200` as before, plus a `warnings` array naming the root. The key is **absent** when there is nothing to say, so its presence is itself the signal. The trigger payload also carries `agent_root_missing_from_catalog`. |
+| `action_trigger` (`create`, `update`) | The reply carries a `⚠️` line under the summary, in the same words. |
+| The web UI | The success flash carries the same sentence appended to "Trigger created successfully." |
+| The trigger list | An `Agent root not in catalog` badge on the row, beside the status badge. |
+| The trigger page | The Agent Root field reads `name (not in catalog)` in red, with a line saying what will happen and the two repairs. |
+| `search_triggers` (by id) | The Agent Root line reads `name (⚠ not in catalog — every fire that has to spawn a session will fail)`. |
+| The edit form | The select **carries the stored name as an option**, marked, and posts it back. Without it the select would fall back to the blank prompt, post `""`, and fail presence — locking the operator out of editing anything else about the trigger. Same reasoning as the server/skill/hook/plugin chips above. |
+
+Two things it deliberately does *not* do. It does not reject the write, and it does not change what a
+fire does: an unresolvable root still reaches `#heal_stale_agent_root!`, which still repoints a
+**renamed** root onto its successor and still raises on one it cannot heal. The warning is about the
+never-valid case — a typo, or a catalog change that has not landed — which is the one knowable at
+write time; the drifted case belongs to the heal, and is unchanged.
+
+It also says nothing when **the catalog could not be read at all**. `AgentRootsConfig.all` rescues a
+failed resolve to `[]` ([#112](https://github.com/tadasant/zimmer/issues/112)), against which every
+name on every trigger looks missing — warning on that reading would fire on every unrelated trigger
+write and badge the whole list during an outage that has nothing to do with any of them. Same guard
+the heal makes, for the same reason. `Trigger.catalog_agent_root_names` returns `nil` rather than an
+empty set to keep the two cases apart, and list surfaces read it **once** per render rather than per
+row.
 
 ## Reusing a session
 

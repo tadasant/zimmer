@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
   Channel = Struct.new(:id, :name, :is_private, :num_members)
@@ -16,6 +17,26 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
     assert_includes output, "### CI Failure Handler (ID: #{triggers(:enabled_slack_trigger).id})"
     assert_includes output, "- **Conditions:** slack | **Status:** enabled | **Sessions:** 5"
     assert_includes output, "  - Slack: #eng-ci"
+  end
+
+  # zimmer#448: a trigger may name a root the catalog does not carry yet, so the
+  # by-id view — the one an audit scans — has to distinguish it from a working one.
+  test "the by-id view marks an agent root the catalog does not carry" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.update_column(:agent_root_name, "root-that-lands-tomorrow")
+
+    output = @tool.call("id" => trigger.id)
+
+    assert_includes output, "- **Agent Root:** root-that-lands-tomorrow (⚠ not in catalog"
+  end
+
+  test "the by-id view says nothing about an agent root the catalog carries" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+
+    output = @tool.call("id" => triggers(:enabled_slack_trigger).id)
+
+    assert_includes output, "- **Agent Root:** zimmer\n"
   end
 
   # "Which triggers reference MCP server X?" is the question every catalog rename

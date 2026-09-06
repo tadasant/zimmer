@@ -12,6 +12,9 @@ class TriggersController < ApplicationController
 
   def index
     @triggers = Trigger.includes(:trigger_conditions).order(created_at: :desc)
+    # Read once for the whole list rather than per row — see
+    # Trigger.catalog_agent_root_names.
+    @catalog_agent_root_names = Trigger.catalog_agent_root_names
   end
 
   def show
@@ -33,7 +36,11 @@ class TriggersController < ApplicationController
     @trigger = Trigger.new(trigger_params)
 
     if @trigger.save
-      redirect_to @trigger, notice: "Trigger created successfully."
+      # The warning rides on the success notice rather than replacing it: the
+      # trigger really was created, and the catalog gap is the second half of
+      # that sentence, not a contradiction of it. See zimmer#448.
+      redirect_to @trigger,
+                  notice: [ "Trigger created successfully.", @trigger.agent_root_catalog_warning ].compact.join(" ")
     else
       render :new, status: :unprocessable_entity
     end
@@ -47,7 +54,9 @@ class TriggersController < ApplicationController
       # A scheduling-class change carries onto this trigger's already-spawned
       # waiting sessions, so the notice says how many it moved — the operator
       # flipping a trigger during a backlog is asking about those sessions.
-      redirect_to @trigger, notice: [ "Trigger updated successfully.", @trigger.reclassification_summary ].compact.join(" ")
+      redirect_to @trigger, notice: [ "Trigger updated successfully.",
+                                      @trigger.reclassification_summary,
+                                      @trigger.agent_root_catalog_warning ].compact.join(" ")
     else
       render :edit, status: :unprocessable_entity
     end

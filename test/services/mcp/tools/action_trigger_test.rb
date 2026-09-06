@@ -13,6 +13,75 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     Mcp::Tools::ActionTrigger.new(context: Mcp::Context.new(tool_groups: "triggers", allowed_agent_roots: roots))
   end
 
+  # --- agent_root_name against the catalog (zimmer#448) ---------------------
+
+  test "creating a trigger against a root the catalog does not carry succeeds and warns" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+
+    output = @tool.call(
+      "action" => "create",
+      "name" => "Written Before Its Root Exists",
+      "trigger_type" => "schedule",
+      "agent_root_name" => "root-that-lands-tomorrow",
+      "prompt_template" => "Do the thing",
+      "configuration" => { "interval" => 1, "unit" => "days", "time" => "03:00" }
+    )
+
+    # Stored, enabled, named as written — the create-ahead workflow is intact.
+    trigger = Trigger.find_by!(name: "Written Before Its Root Exists")
+    assert_equal "root-that-lands-tomorrow", trigger.agent_root_name
+    assert trigger.enabled?
+    # And the calling agent is told in the same reply.
+    assert_includes output, "⚠️"
+    assert_includes output, "root-that-lands-tomorrow' is not in this deployment's catalog"
+  end
+
+  test "creating a trigger against a known root says nothing about the catalog" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+
+    output = @tool.call(
+      "action" => "create",
+      "name" => "Ordinary MCP Trigger",
+      "trigger_type" => "schedule",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "Do the thing",
+      "configuration" => { "interval" => 1, "unit" => "days", "time" => "03:00" }
+    )
+
+    assert_not_includes output, "⚠️"
+    assert_not_includes output, "not in this deployment's catalog"
+  end
+
+  test "moving a trigger onto an unknown root warns on update" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+    trigger = triggers(:enabled_slack_trigger)
+
+    output = @tool.call(
+      "action" => "update",
+      "id" => trigger.id,
+      "agent_root_name" => "root-that-lands-tomorrow"
+    )
+
+    assert_equal "root-that-lands-tomorrow", trigger.reload.agent_root_name
+    assert_includes output, "⚠️"
+    assert_includes output, "root-that-lands-tomorrow"
+  end
+
+  test "a catalog that could not be read warns on nothing" do
+    AgentRootsConfig.stubs(:names).returns([])
+
+    output = @tool.call(
+      "action" => "create",
+      "name" => "Written During An Outage",
+      "trigger_type" => "schedule",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "Do the thing",
+      "configuration" => { "interval" => 1, "unit" => "days", "time" => "03:00" }
+    )
+
+    assert_not_includes output, "⚠️"
+  end
+
   test "a created trigger carries no class by default, and says which it derives" do
     output = @tool.call(
       "action" => "create",

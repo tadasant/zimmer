@@ -435,6 +435,14 @@ the trigger to saying nothing about that artifact; there is no way to spell "spa
 all" from here. `search_triggers` and `action_trigger` both render an empty list as
 `(agent root defaults)` for that reason.
 
+`agent_root_name` is the one reference that is **warned about rather than rejected**. Naming a root
+the catalog does not carry yet is a legitimate ordering — the trigger and the catalog entry that
+defines its root land through different systems — so `create` and `update` store it and the reply
+carries a `⚠️` line saying the name does not resolve and that every fire which has to spawn will
+fail until it does. Nothing is said when the catalog itself could not be read. See [An agent root
+the catalog does not carry
+yet](/sessions/triggers/#an-agent-root-the-catalog-does-not-carry-yet).
+
 `enqueue_messages` and `resuscitate_archived` both require `reuse_session`, and the tool **rejects**
 them without it rather than accepting a value the model then clears
 (`clear_enqueue_messages_without_reuse_session` runs before the paired validation, so a `save` with

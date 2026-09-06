@@ -156,6 +156,14 @@ class Trigger < ApplicationRecord
 
   validates :name, presence: true
   validates :status, presence: true, inclusion: { in: STATUSES }
+  # Presence only, and deliberately not `inclusion:` — the one catalog reference
+  # on a trigger that is allowed to name something the catalog does not carry.
+  # A trigger and the catalog change that defines its root land through
+  # different systems, so writing the trigger first is a legitimate ordering and
+  # rejecting it would break it. What is NOT allowed is that the write looks
+  # clean: #agent_root_catalog_warning is handed back to whoever made it, and
+  # every surface that renders a trigger marks the name. See zimmer#448 and
+  # #agent_root_missing_from_catalog?.
   validates :agent_root_name, presence: true
   validates :prompt_template, presence: true
   validates :trigger_conditions, presence: { message: "must have at least one condition" }
@@ -695,6 +703,67 @@ class Trigger < ApplicationRecord
   # indistinguishable from a healthy one on every one of them.
   def missing_fires?
     missed_fire_count.to_i.positive?
+  end
+
+  # Every agent-root name the catalog carries right now, or **nil** when the
+  # catalog could not be read at all.
+  #
+  # nil is not "no roots". `AgentRootsConfig.all` rescues a failed resolve to
+  # `[]` (zimmer#112), at which point every name on every trigger looks missing
+  # — the reading #heal_stale_agent_root! refuses to act on, and the reading
+  # #agent_root_missing_from_catalog? refuses to report. A catalog outage must
+  # not badge the whole fleet or warn on every unrelated trigger save.
+  #
+  # Built once and passed down by list surfaces: `AgentRootsConfig.all`
+  # reconstructs every root and reads `AppSetting.current` on each call, so
+  # asking it per row is an N+1 on the trigger list.
+  #
+  # @return [Set<String>, nil]
+  def self.catalog_agent_root_names
+    names = AgentRootsConfig.names
+    names.empty? ? nil : names.to_set
+  end
+
+  # Whether the catalog has no agent root under this trigger's
+  # `agent_root_name` — the condition that makes every future spawn fire raise
+  # `AgentRootsConfig::AgentRootNotFoundError` out of #heal_stale_agent_root!.
+  #
+  # This is a WARNING, never a rejection. Two different situations reach it and
+  # only one of them is a mistake:
+  #
+  #   * the name has never existed — a typo, or a catalog change that has not
+  #     landed yet. Creating the trigger ahead of the catalog entry that defines
+  #     its root is legitimate: the two land through different systems, and
+  #     making the trigger wait is not always possible. So the write succeeds
+  #     and the actor is told (zimmer#448);
+  #   * the name existed and was renamed or removed. #heal_stale_agent_root!
+  #     owns that case and repairs it on the next fire by matching the last
+  #     session's git_root + subdirectory onto a successor root. This predicate
+  #     cannot tell the two apart, and does not try — it reports the condition,
+  #     and the heal still gets its chance.
+  #
+  # @param catalog_root_names [Set<String>, nil] from .catalog_agent_root_names;
+  #   nil means the catalog could not be read, and then the answer is false.
+  def agent_root_missing_from_catalog?(catalog_root_names = self.class.catalog_agent_root_names)
+    return false if agent_root_name.blank?
+    return false if catalog_root_names.nil?
+
+    catalog_root_names.exclude?(agent_root_name)
+  end
+
+  # The sentence handed back to whoever wrote this trigger, or nil when there is
+  # nothing to say. The non-fatal half of zimmer#448: the write-time surfaces
+  # (the REST create/update response, `action_trigger`'s reply, the web UI's
+  # flash) each carry this verbatim, so the actor learns at write time what used
+  # to surface at 03:00 as a stack trace.
+  #
+  # @return [String, nil]
+  def agent_root_catalog_warning(catalog_root_names = self.class.catalog_agent_root_names)
+    return nil unless agent_root_missing_from_catalog?(catalog_root_names)
+
+    "Agent root '#{agent_root_name}' is not in this deployment's catalog. The trigger was saved — " \
+    "naming a root before the catalog entry that defines it exists is allowed — but until that name " \
+    "resolves, every fire that has to spawn a session will fail."
   end
 
   # Whether `skip_if_pending_session` is doing nothing on this trigger right now.
