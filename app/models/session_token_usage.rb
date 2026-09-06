@@ -1,12 +1,21 @@
 # frozen_string_literal: true
 
-# One Anthropic API call made by an agent session.
+# One model API call made by an agent session.
 #
-# Rows are written by TokenUsageIngestionService, which reads them out of the
-# runtime's transcript files. They are keyed on `request_id` — the API's own
-# identifier for one call — because a single call appears in the JSONL as several
-# assistant lines, each repeating the same `usage` object. See the migration for
-# why that distinction is load-bearing.
+# Rows are written by the runtime's own ingestor — the `usage_ingestor_class`
+# slot on RuntimeRegistry::Bundle — because where a runtime records what it spent
+# differs per runtime: TokenUsageIngestionService reads Claude Code's
+# `~/.claude/projects` tree, PiTokenUsageIngestionService reads `sessions.transcript`.
+#
+# They are keyed on `request_id`, one row per call. For Claude Code that is the
+# API's own identifier, because a single call appears in the JSONL as several
+# assistant lines each repeating the same `usage` object — see the migration for
+# why that distinction is load-bearing. Pi has no per-call provider id on every
+# usage-bearing entry shape, so its ingestor synthesises `pi:<session uuid>:<entry id>`.
+#
+# **Not every row is Anthropic spend.** A Pi row is billed by OpenRouter and
+# counts against no Anthropic quota window, which is what `quota_bearing` below
+# is for.
 #
 # `session` is nullable and nullifies on delete: a transcript can outlive its
 # Session row, and spend that happened is still spend. `agent_root` is

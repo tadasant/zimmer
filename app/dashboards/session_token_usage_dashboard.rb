@@ -36,9 +36,10 @@ class SessionTokenUsageDashboard < Administrate::BaseDashboard
 
   SHOW_PAGE_ATTRIBUTES = ATTRIBUTE_TYPES.keys.freeze
 
-  # Read-only: rows are measurements of API calls that already happened, written by
-  # TokenUsageIngestionService from transcripts. Hand-editing one would assert spend
-  # that Anthropic never reported. To correct a row, fix the ingestion and re-run —
+  # Read-only: rows are measurements of API calls that already happened, written
+  # from transcripts by whichever ingestor the session's runtime resolves to
+  # (RuntimeRegistry::Bundle#usage_ingestor_class). Hand-editing one would assert
+  # spend no provider reported. To correct a row, fix the ingestion and re-run —
   # `request_id` makes that idempotent.
   FORM_ATTRIBUTES = %i[].freeze
 

@@ -112,7 +112,7 @@ class PiTokenUsageIngestionService
 
   private
 
-  # Pi sessions, newest first, without their transcripts.
+  # The Pi sessions in scope, without their transcripts.
   #
   # `agent_runtime` is indexed and Pi is a small share of the fleet, so the
   # lookback is applied on top of an already narrow relation rather than being
@@ -155,8 +155,8 @@ class PiTokenUsageIngestionService
 
       begin
         entry = JSON.parse(line)
-      rescue JSON::ParserError
-        result.skipped_entries += 1
+      rescue JSON::ParserError => e
+        skip(result, "unparseable line: #{e.message}")
         next
       end
       next unless entry.is_a?(Hash)
@@ -180,6 +180,12 @@ class PiTokenUsageIngestionService
       # compaction entry carries `retainedTail` — a materialized copy of the
       # assistant messages kept after compaction, each with the `usage` object it
       # was already recorded with. Walking into it would count those calls twice.
+      #
+      # The `compactionSummary` message is the same checkpoint in its other
+      # shape, and needs no guard: Pi derives it in memory from the compaction
+      # entry (`sessionEntryToContextMessages`) rather than appending it, and
+      # `createCompactionSummaryMessage` builds it with no `usage` field at all,
+      # so it cannot reach the line below even if a future version persists it.
       usage = message["usage"] || entry["usage"]
       next unless usage.is_a?(Hash)
 
@@ -188,15 +194,30 @@ class PiTokenUsageIngestionService
                                 :cache_read_tokens, :cache_creation_tokens).all?(&:zero?)
 
       entry_id = entry["id"].presence
+      namespace = header_id.presence || session[:session_id].presence
       # No entry id means no safe dedup key, and a row that cannot be deduped
       # would be re-counted on every sweep. Pi mints one for every entry it
       # appends, so this is a malformed line rather than a shape to support.
-      if entry_id.nil? || active_model.nil?
-        result.skipped_entries += 1
+      if entry_id.nil?
+        skip(result, "entry carries no id, so it has no safe dedup key")
+        next
+      end
+      # An 8-hex entry id is nowhere near unique on its own, so a key with an
+      # empty namespace would collapse every such session into one 32-bit space —
+      # exactly the collision the composite key exists to prevent. Unreachable
+      # while a transcript opens with its header, but `sessions.session_id` IS
+      # nullable (AgentSessionJob clears it on recovery paths), so refuse rather
+      # than rely on that.
+      if namespace.nil?
+        skip(result, "neither the transcript header nor the session row carries a session id")
+        next
+      end
+      if active_model.nil?
+        skip(result, "no model in force yet — no assistant message or model_change preceded this entry")
         next
       end
 
-      request_id = "#{REQUEST_ID_PREFIX}:#{header_id || session[:session_id]}:#{entry_id}"
+      request_id = "#{REQUEST_ID_PREFIX}:#{namespace}:#{entry_id}"
       next unless seen.add?(request_id)
 
       attribution ||= attribute(header_id, session)
@@ -206,7 +227,7 @@ class PiTokenUsageIngestionService
         session_id: attribution[:session_id],
         agent_root: attribution[:agent_root],
         agent_runtime: RUNTIME,
-        runtime_session_id: header_id || session[:session_id],
+        runtime_session_id: namespace,
         model: active_model,
         # Pi has no subagent concept, and no server-side tool that bills per
         # request, so these three are constants rather than readings.
@@ -269,17 +290,41 @@ class PiTokenUsageIngestionService
   # which is both what happened and what makes Zimmer's figure reproduce the cost
   # Pi recorded alongside it, to the cent.
   def extract_volumes(usage)
-    cache_write = usage["cacheWrite"].to_i
-    write_1h = usage["cacheWrite1h"].to_i.clamp(0, cache_write)
+    cache_write = count(usage["cacheWrite"])
+    write_1h = count(usage["cacheWrite1h"]).clamp(0, cache_write)
 
     {
-      input_tokens: usage["input"].to_i,
-      output_tokens: usage["output"].to_i,
-      cache_read_tokens: usage["cacheRead"].to_i,
+      input_tokens: count(usage["input"]),
+      output_tokens: count(usage["output"]),
+      cache_read_tokens: count(usage["cacheRead"]),
       cache_creation_tokens: cache_write,
       cache_creation_5m_tokens: cache_write - write_1h,
       cache_creation_1h_tokens: write_1h
     }
+  end
+
+  # A token count out of a transcript, which is DATA and not a schema.
+  #
+  # Total on purpose rather than `.to_i`, which raises NoMethodError on the
+  # Hash or Array a malformed `usage` could hold — and that exception would
+  # escape the per-line parse rescue and take every REMAINING session in the run
+  # with it. One odd entry should cost one entry. A negative count is floored
+  # for the same reason: it is not a volume, and it would otherwise invert the
+  # `clamp` range above into an ArgumentError.
+  def count(value)
+    return 0 unless value.is_a?(Numeric) || value.is_a?(String)
+
+    [ value.to_i, 0 ].max
+  rescue StandardError
+    0
+  end
+
+  # One skipped entry, counted and said out loud. The counter alone tells an
+  # operator that something was dropped and nothing about what, which is the
+  # shape of a number nobody can act on; `warn` does not page.
+  def skip(result, reason)
+    result.skipped_entries += 1
+    @logger.warn("[PiTokenUsageIngestion] skipped an entry: #{reason}")
   end
 
   # `<provider>/<model>`, which is the id ModelCatalog offers and the session
@@ -305,9 +350,14 @@ class PiTokenUsageIngestionService
   # Upsert, ignoring conflicts, so re-reading a transcript costs time and nothing
   # else — which is what lets the recurring sweep and the historical one overlap.
   # `returning` makes the count NEW spend rather than lines re-read.
+  # Sliced, so BATCH_SIZE is a real bound rather than an approximate one: the
+  # caller only checks the batch size between sessions, so a single very long
+  # transcript arrives here whole.
   def flush(rows)
     return 0 if rows.empty?
 
-    SessionTokenUsage.insert_all(rows, unique_by: :request_id, returning: [ :id ]).rows.size
+    rows.each_slice(BATCH_SIZE).sum do |slice|
+      SessionTokenUsage.insert_all(slice, unique_by: :request_id, returning: [ :id ]).rows.size
+    end
   end
 end

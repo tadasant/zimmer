@@ -46,6 +46,21 @@ class TokenUsageIngestionJob < ApplicationJob
       result = ingestor.new(modified_since: since).call
       Rails.logger.info("[TokenUsageIngestionJob] #{result}")
       result
+    # RE-RAISED, and the order matters: this rescue runs INSIDE `perform`, so it
+    # sees the exception before any `rescue_from`/`retry_on` ApplicationJob
+    # registered. Swallowing either of these here would quietly disable
+    # machinery the base class went to some trouble to set up.
+    #
+    #   * GoodJob::InterruptError is a deploy, not a failure. ApplicationJob's
+    #     `discard_interrupt_quietly` exists precisely to keep it off the ERROR
+    #     channel, because a single ERROR line pages #alerts — and this job runs
+    #     every ten minutes over the largest corpus in the deployment, so a
+    #     deploy landing mid-sweep is routine rather than rare.
+    #   * ActiveRecord::StatementTimeout has `retry_on ..., attempts: 5` on the
+    #     base class. Catching it here would turn a transient database blip into
+    #     a silently skipped sweep.
+    rescue GoodJob::InterruptError, ActiveRecord::StatementTimeout
+      raise
     rescue StandardError => e
       Rails.logger.error("[TokenUsageIngestionJob] #{ingestor.name} failed: #{e.class}: #{e.message}")
       nil

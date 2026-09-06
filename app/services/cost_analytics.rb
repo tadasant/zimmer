@@ -87,6 +87,19 @@ class CostAnalytics
   def adhoc_scope = AdhocTokenUsage.in_window(from, to)
   def feature_scope = TokenUsageFeature.in_window(from, to)
 
+  # The denominator for feature ATTRIBUTION, which is a narrower population than
+  # spend. ContextFeatureAttributor measures Claude Code's context-management
+  # machinery — the goal block, the skill bodies, the tool results — by reading a
+  # Claude transcript, so only Claude Code rows can ever have a `token_usage_features`
+  # row to be attributed BY. Dividing attributed tokens by every runtime's tokens
+  # would make `coverage` fall and the residual grow purely as a function of Pi
+  # volume, which the page would read as "attribution is degrading" when nothing
+  # about attribution had changed. `quota_bearing` is the same predicate for a
+  # different reason and they are deliberately not shared: this one would still be
+  # right if Pi spent against an Anthropic window, and that one would still be
+  # right if Pi grew a feature attributor.
+  def attributable_scope = session_scope.where(agent_runtime: ClaudeAuthProvider::RUNTIME)
+
   # Headline numbers, both tables combined.
   def totals
     session = session_scope.totals
@@ -221,7 +234,7 @@ class CostAnalytics
     attributed = grouped(feature_scope, "feature").map { |key, v| v.merge(feature: key) }
     attributed.sort_by! { |r| -r[:cost_usd] }
 
-    session = session_scope.totals
+    session = attributable_scope.totals
     residual_cost = session[:cost_usd] - attributed.sum { |r| r[:cost_usd] }
     residual_tokens = session[:total_tokens] - attributed.sum { |r| r[:tokens] }
 
@@ -252,7 +265,7 @@ class CostAnalytics
   # already narrowed. Same shape as `by_feature`, scoped.
   def feature_breakdown(agent_root: nil, session_id: nil)
     features = feature_scope
-    usage = session_scope
+    usage = attributable_scope
     if agent_root.present?
       features = features.for_agent_root(agent_root)
       usage = usage.for_agent_root(agent_root)
