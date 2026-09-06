@@ -177,8 +177,11 @@ class ClaudeMcpCredentialWriter
   # mid-session back into its DB. On macOS the Keychain is Claude Code's primary
   # store, so its entries win over the file; on Linux only the file exists.
   #
+  # `_credential_keys` is ignored: the store is one readable file, so listing it
+  # is no more work than probing it (#enumerable_store? is the default true).
+  #
   # @return [Hash{String => RuntimeMcpTokenSnapshot}] empty when nothing is stored
-  def read_runtime_credentials
+  def read_runtime_credentials(_credential_keys = nil)
     entries = mcp_oauth_map(read_credentials_from_file)
     entries = entries.merge(mcp_oauth_map(read_keychain_data(keychain_username))) if macos?
 

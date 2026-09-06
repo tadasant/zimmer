@@ -179,8 +179,11 @@ class CodexMcpCredentialWriter
   # runtimes; the Keychain is not read here because the file is authoritative on
   # Zimmer's Linux workers.
   #
+  # `_credential_keys` is ignored: the store is one readable file, so listing it
+  # is no more work than probing it (#enumerable_store? is the default true).
+  #
   # @return [Hash{String => RuntimeMcpTokenSnapshot}] empty when nothing is stored
-  def read_runtime_credentials
+  def read_runtime_credentials(_credential_keys = nil)
     data = read_credentials_from_file
     return {} unless data.is_a?(Hash)
 

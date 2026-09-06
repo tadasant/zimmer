@@ -40,6 +40,23 @@ class RuntimeMcpCredentialWriterContractTest < ActiveSupport::TestCase
       assert_respond_to writer, :read_runtime_credentials
       assert_respond_to writer, :clear_needs_auth_cache
       assert_respond_to writer, :delete_credentials
+      assert_respond_to writer, :enumerable_store?
+      assert_respond_to writer, :runtime_key_for
+    end
+
+    # The reconciler calls the reader with the keys it wants. A writer whose
+    # reader took no argument would ArgumentError inside the one code path that
+    # exists to keep a rotating credential alive.
+    test "#{klass}#read_runtime_credentials accepts the requested keys" do
+      result = klass.new.read_runtime_credentials([ "example|0000000000000000", "example" ])
+      assert_kind_of Hash, result
+      result.each_value { |v| assert_kind_of RuntimeMcpTokenSnapshot, v }
+    end
+
+    test "#{klass}#runtime_key_for returns a String key for a persisted credential" do
+      key = klass.new.runtime_key_for(mcp_oauth_credentials(:notion))
+      assert_kind_of String, key
+      assert_predicate key, :present?
     end
 
     test "#{klass}#delete_credentials returns an Array when nothing is stored" do

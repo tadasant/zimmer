@@ -14,19 +14,54 @@ class McpOauthRuntimeReconcilerTest < ActiveSupport::TestCase
     )
   end
 
-  # A stand-in RuntimeMcpCredentialWriter that returns a fixed on-disk snapshot map.
+  # A stand-in RuntimeMcpCredentialWriter for a listable store (Claude Code,
+  # Codex): it returns the whole map however it is asked, and counts reads so a
+  # test can assert the reconciler reads it once.
   class FakeReader
+    attr_reader :reads, :requested
+
     def initialize(snapshots)
       @snapshots = snapshots
+      @reads = 0
+      @requested = []
     end
 
-    def read_runtime_credentials
+    def enumerable_store? = true
+
+    def read_runtime_credentials(credential_keys = nil)
+      @reads += 1
+      @requested << credential_keys
       @snapshots
     end
   end
 
+  # A stand-in for a probe-only store (Pi): it can only answer for keys it is
+  # given, and answers {} when asked to enumerate.
+  class FakeProbeReader
+    attr_reader :reads, :requested
+
+    def initialize(snapshots)
+      @snapshots = snapshots
+      @reads = 0
+      @requested = []
+    end
+
+    def enumerable_store? = false
+
+    def read_runtime_credentials(credential_keys = nil)
+      @reads += 1
+      @requested << credential_keys
+      @snapshots.slice(*Array(credential_keys))
+    end
+  end
+
   class RaisingReader
-    def read_runtime_credentials
+    attr_reader :reads
+
+    def initialize = @reads = 0
+
+    def read_runtime_credentials(_credential_keys = nil)
+      @reads += 1
       raise "boom"
     end
   end
@@ -151,6 +186,55 @@ class McpOauthRuntimeReconcilerTest < ActiveSupport::TestCase
 
     @credential.reload
     assert_equal "db-refresh-token", @credential.refresh_token
+  end
+
+  test "a listable store is read once and reused across credentials" do
+    entry = snapshot(
+      access_token: "runtime-access-token",
+      refresh_token: "runtime-rotated-refresh-token",
+      expires_at: 2.hours.from_now
+    )
+    reader = FakeReader.new(@credential.credential_key => entry)
+    reconciler = McpOauthRuntimeReconciler.new(reader)
+
+    assert_equal 0, reader.reads, "constructing a reconciler must not touch the store"
+
+    reconciler.reconcile!(@credential)
+    reconciler.reconcile!(@credential, runtime_key: "some-other-key")
+
+    assert_equal 1, reader.reads
+    assert_equal [ nil ], reader.requested, "a listable store is asked to enumerate"
+  end
+
+  test "a probe-only store is asked for exactly the keys wanted, once each" do
+    # Pi's OS credential store has no listing, so the reconciler probes it by
+    # key. Each key costs one probe no matter how many credentials ask for it.
+    entry = snapshot(
+      access_token: "runtime-access-token",
+      refresh_token: "runtime-rotated-refresh-token",
+      expires_at: 2.hours.from_now
+    )
+    reader = FakeProbeReader.new("notion" => entry)
+    reconciler = McpOauthRuntimeReconciler.new(reader)
+
+    assert reconciler.reconcile!(@credential, runtime_key: "notion")
+    assert_not reconciler.reconcile!(@credential, runtime_key: "notion")
+    reconciler.reconcile!(@credential, runtime_key: "linear")
+
+    assert_equal [ [ "notion" ], [ "linear" ] ], reader.requested
+
+    @credential.reload
+    assert_equal "runtime-rotated-refresh-token", @credential.refresh_token
+  end
+
+  test "a probe-only store that never answers is asked once per key, not once per credential" do
+    reader = RaisingReader.new
+    reader.define_singleton_method(:enumerable_store?) { false }
+    reconciler = McpOauthRuntimeReconciler.new(reader)
+
+    3.times { assert_not reconciler.reconcile!(@credential, runtime_key: "notion") }
+
+    assert_equal 1, reader.reads
   end
 
   test "swallows a lock or update failure and returns false without raising" do

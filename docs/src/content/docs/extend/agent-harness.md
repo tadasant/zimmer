@@ -118,10 +118,11 @@ convention:
   `PiMcpCredentialWriter` stages exactly that, so **no registered runtime has a
   `nil` writer today**. The `nil` case remains part of the seam, and the slot
   *may* be `nil` because every caller is guarded:
-  `RuntimeRegistry.mcp_credential_writer_classes` compacts the list (the caller
-  instantiates every class it returns, on the credential-retire path — i.e. while
-  a credential is already failing), and `McpOauthCredentialInjector` asks
-  `#credential_store?` first. That second guard is load-bearing rather than
+  `RuntimeRegistry.mcp_credential_writer_classes` compacts the list (its callers
+  instantiate every class it returns — the credential-retire path, i.e. while a
+  credential is already failing, and `RefreshMcpOauthTokensJob`, which has no
+  session and so reads *every* runtime's store before it refreshes), and
+  `McpOauthCredentialInjector` asks `#credential_store?` first. That second guard is load-bearing rather than
   defensive: `McpOauthController#reinject_and_resume` calls injection and the
   resume service inside one `rescue`, so a raise from injection would skip the
   resume and leave a session parked on an OAuth gate permanently un-resumable.
@@ -336,7 +337,11 @@ backwards and a session's real history is thrown away; leave it unimplemented an
    and `conversation_record?`.
 6. Prompt contribution → register in `RuntimePromptContribution.for`.
 7. Config post-processor.
-8. MCP credential writer.
+8. MCP credential writer — the whole contract, not just `#write!`. If the runtime refreshes
+   MCP OAuth tokens itself (Claude Code and Pi both do), `#read_runtime_credentials` is what
+   keeps a rotating provider's credential alive, and `#enumerable_store?` /
+   `#runtime_key_for` say how it is addressed. See
+   [MCP OAuth](/auth/mcp-oauth/#capturing-the-token-the-runtime-rotates-write-back).
 9. MCP status detector.
 10. Usage ingestor — how the runtime's spend reaches `session_token_usages`. Leaving it `nil`
     is allowed and means the runtime's cost is not tracked; say so in
