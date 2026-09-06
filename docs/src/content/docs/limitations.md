@@ -4193,10 +4193,10 @@ sniffed from its own bytes, which is dropped rather than guessed at, and any att
 follow-up** already owns — both kinds live in the same per-session directory, so a screenshot
 attached to a message somebody queued for later is not smuggled onto the turn before it.
 
-The session page's **Restart from scratch** button is a different door, and it carries them too.
-`SessionsController#restart_from_scratch`, `POST /api/v1/sessions/:id/restart` and MCP
-`action_session`'s `restart` clear `session_id` and build the replacement job themselves rather than
-going through `Sessions::StartNow`, so each reads the same `Sessions::FirstTurnAttachments` before it
+The session page's **Restart from scratch** button is a different door, and it carries them too. It,
+`POST /api/v1/sessions/:id/restart` and MCP `action_session`'s `restart` all run
+`Sessions::RestartFromScratch`, which clears `session_id` and builds the replacement job itself
+rather than going through `Sessions::StartNow`, and reads `Sessions::FirstTurnAttachments` before it
 enqueues ([#746](https://github.com/tadasant/zimmer/issues/746)). Replaying is deliberate rather than
 incidental: a restart from scratch throws the conversation away and re-runs the session's *original*
 prompt, so the attachments that turn was created with are exactly what the replacement turn needs.
