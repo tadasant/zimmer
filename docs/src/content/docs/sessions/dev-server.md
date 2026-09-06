@@ -102,11 +102,14 @@ container is still an existing one ([#419](https://github.com/tadasant/zimmer/is
 So staging's deploy follows the boot with `kamal accessory reboot devdb -d staging`, which
 stops, prunes and re-creates the container unconditionally. That is safe for this accessory
 and this one only: it is volume-less, so there is nothing to preserve. Re-running the
-staging deploy is therefore the recovery path for a preflight failure. The price is that a
-staging deploy discards every `zimmer_dev_<clone>` database along with the container, so a
-session mid-way through `bin/agent-dev` has to re-run `db:prepare` — which is what the
-script does on its next boot anyway, and the same deploy is replacing that session's
-containers regardless. Production's
+staging deploy is therefore the recovery path for a preflight failure.
+
+The price is that every staging deploy discards every `zimmer_dev_<clone>` database along
+with the container. Usually that costs nothing, because the same deploy replaces the worker
+container those sessions run in anyway, and `bin/agent-dev` re-runs `db:prepare` on its next
+boot. The exception is a deploy that fails its health check: kamal-proxy leaves the old
+containers serving, so a session survives — but its scratch database went with the reboot
+that ran before the deploy, and it has to re-run `bin/agent-dev`. Production's
 pipeline (in the companion repo) still only boots, so there the next step is `kamal
 accessory reboot devdb -d production` from an operator shell — never a setup command, since
 the accessory is already declared.

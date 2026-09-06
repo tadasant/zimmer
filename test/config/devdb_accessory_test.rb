@@ -105,7 +105,7 @@ class DevdbAccessoryTest < ActiveSupport::TestCase
   # socket is mounted into the worker but the worker is not in its group (#409). The staging
   # deploy therefore REBOOTS devdb rather than booting it.
   #
-  # `reboot` is stop + `docker container prune` + boot. On `db` or `redis` that is data loss.
+  # `reboot` is pull + stop + `docker container prune` + boot. On `db` or `redis` that is data loss.
   # These assertions are the reason a reader can trust the workflow line: they fail the build
   # if the rebooted name is ever an accessory that declares a volume.
   STAGING_DEPLOY_WORKFLOW = Rails.root.join(".github/workflows/deploy-staging.yml")

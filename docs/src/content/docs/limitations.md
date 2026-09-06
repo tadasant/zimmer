@@ -4591,12 +4591,19 @@ A session cannot repair that itself: the Docker socket is mounted into the worke
 not in its group ([#409](https://github.com/tadasant/zimmer/issues/409)), and there is no root. So
 the only signal is a session reporting that `bin/agent-dev` found no Postgres.
 
-**Staging closed this**: `deploy-staging.yml` now runs `kamal accessory reboot devdb -d staging`
-after `accessory boot all`, so re-running the deploy is the recovery path. `reboot` is stop +
-`docker container prune --filter label=service=zimmer-devdb` + boot, which is destructive by design
-and therefore scoped to `devdb` alone — the one accessory declared with no `volumes:` key, holding
-nothing but scratch `zimmer_dev_<clone>` databases. `test/config/devdb_accessory_test.rb` fails the
-build if that line ever names an accessory that declares a volume.
+**Staging closes this**: `deploy-staging.yml` runs `kamal accessory reboot devdb -d staging` after
+`accessory boot all`, so re-running the deploy is the recovery path. `reboot` is registry login +
+`docker image pull` + stop + `docker container prune --filter label=service=zimmer-devdb` + boot,
+which is destructive by design and therefore scoped to `devdb` alone — the one accessory declared
+with no `volumes:` key, holding nothing but scratch `zimmer_dev_<clone>` databases.
+`test/config/devdb_accessory_test.rb` fails the build if that line ever names an accessory that
+declares a volume.
+
+Two costs come with it, both deliberate. The pull is unconditional, so a staging deploy now depends
+on `postgres:16` being pullable — a Docker Hub outage or rate-limit fails the deploy, loudly, where
+before it would have been skipped over. And staging's scratch Postgres follows that moving tag,
+patch release by patch release, where `db` and `redis` stay on whatever was pulled when they were
+first created.
 
 **Production has not followed.** `zimmer-deploy-prod.yml` lives in the private companion repo, which
 is a different repository and a different agent root, so it still runs `accessory boot all` alone and
