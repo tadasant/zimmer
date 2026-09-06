@@ -105,6 +105,30 @@ class TranscriptSource
     raise NotImplementedError, "#{self.class}#locate"
   end
 
+  # The runtime session uuid a located transcript is named by, when this
+  # conversation was **re-keyed** mid-flight: the located file opens with a copy
+  # of the transcript Zimmer recorded at spawn and carries on under a different
+  # uuid, leaving <session_id>.jsonl behind (#1047).
+  #
+  # `locate` already follows that branch, so this answers a different question —
+  # whether the file it returned carries the whole of what Zimmer stored, or only
+  # the part that existed when the copy was taken. The poller needs the
+  # difference: the events the abandoned file recorded after the copy survive
+  # nowhere else.
+  #
+  # nil — the default, and the answer whenever nothing re-keyed — means "the
+  # located file is the conversation Zimmer already knows about". It is also the
+  # right answer for runtimes whose transcript filename is not a session uuid at
+  # all (Codex names rollouts `rollout-<timestamp>-<uuid>.jsonl` and rotates them
+  # by design; that is #rotates_transcript_files?, a different mechanism).
+  #
+  # @param session [Session] the session whose transcript was located
+  # @param transcript_path [String, nil] the located transcript path
+  # @return [String, nil] the branch uuid, or nil when there is no re-key
+  def rekeyed_branch_id(session:, transcript_path:)
+    nil
+  end
+
   # Find the main (non-subagent) transcript file inside a directory.
   #
   # Declared here rather than only on the concrete sources because
