@@ -490,24 +490,120 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     assert_equal [ "https://github.com/other-org/proj/pull/5" ], tracked_urls
   end
 
-  # A create whose success is only INFERRED vouches for one PR, not for whatever
-  # else printed into the same blob. One create opens one pull request — the same
-  # cap the MCP tier takes, and the guard that keeps this from becoming #214.
-  test "records only the created PR when a create's line goes on to list the repo's PRs" do
+  # A create whose success is only INFERRED is held to three bounds the ordinary
+  # reading is not. One URL, because one create opens one pull request:
+  test "records one PR only from a create whose line then printed more of them" do
     run_hook(
-      claude_shell_call(
-        id: "toolu_cap",
-        command: "gh pr create --repo owner/repo --fill | tail -1; gh pr list --repo owner/repo --json url --jq '.[].url'"
-      ),
+      claude_shell_call(id: "toolu_cap", command: "gh pr create --repo owner/repo --fill | tail -1; gh pr view 50 --json body"),
       claude_tool_result(
         id: "toolu_cap",
-        content: "https://github.com/owner/repo/pull/50\n" \
-                 "https://github.com/owner/repo/pull/12\nhttps://github.com/owner/repo/pull/13",
+        content: "https://github.com/owner/repo/pull/50\nfollows https://github.com/owner/repo/pull/12 " \
+                 "and supersedes https://github.com/owner/repo/pull/13",
         is_error: true
       )
     )
 
     assert_equal [ "https://github.com/owner/repo/pull/50" ], tracked_urls
+  end
+
+  # Nothing at all when a PR LISTING shared the line. A listing prints every open
+  # PR on the repo into the same blob, and on a line that failed there is no
+  # telling which of them the cap would land on — #214 in its purest form.
+  test "records nothing when a create's line also lists the repo's PRs" do
+    run_hook(
+      claude_shell_call(
+        id: "toolu_list",
+        command: "gh pr create --repo owner/repo --fill | tail -1; gh pr list --repo owner/repo --json url --jq '.[].url'"
+      ),
+      claude_tool_result(
+        id: "toolu_list",
+        content: "https://github.com/owner/repo/pull/12\nhttps://github.com/owner/repo/pull/13",
+        is_error: true
+      )
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "records nothing when a create's line also reads the pulls collection over the REST API" do
+    run_hook(
+      claude_shell_call(
+        id: "toolu_restlist",
+        command: "gh pr create --repo owner/repo --fill | tail -1; gh api repos/owner/repo/pulls --jq '.[].html_url'"
+      ),
+      claude_tool_result(id: "toolu_restlist", content: "https://github.com/owner/repo/pull/14", is_error: true),
+    )
+
+    assert_nil tracked_urls
+  end
+
+  # But a single-PR read is not a listing: `gh pr view <n>` prints the one PR it
+  # was asked for, which is #620's own shape. Excluding it would put the bug back.
+  test "records a PR whose create's line goes on to read that one PR back" do
+    run_hook(
+      claude_shell_call(id: "toolu_view", command: "gh pr create --repo owner/repo --fill | tail -1; gh pr view 51 --json url"),
+      claude_tool_result(id: "toolu_view", content: "https://github.com/owner/repo/pull/51", is_error: true)
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/51" ], tracked_urls
+  end
+
+  # And this session's own repo, when the create named none. `unbounded_create?`
+  # lets a create with no `--repo` vouch for any repo — a fork clone opens on a
+  # parent it never mentions — but combined with the cap that would be no bound at
+  # all, and the first URL in a failed line's output would be adopted whatever
+  # repo it belonged to (#214).
+  test "ignores a foreign PR named first in the output of an unbounded create whose line failed" do
+    run_hook(
+      claude_shell_call(id: "toolu_unbounded", command: "gh pr create --fill | tail -1; false"),
+      claude_tool_result(
+        id: "toolu_unbounded",
+        content: "https://github.com/evil-org/other/pull/1\nhttps://github.com/owner/repo/pull/2",
+        is_error: true
+      )
+    )
+
+    assert_equal [ "https://github.com/owner/repo/pull/2" ], tracked_urls
+  end
+
+  # The licence itself is untouched on the ordinary reading: a create the flag
+  # never contradicted still vouches for the upstream repo it never named.
+  test "records an upstream PR from an unbounded create whose line did not fail" do
+    run_hook(
+      claude_shell_call(id: "toolu_fork", command: "gh pr create --fill | tail -1; true"),
+      claude_tool_result(id: "toolu_fork", content: "https://github.com/upstream/proj/pull/3")
+    )
+
+    assert_equal [ "https://github.com/upstream/proj/pull/3" ], tracked_urls
+  end
+
+  # Separators are assigned by position and empty segments are dropped after, so a
+  # trailing `;` or newline must not make a create look like it had something
+  # after it. It did not: the exit status is the create's, and the veto stands.
+  test "ignores a same-repo PR named by a failed create with a trailing semicolon" do
+    run_hook(
+      claude_shell_call(id: "toolu_semi", command: "gh pr create --fill;"),
+      claude_tool_result(
+        id: "toolu_semi",
+        content: "pull request create failed: GraphQL: Head sha can't be blank\nsee https://github.com/owner/repo/pull/700",
+        is_error: true
+      )
+    )
+
+    assert_nil tracked_urls
+  end
+
+  test "ignores a same-repo PR named by a failed create with a trailing blank line" do
+    run_hook(
+      claude_shell_call(id: "toolu_nl", command: "gh pr create --fill\n   "),
+      claude_tool_result(
+        id: "toolu_nl",
+        content: "pull request create failed\nsee https://github.com/owner/repo/pull/701",
+        is_error: true
+      )
+    )
+
+    assert_nil tracked_urls
   end
 
   # And a create whose success was never in doubt still vouches for everything its

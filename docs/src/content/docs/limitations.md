@@ -3908,10 +3908,11 @@ Heuristics have two failure directions and neither announces itself:
   runs a create and then something else — `gh pr create …; gh pr view 1 --json url` — no longer lets
   the *second* command's non-zero exit veto the create, because in a shell that exit status was never
   the create's to begin with. So if the create is what failed there, a same-repo URL the rest of the
-  line printed is read as the create's own. It is capped at **one** URL, which bounds it to a single
-  wrong PR rather than a whole listing, and it costs nothing on the shapes agents actually write —
-  the failure it replaces was a *successful* create being discarded, recorded nowhere, with every
-  GitHub integration silently off for that session.
+  line printed can be read as the create's own. Three bounds hold it to a single wrong PR at worst:
+  one URL only, the session's own repo unless the create named another, and nothing at all when a PR
+  *listing* shared the line. What is left is a single-PR read (`gh pr view <n>`) printing a different
+  PR than the failed create would have. The failure it replaces was a *successful* create being
+  discarded, recorded nowhere, with every GitHub integration silently off for that session.
   `GithubCommentAuthorshipHook` reads its own posting commands the same way since
   [#870](https://github.com/tadasant/zimmer/issues/870), and the same spellings are its
   residual edge, on top of the `gh api` endpoint path it reads as written.
@@ -3937,6 +3938,14 @@ Heuristics have two failure directions and neither announces itself:
   sessions are not covered at all: the `pi-mcp-adapter` extension calls every server through one
   `mcp` proxy tool rather than by name, so there is no `mcp__<server>__create_pull_request` in a Pi
   transcript to key on.
+
+**#620's fix does not reach inside a multi-line `bash -lc "…"` wrapper.** `ShellSegments` splits the
+outer script on newlines *before* it unwraps the wrapper, so a wrapper whose quoted script spans
+lines leaves both lines with unresolved quoting; they fall back to the crude split, which reports no
+separators, and the failure flag is then read as written — vetoing the create. The same script
+written unwrapped across two lines is read correctly. This matters most on **Codex**, which writes
+every command as `bash -lc "…"`, so it is the shape most likely to reproduce #620 there. Pre-existing
+and not a regression: before #620 nothing on any runtime read the flag per command.
 
 **A create the hook reads perfectly well is still lost when it lands in a transcript file Zimmer is
 not reading.** Session [7619](https://zimmer.tadasant.com/sessions/7619) is the worked case, and it

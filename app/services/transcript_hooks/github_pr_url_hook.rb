@@ -51,10 +51,10 @@
 #     the repo's open PRs, which is the #214 shape again. Nor does a POST
 #     somewhere else on the line make one: creates are read per command segment,
 #     never across the whole script.
-#   - More than one URL out of a create whose success was only *inferred* — a
-#     line that exited non-zero somewhere after the create. One create opens one
-#     pull request, and on a line that ended in a failure there is no telling what
-#     else printed into the same blob.
+#   - Anything much out of a create whose success was only *inferred* — a line
+#     that exited non-zero somewhere after the create. One URL only, on this
+#     session's own repo unless the create named another, and nothing at all when
+#     a PR listing shared the line. See #urls_from_successful_create.
 #   - The result of an MCP tool that writes *about* a pull request rather than
 #     opening one. `create_pull_request_review` and
 #     `create_pull_request_review_comment` sit next to `create_pull_request` in
@@ -201,16 +201,14 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   MCP_INPUT_OWNER_KEY = "owner"
   MCP_INPUT_REPO_KEYS = %w[repo repository].freeze
 
-  # The separators after which a shell throws the preceding command's exit status
-  # away: a pipe replaces it with the downstream command's, and `;` or a newline
-  # replaces it with the next command's. `&&` and `||` are deliberately absent —
-  # both propagate a failure, so a create in front of one really can be what set
-  # the flag. See #create_exit_status_observed?.
+  # `gh pr list` as a command being run. Read against the segment's #unquoted view
+  # for the same reason a create is: the three words in a `grep` pattern are data.
   #
-  # A bare `&` is not on the list because TranscriptHooks::ShellSegments does not
-  # treat one as a separator at all; a backgrounded create stays part of its
-  # segment and keeps the veto.
-  EXIT_STATUS_DISCARDING_SEPARATORS = [ ";", "|", "\n" ].freeze
+  # A listing is the #214 shape in its purest form — every open PR on the repo,
+  # printed into the same blob as a create — and #urls_from_successful_create
+  # declines outright when one shares a line with a create whose success it had to
+  # infer. See there.
+  GH_PR_LIST_PATTERN = /\bgh\s+pr\s+list\b/
 
   # `gh pr create` exits non-zero when the branch already has a PR, printing
   # "a pull request for branch \"x\" into branch \"main\" already exists: <url>".
@@ -446,23 +444,55 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   #
   # +capped+ says this is a create whose success is *inferred* — the script exited
   # non-zero, but not on the create's account (see #create_exit_status_observed?).
-  # One create opens one pull request, so an inferred success vouches for exactly
-  # one URL: the first the bound below allows, which is the one `gh pr create`
-  # prints. Anything after it was printed by whatever else ran on that line, and
-  # on a line that ended in a failure there is no telling what that was — a
-  # `gh pr list` fallback would otherwise hand over every PR it printed, which is
-  # #214 through a new door. The same cap the MCP tier takes, for the same reason.
+  # That is weaker evidence than a create the flag never contradicted, because the
+  # line really did fail somewhere and nothing says the create was not part of it.
+  # So it is held to three bounds the ordinary reading is not:
+  #
+  #   - **One URL.** One create opens one pull request. The same cap the MCP tier
+  #     takes, and for the same reason: a line that ended in a failure can have
+  #     printed anything into this blob.
+  #   - **This session's repo, when the create named none.** `unbounded_create?`
+  #     lets a `gh pr create` with no `--repo` vouch for any repo, because a create
+  #     in a fork clone lands on a parent the command never mentions. Combined with
+  #     the cap that would be a bound of nothing at all — `gh pr create --fill |
+  #     tail -1; false` would record the first PR URL in the output whatever repo
+  #     it belonged to, enrolling the session in another repository's comment and
+  #     merge-conflict polling (#214). The unbounded licence is a *strong*-evidence
+  #     licence; an inferred success does not get it.
+  #   - **No listing on the line.** A `gh pr list` or a non-POST `gh api …/pulls`
+  #     sharing a line with the create prints every open PR on the repo into this
+  #     same blob, and on a failed line there is no telling which of them the cap
+  #     will land on. Rather than record one arbitrarily, record nothing.
+  #
+  # Which URL the cap keeps is "the first this bound allows", and that is the
+  # create's own only when nothing before it on the line printed one. Since a
+  # listing is the shape that would, and it is excluded outright, what is left is
+  # narrow enough for first-wins to be the right guess rather than a claim.
   #
   # A create the flag never contradicted keeps vouching for everything its own
-  # bound allows, exactly as before.
+  # repo bound allows, exactly as before — none of the three applies to it.
   def urls_from_successful_create(result, command, capped: false)
+    return [] if capped && segments_of(command).any? { |segment| lists_pull_requests?(segment) }
+
     target_repos = unbounded_create?(command) ? nil : create_repos(command)
+    unbounded = target_repos.nil? && !capped
 
     urls = pr_urls_with_context(result[:text]).map(&:first).select do |url|
-      target_repos.nil? || same_repo?(url) || target_repos.include?(url_owner_repo(url))
+      unbounded || same_repo?(url) || target_repos.to_a.include?(url_owner_repo(url))
     end
 
     capped ? urls.first(1) : urls
+  end
+
+  # Whether one command segment READS a repo's pull requests as a list: `gh pr
+  # list`, or the `gh api repos/o/r/pulls` that is a GET rather than a create.
+  # Not a single-PR read — `gh pr view <n>` prints the one PR it was asked for,
+  # which is routinely the one the create beside it just opened (#620's own
+  # shape), and excluding that would put the bug back.
+  def lists_pull_requests?(segment)
+    return true if unquoted(segment).match?(GH_PR_LIST_PATTERN)
+
+    segment.match?(GH_API_PATTERN) && segment.match?(GH_API_PULLS_ENDPOINT_PATTERN) && !rest_pr_create?(segment)
   end
 
   # Evidence 3: the one URL a create that really did fail can still vouch for —
@@ -503,7 +533,7 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # could be what failed.
   def create_exit_status_observed?(command)
     segments_with_separators_of(command).any? do |segment, separator|
-      next false if EXIT_STATUS_DISCARDING_SEPARATORS.include?(separator)
+      next false if exit_status_discarded_after?(separator)
 
       gh_pr_create?(segment) || rest_pr_create?(segment)
     end
