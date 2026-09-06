@@ -107,10 +107,11 @@ any MCP server with a `${VAR}` placeholder fails at session start. `deploy-stagi
 Production is unaffected: its `.enc` is bind-mounted onto the droplet rather than committed, and
 `PROD_RAILS_MASTER_KEY` is mandatory in practice.
 
-The flip side, once the key *is* set: staging's `AlertService` and `SystemHealthMonitorJob` start
-posting to the `ENG_ALERTS_SLACK_CHANNEL_ID` in `staging.yml.enc` — a real Slack channel that humans
-watch. Staging alerts are only distinguishable from production's by the posting bot (*Zimmer
-(Staging)*), so point staging at a different channel if that noise is unwelcome.
+The flip side, once the key *is* set: staging's `AlertService` and every monitor scheduled there
+start posting to the `ENG_ALERTS_SLACK_CHANNEL_ID` in `staging.yml.enc` — a real Slack channel that
+humans watch. Staging alerts say which environment they came from — a `[staging]` title tag, an
+`*Environment:* staging` context line, and the posting bot (*Zimmer (Staging)*) — but they land in
+the same feed as production's, so point staging at a different channel if that volume is unwelcome.
 
 ### The release build's retry masks a flake
 

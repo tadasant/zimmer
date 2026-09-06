@@ -128,21 +128,33 @@ bin/rails runner 'puts JSON.pretty_generate(CronSchedule::ENVIRONMENTS.to_h { |e
 | Environment | Runs |
 | --- | --- |
 | `production` | everything |
-| `staging` | everything except `EgressHealthCheckJob` and `SlackTriggerHealthCheckJob` |
+| `staging` | everything production does. `NOT_ON_STAGING` in `test/config/cron_schedule_test.rb` is the seam for an exception, and it is empty |
 | `development` | a deliberate subset: nothing that spends money or quota, nothing that reaps the deployed droplet's disk. Paging is not the criterion — `AlertService::ALERTING_ENVIRONMENTS` is `production` and `staging`, so a monitor scheduled in development cannot reach `#eng-alerts` anyway |
 | `test` | nothing. The suite does not run GoodJob's cron; a sweep firing mid-test would be a source of flakes |
 
-:::caution[The two staging omissions are inherited, not decided]
-`EgressHealthCheckJob` and `SlackTriggerHealthCheckJob` run in production and not in staging. The
-reason on record — they page `#eng-alerts`, and a staging copy would double-page on production's own
-signals — came with the schedule rather than from anyone ruling on it. It is only ever an argument
-about staging: development schedules `SlackTriggerHealthCheckJob` too, and cannot page from there,
-because `AlertService::ALERTING_ENVIRONMENTS` is `production` and `staging`. Staging *is* in that
-list, so the question is real.
+:::note[Why staging has no omissions]
+Staging schedules everything production does, and `NOT_ON_STAGING` is empty. That is the position
+[#686](https://github.com/tadasant/zimmer/issues/686) settled: staging is the rehearsal for what
+production does, so a job production runs and staging never has is a code path staging never
+exercises — and an omission is only legitimate when its reason is about staging itself, not about
+what the job happens to do.
 
-#457 preserved the behaviour rather than changing it, so the divergence is at least declared on the
-entries and in the test's `NOT_ON_STAGING` list. Whether staging should run them is
-[#686](https://github.com/tadasant/zimmer/issues/686), still open.
+The one reason ever offered for holding `EgressHealthCheckJob` and `SlackTriggerHealthCheckJob` back
+— they page `#eng-alerts`, and a staging copy would double-page on production's own signals — is not
+that kind of reason, and the rest of the table does not follow it. Staging already pages that
+channel from `GithubTriggerHealthCheckJob` (written to mirror the Slack canary),
+`SystemHealthMonitorJob`, `ElicitationEndpointHealthCheckJob` and both trigger pollers. Every alert
+carries a `[staging]` title tag, an `*Environment:*` context line and a distinct posting bot, and
+staging runs on its own droplet with its own Postgres accessory and its own Redis — so what it
+reports is its own signal, not a second copy of production's. (If that channel is the wrong destination for staging noise, the fix
+is staging's `ENG_ALERTS_SLACK_CHANNEL_ID`, which is one value in `staging.yml.enc` — see
+[Limitations](/limitations/#rails_master_key-is-optional-on-staging-and-silently-degrades-when-absent).)
+
+Neither job is idle there. Staging schedules `SlackTriggerPollerJob`, and a poller with no canary is
+the gap `SlackTriggerHealthCheckJob` exists to close; with no enabled Slack trigger on staging the
+check walks an empty relation and says nothing. `EgressHealthCheckJob` drives the network-degraded
+banner and the egress row on `/health` — and `HealthMonitorService#egress_health` reads an empty
+cache as "DNS egress resolving", so an unprobed environment reports an answer nothing measured.
 :::
 
 :::note[Adding a job is a four-file change, and every one of them fails CI if you miss it]
