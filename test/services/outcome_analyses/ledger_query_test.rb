@@ -10,7 +10,7 @@ class OutcomeAnalyses::LedgerQueryTest < ActiveSupport::TestCase
     Session.delete_all
 
     @archived = create_session(title: "Archived", status: :archived, runtime: "claude_code", model: "opus", root: "zimmer")
-    @other_root = create_session(title: "Other root", status: :archived, runtime: "codex", model: "gpt-5.6-terra", root: "agents")
+    @other_root = create_session(title: "Other root", status: :archived, runtime: "codex", model: "gpt-5.6-terra", root: "general-agent")
     @live = create_session(title: "Still going", status: :needs_input, runtime: "claude_code", model: "opus", root: "zimmer")
   end
 
