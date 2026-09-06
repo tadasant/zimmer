@@ -611,9 +611,7 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     assert File.exist?(event_log), "the child's stdout should have been written to #{event_log}"
     assert_equal stream, File.read(event_log)
 
-    read_back = CodexEventStream.new(working_directory: @test_dir)
-    assert_equal thread_id, read_back.thread_id
-    assert_equal %w[thread.started turn.started], read_back.events.map { |e| e["type"] }
+    assert_equal thread_id, CodexEventStream.new(working_directory: @test_dir).thread_id
   end
 
   test "each spawn truncates the event log so a stale thread id is never read back" do
@@ -858,14 +856,17 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
   # until the child has exited, so the event log is complete on return.
   def spawn_real_process_printing(stdout)
     adapter = CodexRuntimeAdapter.new
-    adapter.process_manager = SystemProcessManager.new
+    process_manager = SystemProcessManager.new
+    adapter.process_manager = process_manager
     adapter.file_system = RealFileSystemAdapter.new
 
     # Not merely unstubbed: the delegated parent has to be absent, or the command
     # is wrapped in a cgroup entry that the printf below is not.
     without_delegated_cgroup_parent do
       result = adapter.send(:spawn_process, [ "printf", "%s", stdout ], working_dir: @test_dir)
-      Process.waitpid(result[:pid])
+      # Through the manager, not a bare Process.waitpid: #spawn registered a
+      # waiter claim and only #wait releases it.
+      process_manager.wait(result[:pid])
       result
     end
   end

@@ -141,6 +141,7 @@ self.stderr_log_filename   # → "<runtime>_stderr.log". REQUIRED — the defaul
 self.spawn_error_class     # → your error class; defaults to RuntimeCliAdapter::SpawnError
 self.cli_label             # → "Codex CLI", for operator-facing errors; defaults to the class name
 self.stderr_log_path(dir)  # provided: dir + stderr_log_filename, nil for a blank dir
+self.spawn_artifact_paths(dir)   # provided: [stderr_log_path(dir)]. Override to add more
 self.validate_working_dir!(dir)  # provided: refuses nil/blank, raising spawn_error_class
 ```
 
@@ -148,6 +149,14 @@ self.validate_working_dir!(dir)  # provided: refuses nil/blank, raising spawn_er
 quietly — it raises `NotImplementedError` the first time a session on your runtime is resumed,
 interrupted, or terminated. Build your spawn-time path from it too (`self.class.stderr_log_path`),
 so the name your process writes and the name every caller reads cannot drift.
+
+`spawn_artifact_paths` is every file your spawned process writes **into the working directory**.
+`ForkSessionService` deletes them from the copied clone, because they describe the run that
+produced it and not the one about to start. The default covers the stderr log; override and append
+to `super` if your runtime writes more. `CodexRuntimeAdapter` does, for its `--json` event log —
+that file names the source session's Codex thread, and a fork that kept it would resume someone
+else's conversation. The contract test asserts this for every adapter, so a runtime that returns a
+relative path or forgets its own stderr log fails the suite rather than leaking state into forks.
 
 `validate_working_dir!` must run at the top of `execute` and `resume`, before anything joins onto
 `working_dir`. A nil working directory does reach adapters — that was #183 — and without the guard
@@ -278,7 +287,10 @@ backwards and a session's real history is thrown away; leave it unimplemented an
 2. `ModelCatalog::MODELS["<runtime>"]` — exactly one entry with `default: true`.
 3. CLI adapter — `include RuntimeCliAdapter` + `CliSpawnEnv`. Identical kwargs.
    Declare `self.stderr_log_filename` (`<runtime>_stderr.log`) and guard `execute`/`resume`
-   with `validate_working_dir!`. `pgroup: true`, NULL stdin/stdout.
+   with `validate_working_dir!`. `pgroup: true`, NULL stdin. If the runtime writes anything
+   else into the working directory, add it to `self.spawn_artifact_paths` so forks shed it —
+   and if it prints a structured event stream on stdout, capture that rather than sending it
+   to NULL (see `CodexEventStream`).
 4. Retry strategy — all five predicates.
 5. Transcript source + normalizer — including `find_main_transcript`, `mints_own_session_id?`
    and `conversation_record?`.

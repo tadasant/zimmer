@@ -100,19 +100,6 @@ class CodexEventStream
     nil
   end
 
-  # Every parsed event in the stream, in order. Malformed lines are dropped —
-  # the last line of a live stream is routinely half-flushed.
-  #
-  # @return [Array<Hash>]
-  def events
-    return [] unless available?
-
-    @file_system.read(path).to_s.lines.filter_map { |line| parse_line(line) }
-  rescue => e
-    Rails.logger.warn "[CodexEventStream] Failed to read #{path}: #{e.message}"
-    []
-  end
-
   private
 
   # A single JSONL line, or nil when it is blank, half-written, or not an
