@@ -41,8 +41,11 @@ module Sessions
   # been handed over and is queued for one of the `agents` lane's worker threads
   # reads `waiting` — so `running?` answers "no turn" for a session that has one
   # coming, and every caller that used it to decide "do not start a second turn"
-  # would start one. Those callers ask #underway? instead. The status gate below
-  # is correspondingly `running? || waiting?` on every predicate here.
+  # would start one. Those callers ask #underway? instead: the web, REST and MCP
+  # follow-up routes, `Trigger#follow_up_session!`, `EnqueuedMessageDrainJob`,
+  # `Sessions::MessageParent`, `Session#claim_system_recovery_turn!` and the
+  # follow-up composer. The status gate below is correspondingly
+  # `running? || waiting?` on every predicate here.
   module LiveTurn
     module_function
 
@@ -94,9 +97,9 @@ module Sessions
     # THE GUARD `running?` USED TO BE. Every caller that has to decide "is a turn
     # already in flight, so hand this prompt to the queue rather than starting a
     # second one" asks this: the follow-up routes (web, REST, MCP), the wake and
-    # poller deliveries in Trigger, EnqueuedMessageProcessorService's hand-off
-    # branch, and Sessions::MessageParent. Reading `session.running?` for that
-    # became wrong the moment a queued turn started reading `waiting` (#1040).
+    # poller deliveries in Trigger, EnqueuedMessageDrainJob's dormancy check, and
+    # Sessions::MessageParent. Reading `session.running?` for that became wrong
+    # the moment a queued turn started reading `waiting` (#1040).
     #
     # NARROWER than #coming? for a `waiting` session, and the difference is
     # deliberate. #coming? counts
@@ -107,6 +110,11 @@ module Sessions
     # minutes away. Only `:running` (a live worker holds it) and `:queued` (ready,
     # unclaimed, a worker will take it on its next poll) mean a turn is underway
     # now.
+    #
+    # A `clone_only` job is excluded, because it spends no turn: it makes the clone
+    # and returns without spawning an agent and without draining the queue. Reading
+    # it as a turn would send the first prompt into a cloning session to the queue,
+    # where nothing at that job's end picks it up.
     #
     # Fails CLOSED, like #in_flight?: an unreadable `good_jobs` reads as "a turn
     # is underway", which routes the prompt into the durable queue. A queued
@@ -124,15 +132,27 @@ module Sessions
       # turn the sweep is about to restart rather than race it.
       return true if session.running?
 
-      unfinished_turns(session).any? { |job| UNDERWAY_STATUSES.include?(JobLiveness.status(job)) }
+      unfinished_turns(session).reject { |job| AgentJobIntent.clone_only?(job) }
+        .any? { |job| UNDERWAY_STATUSES.include?(JobLiveness.status(job)) }
     rescue StandardError => e
       Rails.logger.warn("[Sessions::LiveTurn] Could not read the agents queue for session #{session&.id} " \
                         "(#{e.class}: #{e.message}) — treating a turn as underway")
       true
     end
 
-    # The two statuses in which a worker either has this turn or is about to.
-    UNDERWAY_STATUSES = %i[running queued].freeze
+    # The statuses in which a worker either has this turn or is about to.
+    #
+    # `:abandoned` is in here and `:scheduled` is not, and the asymmetry is the
+    # point. `JobLiveness` calls a ready, unclaimed job `:abandoned` once it is
+    # older than ABANDONED_QUEUED_JOB_AGE — a horizon its own comment calls
+    # "deliberately far longer than any plausible queue delay", which was true
+    # when only a wedged job could reach it. Since #1040 the queue behind an
+    # 8-thread pool is a real population that a busy deployment holds for minutes,
+    # and a turn that has waited 31 of them is still a turn a worker will run. Its
+    # absence here would open EVERY guard at once, at exactly the moment the queue
+    # is deepest. A `:scheduled` job is different in kind rather than in age: it is
+    # parked to a future time by an owner that is not the worker pool.
+    UNDERWAY_STATUSES = %i[running queued abandoned].freeze
 
     # The cheap status gate every predicate here takes before touching
     # `good_jobs`.

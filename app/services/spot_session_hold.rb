@@ -794,7 +794,7 @@ class SpotSessionHold
     # overrun a cap.
     #
     # `return_to_queue!` first, for the same reason `hold!` calls it: the fork
-    # was flipped to `running` by whoever delivered its turn, and archiving
+    # had its turn handed over by whoever delivered it, and archiving
     # straight from there would leave the fleet reading a slot that never ran.
     #
     # Returns true — the turn is refused, so AgentSessionJob stands down.
@@ -1006,16 +1006,19 @@ class SpotSessionHold
     end
 
     # Put a session whose turn was refused into the dormant `waiting` state a held
-    # session sits in. Since #1040 that is where every ordinary turn already is
-    # when it reaches the gate — a hand-over lands in `waiting` and only
-    # `AgentSessionJob#perform` stamps `running` — so the `running` branch below
-    # is a backstop rather than the common path.
+    # session sits in — and, whichever state it arrives in, strip the job pointer
+    # the refused turn was carrying and write down why it stopped.
     #
-    # It is still needed. Anything that reaches the gate already `running` (a
-    # re-entrant job, a turn re-checked after the process came up) must not be
-    # left there: `running` counts against the fleet cap, the session card claims
-    # work is happening, and `CleanupOrphanedSessionsJob` reaps a session whose
-    # recorded job is gone on its next five-minute pass, long before the
+    # Since #1040 the common arrival is `waiting`: a hand-over lands there and only
+    # `AgentSessionJob#perform` stamps `running`, which is downstream of this gate.
+    # That branch has no transition to make, but it has both of the other two jobs
+    # to do, so it is a branch rather than a fall-through.
+    #
+    # The `running` branch is still needed for anything that reaches the gate
+    # already `running` (a re-entrant job, a turn re-checked after the process came
+    # up). Left there, `running` counts against the fleet cap, the session card
+    # claims work is happening, and `CleanupOrphanedSessionsJob` reaps a session
+    # whose recorded job is gone on its next five-minute pass, long before the
     # ten-minute re-check the hold scheduled (issue #589). `waiting` makes a
     # deferred turn indistinguishable from a hold at the starting line, which is
     # exactly what it is.
@@ -1027,7 +1030,20 @@ class SpotSessionHold
     # announcing one would wake an orchestrator and page a person about work that
     # never happened.
     def return_to_queue!(session)
-      if session.running?
+      if session.waiting?
+        # THE ORDINARY PATH since #1040, and it is not a no-op: a deferred turn
+        # arrives here with a `running_job_id` its deliverer recorded
+        # (Session#deliver_follow_up!, Sessions::RestartFromScratch#claim_running_job,
+        # AuthOutageParkService.resume_parked!), and leaving that pointer behind
+        # falsifies the invariant AgentSessionJob#perform's archived guard states as
+        # fact — that a held session carries no `running_job_id`. The stop record is
+        # owed for the same reason it is on the `running` branch: a session that
+        # stops says why (#608).
+        ActiveRecord::Base.transaction do
+          Sessions::StopRecord.record!(session, reason: Sessions::StopRecord::SPOT_HOLD)
+          session.update!(running_job_id: nil) if session.running_job_id.present?
+        end
+      elsif session.running?
         # The one `running -> waiting` that does not pass through the state
         # machine, so it records its own reason rather than inheriting the `sleep`
         # callback's (#608). Both in one transaction, and the record first: a reader

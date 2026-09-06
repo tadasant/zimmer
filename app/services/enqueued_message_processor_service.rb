@@ -6,7 +6,7 @@
 # - Atomically claiming the next pending enqueued message
 # - Updating session's goal if the message carries a non-blank one (blank/nil preserves session goal)
 # - Resetting SIGTERM retry state for fresh execution
-# - Transitioning the session back to running
+# - Resuming the session — into `waiting`, queued for a worker (#1040)
 # - Enqueuing a new job with the message content
 #
 # Race condition prevention:
@@ -51,7 +51,7 @@ class EnqueuedMessageProcessorService
   # Callable from two paths:
   # - Post-pause (default): the AgentSessionJob has already paused the session,
   #   so it is in needs_input. The service claims the message and resumes the
-  #   session back to running.
+  #   session back into the queue for a worker.
   # - Pre-pause (handoff): the AgentSessionJob is still running but the Claude
   #   CLI process has just exited. Calling here BEFORE pause! avoids a transient
   #   running → needs_input → running flap that fires ao_event watchers and
@@ -147,7 +147,8 @@ class EnqueuedMessageProcessorService
           ])
         end
 
-        # Transition session back to running (no-op when already running via handoff).
+        # Resume the session (no-op when already running via the handoff branch,
+        # which returns it to `waiting` itself just below).
         # When may_resume? is true (post-pause path), the after-callbacks fire and clean
         # up running_job_id (cleanup_running_job from the prior pause) and reset the
         # elapsed-time counter. When may_resume? is false (handoff path), apply those

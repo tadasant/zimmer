@@ -46,8 +46,14 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
     assert session.reload.waiting?, "scheduling a wake puts the session to sleep"
 
     follow_up_over_mcp(session)
-    assert session.reload.running?, "the follow-up takes the session's next turn"
+    # `waiting`, not `running`: the follow-up hands the turn to the `agents` queue
+    # and a worker's `start` runs it (#1040), so the delivered prompt is what says
+    # the session took the turn.
+    assert session.reload.waiting?
+    assert_equal "Also check whether the base branch moved", session.metadata["pending_follow_up_prompt"],
+      "the follow-up takes the session's next turn"
 
+    session.start!
     session.pause!
 
     assert session.reload.needs_input?, "the followed-up turn comes to rest, which is correct"
@@ -66,15 +72,18 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
     session = sessions(:needs_input)
     trigger, _condition = schedule_wake(session)
     follow_up_over_mcp(session)
-    session.reload.pause!
+    session.reload.start!
+    session.pause!
 
     trigger.send(:follow_up_session!, session.reload, prompt: "Wake up")
 
-    assert_equal :delivered, trigger.last_follow_up_status
-    assert session.reload.running?, "the wake the follow-up left alone is the wake that wakes the session"
+    assert_equal :delivered, trigger.last_follow_up_status,
+      "the wake the follow-up left alone is the wake that wakes the session"
+    assert session.reload.waiting?
     assert_not_nil trigger.reload.wake_held_at, "and it is held across the turn it woke, not consumed at fire time"
 
-    session.reload.pause!
+    session.reload.start!
+    session.pause!
 
     assert_not Trigger.exists?(trigger.id), "the turn it woke came to rest, so the wake is retired"
   end
@@ -99,7 +108,9 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
 
     EnqueuedMessageProcessorService.new(session.reload).process_next_message
 
-    assert session.reload.running?, "the queued message takes the session's next turn"
+    assert session.reload.waiting?
+    assert_equal 0, session.enqueued_messages.pending.count,
+      "the queued message takes the session's next turn"
     assert_nil condition.reload.last_triggered_at,
       "a queued follow-up draining is still a follow-up — it must not consume the wake"
   end
@@ -143,7 +154,7 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
 
     session.reload.deliver_follow_up!("A human typed this into the session page")
 
-    assert session.reload.running?
+    assert session.reload.waiting?
     assert_nil condition.reload.last_triggered_at,
       "a follow-up through the shared path must not consume the wake either"
   end
@@ -172,7 +183,7 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
 
     poller.send(:follow_up_session!, session.reload, prompt: "Someone mentioned you")
 
-    assert session.reload.running?
+    assert session.reload.waiting?
     assert_nil condition.reload.last_triggered_at,
       "a poller's prompt is a follow-up, not the wake this session was waiting for"
   end
@@ -187,7 +198,7 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
 
     AgentSessionJob.new.send(:resume_for_recovery_prompt, session.reload, "The deferred follow-up")
 
-    assert session.reload.running?
+    assert session.reload.waiting?
     assert_nil condition.reload.last_triggered_at,
       "the re-check must not consume the wake the resume above deliberately kept"
   end
@@ -220,7 +231,8 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
     session = sessions(:needs_input)
     trigger, _condition = schedule_wake(session)
     follow_up_over_mcp(session)
-    session.reload.pause!
+    session.reload.start!
+    session.pause!
     session.reload.archive!
 
     assert_not trigger.reload.resuscitate_archived,
@@ -238,7 +250,8 @@ class Sessions::WakeSurvivesFollowUpTest < ActionDispatch::IntegrationTest
     session = sessions(:needs_input)
     trigger, _condition = schedule_wake(session)
     follow_up_over_mcp(session)
-    session.reload.pause!
+    session.reload.start!
+    session.pause!
     session.reload.archive!
 
     CleanupStaleTriggersJob.new.perform

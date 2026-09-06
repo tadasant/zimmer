@@ -83,7 +83,7 @@ class SupersededSessionRecoveryTurnTest < ActiveJob::TestCase
     end
 
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert_nil @session.metadata["paused_by"], "the stale retry metadata must still be cleared"
     assert @session.logs.any? { |log| log.content.include?("automatically continued after orphan cleanup") }
   end
@@ -98,7 +98,7 @@ class SupersededSessionRecoveryTurnTest < ActiveJob::TestCase
       CleanupOrphanedSessionsJob.perform_now
     end
 
-    assert_equal "running", @session.reload.status
+    assert_equal "waiting", @session.reload.status
   end
 
   # The refusal repeats where the other two do not — the reading can change, so it
@@ -145,7 +145,7 @@ class SupersededSessionRecoveryTurnTest < ActiveJob::TestCase
     assert_enqueued_jobs 1, only: AgentSessionJob do
       CleanupOrphanedSessionsJob.perform_now
     end
-    assert_equal "running", @session.reload.status
+    assert_equal "waiting", @session.reload.status
   end
 
   # Both sweeps share SessionContinuation, and the deployment one runs on every
@@ -172,7 +172,7 @@ class SupersededSessionRecoveryTurnTest < ActiveJob::TestCase
       assert_equal true, CleanupOrphanedSessionsJob.new.send(:continue_recovered_session, @session)
     end
 
-    assert_equal "running", @session.reload.status
+    assert_equal "waiting", @session.reload.status
   end
 
   # ---------------------------------------------------------------------------
@@ -199,7 +199,7 @@ class SupersededSessionRecoveryTurnTest < ActiveJob::TestCase
 
   test "claim_system_recovery_turn! still claims a session with no replacement" do
     assert_equal :claimed, @session.claim_system_recovery_turn!
-    assert_equal "running", @session.reload.status
+    assert_equal "waiting", @session.reload.status
   end
 
   test "claim_system_recovery_turn! still claims when the only replacement failed" do

@@ -691,9 +691,11 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
       service.define_singleton_method(:sleep) { |_| }
       assert_equal :success, service.attempt_recovery("/tmp/test-clone")
 
-      # The recovered process finishes its turn normally.
+      # The recovered process finishes its turn normally, and the next turn is
+      # handed over and picked up by a worker.
       @session.reload.pause!
       @session.resume!
+      @session.start!
     end
 
     assert_nil @session.reload.metadata["auth_recovery_count"]

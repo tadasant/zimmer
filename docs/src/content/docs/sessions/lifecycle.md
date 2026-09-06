@@ -54,10 +54,10 @@ other stranded sleeper. The session page draws a banner for it and `get_session`
 
 **`running?` is no longer the "a turn is already in flight" guard.** Every caller that used it to
 decide *"queue this prompt rather than starting a second turn"* — the web, REST and MCP follow-up
-routes, `Trigger#follow_up_session!`, `EnqueuedMessageProcessorService`, `Sessions::MessageParent` —
-asks `Sessions::LiveTurn.underway?` instead, which reads the `agents` job rows and fails closed. So
-does `Session#claim_system_recovery_turn!`, which is what stops a recovery sweep enqueuing a second
-turn against a session that already has one queued.
+routes, `Trigger#follow_up_session!`, `EnqueuedMessageDrainJob`, `Sessions::MessageParent` — asks
+`Sessions::LiveTurn.underway?` instead, which reads the `agents` job rows and fails closed. So does
+`Session#claim_system_recovery_turn!`, which is what stops a recovery sweep enqueuing a second turn
+against a session that already has one queued.
 
 **What did not change is any ceiling's denominator.** `RunningTurns#on_a_worker` counted `running`
 rows whose job had a `performed_at`, and it still does — the pre-spawn window is reported as

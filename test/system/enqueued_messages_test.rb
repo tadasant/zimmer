@@ -145,10 +145,11 @@ class EnqueuedMessagesTest < ApplicationSystemTestCase
     # Message should be removed from queue
     assert_no_selector "h3", text: "Queued Messages"
 
-    # Verify message was deleted and session transitioned
+    # Verify message was deleted and the turn was handed over. `waiting`, not
+    # `running`: the interrupt queues the turn and a worker's `start` runs it (#1040).
     session.reload
     assert_equal 0, session.enqueued_messages.count
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
   end
 
   # Test accordion expand/collapse functionality

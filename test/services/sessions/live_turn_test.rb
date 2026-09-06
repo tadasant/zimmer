@@ -213,14 +213,44 @@ class Sessions::LiveTurnTest < ActiveSupport::TestCase
     assert_not Sessions::LiveTurn.underway?(session(status: :failed))
   end
 
-  # A queued job nobody has claimed for half an hour is a corpse, not a turn on
-  # its way: `JobLiveness` calls it `:abandoned`, and a follow-up must not be
-  # parked behind it forever.
-  test "a turn abandoned in the queue is not underway" do
+  # THE 30-MINUTE CLIFF. `JobLiveness` calls a ready, unclaimed job `:abandoned`
+  # past ABANDONED_QUEUED_JOB_AGE, on a horizon written when only a wedged job
+  # could reach it. A turn that has genuinely waited 31 minutes behind the pool is
+  # still a turn a worker will run, and dropping it here would open every guard at
+  # once — at exactly the moment the queue is deepest.
+  test "a turn that has waited past the abandoned horizon is still underway" do
     target = session(status: :waiting)
     enqueue_turn!(target, scheduled_at: 2.hours.ago, created_at: 2.hours.ago)
 
+    assert_equal :abandoned, JobLiveness.status(Sessions::LiveTurn.unfinished_turns(target).sole),
+      "precondition: this is the row JobLiveness gives up on"
+    assert Sessions::LiveTurn.underway?(target)
+  end
+
+  # A clone-only job makes the clone and returns without spawning an agent and
+  # without draining the queue, so reading it as a turn would park the first prompt
+  # into a cloning session in a queue nothing at that job's end picks up.
+  test "a clone-only job is not a turn underway" do
+    target = session(status: :waiting)
+    GoodJob::Job.create!(
+      active_job_id: SecureRandom.uuid, queue_name: "agents", job_class: "AgentSessionJob",
+      scheduled_at: 2.minutes.ago,
+      serialized_params: { "arguments" => [ target.id, nil, { "clone_only" => true } ] }
+    )
+
     assert_not Sessions::LiveTurn.underway?(target)
+  end
+
+  test "a turn that is not clone-only is still underway when both rows exist" do
+    target = session(status: :waiting)
+    GoodJob::Job.create!(
+      active_job_id: SecureRandom.uuid, queue_name: "agents", job_class: "AgentSessionJob",
+      scheduled_at: 2.minutes.ago,
+      serialized_params: { "arguments" => [ target.id, nil, { "clone_only" => true } ] }
+    )
+    enqueue_turn!(target)
+
+    assert Sessions::LiveTurn.underway?(target)
   end
 
   # Fails closed, like #in_flight?: the prompt goes into the durable queue and

@@ -517,7 +517,7 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_equal 0, session.enqueued_messages.count
   end
 
@@ -533,7 +533,7 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
     end
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
   end
 
   test "should pause running session before sending interrupt" do
@@ -550,7 +550,7 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
 
     session.reload
     # Session should be paused then resumed to running
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
   end
 
   test "should update goal from interrupt message" do

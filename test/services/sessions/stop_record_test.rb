@@ -203,9 +203,12 @@ class Sessions::StopRecordTest < ActiveSupport::TestCase
 
     @session.resume!
 
-    assert_equal "running", @session.reload.status
+    # `waiting`: the resume hands the turn over and the session queues for a worker
+    # (#1040). The record is dropped either way — the point is that it does not
+    # survive onto a session that has work coming.
+    assert_equal "waiting", @session.reload.status
     Sessions::StopRecord::STOP_KEYS.each do |key|
-      assert_nil @session.metadata[key], "#{key} must not survive onto a running session"
+      assert_nil @session.metadata[key], "#{key} must not survive a resume"
     end
   end
 

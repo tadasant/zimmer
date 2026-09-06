@@ -162,7 +162,7 @@ class ArchivedSessionRecoveryTurnTest < ActiveJob::TestCase
     end
 
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
   end
 
   # The ordinary path, end to end through the cron sweep, so the guard cannot pass
@@ -173,7 +173,7 @@ class ArchivedSessionRecoveryTurnTest < ActiveJob::TestCase
     end
 
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert @session.logs.any? { |log| log.content.include?("automatically continued") }
   end
 
@@ -358,7 +358,7 @@ class ArchivedSessionRecoveryTurnTest < ActiveJob::TestCase
     end
 
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert_equal [ @session.id ], results[:retried]
     assert_empty results[:skipped]
     assert_nil @session.metadata["paused_by"], "the stale retry metadata must still be cleared"
@@ -420,7 +420,7 @@ class ArchivedSessionRecoveryTurnTest < ActiveJob::TestCase
     end
 
     @session.reload
-    assert_equal "running", @session.status
+    assert_equal "waiting", @session.status
     assert_nil @session.metadata["paused_by"], "the stale retry metadata must still be cleared"
     assert @session.logs.any? { |log| log.content.include?("automatically continued after job interruption") }
   end
@@ -483,7 +483,7 @@ class ArchivedSessionRecoveryTurnTest < ActiveJob::TestCase
 
   test "claim_system_recovery_turn! resumes a live session and reports the claim" do
     assert_equal :claimed, @session.claim_system_recovery_turn!
-    assert_equal "running", @session.reload.status
+    assert_equal "waiting", @session.reload.status
   end
 
   private

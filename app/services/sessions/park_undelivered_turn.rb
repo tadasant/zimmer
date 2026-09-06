@@ -146,7 +146,7 @@ module Sessions
       # end of runs for minutes, and the session object the job has carried since
       # before the clone is not evidence of what the row says now.
       session.reload
-      return false unless session.running?
+      return false unless session.running? || session.waiting?
       return false if session.status_summary_fork?
 
       # merge_metadata!, not a whole-column write: `pending_follow_up_prompt` is one
@@ -170,6 +170,17 @@ module Sessions
         "#{@prompt.to_s.truncate(PROMPT_LOG_MAX_CHARS)}",
         level: "warning"
       )
+
+      # `pause` transitions from `running` alone, and since #1040 a turn that dies
+      # during SETUP has not reached `start!` yet — the session is still `waiting`,
+      # queued-for-a-worker as far as the column is concerned. So take the
+      # transition this turn actually earned before coming to rest: a worker DID
+      # hold it, and `start` is the honest record of that, which then lets `pause`
+      # do the rest of its job (the announcement, the queue drain, clearing
+      # `running_job_id`). Without it the park is refused and the caller fails the
+      # session into `failed`, which is precisely the state this class exists to
+      # keep it out of.
+      session.start! if session.waiting? && session.may_start?
 
       # `pause` clears `running_job_id` itself, in cleanup_running_job.
       session.pause! if session.may_pause?

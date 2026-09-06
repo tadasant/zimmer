@@ -28,10 +28,10 @@
 #      Claude one. `fleet_idle_max_sessions = 1` means simply "nothing running".
 #
 #      That is NARROWER than "a `running` row", and RunningTurns is where the
-#      difference is decided. `running` is stamped when a turn is handed to a
-#      session, and the `agents` queue sits between that and a worker picking it
-#      up, so on a busy deployment a real share of the column is turns waiting
-#      for a slot. Those do not count, and neither does a row asleep on its own
+#      difference is decided. A turn handed to a session sits in `waiting` until a
+#      worker picks it up (#1040), and on a busy deployment the `agents` queue
+#      holds a real population of those. They do not count — nor does a `running`
+#      row between jobs, and neither does a row asleep on its own
 #      future wake: this ceiling is a statement about how much of the fleet is
 #      occupied, and a queue is a statement about demand. #running_turns reports
 #      both beside the count, which is what /inference shows — the split

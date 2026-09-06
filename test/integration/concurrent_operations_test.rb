@@ -223,7 +223,7 @@ class ConcurrentOperationsTest < IntegrationTestCase
     assert_response :redirect
 
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
 
     # Try another follow-up while running (should be rejected)
     post follow_up_session_path(session), params: {
@@ -233,8 +233,10 @@ class ConcurrentOperationsTest < IntegrationTestCase
     # Should be redirected with alert since session is running
     assert_response :redirect
 
-    # Session should remain in running state
+    # The first follow-up handed the turn over, so the session is `waiting` with
+    # its turn queued for a worker (#1040) — and the second follow-up was queued
+    # behind it rather than starting a rival turn.
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
   end
 end

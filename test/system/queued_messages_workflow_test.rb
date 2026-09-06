@@ -236,9 +236,10 @@ class QueuedMessagesWorkflowTest < ApplicationSystemTestCase
     # Queue should be empty
     assert_no_selector "h3", text: "Queued Messages"
 
-    # Session should now be running
+    # The interrupt handed the turn over: `waiting`, with the turn queued for a
+    # worker (#1040). The empty queue below is what says the message went out.
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_equal 0, session.enqueued_messages.count
   end
 

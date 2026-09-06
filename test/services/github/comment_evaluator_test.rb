@@ -278,8 +278,8 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     # Should NOT have created an enqueued message (sent immediately instead)
     assert_equal 0, session_needs_input.enqueued_messages.count
 
-    # Should have transitioned to running
-    assert session_needs_input.running?
+    # Should have left needs_input with its turn queued for a worker (#1040)
+    assert session_needs_input.waiting?
 
     # Should have stored the pending prompt in metadata
     assert_equal "Test prompt for immediate send", session_needs_input.metadata["pending_follow_up_prompt"]
