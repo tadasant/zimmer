@@ -15,7 +15,7 @@ module Mcp
       description <<~DESC
         Pull items off the top of the **work backlog** and start them. For each item this spawns a session on the router root (`#{AgentRootsConfig::ROUTER_ROOT_NAMES.first}`) (goal `#{WorkBacklog::Start::GOAL}`, `scheduling_class: "spot"`, prompt = the issue URL plus "please implement this"), marks the item `started` with that session recorded, and returns both. One transaction per pull: if a spawn fails nothing is marked. This replaces the groomer's read-spawn-remove-PR cycle.
 
-        **Two ways to say which.** `count` starts the top N by rank (0 is a legal, useful no-op that just re-ranks). `keys` starts exactly the items you name, in the order you give them, after you have read them with `get_work_backlog` and re-checked each on GitHub — that is the normal path, since **you must re-check before you start**: the item is a pointer to a live thread, and weeks can pass between an append and a pull. Live means open, no linked open PR, no unarchived session already working it; trusted means the thread's author and every commenter still pass the trust rules as it stands now. A key that is not queued fails the whole call. At most #{WorkBacklog::Pull::MAX} per call, so one bad night is bounded — how many to pull is your WIP arithmetic (`counts.in_flight` from `get_work_backlog` is the number of sessions this backlog produced that are still alive).
+        **Two ways to say which.** `count` starts the top N by rank (0 is a legal, useful no-op that just re-ranks). `keys` starts exactly the items you name, in the order you give them, after you have read them with `get_work_backlog` and re-checked each on GitHub — that is the normal path, since **you must re-check before you start**: the item is a pointer to a live thread, and weeks can pass between an append and a pull. Live means open, no linked open PR, no unarchived session already working it; trusted means the thread's author and every commenter still pass the trust rules as it stands now. A key that is not queued fails the whole call. At most #{WorkBacklog::Pull::MAX} per call, so one bad night is bounded — how many to pull is your WIP arithmetic (`counts.in_flight` from `get_work_backlog` is the number of sessions this backlog produced that an agent is still advancing — `counts.parked`, the ones stopped in `needs_input` waiting on a person, is reported beside it and is deliberately not part of it).
 
         **The one removal you may make.** An item whose issue you found dead goes in `dead` with a `reason` from `#{WorkBacklogItem::MECHANICAL_REMOVAL_REASONS.join(' | ')}`; it is marked `removed` with that reason and this session, not started. Those are facts you observed, not judgements — a removal for any other reason is a human's call and has no agent path. A trust failure is a silent drop: count it, do not comment on the issue, do not quote what you saw.
 
@@ -25,7 +25,7 @@ module Mcp
 
         **Pinned items are pulled like any other** — pinning fixes an item's place in the queue, it does not exempt it. Comment the session URL on the issue afterwards; that is still your job.
 
-        **Returns** JSON: `started` (each item with its `session` id, URL and precedence), `removed`, and the queue's `queued` / `in_flight` counts afterwards.
+        **Returns** JSON: `started` (each item with its `session` id, URL and precedence), `removed`, and the queue's `queued` / `in_flight` / `parked` counts afterwards.
       DESC
 
       input_schema({
@@ -71,7 +71,8 @@ module Mcp
         {
           started: result.started.map { |s| { item: s.item.as_api_json, session: session_json(s.session) } },
           removed: result.removed.map { |r| { key: r.item.key, reason: r.reason, item: r.item.as_api_json } },
-          queue: { queued: WorkBacklogItem.queued.count, in_flight: WorkBacklogItem.in_flight.count },
+          queue: { queued: WorkBacklogItem.queued.count, in_flight: WorkBacklogItem.in_flight.count,
+                   parked: WorkBacklogItem.parked.count },
           pulled_by_session_id: context.self_session_id
         }
       rescue WorkBacklog::Pull::InvalidPull, WorkBacklog::Start::NotQueued => e

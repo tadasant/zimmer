@@ -1490,6 +1490,27 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       added_via: WorkBacklogItem::IMPORT, precedence: 3000, status: WorkBacklogItem::STARTED,
       started_session: running, started_at: Time.current, payload: {}
     )
+    # The other two started-item sections. Without a row apiece their tables render
+    # empty, and the widest thing on this page — a started row whose title is one
+    # unbreakable token — would be measured in only one of the three.
+    WorkBacklogItem.create!(
+      key: "zimmer#500", issue_url: "https://github.com/tadasant/zimmer/issues/500",
+      repo: "tadasant/zimmer", surface: "zimmer", title: LONG_TOKEN_TITLE, kind: "bug",
+      scope_direction: "convergent", estimated_cost: "small", gate_verdict: "auto-proceed",
+      decided_at: Date.current, added_at: Time.current, added_by: "issue-work-gate",
+      added_via: WorkBacklogItem::IMPORT, precedence: 3000, status: WorkBacklogItem::STARTED,
+      started_session: create_session(title: "Implement zimmer#500 (parked)", status: :needs_input),
+      started_at: 20.hours.ago, payload: {}
+    )
+    WorkBacklogItem.create!(
+      key: "zimmer#501", issue_url: "https://github.com/tadasant/zimmer/issues/501",
+      repo: "tadasant/zimmer", surface: "zimmer", title: LONG_TOKEN_TITLE, kind: "bug",
+      scope_direction: "convergent", estimated_cost: "small", gate_verdict: "auto-proceed",
+      decided_at: Date.current, added_at: Time.current, added_by: "issue-work-gate",
+      added_via: WorkBacklogItem::IMPORT, precedence: 3000, status: WorkBacklogItem::STARTED,
+      started_session: create_session(title: "Implement zimmer#501 (finished)", status: :archived),
+      started_at: 6.hours.ago, payload: {}
+    )
 
     snapshot = Issues::GithubSnapshot::Snapshot.new(
       fetched_at: Time.current, errors: {},
@@ -1507,6 +1528,11 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       visit issues_path
       assert_selector "h1", text: "Issues"
       assert_text LONG_TOKEN_TITLE
+      # All three started-item sections have to be on screen for the measurement
+      # below to cover them.
+      assert_selector "h2", text: /In flight/
+      assert_selector "h2", text: /Parked on a person/
+      assert_selector "h2", text: /Finished recently/
       assert_no_horizontal_overflow("issues page")
 
       # The queue row's four human-only controls are the last column and the whole

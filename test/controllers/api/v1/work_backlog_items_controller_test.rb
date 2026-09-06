@@ -27,6 +27,8 @@ class Api::V1::WorkBacklogItemsControllerTest < ActionDispatch::IntegrationTest
     c = backlog_item(key: "zimmer#3", cost: "small", precedence: 5990)
     started = backlog_item(key: "zimmer#4")
     started.mark_started!(session: sessions(:running), by: nil)
+    parked = backlog_item(key: "zimmer#5")
+    parked.mark_started!(session: sessions(:needs_input), by: nil)
 
     get api_v1_work_backlog_items_path, headers: @headers
 
@@ -35,7 +37,10 @@ class Api::V1::WorkBacklogItemsControllerTest < ActionDispatch::IntegrationTest
     assert_equal [ a.key, c.key, b.key ], items.map { |i| i["key"] }
     assert_equal [ 1, 2, 3 ], items.map { |i| i["position"] }
     assert_equal 3, body["pagination"]["total_count"]
-    assert_equal({ "queued" => 3, "started" => 1, "removed" => 0, "in_flight" => 1, "pinned" => 0 }, body["counts"])
+    # `parked` is reported beside `in_flight` and is NOT part of it: the WIP
+    # ceiling is computed against the number an agent is still advancing.
+    assert_equal({ "queued" => 3, "started" => 2, "removed" => 0, "in_flight" => 1, "parked" => 1, "pinned" => 0 },
+                 body["counts"])
     assert_equal 3, body.dig("ranking", "bands").size
   end
 

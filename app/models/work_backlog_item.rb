@@ -120,10 +120,55 @@ class WorkBacklogItem < ApplicationRecord
   # the row id as the final tiebreak so the order is total. Matches the file's
   # "sort by precedence descending, then added_at ascending".
   scope :in_rank_order, -> { order(precedence: :desc, added_at: :asc, id: :asc) }
-  # Started items whose session is still alive. `in_flight` is what the groomer's
-  # WIP ceiling counts — sessions THIS backlog produced, not the whole spot queue.
+  # THE THREE THINGS A `started` ITEM CAN BE, AND WHY THE LINE IS WHERE IT IS
+  #
+  # `in_flight` is not only a number on a page: it is the throttle. The groomer
+  # pulls `min(PER_RUN_CAP, WIP_CEILING − in_flight)` items a night, so anything
+  # counted here that is not actually being worked ratchets the ceiling down and
+  # the queue stops draining with no error anywhere.
+  #
+  # The line is drawn at "will this move without a person": a session that is
+  # `running` has a turn on a worker, and one that is `waiting` is queued for a
+  # worker or asleep on a wake it armed for itself — both resume on their own.
+  # A session in `needs_input` has stopped and handed the work to a human; that
+  # is exactly what a session holding a finished PR does when the merge gate has
+  # held it or its self-wake budget is spent, and it can sit there for days. So
+  # **a session parked holding an open PR is NOT in flight.** It is spending no
+  # compute and no agent is advancing it, and counting it lets a handful of
+  # finished items hold the whole WIP ceiling shut.
+  #
+  # That cut lands on the fleet's own protocol rather than beside it: the
+  # `open-pr` skill sleeps on a PR that is merely waiting for the merge gate to
+  # rate it, which leaves a `waiting` session and stays in flight, and comes to
+  # rest in `needs_input` only when a human is what the PR is waiting on.
   scope :in_flight, -> {
+    started.where(started_session_id: Session.where(status: [ :running, :waiting ]).select(:id))
+  }
+
+  # Started items parked in `needs_input`: nothing is advancing them, and a person
+  # is what they are waiting on. Rendered as its own section on the Issues page,
+  # because "these are waiting on you" is the answer to "why is the queue not
+  # draining", and the old single `in_flight` list hid it inside "what is running".
+  scope :parked, -> {
+    started.where(started_session_id: Session.where(status: :needs_input).select(:id))
+  }
+
+  # `in_flight` plus `parked` — every started item whose session has not ended.
+  # NOT a synonym for in flight, and not what the WIP ceiling counts. It answers
+  # a different question: is this issue already claimed? The GitHub half of the
+  # Issues page asks that one, because listing an issue as "nobody is working
+  # this" while a session sits on its open PR is its own kind of lie.
+  scope :claimed, -> {
     started.where(started_session_id: Session.where.not(status: [ :archived, :failed ]).select(:id))
+  }
+
+  # Started items whose session has ended, archived or failed. History — but
+  # recent history is the other half of an honest picture of the fleet: without
+  # it, a page read an hour after seven items ran and finished shows no trace of
+  # them and reads as a fleet that did nothing.
+  scope :ended_since, ->(cutoff) {
+    started.where(started_session_id: Session.where(status: [ :archived, :failed ]).select(:id))
+           .where(started_at: cutoff..)
   }
 
   def queued? = status == QUEUED
