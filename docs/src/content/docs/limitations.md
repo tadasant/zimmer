@@ -1669,15 +1669,21 @@ through, so one bad write corrupts the store every session depends on, and copyi
 roughly doubles what the clones directory holds. Warming the clone at prepare time, by running the
 npx installs during `air prepare` rather than at the first MCP handshake, remains open.
 
-### No extension can ship in a built image
+### Extensions ship, but nothing proves one *works* in a built image
 
-`.dockerignore` excludes `/app/extensions/*/`, so an extension added to `app/extensions/` is absent
-from the Docker image: `ExtensionRegistry` skips the class that no longer resolves, and every seam
-falls back to native behavior. A deployed Zimmer therefore cannot run any extension, and a setting
-behind one cannot be changed on the deployed app — which is why MCP tool search is a plain
-`AppSetting` column rather than the extension it used to be.
+`.dockerignore` no longer excludes `/app/extensions/*/`, and
+`scripts/assert-extensions-shipped.sh` fails the build and the PR if anything puts that exclusion
+back — see [Extensions do ship in the image](/operate/deploying/#extensions-do-ship-in-the-image).
+What the guardrail asserts is *presence*: the tree arrived, a subdirectory of it arrived, and no
+extension directory arrived hollow.
 
-Tracked in [#91](https://github.com/tadasant/zimmer/issues/91).
+It does not assert that a registered extension resolves and loads at boot, because there is no
+extension to assert it about — `BUILTIN_EXTENSION_CLASSES` is empty, and `app/extensions/` holds only
+`CLAUDE.md` and the marker directory the check keys on. The first extension added after
+[#91](https://github.com/tadasant/zimmer/issues/91) is the first one to exercise the path end to
+end. The class of failure still open is a Zeitwerk one — a file whose constant does not match the
+collapsed path, so `safe_constantize` returns `nil` and the registry skips it exactly as it would
+skip a deleted directory. Presence in the image no longer hides that; nothing else catches it either.
 
 ### Extension env contributions are unreachable from Codex
 

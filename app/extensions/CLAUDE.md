@@ -14,7 +14,11 @@ write one — before adding or changing anything in this directory.
 2. **Deleting `app/extensions/<id>/` must leave a working Zimmer.** Keep every
    collaborator a feature needs inside its own `<id>/` directory (or a clearly
    owned sibling like a `lib/` driver script), so `rm -rf app/extensions/<id>/`
-   drops the whole feature and the core falls back to native.
+   drops the whole feature and the core falls back to native. That is the
+   removability mechanism, and it lives here in the **source tree** — the built
+   image carries this directory intact (see `.dockerignore` and
+   `scripts/assert-extensions-shipped.sh`), so an extension merged to `main`
+   runs in production once it is registered and toggled on.
 3. **Zeitwerk collapses `app/extensions/*`** (see `config/application.rb`), so
    files here are **not** namespaced by their directory —
    `pty_transport/pty_claude_cli_adapter.rb` is `PtyClaudeCliAdapter`, not
@@ -24,6 +28,9 @@ write one — before adding or changing anything in this directory.
    map. Adding an extension needs **no migration** and no new column.
 5. **"Extension", not "plugin."** "Plugin" is the AIR session concept
    (`PluginsConfig`); this layer is deliberately a different word.
+6. **`image_canary/` is not an extension.** It holds no Ruby and registers
+   nothing; it exists so the build can prove a subdirectory of this directory
+   reached the image. Do not delete it and do not put a `.rb` file in it.
 
 ## Tests
 

@@ -334,6 +334,34 @@ jobs:
         if: always()
         run: docker image rm --force zimmer-docs-audit:${{ github.run_id }} || true
 
+  # The mirror image of image_excludes_docs: extensions must never STOP shipping. An
+  # extension only does anything in the container that runs it, and the invariant rests
+  # on .dockerignore NOT excluding app/extensions/ -- an absence, which is the hardest
+  # kind of thing to notice going missing. It regressed once, silently, and stayed
+  # regressed (tadasant/zimmer#91).
+  image_includes_extensions:
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      # Same reason as image_excludes_docs: the self-hosted host runs many runner workers
+      # as one OS user, so the default ~/.docker is shared mutable state and a concurrent
+      # job's `docker buildx create --use` would otherwise decide which builder this runs
+      # on.
+      - name: Isolate Docker client state for this job
+        run: |
+          cfg="${RUNNER_TEMP}/docker-config"
+          rm -rf "$cfg"
+          mkdir -p "$cfg"
+          echo "DOCKER_CONFIG=$cfg" >> "$GITHUB_ENV"
+      - name: Assert the extension tree is present in the image build context
+        env:
+          BUILDX_BUILDER: default
+        run: docker build --no-cache --file Dockerfile.extensions-audit --tag zimmer-extensions-audit:${{ github.run_id }} .
+      - name: Remove the audit image
+        if: always()
+        run: docker image rm --force zimmer-extensions-audit:${{ github.run_id }} || true
+
   # Standalone unit tests for the GHCR retention selector. Pure Ruby, no Rails
   # boot required, so it runs fast and independently of the app suite.
   retention_logic:
@@ -488,6 +516,7 @@ jobs:
       - test-system
       - docs_site
       - image_excludes_docs
+      - image_includes_extensions
       - retention_logic
       - shellcheck
     steps:
