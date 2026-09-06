@@ -75,11 +75,10 @@ class Api::V1::GateDecisionsController < Api::BaseController
   # visibly the same list.
   #
   # `artifact_query` — substring over the artifact URL, as against `artifact_url`'s
-  # exact match — is honoured by GateDecisions::Filters, so it works here and on
-  # `search_gate_decisions`, which passes its arguments through. It is documented
-  # on this surface and on the /gate_decisions page, and not in the tool's schema:
-  # a gate's question is "has THIS pull request been rated", which `artifact_url`
-  # already answers exactly, and `query` covers the loose read.
+  # exact match — is honoured by GateDecisions::Filters, so it works here, on the
+  # /gate_decisions page, and on `search_gate_decisions`, which passes its arguments
+  # through. All three surfaces declare it; a filter one of them honours but does
+  # not name is a capability its callers cannot find.
   FILTER_KEYS = %i[gate surface decision artifact_url artifact_query query with_human_feedback from to].freeze
 
   def filter_params
