@@ -13,12 +13,12 @@ require "automated_prompts"
 #      quota_exceeded, so AccountRotationService#rotate! returns
 #      { success: false, reason: "no_available_accounts" }.
 #   2. Auth recovery that cannot succeed — the CLI reports
-#      "Not logged in \u00b7 Please run /login" and re-injecting credentials does not
+#      "Not logged in · Please run /login" and re-injecting credentials does not
 #      fix it (either no account is available at all, or the injected identity is
 #      rejected again on every attempt).
 #
 # Neither is a state a bare `needs_input` communicates. The only visible artifact
-# would be the CLI's own "Not logged in \u00b7 Please run /login" text, which says
+# would be the CLI's own "Not logged in · Please run /login" text, which says
 # nothing about the cause, notifies nobody, and leaves the session stopped even
 # after the condition clears.
 #
@@ -38,22 +38,39 @@ require "automated_prompts"
 #
 # A park used to create a one-off schedule trigger per session, guessing at when
 # the pool would recover. Those rows scaled with the number of PARKED SESSIONS
-# rather than with the number of outages \u2014 dozens of "Auth outage retry for
-# session #N" triggers at a time \u2014 and a wall clock knows nothing about which
+# rather than with the number of outages — dozens of "Auth outage retry for
+# session #N" triggers at a time — and a wall clock knows nothing about which
 # parked session matters most.
 #
-# Nothing is scheduled here now. Two things wake a parked session, and they cover
-# different populations:
+# Nothing is scheduled here now. Two mechanisms wake a parked session, and which
+# of them owns a given park is AuthOutageWakeAuthority's single answer rather
+# than a rule this comment restates:
 #
-#   * SPOT sessions wait for the `quota_available` trigger event
+#   * FLEET-owned (spot) parks wait for the `quota_available` trigger event
 #     (QuotaAvailabilityMonitor), which fires once on the pool's recovery and
 #     spawns one fleet-maintenance session. That session decides who starts, in
 #     precedence order, against the spot thresholds and the concurrency ceiling.
 #     Zimmer does not duplicate that policy here.
-#   * PRIORITY sessions are resumed directly by .wake_parked_sessions!, which
-#     QuotaResetCheckerJob runs every fifteen minutes. Priority work is never
-#     gated on quota, so making it wait on a spawned session's first turn would
-#     be a regression.
+#   * SWEEP-owned (priority) parks are resumed directly by .wake_parked_sessions!,
+#     which QuotaResetCheckerJob runs every fifteen minutes. Priority work is
+#     never gated on quota, so making it wait on a spawned session's first turn
+#     would be a regression.
+#
+# The boundary used to be exactly this paragraph, re-derived from `session.spot?`
+# at four call sites while the fleet-side policy — which lives in a different
+# repository — believed it owned the whole parked population. Both sides claimed
+# the priority parks, and the fleet wake's collision check answered by refusing
+# to wake ANYTHING, including the spot population only it can rank
+# (tadasant/zimmer#617). The rule now has one home and the sweep asks it.
+#
+# .wake_parked_sessions! is also the fleet wake's watchdog. It does not start
+# fleet-owned parks, but it counts the ones that are ready to run and asks
+# QuotaAvailabilityMonitor for a wake on their behalf — every fifteen minutes,
+# for as long as they sit there. Without that, a fleet-owned park the fleet wake
+# declined (no headroom on the one edge that fired) has nothing re-examining it
+# until the pool re-exhausts and recovers again, which is how a spot session
+# stranded 33 hours past its own recorded recovery time
+# (tadasant/zimmer#655).
 #
 # `auth_outage_pool_recovers_at` is recorded when the pool's own snapshots say
 # when they roll over. It is an ESTIMATE for the banner to show, not a promise:
@@ -293,25 +310,40 @@ class AuthOutageParkService
     false
   end
 
-  # Resume every parked PRIORITY session whose runtime can plausibly serve it
-  # again. Called by QuotaResetCheckerJob right after it restores quota_exceeded
-  # accounts to active, so the accounts and the priority work blocked on them
-  # recover together.
+  # Resume every SWEEP-owned parked session whose runtime can plausibly serve it
+  # again, and ask for a fleet wake on behalf of the FLEET-owned ones that are
+  # ready to run. Called by QuotaResetCheckerJob right after it restores
+  # quota_exceeded accounts to active, so the accounts and the priority work
+  # blocked on them recover together.
   #
-  # == Spot sessions are not this sweep's business ==
+  # == Which parks this sweep starts ==
   #
-  # A parked SPOT session stays parked here. Spot work is exactly the work whose
-  # order matters when quota is scarce, and this sweep has no notion of order: it
-  # takes the oldest parks first and stops at a cap. Waking them in that order
-  # would be the arbitrary start the precedence column exists to replace.
+  # AuthOutageWakeAuthority answers that, and it is the only thing that does.
+  # This sweep resumes the parks it owns and starts nothing else — a fleet-owned
+  # park stays parked here even when every other gate would let it through.
   #
-  # They wake on the `quota_available` trigger event instead — one fleet-maintenance
-  # session per recovery, which reads precedence, the spot thresholds and the
-  # concurrency ceiling and decides who runs. See QuotaAvailabilityMonitor.
+  # The reason is that this sweep has no notion of order: it takes the oldest
+  # parks first and stops at a cap. For priority work that is fine, because there
+  # is no ordering question to get wrong and priority work is never gated on
+  # quota. For spot work it is the arbitrary start `precedence` exists to
+  # replace, so those parks belong to the ranked fleet wake.
   #
-  # Priority work is never gated on quota, so it keeps the direct resume: making it
-  # wait for a spawned session to take its first turn would be a regression, and
-  # there is no ordering question to get wrong.
+  # == And the fleet-owned ones it does not start, it speaks for ==
+  #
+  # "Not mine to start" is not "not mine to notice". A fleet-owned park has one
+  # wake path, and that path is an EDGE: `quota_available` fires once per
+  # recovery, and if the fleet session it spawns runs out of headroom before it
+  # reaches a given session, nothing re-examines that session until the pool
+  # exhausts and recovers all over again. tadasant/zimmer#655 is a spot park that
+  # sat 33 hours past its own recorded recovery time in exactly that position.
+  #
+  # So every pass counts the fleet-owned parks it found eligible and hands the
+  # number to QuotaAvailabilityMonitor.request_wake!, which decides whether the
+  # recovery may be announced again — unspent, or spent long enough ago to be
+  # stale. That puts a fifteen-minute re-ask behind a population whose own wake
+  # path fires once. It is a REQUEST and not a wake: the fleet session still
+  # re-reads the gate, the ceiling and the ordering for itself, so the sweep
+  # never decides which spot session starts.
   #
   # == The two reasons need different evidence ==
   #
@@ -359,18 +391,33 @@ class AuthOutageParkService
     # sweep, in the same shape as the pool reads above and for the same reason.
     sleeping = Session.ids_paused_until_scheduled_time(parked_sessions.pluck(:id))
 
+    # Fleet-owned parks this sweep found eligible and will not resume itself —
+    # the number it asks for a fleet wake on behalf of.
+    #
+    # Both park reasons count, because both can be left behind by the one edge
+    # that fires. An auth park is the case where no edge fires at ALL: it is
+    # woken by the pool's CREDENTIALS changing, which happens with
+    # `accounts.available` true the whole time, so without this ask it has no
+    # wake path. A quota park does get an edge — once — and is stranded by the
+    # fleet session running out of headroom before it reaches this session. The
+    # ask is the same in both cases, and QuotaAvailabilityMonitor.request_wake!
+    # is what decides whether the recovery may be announced again.
+    #
+    # ONE RUNTIME's parks count, and it is the runtime the event is about.
+    # `quota_available` is announced against one global level that only ever
+    # reads the Claude Code pool, so a Codex park asking for it would announce a
+    # recovery of a pool it was never blocked on — spending the Claude edge, and
+    # swallowing the real Claude recovery when it came. That is the mirror of the
+    # scope QuotaAvailabilityMonitor.record_unavailable! already keeps, and it
+    # costs the Codex park nothing it had: the fleet wake scopes its own
+    # enumeration to the recovered runtime, so it would not have started that
+    # session either. Codex has no quota API, and a parked Codex session is
+    # woken by this sweep or not at all.
+    fleet_owned_eligible = 0
+
     # `.each`, not `find_each`: find_each imposes its own primary-key order and
     # would discard the oldest-park-first ordering the cap below depends on. The
     # set is bounded by how many sessions can be asleep at once.
-    # Spot AUTH parks this sweep found eligible but will not resume itself.
-    #
-    # Only auth parks. A quota-parked spot session is woken by the pool's own
-    # rising edge, which QuotaAvailabilityMonitor already fires — asking again
-    # for it would be a second request for a wake that is on its way. An auth
-    # park has no such edge: it is woken by the pool's CREDENTIALS changing,
-    # which happens with `accounts.available` true the whole time. Without this
-    # it would have no wake path at all.
-    spot_eligible = 0
 
     parked_sessions.each do |session|
       # A pause outranks the un-park, and it outranks being priority. This session
@@ -380,8 +427,9 @@ class AuthOutageParkService
       # goes through `resume!`, which consumes the session's pending one-time
       # wakes — so the guard has to sit ahead of every other reason to wake it.
       #
-      # Ahead of the spot branch below too, so a paused spot park is not counted
-      # as eligible and does not ask for a fleet wake it must not be started by.
+      # Ahead of the ownership branch below too, so a paused fleet-owned park is
+      # not counted as eligible and does not ask for a fleet wake it must not be
+      # started by.
       if sleeping.include?(session.id)
         paused_until += 1
         next
@@ -395,11 +443,10 @@ class AuthOutageParkService
         next unless auth_park_wakeable?(session, current, logger)
       end
 
-      # Eligible, but spot: this sweep has no notion of order, and ordering spot
-      # work is the whole point of the fleet wake. Let that session decide,
-      # rather than resuming it here out of order.
-      unless session.priority?
-        spot_eligible += 1 if session.metadata&.dig("auth_outage_reason") == AUTH_UNRECOVERABLE
+      # Eligible, and not this sweep's to start. Count it — that number is what
+      # asks the fleet wake to come round again — and leave it where it is.
+      unless AuthOutageWakeAuthority.sweep_owned?(session)
+        fleet_owned_eligible += 1 if runtime.to_s == ClaudeAuthProvider::RUNTIME
         next
       end
 
@@ -424,10 +471,10 @@ class AuthOutageParkService
         resumed: resumed, held: held, cap: MAX_WAKES_PER_SWEEP)
     end
 
-    if spot_eligible.positive?
-      logger.info("Left parked spot auth-outage sessions to the ranked fleet wake", count: spot_eligible)
+    if fleet_owned_eligible.positive?
+      logger.info("Left parked sessions to the ranked fleet wake", count: fleet_owned_eligible)
       QuotaAvailabilityMonitor.request_wake!(
-        reason: "#{spot_eligible} parked spot session(s) whose pool credentials changed"
+        reason: "#{fleet_owned_eligible} parked session(s) the ranked fleet wake has not started"
       )
     end
 

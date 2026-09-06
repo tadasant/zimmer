@@ -258,11 +258,17 @@ module Mcp
       # nothing usable for it — every account over quota, or a login that could not
       # be repaired by re-injecting credentials.
       #
-      # This park has its own resume owner (AuthOutageParkService.wake_parked_sessions!,
-      # driven by the quota-recovery path) and its own timescale, and until #642 it
+      # This park has its own resume owner and its own timescale, and until #642 it
       # was the one mechanism `get_session` could not say out loud. The sentences
       # are the session page's auth-outage banner's, so the human and the agent
       # reading the same session are told the same thing.
+      #
+      # WHICH owner comes from AuthOutageWakeAuthority, and it is named outright
+      # rather than left to be inferred from the scheduling class. This output is
+      # what the ranked fleet wake reads to decide what to restart, so a park it
+      # must not touch has to SAY so here — a boundary that existed only in
+      # Zimmer's comments is what let two mechanisms claim the same population
+      # (tadasant/zimmer#617).
       def auth_outage_lines(session)
         metadata = session.metadata || {}
         cause = if metadata["auth_outage_reason"] == AuthOutageParkService::QUOTA_EXHAUSTED
@@ -275,7 +281,8 @@ module Mcp
         lines = [
           "- **Parked for an auth outage (`#{metadata['auth_outage_reason']}`):** #{cause}",
           "- **Parked at:** #{metadata['auth_outage_parked_at'].presence || 'unknown'}",
-          "- **Resumes when:** #{auth_outage_resume_sentence(session)}"
+          "- **Woken by:** #{AuthOutageWakeAuthority.instruction(session)}",
+          "- **Resumes when:** #{AuthOutageWakeAuthority.resume_sentence(session)}"
         ]
 
         # An estimate read off the pool's snapshots at park time, and labelled as
@@ -289,19 +296,6 @@ module Mcp
         end
 
         lines
-      end
-
-      # A spot session is not simply woken when the pool comes back: the fleet wake
-      # takes a bounded batch in precedence order, so promising it the next wake
-      # would overstate what it gets.
-      def auth_outage_resume_sentence(session)
-        if session.spot?
-          "the account pool recovers and the ranked fleet wake reaches it in precedence order (currently " \
-          "#{session.precedence}). Nothing is cancelled and no action is needed."
-        else
-          "the account pool recovers — Zimmer's quota-recovery sweep resumes it. Nothing is cancelled and " \
-          "no action is needed."
-        end
       end
 
       # Why a spot session is sitting in `waiting`. Emitted only when a hold is

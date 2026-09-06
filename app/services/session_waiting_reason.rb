@@ -17,9 +17,9 @@
 # That is not a cosmetic mistake, because the three mechanisms have three
 # different resume owners: a ceiling pause is resumed by SpotCeilingSweepJob when
 # utilization falls, a hold by its own re-check (repaired by SpotHoldSweepJob),
-# and an outage park by AuthOutageParkService.wake_parked_sessions! when the pool
-# recovers. Naming the wrong mechanism points the reader at an owner that is not
-# coming.
+# and an outage park by whichever mechanism AuthOutageWakeAuthority gives it when
+# the pool recovers — Zimmer's own sweep, or the ranked fleet wake. Naming the
+# wrong mechanism points the reader at an owner that is not coming.
 #
 # == The fourth mechanism: queued for a worker
 #
