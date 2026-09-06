@@ -5434,10 +5434,51 @@ transient three times running is therefore exactly as invisible as it was before
 the deterministic failures, which is the observed shape — the reported case was an `ENOENT` on a
 clone that was wrong and stayed wrong.
 
+This applies only to a turn that was **carrying a prompt**. A session's *first* turn carries none,
+and since [#785](https://github.com/tadasant/zimmer/issues/785) it is retried on its own bounded
+ladder rather than parked — see [A failure before the first agent turn is retried, not
+failed](/sessions/lifecycle/#a-failure-before-the-first-agent-turn-is-retried-not-failed).
+
 Fixing it properly means either parking only on the final attempt (which needs the per-exception
 retry counter ActiveJob keeps privately, not the total this code reads) or making the park itself
 the thing that re-delivers, which reopens the double-run hazard of
 [#400](https://github.com/tadasant/zimmer/issues/400).
+
+## A session retrying its bootstrap looks exactly like a session that has not started yet
+
+`AgentSessionJob#retry_bootstrap_failure` leaves a session that died before its first agent turn in
+`waiting`, and `waiting` is also what every brand-new session is. The retry is recorded on the
+session itself — the catch-all's `error` line and backtrace, a `warning` explaining the re-queue,
+and `bootstrap_retry_count` in metadata — but nothing rolls it up: `HealthMonitorService#failure_reason_distribution` and `#recent_failures` both query
+`status: :failed`, and there is no scope for "waiting, on its third bootstrap attempt".
+
+So a fleet-wide bootstrap fault — the 2026-09-02 `EXDEV` outage is the worked case — is now
+*survived* rather than *seen*. For up to the ladder's ~52 minutes it produces no failed sessions and
+no operator-facing count, only a growing set of sessions that look queued. If the fault clears, that
+is the intended outcome and nobody needed to know. If it does not, every affected session reaches
+`failure_reason: "bootstrap_retries_exhausted"` and pages, an hour later than the old behaviour
+would have.
+
+The trade was made deliberately in that direction: the old behaviour's alert was loud and its
+recovery was a human restarting sessions by hand seven hours later.
+
+## A bootstrap retry deletes its own clone, so a delete that fails leaks one
+
+`AgentSessionJob#retry_bootstrap_failure` clears `Session::SETUP_ARTIFACT_KEYS` so the next attempt
+re-runs `air prepare` rather than adopting a clone that was never prepared (`#perform`'s reuse arm
+does not call it), and then deletes the tree through `AtomicCloneRemoval`. Deleting rather than
+leaving it for a reaper is deliberate: every clone reaper's youngest age bar is
+`OrphanCloneFilesystemCleanupJob::PRESSURE_AGE_THRESHOLD` at two hours, and the whole retry ladder
+fits inside that, so an abandoned clone would be unreclaimable for the entire window in which more
+of them are being made.
+
+The cost is that the delete happens inside a rescue block, on a path whose whole premise is that
+something is already wrong with the host. It is wrapped and best-effort — a delete that raises is
+logged at `warn` and the retry proceeds, because the metadata pointer is already gone and that is
+the part the next attempt depends on. So a filesystem sick enough to fail both `rename` and `rm_rf`
+leaks one directory per attempt, at most five per session, with no pointer left for
+`DeferredCloneCleanupJob` or `StaleCloneCleanupJob` to find it by. `OrphanCloneFilesystemCleanupJob`
+is what reclaims those, at its 48-hour scheduled bar or its two-hour pressure bar.
 
 ## A parked boot failure is invisible to the health rollups
 

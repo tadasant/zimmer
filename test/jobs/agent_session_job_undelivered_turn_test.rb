@@ -161,7 +161,15 @@ class AgentSessionJobUndeliveredTurnTest < ActiveJob::TestCase
   # What must keep failing
   # ---------------------------------------------------------------------------
 
-  test "a first turn that dies at AIR prepare still fails — nobody has been told that work started" do
+  # A first turn is not this park's case and never was — it carries no
+  # undelivered prompt, so condition 3 excludes it. What it gets instead is
+  # AgentSessionJob#retry_bootstrap_failure (#785): the whole start is re-queued
+  # and the session stays `waiting`, because a turn that died before an agent
+  # ever spoke destroyed nothing. It still does not take a slot in the action
+  # queue, which is what this file is about.
+  #
+  # AgentSessionJobBootstrapRetryTest holds the retry itself.
+  test "a first turn that dies at AIR prepare is re-queued, not parked in the action queue" do
     fresh = Session.create!(
       prompt: "Original prompt",
       agent_runtime: "claude_code",
@@ -172,11 +180,12 @@ class AgentSessionJobUndeliveredTurnTest < ActiveJob::TestCase
       status: :waiting
     )
 
-    run_job(fresh, nil)
+    run_job(fresh, nil, swallow: :either)
 
     fresh.reload
-    assert_equal "failed", fresh.status
-    assert_equal "exception", fresh.metadata["failure_reason"]
+    assert_equal "waiting", fresh.status
+    assert_not_equal Sessions::ParkUndeliveredTurn::FAILURE_REASON, fresh.metadata["failure_reason"]
+    assert_equal 1, fresh.metadata["bootstrap_retry_count"]
   end
 
   # `retry_on` covers three transient classes and #perform re-raises, so a turn that
@@ -236,10 +245,17 @@ class AgentSessionJobUndeliveredTurnTest < ActiveJob::TestCase
     AirPrepareService.any_instance.stubs(:prepare!).raises(raised)
 
     GitCloneService.stub(:create_clone, { clone_path: CLONE_PATH, working_directory: CLONE_PATH }) do
-      if swallow
-        assert_raises(raised.class) { job.perform(session.id, prompt) }
-      else
-        job.perform(session.id, prompt)
+      case swallow
+      when :either
+        # The bootstrap-retry path returns rather than re-raising, so the caller
+        # cannot know which it will be. See AgentSessionJobBootstrapRetryTest.
+        begin
+          job.perform(session.id, prompt)
+        rescue StandardError
+          nil
+        end
+      when true then assert_raises(raised.class) { job.perform(session.id, prompt) }
+      else job.perform(session.id, prompt)
       end
     end
 

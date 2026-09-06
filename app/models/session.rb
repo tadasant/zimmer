@@ -535,6 +535,8 @@ class Session < ApplicationRecord
     transcript_files_waiting_logged
     transcript_reading_started_logged
     interrupted_start_requeue_count
+    bootstrap_retry_count
+    last_bootstrap_retry_at
     recovery_continue_attempts
     recovery_refused_superseded_by
     stranded_sleep_rescues
@@ -576,6 +578,7 @@ class Session < ApplicationRecord
     git_clone_failed
     clone_validation_failed
     unstarted_turn_not_recoverable
+    bootstrap_retries_exhausted
   ].freeze
 
   # Metadata keys that represent setup artifacts created during session initialization.
@@ -1940,6 +1943,19 @@ class Session < ApplicationRecord
       detail = klass ? " (#{klass})" : ""
       "This turn stopped before the agent started#{detail}, so its prompt was never delivered. " \
         "The prompt is kept on this session's timeline — send it again to run the turn"
+    when AgentSessionJob::BOOTSTRAP_EXHAUSTED_FAILURE_REASON
+      # `humanize` would render "Bootstrap retries exhausted" — jargon that names
+      # the mechanism and hides both facts a reader needs: this session never ran
+      # at all, and Zimmer already tried by itself several times. Restart is the
+      # action, and it is the one that works here, because this reason is a
+      # PRE_PROMPT_FAILURE_REASON and the failed attempt's setup artifacts were
+      # discarded, which together send the restart down the from-scratch path.
+      spent = metadata&.dig(AgentSessionJob::BOOTSTRAP_RETRY_COUNT).to_i
+      klass = metadata&.dig("exception_class").presence
+      detail = klass ? " (#{klass})" : ""
+      "This session never started: its setup failed #{spent + 1} times#{detail}, each time before " \
+        "the agent ran, and the automatic retries are spent. Nothing was done and nothing was lost — " \
+        "restart it to re-run the whole setup"
     when Sessions::SilentRecoveryGuard::FAILURE_REASON
       # `humanize` would render "Recovery produced no output", which states the
       # symptom and hides the two facts a reader needs: Zimmer already tried this
@@ -2093,6 +2109,51 @@ class Session < ApplicationRecord
   # @return [Boolean] true when there is no conversation to bring back
   def never_ran?
     session_id.blank? && transcript.blank?
+  end
+
+  # Is this session still on the near side of its first agent turn?
+  #
+  # This is the *when* that decides whether a failure raised inside
+  # `AgentSessionJob` is retryable (#785). A turn that dies before an agent has
+  # ever spoken destroyed nothing — no conversation, no half-applied edit, no
+  # pushed branch — so running the whole setup pipeline again is free of the
+  # only hazard a retry has. A turn that dies after one is a runtime fault with
+  # a transcript to read, and re-running it would replay work.
+  #
+  # Deliberately keyed on the row rather than on the exception class. An
+  # allowlist of "retryable" errors is the thing that rots: the 2026-09-02
+  # outage was an `EXDEV` from `File.rename` in the AIR CLI install swap, a
+  # shape nobody had enumerated, and the next one will be a shape nobody has
+  # enumerated either. When it happened is knowable; what it was is not.
+  #
+  # Both signals must be absent, the same caution `never_ran?` takes and for the
+  # same reason — the dangerous mistake is the inverse one:
+  #
+  # * `runtime_started` is stamped by `#record_agent_process!` at the instant a
+  #   spawned pid is recorded, which is the single place in `AgentSessionJob`
+  #   where a turn crosses from setup into a live runtime.
+  # * `transcript` is the runtime's own output. A session holding one has had an
+  #   agent speak into it whatever the metadata says, which is the case
+  #   `ProcessLifecycleManager#release_stale_runtime_session_id!` can produce.
+  #
+  # ABSENT, not merely falsey, and the difference is the whole point.
+  # `ProcessLifecycleManager#fresh_start!`, `Sessions::RestartUnstartedTurn`,
+  # `SessionStatusSummaryGenerator` and `ForkSessionService` all write
+  # `runtime_started => false` — deliberately, to make the next spawn use
+  # `--session-id` rather than `--resume`. Every one of those is a session that
+  # HAS been through a spawn; `false.blank?` is true in Rails, so reading this
+  # with `blank?` would call each of them a session that had never started and
+  # hand it a re-clone. `nil` is the only value that means "no spawn has ever
+  # been recorded here".
+  #
+  # `session_id` is deliberately NOT one of the signals, and that is what makes
+  # this different from `never_ran?`: `AgentSessionJob` stamps the runtime
+  # session id right after the clone and BEFORE `air prepare`, so every failure
+  # this predicate exists to catch already has one.
+  #
+  # @return [Boolean]
+  def before_first_agent_turn?
+    metadata&.dig("runtime_started").nil? && transcript.blank?
   end
 
   # Can this session only be restarted by re-running the whole setup pipeline —
