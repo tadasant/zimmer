@@ -67,6 +67,30 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_includes output, "root-that-lands-tomorrow"
   end
 
+  # Re-arming is what an agent does to a trigger the 03:00 fire parked `failed`.
+  # A clean "New Status: enabled" for a trigger that will fail again for the same
+  # reason is the loop zimmer#448 is about.
+  test "re-arming a trigger whose root the catalog does not carry warns" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.update_column(:agent_root_name, "root-that-lands-tomorrow")
+
+    output = @tool.call("action" => "toggle", "id" => trigger.id)
+
+    assert_includes output, "## Trigger Toggled"
+    assert_includes output, "⚠️"
+    assert_includes output, "root-that-lands-tomorrow"
+  end
+
+  test "toggling a trigger with a known root says nothing about the catalog" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+
+    output = @tool.call("action" => "toggle", "id" => triggers(:enabled_slack_trigger).id)
+
+    assert_includes output, "## Trigger Toggled"
+    assert_not_includes output, "⚠️"
+  end
+
   test "a catalog that could not be read warns on nothing" do
     AgentRootsConfig.stubs(:names).returns([])
 

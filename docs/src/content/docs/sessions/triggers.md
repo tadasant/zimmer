@@ -1331,12 +1331,12 @@ write time:
 | Surface | What it does |
 | --- | --- |
 | `POST`/`PATCH /api/v1/triggers` | `201`/`200` as before, plus a `warnings` array naming the root. The key is **absent** when there is nothing to say, so its presence is itself the signal. The trigger payload also carries `agent_root_missing_from_catalog`. |
-| `action_trigger` (`create`, `update`) | The reply carries a `⚠️` line under the summary, in the same words. |
-| The web UI | The success flash carries the same sentence appended to "Trigger created successfully." |
+| `action_trigger` (`create`, `update`, `toggle`) | The reply carries a `⚠️` line under the summary, in the same words. `toggle` is in the list because re-arming is what an agent does to a trigger the 03:00 fire parked `failed` — a clean "New Status: enabled" for a trigger that will fail again for the same reason is the loop this issue is about. |
+| The web UI | The success flash carries the same sentence, appended to "Trigger created successfully." or "Trigger updated successfully." |
 | The trigger list | An `Agent root not in catalog` badge on the row, beside the status badge. |
 | The trigger page | The Agent Root field reads `name (not in catalog)` in red, with a line saying what will happen and the two repairs. |
 | `search_triggers` (by id) | The Agent Root line reads `name (⚠ not in catalog — every fire that has to spawn a session will fail)`. |
-| The edit form | The select **carries the stored name as an option**, marked, and posts it back. Without it the select would fall back to the blank prompt, post `""`, and fail presence — locking the operator out of editing anything else about the trigger. Same reasoning as the server/skill/hook/plugin chips above. |
+| The edit form | The select **carries the stored name as an option**, marked, and posts it back. Without it the select would fall back to the blank prompt, post `""`, and fail presence — locking the operator out of editing anything else about the trigger. Same reasoning as the server/skill/hook/plugin chips above. Carrying the name is unconditional; *labelling* it is not, for the empty-catalog reason below. |
 
 Two things it deliberately does *not* do. It does not reject the write, and it does not change what a
 fire does: an unresolvable root still reaches `#heal_stale_agent_root!`, which still repoints a

@@ -321,6 +321,41 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_not json.key?("warnings")
   end
 
+  # The `catalog_root_names:` kwarg is the whole reason this is not an N+1:
+  # AgentRootsConfig.all rebuilds every root and reads AppSetting.current on each
+  # call. Nothing else fails if a future edit drops it, so this does.
+  test "the index reads the catalog once for the whole page" do
+    Trigger.create!(
+      name: "Second Trigger",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Do the thing",
+      trigger_conditions: [ TriggerCondition.new(condition_type: "schedule",
+                                                 configuration: { "interval" => 1, "unit" => "days", "time" => "03:00" }) ]
+    )
+    assert_operator Trigger.count, :>, 1
+
+    AgentRootsConfig.expects(:names).at_most_once.returns(%w[zimmer general-agent])
+
+    get api_v1_triggers_path, headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert json["triggers"].all? { |t| t.key?("agent_root_missing_from_catalog") },
+      "every row should report whether its agent root resolves"
+  end
+
+  test "the index marks a row whose agent root the catalog does not carry" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+    @trigger.update_column(:agent_root_name, "root-that-lands-tomorrow")
+
+    get api_v1_triggers_path, headers: @headers
+
+    assert_response :success
+    row = JSON.parse(response.body)["triggers"].find { |t| t["id"] == @trigger.id }
+    assert_equal true, row["agent_root_missing_from_catalog"]
+  end
+
   test "should create schedule trigger with conditions" do
     assert_difference("Trigger.count", 1) do
       post api_v1_triggers_path, params: {

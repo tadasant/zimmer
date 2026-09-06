@@ -109,7 +109,13 @@ class Api::V1::TriggersController < Api::BaseController
     @trigger = Trigger.new(trigger_params)
 
     if @trigger.save
-      render json: { trigger: trigger_json(@trigger), warnings: write_warnings(@trigger) }.compact,
+      # One catalog read, shared by both fields. Two would not only cost twice —
+      # AirCatalogService's snapshot can turn over between them, and `warnings`
+      # disagreeing with `agent_root_missing_from_catalog` inside one response is
+      # worse than either answer.
+      catalog_root_names = Trigger.catalog_agent_root_names
+      render json: { trigger: trigger_json(@trigger, catalog_root_names: catalog_root_names),
+                     warnings: write_warnings(@trigger, catalog_root_names) }.compact,
              status: :created
     else
       render_api_error("Validation failed", @trigger.errors.full_messages, status: :unprocessable_entity)
@@ -124,9 +130,10 @@ class Api::V1::TriggersController < Api::BaseController
       # scheduling class: it is how many of the trigger's already-spawned waiting
       # sessions the change moved. Omitted otherwise, so its absence means "the
       # class was not touched" rather than "nothing moved".
-      render json: { trigger: trigger_json(@trigger),
+      catalog_root_names = Trigger.catalog_agent_root_names
+      render json: { trigger: trigger_json(@trigger, catalog_root_names: catalog_root_names),
                      reclassified_waiting_sessions: @trigger.reclassified_session_count,
-                     warnings: write_warnings(@trigger) }.compact
+                     warnings: write_warnings(@trigger, catalog_root_names) }.compact
     else
       render_api_error("Validation failed", @trigger.errors.full_messages, status: :unprocessable_entity)
     end
@@ -276,13 +283,14 @@ class Api::V1::TriggersController < Api::BaseController
   # itself the signal.
   #
   # @return [Array<String>, nil]
-  def write_warnings(trigger)
-    [ trigger.agent_root_catalog_warning ].compact.presence
+  def write_warnings(trigger, catalog_root_names)
+    [ trigger.agent_root_catalog_warning(catalog_root_names) ].compact.presence
   end
 
-  # `catalog_root_names` is passed only by #index, which has many rows to answer
-  # for. Omitted — every other action renders one trigger — the default reads
-  # the catalog once, here, which is the same cost.
+  # `catalog_root_names` comes from the caller wherever one response answers for
+  # more than one read of it — #index has a row per trigger, #create and #update
+  # pair this with `warnings`. Omitted (#show, #toggle, #invoke) the default
+  # reads the catalog once, here, which is the same cost.
   def trigger_json(trigger, catalog_root_names: Trigger.catalog_agent_root_names)
     {
       id: trigger.id,
