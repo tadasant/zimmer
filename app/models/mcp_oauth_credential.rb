@@ -162,6 +162,7 @@ class McpOauthCredential < ApplicationRecord
   #
   # @return [Boolean] true if refresh succeeded, false otherwise
   # @raise [RuntimeError] if refresh_token or token_endpoint is missing
+  # @raise [McpOauthService::InsecureEndpoint] if token_endpoint is not https
   def refresh!
     raise "Cannot refresh: missing refresh_token" unless refresh_token.present?
     raise "Cannot refresh: missing token_endpoint" unless token_endpoint.present?
