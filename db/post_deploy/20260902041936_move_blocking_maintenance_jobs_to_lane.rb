@@ -17,6 +17,7 @@ class MoveBlockingMaintenanceJobsToLane < PostDeployTask
     StaleCloneCleanupJob
     TokenUsageBackfillJob
     TranscriptArchiveJob
+    TriggerPromotionReleaseJob
   ].freeze
 
   def up
