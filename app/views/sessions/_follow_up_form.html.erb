@@ -14,7 +14,8 @@
   <div id="session_<%= agent_session.id %>_follow_up_form"
        data-live-region="replace"
        class="fixed bottom-0 left-0 right-0 z-20 bg-white border-t border-gray-200 shadow-lg"
-       data-controller="follow-up-prompt character-counter bottom-panel-padding bottom-drawer image-attachment file-attachment slash-command"
+       data-controller="follow-up-prompt character-counter bottom-panel-padding bottom-drawer composer-drop image-attachment file-attachment slash-command"
+       data-action="composer-drop:files->image-attachment#handleComposerDrop composer-drop:files->file-attachment#handleComposerDrop"
        data-character-counter-max-value="<%= Session::PROMPT_MAX_LENGTH %>"
        data-follow-up-prompt-prompt-max-length-value="<%= Session::PROMPT_MAX_LENGTH %>"
        data-follow-up-prompt-session-running-value="<%= agent_session.running? %>"
@@ -104,7 +105,15 @@
         </button>
       </div>
 
-      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 sm:py-4">
+      <div class="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 sm:py-4">
+        <%# Drop affordance. composer-drop accepts a file dropped anywhere on the page —
+            the composer is the only thing on the screen that takes one — so this overlay
+            is what tells the user where it is going. pointer-events-none keeps it out of
+            the way of the controls underneath it. %>
+        <div data-composer-drop-target="overlay"
+             class="hidden absolute inset-2 z-30 flex items-center justify-center rounded-lg border-2 border-dashed border-indigo-500 bg-indigo-50/95 pointer-events-none">
+          <span class="text-sm font-medium text-indigo-700">Drop images or files to attach them to your message</span>
+        </div>
         <%# Container for form errors - updated via Turbo Stream when validation fails %>
         <div id="enqueued_messages_form_errors"></div>
 
@@ -137,7 +146,7 @@
                     the parent form is replaced via Turbo Stream. This prevents losing user input
                     when status changes or transcript updates trigger form replacement. The element
                     must have a unique ID for this to work. %>
-                <div data-image-attachment-target="dropZone" data-file-attachment-target="dropZone" class="relative border-2 border-transparent rounded-md transition-colors">
+                <div class="relative">
                   <%= text_area_tag :follow_up_prompt, nil,
                     id: "session_#{agent_session.id}_follow_up_textarea",
                     class: "block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm px-3 py-2",
