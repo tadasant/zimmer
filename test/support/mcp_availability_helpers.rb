@@ -57,4 +57,13 @@ module McpAvailabilityHelpers
   def option_for(options, name)
     options.find { |option| option[:name] == name || option["name"] == name }
   end
+
+  # The item list the MCP `catalog-multiselect` widget was handed, read back off
+  # the rendered page. Scoped by accent because all four catalog pickers on the
+  # session page share the controller identifier; indigo is the MCP one.
+  def mcp_multiselect_items
+    value = css_select("[data-catalog-multiselect-accent-value='indigo']")
+      .first["data-catalog-multiselect-items-value"]
+    JSON.parse(value)
+  end
 end

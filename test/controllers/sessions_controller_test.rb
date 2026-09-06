@@ -435,12 +435,10 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     with_mixed_availability_catalog { get session_url(session) }
     assert_response :success
 
-    value = css_select("[data-editable-mcp-servers-available-servers-value]")
-      .first["data-editable-mcp-servers-available-servers-value"]
-    servers = JSON.parse(value)
+    servers = mcp_multiselect_items
 
-    assert_equal true, servers.find { |s| s["name"] == "strad-secrets-staging-rw" }["unavailable"]
-    assert_equal false, servers.find { |s| s["name"] == "context7" }["unavailable"]
+    assert_equal true, servers.find { |s| s["key"] == "strad-secrets-staging-rw" }["unavailable"]
+    assert_equal false, servers.find { |s| s["key"] == "context7" }["unavailable"]
   end
 
   # The turbo-stream re-render after a write goes through mcp_partials_locals,
@@ -456,14 +454,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
     assert_response :success
 
-    value = css_select("[data-editable-mcp-servers-available-servers-value]")
-      .first["data-editable-mcp-servers-available-servers-value"]
-    servers = JSON.parse(value)
+    servers = mcp_multiselect_items
 
-    assert_equal true, servers.find { |s| s["name"] == "strad-secrets-staging-rw" }["unavailable"]
+    assert_equal true, servers.find { |s| s["key"] == "strad-secrets-staging-rw" }["unavailable"]
     assert_equal "STRAD_STAGING_API_KEY unresolved",
-      servers.find { |s| s["name"] == "strad-secrets-staging-rw" }["unavailable_reason"]
-    assert_equal false, servers.find { |s| s["name"] == "context7" }["unavailable"]
+      servers.find { |s| s["key"] == "strad-secrets-staging-rw" }["unavailable_reason"]
+    assert_equal false, servers.find { |s| s["key"] == "context7" }["unavailable"]
   end
 
   # Test create action - success cases
@@ -912,12 +908,9 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     # JS contract: the editable Stimulus controllers toggle these spans, so they
     # must still exist in the inherited-defaults branch or live edits silently break.
-    assert_select '[data-role="skill-tags"]'
-    assert_select '[data-role="skill-empty"]'
-    assert_select '[data-role="hook-tags"]'
-    assert_select '[data-role="hook-empty"]'
-    assert_select '[data-role="plugin-tags"]'
-    assert_select '[data-role="plugin-empty"]'
+    assert_select '[data-role="catalog-tags"]', minimum: 3
+    assert_select '[data-role="catalog-selected"]', minimum: 3
+    assert_select '[data-role="catalog-empty"]', minimum: 3
   end
 
   # A populated column wins — its captured badges render and the inherited
@@ -4894,7 +4887,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     # Check that the available servers are included in the page
     # They should be in a data attribute for the editable MCP servers controller
-    assert_match /data-editable-mcp-servers-available-servers-value/, response.body
+    assert_match(/data-catalog-multiselect-items-value/, response.body)
   end
 
   test "show page renders oauth required prompt in mobile visible header" do
@@ -6172,8 +6165,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     get session_url(session)
     assert_response :success
     # Verify the available skills data is rendered into the Stimulus controller's data attribute
-    assert_select "[data-editable-catalog-skills-available-skills-value]" do |elements|
-      available_skills_json = elements.first["data-editable-catalog-skills-available-skills-value"]
+    assert_select "[data-catalog-multiselect-accent-value='green']" do |elements|
+      available_skills_json = elements.first["data-catalog-multiselect-items-value"]
       available_skills = JSON.parse(available_skills_json)
       assert available_skills.present?, "Expected available skills to be loaded"
     end
@@ -6184,7 +6177,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", catalog_skills: [ skill_name ])
     get session_url(session)
     assert_response :success
-    assert_select "[data-controller='editable-catalog-skills']"
+    assert_select "[data-controller='catalog-multiselect'][data-catalog-multiselect-accent-value='green']"
   end
 
   test "should reject too many catalog_skills" do
@@ -6205,7 +6198,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     get session_url(session)
     assert_response :success
     # The skills section should appear because @catalog_skills_for_select is loaded on the show page
-    assert_select "[data-controller='editable-catalog-skills']"
+    assert_select "[data-controller='catalog-multiselect'][data-catalog-multiselect-accent-value='green']"
   end
 
   # Flat dashboard: archived-session visibility

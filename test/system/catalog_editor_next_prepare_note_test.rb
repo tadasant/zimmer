@@ -11,12 +11,13 @@ require "application_system_test_case"
 class CatalogEditorNextPrepareNoteTest < ApplicationSystemTestCase
   include MobileOverflowAssertions
 
-  # One per editor: the Stimulus controller identifier, and the noun the note ends on.
+  # One per editor. All four are the same `catalog-multiselect` controller now
+  # (zimmer#456), so the accent is what tells them apart in the DOM.
   EDITORS = [
-    [ "editable-mcp-servers", "servers" ],
-    [ "editable-catalog-skills", "skills" ],
-    [ "editable-catalog-hooks", "hooks" ],
-    [ "editable-catalog-plugins", "plugins" ]
+    [ "indigo", "servers" ],
+    [ "green", "skills" ],
+    [ "amber", "hooks" ],
+    [ "purple", "plugins" ]
   ].freeze
 
   teardown do
@@ -36,9 +37,9 @@ class CatalogEditorNextPrepareNoteTest < ApplicationSystemTestCase
     page.driver.browser.manage.window.resize_to(1400, 900)
     visit session_path(session)
 
-    EDITORS.each do |controller, noun|
-      open_editor(controller)
-      assert_selector "[data-controller='#{controller}'] [data-#{controller}-target='editor']",
+    EDITORS.each do |accent, noun|
+      open_editor(accent)
+      assert_selector "#{editor_root(accent)} [data-catalog-multiselect-target='editor']",
         text: "Applies on the next turn or restart — the running process keeps its current #{noun}."
     end
 
@@ -46,7 +47,7 @@ class CatalogEditorNextPrepareNoteTest < ApplicationSystemTestCase
 
     # The four notes are open together, which is the widest the section ever gets.
     page.driver.browser.manage.window.resize_to(MOBILE_WIDTH, MOBILE_HEIGHT)
-    EDITORS.each { |controller, _| open_editor(controller) }
+    EDITORS.each { |accent, _| open_editor(accent) }
 
     assert_no_horizontal_overflow("session page with every catalog editor open")
 
@@ -74,20 +75,24 @@ class CatalogEditorNextPrepareNoteTest < ApplicationSystemTestCase
   def save_evidence(name)
     FileUtils.mkdir_p(Rails.root.join("tmp/screenshots"))
     page.execute_script(<<~JS)
-      const editor = document.querySelector("[data-editable-mcp-servers-target='editor']:not(.hidden)");
+      const editor = document.querySelector("[data-catalog-multiselect-target='editor']:not(.hidden)");
       if (editor) editor.scrollIntoView({ block: "center" });
     JS
     page.save_screenshot(Rails.root.join("tmp/screenshots/#{name}.png").to_s)
   end
 
+  def editor_root(accent)
+    "[data-controller='catalog-multiselect'][data-catalog-multiselect-accent-value='#{accent}']"
+  end
+
   # The editors reveal themselves by toggling `hidden` on their two targets. Drive
   # that directly rather than hunting the pencil button, which is a 14px icon whose
   # position depends on how long the current selection renders.
-  def open_editor(controller)
+  def open_editor(accent)
     page.execute_script(<<~JS)
-      document.querySelectorAll("[data-controller='#{controller}']").forEach((root) => {
-        const display = root.querySelector("[data-#{controller}-target='display']");
-        const editor = root.querySelector("[data-#{controller}-target='editor']");
+      document.querySelectorAll("#{editor_root(accent)}").forEach((root) => {
+        const display = root.querySelector("[data-catalog-multiselect-target='display']");
+        const editor = root.querySelector("[data-catalog-multiselect-target='editor']");
         if (display) display.classList.add("hidden");
         if (editor) editor.classList.remove("hidden");
       });
