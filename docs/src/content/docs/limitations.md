@@ -4755,6 +4755,27 @@ The risk is a future Docker release changing or dropping the flag, which would p
 upstream lands in [#421](https://github.com/tadasant/zimmer/issues/421) — see
 [Nested Docker for agent sessions](/operate/nested-docker/).
 
+## Declining needrestart's sysbox restart leaves the daemons on old libraries
+
+`/etc/needrestart/conf.d/99-sysbox.conf` stops `needrestart` restarting `sysbox-mgr` and
+`sysbox-fs` after an unattended library upgrade, because that restart empties sysbox's
+container registry and permanently orphans every container already running
+([#774](https://github.com/tadasant/zimmer/issues/774)). The trade is real and it is not
+hidden: the upgraded library is on disk, but the running daemons keep the old one mapped
+until something restarts them deliberately. A security fix in one of sysbox's dependencies
+therefore does **not** take effect on the daemons at upgrade time — it waits for the next
+reboot, or for an operator who restarts sysbox knowing it will cost a worker recreation.
+That is the right trade for a host whose containers cannot survive the restart anyway, but it
+means "the box is patched" and "the sysbox daemons are patched" are different claims, and
+nothing currently reports the second one.
+
+There is also a window on a **new** droplet. Staging's drop-in is converged by `Deploy
+staging` (`Keep needrestart from restarting sysbox (converge)`), not by cloud-init — a
+snippet in `user_data` could never reach the hosts that already exist, which is every host
+that matters. So between a droplet's first boot and the deploy step that converges it, the
+box is briefly exposed to exactly this failure. In practice that window is the few minutes
+between `terraform apply` and the step, on a box with no worker to orphan yet.
+
 ## CI cannot test the nested-Docker path, only the shape of it
 
 CI has no sysbox runtime and no user namespace, so nothing in the suite can start the

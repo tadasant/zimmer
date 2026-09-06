@@ -1494,6 +1494,34 @@ four gated queues with a perfectly healthy worker. The gate is the piece that ha
 `test/jobs/canary_job_test.rb` holds each of those lines, including a round trip through a real
 GoodJob row on all seven queues.
 
+### needrestart is told to leave sysbox alone, on every deploy
+
+`Keep needrestart from restarting sysbox (converge)` runs
+`scripts/install-needrestart-sysbox-dropin.sh` against the staging droplet, before the sysbox
+preflight and before the cutover.
+
+It exists because a host can wedge its own worker without anyone deploying anything.
+`apt-daily-upgrade` upgrades a library sysbox links against, `needrestart` restarts the sysbox
+units, and the daemons come back with an empty container registry — which orphans every sysbox
+container already running, permanently, while leaving their processes alive. Both hosts went
+that way on 2026-09-02, twelve minutes apart
+([#774](https://github.com/tadasant/zimmer/issues/774)). The step drops one snippet into
+`/etc/needrestart/conf.d` that declines the restart, and then asserts the snippet parses,
+deselects a real sysbox unit name without clobbering the stock entries, and is somewhere
+needrestart still reads. The mechanism and the one line it writes are in
+[The host must not restart sysbox on its own](/operate/nested-docker/#the-host-must-not-restart-sysbox-on-its-own).
+
+Ordering is the point of putting it *before* the preflight: a droplet whose sysbox is broken
+enough to fail the preflight still gets the drop-in on the way past, and the worker container
+this run is about to create is covered from the moment it exists. Like the watchdog it runs
+unconditionally rather than gated on `nested_docker`, and it is a converge — the droplet is
+persistent, cloud-init runs only at first boot, and `ignore_changes = [user_data]` means a
+snippet written there would never reach a box that already exists.
+
+Production is not on this path: its sysbox provisioning lives in the private companion repo
+and already converges the same override on every production deploy. Staging had no equivalent,
+which is what [#775](https://github.com/tadasant/zimmer/issues/775) was about.
+
 ### The worker watchdog is converged on every deploy
 
 Everything above proves the deploy is healthy *at the moment it finishes*. `Install the worker

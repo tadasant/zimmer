@@ -306,6 +306,51 @@ back to deriving `/root` from `user: "0:0"`.
 `HOME=/root` reaching the app is how the 2026-08-13 freeze presented, and every
 container-shaped check stayed green throughout it.
 
+### The host must not restart sysbox on its own
+
+`apt-daily-upgrade` runs on every droplet. When it upgrades a library `sysbox-fs` or
+`sysbox-mgr` links against, `needrestart` decides those units are outdated and runs
+`systemctl restart sysbox.service` — and the daemons come back with an **empty container
+registry**. Every sysbox container that was already running is orphaned permanently: its
+own processes keep running, but `docker exec` into it fails forever with `unsafe procfs
+detected`. Recovering one costs a container *recreation*, which an unattended upgrade is in
+no position to do. That is the 2026-09-02 double wedge
+([#774](https://github.com/tadasant/zimmer/issues/774)) — one host-level event, both hosts,
+twelve minutes apart.
+
+The prevention is one `needrestart` snippet that deselects the sysbox units from the
+automatic restart set. The upgrade still lands; only the restart is declined.
+
+```perl
+# /etc/needrestart/conf.d/99-sysbox.conf
+$nrconf{override_rc} = { %{$nrconf{override_rc} // {}}, qr(^sysbox) => 0 };
+```
+
+Two details in that one line. It **merges** rather than assigns — a bare assignment parses
+fine, deselects sysbox, and silently drops the ~20 stock entries (dbus, the display managers,
+the networking units) that `needrestart.conf` already put there. And the file is `99-` so it
+sorts last among the `conf.d` snippets `needrestart.conf` evals, which is what lets the merge
+see the stock hash rather than the other way round.
+
+Where it comes from depends on the host. Production's sysbox provisioning lives in the
+private companion repo and converges the same override on every production deploy. Nothing
+in *this* repo provisions sysbox — the staging deploy only preflights it — so staging gets
+its own convergence point, `Keep needrestart from restarting sysbox (converge)`, which runs
+`scripts/install-needrestart-sysbox-dropin.sh` before the preflight and before the cutover
+([#775](https://github.com/tadasant/zimmer/issues/775)). It writes the snippet by
+temp-and-move (needrestart `die`s on a half-written file, and it is `unattended-upgrades`
+that would carry the error), then asserts three things: that the file compiles, that it
+actually deselects a real unit name while preserving the pre-existing entries, and that
+`needrestart.conf` still evals `conf.d` at all — the last one because a needrestart upgrade
+that dropped the snippet mechanism would leave the file inert with nothing to say so.
+
+The step is a **converge**, not a one-off, for the same reason the watchdog is: cloud-init
+runs only at first boot and Terraform provisions the droplet with
+`ignore_changes = [user_data]`, so nothing written there reaches a host that already exists.
+It is also unconditional rather than gated on `nested_docker` — the host has sysbox either
+way, and a deploy that disarms the runtime should not also strip the box's protection from
+the next unattended upgrade.
+
 ### Extending it to production
 
 The mechanism is identical and already written — production's config resolves the same
@@ -469,6 +514,10 @@ in the cgroup, and an identical `unsafe procfs detected: openat2 … operation n
 from exec, on hosts whose memory limits differ 5x
 ([#774](https://github.com/tadasant/zimmer/issues/774)). So the signature says the worker is
 unreachable by `exec`. It does not say why, and it does not say what that cost.
+
+That particular cause — `needrestart` restarting the sysbox daemons out from under running
+containers after a library upgrade — is prevented rather than recovered from; see
+[The host must not restart sysbox on its own](#the-host-must-not-restart-sysbox-on-its-own).
 
 ### What watches for it
 

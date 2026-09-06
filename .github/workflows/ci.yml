@@ -521,7 +521,8 @@ jobs:
             scripts/clear-root-password-expiry.sh \
             scripts/tailnet-reap-node.sh \
             scripts/worker-watchdog.sh \
-            scripts/install-worker-watchdog.sh; do
+            scripts/install-worker-watchdog.sh \
+            scripts/install-needrestart-sysbox-dropin.sh; do
             case " ${files[*]} " in
               *" $required "*) ;;
               *)
