@@ -38,12 +38,6 @@ class AirCatalogService
   UNKNOWN_REFERENCE_MARKER = "references unknown"
   DROPPED_REFERENCE_MARKER = "Dropping the reference"
 
-  # A credential value shorter than this is indistinguishable from ordinary
-  # text, so scrubbing every occurrence of it would shred the error message
-  # instead of protecting anything. Same threshold, same reasoning, as
-  # TranscriptRedactor::MIN_KNOWN_SECRET_LENGTH.
-  MIN_REDACTABLE_SECRET_LENGTH = 12
-
   class << self
     # Get all entries for an artifact type, keyed by ID.
     # @param type [Symbol] one of ARTIFACT_TYPES
@@ -188,10 +182,21 @@ class AirCatalogService
     # @param text [String, nil]
     # @return [String, nil] the text with known credentials replaced
     def redact_secrets(text)
+      return text if text.nil?
+
+      # Scrubbed before anything reads it. `Open3.capture3` tags a subprocess's
+      # stderr UTF-8 without validating it, and a mis-encoded path or remote name
+      # in a git error is enough to make String#blank? (and the view's own
+      # truncate) raise ArgumentError on the byte sequence. TranscriptRedactor
+      # answers the same problem the same way.
+      text = text.to_s
+      text = text.scrub("") unless text.valid_encoding?
       return text if text.blank?
 
       redactable_secrets.reduce(text) do |scrubbed, (name, value)|
-        scrubbed.gsub(value, "[REDACTED:#{name}]")
+        # Block form: a `\0` in the name would otherwise be a backreference that
+        # writes the credential back into the output.
+        scrubbed.gsub(value) { "[REDACTED:#{name}]" }
       end
     rescue => e
       # Withhold rather than fall through to the raw string: the whole point of
@@ -343,19 +348,42 @@ class AirCatalogService
     # first so a value containing another is replaced whole rather than shredded
     # from the inside out.
     #
-    # Broader than the single token #provider_credentials_env injects, because
-    # the exposure is broader: `air prepare` merges *all* of SecretsLoader.all
-    # into its own subprocess env, and every AIR subprocess inherits this
-    # process's ENV through Open3 — which is exactly how an operator-set
-    # AIR_GITHUB_TOKEN (CI) reaches the resolve that never merges it.
+    # Two tiers, because the exposure has two halves:
+    #
+    #   1. SecretsLoader.all — Zimmer's own secret set. `air prepare` merges all
+    #      of it into its subprocess env, and #provider_credentials_env takes
+    #      AIR_GITHUB_TOKEN from it for `air resolve` / `air update`.
+    #   2. Credential-named process ENV — every AIR subprocess inherits this
+    #      process's whole environment through Open3, which is what an echoed
+    #      environment would print. In production that is SECRET_KEY_BASE,
+    #      RAILS_MASTER_KEY, DATABASE_PASSWORD, the operator SSH key, the
+    #      Parameter Store service-account keys — none of them in tier 1, all of
+    #      them in the child's env. It is also how an operator-set
+    #      AIR_GITHUB_TOKEN (CI) reaches the resolve that never merges it.
+    #
+    # Filtered by name (TranscriptRedactor::SENSITIVE_KEY) rather than scrubbing
+    # every environment variable, and each value has to look like a credential
+    # rather than like prose — the same three conditions TranscriptRedactor puts
+    # on a known value, for the same reason: replacing a short, spaced or
+    # ordinary-word value would shred the error rather than protect anything.
     #
     # @return [Array<Array(String, String)>] [name, value] pairs
     def redactable_secrets
-      candidates = SecretsLoader.all.to_a + [ [ "AIR_GITHUB_TOKEN", ENV["AIR_GITHUB_TOKEN"] ] ]
+      candidates = SecretsLoader.all.to_a +
+        ENV.select { |name, _value| name.match?(TranscriptRedactor::SENSITIVE_KEY) }.to_a
       candidates
-        .select { |_name, value| value.is_a?(String) && value.length >= MIN_REDACTABLE_SECRET_LENGTH }
+        .select { |_name, value| redactable_value?(value) }
         .uniq { |_name, value| value }
         .sort_by { |_name, value| -value.length }
+    end
+
+    # A value only earns exact-match replacement if replacing every occurrence of
+    # it cannot plausibly destroy ordinary error text.
+    def redactable_value?(value)
+      value.is_a?(String) &&
+        value.length >= TranscriptRedactor::MIN_KNOWN_SECRET_LENGTH &&
+        value.match?(/\A\S+\z/) &&
+        !value.match?(/\A(?:true|false|null|none|\d+)\z/i)
     end
 
     # Cache a freshly resolved tree, persist it as the new last-known-good
@@ -522,9 +550,22 @@ class AirCatalogService
     # binary (see AirPrepareService#swap_staged_install!), but "the file is
     # gone" is a state this service should survive however it arises.
     def capture_air(*command)
-      Open3.capture3(*command)
+      stdout, stderr, status = Open3.capture3(*command)
+      # Open3 tags a subprocess's output UTF-8 without validating it, and a
+      # mis-encoded path or remote name in a git error is enough to make every
+      # ActiveSupport string predicate downstream — `stderr.presence` in
+      # #run_air_resolve!, `blank?` in .redact_secrets, `truncate` in the banner —
+      # raise ArgumentError on the byte sequence. That ArgumentError is not a
+      # CatalogError, so it would escape load!'s rescue rather than degrading to
+      # the last-known-good catalog.
+      [ scrub_bytes(stdout), scrub_bytes(stderr), status ]
     rescue SystemCallError => e
       raise CatalogError, "could not run the AIR CLI (#{e.class}: #{e.message})"
+    end
+
+    def scrub_bytes(output)
+      return output unless output.is_a?(String)
+      output.valid_encoding? ? output : output.scrub("")
     end
 
     # Lazy-install AIR CLI on first use. Converts AirPrepareError to CatalogError
