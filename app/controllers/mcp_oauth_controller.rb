@@ -373,7 +373,7 @@ class McpOauthController < ApplicationController
   # @return [Symbol, nil] the McpOauthResumeService result (:resumed, :partial,
   #   :reconnect_pending, :not_blocked), or nil when re-injection/resume raised.
   def reinject_and_resume(session, server_name)
-    working_directory = session.metadata&.dig("working_directory")
+    working_directory = session.working_directory
     injector = McpOauthCredentialInjector.new(session, working_directory: working_directory)
     injector.inject_credentials!
     injector.clear_runtime_needs_auth_cache([ server_name ])

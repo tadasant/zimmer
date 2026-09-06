@@ -423,7 +423,7 @@ module SessionContinuation
     errors = []
     errors << "no session_id found" unless session.session_id.present?
 
-    working_directory = session.metadata&.dig("working_directory")
+    working_directory = session.working_directory
     unless working_directory.present? && Dir.exist?(working_directory)
       errors << "working directory not found or invalid"
     end

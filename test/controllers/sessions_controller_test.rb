@@ -993,7 +993,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       metadata: {
         "agent_root_key" => "agent-orchestrator",
         "clone_path" => "#{clone_base}/agents-main-123-abc",
-        "full_clone_path" => "#{clone_base}/agents-main-123-abc/agent-orchestrator"
+        "working_directory" => "#{clone_base}/agents-main-123-abc/agent-orchestrator"
       }
     )
 
@@ -1007,7 +1007,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     refute_match(%r{<strong>Root:</strong>[^<]*agents-main-123-abc}, response.body,
       "Root row's visible text should not leak the clone directory name")
 
-    # Copy button still carries the full absolute path (prefers full_clone_path)
+    # Copy button still carries the full absolute path (Session#working_directory)
     expected_path = Regexp.escape("#{clone_base}/agents-main-123-abc/agent-orchestrator")
     assert_match(/data-clipboard-value="#{expected_path}"/, response.body)
   end
@@ -1032,7 +1032,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     refute_match(%r{<strong>Root:</strong>[^<]*agents-main-123-abc}, response.body,
       "Root row's visible text should not leak the clone directory name")
 
-    # Copy button falls back to clone_path when full_clone_path is absent
+    # Copy button falls back to the clone root when no working_directory is recorded
     expected_path = Regexp.escape("#{clone_base}/agents-main-123-abc")
     assert_match(/data-clipboard-value="#{expected_path}"/, response.body)
   end

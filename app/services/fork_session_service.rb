@@ -258,7 +258,7 @@ class ForkSessionService
     return nil if scaffold_missing_clone
 
     # Source session must have clone metadata
-    source_clone_path = source_session.metadata&.dig("clone_path")
+    source_clone_path = source_session.clone_root
     return "Source session has no clone path" if source_clone_path.blank?
 
     # Clone must exist. It can already be gone for the benign reason below, when
@@ -338,7 +338,7 @@ class ForkSessionService
     return scaffold_clone(new_clone_path) if scaffold_clone?
 
     begin
-      copy_clone_directory(source_session.metadata["clone_path"], new_clone_path)
+      copy_clone_directory(source_session.clone_root, new_clone_path)
     rescue Errno::ENOENT => e
       raise unless scaffold_missing_clone && source_clone_enoent?(e) && archived_source_session?
 
@@ -378,7 +378,7 @@ class ForkSessionService
     return true unless copy_source_tree
     return false unless scaffold_missing_clone
 
-    source_clone_path = source_session.metadata&.dig("clone_path").to_s
+    source_clone_path = source_session.clone_root.to_s
     source_clone_path.blank? || !file_system.directory?(source_clone_path)
   end
 
@@ -538,7 +538,7 @@ class ForkSessionService
   def source_clone_enoent?(error)
     return false unless error.is_a?(Errno::ENOENT)
 
-    source_clone_path = source_session.metadata&.dig("clone_path")
+    source_clone_path = source_session.clone_root
     source_clone_path.present? && error.message.include?(source_clone_path)
   end
 
@@ -687,7 +687,6 @@ class ForkSessionService
         new_metadata = {
           "clone_path" => new_clone_path,
           "working_directory" => new_working_directory,
-          "full_clone_path" => new_working_directory,
           "forked_from_session_id" => source_session.id,
           "forked_at_message_index" => message_index,
           "broadcast_message_count" => @truncated_message_count, # Set to transcript length to prevent replay

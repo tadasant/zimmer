@@ -156,7 +156,7 @@ class SigtermRetryService
       # Regenerate system prompt for retry consistency
       system_prompt = OrchestratorSystemPromptBuilder.build(
         session: session,
-        clone_path: session.metadata&.dig("clone_path")
+        working_directory: session.working_directory
       )
 
       add_log("Resuming existing conversation", level: "debug")
@@ -172,7 +172,7 @@ class SigtermRetryService
       # Regenerate system prompt for retry consistency
       system_prompt = OrchestratorSystemPromptBuilder.build(
         session: session,
-        clone_path: session.metadata&.dig("clone_path")
+        working_directory: session.working_directory
       )
 
       add_log("No existing conversation found, starting fresh with original prompt", level: "info")
