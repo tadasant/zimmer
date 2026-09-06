@@ -11,8 +11,10 @@
         <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">Costs</h1>
       </div>
       <p class="text-sm text-gray-600">
-        Token spend from Zimmer's own ledger, priced at current Anthropic list rates.
-        <span class="text-gray-500">Volumes are stored; prices are applied on read, so this re-prices itself when rates change.</span>
+        Token spend from Zimmer's own ledger, priced at current list rates.
+        <span class="text-gray-500">Volumes are stored; prices are applied on read, so this re-prices itself when rates change.
+        Claude Code spend is subscription-billed and priced at Anthropic list; Pi spend is metered by OpenRouter and priced at
+        the rates it publishes. See <span class="font-medium">By runtime</span> below for the split.</span>
       </p>
     </div>
 
@@ -154,6 +156,17 @@
       <%= render "bar_table", rows: @by_thread_kind, label_key: :kind,
             title: "Main thread vs subagents", empty: "No session spend in this window.",
             max: max_cost.call(@by_thread_kind), total: @totals[:cost_usd] %>
+
+      <%# Spend by runtime is spend by BILLING RELATIONSHIP: `claude_code` is
+          subscription spend priced at list, `pi` is a metered OpenRouter invoice.
+          Every other total on this page adds them together, so without this split
+          a reader cannot tell what share of a number is money actually owed. %>
+      <%= render "bar_table", rows: @by_runtime, label_key: :runtime,
+            title: "By runtime",
+            subtitle: "By billing relationship, really: Claude Code is subscription-billed and priced at Anthropic list; " \
+                      "Pi is metered by OpenRouter, so its share is money actually owed.",
+            empty: "No session spend in this window.",
+            max: max_cost.call(@by_runtime), total: @totals[:cost_usd] %>
 
       <%= render "bar_table", rows: @by_adhoc_source, label_key: :source,
             title: "Ad hoc calls from Zimmer's own code",

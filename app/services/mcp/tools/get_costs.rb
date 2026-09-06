@@ -169,6 +169,12 @@ module Mcp
         lines.concat(table("By agent root", "Agent root", analytics.by_agent_root, :agent_root, totals[:cost_usd]))
         lines.concat(table("By model", "Model", analytics.by_model, :model, totals[:cost_usd]))
         lines.concat(table("Main thread vs subagents", "Thread", analytics.by_thread_kind, :kind, totals[:cost_usd]))
+        # By billing relationship, not just by harness: `claude_code` is
+        # subscription spend priced at list, `pi` is a metered OpenRouter invoice.
+        # Every other figure in this report adds them together.
+        lines.concat(table("By runtime — `claude_code` is subscription-billed; `pi` is metered by OpenRouter, so its " \
+                           "share is money actually owed",
+                           "Runtime", analytics.by_runtime, :runtime, totals[:cost_usd]))
 
         adhoc = analytics.by_adhoc_source
         lines.concat(table("Ad hoc calls from Zimmer's own code", "Source", adhoc, :source, totals[:cost_usd])) if adhoc.any?
