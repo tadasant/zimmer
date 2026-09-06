@@ -1023,10 +1023,13 @@ class SpotSessionHold
       if session.running?
         # The one `running -> waiting` that does not pass through the state
         # machine, so it records its own reason rather than inheriting the `sleep`
-        # callback's (#608). Written BEFORE the status flip: a reader that catches
-        # the row in `waiting` must never find it without a cause.
-        Sessions::StopRecord.record!(session, reason: Sessions::StopRecord::SPOT_HOLD)
-        session.update!(status: :waiting, running_job_id: nil)
+        # callback's (#608). Both in one transaction, and the record first: a reader
+        # that catches the row in `waiting` must never find it without a cause, and a
+        # flip that fails must not leave a stop record on a session still running.
+        ActiveRecord::Base.transaction do
+          Sessions::StopRecord.record!(session, reason: Sessions::StopRecord::SPOT_HOLD)
+          session.update!(status: :waiting, running_job_id: nil)
+        end
       elsif session.needs_input? && session.may_sleep?
         session.update!(running_job_id: nil) if session.running_job_id.present?
         session.sleep!

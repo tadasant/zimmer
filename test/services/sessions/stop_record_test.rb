@@ -82,10 +82,10 @@ class Sessions::StopRecordTest < ActiveSupport::TestCase
     assert_equal Sessions::StopRecord::AUTH_OUTAGE_PARK, stop_reason
   end
 
-  test "the provenance survives a park whose own record did not land" do
-    # The auth-outage park now writes both in one statement, so this row cannot be
-    # produced by that path any more. It is still the shape a future two-write
-    # mechanism would leave, and the provenance is what keeps it attributable.
+  test "the provenance survives a stop whose mechanism recorded nothing else" do
+    # AuthOutageParkService writes both in one statement, so it cannot produce this
+    # row. It is the shape any two-write mechanism would leave on a lost second
+    # write, and the stamp is what keeps such a stop attributable.
     @session.merge_metadata!(
       Sessions::StopRecord.pending_sleep(Sessions::StopRecord::AUTH_OUTAGE_PARK)
     )
@@ -133,11 +133,54 @@ class Sessions::StopRecordTest < ActiveSupport::TestCase
 
   test "a session asleep on a wake it armed classifies as a scheduled wake" do
     @session.pause!
-    @session.stubs(:awaiting_scheduled_wake?).returns(true)
+    @session.stubs(:armed_scheduled_wake?).returns(true)
 
     @session.sleep!
 
     assert_equal Sessions::StopRecord::SCHEDULED_WAKE, stop_reason
+  end
+
+  # `paused_by` carries four values from four paths, and none of them is cleared by
+  # a pause or a sleep. Collapsing them would report Zimmer's own recovery of an
+  # interrupted process as something a human did.
+  test "a recovery pause is not reported as something a human did" do
+    @session.pause!
+    @session.merge_metadata!("paused_by" => "recovery")
+
+    @session.sleep!
+
+    assert_equal Sessions::StopRecord::RECOVERY_PAUSE, stop_reason
+    assert_match(/recovery/i, @session.reload.metadata[Sessions::StopRecord::DETAIL])
+  end
+
+  test "a human pause is reported as one" do
+    @session.pause!
+    @session.merge_metadata!("paused_by" => "user")
+
+    @session.sleep!
+
+    assert_equal Sessions::StopRecord::USER_PAUSE, stop_reason
+  end
+
+  # An armed wake is the operationally useful fact — the session is coming back on
+  # it — and `paused_by` outliving an earlier pause must not suppress that.
+  test "an armed wake outranks a paused_by left over from an earlier stop" do
+    @session.pause!
+    @session.merge_metadata!("paused_by" => "recovery")
+    @session.stubs(:armed_scheduled_wake?).returns(true)
+
+    @session.sleep!
+
+    assert_equal Sessions::StopRecord::SCHEDULED_WAKE, stop_reason
+  end
+
+  test "an unrecognised paused_by value is not invented into a cause" do
+    @session.pause!
+    @session.merge_metadata!("paused_by" => "something_new")
+
+    @session.sleep!
+
+    assert_equal Sessions::StopRecord::UNATTRIBUTED, stop_reason
   end
 
   test "a session returned to the queue before it ever ran classifies as such" do
@@ -223,12 +266,37 @@ class Sessions::StopRecordTest < ActiveSupport::TestCase
       "losing the note must not also lose the transition it describes"
   end
 
+  # Stubbed at the real underlying read, NOT at the predicate, because the two
+  # predicates disagree on purpose and that disagreement is the thing being pinned:
+  # #awaiting_scheduled_wake? rescues an unreadable trigger table to TRUE, and a
+  # classifier inheriting that would attribute an unexplained stop to a wake nobody
+  # could see.
   test "an unreadable trigger table does not let an unexplained stop borrow an explanation" do
     @session.pause!
-    @session.stubs(:awaiting_scheduled_wake?).raises(ActiveRecord::StatementInvalid, "gone")
+    @session.stubs(:pending_one_time_wake_conditions).raises(ActiveRecord::StatementInvalid, "gone")
+
+    assert @session.awaiting_scheduled_wake?,
+      "the predicate every start path asks still fails safe to true"
 
     @session.sleep!
 
     assert_equal Sessions::StopRecord::UNATTRIBUTED, stop_reason
+  end
+
+  # SessionRecoveryService strips `pending_sleep` on its own and lets the session
+  # keep running. A stamp surviving that would sit on a RUNNING row and then name
+  # the cause of some later, unrelated stop — #608's invisibility with a false
+  # explanation attached.
+  test "a stamp whose flag was stripped elsewhere does not survive onto a later stop" do
+    @session.merge_metadata!(
+      Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE)
+    )
+    @session.remove_metadata!("pending_sleep")
+
+    @session.pause!
+    assert_equal "needs_input", @session.reload.status
+    @session.resume!
+
+    assert_nil @session.reload.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON]
   end
 end

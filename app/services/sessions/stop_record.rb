@@ -29,10 +29,11 @@ module Sessions
   #
   # **Provenance at the intent.** A running session does not sleep directly; it is
   # marked `pending_sleep` and the pause callback carries it needs_input -> waiting.
-  # The mark and the mechanism's own record are two writes, so a failure between
-  # them leaves the intent with nothing explaining it. #pending_sleep stamps the
+  # A mark written apart from the mechanism's own record can outlive a failure that
+  # loses the record, leaving an intent nothing explains. #pending_sleep stamps the
   # cause into the SAME write as the intent, so the provenance cannot be lost
-  # separately from the thing it explains.
+  # separately from the thing it explains — and every path that clears the flag
+  # clears the stamp with it.
   #
   # **Classification at the transition.** #classify reads whatever the row actually
   # carries when the sleep lands — the provenance first, then the park mechanisms
@@ -72,7 +73,20 @@ module Sessions
     HALTED_TURN = "halted_turn"
     UNSTARTED_REQUEUE = "unstarted_requeue"
     USER_PAUSE = "user_pause"
+    RECOVERY_PAUSE = "recovery_pause"
+    MCP_RETRY_PAUSE = "mcp_retry_pause"
     UNATTRIBUTED = "unattributed"
+
+    # `paused_by` carries four different values written by four different paths,
+    # and they are four different answers to "why did this stop". Collapsing them
+    # into one would have a recovery pause read back as something a human did.
+    # SpotSessionPause::PAUSED_BY is absent deliberately: the mechanism ranking
+    # above answers for it, and a spot row that reached this far is not a pause.
+    PAUSED_BY_CAUSES = {
+      "user" => USER_PAUSE,
+      "recovery" => RECOVERY_PAUSE,
+      "mcp_retry" => MCP_RETRY_PAUSE
+    }.freeze
 
     class << self
       # The `pending_sleep` pair, for callers that mark a RUNNING session to sleep
@@ -103,13 +117,20 @@ module Sessions
         reason ||= classify(session)
         detail ||= detail_for(session, reason)
 
-        session.merge_metadata!(
-          {
-            REASON => reason,
-            DETAIL => detail,
-            AT => Time.current.utc.iso8601
-          }
-        )
+        # Its own savepoint. The `sleep` callback runs inside AASM's transaction, and
+        # a DB-level failure swallowed there would leave the surrounding transaction
+        # ABORTED — so the very next statement raises `PG::InFailedSqlTransaction` and
+        # the transition this rescue promises to preserve is rolled back after all.
+        # A savepoint contains the failure to this write.
+        session.class.transaction(requires_new: true) do
+          session.merge_metadata!(
+            {
+              REASON => reason,
+              DETAIL => detail,
+              AT => Time.current.utc.iso8601
+            }
+          )
+        end
 
         announce_unattributed(session, detail) if reason == UNATTRIBUTED
 
@@ -135,6 +156,9 @@ module Sessions
       #    path.
       # 4. An armed one-time wake — the ordinary "the agent asked to be woken later"
       #    sleep, which writes no marker of its own because the trigger IS its record.
+      #    Ranked ABOVE `paused_by`, which is not cleared by a pause or a sleep: a
+      #    session holding a live wake is coming back on that wake, and saying it is
+      #    paused instead suppresses the one operationally useful fact about it.
       #
       # @return [String] one of the causes above; UNATTRIBUTED when none of them fits
       def classify(session)
@@ -152,10 +176,9 @@ module Sessions
 
         return DELIBERATE_SLEEP if metadata[Session::DELIBERATE_SLEEP_KEY].present?
         return UNSTARTED_REQUEUE if metadata[Sessions::ReturnToQueue::REASON_KEY].present?
-        return USER_PAUSE if metadata["paused_by"].present?
         return SCHEDULED_WAKE if armed_wake?(session)
 
-        UNATTRIBUTED
+        PAUSED_BY_CAUSES.fetch(metadata["paused_by"], UNATTRIBUTED)
       rescue StandardError => e
         Rails.logger.error(
           "[Sessions::StopRecord] Could not classify the stop of session #{session&.id}: " \
@@ -166,11 +189,14 @@ module Sessions
 
       private
 
-      # Read through the session's own predicate so this agrees with every start
-      # path about what "asleep on a wake" means. Fails to FALSE: an unreadable
-      # trigger table must not let an unexplained stop borrow an explanation.
+      # Deliberately #armed_scheduled_wake? and NOT #awaiting_scheduled_wake?, which
+      # are the same question with opposite failure biases. The predicate every start
+      # path asks answers TRUE on an unreadable trigger table, so a refresh cannot
+      # wake a sleeping session on the strength of a DB error. Here that bias would
+      # let an unexplained stop borrow an explanation, which is the whole thing this
+      # class refuses to do — so the strict twin is used and a failure means "no".
       def armed_wake?(session)
-        session.awaiting_scheduled_wake?
+        session.armed_scheduled_wake?
       rescue StandardError
         false
       end
@@ -198,7 +224,11 @@ module Sessions
           "Returned to the queue without ever running " \
           "(#{metadata[Sessions::ReturnToQueue::REASON_KEY].presence || 'reason not recorded'})."
         when USER_PAUSE
-          "Paused by #{metadata['paused_by']}."
+          "Paused by a human."
+        when RECOVERY_PAUSE
+          "Paused by Zimmer's own recovery of an interrupted process."
+        when MCP_RETRY_PAUSE
+          "Paused so its MCP servers could be retried."
         when UNATTRIBUTED
           "Went dormant with nothing on the record naming a cause: no park, no pause, no armed " \
           "wake-up and no exit status. Nothing is scheduled to wake it, so it stays in `waiting` " \
@@ -217,7 +247,10 @@ module Sessions
           "[Sessions::StopRecord] Session #{session.id} went dormant with no attributable cause " \
           "(status=#{session.status}, exit_status=#{(session.metadata || {})['exit_status'].inspect})"
         )
-        session.logs.create!(level: "warning", content: detail)
+        # Savepointed for the reason #record! is — see the comment there.
+        session.class.transaction(requires_new: true) do
+          session.logs.create!(level: "warning", content: detail)
+        end
       rescue StandardError => e
         Rails.logger.error(
           "[Sessions::StopRecord] Could not announce the unattributed stop of session " \

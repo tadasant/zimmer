@@ -29,8 +29,8 @@ require "automated_prompts"
 #    anchors its cadence instead of nudging it, so a parked session cannot be
 #    re-poked into the same wall. A session that is still RUNNING is marked
 #    `pending_sleep` and carried needs_input -> waiting by the pause callback;
-#    one that has already come to rest is slept outright. Those used to be two
-#    separate writes, and a failure between them is tadasant/zimmer#608 - see #park!.
+#    one that has already come to rest is slept outright. One write, not two:
+#    a failure between them is tadasant/zimmer#608 - see #park!.
 # 2. Writes an unmistakable session log naming the outage.
 # 3. Sends a push notification so the user learns about it away from the UI.
 #
@@ -138,30 +138,21 @@ class AuthOutageParkService
     # An estimate for the banner, not a schedule. Nothing fires at it.
     recovers_at = (reason == QUOTA_EXHAUSTED) ? earliest_pool_reset : nil
 
-    # The dormancy and the record of it are ONE write.
+    # The dormancy and the record of it are ONE write, and the announcement comes
+    # after both — the ordering this method exists to keep (tadasant/zimmer#608).
     #
-    # They used to be two, in this order: #sleep_session! first — because the
-    # metadata is what renders "this session is parked and will come back", and
-    # writing it while the session sat awake in needs_input would put a promise on
-    # screen that nothing was keeping — and #record_outage! after it.
+    # A RUNNING session is made dormant by a `pending_sleep` mark the pause callback
+    # reads at the END of its turn, so a mark written apart from the outage record
+    # can outlive a failure that loses the record. That row is invisible: with
+    # `auth_outage_reason` absent, AgentSessionJob reads the exit as an ordinary
+    # completed turn, writes no `exit_status`, pauses, and `execute_pending_sleep`
+    # carries the session running -> needs_input -> waiting saying nothing at all.
+    # Priority sessions reach that shape and no other, because they are what no
+    # spot mechanism can touch.
     #
-    # That order left a window, and the window is tadasant/zimmer#608. For a
-    # RUNNING session #sleep_session! writes nothing but `pending_sleep`, which is
-    # a mark the pause callback reads at the END of the turn. Anything raising
-    # between the two writes — the log insert, a DB blip that outlasts
-    # #with_db_retry's three attempts — is caught by this method's own rescue,
-    # which returns false and leaves the mark behind with no park record beside it.
-    # The turn then ends normally, and because `auth_outage_reason` is absent
-    # AgentSessionJob reads the exit as an ordinary completed turn: it writes no
-    # `exit_status`, pauses, and `execute_pending_sleep` carries the session
-    # running -> needs_input -> waiting. The row lands in `waiting` with no exit
-    # status, no `auth_outage_reason` and no `auth_outage_parked_at` — the exact
-    # three-column signature reported for sessions 6781, 7547 and 7324, and the
-    # reason it hit PRIORITY sessions, which no spot mechanism can touch.
-    #
-    # Merging them makes the failure atomic in the direction that matters: either
+    # One statement makes the failure atomic in the direction that matters: either
     # the session is marked to sleep AND says why, or it is neither and comes to
-    # rest in needs_input where the rescue below already claims it does.
+    # rest in needs_input, where this method's rescue says it does.
     return false unless record_park!(reason, recovers_at)
 
     announce_park(reason, recovers_at, detail)
@@ -748,11 +739,9 @@ class AuthOutageParkService
   # positive evidence for QuotaAvailabilityMonitor, and the push notification.
   #
   # Separately rescued, and NOT allowed to change #park!'s answer. The park is
-  # already committed by the time this runs, so an exception here would otherwise
-  # be caught by #park!'s own rescue and reported as "not parked" — a session that
-  # IS dormant, described to its caller as one that is not. Under the old ordering
-  # that same exception ALSO stranded the sleep intent, which is tadasant/zimmer#608;
-  # the merge above closes that half, and this closes the reporting half.
+  # committed before this runs, so an exception reaching #park!'s own rescue would
+  # report "not parked" for a session that is dormant — the reporting half of
+  # tadasant/zimmer#608, whose other half #record_park! closes.
   def announce_park(reason, recovers_at, detail)
     add_log(park_message(reason, recovers_at, detail), level: "error")
     log_buffer&.flush
@@ -811,8 +800,8 @@ class AuthOutageParkService
   #
   # Anything else — already waiting, archived, failed — takes no transition: it is
   # dormant or terminal already, and forcing one would be the caller's decision to
-  # undo, not this one's. It still gets the outage record, exactly as it did when
-  # this was two methods, because that branch never had a sleep to be atomic with.
+  # undo, not this one's. It still gets the outage record: there is no sleep on that
+  # branch for the record to be atomic with, and the session is dormant regardless.
   #
   # @return [Boolean] whether the outage was recorded
   def record_park!(reason, recovers_at)
