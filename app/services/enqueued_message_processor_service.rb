@@ -186,6 +186,14 @@ class EnqueuedMessageProcessorService
                .order(position: :asc)
                .each { |m| m.update!(position: m.position - 1) }
 
+        # A prompt the session is STILL HOLDING must not swallow the one we just
+        # claimed. `AgentSessionJob`'s follow-up arm resolves this turn's prompt as
+        # `pending_follow_up_prompt || follow_up_prompt`, so a marker standing here
+        # would win over `message_content` — and the row that carried
+        # `message_content` has just been destroyed, so it would be gone. See
+        # #displace_pending_follow_up_prompt.
+        displace_pending_follow_up_prompt(message_content)
+
         # Enqueue job to continue the session with the captured message content.
         # Attachments stored on the EnqueuedMessage ride along so queued messages
         # deliver images/files exactly the same way as immediate follow-ups.
@@ -215,6 +223,88 @@ class EnqueuedMessageProcessorService
   end
 
   private
+
+  # Get the session's held follow-up out of the way of the message we just claimed,
+  # without losing either of them.
+  #
+  # `pending_follow_up_prompt` means "a prompt was accepted for a job that has not
+  # picked it up yet", and every route that accepts a follow-up into an idle
+  # session stamps it (tadasant/zimmer#1023). It is read in preference to a job's
+  # own argument, which is what makes it work for a resume carrying a nudge — and
+  # what makes it dangerous here: the message this service claimed exists only as
+  # the argument of the job below, its queue row having been destroyed a few lines
+  # up, so a marker left standing would be delivered *instead* and the claimed
+  # message would be gone with no record of it. Two undelivered prompts, one turn,
+  # one survivor.
+  #
+  # Both survive instead. The held prompt goes to the tail of the queue and drains
+  # at the end of the turn the claimed message is about to take, in the order they
+  # were accepted; the marker is released either way, because the queue now owns
+  # it. Three cases collapse to just releasing it:
+  #
+  # - **It IS the claimed message.** The queue row was this same prompt (the guard
+  #   path in `AgentSessionJob` requeues a skipped job's prompt verbatim), so
+  #   re-queuing would give the session the same turn twice.
+  # - **A copy is already queued.** Same coalesce, one step wider.
+  # - **It is a nudge.** "You may have been interrupted, carry on" has nothing to
+  #   add to a real message that is about to be delivered — the same judgement
+  #   `Sessions::RequeueSkippedPrompt` and `AgentSessionJob#queued_message_took_over?`
+  #   both make.
+  #
+  # The queue write and the release are ONE savepoint, and that is the whole of
+  # what makes this safe. A half-applied pair is worse than either outcome on its
+  # own: a row written and the marker left standing gives the session two live
+  # copies, so the job below delivers the held prompt (the marker outranks
+  # `message_content`) and the queue drains it a second time at the end of the
+  # turn — the claimed message lost AND the held one doubled, which is both of the
+  # failures this PR exists to close, at once. Rolling the pair back leaves the
+  # pre-existing behaviour instead: the marker stands and swallows the claimed
+  # message, with the rescue's log line to say so.
+  #
+  # The rescue cannot see a position collision, and that is fine rather than a
+  # gap: the `(session_id, position)` unique constraint is DEFERRABLE INITIALLY
+  # DEFERRED, so a race with another writer of this queue surfaces at COMMIT of the
+  # outer transaction, which rolls the whole claim back. The message stays
+  # `pending` and is redelivered — late, not lost.
+  #
+  # @param message_content [String] the message this turn is about to deliver
+  # @return [void]
+  def displace_pending_follow_up_prompt(message_content)
+    held = session.metadata&.dig("pending_follow_up_prompt").presence
+    return if held.blank?
+
+    ActiveRecord::Base.transaction(requires_new: true) do
+      if held != message_content && !AutomatedPrompts.nudge?(held) &&
+         !session.enqueued_messages.pending.exists?(content: held)
+        position = (session.enqueued_messages.maximum(:position) || 0) + 1
+        session.enqueued_messages.create!(
+          content: held,
+          position: position,
+          status: "pending",
+          origin: EnqueuedMessage.origin_for_prompt(held)
+        )
+        add_log(
+          "This session was also holding an undelivered follow-up prompt, which would have been " \
+          "delivered in place of the message above. It is queued at position #{position} instead, so " \
+          "both are delivered — this one now, that one at the end of this turn.",
+          level: "warning"
+        )
+      end
+
+      session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
+    end
+  rescue => e
+    Rails.logger.error(
+      "[EnqueuedMessageProcessorService] Could not displace the held follow-up prompt for session " \
+      "#{session.id}: #{e.class}: #{e.message}"
+    )
+    add_log(
+      "This session is holding an undelivered follow-up prompt that could not be moved aside " \
+      "(#{e.class}: #{e.message}). The turn starting now may deliver it in place of the queued " \
+      "message above.",
+      level: "error"
+    )
+  end
 
   # Retire queued notices whose reason for existing has expired, before claiming
   # one to deliver. This is the point the check has to live at: the poller that

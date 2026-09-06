@@ -478,6 +478,13 @@ the session's status at the moment it arrives:
 | `running` | prompt becomes a pending `EnqueuedMessage`, delivered when the turn ends | 202 |
 | any of the three, with `force_immediate: true` | staged as an `EnqueuedMessage` and delivered through `Sessions::InterruptService`, terminating the running turn | 200 |
 
+On the direct path the prompt is also recorded on the session itself, not only handed to the job.
+That is what makes a 200 mean delivery: a worker shutdown between the response and the turn discards
+the job, and without the record the session would be resumed on a generic recovery nudge with the
+prompt gone and nothing to say so — see [a follow-up the session is still
+holding](/sessions/lifecycle/#and-a-follow-up-the-session-is-still-holding-outranks-it-too). Nothing
+about the request or the response shape changes; the record is internal.
+
 `goal` behaves identically on all three: **a non-blank goal is applied to the session, a blank or
 omitted one leaves the session's existing goal alone.** The queued and interrupted paths carry it on
 the `EnqueuedMessage` and `EnqueuedMessageProcessorService` applies it when it claims the message;

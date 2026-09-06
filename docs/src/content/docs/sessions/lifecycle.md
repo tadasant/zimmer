@@ -420,6 +420,62 @@ Why it mattered: session 7681 was killed and auto-continued four times in ninety
 lost to the nudge on every cycle, while `broadcast_message_count` moved 136 → 284 → 533. A session
 being restarted every few minutes could never drain its queue at all.
 
+#### And a follow-up the session is still holding outranks it too
+
+The queue is not the only place an undelivered prompt lives. `metadata["pending_follow_up_prompt"]`
+is the other, and it means the same thing one step earlier: **a prompt was accepted for a job that
+has not picked it up yet.** A follow-up sent to an idle session goes there, not into the queue —
+the session is resumed and a job is enqueued to carry the prompt straight to the agent.
+
+That is the window [#1023](https://github.com/tadasant/zimmer/issues/1023) reported. The sender was
+told the follow-up was sent; a recovery path resumed the target first, carrying the nudge; and no
+turn for the prompt ever appeared in the target's transcript. It was silent from both ends — the
+sender had a success result and an empty `manage_enqueued_messages`, and the recipient got a
+message indistinguishable from an ordinary interruption. Three hand-offs vanished that way in one
+afternoon and stalled a PR for four hours.
+
+`Session#recovery_turn_prompt` is where the precedence now lives, and all four automated resumes
+read it rather than reaching for the constant: `AgentSessionJob#auto_continue_after_interrupt`, both
+sweeps through `SessionContinuation#continue_recovered_session`, and
+`SessionRecoveryService#auto_restart_session`. If the session is holding a follow-up, the recovery
+turn carries **that**; otherwise it carries the nudge. The session's own timeline says which, so
+"why did this session get a nudge instead of my message" is answerable from the session page rather
+than from a raw transcript read.
+
+Two properties keep it exactly-once in both directions:
+
+- **The marker is not cleared by the read.** The follow-up arm of `AgentSessionJob#perform`
+  consumes it — moving it to `active_follow_up_prompt` just before it spawns — so the prompt
+  survives an enqueue that then fails. `STALE_RETRY_METADATA_KEYS`, which every recovery claim
+  clears, deliberately does not list it: an undelivered prompt is not retry state.
+- **Whoever takes custody drops it.** [`Sessions::RequeueSkippedPrompt`](/sessions/spawning/#standing-down-does-not-throw-the-prompt-away)
+  releases the marker when it moves that same prompt into the durable queue, and
+  [`SpotSessionHold`](/sessions/spot-and-priority/) removes it when the gate takes the turn. Two live
+  copies of one prompt is two turns, which is the same defect wearing the other mask — the one
+  [#1009](https://github.com/tadasant/zimmer/issues/1009) landed guards for.
+- **And it never displaces a message that outranks it.** `EnqueuedMessageProcessorService` claims a
+  queued message and destroys its row inside the transaction that enqueues the job carrying it — so
+  from that moment the message is a job argument, and a marker left standing would be delivered
+  *instead* of it. The processor moves the held prompt to the tail of the queue and releases the
+  marker, so the claimed message takes this turn and the held prompt takes the next one. Identical
+  text, a copy already queued, and a nudge each collapse to just releasing it.
+
+The producer side had to be fixed for any of it to hold. `Session#deliver_follow_up!` stamped the
+marker, but the two routes that deliver a follow-up straight into an idle session —
+`Mcp::Tools::ActionSession#direct_follow_up` and `POST /api/v1/sessions/:id/follow_up` — did not, so
+for them the accepted prompt existed **only** as the argument of the job they enqueued. A worker
+shutdown discards that job, and with it the only copy. Both now stamp it, immediately after the
+resume, so a reader who sees the marker is guaranteed to also see `running`.
+
+The interrupt path is the same loss reached from the other side, and `AgentSessionJob`'s
+`#preserve_interrupted_prompt` closes it: when `handle_interrupt_error` throws a job away and
+recovery-pauses the session, the prompt that job was carrying is handed back to the row first, so
+the resume that follows delivers it. It refuses in five cases — no prompt, a nudge, a prompt already
+handed to the runtime (`active_follow_up_prompt` contains it, so re-stamping would *replay* a
+message the agent already acted on), an earlier undelivered prompt already in the slot, and a copy
+already in the queue — and every refusal is written to the session's timeline with the prompt text,
+because a drop that is written down is not this bug.
+
 ### `resume` — `waiting | needs_input | failed → running`
 
 Unguarded, deliberately. The preconditions for resuming — a clone on disk, a runtime
