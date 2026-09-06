@@ -9,6 +9,14 @@ name: Domain cert (staging)
 # still valid for >30 days), on demand, and via workflow_call so deploy-staging can
 # chain it after a fresh droplet comes up.
 #
+# THE SCHEDULED RUN IS GUARDED, because staging is not always there. `teardown-staging`
+# destroys the droplet on the nights nobody deployed to it, and with no droplet there is
+# no tailnet IP to point the A record at and no box to push a cert to -- so an unguarded
+# weekly cron would fail, and page #alerts through `alert-ci-failure.yml`, on a schedule
+# of its own. The guard job below skips the week instead. Nothing is lost by skipping:
+# `deploy-staging` chains this workflow after a fresh droplet comes up, so the cert is
+# re-issued the moment there is somewhere to put it.
+#
 # Prod has its own copy of this in a private companion repo, pointed at the prod
 # host + zone; the shared logic is scripts/domain-cert.sh so the two cannot drift.
 on:
@@ -34,7 +42,46 @@ permissions:
   contents: read
 
 jobs:
+  # Only the SCHEDULE is guarded. A `workflow_dispatch` or the `workflow_call` from
+  # deploy-staging skips this job entirely and runs the cert job unconditionally, exactly
+  # as before: a human asking for a cert gets the attempt (and its error) they asked for,
+  # and the deploy chain must not pay for a `terraform init` it does not need -- it just
+  # applied, so the droplet is provably there.
+  guard:
+    if: github.event_name == 'schedule'
+    runs-on: self-hosted
+    environment: staging
+    outputs:
+      proceed: ${{ steps.decide.outputs.proceed }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+          # The guard READS terraform's stdout to find the droplet, so it takes the raw
+          # binary rather than the action's Node wrapper -- there is nothing here for the
+          # wrapper's captured step outputs to be useful for, and one less layer between
+          # `terraform state list` and the decision.
+          terraform_wrapper: false
+
+      - name: Is there a staging droplet to certify?
+        id: decide
+        env:
+          # Read-only: the guard opens the remote state to look for the droplet, and
+          # talks to neither DigitalOcean nor Cloudflare.
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: bash scripts/staging-lifecycle-guard.sh cert
+
   cert:
+    needs: [guard]
+    # `!cancelled()` and not `always()`: a plain `needs:` job is skipped when its
+    # dependency is skipped, which is what happens on every dispatch and every
+    # workflow_call -- so this has to run past a skipped `guard` while still respecting
+    # a real cancellation.
+    if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.guard.outputs.proceed == 'true') }}
     runs-on: self-hosted
     environment: staging
     env:
