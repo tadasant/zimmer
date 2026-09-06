@@ -396,8 +396,8 @@ systemctl restart docker                          # containers restart per their
 `sysbox.service.wants/`, which nothing at boot reads; the umbrella unit is the one carrying
 `WantedBy=multi-user.target` and `Before=docker.service`, and it `BindsTo` the other two, so
 enabling it starts all three in the order `--restart` policies need. Enable only the daemons
-and the runtime is active now and gone after the next reboot, with the worker still asking
-for `runtime: sysbox-runc`.
+and the runtime works now but is gone after the next reboot, with the worker still asking for
+`runtime: sysbox-runc`.
 
 Verify before deploying anything onto it:
 
