@@ -332,8 +332,9 @@ class SpotSessionPause
           PAUSED_COUNT => (session.metadata || {})[PAUSED_COUNT].to_i + 1,
           "paused_by" => PAUSED_BY,
           # What actually makes the session dormant: the pause callback reads
-          # this and sleeps it needs_input -> waiting.
-          "pending_sleep" => true
+          # this and sleeps it needs_input -> waiting. The provenance rides in the
+          # same statement so the sleep can name its own cause (#608).
+          **Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SPOT_PAUSE)
         )
         session.update!(running_job_id: nil)
         session.pause!

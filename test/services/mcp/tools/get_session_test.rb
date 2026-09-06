@@ -358,6 +358,55 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
                             "pause. It is older than the reason above."
   end
 
+  # tadasant/zimmer#608. A session that left `running` for `waiting` with no park,
+  # no pause and no armed wake used to render NOTHING here — which is exactly what
+  # made the reported bounce invisible to the caller that had just woken it.
+  test "a dormant session no mechanism claims still says why it stopped" do
+    session = sessions(:running)
+    session.update!(status: :waiting, metadata: {
+      Sessions::StopRecord::REASON => Sessions::StopRecord::UNATTRIBUTED,
+      Sessions::StopRecord::DETAIL => "Went dormant with nothing on the record naming a cause.",
+      Sessions::StopRecord::AT => "2026-08-22T17:16:20Z"
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "**Went dormant with no attributable cause at 2026-08-22T17:16:20Z.**"
+    assert_includes output, "Treat a wake of this session as unconfirmed until it is re-read"
+  end
+
+  test "an ordinary dormancy names its recorded reason in one line" do
+    session = sessions(:running)
+    session.update!(status: :waiting, metadata: {
+      Sessions::StopRecord::REASON => Sessions::StopRecord::SCHEDULED_WAKE,
+      Sessions::StopRecord::DETAIL => "Slept on a wake-up it has armed.",
+      Sessions::StopRecord::AT => "2026-08-22T17:16:20Z"
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Dormant because:** `scheduled_wake`"
+    assert_includes output, "Slept on a wake-up it has armed."
+  end
+
+  # The park mechanisms keep their own richer rendering — the stop record is the
+  # fallback for what they do not claim, not a second answer beside them.
+  test "a park mechanism still outranks the stop record" do
+    session = sessions(:running)
+    session.update!(status: :waiting, metadata: {
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => "2026-08-22T11:50:51Z",
+      Sessions::StopRecord::REASON => Sessions::StopRecord::AUTH_OUTAGE_PARK,
+      Sessions::StopRecord::DETAIL => "Parked because the runtime's login pool had nothing usable.",
+      Sessions::StopRecord::AT => "2026-08-22T11:50:51Z"
+    })
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Parked for an auth outage"
+    refute_includes output, "- **Dormant because:**"
+  end
+
   # An auth-outage park has its own resume owner — the quota-recovery path, not
   # the spot gate — and until #642 it was the one dormancy this tool could not say
   # out loud. A session parked on an empty login pool read back nothing at all.

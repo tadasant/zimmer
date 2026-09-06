@@ -359,7 +359,11 @@ class SessionRecoveryService
       # rescues needs_input. Clearing the flag here keeps recovery deterministic.
       session.merge_metadata!(
         { "paused_by" => "recovery" },
-        %w[recovery_termination_initiated pending_sleep]
+        # The provenance stamp goes with the flag it explains. Left behind, it
+        # would sit on a session that goes on running and name the cause of a
+        # later stop that has nothing to do with this one.
+        [ "recovery_termination_initiated", "pending_sleep",
+          Sessions::StopRecord::PENDING_SLEEP_REASON ]
       )
       session.update!(running_job_id: nil)
       session.pause! if session.may_pause?
