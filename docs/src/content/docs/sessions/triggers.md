@@ -762,14 +762,16 @@ this event fires.
 What the queue count was really doing was damping churn — keeping the moment between one session
 ending and the next starting from reading as an idle fleet. **`fleet_idle_threshold_minutes` absorbs
 that directly**, and it is why dropping the queue from the count is safe: the fleet has to stay under
-the ceiling for the *whole* stretch, and `record_busy!` restarts that clock unconditionally the
-moment any session enters `running`. A fleet that flaps never accumulates a stretch, at any ceiling.
+the ceiling for the *whole* stretch, and both the sweep and the state-machine hook end that stretch
+the moment it is at or over the ceiling again. A fleet that flaps *across its ceiling* never
+accumulates a stretch. Churn well *under* the ceiling is not flapping and resets nothing — a fleet of
+four with a ceiling of twelve has not stopped being quiet because a fifth session started.
 
 The `running` count is scoped `not_in_frozen_category`, matching `CleanupOrphanedSessionsJob` and
 `DeploymentRecoveryJob`: a `running` row in a frozen category is one nothing will ever repair, and
 counting it would pin the monitor to "busy" forever with nothing to say why.
 
-##### Why a latch as well as a level
+##### Why a dwell and a cooldown, not just a level
 
 This is the one system event where the analogy to `quota_available` needs care. A pool recovering is
 naturally a transition; "the fleet is under its ceiling" is a **state** that stays true for as long as
@@ -779,51 +781,64 @@ columns on `app_settings`:
 
 | Column | Means |
 | --- | --- |
-| `fleet_idle_since` | when the fleet was first observed under its ceiling — the clock the threshold is measured against. `NULL` means the fleet was at or over it at the last observation |
-| `fleet_idle_event_fired_at` | when the event last fired. Two jobs: within one quiet stretch it is the **latch**, and across stretches it is the **cooldown** clock |
+| `fleet_idle_since` | when the fleet was first observed under its ceiling — the **crossing**, not the last time anything happened on it. The clock the threshold is measured against. `NULL` means the fleet was at or over the ceiling at the last observation |
+| `fleet_idle_event_fired_at` | when the event last fired. The **cooldown** clock, and nothing else |
 
-`fleet_idle_since` is cleared the moment the fleet has work again, and that happens two ways:
-`FleetIdleCheckerJob` observes it on its next tick, and `SessionStateMachine` writes it directly the
-moment any session enters `running`. The second is what makes a session that starts and finishes
-inside one tick count — sampling alone would never see it, and the latch would stay spent against a
-fleet that had gone back to work. (It is an `after_commit`, so it does not cover a `update_column`
-write of `status`; nothing does that today, and the sweep re-arms on its next tick regardless.)
+The two answer different questions and neither substitutes for the other. `fleet_idle_since` is the
+**dwell** — has the fleet been quiet long enough to be worth topping up, rather than merely between
+two sessions. `fleet_idle_event_fired_at` is the **cadence** — how often top-up may hand work out at
+all. A fire needs both.
 
-##### The latch is not enough on its own
+`fleet_idle_since` is cleared only when the fleet is at or over its ceiling, and that is observed two
+ways: `FleetIdleCheckerJob` sees it on its next tick, and `SessionStateMachine` reports every session
+entering `running` so the monitor can check the ceiling straight away. The second is what makes a
+fleet that fills up and empties again inside one tick count — sampling alone would never see it, and
+a stretch would run straight through the moment the fleet was full. (It is an `after_commit`, so it
+does not cover an `update_column` write of `status`; nothing does that today, and the sweep takes its
+own reading on its next tick regardless.)
 
-The reason is circular and easy to miss: **the fire spawns a session, that session enters `running`,
-and running is exactly what re-arms the latch.** On a deployment quiet for some other reason — an
-empty backlog, a gate that declines — the steady state would be one spawned session every five
-minutes plus however long it takes to finish, forever. The event's own answer would keep
-re-qualifying it.
+A session start that leaves the fleet **under** its ceiling changes nothing. That is the whole point
+of the column: a fleet of four with a ceiling of twelve is as quiet after the fifth session starts as
+it was before.
 
-`fleet_idle_min_fire_interval_minutes` — one hour by default — is the floor under that, which is why
-`fleet_idle_event_fired_at` is *not* cleared when the fleet gets work. "Has this stretch already
-fired" is the comparison `fired_at >= idle_since`, not mere presence.
+##### Why the cadence is the cooldown alone
 
-**A ceiling above 1 makes the cooldown the load-bearing half of that pair, and the real cap on how
-often work gets started.** With the old boolean the fire's own session took the fleet from zero
-running to one, which ended the stretch outright and left the cooldown to matter only on the next
-one. Under a ceiling the fleet is routinely still under it while the spawned session runs, so the
-stretch does not end on its own — the cooldown is the only thing between the deployment and a fire
-per threshold. At the shipped 60 minutes that is at most **24 top-ups a day**, whatever the ceiling
-is set to. Retune the interval, not the ceiling, to change the cadence.
+The dwell cannot pace a fleet that stays quiet. Once a stretch is past its threshold it *stays* past
+it, for hours, so the threshold answers "may this stretch fire at all" and never "may it fire again".
 
-The re-arm on `running` stays **unconditional** rather than becoming ceiling-aware, and that is
-deliberate. A version that only cleared the clock when the fleet climbed *above* its ceiling would
-leave `fleet_idle_since` frozen behind `fleet_idle_event_fired_at` on a fleet that never gets that
-busy, the latch would hold forever, and the event would fire exactly once in the deployment's life.
-Ending the stretch is what hands the cadence to the cooldown.
+`fleet_idle_min_fire_interval_minutes` — one hour by default — is what answers the second question,
+and it is the only thing that does. On a fleet permanently under its ceiling the cadence is exactly
+that interval: at the shipped 60 minutes, at most **24 top-ups a day**, whatever the ceiling is set
+to. Retune the interval, not the ceiling, to change how often work gets started.
+
+It has to be a clock the fleet cannot touch, for a reason that is circular and easy to miss: **the
+fire spawns a session, and that session is itself work on the fleet.** Anything that read the fleet's
+own response as evidence of a new stretch would let the event re-qualify itself, and on a deployment
+quiet for some other reason — an empty backlog, a gate that declines — the steady state would be one
+spawned session every five minutes plus however long it takes to finish, forever. The cooldown never
+consults the fleet, so the fleet cannot talk it round. That is why `fleet_idle_event_fired_at` is
+*not* cleared when the fleet gets work.
+
+There was a third term here once, a **latch**: `fired_at >= idle_since`, meaning "this stretch has
+already had its fire". It worked only because the state-machine hook cleared `fleet_idle_since` on
+*any* session entering `running`, which quietly made the column mean "when a session last started"
+rather than the ceiling crossing it is named for. That cost two things. The `/inference` card told an
+operator the fleet had "been under its ceiling of 12 for 1 minute" when it had been under 12 for
+hours; and top-up's real cadence became the gaps between session starts, so a deployment with any
+steady trickle of them struggled to accumulate a threshold at all. The clock now means what it says
+and the latch went with it — the cooldown was already the load-bearing half at any ceiling above 1,
+and it is now the whole of it.
 
 The fire itself is a guarded `UPDATE` on `(id, fleet_idle_since, fleet_idle_event_fired_at)` rather
-than a plain write, so a re-arm landing between the read and the write cannot be clobbered from a
-stale record — losing that race means the fleet got work while the monitor was deciding, which is
-exactly when it must not fire.
+than a plain write, so a clear landing between the read and the write cannot be clobbered from a
+stale record — losing that race means the fleet reached its ceiling while the monitor was deciding,
+which is exactly when it must not fire. The `UPDATE` deliberately leaves `fleet_idle_since` where it
+is: the stretch did not end because the event fired.
 
 One more asymmetry. An undelivered `quota_available` fire **re-arms** its edge, because the sessions
 it exists to wake are still parked and the next sweep should try again. An undelivered
 `no_sessions_in_progress` fire does not: nothing is waiting on it, and re-arming would produce one
-fire per tick for as long as the quiet lasted — the exact loop the latch exists to prevent.
+fire per tick for as long as the quiet lasted — the exact loop the cooldown exists to prevent.
 
 ### `github_label`
 

@@ -90,9 +90,9 @@ class AppSetting < ApplicationRecord
   #
   # Deliberately NOT the whole row. `fleet_idle_since`, `fleet_idle_event_fired_at`
   # and `quota_pool_available*` live on the same record but are written by the
-  # pollers on their own sweep, several times an hour — folding them in would bury
-  # the handful of lines that matter under a running commentary and make
-  # `updated_at` useless as "when did the policy last move". `default_runtime`,
+  # pollers on their own sweep rather than by anyone deciding anything — folding
+  # them in would bury the handful of lines that matter under a running
+  # commentary and make `updated_at` useless as "when did the policy last move". `default_runtime`,
   # `default_model`, `extension_states` and `uncategorized_position` are settings
   # too, but they are not fleet scheduling and they are not what silently halves
   # throughput.
@@ -179,9 +179,10 @@ class AppSetting < ApplicationRecord
       DEFAULT_FLEET_IDLE_MIN_FIRE_INTERVAL_MINUTES
     end
 
-    # No row means no observation, which is what NULL means on a real row too.
-    # FleetTopUpStatus reads both unconditionally, so a DB-less boot needs them to
-    # answer rather than raise.
+    # No row means no observation, which is what NULL means on a real row too:
+    # the fleet was at or over its ceiling when it was last looked at, and nothing
+    # has fired. FleetTopUpStatus reads both unconditionally, so a DB-less boot
+    # needs them to answer rather than raise.
     def fleet_idle_since
       nil
     end

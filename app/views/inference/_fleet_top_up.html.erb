@@ -68,7 +68,9 @@
                  class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
           <p class="mt-1 text-xs text-gray-500">
             How long it has to stay there first, so the gap between one session ending and the next
-            starting is not mistaken for an idle fleet. Checked once a minute.
+            starting is not mistaken for an idle fleet. Checked once a minute. The clock runs from the
+            moment the fleet drops <strong>below</strong> the ceiling and is only put back when it
+            reaches the ceiling again — sessions starting and finishing underneath it do not restart it.
           </p>
         </div>
         <div>
@@ -82,8 +84,9 @@
                  min="1" max="10080" step="1"
                  class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
           <p class="mt-1 text-xs text-gray-500">
-            The floor between two fires — <strong><%= @fleet_top_up.cadence_phrase %></strong>.
-            With a ceiling above 1 this, not the ceiling, is what caps how often work gets started.
+            The floor between two fires — <strong><%= @fleet_top_up.cadence_phrase %></strong>. On a fleet
+            that stays under its ceiling this, not the ceiling, is the whole of the cadence: the stretch
+            runs on through a fire, so only the cooldown decides when the next one is allowed.
           </p>
         </div>
       </div>
@@ -96,8 +99,8 @@
     <% end %>
 
     <%# ---- Where the fleet sits against them ----
-        Both of the monitor's clocks, which are readable nowhere else: four states
-        look identical from outside ("it hasn't fired") and clear four different
+        Both of the monitor's clocks, which are readable nowhere else: three states
+        look identical from outside ("it hasn't fired") and clear three different
         ways. FleetTopUpStatus names which one, and `get_spot_policy` prints the
         same sentence from the same object. %>
     <div class="rounded-md border <%= @fleet_top_up.under_ceiling? ? "border-green-200 bg-green-50" : "border-gray-200 bg-gray-50" %> p-4"
@@ -147,9 +150,16 @@
           </dd>
         </div>
         <div>
-          <dt class="text-gray-500">Idle since</dt>
+          <%# The moment the fleet CROSSED below its ceiling, not the last time
+              anything happened on it. It used to be the latter, which is how the
+              card came to tell an operator the fleet had been under a ceiling of
+              12 for one minute while it had been under 12 for hours. %>
+          <dt class="text-gray-500">Under its ceiling since</dt>
           <dd class="font-medium text-gray-900" id="fleet-top-up-idle-since">
             <%= @fleet_top_up.idle_since ? "#{time_ago_in_words(@fleet_top_up.idle_since)} ago" : "—" %>
+            <div class="text-xs text-gray-500 font-normal mt-0.5">
+              the crossing below <%= @fleet_top_up.max_sessions %>, not the last session start
+            </div>
           </dd>
         </div>
         <div>
