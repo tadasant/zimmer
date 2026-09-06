@@ -340,13 +340,28 @@ What production still needs:
    *outside* it, so the pool decides *who* the kernel kills when the sum is reached — one
    session, not the worker that runs all of them. That is what let the number move.
 
-   **The dev stacks in this document are the reason the pool was not raised with it.**
-   dockerd starts before the cgroup delegation, so it and the `.agent-containers` stacks it
-   runs stay in the container cgroup, *outside* the sessions pool — about 1.5 GiB alongside
-   the worker's ~1.6 GiB. The pool's residual has to cover both, which is why
-   `ZIMMER_SESSIONS_MEMORY_MAX_MB` stayed at 6144 (residual 4096 MB) when the threads went
-   to 12: at 7168 the residual would be 3072 MB, under that measured need, and the
-   *container* cap would fire instead — taking the worker, exactly as before the fix.
+   **The dev stacks are outside the sessions pool, and this number is the only thing that
+   bounds them.** dockerd starts before the cgroup delegation — `bin/docker-entrypoint` says
+   so explicitly — so it and the `.agent-containers` stacks it runs are charged to the
+   container cgroup, alongside the Rails worker, in the victim set the container cap selects
+   from. [#981](https://github.com/tadasant/zimmer/issues/981)'s pool does not cover this
+   path. So while session *process* memory is now contained, a session that holds a dev stack
+   still spends the container's residual, and twelve threads means up to twelve of them.
+
+   Two consequences, and the second is the one that gets this backwards:
+
+   - The residual has to cover the worker (~1.6 GiB) plus dockerd and its stacks (~1.5 GiB
+     measured at 8 threads) — ~3.1 GiB. At `ZIMMER_SESSIONS_MEMORY_MAX_MB` 6144 the residual
+     is 4096 MB and covers it; at 7168 it would be 3072 MB and would not, so the *container*
+     cap would fire and take the worker. That is why the pool did **not** move with the
+     threads.
+   - Scaling only the stack term to 12 threads gives ~1.6–2.25 GiB, so ~3.2–3.85 GiB against
+     that 4096 MB residual — positive margin, but thinner than at 8. Measured live it is far
+     smaller (dockerd plus stacks at 63 MB, because few sessions hold one), which is what
+     makes 12 defensible rather than proven. **A fleet that leans on nested Docker should
+     re-derive this before raising the threads again.** The staging measurement above — one
+     stack ≈ 700 MB, a second concurrent stack OOM-killing — was taken against staging's
+     2g cap and does not transfer to production's 10g.
 
 Do it as its own change, after staging has run on it. The blast radius is not comparable:
 production is where agent sessions actually execute, and the failure mode of arming the
