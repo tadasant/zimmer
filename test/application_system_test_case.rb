@@ -137,6 +137,31 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
     Capybara.server_port = 9800 + worker
   end
 
+  # The window every test starts at.
+  #
+  # Nothing set one before, and that was not a choice — Rails only applies a
+  # `screen_size` to the drivers it registers itself (`:selenium`, `:cuprite`,
+  # `:rack_test`, `:playwright`), and `:selenium_chrome_headless` is this file's
+  # own registration, which sizes nothing. So a test ran at Chrome's headless
+  # default of 800x600, or at whatever the last file to call `resize_to` left
+  # behind — decided by the `--seed` shuffle rather than by the test.
+  #
+  # Geometry is not cosmetic in a browser suite. It decides what is in the
+  # viewport, and what is in the viewport decides whether an IntersectionObserver
+  # fires — which is how a `<turbo-frame loading="lazy">` learns to fetch. Two
+  # LostElicitationBannerTest cases failed that way in run 34060027053, at
+  # 800x600, on a commit that touched neither the view nor the test.
+  #
+  # 1400x900 is what the twenty-odd files that resize for a phone already restore
+  # to, so this is the suite's desktop default written down rather than a new
+  # one. A test that wants another size still resizes: a `setup` block in a
+  # subclass runs after this one, and a resize in the test body is later still.
+  DESKTOP_WINDOW_SIZE = [ 1400, 900 ].freeze
+
+  setup do
+    page.driver.browser.manage.window.resize_to(*DESKTOP_WINDOW_SIZE)
+  end
+
   # Scroll element into center of viewport to avoid fixed headers intercepting clicks
   # Uses JavaScript scrollIntoView with 'center' block option
   def scroll_into_center(element)
