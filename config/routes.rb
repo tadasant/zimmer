@@ -2,7 +2,7 @@ Rails.application.routes.draw do
   namespace :supervisor do
     resources :account_rotation_events
     # Read-only: both tables are measurements of API calls that already happened,
-    # written by TokenUsageIngestionService from transcripts. There is nothing to
+    # written from transcripts by the ingestion services. There is nothing to
     # hand-author, and a corrected row comes from re-running ingestion.
     resources :adhoc_token_usages, only: [ :index, :show ]
     # Read-only plus destroy: rows are written by TranscriptHooks::GithubCommentAuthorshipHook

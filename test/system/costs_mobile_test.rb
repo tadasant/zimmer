@@ -77,6 +77,18 @@ class CostsMobileTest < ApplicationSystemTestCase
       )
     end
 
+    # A Pi row alongside them, so the by-runtime table renders both billing
+    # relationships rather than a single row. Its model id is the longest
+    # unbreakable string on the page — signature 4, provider-qualified.
+    SessionTokenUsage.create!(
+      request_id: "pi:#{SecureRandom.uuid}:deadbeef", session_id: session.id,
+      agent_runtime: "pi", model: "openrouter/anthropic/claude-opus-4.6",
+      agent_root: "tadasant-internal/artifacts-agent-roots-issue-work-gate",
+      called_at: 1.hour.ago, input_tokens: 500, output_tokens: 120_000,
+      cache_read_tokens: 400_000_000, cache_creation_tokens: 20_000_000,
+      cache_creation_5m_tokens: 20_000_000
+    )
+
     AdhocTokenUsage.create!(
       request_id: "req_mobile_adhoc", source: "cli_status_probe",
       model: "claude-opus-5", called_at: 1.hour.ago,
@@ -107,6 +119,12 @@ class CostsMobileTest < ApplicationSystemTestCase
 
     visit costs_path(days: 30)
     assert_text "Where the money goes"
+
+    # The by-runtime table is the split that tells subscription spend from a
+    # metered invoice, and its heading is the longest on the page. Asserted so
+    # the probes below are measuring it rather than passing on its absence.
+    assert_text "By runtime"
+    assert_text "openrouter/anthropic/claude-opus-4.6"
 
     assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
       "Costs page overflows the viewport at #{MOBILE_WIDTH}px"
