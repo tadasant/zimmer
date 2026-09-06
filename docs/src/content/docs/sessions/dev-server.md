@@ -99,11 +99,24 @@ So the first deploy after a destination declares `devdb` creates it, and nobody 
 setup command.
 
 Later deploys skip it: `accessory boot` looks for an existing container (`docker ps -a`)
-and leaves the host alone if one is there. That is what makes running it every time free,
-and it is also why a `devdb` that stops is not revived by deploying again
-([#419](https://github.com/tadasant/zimmer/issues/419)). A preflight failure means the
-accessory is not running right now, so the next step is `kamal accessory details devdb -d
-<dest>` from an operator shell, not a setup command.
+and leaves the host alone if one is there. That is what makes running it every time free —
+and it is also why booting alone never revives a `devdb` that **stopped**, since a stopped
+container is still an existing one ([#419](https://github.com/tadasant/zimmer/issues/419)).
+
+So staging's deploy follows the boot with `kamal accessory reboot devdb -d staging`, which
+stops, prunes and re-creates the container unconditionally. That is safe for this accessory
+and this one only: it is volume-less, so there is nothing to preserve. Re-running the
+staging deploy is therefore the recovery path for a preflight failure.
+
+The price is that every staging deploy discards every `zimmer_dev_<clone>` database along
+with the container. Usually that costs nothing, because the same deploy replaces the worker
+container those sessions run in anyway, and `bin/agent-dev` re-runs `db:prepare` on its next
+boot. The exception is a deploy that fails its health check: kamal-proxy leaves the old
+containers serving, so a session survives — but its scratch database went with the reboot
+that ran before the deploy, and it has to re-run `bin/agent-dev`. Production's
+pipeline (in the companion repo) still only boots, so there the next step is `kamal
+accessory reboot devdb -d production` from an operator shell — never a setup command, since
+the accessory is already declared.
 :::
 
 ### Every clone shares one database server

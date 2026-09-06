@@ -348,10 +348,19 @@ jobs:
           fi
           echo "✅ sysbox works: container root maps to host uid ${host_uid}, not 0"
 
-      # Deploy onto the persistent host. `accessory boot` is already idempotent in
-      # Kamal 2 (it skips a container that exists), so this is NOT `|| true`-guarded:
-      # a genuine failure here (registry login, image pull, bad DB password) must fail
-      # the deploy loudly instead of surfacing later as an opaque health-check timeout.
+      # Deploy onto the persistent host. Nothing here is `|| true`-guarded: a genuine
+      # failure (registry login, image pull, bad DB password) must fail the deploy loudly
+      # instead of surfacing later as an opaque health-check timeout.
+      #
+      # The accessory lines are safe to run on every deploy, but for two different reasons.
+      # `accessory boot` is idempotent by EXISTENCE, not by health: Kamal 2 checks
+      # `docker ps -a` per host and skips any host where a container is present, and a
+      # STOPPED container is present. That makes booting every time free -- and it also
+      # means a `devdb` that stops is never revived by deploying again, which stranded
+      # sessions with no way back (#419): the Docker socket is mounted into the worker but
+      # the worker is not in its group (#409), so `bin/agent-dev` just fails its preflight.
+      # So `devdb` is REBOOTED instead, which is safe only because it is the volume-less,
+      # disposable accessory -- see the lines themselves for the scoping.
       # The image was built above, so --skip-push just pulls the existing tag.
       - name: Kamal deploy (staging)
         env:
@@ -489,7 +498,29 @@ jobs:
             echo "::warning::session's first \`git commit\` fails with 'Author identity unknown'."
           fi
           echo "-------------------------------"
+          # Creates any accessory the destination declares but the host does not have.
+          # Skips every accessory that already exists, running or not -- see the comment
+          # above this step for why that is not enough on its own.
           kamal accessory boot all -d staging
+          # ...which is why `devdb` -- and ONLY `devdb` -- is rebooted rather than booted.
+          # `reboot` is registry login + `docker image pull` + stop + `docker container
+          # prune --filter label=service=zimmer-devdb` + boot, so it is destructive by
+          # design: on a data-bearing accessory it would be a bug. `devdb` is the one
+          # accessory declared with no `volumes:` key at all (config/deploy.staging.yml);
+          # it holds nothing but scratch `zimmer_dev_<clone>` databases, so throwing the
+          # container away costs nothing and makes a deploy the recovery path for a
+          # session that finds no Postgres at zimmer-devdb:5432 (#419).
+          #
+          # Two accepted costs. The pull is unconditional and raises, so a Docker Hub
+          # outage or rate-limit now fails the deploy here rather than being skipped over
+          # -- deliberate, same fail-loudly bargain as the rest of this step. And staging's
+          # scratch Postgres follows the moving `postgres:16` tag, which is what a
+          # throwaway database should do.
+          #
+          # Widening this line to `db`, `redis` or `all` would destroy staging's own data.
+          # `test/config/devdb_accessory_test.rb` fails the build if the name rebooted here
+          # is ever an accessory that declares a volume, so the guard is not this comment.
+          kamal accessory reboot devdb -d staging
           kamal deploy -d staging \
             --version="${{ steps.img.outputs.tag }}" \
             --skip-push
