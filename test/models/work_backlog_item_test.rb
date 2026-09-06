@@ -145,6 +145,7 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
   test "an item whose session has archived is neither in flight nor parked nor claimed" do
     item = backlog_item
     item.mark_started!(session: sessions(:archived), by: nil, now: 2.hours.ago)
+    sessions(:archived).update!(archived_at: 1.hour.ago)
 
     assert_empty WorkBacklogItem.in_flight
     assert_empty WorkBacklogItem.parked
@@ -152,14 +153,40 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
     assert_equal [ item.id ], WorkBacklogItem.ended_since(24.hours.ago).pluck(:id)
   end
 
+  # THE WINDOW IS DATED FROM THE END, NOT THE START, and this is the case that
+  # tells the two apart. An item started three days ago whose session archived a
+  # minute ago is the SHAPE THIS QUEUE PRODUCES — a session parks on a PR for two
+  # days and then a human merges it — so a window measured from `started_at`
+  # would drop it at the exact moment it finished.
+  test "ended_since dates the window from when the session ended, not when the item started" do
+    long_running = backlog_item
+    long_running.mark_started!(session: sessions(:archived), by: nil, now: 3.days.ago)
+    sessions(:archived).update!(archived_at: 1.minute.ago)
+
+    assert_equal [ long_running.id ], WorkBacklogItem.ended_since(24.hours.ago).pluck(:id),
+                 "an item started three days ago whose session just archived has just finished"
+  end
+
   test "ended_since reaches back only as far as it is asked to" do
     recent = backlog_item
     recent.mark_started!(session: sessions(:archived), by: nil, now: 2.hours.ago)
+    sessions(:archived).update!(archived_at: 2.hours.ago)
     old = backlog_item
     old.mark_started!(session: sessions(:failed), by: nil, now: 3.days.ago)
+    # `failed` carries no end timestamp of its own, so `updated_at` is the proxy.
+    sessions(:failed).update_columns(updated_at: 3.days.ago)
 
     assert_equal [ recent.id ], WorkBacklogItem.ended_since(24.hours.ago).pluck(:id)
     assert_equal [ recent.id, old.id ].sort, WorkBacklogItem.ended_since(1.week.ago).pluck(:id).sort
+  end
+
+  test "ended_since ignores a session that has not ended, however old the item is" do
+    running = backlog_item
+    running.mark_started!(session: sessions(:running), by: nil, now: 3.days.ago)
+    parked = backlog_item
+    parked.mark_started!(session: sessions(:needs_input), by: nil, now: 3.days.ago)
+
+    assert_empty WorkBacklogItem.ended_since(1.week.ago)
   end
 
   test "claimed is in_flight plus parked, and never a queued or removed item" do

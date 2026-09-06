@@ -152,7 +152,20 @@ read surface â€” the REST index, `get_work_backlog`, `pull_work_backlog_items` â
 [the Issues view](/operate/issues-view/) renders them as their own section, because "these are
 waiting on you" is usually the answer to "why is the queue not draining".
 
+They are also **listable**, not only countable: `status` accepts `in_flight`, `parked` and
+`claimed` (both) alongside `queued` / `started` / `removed` / `all`, on the REST index and on
+`get_work_backlog`. A count says how many; a caller told "parked is not part of your WIP
+arithmetic" needs to be able to go and look at which.
+
 Both counts are of sessions **this backlog produced**, not of the whole spot population.
+
+**Nothing bounds the parked pile, and that is a deliberate open edge.** Narrowing `in_flight` also
+removes the only thing that indirectly limited how many finished-but-unmerged sessions the backlog
+could accumulate: parked sessions are outside `SpotGateService`'s fleet cap too, and `needs_input`
+is a non-reapable status, so each one holds its clone. If merging stops for a fortnight the pull
+keeps pulling while `parked` climbs. The rule for a groomer is therefore a second condition rather
+than a second number: when `parked` keeps growing, the useful action is to get those PRs merged,
+not to pull more. See [Limitations](/limitations/).
 
 ## The import
 

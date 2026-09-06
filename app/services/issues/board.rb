@@ -5,12 +5,20 @@ module Issues
   # on in GitHub across the repos it watches.
   #
   # The join key is the issue URL. A backlog item carries one; a GitHub issue is
-  # one. Everything the page shows is one of three things:
+  # one. Everything the page shows is one of five things:
   #
   #   queued    an item the issue gate cleared, waiting its turn, in rank order
-  #   in flight an item a pull or a promote started, whose session is still alive
-  #   loose     an open GitHub issue with no queued or in-flight backlog row —
+  #   in flight a started item an agent is still advancing — its session is
+  #             `running` or `waiting`
+  #   parked    a started item whose session has stopped in `needs_input`: a
+  #             person is what it is waiting on, usually over an open PR
+  #   ended     a started item whose session archived or failed recently
+  #   loose     an open GitHub issue with no queued or CLAIMED backlog row —
   #             held, unrated, or simply not picked up yet
+  #
+  # In flight and parked are two readings of what used to be one list, and the
+  # split is the point rather than a presentation choice: see
+  # WorkBacklogItem.in_flight for why a parked item must not hold a WIP slot.
   #
   # THE FILTERS ARE WorkBacklog::Filters, not a second filtering path. The queue
   # is the same queue `get_work_backlog` and the REST index read, and a page that
@@ -21,6 +29,10 @@ module Issues
     # Loose GitHub issues are paginated: the repos carry ~500 open issues between
     # them and a page that renders all of them is a page nobody scrolls.
     GITHUB_PER_PAGE = 50
+
+    # How far back the "finished recently" list reaches, measured from when each
+    # session ENDED rather than from when its item started.
+    RECENTLY_ENDED_WINDOW = 24.hours
 
     Row = Data.define(:item, :github, :direction, :position) do
       def key = item.key
@@ -64,9 +76,6 @@ module Issues
       end
     end
 
-    # How far back the "finished recently" list reaches.
-    RECENTLY_ENDED_WINDOW = 24.hours
-
     # Started items an agent is still advancing, newest start first. Not filtered
     # by the queue filters: "what is the fleet working on right now" is a fixed
     # question, and a repo filter that emptied it would read as "nothing running".
@@ -85,6 +94,10 @@ module Issues
     # Started items whose session ended inside RECENTLY_ENDED_WINDOW. The other
     # half of the same honesty: without it, seven items that ran and archived
     # overnight leave no trace on the page and the fleet reads as idle.
+    #
+    # Ordered by start, like the two lists above, because the column the table
+    # actually renders is `started_at` — a list ordered by an end date it does
+    # not show would read as unsorted.
     def recently_ended_rows
       @recently_ended_rows ||= started_rows(WorkBacklogItem.ended_since(RECENTLY_ENDED_WINDOW.ago))
     end
