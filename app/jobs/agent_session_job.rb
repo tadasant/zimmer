@@ -2913,6 +2913,24 @@ class AgentSessionJob < ApplicationJob
       end
     end
 
+    # Hand this job's undelivered prompt back to the session BEFORE the pause.
+    #
+    # From here the recovery pause and `auto_continue_after_interrupt` resume the
+    # session on a SYSTEM_RECOVERY nudge, and the prompt this job was carrying
+    # exists ONLY as its argument — the job row is being discarded, and two of the
+    # three routes that accept a follow-up (`Mcp::Tools::ActionSession#direct_follow_up`
+    # and `Api::V1::SessionsController#follow_up`) never stamped it anywhere. So
+    # the sender was told "sent", the agent was resumed with "you may have been
+    # interrupted, carry on", and the prompt was never seen by anyone (#1023).
+    #
+    # Stamping it BEFORE the pause is what makes the nudge harmless: the follow-up
+    # arm of #perform resolves this turn's prompt as
+    # `pending_follow_up_prompt || follow_up_prompt`, so the job the auto-continue
+    # enqueues delivers the real message and the nudge is never spent. If the
+    # auto-continue declines, the marker still stands and both recovery sweeps
+    # deliver it on their next pass.
+    preserve_interrupted_prompt(session)
+
     session.merge_metadata!("paused_by" => "recovery")
     session.update_columns(running_job_id: nil)
     session.reload
@@ -2934,6 +2952,124 @@ class AgentSessionJob < ApplicationJob
     # Don't let recovery errors prevent the job from being discarded.
     # DeploymentRecoveryJob/CleanupOrphanedSessionsJob will catch orphaned sessions as a safety net.
     Rails.logger.error "[AgentSessionJob] Error handling InterruptError for session #{session_id}: #{e.message}"
+  end
+
+  # Put the interrupted job's prompt back on the session, so the recovery resume
+  # that follows delivers it instead of a nudge.
+  #
+  # This is the interrupt-side twin of `Sessions::RequeueSkippedPrompt` (#983): the
+  # same loss — a prompt that lives only as a job argument, and a job that will
+  # never run — reached from the other direction. The destination differs because
+  # the situation does. The guard defers to a turn that is *already running*, so
+  # the queue is right; here nothing is running and this path is itself about to
+  # resume the session, so `pending_follow_up_prompt` is right. It is the marker
+  # every resume path already reads, and stamping it means the SYSTEM_RECOVERY
+  # job enqueued moments later carries the real prompt rather than the nudge.
+  #
+  # Five refusals, and every one of them is logged rather than passed over —
+  # "delivered" and "silently dropped" being indistinguishable is the whole defect:
+  #
+  # 1. **No prompt.** A first start, a `resume_monitoring` job or a `clone_only`
+  #    setup carries none; there is nothing to preserve.
+  # 2. **A nudge** (`AutomatedPrompts.nudge?`). Re-stamping SYSTEM_RECOVERY or
+  #    HEARTBEAT so the *next* SYSTEM_RECOVERY delivers it is a no-op with extra
+  #    steps. Same carve-out `RequeueSkippedPrompt` makes first, and for the same
+  #    reason.
+  # 3. **Already handed to the runtime.** The follow-up arm moves this turn's
+  #    prompt from `pending_follow_up_prompt` to `active_follow_up_prompt` just
+  #    before it spawns, so an `active_follow_up_prompt` CONTAINING this prompt
+  #    means the original execution got that far and the agent has it. Stamping
+  #    then would replay a message the session already acted on — the opposite
+  #    failure, and just as silent (#1009). Containment rather than equality
+  #    because the stored value is `build_prompt_with_goal` output, the raw prompt
+  #    with the goal block appended; `TranscriptPollerService` matches the same
+  #    pair the same way. A value naming some *other* prompt is a leftover from an
+  #    earlier turn and does not refuse this one.
+  # 4. **Already stamped.** Something else — `Session#deliver_follow_up!`,
+  #    `SigtermRetryService`, `AuthOutageParkService` — holds an undelivered
+  #    prompt in the single slot. Overwriting it would lose that one to save this
+  #    one.
+  # 5. **Already queued verbatim.** A copy is in the durable queue and drains on
+  #    its own; a second copy costs the session a duplicate turn. Same coalesce
+  #    `RequeueSkippedPrompt` makes.
+  #
+  # Called only from the recovery-pause branch of #handle_interrupt_error. The two
+  # branches above it need nothing: `#requeue_interrupted_start` re-enqueues this
+  # job's arguments verbatim, prompt included, and a dormant session's prompt is
+  # already held by whatever put it to sleep (`SpotSessionHold` re-enqueues
+  # carrying it, `AuthOutageParkService` stamps this same marker) — so stamping
+  # there would be the duplicate refusal 5 exists to avoid.
+  #
+  # @param session [Session] the session about to be recovery-paused
+  # @return [Symbol] :stamped, or which refusal applied
+  def preserve_interrupted_prompt(session)
+    prompt = arguments[1]
+    return :no_prompt unless prompt.is_a?(String) && prompt.present?
+    return :nudge if AutomatedPrompts.nudge?(prompt)
+
+    metadata = session.metadata || {}
+
+    active = metadata["active_follow_up_prompt"].to_s
+    return :already_delivered if active.present? && active.include?(prompt)
+
+    if metadata["pending_follow_up_prompt"].present?
+      return refuse_prompt_preservation(session, :already_stamped, prompt)
+    end
+    if session.enqueued_messages.pending.exists?(content: prompt)
+      return refuse_prompt_preservation(session, :already_queued, prompt)
+    end
+
+    session.merge_metadata!("pending_follow_up_prompt" => prompt)
+    session.logs.create!(
+      content: "The prompt this job was carrying was NOT lost: it is held on this session and is " \
+               "delivered by the turn that recovery is about to start, in place of the recovery " \
+               "nudge. #{quoted_undelivered_prompt(prompt)}",
+      level: "warning"
+    )
+    Rails.logger.info(
+      "[AgentSessionJob] Session #{session.id} kept the interrupted job's prompt for its recovery turn"
+    )
+    :stamped
+  rescue => e
+    # Never let the hand-back become the thing that breaks interrupt recovery. The
+    # prompt is lost either way at this point, so the one thing that must still
+    # happen is that the loss is written down.
+    Rails.logger.error(
+      "[AgentSessionJob] Could not preserve the interrupted prompt for session #{session&.id}: " \
+      "#{e.class}: #{e.message}"
+    )
+    :failed
+  end
+
+  # Say on the session's own timeline why an interrupted prompt was not stamped.
+  #
+  # Both refusals leave a copy somewhere that gets delivered, so neither is a loss
+  # — but "why did this session get a nudge instead of my message" is asked from
+  # the session page, and an unexplained nudge is what made #1023 take a raw
+  # transcript read to diagnose.
+  def refuse_prompt_preservation(session, reason, prompt)
+    message =
+      if reason == :already_stamped
+        "The prompt this job was carrying was not stamped for the recovery turn: this session is " \
+        "already holding an earlier undelivered prompt, which goes first. This one is not lost — it " \
+        "is recorded here. #{quoted_undelivered_prompt(prompt)}"
+      else
+        "The prompt this job was carrying is already queued on this session, so it was not stamped a " \
+        "second time — it is delivered once, by the turn recovery is about to start or the one after it."
+      end
+
+    session.logs.create!(content: message, level: "warning")
+    Rails.logger.info(
+      "[AgentSessionJob] Session #{session.id} did not stamp the interrupted job's prompt (#{reason})"
+    )
+    reason
+  end
+
+  # The prompt echoed into a log line that may be the only surviving copy. Same cap
+  # and same reasoning as Sessions::RequeueSkippedPrompt: generous, because a human
+  # re-sends it by hand from this line.
+  def quoted_undelivered_prompt(prompt)
+    "The prompt was: #{prompt.to_s.truncate(Sessions::RequeueSkippedPrompt::UNDELIVERED_PROMPT_LOG_MAX_CHARS)}"
   end
 
   # Replay an interrupted job for a session that never got a runtime session id.
@@ -3582,16 +3718,27 @@ class AgentSessionJob < ApplicationJob
 
       next unless outcome == :claimed
 
+      # The prompt this session is holding — including the one
+      # #preserve_interrupted_prompt just handed back from the interrupted job —
+      # outranks the nudge. See Session#recovery_turn_prompt.
+      holding_follow_up = session.holding_undelivered_follow_up?
+
       AgentSessionJob.enqueue_with_prompt(
         session.id,
-        AutomatedPrompts.system_recovery(
+        session.recovery_turn_prompt(
           reason: "the Zimmer job monitoring this session was interrupted before it finished, " \
                   "so the session was resumed on a fresh one"
         )
       )
 
       session.logs.create!(
-        content: "Session automatically continued after job interruption",
+        content:
+          if holding_follow_up
+            "Session automatically continued after job interruption, delivering the follow-up prompt " \
+            "it was still holding instead of the recovery nudge"
+          else
+            "Session automatically continued after job interruption"
+          end,
         level: "info"
       )
     end

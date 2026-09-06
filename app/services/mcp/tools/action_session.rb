@@ -332,6 +332,26 @@ module Mcp
           # the filed strand came down — a router redirecting a session asleep on
           # its own `wake_me_up_later`.
           session.resume_for_follow_up!
+          # Stamp the prompt where every resume path looks for it, exactly as
+          # Session#deliver_follow_up! does — and AFTER the resume, for the reason
+          # that method gives: the resume's callbacks rewrite `metadata`
+          # whole-column, and a reader who sees the marker must be guaranteed to
+          # also see `running`.
+          #
+          # Without this the accepted prompt existed only as the argument of the
+          # job enqueued below: one copy, in the one place a deploy destroys. A
+          # worker shutdown discards the job, `handle_interrupt_error` resumes the
+          # session on a SYSTEM_RECOVERY nudge, and the sender — already told
+          # "Follow-up prompt sent" — cannot tell delivery from loss (#1023). It
+          # also left the orphan sweep's "a follow-up is mid-delivery, do not reap
+          # this session" skip blind to every follow-up sent through MCP.
+          #
+          # Exactly one copy stays live: whichever route delivers the prompt
+          # consumes the marker. AgentSessionJob's follow-up arm moves it to
+          # `active_follow_up_prompt` when it spawns, and
+          # Sessions::RequeueSkippedPrompt drops it when it takes custody of the
+          # same text into the durable queue.
+          session.merge_metadata!("pending_follow_up_prompt" => prompt)
           # Before the enqueue, and in the same transaction: the job this line
           # creates builds the next prompt, and it must see the edge. Rolling
           # back takes the edge with it, so a failed send still records nothing.

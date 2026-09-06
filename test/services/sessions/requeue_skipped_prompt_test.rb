@@ -29,6 +29,30 @@ class Sessions::RequeueSkippedPromptTest < ActiveSupport::TestCase
     assert_equal "caller", message.origin
   end
 
+  # Queueing is a transfer of custody. Every route that accepts a follow-up into an
+  # idle session stamps `pending_follow_up_prompt`, so leaving it standing once the
+  # prompt is in the durable queue would give the session two live copies of one
+  # message: the queue drains one and the next recovery resume delivers the other
+  # (tadasant/zimmer#1023).
+  test "releases the pending marker it just took custody of" do
+    @session.merge_metadata!("pending_follow_up_prompt" => "Finish the PR")
+
+    assert_equal :queued, requeue("Finish the PR")
+
+    assert_nil @session.reload.metadata["pending_follow_up_prompt"]
+    assert_equal [ "Finish the PR" ], @session.enqueued_messages.pending.map(&:content)
+  end
+
+  # A marker naming some *other* prompt is a different, still-undelivered turn.
+  # Dropping it would be the loss this class exists to prevent, from the inside.
+  test "leaves a pending marker for a different prompt alone" do
+    @session.merge_metadata!("pending_follow_up_prompt" => "An earlier undelivered prompt")
+
+    assert_equal :queued, requeue("Something else entirely")
+
+    assert_equal "An earlier undelivered prompt", @session.reload.metadata["pending_follow_up_prompt"]
+  end
+
   test "queues behind whatever is already in the queue" do
     @session.enqueued_messages.create!(content: "Earlier message", position: 1, status: "pending")
 

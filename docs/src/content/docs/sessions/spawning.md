@@ -1242,6 +1242,40 @@ landing in that window is coalesced into it rather than delivered on its own. Th
 boundary, the same property already held for the two other writers of this queue, and `record_missed_fire!`
 counts and alerts on a run of them — but it is a widening, not a nil change.
 
+Queueing the prompt is also a **transfer of custody**, so the session stops holding it: if
+`metadata["pending_follow_up_prompt"]` holds this same text, it is released as the queue row is
+written. Otherwise the queue would drain one copy and the next recovery resume would deliver the
+other — [two live copies is two turns](/sessions/lifecycle/#and-a-follow-up-the-session-is-still-holding-outranks-it-too).
+A marker naming some *other* prompt is a different, still-undelivered turn and is left alone.
+
+### An interrupted job does not throw the prompt away either
+
+The same loss, reached from the other side. `#handle_interrupt_error` fires when GoodJob re-picks a
+row it considers interrupted; on the ordinary branch it recovery-pauses the session and asks
+`#auto_continue_after_interrupt` to resume it. Both the job and its argument are gone by then, so
+until [#1023](https://github.com/tadasant/zimmer/issues/1023) a follow-up interrupted in that window
+was replaced by the recovery nudge with nothing said anywhere.
+
+`#preserve_interrupted_prompt` hands the prompt back to the session *before* the pause, as
+`pending_follow_up_prompt` — the marker every resume path reads. The destination differs from the
+guard's for a reason: there the guard is deferring to a turn that is **already running**, so the
+queue is right and drains behind it; here nothing is running and this path is itself about to resume
+the session, so the row is right and the resume delivers it immediately.
+
+It refuses in five cases, each logged on the session's timeline with the prompt text:
+
+| Case | Why nothing is stamped |
+| --- | --- |
+| No prompt | A first start, a `resume_monitoring` job or a `clone_only` setup carries none. |
+| A nudge | Stamping `SYSTEM_RECOVERY` so the next `SYSTEM_RECOVERY` can deliver it is a no-op with extra steps. |
+| Already handed to the runtime | `active_follow_up_prompt` *contains* this prompt, so the original execution got as far as the spawn and the agent has it. Stamping would replay a message the session already acted on — the opposite failure, and just as silent. |
+| An earlier undelivered prompt is in the slot | Overwriting it would lose that one to save this one. |
+| A copy is already in the queue | It drains on its own; a second copy costs a duplicate turn. |
+
+The two branches above the recovery pause need nothing: `#requeue_interrupted_start` re-enqueues the
+job's arguments verbatim, prompt included, and a dormant session's prompt is already held by whatever
+put it to sleep.
+
 ## One live agent process per session
 
 Superseding a job is not the same as ending the turn it was running. The agent CLI is a child of the

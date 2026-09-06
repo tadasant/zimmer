@@ -63,11 +63,14 @@ module SessionContinuation
   # Validates the session has the required metadata (session_id, working_directory),
   # clears stale retry metadata, transitions to running, and enqueues a job to resume.
   #
-  # If the user queued a follow-up message while the session was running/orphaned,
-  # that message is delivered instead of the automated recovery prompt — otherwise
-  # repeated recovery cycles (deploys, orphan cleanup) would leapfrog the user's
-  # pending input with SYSTEM_RECOVERY on every pass, making the session appear to
-  # ignore the user's messages.
+  # Two things outrank the automated recovery prompt, in this order. A message the
+  # user queued while the session was running or orphaned is delivered instead —
+  # otherwise repeated recovery cycles (deploys, orphan cleanup) would leapfrog the
+  # user's pending input with SYSTEM_RECOVERY on every pass, making the session
+  # appear to ignore the user's messages. Failing that, a follow-up prompt STAMPED
+  # on the session row (`pending_follow_up_prompt`) is what the resumed turn
+  # carries, for the same reason and one step earlier in the same story: it was
+  # accepted, acknowledged to its sender, and never delivered (#1023).
   #
   # @param session [Session] the session to continue
   # @return [Boolean] true if session was continued, false if validation failed
@@ -103,16 +106,33 @@ module SessionContinuation
 
       next unless outcome == :claimed
 
+      # A prompt this session is still holding outranks the nudge — see
+      # Session#recovery_turn_prompt. Read here rather than before the claim:
+      # `claim_system_recovery_turn!` reloaded the row `FOR UPDATE` and holds it
+      # until this block commits, so this is the row's own value and not one a
+      # follow-up landing mid-sweep has already moved on from.
+      #
+      # STALE_RETRY_METADATA_KEYS, cleared in the claim block above, does not list
+      # `pending_follow_up_prompt`: an undelivered prompt is not retry state, and
+      # clearing it on resume would destroy the very thing this branch reads.
+      holding_follow_up = session.holding_undelivered_follow_up?
+
       # Enqueue a job with the automated recovery prompt, naming the sweep that sent it
       # so the agent (and whoever reads the transcript) can tell this apart from the
       # other paths that share the constant.
       AgentSessionJob.enqueue_with_prompt(
         session.id,
-        AutomatedPrompts.system_recovery(reason: "Zimmer's #{continuation_source} resumed this session")
+        session.recovery_turn_prompt(reason: "Zimmer's #{continuation_source} resumed this session")
       )
 
       session.logs.create!(
-        content: "Session automatically continued after #{continuation_source}",
+        content:
+          if holding_follow_up
+            "Session automatically continued after #{continuation_source}, delivering the follow-up " \
+            "prompt it was still holding instead of the recovery nudge"
+          else
+            "Session automatically continued after #{continuation_source}"
+          end,
         level: "info"
       )
     end
