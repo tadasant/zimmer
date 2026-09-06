@@ -21,18 +21,18 @@ class CronScheduleTest < ActiveSupport::TestCase
   SCHEDULE_FILE = Rails.root.join("config/cron_schedule.rb")
   PINNED = JSON.parse(Rails.root.join("test/fixtures/files/good_job_cron_schedule.json").read).freeze
 
-  # Jobs production schedules and staging does not, each with the reason. Adding to this
-  # list is a conscious decision, not a way to silence the test below.
+  # Jobs production schedules and staging does not, each with the reason. It is empty, and
+  # empty is the rule rather than an accident: staging exists to rehearse production, so an
+  # omission is only legitimate when the reason is about staging itself -- a resource
+  # staging does not have, or a signal that would be production's rather than staging's own.
   #
-  # The reason on both came with the schedule rather than from anyone ruling on it, and
-  # staging is in AlertService::ALERTING_ENVIRONMENTS, so it is a live question rather
-  # than a settled one: tadasant/zimmer#686. The same note is on the entries themselves.
-  NOT_ON_STAGING = {
-    "EgressHealthCheckJob" =>
-      "alerting canary: it pages #eng-alerts, and a staging copy would double-page on " \
-      "production's own signals",
-    "SlackTriggerHealthCheckJob" => "same"
-  }.freeze
+  # "It pages #eng-alerts" is not one of those reasons, and the schedule never treated it as
+  # one: staging schedules GithubTriggerHealthCheckJob, SystemHealthMonitorJob,
+  # ElicitationEndpointHealthCheckJob and both trigger pollers, all of which page that
+  # channel, tagged [staging] by AlertService#tagged_title (tadasant/zimmer#686).
+  #
+  # Adding a row back is a conscious decision, not a way to silence the test below.
+  NOT_ON_STAGING = {}.freeze
 
   def resolved(environment)
     CronSchedule.for(environment).to_h { |name, entry| [ name.to_s, entry.transform_keys(&:to_s) ] }

@@ -322,6 +322,11 @@
       "class": "GithubTriggerPollerJob",
       "description": "Poll GitHub for label-added and new-issue trigger conditions and create sessions"
     },
+    "slack_trigger_health_check": {
+      "cron": "45 * * * *",
+      "class": "SlackTriggerHealthCheckJob",
+      "description": "Detect Slack trigger feeds that have silently stopped firing and alert"
+    },
     "github_trigger_health_check": {
       "cron": "*/5 * * * *",
       "class": "GithubTriggerHealthCheckJob",
@@ -471,6 +476,11 @@
       "cron": "*/2 * * * *",
       "class": "SystemHealthMonitorJob",
       "description": "Alert #eng-alerts when the GoodJob queue backlog is critical (sustained across checks)"
+    },
+    "egress_health_check": {
+      "cron": "* * * * *",
+      "class": "EgressHealthCheckJob",
+      "description": "Probe the primary DNS resolver's public egress; drive the network-degraded banner"
     },
     "live_clone_integrity": {
       "cron": "40 * * * *",
