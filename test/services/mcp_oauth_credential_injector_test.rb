@@ -5,13 +5,65 @@ require "minitest/mock"
 require "mocha/minitest"
 
 class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
+  # The runtime credential stores are HOST-GLOBAL files — ~/.claude/.credentials.json
+  # is the developer's (and, on a Zimmer box, the running fleet's) real one. The
+  # injector resolves a REAL writer for any session carrying a real runtime bundle,
+  # so a test that lets a credential resolve and forgets to stub the writer merges
+  # fixture tokens straight into it. That is not hypothetical: writing this file's
+  # per-runtime coverage put `notion|<fixture key>` — client id
+  # `agent-orchestrator-test`, access token `test-access-token-12345` — into a live
+  # store next to the real credentials.
+  #
+  # So no test here opts IN to isolation; every test gets it, for both runtimes and
+  # for the session-scoped Claude config dir, and a test that wants specific
+  # on-disk entries layers with_claude_runtime_store / with_codex_runtime_store on
+  # top of an already-redirected path.
+  REDIRECTED_CREDENTIAL_STORES = {
+    ClaudeMcpCredentialWriter => :CLAUDE_CREDENTIALS_PATH,
+    CodexMcpCredentialWriter => :CODEX_CREDENTIALS_PATH
+  }.freeze
+
   setup do
     @session = sessions(:active_session)
     @working_directory = Dir.mktmpdir("mcp-oauth-test")
+    @runtime_store_dir = Dir.mktmpdir("mcp-oauth-runtime-stores")
+    redirect_runtime_credential_stores(@runtime_store_dir)
   end
 
   teardown do
+    restore_runtime_credential_stores
+    FileUtils.rm_rf(@runtime_store_dir) if @runtime_store_dir
     FileUtils.rm_rf(@working_directory) if @working_directory && File.exist?(@working_directory)
+  end
+
+  # Points every runtime credential store at a per-test temp directory. The paths
+  # are constants read at writer-construction time, so swapping them before any
+  # writer is built is enough; #macos? goes with them, because the Claude writer
+  # mirrors to the login Keychain, which no test may touch either.
+  def redirect_runtime_credential_stores(dir)
+    @original_credential_store_paths = {}
+
+    REDIRECTED_CREDENTIAL_STORES.each do |klass, const|
+      @original_credential_store_paths[klass] = klass.const_get(const)
+      klass.send(:remove_const, const)
+      klass.const_set(const, File.join(dir, klass.name, ".credentials.json"))
+      klass.any_instance.stubs(:macos?).returns(false)
+    end
+
+    # The other path a Claude writer can resolve to: under session-scoped
+    # credentials, .for_session reads the session's own config dir instead.
+    @original_session_config_dir = ENV["CLAUDE_SESSION_CONFIG_DIR"]
+    ENV["CLAUDE_SESSION_CONFIG_DIR"] = File.join(dir, "session-config")
+  end
+
+  def restore_runtime_credential_stores
+    ENV["CLAUDE_SESSION_CONFIG_DIR"] = @original_session_config_dir
+
+    @original_credential_store_paths&.each do |klass, path|
+      const = REDIRECTED_CREDENTIAL_STORES[klass]
+      klass.send(:remove_const, const)
+      klass.const_set(const, path)
+    end
   end
 
   # Test that check_credentials_status attempts refresh for expired tokens with refresh_token
