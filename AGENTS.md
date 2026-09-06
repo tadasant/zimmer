@@ -77,11 +77,20 @@ they booted with the column present, so their model still has the attribute, but
 2. **Deploy 2** — a later PR drops the column, removes the `ignored_columns` entry, and
    annotates the migration `# two-phase-drop: phase 2 of #<phase-1 PR>`.
 
+**A rename is a drop and an add at the same instant, so it costs more deploys, not fewer.**
+`rename_column` strands the old containers the same way; `rename_table` and `drop_table` do it
+harder, with `PG::UndefinedTable` on every query rather than one attribute on one model. Nothing
+renames in place: expand (add the new name, write both, backfill from a post-deploy task), switch
+reads, stop writing the old name, then contract with the two-phase drop above. A `drop_table` is
+two deploys — delete the model and every reference, then drop.
+
 `TwoPhaseColumnDropGuard` (`test/support/two_phase_column_drop_guard.rb`) fails the `lint` and
 `test-unit` CI jobs on a forward `remove_column` / `remove_reference` / `t.remove` / `DROP COLUMN`
-without that annotation. It does *not* cover `rename_column` or `drop_table`, which are the same
-hazard — see [#722](https://github.com/tadasant/zimmer/issues/722). Full recipe:
-[Dropping a column takes two deploys](docs/src/content/docs/operate/deploying.md).
+without that annotation, and on a forward `rename_column` / `t.rename` / `rename_table` /
+`drop_table` — and their raw-SQL spellings — without `# expand-contract: contract of #<ref>`.
+Neither annotation clears the other's shape. Full recipes:
+[Dropping a column takes two deploys](docs/src/content/docs/operate/deploying.md) and
+[Renames and table drops expand before they contract](docs/src/content/docs/operate/deploying.md).
 
 ## Documentation lives in `docs/` — update it in the same PR
 
@@ -115,6 +124,7 @@ same PR.** If it introduces a limitation, a hack, or a known-broken edge, add it
 | `docs/scripts/generate-icons.mjs`, `docs/scripts/zimmer-icon-source.jpg`, `public/icons/**`, `public/favicon.ico`, `docs/public/*.png`, `public/manifest.json` | `meta/contributing.md` |
 | `config.public_file_server.headers` | `operate/deploying.md` |
 | a migration that removes a column | `operate/deploying.md` (Dropping a column takes two deploys) |
+| a migration that renames a column or table, or drops a table | `operate/deploying.md` (Renames and table drops expand before they contract) |
 | a migration that adds a column | that model's `app/dashboards/*_dashboard.rb` — `/supervisor` renders only what `ATTRIBUTE_TYPES` names, silently, so `test/dashboards/dashboard_schema_coverage_test.rb` fails until the column is either on the dashboard or in its `DELIBERATELY_OMITTED` with a reason |
 
 Pages are `docs/src/content/docs/**`. A new page must also be added to the `sidebar`

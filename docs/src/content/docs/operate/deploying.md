@@ -315,13 +315,30 @@ if one is ever added back.
 ### The guard
 
 `TwoPhaseColumnDropGuard` (`test/support/two_phase_column_drop_guard.rb`) fails CI when a migration
-removes a column in the forward direction without that annotation. It catches `remove_column`,
-`remove_columns`, `remove_reference`, `remove_belongs_to`, `t.remove` inside a `change_table` block,
-and `DROP COLUMN` in raw SQL, heredocs included.
+makes a column or a table stop answering to the name the running image compiled against, in the
+forward direction, without the annotation its shape calls for. It sorts what it finds into four
+shapes:
+
+| Shape | Caught in | Annotation |
+| --- | --- | --- |
+| `column_drop` | `remove_column`, `remove_columns`, `remove_reference`, `remove_belongs_to`, `t.remove`, raw `DROP COLUMN` | `# two-phase-drop: phase 2 of <ref>` |
+| `column_rename` | `rename_column`, `t.rename`, raw `RENAME COLUMN` | `# expand-contract: contract of <ref>` |
+| `table_rename` | `rename_table`, raw `RENAME TO` | `# expand-contract: contract of <ref>` |
+| `table_drop` | `drop_table`, raw `DROP TABLE` | `# expand-contract: contract of <ref>` |
+
+Raw SQL is matched against string *contents*, so heredocs count — which is how anyone actually
+writes SQL in a migration. `rename_index` and `remove_index` are deliberately absent: an index
+carries no attribute and no query of the old container names it, so neither strands anything.
+
+The two annotations are separate because they assert different facts. `two-phase-drop` says an
+`ignored_columns` deploy shipped. `expand-contract` says an earlier deploy left the old *name*
+unread and unwritten by the running image — which for a rename is the end of an
+add-dual-write-backfill-switch sequence, not a one-line model change. Neither annotation clears
+the other's shape, so a migration that renames one column and drops another has to carry both.
 
 It parses the migration rather than grepping it, because the direction is a syntactic fact. A
 `remove_column` inside `def down`, `dir.down { }` or `revert { }` is the undo of an `add_column`, and
-a regex cannot tell it from the forward body two lines above: 13 of this repo's migrations contain a
+a regex cannot tell it from the forward body two lines above: 14 of this repo's migrations contain a
 `remove_column` and only 6 of them actually drop one. The pruning is by method *name* though, so a
 removal factored out of `down` into a helper is still reported. Inline it into `down` rather than
 annotating a phase 1 that never happened.
@@ -345,17 +362,123 @@ which fails when a `Timeout.timeout` encloses an `Open3` call that joins its wai
 `ensure`. It is documented in
 [background-jobs.md](/operate/background-jobs/#timeouttimeout-around-open3capture3-bounds-nothing).
 
-Seven migrations that dropped columns before the guard existed are named in its `GRANDFATHERED`
-list. That list is closed, and a `GRANDFATHER_CUTOFF` assertion keeps it that way: a new drop gets
-the two deploys, not an eighth entry. The newest entry is the case for the guard — `#680` dropped
-`app_settings.provenance_via_mcp_enabled` in a single phase on 2026-08-28, twelve days after the
-incident, because nothing was checking.
+Ten migrations that shipped before the guard covered their shape are named in its `GRANDFATHERED`
+list — seven single-phase column drops, and the three single-phase renames that were invisible to it
+until the detected set widened. That list is closed, and a `GRANDFATHER_CUTOFF` assertion keeps it
+that way: a new drop or rename gets the deploys and the annotation, not an eleventh entry. The
+newest drop is the case for the guard — `#680` dropped `app_settings.provenance_via_mcp_enabled` in
+a single phase on 2026-08-28, twelve days after the incident, because nothing was checking. The
+newest rename is the case for widening it: [#629](https://github.com/tadasant/zimmer/pull/629) renamed two `app_settings` columns on 2026-08-23
+and nothing said a word.
 
-**What it does not cover.** `rename_column`, `rename_table` and `drop_table` strand an old container
-in exactly the same way, and the guard says nothing about them. Their phase 1 is not an
-`ignored_columns` entry but an add-and-backfill, which is a longer recipe this repo has not written
-down — see [zimmer#722](https://github.com/tadasant/zimmer/issues/722). Treat them with the same
-suspicion by hand.
+**What it does not cover.** Schema changes that keep every name intact — a widened type, a changed
+default, a new `NOT NULL` — are outside it. Those can still break an old container, but they break
+it on the *values* rather than on the names, and the guard reads names.
+
+## Renames and table drops expand before they contract
+
+The mechanism above was never about dropping a column. It is that kamal-proxy health-gates the
+cutover, so the old containers keep serving after `db:prepare` has already changed the schema.
+Anything that makes a column or a table stop answering to the name the old image compiled against
+reproduces it, and three shapes do:
+
+| Migration | What the old container hits |
+| --- | --- |
+| `rename_column` | `ActiveModel::MissingAttributeError` on reads — the `SELECT` comes back with the new name and without the old one — and `PG::UndefinedColumn` on writes, because its `INSERT` still names the old column. |
+| `rename_table` | `PG::UndefinedTable` on **every** query against the table, not one attribute on one model. |
+| `drop_table` | `PG::UndefinedTable`, the same, permanently. |
+
+A rename looks like one operation and is two: a drop and an add at the same instant. So it does not
+get a two-deploy recipe — it gets the drop's recipe with an add in front of it.
+
+### Renaming a column
+
+Nothing renames in place. Expand: add the new name and fill it. Contract: take the old one away
+once nothing touches it.
+
+| Deploy | Migration | Code |
+| --- | --- | --- |
+| 1 — **expand** | `add_column :sessions, :goal, :string` (nullable, no default), plus a post-deploy task that backfills it | the model writes **both** names on every write; reads still come from `stop_condition` |
+| 2 — **switch reads** | none | every read moves to `goal`; both are still written |
+| 3 — **stop writing the old name** | none | `self.ignored_columns += %w[stop_condition]`, and the dual-write goes |
+| 4 — **contract** | `remove_column :sessions, :stop_condition`, annotated `# two-phase-drop: phase 2 of #<deploy-3 PR>` | the `ignored_columns` line goes |
+
+Deploys 3 and 4 are exactly [the two-phase drop](#dropping-a-column-takes-two-deploys), because by
+then that is all that is left. Deploys 1 and 2 are what a rename adds.
+
+**The backfill is a post-deploy task, not part of the migration.** A migration runs in
+`bin/docker-entrypoint`, *before* the new container answers `/up` — so every row the old containers
+write during the swap window lands after the backfill has already read the table, with the new
+column NULL. A [post-deploy task](#one-time-post-deploy-tasks) runs from the new image a couple of
+minutes later, once the old containers have drained. Nothing can slip past it in the other
+direction either: from deploy 1 onward every write from a new container fills both names.
+
+```ruby
+# db/post_deploy/20260906120000_backfill_session_goal.rb
+class BackfillSessionGoal < PostDeployTask
+  def up
+    sweep(Session.where(goal: nil).where.not(stop_condition: nil)) do |batch|
+      Session.where(id: batch.map(&:id)).update_all("goal = stop_condition")
+    end
+  end
+end
+```
+
+`sweep` pages by primary key and checkpoints its cursor, so the task resumes where it left off if a
+slice runs out of its 90-second budget. The `goal IS NULL` predicate is what makes a second run a
+no-op.
+
+**Deploys 2 and 3 are separate for a reason.** Merge them and, for the length of that swap window,
+the new containers are inserting rows with the old column NULL while the old containers are still
+reading it. You may merge them when the old column is nullable *and* the old code shrugs at a NULL
+there — a display string, say. Do not merge them when the old column is `NOT NULL`: the new
+image's `INSERT`s omit it and fail outright.
+
+**The cheapest correct rename is usually no rename.** Four deploys to improve a name is a real
+price. `alias_attribute`, or just living with `stop_condition` in the schema and `goal` in the
+code, costs nothing and strands nobody. Rename when the old name is actively misleading, not when
+the new one is nicer.
+
+### Renaming or dropping a table
+
+A `rename_table` is the same expand-and-contract one level up: create the new table, write both,
+backfill from a post-deploy task, switch reads, stop writing the old table, drop it. That is a lot
+of machinery for a name — `self.table_name` on the model lets the class say `Goal` while the table
+stays `stop_conditions`, and it ships in one deploy.
+
+A `drop_table` is genuinely two deploys, because there is nothing to expand into:
+
+1. **Deploy 1 — stop querying it.** Delete the model and every reference to it: the association,
+   the fixture, the dashboard entry, the job, the route. No migration. Nothing in either image then
+   touches the table.
+2. **Deploy 2 — drop it.** A later pull request, merged after deploy 1 is live, carrying the
+   annotation.
+
+### The annotation
+
+The three name-changing shapes take their own annotation, and it names the deploy that left the old
+name unread and unwritten:
+
+```ruby
+# expand-contract: contract of #474
+class DropWidgetsTable < ActiveRecord::Migration[8.0]
+  def up
+    drop_table :widgets
+  end
+end
+```
+
+It is deliberately not the `two-phase-drop` one. That annotation claims an `ignored_columns` deploy
+shipped; this one claims a whole expand-and-switch shipped, and a reviewer checking the wrong claim
+against the wrong pull request would find nothing wrong. Neither clears the other's shape, so a
+migration that renames one column and drops another carries both. Same rule on the reference: a PR
+or issue number, a commit sha, or the earlier migration's version — something a reviewer can go and
+read.
+
+On a `rename_column` the annotation should be rare to the point of suspicious. Follow the recipe
+and there is no `rename_column` left to annotate — deploy 4 is a `remove_column` carrying
+`two-phase-drop`. It is honest only when the old name is *already* dead in the deployed image: a
+column nothing has read since some earlier release, renamed for tidiness.
 
 ## Two migrations may not share a version
 
