@@ -330,8 +330,17 @@ class BroadcastDelegationTest < ActiveSupport::TestCase
 
     # The lookup happens inside the guard, so a session that vanished between the
     # hierarchy read and the render sends nothing rather than raising.
-    Session.stubs(:find_by).with(id: parent.id).returns(nil)
-    Session.stubs(:find_by).with(id: child.id).returns(child)
+    #
+    # Stubbed on the relation `SessionHierarchy.graph_scope` returns, because that
+    # is the seam the fan-out loads each viewer through — it reads the ten columns
+    # the panel needs rather than a whole row with its `transcript` in it. Only
+    # `find_by` is stubbed, so the `where` the upward walk uses still resolves
+    # `parent` into the hierarchy: the case under test is a viewer that vanishes
+    # AFTER the graph was read, which is the only way the guard is reachable.
+    scope = SessionHierarchy.graph_scope
+    scope.stubs(:find_by).with(id: parent.id).returns(nil)
+    scope.stubs(:find_by).with(id: child.id).returns(child)
+    SessionHierarchy.stubs(:graph_scope).returns(scope)
 
     captured = capture_turbo_broadcasts { child.broadcast_provenance_change_to_hierarchy }
 
