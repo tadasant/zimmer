@@ -271,10 +271,12 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   # turbo-frame, so it is not in the DOM the instant the drawer opens.
   #
   # Opening is only half of it. The rows are themselves a
-  # <turbo-frame loading="lazy">, and giving it layout is exactly what makes
-  # Turbo fetch it — so this returns when that fetch has landed, which Turbo
-  # marks with a `complete` attribute on the frame. Without the wait every caller
-  # would race the request and see an empty panel.
+  # <turbo-frame loading="lazy">, which transcript-panel#loadFrame switches to
+  # `eager` on the toggle this dispatches — layout alone does not fetch a lazy
+  # frame, only appearing in the viewport does, and a panel opened by script sits
+  # wherever the page happens to be scrolled. So this returns when that fetch has
+  # landed, which Turbo marks with a `complete` attribute on the frame. Without
+  # the wait every caller would race the request and see an empty panel.
   def open_transcript_panel(wait: 0, load_timeout: 10)
     return unless page.has_css?("details[data-controller~='transcript-panel']", wait: wait)
 

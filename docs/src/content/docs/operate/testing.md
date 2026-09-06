@@ -500,8 +500,9 @@ Two changes, because there were two defects and only one of them was in the test
   so opening the panel is what fetches the rows — which is what
   [the transcript page](/sessions/transcripts/#opening-the-transcript-is-what-loads-it) had claimed
   all along. This is a product fix, not a test one: a `#message-N` link opened cold opens the panel
-  under a viewport still parked at the top of the page, and `reveal` was waiting on the same frame
-  for the same reason.
+  under a viewport still parked at the top of the page, and a panel the server rendered *already*
+  open — the `transcript=open` page the log-level filter re-fetches — fires no toggle at all, so it
+  is reached through `frameTargetConnected` instead.
 - **`ApplicationSystemTestCase` resizes to 1400x900 before every test.** That is the size the
   twenty-odd files that resize for a phone already restore to, so it is the suite's desktop default
   written down rather than a new one; a subclass that wants a phone still resizes in its own `setup`,

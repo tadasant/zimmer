@@ -61,6 +61,18 @@ export default class extends Controller {
     if (!this.inDrawer) this.handleHash()
   }
 
+  // The frame can arrive after this controller does — Stimulus connects on the
+  // element as soon as it is parsed, before the frame nested inside it exists —
+  // and a panel that was rendered ALREADY OPEN fires no toggle for #toggled to
+  // catch. `transcript=open` is exactly that page: the log-level filter's
+  // re-fetch asks for the disclosure open so the reader gets the panel back at
+  // the level they picked, and a reader on a phone is looking at a panel that
+  // has scrolled well down the page. Without this the frame stays lazy there,
+  // which is the whole defect #loadFrame exists to remove.
+  frameTargetConnected() {
+    if (this.element.open) this.loadFrame()
+  }
+
   disconnect() {
     window.removeEventListener("hashchange", this.boundHandleHash)
     this.element.removeEventListener("turbo:frame-load", this.boundFrameLoaded)
@@ -81,12 +93,15 @@ export default class extends Controller {
       return
     }
 
+    // Ahead of the `revealing` return below, not after it: a reveal that opened
+    // a closed panel is still an opening, and it has nothing to scroll to until
+    // the rows are fetched.
+    this.loadFrame()
+
     // A reveal opened this panel to land on one specific message, and the toggle
     // it caused must not then scroll past it to the newest row. Cleared on
     // close rather than once the reveal has run, because a frame that was
     // already loaded reveals synchronously — before this toggle is delivered.
-    this.loadFrame()
-
     if (this.revealing) return
 
     this.whenLoaded(() => {
@@ -117,8 +132,18 @@ export default class extends Controller {
   // long as the disclosure is closed, which is the whole point of deferring the
   // panel (see sessions_controller#transcript_panel); this only stops the fetch
   // being contingent on scroll position once the reader has asked for it.
+  // Called from three places, so it has to be safe to call twice — and
+  // `setAttribute` is not, even with the value the attribute already holds.
+  // There is no same-value short circuit: the DOM runs its attribute-change
+  // steps regardless, Turbo's `attributeChangedCallback` re-enters
+  // `loadingStyleChanged`, and `#loadSourceURL` is guarded only by `complete`.
+  // A second call while the first fetch is in flight therefore CANCELS it and
+  // issues another — a second GET of the most expensive response the session
+  // screen has, after the server has already built the first. Reading the
+  // attribute back is what makes the second call the no-op it reads as.
   loadFrame() {
     if (!this.deferredValue || !this.hasFrameTarget) return
+    if (this.frameTarget.getAttribute("loading") === "eager") return
 
     this.frameTarget.setAttribute("loading", "eager")
   }
@@ -200,9 +225,7 @@ export default class extends Controller {
 
     // Also here, and not only in #toggled: a panel that was ALREADY open fires
     // no toggle, so the reveal would otherwise queue behind a frame that is
-    // still waiting to be scrolled to. Setting `loading` to the value it
-    // already holds is a no-op, and re-setting it on a loaded frame is too —
-    // Turbo's re-read stops at `complete`.
+    // still waiting to be scrolled to.
     this.loadFrame()
 
     this.whenLoaded(() => {

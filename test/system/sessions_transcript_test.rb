@@ -71,23 +71,65 @@ class SessionsTranscriptTest < ApplicationSystemTestCase
   # rows have to arrive at a window where the panel starts off screen. The window
   # is the one from that run, and `page.visit` is deliberate: the suite's own
   # `visit` opens the panel for every caller, and this test has to look at the
-  # page before that happens.
+  # page before that happens. It skips the post-`visit` Turbo Stream readiness
+  # wait with it, which costs nothing here — the rows come from the frame's own
+  # fetch, not from a broadcast.
   test "opening the transcript below the fold still loads its rows" do
     page.driver.browser.manage.window.resize_to(800, 600)
 
     page.visit session_path(sessions(:with_transcript))
+    wait_for_stimulus_controller("transcript-panel")
 
-    assert_selector "details[data-controller~='transcript-panel']", visible: :all
-    assert panel_below_the_fold?,
-      "the Transcript disclosure has to start outside the viewport for this to test anything; " \
-      "it is at #{panel_viewport_offset}px in a #{page.evaluate_script('window.innerHeight')}px viewport"
+    assert_panel_below_the_fold
 
     open_transcript_panel
 
     assert_text "Hello, can you help me?"
   end
 
+  # The other opening nobody scrolls to, and the one a reader actually meets: the
+  # log-level filter re-fetches with `transcript=open` so the panel comes back
+  # open at the level just picked (log_level_filter_controller.js#refetchAtLevel).
+  # That page renders the disclosure already open, so no toggle fires and
+  # #loadFrame has to be reached through `frameTargetConnected` instead. On a
+  # phone the panel is a long way down the page, so intersection cannot be what
+  # rescues it.
+  test "a transcript rendered already open loads its rows below the fold" do
+    page.driver.browser.manage.window.resize_to(800, 600)
+
+    page.visit session_path(sessions(:with_transcript), transcript: "open")
+    wait_for_stimulus_controller("transcript-panel")
+
+    assert_selector "details[data-controller~='transcript-panel'][open]", visible: :all
+    assert_panel_below_the_fold
+
+    assert_selector "turbo-frame[id$='_transcript'][complete]", wait: 10
+    assert_text "Hello, can you help me?"
+  end
+
   private
+
+  # Both tests above are only about the frame's fetch trigger, so each has to
+  # prove that the trigger the fix replaces — appearing in the viewport — is
+  # genuinely unavailable. Without this a layout change that lifts the panel
+  # above the fold would leave two tests that pass for the wrong reason.
+  def assert_panel_below_the_fold
+    assert_selector "details[data-controller~='transcript-panel']", visible: :all
+
+    # Stated rather than assumed. A reader who has not scrolled is at the top of
+    # the page, which is the position both tests are about; leaving it to
+    # whatever the composer's autofocus and the sticky footer settle on would
+    # make the precondition an accident of layout rather than the case under
+    # test.
+    page.execute_script("window.scrollTo(0, 0)")
+
+    viewport_height = page.evaluate_script("window.innerHeight")
+    offset = panel_viewport_offset
+
+    assert offset >= viewport_height,
+      "the Transcript disclosure has to start outside the viewport for this to test anything; " \
+      "it is at #{offset}px in a #{viewport_height}px viewport"
+  end
 
   # How far below the top of the viewport the Transcript disclosure sits, in CSS
   # pixels. Read from the document rather than from a Capybara node: the question
@@ -96,9 +138,5 @@ class SessionsTranscriptTest < ApplicationSystemTestCase
     page.evaluate_script(<<~JS)
       document.querySelector("details[data-controller~='transcript-panel']").getBoundingClientRect().top
     JS
-  end
-
-  def panel_below_the_fold?
-    panel_viewport_offset >= page.evaluate_script("window.innerHeight")
   end
 end
