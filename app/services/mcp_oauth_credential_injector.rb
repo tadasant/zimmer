@@ -365,9 +365,10 @@ class McpOauthCredentialInjector
 
   # Whether this session's runtime has a credential store Zimmer writes at all.
   #
-  # Pi does not: its MCP support comes from the pi-mcp-adapter extension, which
-  # keeps OAuth tokens in its own state rather than in a host-global file Zimmer
-  # owns, so `mcp_credential_writer_class` is nil for it.
+  # Every registered runtime does today — Pi's store is the pi-mcp-adapter
+  # extension's own, which PiMcpCredentialWriter stages into — but the slot is
+  # allowed to be nil for a runtime that keeps its MCP OAuth tokens somewhere
+  # Zimmer cannot write, and the nil has to degrade rather than raise.
   #
   # Asked through #credential_writer rather than re-derived from
   # `session.runtime`, so exactly one place knows how the writer is obtained and

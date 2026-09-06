@@ -97,10 +97,10 @@ class RefreshMcpOauthTokensJob < ApplicationJob
     retry_ids = []
 
     credentials_needing_refresh.find_each do |credential|
-      # Adopt any token the agent runtime already refreshed (and rotated) on disk
+      # Adopt any token an agent runtime already refreshed (and rotated) on disk
       # before we hit the network. Without this the cron can present a DB refresh
       # token a session rotated away and get invalid_grant on a live credential.
-      runtime_reconciler.reconcile!(credential)
+      reconcile_from_runtimes!(credential)
 
       # Use database-level locking to prevent concurrent refresh attempts
       # from multiple workers racing on the same credential
@@ -143,7 +143,7 @@ class RefreshMcpOauthTokensJob < ApplicationJob
     McpOauthCredential.where(id: credential_ids).find_each do |credential|
       # A session may have refreshed this token on disk between the failed attempt
       # and this retry — adopt it so we don't retry against a rotated-away token.
-      runtime_reconciler.reconcile!(credential)
+      reconcile_from_runtimes!(credential)
 
       credential.with_lock do
         # Re-check inside lock — the token may have been refreshed (or become
@@ -181,12 +181,38 @@ class RefreshMcpOauthTokensJob < ApplicationJob
     self.class.set(wait: wait).perform_later(retry_credential_ids: credential_ids, attempt: attempt)
   end
 
-  # Reconciles DB credentials against the runtime's on-disk store before refreshing.
-  # Only Claude Code refreshes MCP tokens mid-session (Codex is written-not-trusted,
-  # see CodexMcpCredentialWriter), and its store is keyed by the same credential_key
-  # Zimmer persists, so the reconciler matches each credential by its own key.
-  def runtime_reconciler
-    @runtime_reconciler ||= McpOauthRuntimeReconciler.new(ClaudeMcpCredentialWriter.new)
+  # Adopts a token any runtime already rotated on disk before this job hits the
+  # network with the DB's copy.
+  #
+  # **Every** runtime, not just the session's or just Claude Code's. An
+  # McpOauthCredential row is runtime-agnostic — one row per server config — but
+  # each runtime keeps its own copy, and both Claude Code and Pi refresh MCP
+  # tokens mid-session. This job has no session and therefore no runtime, so
+  # reading only one store is how a rotation performed by a session on another
+  # runtime gets burned: the cron presents the rotated-away DB token, the
+  # provider's reuse detection answers `invalid_grant`, and the credential is
+  # dead until a human re-authorizes it. Codex is written-not-trusted (see
+  # CodexMcpCredentialWriter) so its store never holds anything newer, which
+  # makes including it a no-op rather than an exception to carve out.
+  #
+  # Order does not matter. Adoption requires a strictly later access-token
+  # expiry than the DB row *currently* holds, so each store is compared against
+  # the outcome of the previous one and the newest pair wins whichever order
+  # they are read in.
+  def reconcile_from_runtimes!(credential)
+    runtime_reconcilers.each do |writer, reconciler|
+      reconciler.reconcile!(credential, runtime_key: writer.runtime_key_for(credential))
+    end
+  end
+
+  # One writer/reconciler pair per registered runtime that has a credential
+  # store, built once per job run. Reading is lazy inside the reconciler, so a
+  # runtime whose store holds nothing costs one probe, not a read per credential.
+  def runtime_reconcilers
+    @runtime_reconcilers ||= RuntimeRegistry.mcp_credential_writer_classes.map do |writer_class|
+      writer = writer_class.new
+      [ writer, McpOauthRuntimeReconciler.new(writer) ]
+    end
   end
 
   def credentials_needing_refresh

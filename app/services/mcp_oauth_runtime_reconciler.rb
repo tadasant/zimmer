@@ -8,12 +8,21 @@
 #
 # Zimmer stores each MCP server's OAuth tokens in McpOauthCredential and, at every
 # spawn, writes them into the agent CLI's own credential store via a
-# RuntimeMcpCredentialWriter. But Claude Code has its own MCP OAuth client: when an
-# access token expires mid-session it refreshes it and writes the NEW pair back to
-# ~/.claude/.credentials.json. Providers that rotate refresh tokens (OAuth 2.1
-# reuse-detection: every refresh mints a new refresh token and revokes the prior
-# one) then leave Zimmer's DB holding a refresh token that has already been
-# rotated away.
+# RuntimeMcpCredentialWriter. But Claude Code and Pi each ship their own MCP OAuth
+# client: when an access token expires mid-session they refresh it and write the
+# NEW pair back — Claude Code to ~/.claude/.credentials.json, Pi through the MCP
+# SDK's OAuth provider, whose saveTokens lands in the OS credential store.
+# Providers that rotate refresh tokens (OAuth 2.1 reuse-detection: every refresh
+# mints a new refresh token and revokes the prior one) then leave Zimmer's DB
+# holding a refresh token that has already been rotated away.
+#
+# Neither runtime can be told to stop refreshing — pi-mcp-adapter's `oauth: false`
+# disables OAuth for the server outright rather than pinning the staged token, and
+# Claude Code exposes nothing at all — so "Zimmer is the sole authority" is not a
+# configuration that exists. Adopting back IS the design, and the ordering two
+# writers would otherwise lack is supplied by #adoptable? below: only a strictly
+# later access-token expiry is adopted, so the chain advances one way and a
+# re-stamp of an older pair can never win.
 #
 # ClaudeMcpCredentialWriter#merge_preserving_fresher! keeps that fresher on-disk
 # entry ONLY while its paired access token is still valid. Across an idle gap
@@ -32,22 +41,35 @@
 #
 # == Matching ==
 #
-# The runtime store is keyed by the same "server_name|hash" credential key Zimmer
+# Each runtime names its own entries, so the caller passes `runtime_key`: Claude
+# Code and Codex key by the same "server_name|hash" credential key Zimmer
 # persists (ClaudeMcpCredentialWriter#credential_key_for delegates to
-# McpOauthCredential.compute_credential_key), so a credential matches its on-disk
-# entry directly by key. Only Claude Code refreshes MCP tokens mid-session; Codex
-# is written-not-trusted (see CodexMcpCredentialWriter), so its store never holds
-# a newer token and reconciling against it is a harmless no-op.
+# McpOauthCredential.compute_credential_key), and Pi keys by the bare
+# `.mcp.json` server name. Codex is written-not-trusted (see
+# CodexMcpCredentialWriter), so its store never holds a newer token and
+# reconciling against it is a harmless no-op; Claude Code and Pi both refresh
+# mid-session and both need adopting back.
+#
+# == How the store gets read ==
+#
+# A store that can be listed (one readable file) is read once and serves every
+# credential from that snapshot. A store that can only be probed by key — Pi's,
+# whose OS credential store is addressed by `sha256(server_name)` with no
+# listing — is asked per key, memoized so a repeated key costs one read. Which
+# one a reader is comes from RuntimeMcpCredentialWriter#enumerable_store?.
+#
+# Reading lazily also means a reconciler nobody asks anything of touches no
+# store: constructing one is free, which is what lets the injector and the cron
+# build one unconditionally.
 class McpOauthRuntimeReconciler
   # @param reader [RuntimeMcpCredentialWriter] a runtime credential writer whose
   #   #read_runtime_credentials exposes what the runtime currently has on disk
   def initialize(reader)
-    @snapshots = reader.read_runtime_credentials
-  rescue StandardError => e
-    # A missing/corrupt runtime store must never block a spawn or a refresh — treat
-    # it as "nothing to adopt" and let the existing DB tokens flow through.
-    Rails.logger.warn "[McpOauthRuntimeReconciler] Failed to read runtime credentials: #{e.message}"
+    @reader = reader
+    @enumerable = !reader.respond_to?(:enumerable_store?) || reader.enumerable_store?
     @snapshots = {}
+    @probed = Set.new
+    @listed = false
   end
 
   # Adopts a newer runtime-written token pair for `credential` into the DB.
@@ -57,7 +79,7 @@ class McpOauthRuntimeReconciler
   #   under (defaults to the credential's own key, which equals Claude Code's)
   # @return [Boolean] true if the DB row was updated from the runtime store
   def reconcile!(credential, runtime_key: credential.credential_key)
-    snapshot = @snapshots[runtime_key]
+    snapshot = snapshot_for(runtime_key)
     return false unless adoptable?(snapshot, credential)
 
     adopted = false
@@ -104,6 +126,32 @@ class McpOauthRuntimeReconciler
   end
 
   private
+
+  # The runtime's entry for `runtime_key`, reading the store on first need.
+  def snapshot_for(runtime_key)
+    if @enumerable
+      unless @listed
+        @listed = true
+        @snapshots = read_store(nil)
+      end
+    elsif @probed.add?(runtime_key)
+      @snapshots.merge!(read_store([ runtime_key ]))
+    end
+
+    @snapshots[runtime_key]
+  end
+
+  # A missing/corrupt runtime store must never block a spawn or a refresh — treat
+  # it as "nothing to adopt" and let the existing DB tokens flow through. The
+  # probe is still recorded as done, so a store that raises every time is asked
+  # once per key rather than once per credential.
+  def read_store(credential_keys)
+    result = @reader.read_runtime_credentials(credential_keys)
+    result.is_a?(Hash) ? result : {}
+  rescue StandardError => e
+    Rails.logger.warn "[McpOauthRuntimeReconciler] Failed to read runtime credentials: #{e.message}"
+    {}
+  end
 
   # True when the on-disk snapshot is a strictly newer token pair worth adopting.
   #

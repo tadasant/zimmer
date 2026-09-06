@@ -284,14 +284,20 @@ module RuntimeRegistry
   # and McpOauthRuntimeReconciler adopts it back into the DB on the next spawn
   # there. See McpOauthCredentialInjector#delete_runtime_credentials.
   #
+  # The same row-is-shared, copies-are-per-runtime fact drives the other caller,
+  # RefreshMcpOauthTokensJob, in the opposite direction: the cron has no session
+  # and so no runtime, and reads every store before refreshing so that a token a
+  # session rotated on any runtime is adopted rather than burned.
+  #
   # @return [Array<Class>]
   def mcp_credential_writer_classes
-    # `.compact`: a runtime whose slot is nil has no host-global credential store
-    # to clear (Pi keeps MCP OAuth tokens inside the pi-mcp-adapter extension's
-    # own state, which Zimmer does not write). The caller instantiates every class
-    # this returns, so a nil left in the list would NoMethodError on the retire
-    # path — which runs only while a credential is already failing, i.e. at the
-    # worst possible moment. See McpOauthCredentialInjector#delete_runtime_credentials.
+    # `.compact`: every registered runtime fills this slot today (Pi's is
+    # PiMcpCredentialWriter, which stages the plaintext entry pi-mcp-adapter
+    # imports), but the slot is allowed to be nil for a runtime that keeps its
+    # MCP OAuth tokens somewhere Zimmer cannot write. The caller instantiates
+    # every class this returns, so a nil left in the list would NoMethodError on
+    # the retire path — which runs only while a credential is already failing,
+    # i.e. at the worst possible moment.
     BUNDLES.values.filter_map(&:mcp_credential_writer_class).uniq
   end
 end
