@@ -16,6 +16,7 @@ sidebar:
 | `verify_lockfile` | `bundle lock` then `git diff --exit-code Gemfile.lock` |
 | `test-unit` | `bin/rails test` — unit + integration; Postgres 16 + Redis 7 service containers |
 | `test-system` | `bin/rails test:system` — the Chrome-driven browser suite; `PARALLEL_WORKERS=1` |
+| `schema_verify` | `bin/rails db:schema:verify` — round-trips `db/schema.rb` against `db/migrate/` on a scratch Postgres 16 container |
 | `retention_logic` | `ruby scripts/ghcr_retention_test.rb` (pure Ruby, no Rails boot) |
 | `docs_site` | Builds this documentation site |
 | `image_excludes_docs` | Asserts `docs/` is absent from the image build context — see [Deploying](/operate/deploying/#the-docs-never-ship-in-the-image) |
@@ -88,30 +89,50 @@ runners that need a Playwright browser the runner is not provisioned for, and
 `test-system` job covers the overlapping UI through the Ruby browser suite. Tracked in
 [#162](https://github.com/tadasant/zimmer/issues/162).
 
-Neither does CI ever run a **migration**. Both test jobs build the database with `bin/rails
-db:test:prepare`, which *loads* `db/schema.rb` — so a schema that disagrees with `db/migrate/` is
-green here and diverges from production, which does run them. `db:schema:verify` is the check, and
-it is deliberately outside the gate because it drops and recreates databases:
+## The migrations are replayed, in their own job
+
+`test-unit` and `test-system` build the database with `bin/rails db:test:prepare`, which *loads*
+`db/schema.rb` and never runs a migration. On its own that leaves a `schema.rb` disagreeing with
+`db/migrate/` green all the way to whoever next migrates an empty database. The `schema_verify` job
+is what closes that:
 
 ```bash
 RAILS_ENV=test bin/rails db:schema:verify
 ```
 
-It migrates a scratch database from zero, loads the committed schema into another, dumps both, and
-diffs. Run it on any PR that adds a migration. `test/migrations/schema_dump_test.rb` covers the cheap
-half in CI — that the dumps are in the running Active Record version's format, and that `schema.rb`
-is at the newest migration on disk.
+It migrates a scratch database from zero and dumps it, loads the committed schema into another and
+dumps that, then diffs — printing the unified diff of whichever file disagrees, because a CI log is
+the only place most readers will ever see the failure. It drops and recreates databases several
+times, which is why it gets its own Postgres service container instead of a step inside `test-unit`,
+and why it refuses to run outside `RAILS_ENV=test`. The same command is what you run locally.
 
-**It does not pass today, and that is the finding.** `db/migrate/` is not replayable from zero:
-`20260613193000_add_session_maintenance_indexes` builds a partial index on `sessions.transcript`, and
-no migration in the directory ever creates that column — `db/schema.rb` declares it, so every
-environment got it from a schema load rather than from the migrations. A from-zero `db:migrate` dies
-there with `PG::UndefinedColumn`. Nothing noticed because nothing has migrated from zero since.
+The job deliberately does **not** set `CI=true`, unlike the two test jobs. That variable's only
+effect in the test environment is to turn on eager loading, and eager-loading the app while
+migrating from zero means model code meeting a half-built schema.
 
-The task takes some care to see this at all: `db:migrate` against a database with no
+`test/migrations/schema_dump_test.rb` still covers the cheap half inside `test-unit`, where it
+answers in milliseconds: the dumps are in the running Active Record version's format, and
+`schema.rb` is at the newest migration on disk.
+
+**The check found real drift both times it has been run end to end.** The first, in
+[#182](https://github.com/tadasant/zimmer/issues/182): `db/migrate/` was not replayable from zero
+because `20260613193000_add_session_maintenance_indexes` built a partial index on
+`sessions.transcript`, a column no migration created —
+`20260613192900_add_missing_session_columns_for_migration_replay` fixed that. The second, when the
+job was wired in ([#318](https://github.com/tadasant/zimmer/issues/318)): `logs.session_id` was a
+`bigint` in `20251112023554_create_logs` and an `integer` in every database that exists. See
+[Known limitations](/limitations/#logssession_id-is-an-integer-referencing-a-bigint-primary-key).
+
+The task takes some care to see any of this at all: `db:migrate` against a database with no
 `schema_migrations` table does **not** run the migrations — it loads `db/schema.rb` and stamps every
 version as applied. So the from-zero pass moves the schema files out of the way first. Without that,
 both passes just re-dump the committed schema and the check reports OK for any drift.
+
+Its replay half is scoped to databases that actually have migrations, which today means the primary
+one. solid_cable's `cable` database is installed by loading `db/cable_schema.rb` — the gem ships
+that file and no migration, and the `migrations_paths` its config names (`db/cable_migrate`) is not
+a directory in this repo — so a from-zero migrate dumps it empty by design. It is still covered by
+the load-and-dump half, which is the only comparison that means anything for a schema-only database.
 
 ## Tests that skip themselves
 

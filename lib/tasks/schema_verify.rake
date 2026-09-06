@@ -1,15 +1,19 @@
 # frozen_string_literal: true
 
-# CI never runs the migrations: `bin/rails db:test:prepare` *loads* `db/schema.rb`
-# and no job migrates from zero. So a schema.rb that has drifted from what the
-# migrations actually produce — a hand-edited entry, a migration whose reformat
-# was thrown away, a column the schema declares that no migration creates —
-# passes every check the merge gate has, and only bites whoever next runs
-# `db:migrate` against an empty database.
+require "open3"
+require "tempfile"
+
+# The test suite never runs the migrations: `bin/rails db:test:prepare` *loads*
+# `db/schema.rb`. So a schema.rb that has drifted from what the migrations
+# actually produce — a hand-edited entry, a migration whose reformat was thrown
+# away, a column the schema declares that no migration creates — passes every
+# other check the merge gate has, and only bites whoever next runs `db:migrate`
+# against an empty database.
 #
-# `db:schema:verify` is that missing check, on demand and outside CI: migrate a
-# scratch database from zero and dump it, load the committed schema into a
-# scratch database and dump that, then compare the two dumps.
+# `db:schema:verify` is that missing check: migrate a scratch database from zero
+# and dump it, load the committed schema into a scratch database and dump that,
+# then compare the two dumps. The `schema_verify` job in .github/workflows/ci.yml
+# runs it on every PR against a throwaway Postgres service container.
 #
 # Destructive — it drops and recreates the environment's databases — so it
 # refuses to run outside the test environment.
@@ -28,15 +32,24 @@ module SchemaVerifyTask
         puts "==> loading the committed schema into a scratch database"
         from_schema_load = schema_load_pass(committed)
 
-        if from_migrations != from_schema_load
+        replayed = from_migrations.slice(*replayable_paths)
+        loaded = from_schema_load.slice(*replayable_paths)
+
+        if replayed != loaded
           abort "DRIFT: migrating from zero and loading the committed schema produce different dumps — " \
-                "a migration and the committed schema disagree. Diff them to see which objects differ."
-        elsif from_migrations == committed
-          puts "OK: #{describe(committed.keys)} match both a from-zero migration and a schema load."
+                "a migration and the committed schema disagree.\n\n" \
+                "#{diff(loaded, replayed, from: "schema-load", to: "migrated-from-zero")}"
+        elsif from_schema_load == committed
+          puts "OK: #{describe(loaded.keys)} — a from-zero migration and a schema load produce the same dump."
+          skipped = committed.keys - loaded.keys
+          if skipped.any?
+            puts "    #{describe(skipped)} — no migrations to replay; checked by schema load and re-dump only."
+          end
         else
-          keep = from_migrations
+          keep = from_schema_load
           abort "DRIFT: the migrations and the committed schema agree with each other but not with the " \
-                "files in the tree. They have been rewritten in place — review and commit them."
+                "files in the tree. They have been rewritten in place — review and commit them.\n\n" \
+                "#{diff(committed, from_schema_load, from: "committed", to: "re-dumped")}"
         end
       ensure
         # Runs on success, on abort (SystemExit), and on Ctrl-C (Interrupt), so a
@@ -91,14 +104,38 @@ module SchemaVerifyTask
     end
 
     # Every schema file Rails dumps for this environment — `db/schema.rb` and,
-    # because solid_cable declares a second database, `db/cable_schema.rb`. The
-    # passes rewrite all of them, so all of them are snapshotted and compared.
+    # because solid_cable declares a second database, `db/cable_schema.rb`. Both
+    # passes rewrite all of them, so all of them are snapshotted and restored.
     def schema_paths
-      ActiveRecord::Base.configurations
-        .configs_for(env_name: Rails.env)
+      configs.filter_map { |db_config| ActiveRecord::Tasks::DatabaseTasks.schema_dump_path(db_config) }
+        .uniq
+        .map { |path| Pathname.new(path) }
+    end
+
+    # The subset a from-zero `db:migrate` can actually reproduce.
+    #
+    # solid_cable's `cable` database is installed by loading `db/cable_schema.rb`
+    # — the gem ships that file and no migration, and the `migrations_paths` the
+    # config names (`db/cable_migrate`) is not a directory in this repo. A
+    # from-zero migrate therefore dumps that database empty, which is the design
+    # and not drift; comparing it against the committed file would fail forever.
+    # It is still covered by the load-and-dump comparison in `run`, which is the
+    # only one that means anything for a schema-only database. The same reasoning
+    # scopes test/migrations/schema_dump_test.rb's version assertion.
+    def replayable_paths
+      configs.select { |db_config| migrations?(db_config) }
         .filter_map { |db_config| ActiveRecord::Tasks::DatabaseTasks.schema_dump_path(db_config) }
         .uniq
         .map { |path| Pathname.new(path) }
+    end
+
+    def migrations?(db_config)
+      Array(db_config.migrations_paths || ActiveRecord::Migrator.migrations_paths)
+        .any? { |dir| Dir.glob(Rails.root.join(dir, "*.rb")).any? }
+    end
+
+    def configs
+      ActiveRecord::Base.configurations.configs_for(env_name: Rails.env)
     end
 
     def read_schemas
@@ -107,6 +144,39 @@ module SchemaVerifyTask
 
     def write_schemas(contents)
       contents.each { |path, body| path.write(body) if body && (!path.exist? || path.read != body) }
+    end
+
+    # A CI log is the only place most readers will ever see this failure, and
+    # "diff them yourself" is not something you can act on from one. Print the
+    # difference, per file, in the message that fails the job.
+    def diff(before, after, from:, to:)
+      before.filter_map { |path, body| file_diff(path, body, after[path], from:, to:) }.join("\n")
+    end
+
+    def file_diff(path, before, after, from:, to:)
+      return nil if before == after
+
+      name = path.relative_path_from(Rails.root)
+      body = unified_diff(before.to_s, after.to_s, "#{name} (#{from})", "#{name} (#{to})")
+      body.presence || "#{name} differs between the #{from} and #{to} dumps."
+    end
+
+    def unified_diff(before, after, before_label, after_label)
+      Tempfile.create("schema-verify-before") do |a|
+        Tempfile.create("schema-verify-after") do |b|
+          a.write(before)
+          a.flush
+          b.write(after)
+          b.flush
+          # `diff` exits 1 when the files differ, which is the expected case here,
+          # so the status is deliberately ignored.
+          out, = Open3.capture2e("diff", "-u", "--label", before_label, "--label", after_label, a.path, b.path)
+          out
+        end
+      end
+    rescue Errno::ENOENT
+      # No `diff` on this box. The abort message above still names the files.
+      nil
     end
 
     def describe(paths)

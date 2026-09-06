@@ -11,12 +11,14 @@ require "test_helper"
 # the usual escape was to throw the reformat away and hand-write the entry —
 # which is how a schema.rb drifts from what the migrations actually produce.
 #
-# These assertions are the cheap half of the guard: they run in CI on every PR
-# and catch a stale dump the moment the Rails version moves, or a schema version
-# that no longer matches the migrations on disk. The expensive half — proving
-# that migrating from zero and loading the schema produce the same database — is
-# `bin/rails db:schema:verify` (lib/tasks/schema_verify.rake), which needs to
-# drop and recreate databases and so stays out of the merge gate.
+# These assertions are the cheap half of the guard: they run inside `test-unit`
+# and answer in milliseconds, catching a stale dump the moment the Rails version
+# moves, or a schema version that no longer matches the migrations on disk. The
+# expensive half — proving that migrating from zero and loading the schema
+# produce the same database — is `bin/rails db:schema:verify`
+# (lib/tasks/schema_verify.rake). It drops and recreates databases, so it runs in
+# the merge gate as its own job, `schema_verify`, against its own scratch
+# Postgres service container rather than the one this suite is using.
 class SchemaDumpTest < ActiveSupport::TestCase
   SCHEMA_FILES = [ Rails.root.join("db/schema.rb"), Rails.root.join("db/cable_schema.rb") ].freeze
 
