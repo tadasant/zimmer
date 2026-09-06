@@ -256,7 +256,7 @@ holds the next start; it never interrupts work already underway.
 
 A turn is **handed to** a session — by a fired wake trigger, a follow-up, a poller, or the end-of-turn
 handoff to a queued message — well before a worker starts executing it. Between the two sits the
-`agents` GoodJob queue, which is only `GOOD_JOB_AGENTS_THREADS` (default 8) deep, and on a busy
+`agents` GoodJob queue, which is only `GOOD_JOB_AGENTS_THREADS` (default 12) deep, and on a busy
 deployment that gap runs to minutes.
 
 Since [#1040](https://github.com/tadasant/zimmer/pull/1040) that queue reads `waiting` rather than
@@ -299,24 +299,26 @@ repairs). Reading the count *with* the queue folded in is exactly how
 `RunningTurns` is the one place the distinction is made; both ceilings read through it.
 
 **The consequence for tuning: the `agents` pool is a hard bound on both ceilings.** The count is
-turns a worker is running and the pool runs `GOOD_JOB_AGENTS_THREADS` (default 8) of them, so a
+turns a worker is running and the pool runs `GOOD_JOB_AGENTS_THREADS` (default 12) of them, so a
 ceiling above that can never be reached — the spot gate would never report `fleet_at_cap`, and top-up
-would always see the fleet as having room, while work keeps queueing behind the same eight workers.
+would always see the fleet as having room, while work keeps queueing behind the same twelve workers.
 Nothing clamps the setting: the number you type is yours, and growing the pool is a deploy away. Both
 `/inference` cards and `get_spot_policy` say so when your number is above the pool, and print the
-effective ceiling — `min(configured, GOOD_JOB_AGENTS_THREADS)` — beside it. Note that the **default**
-of 10 is itself above the default pool of 8, so an un-retuned deployment sees that note from the
-start.
+effective ceiling — `min(configured, GOOD_JOB_AGENTS_THREADS)` — beside it. Both shipped defaults —
+`spot_max_concurrent_sessions` 10 and the top-up ceiling 3 — now sit *under* the default pool of 12,
+so an un-retuned deployment gets ceilings that bind. A deployment that raised its ceilings to work
+around the old pool of 8 should bring them back under 12, or it keeps the unreachable-ceiling
+behaviour for no reason.
 
-#### Growing the pool is a deploy away, and on Tadasant production it is currently blocked
+#### What actually bounds the pool: memory, and not the way you would guess
 
-"Growing the pool is a deploy away" is true of the *config*, and it is the sentence to be careful
-with. `GOOD_JOB_AGENTS_THREADS` is bounded by the worker's **memory cgroup**, not by the database,
-because each of its threads runs a whole agent session — and on the Tadasant production deployment
-that bound is already reached at 8.
+`GOOD_JOB_AGENTS_THREADS` is sized by what the `sessions` cgroup pool can hold, not by the database,
+because each of its threads runs a whole agent session. The history is worth keeping, because the
+intuition it corrects is a common one.
 
-Measured over the 24 hours to 2026-09-05T14:16Z, at 8, against the worker's 10 GiB `memory.max`,
-strongest evidence first:
+Measured over the 24 hours to 2026-09-05T14:16Z, at **8** threads and *before*
+[#981](https://github.com/tadasant/zimmer/issues/981)'s fix, against the worker's 10 GiB
+`memory.max`, strongest evidence first:
 
 | Metric | Value | Weight |
 | --- | --- | --- |
@@ -335,13 +337,32 @@ cgroups do not help here and are not meant to: cgroup v2 is hierarchical, so
 bounds the sum, on a pool the Rails worker is not inside — so the pile-up now kills a session rather
 than the worker that runs all of them.
 
-**That is a blast-radius bound, not a demand reduction, so it does not raise this ceiling.** A larger
-pool still buys no throughput on this deployment: it converts queued rows — which are durable and
-resume — into killed sessions. The measurements above were taken before the fix, so raising the
-number means re-measuring `anon` under the pool and the per-session `PARALLEL_WORKERS` cap, then a
-matching bump to `app_required_backends`. The connection budget is not what holds it first, and is
-not roomy either: 15 threads derive 97 required backends, which is the *entire* capacity of a
-`db-s-2vcpu-4gb` cluster — zero margin.
+**That changes the victim, not the demand — and the victim is the part that mattered.** Because the
+pool's `memory.max` is absolute, admitting more sessions no longer endangers the worker *through
+session memory*; it spends pool headroom instead. That is what let the thread count go **8 → 12**:
+overshoot costs one session, which GoodJob retries, where it once cost every session plus the worker.
+
+One path stays outside the pool, and the qualifier above is doing real work. `bin/docker-entrypoint`
+runs the cgroup delegation *after* starting the inner dockerd, deliberately — so the daemon and the
+`.agent-containers` dev stacks it manages are charged to the container cgroup, alongside the worker.
+`GOOD_JOB_AGENTS_THREADS` is the only thing bounding that path, which is the residual risk in raising
+it. See [nested Docker](/operate/nested-docker/) for the accounting.
+
+**The counter-intuitive corollary: do not raise the pool to match the threads.** The pool is sized
+from what must survive a pile-up, not from how many sessions are admitted. Two tenants live outside
+it and both have to fit in the residual — the Rails worker (~1.6 GiB measured) and the inner dockerd
+with the dev stacks it runs (~1.5 GiB), ~3.1 GiB together. At 6144 the residual is 4096 MB and covers
+that. At 7168 it would be 3072 MB — *under* the measured need — so the **container** cap would fire
+first, and that OOM selects across the whole container and takes the worker. The pool has to fire
+first, so 6144 stayed put when the threads moved.
+
+What 12 costs is headroom for concurrent heavy work. Measured on the live worker at 12 session
+cgroups: pool `anon` 3154 MB of the 6144 cap, ~263 MB per session, leaving ~3.0 GB — about five
+concurrent capped test suites at ~560 MB each. The conservative figure from #981's peak task dump
+(~382 MB per session) would leave ~1.6 GB, or two to three. The real tolerance is somewhere in that
+band and is not pinned down. The connection budget is not what binds first, and is not roomy either:
+12 threads derive 91 required backends against the 97 a `db-s-2vcpu-4gb` cluster serves, and 15 would
+derive exactly 97 — the whole plan, zero margin, which is the other reason 12 rather than 15.
 
 ### Its sibling: the backlog top-up ceiling
 

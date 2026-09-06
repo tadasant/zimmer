@@ -110,7 +110,7 @@ class HealthMonitorService
   #                from "wedged". 150 deep AND an hour at the head can.
   #   maintenance  2 threads against filesystem scans, `bundle install`, docker
   #                prune and transcript archiving — minutes each, same shape.
-  #   agents       8 threads, and AgentSessionJob holds its thread for the whole
+  #   agents       12 threads, and AgentSessionJob holds its thread for the whole
   #                life of the session. A ready AgentSessionJob waiting hours is
   #                the scheduler's admission control working as designed (see
   #                ConnectionBudget.good_job_queue_threads), not a stall.

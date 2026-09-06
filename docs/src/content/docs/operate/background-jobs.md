@@ -1173,14 +1173,14 @@ way. Those are the [#458](https://github.com/tadasant/zimmer/issues/458) shape r
 
 Most short jobs run on `default`. Six kinds of work are deliberately isolated:
 
-- **`:agents`** — `AgentSessionJob`, capped at eight concurrent turns. The cap is set by what the
-  worker's 10 GiB cgroup can hold, not by the database, because each thread runs a whole agent
-  session. Eight is not a number that has been shown to fit: measured on production at eight, the
-  cgroup's unreclaimable `anon` peaks at 9.07 GiB against that 10 GiB, and the kernel has
-  OOM-killed the GoodJob worker itself ([#981](https://github.com/tadasant/zimmer/issues/981)).
-  Excess turns stay as durable queued rows and start as slots finish — which is the point, since a
-  queued row resumes and a killed worker takes every in-flight turn with it. The measurements and
-  the conditions for raising it are on `agents:` in `config/connection_budget.rb`.
+- **`:agents`** — `AgentSessionJob`, capped at twelve concurrent turns. The cap is set by what the
+  `sessions` cgroup pool can hold, not by the database, because each thread runs a whole agent
+  session. [#981](https://github.com/tadasant/zimmer/issues/981) put every session cgroup in a pool
+  with its own `memory.max` and left the Rails worker in a sibling outside it, so overshoot costs
+  one session rather than the worker and all of them — which is what makes this a throughput number
+  rather than a safety one. Excess turns stay as durable queued rows and start as slots
+  finish. Raising it further is bounded by the pool, and the pool is *not* sized from this number —
+  see `agents:` in `config/connection_budget.rb` for the arithmetic and the measurements.
 
 - **`:triggers`** — `AoEventTriggerJob` and `ScheduleTriggerJob`. They were previously starved on
   `default`; `AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD = 120s` exists because of it.
@@ -1556,7 +1556,7 @@ lanes that deviate from the original calibration are listed; anything absent —
 | --- | --- | --- | --- | --- |
 | `inference` | 2 | `SessionTitleJob` blocks for `INFERENCE_TIMEOUT` (30s) and `SessionStatusSummaryJob` for `HEADLESS_TIMEOUT` (90s). At the 90s ceiling that is 2 × 3600/90 = **80 jobs/hour**, so a hundred-deep lane is over an hour of legitimate work | 150 | 60m |
 | `maintenance` | 2 | Filesystem scans, `bundle install`, docker prune, transcript archiving — minutes each, same shape. The scheduled sweeps cap themselves at `SWEEP_BUDGET_SECONDS` ([above](#the-scheduled-sweeps-yield-the-maintenance-thread)); the package installs do not, and they are what the ceiling is sized for | 100 | 60m |
-| `agents` | 8 | `AgentSessionJob` holds its thread for the whole life of the session, so a ready one waiting hours is admission control working as designed | 100 | 4h |
+| `agents` | 12 | `AgentSessionJob` holds its thread for the whole life of the session, so a ready one waiting hours is admission control working as designed | 100 | 4h |
 | `auth` | 2 | `RuntimeLoginJob` holds a thread for as long as the login CLI is open, up to `MAX_DURATION` (12 minutes) | 100 | 30m |
 
 A deep queue that is still draining is a `warning`: visible on `/health`, silent in Slack.

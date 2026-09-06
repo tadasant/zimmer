@@ -684,7 +684,7 @@ change takes effect within the minute and needs no deploy.
 
 | Column | Default | Means |
 | --- | --- | --- |
-| `fleet_idle_max_sessions` | 3 | the fleet counts as idle enough while **fewer than** this many sessions are **running on a worker**. A value above `GOOD_JOB_AGENTS_THREADS` (default 8) can never be reached, so the fleet always reads as having room — `/inference` says so on the card |
+| `fleet_idle_max_sessions` | 3 | the fleet counts as idle enough while **fewer than** this many sessions are **running on a worker**. A value above `GOOD_JOB_AGENTS_THREADS` (default 12) can never be reached, so the fleet always reads as having room — `/inference` says so on the card |
 | `fleet_idle_threshold_minutes` | 5 | how long it must stay under that ceiling first |
 | `fleet_idle_min_fire_interval_minutes` | 60 | the floor between two fires |
 
@@ -709,7 +709,7 @@ has least room for it — so three questions all have to answer no:
 ##### Why the ceiling computes its population instead of counting a column
 
 A turn is **handed to** a session well before a worker starts executing it, and the `agents` queue
-(default 8 threads) sits between the two. Since
+(default 12 threads) sits between the two. Since
 [#1040](https://github.com/tadasant/zimmer/pull/1040) that queue reads `waiting` rather than
 `running`, so the two no longer share a status — but neither status is a clean count on its own.
 `waiting` also holds every dormant session in the deployment, and `running` still holds rows between
