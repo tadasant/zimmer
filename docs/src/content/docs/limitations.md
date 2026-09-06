@@ -3904,6 +3904,14 @@ Heuristics have two failure directions and neither announces itself:
   is a third — deliberately, because the alternative loses real creates, which is the failure below.
   All are rarer than the quoted form that #772 was, and erring this way is the same choice that
   keeps a real create behind `timeout`, `until`, `sudo` or `xargs` from being missed.
+  [#620](https://github.com/tadasant/zimmer/issues/620) added one more, deliberately: a command that
+  runs a create and then something else — `gh pr create …; gh pr view 1 --json url` — no longer lets
+  the *second* command's non-zero exit veto the create, because in a shell that exit status was never
+  the create's to begin with. So if the create is what failed there, a same-repo URL the rest of the
+  line printed is read as the create's own. It is capped at **one** URL, which bounds it to a single
+  wrong PR rather than a whole listing, and it costs nothing on the shapes agents actually write —
+  the failure it replaces was a *successful* create being discarded, recorded nowhere, with every
+  GitHub integration silently off for that session.
   `GithubCommentAuthorshipHook` reads its own posting commands the same way since
   [#870](https://github.com/tadasant/zimmer/issues/870), and the same spellings are its
   residual edge, on top of the `gh api` endpoint path it reads as written.
@@ -3942,7 +3950,8 @@ new runtime session id. Zimmer keeps polling the `session_id` it recorded at spa
 (`ClaudeTranscriptSource#locate` prefers `<session_id>.jsonl`), which by then named the branch that
 never ran the create. Nothing in the recording path can see that — the matcher was never handed the
 file — so this is a transcript-identity failure rather than a matcher one, and every conclusion drawn
-from a transcript is exposed to it, not only PR ownership.
+from a transcript is exposed to it, not only PR ownership. Tracked as
+[#1047](https://github.com/tadasant/zimmer/issues/1047).
 
 The warning log a PR-flavored goal gets when a session comes to rest (`pause`, `fail` or `archive`)
 covers the second case only, and only when the goal happens to mention pull requests. There is no
