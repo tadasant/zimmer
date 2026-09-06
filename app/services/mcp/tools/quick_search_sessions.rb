@@ -65,7 +65,7 @@ module Mcp
 
         **Returns:** A list of matching sessions with their status, configuration, and metadata.
 
-        **Rows are compact by default.** Each result carries what a listing is read for — status, runtime, pause, board visibility, genesis and scheduling class, precedence, and both timestamps — and omits six per-session fields: slug, category, repository, branch, the prompt preview and the MCP server list. That is what makes the advertised `per_page: 100` actually return: the full row is roughly twice the size, and a full page of them exceeds the tool-result limit. The omission is stated in every response, never silent. Pass `verbose: true` for the full rows, or `get_session` for one session in full — where the **Prompt** line is a preview of the first #{MAX_PROMPT_DISPLAY_LENGTH} characters.
+        **Rows are compact by default.** Each result carries what a listing is read for — status, runtime, pause, board visibility, genesis and scheduling class, precedence, an auth-outage park and the mechanism that wakes it, and both timestamps — and omits six per-session fields: slug, category, repository, branch, the prompt preview and the MCP server list. That is what makes the advertised `per_page: 100` actually return: the full row is roughly twice the size, and a full page of them exceeds the tool-result limit. The omission is stated in every response, never silent. Pass `verbose: true` for the full rows, or `get_session` for one session in full — where the **Prompt** line is a preview of the first #{MAX_PROMPT_DISPLAY_LENGTH} characters.
 
         **Session statuses:**
         - waiting: Not executing. Either its turn has been handed over and is queued for one of Zimmer's agent worker threads (it starts on its own, usually within minutes), or it is dormant — held at the spot gate, paused for quota headroom, parked on an auth outage, or asleep on a wake it armed. `get_session` names which. A `waiting` session is still in flight; it is not waiting on you.
@@ -388,9 +388,21 @@ module Mcp
         # what let two mechanisms claim the same sessions (tadasant/zimmer#617).
         # Rendered in compact rows too: it is one line, only on a parked session,
         # and it is the difference between a correct restart and a collision.
+        #
+        # A PAUSE outranks the park and neither owner may act through it — the
+        # same guard AuthOutageParkService.wake_parked_sessions! keeps ahead of
+        # its ownership branch — so a paused park names no owner to act on. It
+        # still says it is parked, because that is a fact about the row, and the
+        # `Paused` line above already says what to do about it.
         if AuthOutageParkService.parked?(session)
-          lines << "- **Parked on an auth outage** (`#{session.metadata['auth_outage_reason']}`), " \
-                   "woken by #{AuthOutageWakeAuthority.instruction(session)}"
+          reason = session.metadata["auth_outage_reason"]
+          lines << if paused
+            "- **Parked on an auth outage** (`#{reason}`), and asleep on a wake-up of its own. The " \
+            "pause outranks the park: no wake mechanism touches it while the pause stands."
+          else
+            "- **Parked on an auth outage** (`#{reason}`), woken by " \
+            "#{AuthOutageWakeAuthority.instruction(session, genesis_class_overrides)}"
+          end
         end
 
         # Reported only when it is not the default, and reported with the reminder

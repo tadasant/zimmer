@@ -108,6 +108,10 @@ class QuotaAvailabilityMonitorTest < ActiveSupport::TestCase
   # carry — an auth park whose credentials changed. Firing on request is its only
   # wake path.
   test "request_wake! fires when the edge has not been spent" do
+    # The pool has to be able to serve, because that is the precondition the
+    # caller checked before counting this session: AuthOutageParkService's sweep
+    # only reaches its ask for a park whose runtime has an available account.
+    account(:active)
     QuotaAvailabilityMonitor.record_unavailable!
 
     assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
@@ -202,6 +206,34 @@ class QuotaAvailabilityMonitorTest < ActiveSupport::TestCase
       assert_not QuotaAvailabilityMonitor.request_wake!(reason: "1 parked session")
     end
     assert_equal true, AppSetting.current.reload.quota_pool_available
+  end
+
+  # `check!` never announces a level it has not just read. This one is handed a
+  # count by a caller, so it has to look for itself — otherwise a caller that
+  # believes there is work to wake announces a recovery of a pool that can serve
+  # nothing, which is the #611 shape from the other direction.
+  test "request_wake! refuses on a pool that can still serve nothing" do
+    account(:quota_exceeded)
+    QuotaAvailabilityMonitor.record_unavailable!
+
+    assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+      assert_not QuotaAvailabilityMonitor.request_wake!(reason: "1 parked session")
+    end
+    assert_equal false, AppSetting.current.reload.quota_pool_available,
+      "the level is untouched — nothing was announced, so nothing was spent"
+  end
+
+  # ...but an UNREADABLE pool is not that confirmation, and suppressing the ask on
+  # one would turn a monitoring gap into an outage of a parked session's only
+  # wake path. Same fail-open rule the gate read keeps.
+  test "request_wake! still fires when the pool cannot be read" do
+    QuotaAvailabilityMonitor.record_unavailable!
+
+    QuotaAvailabilityMonitor.stub(:pool_available?, nil) do
+      assert_enqueued_with(job: SystemEventTriggerJob, args: [ "quota_available" ]) do
+        assert QuotaAvailabilityMonitor.request_wake!(reason: "1 parked session")
+      end
+    end
   end
 
   # The loop this guards: `check!` and the sweep that calls `request_wake!` run in

@@ -63,33 +63,44 @@ class AuthOutageWakeAuthority
   OWNERS = [ SWEEP, FLEET ].freeze
 
   class << self
-    # @param session [Session, nil]
-    # @return [Symbol] SWEEP or FLEET. A nil session answers FLEET rather than
-    #   raising: the sweep's own guard is #sweep_owned?, and the safe default for
-    #   a session it cannot classify is "not mine".
-    def for(session)
-      return FLEET if session.nil?
-
-      session.spot? ? FLEET : SWEEP
+    # @param session [Session] the parked session
+    # @param overrides [Hash, nil] the deployment's genesis class overrides, when
+    #   the caller is classifying many sessions at once and has read them once.
+    #   Without it every call re-reads AppSetting.
+    # @return [Symbol] SWEEP or FLEET
+    def for(session, overrides = nil)
+      session.spot?(overrides) ? FLEET : SWEEP
     end
 
     # Is Zimmer's own sweep the mechanism that resumes this parked session?
-    def sweep_owned?(session) = self.for(session) == SWEEP
+    #
+    # Both predicates answer false for nil rather than picking an owner for a
+    # session that does not exist: the sweep asks this about rows it is
+    # iterating, and "not mine" is the only safe answer to a row it cannot read.
+    def sweep_owned?(session, overrides = nil)
+      !session.nil? && self.for(session, overrides) == SWEEP
+    end
 
     # Is the ranked fleet wake the mechanism that starts this parked session?
-    def fleet_owned?(session) = self.for(session) == FLEET
+    def fleet_owned?(session, overrides = nil)
+      !session.nil? && self.for(session, overrides) == FLEET
+    end
 
     # How a parked session's own resume happens, as one sentence, with no leading
     # capital — the surfaces that render it supply their own stem ("Resumes
     # when:", "It resumes when"). One source so the human reading the session
     # page and the agent reading `get_session` are told the same thing.
-    def resume_sentence(session)
-      if fleet_owned?(session)
+    def resume_sentence(session, overrides = nil)
+      if fleet_owned?(session, overrides)
         "the account pool recovers and the ranked fleet wake reaches it in precedence order " \
         "(currently #{session.precedence}). Nothing is cancelled and no action is needed."
       else
-        "the account pool recovers — Zimmer's own auth-outage sweep resumes it, within fifteen " \
-        "minutes. Nothing is cancelled and no action is needed."
+        # The cadence, deliberately, and not a delivery bound: the sweep resumes
+        # at most AuthOutageParkService::MAX_WAKES_PER_SWEEP per runtime per
+        # pass, so a large parked cohort takes several sweeps to drain and the
+        # session at the back of it waits longer than one.
+        "the account pool recovers — Zimmer's own auth-outage sweep resumes it, and that sweep " \
+        "runs every fifteen minutes. Nothing is cancelled and no action is needed."
       end
     end
 
@@ -100,8 +111,8 @@ class AuthOutageWakeAuthority
     # that has to infer it from the scheduling class is the arrangement that
     # produced #617. This says which mechanism owns the park and, for the half
     # the fleet wake must not touch, that it must not touch it.
-    def instruction(session)
-      if fleet_owned?(session)
+    def instruction(session, overrides = nil)
+      if fleet_owned?(session, overrides)
         "the ranked fleet wake (the `quota_available` event). This park is the fleet wake's to " \
         "start, in precedence order, within the spot thresholds and the concurrency ceiling."
       else

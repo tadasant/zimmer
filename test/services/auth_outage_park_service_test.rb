@@ -390,6 +390,24 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # `quota_available` is announced against ONE global level that only ever reads
+  # the Claude Code pool, so a Codex park asking for it would spend the Claude
+  # edge on a recovery of a pool it was never blocked on — and swallow the real
+  # Claude recovery when it arrived. It costs the Codex park nothing it had: the
+  # fleet wake scopes its enumeration to the recovered runtime.
+  test "a parked spot Codex session does not ask for the Claude pool's wake" do
+    create_account(email: "codex@example.com", status: :active, runtime: "codex")
+    codex = parked_peer(runtime: "codex")
+    codex.update!(scheduling_class: SessionGenesis::SPOT)
+    AuthOutageParkService.new(codex).park!(reason: AuthOutageParkService::QUOTA_EXHAUSTED)
+    AppSetting.current.update!(quota_pool_available: false)
+
+    assert_no_enqueued_jobs(only: SystemEventTriggerJob) do
+      assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+    end
+    assert AuthOutageParkService.parked?(codex.reload), "it stays parked either way"
+  end
+
   # The reason an auth park needs it: `accounts.available` never goes false→true
   # for a credentials problem, so the pool's own edge never fires for it.
   test "a spot auth-outage park asks for the wake once its pool credentials change" do

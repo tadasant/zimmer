@@ -60,9 +60,26 @@ class AuthOutageWakeAuthorityTest < ActiveSupport::TestCase
   end
 
   # The sweep asks #sweep_owned? about sessions it is iterating, and the safe
-  # answer for one it cannot classify is "not mine".
-  test "a nil session is nobody's to wake by the sweep" do
+  # answer for one it cannot classify is "not mine" — from BOTH predicates,
+  # rather than one of them picking an owner for a session that does not exist.
+  test "a nil session is nobody's to wake" do
     assert_not AuthOutageWakeAuthority.sweep_owned?(nil)
+    assert_not AuthOutageWakeAuthority.fleet_owned?(nil)
+  end
+
+  # Passed by a caller classifying a whole page at once, so the owner does not
+  # cost an AppSetting read per row (quick_search_sessions reads it once).
+  test "a caller's genesis overrides are honoured rather than re-read" do
+    derived = Session.create!(
+      prompt: "Test prompt", agent_runtime: "claude_code", status: :waiting,
+      genesis: SessionGenesis::DEFAULT_KEY, git_root: "https://github.com/test/repo.git",
+      branch: "main", execution_provider: "local_filesystem", session_id: SecureRandom.uuid
+    )
+    overrides = { SessionGenesis::DEFAULT_KEY => SessionGenesis::SPOT }
+
+    assert AuthOutageWakeAuthority.sweep_owned?(derived), "the deployment default classifies priority"
+    assert AuthOutageWakeAuthority.fleet_owned?(derived, overrides),
+      "an override that makes the genesis spot moves the park to the fleet wake"
   end
 
   test "the sentences name the owner each population actually has" do
@@ -71,7 +88,11 @@ class AuthOutageWakeAuthorityTest < ActiveSupport::TestCase
 
     assert_match(/fleet wake/, AuthOutageWakeAuthority.resume_sentence(spot))
     assert_match(/precedence order/, AuthOutageWakeAuthority.resume_sentence(spot))
-    assert_match(/fifteen minutes/, AuthOutageWakeAuthority.resume_sentence(priority))
+    # The sweep's CADENCE, not a delivery bound: MAX_WAKES_PER_SWEEP means a large
+    # parked cohort takes several sweeps to drain, so promising the session at the
+    # back of it a resume "within fifteen minutes" would be a false statement.
+    assert_match(/sweep runs every fifteen minutes/, AuthOutageWakeAuthority.resume_sentence(priority))
+    refute_match(/within fifteen minutes/, AuthOutageWakeAuthority.resume_sentence(priority))
 
     # The half the fleet wake must not touch has to say so, because `get_session`
     # and `quick_search_sessions` are what it reads to decide.
