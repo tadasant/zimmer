@@ -2,10 +2,12 @@ require "application_system_test_case"
 
 # Drag-and-drop attachment on the message composer.
 #
-# The regression these pin is a *geometry* one, not a handler one: the drop
-# listeners used to live on a div wrapping only the textarea, so a file dropped on
-# the button row -- inside what anyone would call the composer -- reached no handler,
-# nothing called preventDefault, and the browser navigated the tab to the file.
+# What these pin is a *geometry* invariant, not a handler one: a file dropped
+# anywhere a user reads as "the composer" has to be claimed by the page. Binding the
+# drop to any one element inside the panel leaves the rest of it unclaimed, and an
+# unclaimed file drop is not inert -- the browser navigates the tab to the file and
+# the half-typed draft goes with it.
+#
 # So every drop below is aimed at an element deliberately OUTSIDE the textarea, and
 # each one asserts on `defaultPrevented` as well as on the resulting preview: a drop
 # the page did not claim is the bug, whether or not an upload happens to follow.
@@ -54,11 +56,15 @@ class ComposerDragDropTest < ApplicationSystemTestCase
     visit session_path(session)
     wait_for_stimulus_controller("composer-drop")
 
-    assert_selector '[data-composer-drop-target="overlay"].hidden', visible: :all
+    # `visible:` rather than a `.hidden` class selector, deliberately: the overlay
+    # carries `hidden` and `flex` together, so which one wins is Tailwind's generated
+    # utility order. Asserting on the class attribute would stay green through an
+    # overlay permanently stuck over the composer.
+    assert_selector '[data-composer-drop-target="overlay"]', visible: :hidden
 
     # dragenter/dragleave fire once per element crossed and bubble to the document,
-    # so entering a child while leaving its parent is the sequence that used to
-    # clear the highlight mid-drag.
+    # so entering a child while leaving its parent is the sequence that would
+    # otherwise clear the highlight mid-drag.
     page.execute_script(<<~JS)
       window.__dt = new DataTransfer()
       window.__dt.items.add(new File(["x"], "a.txt", { type: "text/plain" }))
@@ -71,7 +77,7 @@ class ComposerDragDropTest < ApplicationSystemTestCase
       fire(document.body, "dragleave")
     JS
 
-    assert_no_selector '[data-composer-drop-target="overlay"].hidden', visible: :all
+    assert_selector '[data-composer-drop-target="overlay"]', visible: true
 
     page.execute_script(<<~JS)
       const textarea = document.querySelector("textarea[name='follow_up_prompt']")
@@ -80,7 +86,7 @@ class ComposerDragDropTest < ApplicationSystemTestCase
       )
     JS
 
-    assert_selector '[data-composer-drop-target="overlay"].hidden', visible: :all
+    assert_selector '[data-composer-drop-target="overlay"]', visible: :hidden
   end
 
   test "a drag carrying no files is left alone for the enqueued-message reorder" do
@@ -111,6 +117,24 @@ class ComposerDragDropTest < ApplicationSystemTestCase
     assert result["overlayHidden"], "the drop overlay appeared for a drag carrying no files"
   end
 
+  test "a file dropped on a queued message still reaches the composer" do
+    session = create_session(status: :running)
+    session.enqueued_messages.create!(content: "an already queued message", position: 1, status: "pending")
+    visit session_path(session)
+    wait_for_stimulus_controller("composer-drop")
+    assert_selector "[data-message-id]"
+
+    # The queued list is rendered inside the composer panel, and it binds its own
+    # drag handlers for reordering. Its drop handler calls stopPropagation, so
+    # without a files guard of its own it swallows the event before the document
+    # listener sees it — the file vanishes and the overlay is left stuck on screen.
+    prevented = drop_files_on("[data-message-id]", [ text_file("dropped-on-a-queued-message.txt") ])
+
+    assert prevented, "a file dropped on a queued message was swallowed by the reorder handler"
+    assert_selector '[data-file-attachment-target="preview"]', text: "dropped-on-a-queued-message.txt"
+    assert_selector '[data-composer-drop-target="overlay"]', visible: :hidden
+  end
+
   test "a file dropped on the new session form attaches to the initial prompt" do
     visit new_session_path
     wait_for_stimulus_controller("composer-drop")
@@ -130,9 +154,9 @@ class ComposerDragDropTest < ApplicationSystemTestCase
     session = create_session
     visit session_path(session)
     wait_for_stimulus_controller("composer-drop")
-    # The composer lives behind a collapsed drawer on a phone, and the overlay is
-    # inside it — measuring it collapsed would measure nothing.
-    find("[data-bottom-drawer-target='trigger'] button").click
+    # Deliberately left collapsed: on a phone the composer sits behind this drawer,
+    # and the overlay is rendered outside it precisely so the affordance still shows.
+    assert_selector "[data-bottom-drawer-target='trigger']", visible: true
 
     page.execute_script(<<~JS)
       const dt = new DataTransfer()
@@ -142,18 +166,29 @@ class ComposerDragDropTest < ApplicationSystemTestCase
       )
     JS
 
-    assert_no_selector '[data-composer-drop-target="overlay"].hidden', visible: :all
+    assert_selector '[data-composer-drop-target="overlay"]', visible: true
     assert_no_horizontal_overflow("session detail with the composer drop overlay showing")
+
+    # The shared probe only inspects controls, never a bare div, so the overlay's own
+    # box is measured here directly.
+    right_edge = page.evaluate_script(<<~JS)
+      (function () {
+        const overlay = document.querySelector("[data-composer-drop-target='overlay']")
+        return Math.round(overlay.getBoundingClientRect().right - document.documentElement.clientWidth)
+      })()
+    JS
+    assert right_edge <= 1,
+      "the drop overlay sticks #{right_edge}px past the right edge of a #{MOBILE_WIDTH}px screen"
   ensure
     page.driver.browser.manage.window.resize_to(1400, 900)
   end
 
   private
 
-  def create_session
+  def create_session(status: :needs_input)
     Session.create!(
       prompt: "Initial prompt",
-      status: :needs_input,
+      status: status,
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main"

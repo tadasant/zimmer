@@ -3,19 +3,15 @@ import { Controller } from "@hotwired/stimulus"
 // Owns the drag-and-drop surface for the message composer, and hands whatever was
 // dropped to the two attachment controllers that share it.
 //
-// image-attachment and file-attachment each used to bind their own dragover/drop
-// listeners to a div wrapping only the textarea. A drop that landed on the button
-// row, on the preview strip, or on the panel around them -- all of which read as
-// "the composer" -- missed that div, so nothing called preventDefault and the
-// browser did what it does with an unclaimed file drop: navigate the tab to the
-// file, taking the half-typed draft with it. On the session screen the wrapper was
-// about a third of the panel's area, which is why the paperclip button felt
-// mandatory.
+// The surface is the *document*, not the composer's own box. Anywhere on the page, a
+// dragged file belongs to the composer, because the composer is the only thing on the
+// page that takes one -- and a file drop no handler claims is not inert, it navigates
+// the tab to the file and takes the half-typed draft with it. Binding to an element
+// instead leaves everything outside it (the button row, the preview strip, the panel
+// margins, the transcript) unclaimed, and a user aiming at "the composer" hits those.
 //
-// So the surface here is the *document*. Anywhere on the page, a dragged file
-// belongs to the composer, because the composer is the only thing on the page that
-// takes one. The overlay target says where it is going, so a document-wide surface
-// still reads as a targeted one.
+// The overlay target is what keeps a document-wide surface readable as a targeted
+// one: it marks where the file will go.
 //
 // Drags that carry no files are ignored outright -- no preventDefault, no overlay,
 // no drop handling. That is what keeps the enqueued-message reorder working: it is
@@ -27,7 +23,7 @@ export default class extends Controller {
   connect() {
     // dragenter/dragleave fire once per element the pointer crosses, and they bubble
     // to the document, so a plain boolean would clear the overlay the moment the
-    // pointer moved from the panel onto the textarea inside it. Counting the pairs
+    // pointer moves from the panel onto the textarea inside it. Counting the pairs
     // and only clearing at zero is what survives crossing child boundaries.
     this.dragDepth = 0
 
@@ -101,6 +97,12 @@ export default class extends Controller {
 
     this.overlayVisible = true
     this.overlayTarget.classList.remove("hidden")
+    // An affordance the user cannot see does not tell them anything. On the session
+    // screen the composer is a fixed panel and this is a no-op; on the new-session
+    // form the prompt field sits partway down a long page, and a drag that starts
+    // over the agent-root picker at the top would otherwise show nothing at all.
+    // "nearest" scrolls only when it is actually off-screen.
+    this.overlayTarget.scrollIntoView({ block: "nearest" })
   }
 
   hideOverlay() {

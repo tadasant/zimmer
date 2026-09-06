@@ -105,6 +105,10 @@ export default class extends Controller {
         }
       } catch (err) {
         console.error("Failed to walk dropped entries, falling back to flat files:", err)
+        // Discard the partial harvest first: the flat list already contains every
+        // top-level file, so pushing it on top of what the walk managed would upload
+        // each of those twice.
+        collected.length = 0
         collected.push(...flatFiles)
       }
     } else {
