@@ -624,8 +624,25 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
 
     AppSetting.editable.update!(fleet_idle_since: 30.minutes.ago, fleet_idle_event_fired_at: 25.minutes.ago)
     policy = get_policy
-    assert_match(/State:\*\* `latched`/, policy)
-    assert_match(/no clock running toward one/, policy)
+    assert_match(/State:\*\* `cooling_down`/, policy)
+    assert_match(/under its ceiling of 100 for 30 minutes/, policy)
+
+    AppSetting.editable.update!(fleet_idle_since: 2.minutes.ago, fleet_idle_event_fired_at: nil)
+    assert_match(/State:\*\* `inside_threshold`/, get_policy)
+  end
+
+  # UI/MCP parity on the clock the card renders, and on what it means: the moment
+  # the fleet crossed BELOW its ceiling, not the last time a session started.
+  test "get_spot_policy reports the same idle clock the /inference card does" do
+    AppSetting.editable.update!(fleet_idle_max_sessions: 100, fleet_idle_event_fired_at: nil,
+                                fleet_idle_since: 2.minutes.ago)
+
+    policy = get_policy
+    assert_match(/Under its ceiling since:\*\* .*2 minutes ago/, policy)
+    assert_match(/the crossing below 100, not the last session start/, policy)
+
+    AppSetting.editable.update!(fleet_idle_since: nil)
+    assert_match(/Under its ceiling since:\*\* — \(the fleet was at or over its ceiling/, get_policy)
   end
 
   test "promote_genesis reclassifies existing sessions" do

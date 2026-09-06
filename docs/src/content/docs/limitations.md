@@ -1601,7 +1601,7 @@ whole spot wake into one event, and the sharp edges are all about that concentra
   half. The shipped `fleet-maintenance` wake is the only listener on this deployment, so today this
   costs nothing.
 
-### The idle-fleet event is sampled, latched and floored, and each of the three has an edge
+### The idle-fleet event is sampled, floored and cooled down, and each of the three has an edge
 
 🟡 [`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress) fires when the deployment
 has been running fewer sessions on a worker than its configured ceiling for the whole of its
@@ -1612,9 +1612,16 @@ that does it has known limits:
 - **It is sampled once a minute, so the clock starts up to a tick late.** `fleet_idle_since` is
   written at the first observation under the ceiling, not at the moment the fleet crossed it, so "five
   continuous minutes" is really "five minutes since we noticed", ±60 seconds. The
-  `SessionStateMachine` hook closes the opposite gap — a session that starts and finishes between two
-  ticks still re-arms — but nothing narrows the start. It is also why the stretch cannot be set below
-  a minute.
+  `SessionStateMachine` hook closes the opposite gap — a fleet that fills up and empties again between
+  two ticks still ends its stretch — but nothing narrows the start. It is also why the stretch cannot
+  be set below a minute.
+- **The cooldown is the only thing pacing a fleet that never reaches its ceiling, so the threshold
+  stops mattering after the first fire.** The idle stretch runs on *through* a fire — only the fleet
+  reaching its ceiling ends one — so on a deployment whose ceiling it never touches, every fire after
+  the first is timed by `fleet_idle_min_fire_interval_minutes` alone and the stretch has nothing left
+  to say. That is deliberate (it is what stops the event re-qualifying itself on the session it just
+  spawned), but it means lowering the threshold on such a deployment changes only when the *first*
+  top-up lands, not the cadence. The number to retune is the interval.
 - **A backed-up spot queue no longer holds it off at all.** Only sessions a worker is running count
   toward the ceiling, so the event can fire — spawning a **priority**, ungated session — while any
   number of spot sessions sit held or paused behind the gate. That is deliberate: the spawned session

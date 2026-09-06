@@ -417,6 +417,11 @@ go through `RunningTurns`, so they agree about what a `running` row *means* and 
 and frozen categories. The full rules live under
 [`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress).
 
+The card's **Under its ceiling since** is the moment the fleet crossed *below* that ceiling, not the
+last time a session started — sessions coming and going underneath the ceiling do not move it. On a
+fleet that stays under its ceiling, top-up's cadence is therefore the cooldown alone; see
+[Why the cadence is the cooldown alone](/sessions/triggers/#why-the-cadence-is-the-cooldown-alone).
+
 ### Every change to both ceilings is recorded
 
 The gate switch, both reserves, the concurrency limit, the preemption switch and the three top-up
@@ -441,7 +446,7 @@ The covered columns are `AppSetting::FLEET_POLICY_ATTRIBUTES`: the gate switch, 
 concurrency limit, the preemption switch, the three top-up thresholds and the genesis class
 overrides. The state the pollers write on their own sweep — `fleet_idle_since`,
 `fleet_idle_event_fired_at`, `quota_pool_available` — is deliberately outside it, because a running
-commentary several times an hour would bury the handful of lines that matter.
+commentary from the pollers would bury the handful of lines that matter.
 
 Two things worth knowing about the line:
 

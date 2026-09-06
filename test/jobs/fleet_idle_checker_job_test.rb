@@ -63,7 +63,7 @@ class FleetIdleCheckerJobTest < ActiveJob::TestCase
     assert_not_nil trigger.trigger_conditions.first.reload.last_triggered_at
   end
 
-  # The whole reason for the latch: an unattended deployment must not get one
+  # The whole reason for the cooldown: an unattended deployment must not get one
   # groomer session per minute for as long as it stays quiet.
   test "a fleet that stays quiet spawns one session, not one per tick" do
     idle_trigger
@@ -82,9 +82,9 @@ class FleetIdleCheckerJobTest < ActiveJob::TestCase
   end
 
   # The production case the test above does NOT reach: there, the spawned session
-  # sits in `waiting` forever. In production it runs, and running is what re-arms
-  # the latch — so without the cooldown the fleet would go quiet again five
-  # minutes after it finished and the event would fire again, indefinitely.
+  # sits in `waiting` forever. In production it runs — and the cooldown is the
+  # only thing standing between that and one session every five minutes, since
+  # the idle stretch it fired inside never ended.
   test "the session the event spawns cannot re-qualify the event by running" do
     idle_trigger
 
@@ -114,6 +114,36 @@ class FleetIdleCheckerJobTest < ActiveJob::TestCase
       assert_difference -> { Session.count }, 1 do
         perform_enqueued_jobs(only: SystemEventTriggerJob) { FleetIdleCheckerJob.perform_now }
       end
+    end
+  end
+
+  # The reported deployment, end to end: a ceiling of 12 the fleet never comes
+  # near, four turns on a worker, and sessions entering `running` throughout. The
+  # clock stays anchored to the crossing, so top-up runs at the CONFIGURED
+  # cadence — one groomer per cooldown — rather than at the mercy of gaps between
+  # session starts.
+  test "a fleet steady well under a high ceiling tops up on the configured cadence" do
+    AppSetting.editable.update!(fleet_idle_max_sessions: 12)
+    idle_trigger
+
+    freeze_time do
+      FleetIdleCheckerJob.perform_now
+      crossing = AppSetting.current.reload.fleet_idle_since
+
+      # Three hours of a fleet that is always busy and never full: a session
+      # entering `running` every ten minutes, and one fire an hour.
+      assert_difference -> { Session.where(genesis: SessionGenesis::SYSTEM_EVENT).count }, 3 do
+        18.times do
+          travel 10.minutes
+          Session.create!(git_root: "https://github.com/t/r.git", prompt: "work",
+                          genesis: SessionGenesis::GITHUB_ISSUE, status: :running,
+                          session_id: "cli-#{SecureRandom.hex(4)}")
+          perform_enqueued_jobs(only: SystemEventTriggerJob) { FleetIdleCheckerJob.perform_now }
+        end
+      end
+
+      assert_equal crossing.to_i, AppSetting.current.reload.fleet_idle_since.to_i,
+        "nothing crossed the ceiling of 12, so nothing moved the clock"
     end
   end
 end

@@ -88,10 +88,13 @@ module Mcp
           either, of any class: most of them are asleep on their own wake rather than queueing for a
           slot. Neither does a `running` row asleep on its own future wake, since no start path will
           run it before that wake. 1 means literally nothing running.
-          `idle_minutes` is how long it must stay under that ceiling first; `min_fire_interval_minutes`
-          is the floor between two fires, and with a ceiling above 1 that floor, not the ceiling, is
-          what caps how often work gets started. `get_spot_policy` reports all three plus where the
-          fleet currently sits against them.
+          `idle_minutes` is how long it must stay under that ceiling first, measured from the moment
+          the fleet dropped BELOW the ceiling — sessions starting and finishing underneath it do not
+          restart that clock, only reaching the ceiling again does. `min_fire_interval_minutes` is the
+          floor between two fires, and on a fleet that stays under its ceiling that floor, not the
+          ceiling, is the whole of the cadence: the idle stretch runs on through a fire, so only the
+          cooldown decides when the next one is allowed. `get_spot_policy` reports all three plus where
+          the fleet currently sits against them.
         - **promote_genesis**: Make a genesis kind `priority` (requires `genesis`). This is the one-click
           promotion: it reclassifies every session from that genesis, including ones that already exist,
           because a session's class is derived from its genesis unless something named one for it.
@@ -173,14 +176,17 @@ module Mcp
             minimum: 1,
             maximum: 1440,
             description: "set_top_up: how long the fleet must stay under that ceiling before the event " \
-                         "fires, in minutes, 1-1440 (5 by default). Sampled once a minute."
+                         "fires, in minutes, 1-1440 (5 by default). Sampled once a minute, and measured " \
+                         "from the moment the fleet dropped BELOW the ceiling — only reaching the " \
+                         "ceiling again restarts it."
           },
           min_fire_interval_minutes: {
             type: "integer",
             minimum: 1,
             maximum: 10080,
-            description: "set_top_up: floor between two fires, in minutes, 1-10080 (60 by default). With " \
-                         "a ceiling above 1 this is the real cap on how often work gets started."
+            description: "set_top_up: floor between two fires, in minutes, 1-10080 (60 by default). On a " \
+                         "fleet that stays under its ceiling this is the whole of the cadence — the idle " \
+                         "stretch runs on through a fire, so only this decides when the next is allowed."
           }
         },
         required: [ "action" ]
