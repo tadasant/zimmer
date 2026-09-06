@@ -375,7 +375,7 @@ message and delivering would make things worse:
 | Parked by `AuthOutageParkService` (`auth_outage_reason`) | A fresh turn hits the same quota or auth wall, burns the message, and parks again. `AgentSessionJob`'s own drain reads the same marker. |
 | `paused_by: "mcp_retry"` | A retry carrying the original prompt is already scheduled; delivering now races it into the same failing MCP server. |
 | `waiting` with a `running_job_id` | `waiting` is not only a resting state — it is also where a session sits for the whole of its **first start**, from the moment `AgentSessionJob` claims `running_job_id` through the clone, the session-id write and the spawn. Delivering there buys nothing and costs a round trip: the processor takes its `resume!` branch, destroys the row, and the replacement job is refused by the concurrency guard as a duplicate of the live first-start job — which now [parks the prompt straight back in the queue](/sessions/spawning/#standing-down-does-not-throw-the-prompt-away) rather than losing it, but only after churning its position and origin. A session genuinely at rest carries no job id — `pause` clears it, and so do `SpotSessionHold#return_to_queue!` and `AuthOutageParkService.resume_parked!`. |
-| `waiting` with no runtime session id (`session_id.blank?`) | A follow-up prompt into a session with none is reclassified by `AgentSessionJob` as a **fresh start**, which runs the session's own prompt and *discards* the follow-up — so "delivering" would destroy the message. It goes out on that first turn's end-of-turn drain instead. This asks about the session id **alone**, not `never_ran?`: the two differ by `transcript.blank?`, and the population that matters most is a session that *has* run and whose stale runtime id was later released. |
+| `waiting` with no runtime session id (`session_id.blank?`) | A follow-up prompt into a session with none is reclassified by `AgentSessionJob` as a **fresh start**, which runs `session.prompt` — and the way a message reaches that turn is by being [merged into the prompt column](/sessions/spawning/#a-turn-into-a-session-that-never-started), permanently. A queued message is a turn with an origin and a position, and spending it there loses both. It goes out on that first turn's end-of-turn drain instead, where it runs as itself. This asks about the session id **alone**, not `never_ran?`: the two differ by `transcript.blank?`, and the population that matters most is a session that *has* run and whose stale runtime id was later released. |
 | `waiting` and held at the spot gate (`SpotSessionHold.held?`) | `SpotSessionHold` refuses the turn at the door and re-queues it as a fresh row, so a drain would churn the message's position and origin on every pass. The gate's own re-check is already the thing that will run it. |
 | `waiting` and paused in the spot queue (`SpotSessionPause.paused?`) | Same gate, resumed by `SpotCeilingSweepJob` rather than by a re-check. |
 
@@ -1424,8 +1424,9 @@ start path picks it up again:
    pids.
 2. **The turn carried no prompt.** That is the park's case and must stay there — this retry clears
    the runtime session id, which routes the replacement down `#perform`'s fresh-start
-   reclassification, and that arm *drops* the follow-up text when the session already has a prompt
-   of its own. The two paths are disjoint by this line.
+   reclassification, and that arm *merges* the follow-up text into `session.prompt` when the session
+   already has one, rewriting the column. A human's message would be delivered joined to the
+   original prompt rather than as the turn they sent. The two paths are disjoint by this line.
 3. **The session is `waiting`** — what a turn still in setup reads as since #1040. This is also what
    keeps a `clone_only` turn out (created `needs_input`) and a `resume_monitoring` one (it takes
    `start!` before any of its setup can raise).
@@ -2112,8 +2113,10 @@ fresh start.
 
 `Trigger#resuscitatable_session?` is the same predicate, used for a different decision: a recurring
 trigger will not *reuse* a never-run session even though the restore would now succeed, because a
-follow-up into a session with no `session_id` runs that session's own prompt and silently drops the
-one this fire carried. The trigger spawns instead. See [Triggers](/sessions/triggers/).
+follow-up into a session with no `session_id` runs that session's own prompt with this fire's prompt
+[merged into it](/sessions/spawning/#a-turn-into-a-session-that-never-started) — a fire folded into
+somebody else's prompt is not a fire. The trigger spawns instead. See
+[Triggers](/sessions/triggers/).
 
 #### The undo window is one number
 

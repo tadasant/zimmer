@@ -612,8 +612,8 @@ class Trigger < ApplicationRecord
       # when there is a conversation to follow up INTO. A session archived before
       # it ever took a turn is not a reuse candidate at all (see
       # #resuscitatable_session?), because a follow-up to a session with no
-      # session_id is reclassified as a fresh start that runs the session's own
-      # prompt, dropping the one this fire carries.
+      # session_id is reclassified as a fresh start that merges this fire's prompt
+      # into the session's own rather than running it as a fire of its own.
       if session && resuscitate_archived && session.archived?
         if resuscitatable_session?(session)
           resuscitate_session!(session)
@@ -1342,11 +1342,13 @@ class Trigger < ApplicationRecord
   # Only if there is a conversation to follow up INTO. A session that never
   # started has none (Session#never_ran?), and following up into it does not do
   # what the trigger asked: AgentSessionJob reclassifies a follow-up prompt to a
-  # session with no session_id as a fresh start, and a fresh start runs the
-  # session's OWN prompt — so this fire's prompt would be silently dropped in
-  # favour of the one the session was created with. Falling through to
-  # #create_new_session! spawns a session that runs this fire's prompt, which is
-  # what the trigger meant.
+  # session with no session_id as a fresh start, and a fresh start runs
+  # `session.prompt`. AgentSessionJob#fresh_start_prompt no longer throws this
+  # fire's prompt away — it folds it into that column alongside the one the
+  # session was created with — but a fire merged into somebody else's prompt, and
+  # permanently rewriting it, is still not a fire. Falling through to
+  # #create_new_session! spawns a session that runs this fire's prompt on its own,
+  # which is what the trigger meant.
   #
   # It also has to stay a screen because it once bricked triggers outright: the
   # unarchive refused a never-started session, #resuscitate_session! raised,
