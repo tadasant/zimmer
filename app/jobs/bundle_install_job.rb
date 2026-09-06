@@ -127,7 +127,7 @@ class BundleInstallJob < ApplicationJob
     return if @session.archived? || @session.failed?
 
     @working_directory = working_directory
-    return unless File.exist?(gemfile_path)
+    return unless File.file?(gemfile_path)
 
     if (bundle_path = adopt_image_bundle_for(working_directory))
       log_to_session(
@@ -137,6 +137,13 @@ class BundleInstallJob < ApplicationJob
       )
       return
     end
+
+    # A config left behind by an earlier attempt (or by this job before #410) can name a
+    # bundle that is not there, and a BUNDLE_PATH in it OUTRANKS the one the install below
+    # puts in the environment — so it has to go before the install, not merely be
+    # overridden. `adopt_image_bundle_for` has already done this for a clone that got as
+    # far as probing the image bundle; the guard inside makes the second call a no-op.
+    discard_unusable_bundle_config
 
     install_into_vendor_bundle
   end
@@ -152,11 +159,20 @@ class BundleInstallJob < ApplicationJob
   def adopt_image_bundle_for(working_directory)
     @working_directory = working_directory
     return nil unless File.file?(gemfile_path)
+    # The byte comparison goes first, ahead of anything that spawns a process, and that
+    # ordering is the whole reason this is safe to run inline. `discard_unusable_bundle_config`
+    # shells out to `bundle check` for any clone carrying a config with only this job's own
+    # keys — and `bundle check` against a foreign Gemfile evaluates that Gemfile and resolves
+    # over the NETWORK, with no timeout: 22 seconds, measured, for a clone declaring `rails`
+    # and `pg`. On the maintenance queue that is merely slow. On the session-spawn thread it
+    # would be 22 seconds of a session not starting, to answer a question whose answer was
+    # already "no". A clone whose Gemfile is not this app's cannot share this app's bundle,
+    # so decide that from the bytes and return.
+    return nil unless lockfile_matches_image?
 
-    # A config left behind by an earlier attempt (or by this job before #410) can name a
-    # bundle that is not there, and it would win over every BUNDLE_PATH set below. Clear
-    # that first, so the rest of the decision is made against a clone that is not arguing
-    # with a stale file.
+    # Only now, for a clone that really might adopt the image bundle: a config left behind by
+    # an earlier attempt (or by this job before #410) can name a bundle that is not there,
+    # and it would win over every BUNDLE_PATH set below.
     discard_unusable_bundle_config
 
     adopt_image_bundle
@@ -173,11 +189,13 @@ class BundleInstallJob < ApplicationJob
   # sitting in the image, which is the whole of zimmer#592: the agent's first turns are
   # exactly when it would run a test, and exactly when it cannot.
   #
-  # Nothing about the fast path wants a queue. It is a byte comparison of two Gemfiles and
-  # one `bundle check` — no download, no writes outside `.bundle/` — so session spawn takes
-  # it inline, before the agent process exists, and a clone of this repo at a commit that
-  # has not touched the Gemfile is ready on the agent's very first turn. A clone of any
-  # other repo fails the byte comparison and never reaches the subprocess.
+  # Nothing about the fast path wants a queue. For a fresh clone of this repo it is a byte
+  # comparison of two Gemfiles and one `bundle check` against a bundle that is already on
+  # disk — no download, no writes outside `.bundle/`, ~0.7s measured on the production
+  # droplet — so session spawn takes it inline, before the agent process exists, and such a
+  # clone is ready on the agent's very first turn. A clone of any other repo is decided by
+  # the byte comparison alone and spawns nothing; see `adopt_image_bundle_for`, where that
+  # ordering is load-bearing rather than incidental.
   #
   # Only ever the fast path: an install is unbounded and stays in the background. This
   # returns nil for that case and the caller enqueues the job as before.
@@ -404,6 +422,14 @@ class BundleInstallJob < ApplicationJob
   # contain nothing but this job's own keys, and it has to actually fail `bundle check`.
   # A config that works is left exactly where it is — including a repository's own.
   def discard_unusable_bundle_config
+    # At most once per job instance. Both the fast path and the install path need the stale
+    # config gone before they run, and a clone that probed the image bundle and was refused
+    # by it reaches both — without this the queued path would pay for a second `bundle check`
+    # to re-answer a question it has already answered.
+    return if @bundle_config_discarded
+
+    @bundle_config_discarded = true
+
     return unless File.file?(bundle_config_path)
     return unless managed_bundle_config?
     # No BUNDLE_PATH in the env, so the file itself decides where bundler looks — which is

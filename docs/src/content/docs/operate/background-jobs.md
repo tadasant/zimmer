@@ -639,10 +639,19 @@ when the answer is "this clone needs gems of its own". The queue was the whole o
 `GEM_*` from the agent's environment on purpose, so `.bundle/config` is the *only* thing telling a
 clone where its gems are — and a clone waiting its turn on `maintenance` does not have one yet. For
 the length of that wait every `bin/rails` in it died with `Bundler::GemNotFound` listing gems that
-were sitting in the image, over exactly the opening turns where an agent would run a test. Inline,
-the decision costs a byte comparison of two `Gemfile`s and one `bundle check` — about 0.7s on the
-production droplet — and a clone of a repo that is not this one fails the byte comparison without
-spawning anything. The method never raises: a spawn is not worth failing over a bundle.
+were sitting in the image, over exactly the opening turns where an agent would run a test. For a
+fresh clone of this repo the inline decision costs a byte comparison of two `Gemfile`s and one
+`bundle check` against a bundle already on disk — about 0.7s on the production droplet. The method
+never raises: a spawn is not worth failing over a bundle.
+
+**The byte comparison runs before anything that spawns a process, and that ordering is the fix, not
+a detail of it.** Clearing a stale `.bundle/config` means asking `bundle check` whether the bundle it
+names still works, and `bundle check` against a Gemfile that is not this app's evaluates that Gemfile
+and resolves it over the network with no timeout — 22 seconds, measured, for a clone declaring
+`rails` and `pg`. On the `maintenance` queue that is merely slow. On the spawn thread it would be 22
+seconds of a session not starting, to answer a question the lockfile comparison had already answered
+"no". So a clone whose `Gemfile` is not byte-identical to the image's is decided from the bytes and
+handed to the queue, having spawned nothing and touched nothing.
 
 ## Noticing when a live session has lost its working tree
 

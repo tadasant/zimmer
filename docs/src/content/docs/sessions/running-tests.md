@@ -78,11 +78,16 @@ bin/rails db:test:prepare      # ~25s
 bin/rails test test/jobs/bundle_install_job_test.rb
 ```
 
-Targeted, by file or by `file:line`. Sessions run with `PARALLEL_WORKERS=2` — Zimmer sets
-it, and a session also runs inside a 4 GiB memory cgroup of its own, so an over-parallel
-run is bounded rather than a threat to the worker or to another session. If a run dies
-with **exit 137** that bound is what killed it: run one file at a time rather than raising
-the worker count.
+Targeted, by file or by `file:line`. Sessions run with `PARALLEL_WORKERS=2`, which Zimmer
+sets, and a session also runs inside a 4 GiB memory cgroup of its own — so a run that dies
+with **exit 137** was killed by that bound, and the answer is to run one file at a time
+rather than to raise the worker count.
+
+Do not read the per-session bound as protection for anything but this session. Three
+sessions each running a parallel suite, *none of them near its own 4 GiB*, once used 8.7 GB
+between them and killed the Rails worker; what protects the worker and the other sessions is
+the 6 GiB cap on the sessions pool as a whole, not the per-session one. See
+[All sessions together get a second bound](/sessions/spawning/#all-sessions-together-get-a-second-bound).
 
 **The full suite is not the point of this path and is not worth attempting** — it is
 thousands of tests against a shared database on a busy droplet. CI runs it. Run what your
@@ -105,7 +110,7 @@ CHROME_NO_SANDBOX=true bin/rails test test/system/code_block_copy_test.rb
 
 Screenshots land in `tmp/capybara/` — Capybara writes one automatically for every failing
 system test, which is usually the fastest way to see what a session's change actually did.
-Share them the way [`GIT_WORKFLOW.md`](https://github.com/tadasant/zimmer/blob/main/GIT_WORKFLOW.md)
+Share them the way [`references/GIT_WORKFLOW.md`](https://github.com/tadasant/zimmer/blob/main/references/GIT_WORKFLOW.md)
 describes: a session's filesystem is not reachable by the person reading the PR.
 
 A system test that drives a *runtime* rather than a screen is a different matter —
