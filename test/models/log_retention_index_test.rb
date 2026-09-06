@@ -12,7 +12,10 @@ class LogRetentionIndexTest < ActiveSupport::TestCase
   test "logs carries the index LogRetentionJob's verbose batch selector needs" do
     index = @indexes.find { |i| i.name == "index_logs_on_level_and_id_and_created_at" }
 
-    assert index, "the retention scan index must be in the schema every environment loads"
+    # This pins the committed schema dump, which is what a fresh database loads.
+    # On a deployed database the index's existence is the post-deploy task's job —
+    # the migration declines to build it there.
+    assert index, "the retention scan index must be in db/schema.rb"
     assert_equal %w[level id created_at], index.columns,
       "the order is load-bearing: `level` is the equality, `id` is the ordered range the LIMIT " \
       "stops on, and `created_at` rides along to make the scan index-only"

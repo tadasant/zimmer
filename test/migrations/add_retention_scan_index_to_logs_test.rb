@@ -52,6 +52,30 @@ class AddRetentionScanIndexToLogsTest < ActiveSupport::TestCase
     assert_includes logs_index_names, INDEX_NAME
   end
 
+  test "never drops the superseded index when the replacement did not come out valid" do
+    # The reachable version of this: a cancelled `CREATE INDEX CONCURRENTLY`
+    # commits the index as `indisvalid = false` and raises, `up` never records its
+    # version, and the next boot re-runs it — where `IF NOT EXISTS` matches on
+    # name and would skip straight past the unusable index. Dropping the one it
+    # supersedes at that point leaves `logs` with no usable index on `level`.
+    @migration.stub(:index_valid?, false) { migrate_up }
+
+    assert_includes logs_index_names, SUPERSEDED_INDEX_NAME,
+      "no ordering may leave logs with neither index"
+  end
+
+  test "defers on a table whose heap is large however few rows are left in it" do
+    # `CREATE INDEX CONCURRENTLY` costs two passes over the heap, and a drained
+    # `logs` keeps every page it ever allocated — so a small row count is not on
+    # its own evidence that the build is cheap.
+    @migration.stub(:table_bytes, AddRetentionScanIndexToLogs::INLINE_BUILD_BYTE_LIMIT + 1) do
+      @migration.stub(:estimated_rows, 1) { migrate_up }
+    end
+
+    assert_not_includes logs_index_names, INDEX_NAME
+    assert_includes logs_index_names, SUPERSEDED_INDEX_NAME
+  end
+
   test "down restores the superseded index before removing the replacement" do
     migrate_up
     migrate_down

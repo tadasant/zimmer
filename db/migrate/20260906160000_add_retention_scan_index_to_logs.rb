@@ -55,9 +55,10 @@
 # most likely spend, and a deploy that fails is strictly worse than a prune that
 # is slow.
 #
-# So the build is only done inline where it is free: an empty or small `logs` —
-# every developer machine, CI, a fresh install. Above the threshold, which is
-# where both deployed environments sit today, the work belongs to
+# So the build is only done inline where it is free: a small `logs` by both row
+# count and heap size — every developer machine, CI, a fresh install. Above
+# either threshold, which is where both deployed environments sit today, the work
+# belongs to
 # `db/post_deploy/20260906160100_build_logs_retention_scan_index.rb`, which
 # PostDeployTaskJob starts a couple of minutes after the deploy, off the boot
 # path, with a 20-minute lease and an answer for "has it run" on /health.
@@ -66,41 +67,67 @@
 # is recorded as applied and the index does not exist yet. That window is
 # minutes, it is visible in `post_deploy_task_runs` rather than silent, and the
 # thing it protects is the deploy that carries the fix.
+#
+# One trap for a developer whose own `logs` is over a threshold: development
+# dumps the schema after migrating, so a deferred build there rewrites
+# `db/schema.rb` back to the old index. The database heals a couple of minutes
+# later when the task runs; the file does not. Do not commit that dump.
 class AddRetentionScanIndexToLogs < ActiveRecord::Migration[8.1]
   disable_ddl_transaction!
 
   INDEX_NAME = "index_logs_on_level_and_id_and_created_at"
   SUPERSEDED_INDEX_NAME = "index_logs_on_level"
 
-  # Estimated rows below which building inline is not worth deferring. Two orders
-  # of magnitude under the table this is written for, and far enough above a
-  # seeded dev database that no laptop takes the deferred path by accident.
+  # Estimated rows below which building inline is not worth deferring, and the
+  # heap size above which it is deferred whatever the row count says. Both,
+  # because `CREATE INDEX CONCURRENTLY` costs two passes over the **heap** and a
+  # drained `logs` keeps every page it ever allocated until somebody runs
+  # `VACUUM FULL` — so a table down to 200k live rows can still be many GB to
+  # scan, and the row count alone would wave it onto the boot path.
   INLINE_BUILD_ROW_LIMIT = 250_000
+  INLINE_BUILD_BYTE_LIMIT = 1.gigabyte
 
   def up
     unless build_inline?
-      say "logs has ~#{estimated_rows} rows; leaving #{INDEX_NAME} to the post-deploy task", true
+      say "logs is ~#{estimated_rows.inspect} rows / #{table_bytes} bytes; " \
+          "leaving #{INDEX_NAME} to the post-deploy task", true
       return
     end
+
+    # Wreckage from an interrupted build, which this migration can leave behind
+    # itself: a cancelled `CREATE INDEX CONCURRENTLY` commits the index as
+    # `indisvalid = false`, `up` raises before the version is recorded, and the
+    # next boot re-runs it. `IF NOT EXISTS` matches on name, so without this the
+    # re-run would skip straight past the unusable index and go on to drop the
+    # one it supersedes — leaving `logs` with no usable index on `level` at all.
+    drop_invalid_index
 
     add_index :logs, %i[level id created_at],
               name: INDEX_NAME,
               algorithm: :concurrently,
               if_not_exists: true
 
-    # Strictly after the replacement exists, so there is never an instant with
-    # neither. Same ordering the post-deploy task keeps.
+    # Gated on VALID, not on merely present, for the reason above. Same ordering,
+    # and the same reading, the post-deploy task keeps: nothing drops until the
+    # replacement is one the planner will actually use.
+    return unless index_valid?(INDEX_NAME)
+
     remove_index :logs,
                  name: SUPERSEDED_INDEX_NAME,
                  algorithm: :concurrently,
                  if_exists: true
   end
 
+  # Rolling this back on a deployment that took the deferred path drops an index
+  # `up` will not rebuild — it declines again on the same table. Re-arm
+  # `20260906160100_build_logs_retention_scan_index` from /health to get it back.
   def down
     add_index :logs, :level,
               name: SUPERSEDED_INDEX_NAME,
               algorithm: :concurrently,
               if_not_exists: true
+
+    return unless index_valid?(SUPERSEDED_INDEX_NAME)
 
     remove_index :logs,
                  name: INDEX_NAME,
@@ -111,16 +138,39 @@ class AddRetentionScanIndexToLogs < ActiveRecord::Migration[8.1]
   private
 
   def build_inline?
+    return false if table_bytes > INLINE_BUILD_BYTE_LIMIT
+
     rows = estimated_rows
     rows.nil? || rows <= INLINE_BUILD_ROW_LIMIT
   end
 
+  def drop_invalid_index
+    return unless index_state(INDEX_NAME) == false
+
+    say "dropping an invalid #{INDEX_NAME} left by an earlier attempt", true
+    connection.execute("DROP INDEX CONCURRENTLY IF EXISTS #{connection.quote_table_name(INDEX_NAME)}")
+  end
+
+  def index_valid?(name) = index_state(name) == true
+
+  # true / false / nil for valid / invalid / absent.
+  def index_state(name)
+    connection.select_value(<<~SQL.squish)
+      SELECT i.indisvalid
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_index i ON i.indexrelid = c.oid
+      WHERE c.relname = #{connection.quote(name)} AND n.nspname = current_schema()
+    SQL
+  end
+
   # `reltuples`, not `COUNT(*)`: this runs in the boot path, and counting the
   # table is the very cost the split exists to keep out of it. PG14+ reports -1
-  # on a table it has never analyzed, which means "unknown", not "empty" — and an
-  # unanalyzed `logs` is a fresh database, so unknown takes the inline path.
+  # on a table it has never analyzed, which means "unknown", not "empty" — a
+  # restore leaves it that way on a table full of rows, which is exactly why the
+  # byte limit is checked first and unknown may then take the inline path.
   def estimated_rows
-    value = ActiveRecord::Base.connection.select_value(<<~SQL.squish)
+    value = connection.select_value(<<~SQL.squish)
       SELECT c.reltuples::bigint
       FROM pg_class c
       JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -131,5 +181,15 @@ class AddRetentionScanIndexToLogs < ActiveRecord::Migration[8.1]
 
     rows = value.to_i
     rows.negative? ? nil : rows
+  end
+
+  # A catalog lookup, so it costs nothing on the boot path. `pg_table_size` counts
+  # TOAST and the FSM/VM forks alongside the main heap, which overstates what a
+  # build actually scans — none of the three indexed columns is ever TOASTed. That
+  # is the safe direction: this guard's only dangerous answer is a wrong "small".
+  def table_bytes
+    connection.select_value("SELECT pg_table_size('logs'::regclass)").to_i
+  rescue ActiveRecord::StatementInvalid
+    0
   end
 end

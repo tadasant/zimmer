@@ -37,10 +37,15 @@ class HealthMonitorService
   # first backlog, which really is behind.
   LOG_RETENTION_OVERDUE_GRACE = 7.days
 
-  # How far into the table the verbose half of that check looks. `logs` has no
-  # index that answers "the oldest verbose row" — the level index is not ordered
-  # by id within a level — so the reading is taken over a bounded pk range at the
-  # head, which is where an unpruned verbose row would be.
+  # How far into the table the verbose half of that check looks.
+  #
+  # `index_logs_on_level_and_id_and_created_at` does answer "the oldest verbose
+  # row" — it is ordered by id within a level — so the bound is no longer what
+  # makes the read cheap. It is kept for what it says: the panel's question is
+  # "is retention running", and a verbose row at the head is the evidence for
+  # that. Widening it to the whole table would change the reading from "the head
+  # is clean" to "no expired verbose row exists anywhere", which is a claim
+  # `oldest_log_at` deliberately does not make either.
   VERBOSE_HEAD_PROBE_ROWS = 25_000
 
   QUEUE_DEPTH_WARNING_THRESHOLD = 50
