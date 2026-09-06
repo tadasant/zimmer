@@ -79,6 +79,62 @@ class SessionDrawerLogFilterTest < ApplicationSystemTestCase
     assert_equal dashboard_url, page.current_url
   end
 
+  # Re-filtering in place is only in place if the reader is still looking at
+  # something afterwards. The Transcript disclosure renders collapsed on every
+  # ordinary load, so a re-render that does not say otherwise takes the
+  # transcript the reader was filtering off the screen — the drawer stays open
+  # and the level really did change, but nothing on screen shows it, which is
+  # indistinguishable from a filter that did nothing.
+  test "changing the log level with the transcript open leaves it open at the new level" do
+    visit root_url(every_status_params)
+    dashboard_url = page.current_url
+
+    find("a[aria-label='View session #{@session.id}']").click
+    assert_selector "turbo-frame#session_detail [data-current-session-id='#{@session.id}']"
+
+    # The reader opens the transcript and is reading it, which is the state the
+    # log level is worth changing from.
+    open_transcript_panel(wait: 5)
+    assert_selector "turbo-frame#session_detail details[data-controller~='transcript-panel'][open]"
+
+    within "turbo-frame#session_detail" do
+      select "Show Logs", from: "log-level-filter"
+    end
+
+    assert_selector "turbo-frame#session_detail select#log-level-filter option[value='show-logs'][selected]",
+                    visible: :all
+
+    # Still open, and showing the level that was just asked for — no second
+    # click on the disclosure to see the result of the first one.
+    assert_selector "turbo-frame#session_detail details[data-controller~='transcript-panel'][open]"
+    within "turbo-frame#session_detail" do
+      assert_text LOG_LINE
+    end
+
+    assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']"
+    assert_equal dashboard_url, page.current_url
+  end
+
+  # The state travels, it does not stick: a reader who never opened the
+  # transcript is not handed one open by a filter change.
+  test "changing the log level with the transcript closed leaves it closed" do
+    visit root_url(every_status_params)
+
+    find("a[aria-label='View session #{@session.id}']").click
+    assert_selector "turbo-frame#session_detail [data-current-session-id='#{@session.id}']"
+    assert_no_selector "turbo-frame#session_detail details[data-controller~='transcript-panel'][open]"
+
+    within "turbo-frame#session_detail" do
+      select "Show Logs", from: "log-level-filter"
+    end
+
+    assert_selector "turbo-frame#session_detail select#log-level-filter option[value='show-logs'][selected]",
+                    visible: :all
+    assert_no_selector "turbo-frame#session_detail details[data-controller~='transcript-panel'][open]"
+    assert_selector "turbo-frame#session_detail[src*='filter=show-logs']", visible: :all
+    refute_includes page.find("turbo-frame#session_detail", visible: :all)[:src].to_s, "transcript=open"
+  end
+
   # The other half of the fix: with no enclosing frame the controller still
   # navigates the document, so the full session page behaves exactly as before.
   test "the full session page still restores the saved log level from localStorage" do
@@ -111,6 +167,22 @@ class SessionDrawerLogFilterTest < ApplicationSystemTestCase
     assert_match(/[?&]filter=show-logs/, page.current_url)
 
     open_transcript_panel(wait: 5)
+    assert_text LOG_LINE
+  end
+
+  # Same disclosure rule on the page that navigates the document: the address it
+  # navigates to carries the open transcript, so the reader lands back on it.
+  test "the full session page keeps an open transcript across a log level change" do
+    visit session_path(@session)
+    wait_for_stimulus_controller("log-level-filter")
+    open_transcript_panel(wait: 5)
+    assert_selector "details[data-controller~='transcript-panel'][open]"
+
+    select "Show Logs", from: "log-level-filter"
+
+    assert_selector "select#log-level-filter option[value='show-logs'][selected]", visible: :all
+    assert_match(/[?&]filter=show-logs/, page.current_url)
+    assert_selector "details[data-controller~='transcript-panel'][open]"
     assert_text LOG_LINE
   end
 end
