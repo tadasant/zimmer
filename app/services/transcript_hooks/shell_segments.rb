@@ -48,6 +48,16 @@ module TranscriptHooks::ShellSegments
   # Shell separators a command is split on before classification.
   SEGMENT_SEPARATOR = /(?:&&|\|\||[;|\n])/
 
+  # The subset of those after which a shell throws the PRECEDING command's exit
+  # status away: a pipe replaces it with the downstream command's, and `;` or a
+  # newline replaces it with the next command's. `&&` and `||` are deliberately
+  # absent — both propagate a failure, so a command in front of one really can be
+  # what set a script's status.
+  #
+  # Lives here rather than in the caller so it cannot drift from SEGMENT_SEPARATOR
+  # above: a separator added there and not classified here would go unread.
+  EXIT_STATUS_DISCARDING_SEPARATORS = [ ";", "|", "\n" ].freeze
+
   # The quotes that turn a separator into data. Which one opened the run matters:
   # an apostrophe inside a double-quoted string is a literal apostrophe, and a
   # backslash inside a single-quoted string is a literal backslash.
@@ -173,6 +183,17 @@ module TranscriptHooks::ShellSegments
     shell_segments_with_separators(command).map(&:first)
   end
 
+  # Whether +separator+ is one a shell throws the preceding command's exit status
+  # away at. `nil` — nothing followed — is not: that command's status IS the
+  # script's. So is a separator the split could not recover, for the reason under
+  # #shell_segments_with_separators.
+  #
+  # @param separator [String, nil] one from #shell_segments_with_separators
+  # @return [Boolean]
+  def exit_status_discarded_after?(separator)
+    EXIT_STATUS_DISCARDING_SEPARATORS.include?(separator)
+  end
+
   # The same commands, each paired with the separator the shell wrote **after**
   # it — which is what says whether that command's exit status survives into the
   # script's own.
@@ -233,12 +254,23 @@ module TranscriptHooks::ShellSegments
   # wrapper, so each round is strictly shorter than the one before it.
   #
   # Every segment carries the separator that followed it (see
-  # #shell_segments_with_separators). Two joins are worth naming. A line that is
-  # not the last one is terminated by the newline the split consumed, which is a
-  # separator like any other and discards the status of the command before it. And
-  # a wrapper's own separator belongs to the LAST command of the script it wrapped:
+  # #shell_segments_with_separators). Three joins are worth naming.
+  #
+  # A line that is not the last one is terminated by the newline the split
+  # consumed, which is a separator like any other and discards the status of the
+  # command before it.
+  #
+  # A wrapper's own separator belongs to the LAST command of the script it wrapped:
   # `bash -lc "a; b" && c` is `c` running after `b`, so `b` is the one whose
   # failure `&&` propagates.
+  #
+  # And the last SURVIVING segment reports `nil` whatever the text said, because
+  # separators are assigned by position and empty segments are dropped afterwards.
+  # `gh pr create --fill;` splits into the create and a trailing empty, so without
+  # this the create would report a `;` it is not actually in front of anything
+  # across — and a caller reading that as "the exit status is somebody else's"
+  # would be reading it about a command that ran last. A trailing newline is the
+  # same shape.
   #
   # @param script [String]
   # @return [Array<Array(String, String)>] `[segment, separator]` pairs
@@ -246,8 +278,9 @@ module TranscriptHooks::ShellSegments
     lines = shell_lines(script)
     last_line = lines.length - 1
 
-    lines.each_with_index.flat_map { |line, index| split_line(line, ends_script: index == last_line) }
-         .flat_map do |segment, separator|
+    pairs = lines.each_with_index
+                 .flat_map { |line, index| split_line(line, ends_script: index == last_line) }
+                 .flat_map do |segment, separator|
       normalized = segment.sub(KEYWORD_PREFIX_PATTERN, "")
                           .sub(CAPTURE_PREFIX_PATTERN, "")
                           .sub(ENV_PREFIX_PATTERN, "")
@@ -262,6 +295,8 @@ module TranscriptHooks::ShellSegments
         [ [ normalized, separator ] ]
       end
     end
+
+    pairs.empty? ? pairs : pairs[0...-1] + [ [ pairs.last.first, nil ] ]
   end
 
   # +script+'s lines as a shell would run them: continuations folded back into the
@@ -451,7 +486,7 @@ module TranscriptHooks::ShellSegments
   # @param line [String]
   # @param ends_script [Boolean] whether this is the script's last line
   # @return [Array<Array(String, String)>] `[segment, separator]` pairs
-  def split_line(line, ends_script: true)
+  def split_line(line, ends_script:)
     trailing = ends_script ? nil : "\n"
     scanner = StringScanner.new(line)
     segments = []

@@ -110,16 +110,32 @@ after it was missing its positional argument and exited 1, so the whole call was
 create read as failed, so the PR was recorded nowhere — no merge notification, no comment or
 merge-conflict polling, and the merge gate's conflict hand-back path with no session to hand back to.
 
-A create whose success is only **inferred** this way vouches for exactly **one** URL — the first its
-own repo bound allows, which is the one `gh pr create` prints. Anything after it was printed by
-whatever else ran on that line, and on a line that ended in a failure there is no telling what that
-was: a `gh pr list` fallback would otherwise hand over every PR it printed, which is #214 through a
-new door. It is the same cap the MCP-created tier takes, for the same reason. A create the flag never
-contradicted is unchanged, and still vouches for everything its bound allows.
+A create whose success is only **inferred** this way is weaker evidence than one the flag never
+contradicted — the line really did fail somewhere, and nothing says the create was not part of it —
+so it is held to three bounds the ordinary reading is not:
+
+- **One URL**, because one create opens one pull request. The same cap the MCP-created tier takes.
+- **This session's own repo, when the create named none.** A `gh pr create` with no `--repo` normally
+  vouches for any repo, since a create in a fork clone lands on a parent the command never mentions.
+  Combined with the cap that would be a bound of nothing at all, and `gh pr create --fill | tail -1;
+  false` would record the first PR URL in the output whatever repo it belonged to. The unbounded
+  licence is a *strong*-evidence licence; an inferred success does not get it.
+- **Nothing at all when a PR listing shared the line.** A `gh pr list`, or a `gh api repos/o/r/pulls`
+  that is a GET, prints every open PR on the repo into the same blob, and on a failed line there is
+  no telling which of them the cap would land on. A single-PR read is *not* a listing — `gh pr view
+  <n>` prints the one PR it was asked for, which is #620's own shape, and excluding it would put the
+  bug back.
+
+Which URL the cap keeps is "the first the bound allows", and that is the create's own only when
+nothing before it on the line printed one. A listing is the shape that would, and it is excluded
+outright, so what is left is narrow enough for first-wins to be the right guess rather than a claim.
 
 When the split cannot say which separator went where — a line whose quoting never resolves falls back
 to a crude split — the flag is read as written. The question is only ever asked in order to
-*discount* a failure, so an unreadable command records less rather than more.
+*discount* a failure, so an unreadable command records less rather than more. That is also why
+`ShellSegments` reports `nil` for the **last surviving** command whatever the text said: separators
+are assigned by position and empty segments are dropped afterwards, so a trailing `;` would otherwise
+leave a create looking like it had something after it when it ran last.
 
 A create is also read out of what a command **runs**, never out of what it **quotes**. `gh pr create`
 inside a `grep` pattern, an `rg` argument, an `echo` or a `sed` script is data, and session 11898 ran

@@ -412,6 +412,23 @@ class TranscriptHooks::ShellSegmentsTest < ActiveSupport::TestCase
     assert_equal [ [ "gh pr create --fill", nil ] ], separators("gh pr create --fill")
   end
 
+  test "reports no separator for the last surviving command, whatever the text said" do
+    # Separators are assigned by position and empty segments are dropped after, so
+    # a trailing `;` or newline would otherwise leave the last real command
+    # reporting a separator it is not in front of anything across.
+    assert_equal [ [ "gh pr create --fill", nil ] ], separators("gh pr create --fill;")
+    assert_equal [ [ "gh pr create --fill", nil ] ], separators("gh pr create --fill\n   ")
+    assert_equal [ [ "gh pr list", ";" ], [ "gh pr create --fill", nil ] ],
+                 separators("gh pr list; gh pr create --fill; ")
+  end
+
+  test "reports nothing for a script with no commands in it" do
+    [ "", "   ", ";;;", "\n\n", %q(bash -lc ""), %q(bash -lc "  ") ].each do |script|
+      assert_equal [], separators(script), script.inspect
+      assert_equal [], segments(script), script.inspect
+    end
+  end
+
   test "reports no separator at all when the line's quoting does not resolve" do
     # The crude fallback split cannot say what separated what. Reported as nil,
     # which every caller reads as "nothing follows" — the answer that discounts
