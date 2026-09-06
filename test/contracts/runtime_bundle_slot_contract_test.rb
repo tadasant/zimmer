@@ -24,8 +24,13 @@ class RuntimeBundleSlotContractTest < ActiveSupport::TestCase
   # Slots deliberately left nil are NOT listed: `auth_provider_class` and
   # `config_preparer_class` are nil for every runtime and nothing reads them
   # (auth resolves through RuntimeAuthProvider.for instead), and
-  # `mcp_credential_writer_class` is nil for Pi with its one caller guarded by
-  # McpOauthCredentialInjector#credential_store?.
+  # `mcp_credential_writer_class` is nil for Pi with every caller guarded by
+  # McpOauthCredentialInjector#credential_store?. That last one was written here
+  # as "its one caller" and there were three — the OAuth spawn gate reached the
+  # nil through #credential_key_for and killed every Pi session with an
+  # OAuth-credentialed MCP server. McpOauthCredentialInjectorTest asserts the
+  # gate and injection for every registered runtime now, which is where a fourth
+  # caller would be caught.
   UNCONDITIONALLY_DEREFERENCED_SLOTS = {
     cli_adapter_class: "RuntimeRegistry.cli_adapter_class_for / ProcessLifecycleManager",
     retry_strategy_class: "the runtime's own #retry_strategy factory",
