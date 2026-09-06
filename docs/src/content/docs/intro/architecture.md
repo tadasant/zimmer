@@ -80,12 +80,17 @@ The Kamal deploy runs that as a dedicated `worker` role (`config/deploy.staging.
 and pollers run on the deployed droplet.
 
 **Agent subprocess.** A real headless `claude` or `codex` process, spawned with
-`pgroup: true` so the whole process group can be killed as a unit. Its stdin and stdout go
-to `/dev/null`; stderr goes to a log file inside the clone. The transcript file on disk is
-the only channel Zimmer reads output from. Codex is always launched with `--json`, and Claude
-with `--output-format stream-json` on the image / large-prompt path — and in every case the
-stream is discarded.
-Tracked in [#109](https://github.com/tadasant/zimmer/issues/109).
+`pgroup: true` so the whole process group can be killed as a unit. Its stdin goes to
+`/dev/null`; stderr goes to a log file inside the clone. The transcript file on disk carries
+the conversation.
+
+Codex is always launched with `--json`, and its stdout event stream is captured into
+`codex_events.jsonl` in the clone and read by `CodexEventStream`: its first line names the
+thread UUID, which is how Zimmer identifies this session's rollout in a tree shared by every
+session on the host, and what `codex exec resume` targets. Claude's stdout is still discarded —
+`--output-format stream-json` is only passed on the image / large-prompt path, and Zimmer
+already knows a Claude session's id because it supplies it. See
+[Spawning](/sessions/spawning/).
 
 ## Data
 

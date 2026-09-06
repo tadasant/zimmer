@@ -270,6 +270,55 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     assert_includes result.forked_session.metadata["working_directory"], "packages/web"
   end
 
+  # === spawn artifacts the fork must not inherit ===
+
+  test "a forked Claude session sheds the inherited stderr log" do
+    @mock_fs.write(File.join(@clone_path, "claude_stderr.log"), "old run\n")
+
+    result = ForkSessionService.call(source_session: @source_session, message_index: 1, file_system: @mock_fs)
+
+    assert result.success?
+    refute @mock_fs.exists?(File.join(result.forked_session.metadata["clone_path"], "claude_stderr.log"))
+  end
+
+  # #109: the Codex event log records the SOURCE session's thread id, and the
+  # transcript pipeline reads that id back (CodexEventStream) to decide which
+  # rollout is this session's — and to target `codex exec resume`. A fork that
+  # inherited it would continue someone else's conversation.
+  test "a forked Codex session sheds both the stderr log and the --json event log" do
+    @source_session.update!(agent_runtime: "codex")
+    @mock_fs.write(File.join(@clone_path, "codex_stderr.log"), "old run\n")
+    @mock_fs.write(
+      File.join(@clone_path, "codex_events.jsonl"),
+      %({"type":"thread.started","thread_id":"01a07412-4d9a-78f0-aad9-2cde1bf7586e"}\n)
+    )
+
+    result = ForkSessionService.call(source_session: @source_session, message_index: 1, file_system: @mock_fs)
+
+    assert result.success?
+    forked_clone = result.forked_session.metadata["clone_path"]
+    refute @mock_fs.exists?(File.join(forked_clone, "codex_stderr.log"))
+    refute @mock_fs.exists?(File.join(forked_clone, "codex_events.jsonl")),
+      "the fork must not inherit the source session's Codex thread id"
+    assert_nil CodexEventStream.new(working_directory: forked_clone, file_system: @mock_fs).thread_id
+  end
+
+  test "a forked Codex session sheds the spawn artifacts inside its subdirectory too" do
+    @source_session.update!(agent_runtime: "codex", subdirectory: "packages/web")
+    working_dir = File.join(@clone_path, "packages/web")
+    @mock_fs.mkdir_p(working_dir)
+    @source_session.update!(metadata: @source_session.metadata.merge("working_directory" => working_dir))
+    @mock_fs.write(File.join(working_dir, "codex_stderr.log"), "old run\n")
+    @mock_fs.write(File.join(working_dir, "codex_events.jsonl"), "{}\n")
+
+    result = ForkSessionService.call(source_session: @source_session, message_index: 1, file_system: @mock_fs)
+
+    assert result.success?
+    forked_working_dir = result.forked_session.metadata["working_directory"]
+    refute @mock_fs.exists?(File.join(forked_working_dir, "codex_stderr.log"))
+    refute @mock_fs.exists?(File.join(forked_working_dir, "codex_events.jsonl"))
+  end
+
   test "generates unique title for forked session" do
     result = ForkSessionService.call(
       source_session: @source_session,

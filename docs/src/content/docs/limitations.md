@@ -2074,6 +2074,36 @@ of them to `zimmer`. Same root cause as [#67](https://github.com/tadasant/zimmer
 
 ## Sessions
 
+### A Codex session's `--json` event log is a second copy of the turn, sitting in the clone
+
+🟡 Capturing Codex's stdout into `codex_events.jsonl`
+([#109](https://github.com/tadasant/zimmer/issues/109)) is what lets Zimmer be *told* which rollout is
+this session's rather than infer it, but the file is the whole stream, not just the first line Zimmer
+reads: it grows for the life of the turn, roughly mirroring the rollout's own content, and nothing
+rotates or truncates it mid-turn. Two consequences, and the second is the one worth knowing about.
+
+**Disk.** It is a second copy of a long session's output on the same volume `CloneDiskGuard` sizes new
+clones against. Three things bound it: each spawn reopens the file with `"w"`, so a session
+accumulates one turn's stream at a time rather than the whole conversation's; the file dies with the
+clone; and it is the same trade `codex_stderr.log` already makes.
+
+**It is untracked inside the session's git clone**, at the working-directory root, alongside
+`codex_stderr.log` and `codex_last_message.txt` — and nothing excludes any of them. So an agent that
+runs `git add -A && git commit` commits its own conversation into the user's branch, and
+`CloneArtifactService` (which stages with `git add -A` before diffing) bakes the stream into the
+archived working-tree patch. Unlike `sessions.transcript`, that copy does not go through
+`TranscriptRedactor`. This is a pre-existing property of the whole set rather than something the
+event log introduces, but the event log is much the largest member of it. The fix is one line of
+`.git/info/exclude` per clone, covering all four names, and it belongs with whichever service
+materializes a clone rather than with the adapter that writes into one.
+
+Truncating the file live is not available: the child holds the descriptor and appends to it, so
+anything Zimmer did to the file underneath would move the offsets the child is writing at. The
+alternative that costs no disk is a pipe, and that is worse here —
+`ProcessLifecycleManager#resume_monitoring` exists precisely because the monitoring loop does not
+always outlive the process, and a pipe whose read end goes away leaves the agent writing into a
+broken pipe mid-turn.
+
 ### An unarchive whose subdirectory is gone still opens a second transcript directory
 
 A re-clone lands back at the path the session already occupied, so a conversation keeps one

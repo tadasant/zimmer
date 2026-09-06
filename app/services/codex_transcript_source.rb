@@ -37,6 +37,20 @@ class CodexTranscriptSource < TranscriptSource
     nil
   end
 
+  # @see TranscriptSource#runtime_session_id
+  #
+  # Read from the `--json` event stream Codex prints to stdout, which the
+  # adapter captures into the working directory (CodexEventStream). Its first
+  # line carries the thread UUID — the same UUID that names the rollout and that
+  # `codex exec resume` takes — so Zimmer knows it as soon as the process starts
+  # talking, rather than only once a rollout has been found and read.
+  def runtime_session_id(session:, working_directory: nil)
+    directory = working_directory.presence || session&.working_directory
+    return nil if directory.blank?
+
+    CodexEventStream.new(working_directory: directory, file_system: file_system).thread_id
+  end
+
   # @see TranscriptSource#locate
   def locate(session:, working_directory: nil)
     transcript_dir = transcript_directory(working_directory: working_directory)
@@ -157,9 +171,14 @@ class CodexTranscriptSource < TranscriptSource
   # Select a rollout before this session's own Codex UUID has been captured.
   #
   # At spawn Zimmer stores a randomly-minted placeholder `session_id` (Codex ignores
-  # the Zimmer-supplied id and generates its own UUID, captured later from the
-  # rollout's `session_meta` line). Until that capture happens the placeholder
-  # never matches a rollout filename, so we land here.
+  # the Zimmer-supplied id and generates its own UUID). Until that capture happens
+  # the placeholder never matches a rollout filename, so we land here.
+  #
+  # The first thing tried is not a guess at all: `codex exec --json` announces
+  # the thread UUID on the first line of stdout, which the adapter captures into
+  # the working directory, so the rollout can be named exactly (#109). Only when
+  # the stream has not said so yet — no event log, or the head not flushed —
+  # does the cwd heuristic below run.
   #
   # Codex writes EVERY session's rollout into the same shared tree under
   # `$CODEX_HOME/sessions`. Picking "the most recent rollout anywhere" therefore
@@ -179,10 +198,17 @@ class CodexTranscriptSource < TranscriptSource
   # @param session [Session] the session whose rollout we want
   # @return [String, nil] the rollout file path, or nil if none matches yet
   def fallback_transcript(transcript_directory, session)
+    working_directory = session.working_directory
+
+    thread_id = runtime_session_id(session: session, working_directory: working_directory)
+    if thread_id.present?
+      matches = rollout_glob(transcript_directory, thread_id)
+      return most_recent(matches) if matches.any?
+    end
+
     candidates = rollout_glob(transcript_directory, "*")
     return nil if candidates.empty?
 
-    working_directory = session.working_directory
     # Defensive: without a working directory we cannot disambiguate by clone, so
     # preserve the legacy most-recent behavior rather than returning nothing.
     return most_recent(candidates) if working_directory.blank?

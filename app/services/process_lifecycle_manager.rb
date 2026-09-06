@@ -1346,6 +1346,10 @@ class ProcessLifecycleManager
       File.join(working_dir, ".mcp.json")
     end
 
+    # Read before the spawn. The spawn is what starts producing the NEW runtime
+    # id, and the release below must only drop the one that just failed.
+    stale_runtime_session_id = session.session_id
+
     spawn_result = @cli_adapter.execute(
       prompt: prompt,
       session_id: session.session_id,
@@ -1360,7 +1364,7 @@ class ProcessLifecycleManager
 
     add_log("Fresh start recovery successful, spawned PID #{new_pid}", level: "info")
 
-    release_stale_runtime_session_id!
+    release_stale_runtime_session_id!(stale_runtime_session_id)
 
     # Update session metadata with new process PID and re-set runtime_started
     with_db_retry do
@@ -1520,23 +1524,41 @@ class ProcessLifecycleManager
   #
   # Leaving it in place deadlocks transcript polling: CodexTranscriptSource#
   # find_main_transcript prefers the rollout whose filename carries the stored
-  # id, so the poller keeps reading the abandoned file, and the only code that
-  # would learn the new UUID (TranscriptPollerService#capture_runtime_session_id!)
-  # reads it from a file the locator will never hand it. Clearing the id makes the
-  # locator fall back to matching on this session's clone path, which finds the
-  # live rollout and re-attaches within one poll.
+  # id, so the poller keeps reading the abandoned file, and the transcript-side
+  # capture (TranscriptPollerService#capture_runtime_session_id!) reads the new
+  # UUID from a file the locator will never hand it. Clearing the id lets the
+  # locator find the live rollout and re-attach within one poll.
+  #
+  # This runs AFTER the fresh spawn on purpose. That spawn truncates and reopens
+  # the `--json` event log, so by the time the id is released the stream already
+  # names — or is about to name — the NEW thread, and the poller's stream-side
+  # capture (#capture_runtime_session_id_from_stream!) supplies it directly
+  # rather than leaving the locator to infer it from the clone path.
+  #
+  # Which is why the release is conditional on the id it was told to drop rather
+  # than unconditional. Transcript polling runs in a different job, so it can
+  # land between the spawn and this call and store the NEW thread id; a blind
+  # `nil` would erase the very answer this method exists to make findable.
   #
   # A no-op for Claude Code, which honors the supplied `--session-id`, so its
   # stored id stays authoritative across a fresh start.
-  def release_stale_runtime_session_id!
+  #
+  # @param stale_id [String, nil] the id read BEFORE the spawn — the one the
+  #   failed resume was targeting
+  def release_stale_runtime_session_id!(stale_id)
     return unless TranscriptRuntime.normalizer_for(session).mints_own_session_id?
-    return if session.session_id.blank?
+    return if stale_id.blank?
 
-    add_log(
-      "Releasing stale runtime session id #{session.session_id} so transcript polling re-attaches to the new transcript",
-      level: "info"
-    )
-    with_db_retry { session.update_column(:session_id, nil) }
+    with_db_retry do
+      session.reload
+      next unless session.session_id == stale_id
+
+      add_log(
+        "Releasing stale runtime session id #{stale_id} so transcript polling re-attaches to the new transcript",
+        level: "info"
+      )
+      session.update_column(:session_id, nil)
+    end
   end
 
   # Wait briefly and re-check if session is still running

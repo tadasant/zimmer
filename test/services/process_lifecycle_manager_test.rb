@@ -2320,7 +2320,7 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     @session.update_column(:session_id, "abandoned-rollout-uuid")
     manager = create_manager
 
-    manager.send(:release_stale_runtime_session_id!)
+    manager.send(:release_stale_runtime_session_id!, "abandoned-rollout-uuid")
     @log_buffer.flush
 
     assert_nil @session.reload.session_id,
@@ -2334,7 +2334,7 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     @session.update_column(:session_id, "claude-authoritative-uuid")
     manager = create_manager
 
-    manager.send(:release_stale_runtime_session_id!)
+    manager.send(:release_stale_runtime_session_id!, "claude-authoritative-uuid")
 
     assert_equal "claude-authoritative-uuid", @session.reload.session_id,
       "Claude honors the supplied --session-id, so it stays authoritative across a fresh start"
@@ -2346,9 +2346,24 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     manager = create_manager
 
     Session.any_instance.expects(:update_column).never
-    manager.send(:release_stale_runtime_session_id!)
+    manager.send(:release_stale_runtime_session_id!, nil)
 
     assert_nil @session.reload.session_id
+  end
+
+  # #109: transcript polling runs in a different job and can land between the
+  # fresh spawn and this call, storing the NEW thread id it read off the Codex
+  # `--json` stream. An unconditional nil would erase the very answer the release
+  # exists to make findable.
+  test "release_stale_runtime_session_id! leaves an id that is no longer the stale one" do
+    @session.update!(agent_runtime: "codex")
+    @session.update_column(:session_id, "freshly-captured-thread-uuid")
+    manager = create_manager
+
+    manager.send(:release_stale_runtime_session_id!, "abandoned-rollout-uuid")
+
+    assert_equal "freshly-captured-thread-uuid", @session.reload.session_id,
+      "the poller's newer capture must survive the release of the id that failed"
   end
 
   private
