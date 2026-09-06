@@ -427,8 +427,9 @@ class SpotSessionPause
     #
     # Measured against every turn IN FLIGHT — on a worker or queued for one — and
     # not against the cap's own count, which is worker occupancy alone. #resume!
-    # flips the session to `running` and enqueues its job, so a session this
-    # sweep puts back lands in the queue rather than on a worker. Reading only
+    # hands the turn over and enqueues its job, so a session this sweep puts back
+    # lands in the queue rather than on a worker — and reads `waiting` until a
+    # worker takes it, which is the same fact told twice. Reading only
     # the occupancy would leave the next sweep's headroom identical to this
     # one's, and a fleet whose workers are all busy would drain the whole pause
     # queue into the `agents` lane a batch every five minutes.
@@ -470,7 +471,9 @@ class SpotSessionPause
         session.update!(running_job_id: nil)
         resumed = session.resume_for_system_recovery!
       end
-      return false unless resumed && session.reload.running?
+      # `waiting?`, not `running?`. The resume hands the turn over; the session
+      # reads `running` only once a worker picks the job up below (#1036).
+      return false unless resumed && session.reload.waiting?
 
       session.logs.create!(level: "info", content: message)
       # A human queueing the session may have typed what it should come back on;

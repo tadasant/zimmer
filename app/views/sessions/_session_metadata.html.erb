@@ -552,7 +552,11 @@
     </div>
   <% end %>
   <%= render "sessions/auth_outage_banner", agent_session: agent_session %>
-  <%= render "sessions/spot_hold_banner", agent_session: agent_session %>
+  <%# One reading for both banners: it reaches `good_jobs`, and the two would
+      otherwise ask the same question twice per breakpoint. %>
+  <% waiting_reason = SessionWaitingReason.for(agent_session) %>
+  <%= render "sessions/spot_hold_banner", agent_session: agent_session, waiting_reason: waiting_reason %>
+  <%= render "sessions/queued_turn_banner", agent_session: agent_session, waiting_reason: waiting_reason %>
   <%= render "sessions/mcp_oauth_reconnect_banner", agent_session: agent_session %>
   <% if agent_session.failed? && agent_session.metadata&.dig("failure_reason") == "oauth_required" %>
     <div class="mt-2">

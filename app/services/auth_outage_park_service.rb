@@ -620,22 +620,25 @@ class AuthOutageParkService
       session.resume!
 
       # Stamp the prompt BEFORE leaving the transaction, and after `resume!` so a reader
-      # that sees the marker is guaranteed to also see `running` (the same ordering, and
-      # the same reason, as Session#deliver_follow_up!).
+      # that sees the marker is guaranteed to also see the state the resume left behind
+      # (the same ordering, and the same reason, as Session#deliver_follow_up!).
       #
-      # Without it this method resumes a session to `running` while its job does not yet
-      # exist and `running_job_id` is nil — and CleanupOrphanedSessionsJob calls a running
-      # session with a blank running_job_id "DEFINITELY orphaned" with no grace period. A
-      # sweep landing in that window reaps the resume, hijacks the session with a
-      # resume-monitoring job pointed at a stale pid, and the recovery turn never runs.
-      # `pending_follow_up_prompt` is the marker that sweep already honours.
+      # Since #1036 that state is `waiting` — the turn is queued for a worker — which
+      # also takes this resume out of CleanupOrphanedSessionsJob's reach entirely: that
+      # sweep calls a RUNNING session with a blank running_job_id "DEFINITELY orphaned"
+      # with no grace period, and a sweep landing in that window used to reap the resume,
+      # hijack the session with a resume-monitoring job pointed at a stale pid, and lose
+      # the recovery turn. The marker is kept regardless: it is what the sweep honours,
+      # and it is the durable record of a prompt that has been accepted.
       session.merge_metadata!(
         "pending_follow_up_prompt" => prompt,
         "pending_follow_up_sent_at" => Time.current.utc.iso8601
       )
     end
 
-    return false if reason.blank? || !session.reload.running?
+    # `waiting?`: the resume hands the turn over, and the session reads `running`
+    # only once a worker picks up the job enqueued below (#1036).
+    return false if reason.blank? || !session.reload.waiting?
 
     session.logs.create!(level: "warning", content: resume_message(reason))
 
@@ -645,11 +648,12 @@ class AuthOutageParkService
     job_id = job.try(:job_id)
     if job_id.blank?
       logger.warn("Resumed parked session but no job id was returned", session_id: session.id)
-    elsif session.reload.running? && session.running_job_id.blank?
+    elsif (session.reload.waiting? || session.running?) && session.running_job_id.blank?
       # Re-read under the same condition the write assumes. GoodJob can pick the job up,
       # deliver the turn and pause the session before this line runs, and stamping a job id
-      # onto a session that is no longer running would hand orphan detection a job that has
-      # already finished.
+      # onto a session that has come to rest would hand orphan detection a job that has
+      # already finished. Both live states count, because the turn is queued (`waiting`)
+      # until a worker spawns its process (`running`).
       session.update!(running_job_id: job_id)
     end
     logger.info("Resumed session parked for auth outage", session_id: session.id, reason: reason)

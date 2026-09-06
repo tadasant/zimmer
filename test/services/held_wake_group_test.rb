@@ -102,7 +102,8 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
 
     child_reaches_needs_input!(child)
 
-    assert requester.reload.running?, "precondition: the fire resumed the requester"
+    # `waiting`: the fire hands the turn over and it queues for a worker (#1036).
+    assert requester.reload.waiting?, "precondition: the fire resumed the requester"
     assert Trigger.exists?(deadline.id),
       "the deadline backstop must survive the fire — it is the only thing that wakes an interrupted turn"
     assert_equal "enabled", deadline.reload.status
@@ -129,11 +130,12 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
     deadline = deadline_for(requester)
 
     child_reaches_needs_input!(child)
-    assert requester.reload.running?
+    assert requester.reload.waiting?
 
     # The interruption: a deploy restart, a killed process. Every recovery path
     # writes `paused_by = "recovery"` immediately before pausing, which is how a
     # turn Zimmer cut short is told apart from a turn that finished.
+    requester.start!
     requester.update!(metadata: requester.metadata.merge("paused_by" => "recovery"))
     requester.pause!
 
@@ -144,8 +146,10 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
       ScheduleTriggerJob.perform_now
     end
 
-    assert requester.reload.running?,
+    assert requester.reload.waiting?,
       "expected the backstop to wake the interrupted session, got #{requester.status}"
+    assert_equal "Deadline reached — re-read the PR.", requester.metadata["pending_follow_up_prompt"],
+      "and the woken turn must be the backstop's own prompt"
   end
 
   # The same interruption, seen through the predicate every sweep and every UI
@@ -158,7 +162,8 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
     deadline_for(requester)
 
     child_reaches_needs_input!(child)
-    requester.reload.update!(metadata: requester.metadata.merge("paused_by" => "recovery", "pending_sleep" => true))
+    requester.reload.start!
+    requester.update!(metadata: requester.metadata.merge("paused_by" => "recovery", "pending_sleep" => true))
     requester.pause!
 
     assert requester.reload.waiting?, "precondition: the recovery pause left it asleep"
@@ -175,9 +180,10 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
     deadline = deadline_for(requester)
 
     child_reaches_needs_input!(child)
-    assert requester.reload.running?
+    assert requester.reload.waiting?
 
-    # The turn ends normally — no recovery marker.
+    # A worker takes the queued turn, and it ends normally — no recovery marker.
+    requester.start!
     requester.pause!
 
     assert_not Trigger.exists?(deadline.id),
@@ -193,7 +199,8 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
     deadline_for(requester)
 
     child_reaches_needs_input!(child)
-    requester.reload.pause!
+    requester.reload.start!
+    requester.pause!
     assert requester.reload.needs_input?
 
     travel_to 1.hour.from_now do
@@ -221,7 +228,8 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
     old_deadline = deadline_for(requester)
 
     child_reaches_needs_input!(child)
-    assert requester.reload.running?
+    assert requester.reload.waiting?
+    requester.start!
 
     # What the woken turn does before it ends: re-register.
     new_child = child_session
@@ -284,7 +292,8 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
     deadline = deadline_for(requester)
 
     child_reaches_needs_input!(child)
-    assert requester.reload.running?
+    assert requester.reload.waiting?
+    requester.start!
 
     requester.update!(metadata: requester.metadata.merge(
       "failure_reason" => Sessions::ParkUndeliveredTurn::FAILURE_REASON
@@ -298,7 +307,9 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
       ScheduleTriggerJob.perform_now
     end
 
-    assert requester.reload.running?, "the backstop must still wake it"
+    assert requester.reload.waiting?, "the backstop must still wake it"
+    assert_equal "Deadline reached — re-read the PR.", requester.metadata["pending_follow_up_prompt"],
+      "and the turn it queued is the backstop's own prompt"
   end
 
   # The same shape through the auth-outage park: the account pool was empty, the
@@ -313,7 +324,8 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
     deadline = deadline_for(requester)
 
     child_reaches_needs_input!(child)
-    requester.reload.update!(metadata: requester.metadata.merge(
+    requester.reload.start!
+    requester.update!(metadata: requester.metadata.merge(
       "auth_outage_reason" => "pool_empty", "pending_sleep" => true
     ))
     requester.pause!
@@ -354,7 +366,8 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
     assert_not_nil mixed.trigger_conditions.find_by(condition_type: "ao_event").last_triggered_at,
       "but its one-shot is consumed, exactly as a resume always consumed it"
 
-    requester.reload.pause!
+    requester.reload.start!
+    requester.pause!
 
     assert Trigger.exists?(mixed.id), "and the recurring half survives the pause"
     assert_nil mixed.reload.trigger_conditions.find_by(condition_type: "schedule").last_triggered_at
@@ -379,7 +392,8 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
     assert_equal "enabled", deadline.reload.status
     assert_nil deadline.wake_held_at, "a re-arm is owed to nobody"
 
-    requester.reload.pause!
+    requester.reload.start!
+    requester.pause!
 
     assert Trigger.exists?(deadline.id), "so the re-armed wake survives the pause"
   end
@@ -395,7 +409,8 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
     parked.mark_failed(StandardError.new("agent root not found"))
 
     child_reaches_needs_input!(child)
-    requester.reload.pause!
+    requester.reload.start!
+    requester.pause!
 
     assert_not Trigger.exists?(deadline.id), "the healthy backstop is retired with the turn"
     assert Trigger.exists?(parked.id), "the parked one carries evidence and survives"

@@ -1488,10 +1488,12 @@ class SessionsController < ApplicationController
       return
     end
 
-    # IMPORTANT: If session is running, redirect to queue the message instead of sending immediately.
-    # This prevents race conditions where the form action was set incorrectly (e.g., before JS loaded)
-    # or where the user double-submitted. Messages should be queued when the agent is running.
-    if @session.running?
+    # IMPORTANT: If a turn is already underway, redirect to queue the message instead of
+    # sending immediately. This prevents race conditions where the form action was set
+    # incorrectly (e.g., before JS loaded) or where the user double-submitted. Messages
+    # should be queued when the agent is running — or when its turn is sitting in the
+    # `agents` queue, which since #1036 reads `waiting` rather than `running`.
+    if Sessions::LiveTurn.underway?(@session)
       # Create enqueued message instead of interrupting
       max_position = @session.enqueued_messages.maximum(:position) || 0
       next_position = max_position + 1
@@ -3643,7 +3645,7 @@ class SessionsController < ApplicationController
         AgentSessionJob.enqueue_with_prompt(session.id, restart_prompt)
 
         session.logs.create!(
-          content: "Session resumed - status changed to running",
+          content: "Session resumed - its turn is queued for a worker",
           level: "info"
         )
       end

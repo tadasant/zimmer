@@ -380,11 +380,12 @@ class Session < ApplicationRecord
   # against a Claude account.
   #
   # Read through RunningTurns rather than counting the column, and narrowed to
-  # the turns a worker is EXECUTING: `running` is stamped when a turn is handed
-  # to a session, so the column also holds turns queued behind the `agents` pool
-  # and rows asleep on their own wake, and neither of those occupies the fleet.
-  # See that concern for why, and #running_claude_code_turns for the split the
-  # gate reports beside this number.
+  # the turns a worker is EXECUTING. Since #1036 the queue behind the `agents`
+  # pool reads `waiting` rather than `running`, so the column is much closer to
+  # the truth than it was — but it still holds rows asleep on their own wake and
+  # rows between jobs, and neither of those occupies the fleet. See that concern
+  # for why, and #running_claude_code_turns for the split the gate reports beside
+  # this number.
   #
   # Any database trouble reads as zero rather than raising: the spot gate calls
   # this on the path that decides whether a session may start, and a monitoring
@@ -405,23 +406,44 @@ class Session < ApplicationRecord
     where(agent_runtime: ClaudeAuthProvider::RUNTIME).running_turns
   end
 
-  # The [harness, model] pair of every Claude Code session running right now, as
-  # HarnessModelBurnRate keys its rates — so the spot gate can price what the
-  # fleet is burning in one query rather than one per session.
+  # The [harness, model] pair of every Claude Code session that has been HANDED a
+  # turn, as HarnessModelBurnRate keys its rates — so the spot gate can price what
+  # the fleet is burning in one query rather than one per session.
+  #
+  # Deliberately a WIDER population than #running_claude_code_count, and the two
+  # read differently on purpose: the cap asks how much of the fleet is occupied,
+  # the burn asks what is about to be spent. A turn queued behind the `agents`
+  # pool will spend as soon as a thread frees up, and pricing the fleet as if it
+  # would not is the direction a quota gate must never be wrong in.
+  #
+  # Before #1036 that population was simply `status = running`, because a handed
+  # turn was stamped `running` by its deliverer. Now the hand-over lands in
+  # `waiting`, so the queue has to be read off the job rows to keep this number
+  # meaning what it meant.
   #
   # Read straight out of the JSON columns rather than through `agent_root_key`,
   # which resolves against the catalog per session. The stored key is what that
   # method prefers anyway, and a session without one is priced at the fleet
   # default by the caller rather than at nothing.
   #
-  # Any database trouble reads as an empty fleet for the same reason the count
-  # above reads as zero: this is on the path that decides whether a session may
-  # start, and a monitoring gap must never fail one.
+  # Any trouble reads as an empty fleet for the same reason the count above reads
+  # as zero: this is on the path that decides whether a session may start, and a
+  # monitoring gap must never fail one. StandardError rather than the
+  # ActiveRecord family alone, because PendingAgentTurns is more than a query.
   def self.running_claude_code_burn_keys
-    where(status: :running, agent_runtime: ClaudeAuthProvider::RUNTIME)
-      .pluck(Arel.sql("metadata->>'agent_root_key'"), Arel.sql("config->>'model'"))
-      .map { |root, model| [ root.to_s, model.to_s ] }
-  rescue ActiveRecord::ActiveRecordError
+    scope = where(agent_runtime: ClaudeAuthProvider::RUNTIME)
+    candidates = scope.where(status: [ :running, :waiting ]).pluck("sessions.id")
+    return [] if candidates.empty?
+
+    turns = PendingAgentTurns.split(candidates)
+    spending = scope.where(status: :running).pluck("sessions.id").to_set |
+               turns.on_a_worker | turns.queued
+    return [] if spending.empty?
+
+    scope.where(id: spending.to_a)
+         .pluck(Arel.sql("metadata->>'agent_root_key'"), Arel.sql("config->>'model'"))
+         .map { |root, model| [ root.to_s, model.to_s ] }
+  rescue StandardError
     []
   end
 
@@ -1621,11 +1643,12 @@ class Session < ApplicationRecord
   # is already false for an archived session, because the two refusals mean
   # different things to the caller and belong in different words on the session's
   # timeline: `:archived` is terminal and nothing will ever make this turn a good
-  # idea, while `:not_resumable` means the session is already `running` — somebody
-  # else got there first, and re-enqueueing would be the two-processes-on-one-
-  # session defect (#400). Those two are exhaustive: `resume` transitions from
-  # `waiting`, `needs_input` and `failed` with no guard, so past the `archived?`
-  # check the only unresumable status left is `running`.
+  # idea, while `:not_resumable` means somebody else got there first — the session
+  # is already `running`, or it is `waiting` with a turn already queued for a
+  # worker — and re-enqueueing would be the two-processes-on-one-session defect
+  # (#400). `resume` transitions from `waiting`, `needs_input` and `failed` with no
+  # guard, so `running` is the only status the state machine refuses; the queued
+  # turn is the second half of the same refusal and is read off the job rows.
   #
   # It does NOT refuse an UNARCHIVED session. Every unarchive path leaves
   # `archived` before anything is enqueued, so by the time a sweep or a follow-up
@@ -1685,6 +1708,26 @@ class Session < ApplicationRecord
 
       next :archived if archived?
       next :not_resumable unless may_resume?
+      # `may_resume?` alone stopped being the "nobody else is driving this"
+      # answer when a queued turn started reading `waiting` (#1036). Before that,
+      # a session with a turn in flight was `running` and the check above refused
+      # it; now that session is `waiting`, `may_resume?` says yes, and a sweep
+      # that acted on it would enqueue a SECOND turn against one clone — the #400
+      # defect arriving from a new direction.
+      #
+      # Asked of the job rows rather than `running_job_id`, which is written from
+      # inside `AgentSessionJob#perform` and so is blank for exactly the queued
+      # turn this has to see (PendingAgentTurns documents why). `underway?` and
+      # not `coming?`: a job parked on a future `scheduled_at` is a spot-gate
+      # re-check or a clone backoff, not a turn anybody is running, and refusing
+      # on one would leave a recovery-paused session unrecoverable for as long as
+      # the ladder ran.
+      #
+      # Only for a session at rest in `waiting`. A `needs_input` session is the
+      # ordinary recovery-pause shape and reaches here with the interrupted job's
+      # row not yet finished — asking there would refuse the immediate
+      # auto-continue that closes the deploy-interrupt window.
+      next :not_resumable if waiting? && Sessions::LiveTurn.underway?(self)
       next :superseded if replacement_carrying_work.present?
 
       yield if block_given?
@@ -1717,7 +1760,9 @@ class Session < ApplicationRecord
   #
   # Callers keep what is genuinely theirs (validation, logging, broadcasting) and pass
   # only what differs. The prompt is stamped AFTER the state transition, so a reader who
-  # sees `pending_follow_up_prompt` is guaranteed to also see `running`.
+  # sees `pending_follow_up_prompt` is guaranteed to also see the state the resume left
+  # behind — `waiting`, since #1036: the turn is queued for one of the `agents` lane's
+  # worker threads and the session reads `running` only once one has it.
   #
   # The sequence is not atomic end to end: `resume!` runs state-machine callbacks that
   # rewrite `metadata` whole-column (`clear_pending_sleep`, `clear_paused_by_metadata`),
@@ -1778,7 +1823,7 @@ class Session < ApplicationRecord
       # loudly instead of returning quietly; no caller inspects the return value.
       Rails.logger.error(
         "[Session#deliver_follow_up!] Session #{id} was resumed but AgentSessionJob.enqueue_with_prompt " \
-        "returned no job id — the session is running with no tracked job"
+        "returned no job id — the session is queued with no tracked job"
       )
     end
 

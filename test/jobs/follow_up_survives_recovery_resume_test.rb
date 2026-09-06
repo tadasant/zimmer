@@ -70,8 +70,9 @@ class FollowUpSurvivesRecoveryResumeTest < ActiveJob::TestCase
 
     assert_equal PROMPT, @session.reload.metadata["pending_follow_up_prompt"],
       "the prompt must exist somewhere a resume path can read it, not only as a job argument"
-    assert_equal "running", @session.status,
-      "a reader who sees the marker must be guaranteed to also see running"
+    assert_equal "waiting", @session.status,
+      "a reader who sees the marker must also see the state the resume left behind — " \
+      "the turn queued for a worker"
   end
 
   # ---------------------------------------------------------------------------

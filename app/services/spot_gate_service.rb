@@ -61,9 +61,13 @@
 # much of the fleet is occupied, so a turn queued behind the `agents` pool does
 # not fill a slot — see RunningTurns. The projected burn asks what is being
 # SPENT, and a session spends from the moment it is handed a turn, so
-# .running_claude_code_burn_keys prices every `running` row. Both numbers are on
-# the /inference card and they are legitimately different; #awaiting_clause is
-# what explains the gap.
+# .running_claude_code_burn_keys prices the queue too. Both numbers are on the
+# /inference card and they are legitimately different; #awaiting_clause is what
+# explains the gap.
+#
+# Since #1036 a handed-over turn reads `waiting` rather than `running`, so
+# neither number is a `COUNT(*)` on the status column any more — both are read
+# through the `agents` job rows. What each one MEANS is unchanged.
 #
 # == The pool decides, not one account
 #
@@ -531,7 +535,7 @@ class SpotGateService
 
   # The fleet cap's population, read once per decision.
   #
-  # RunningTurns::Reading rather than a bare count: `running` holds both turns a
+  # RunningTurns::Reading rather than a bare count: the fleet holds both turns a
   # worker is executing and turns queued behind the `agents` pool waiting for
   # one, and only the first of those occupies a slot. So the cap counts
   # `on_a_worker` and the queue is reported beside it (#awaiting_clause) rather
@@ -674,8 +678,9 @@ class SpotGateService
   # Silent when no turn is waiting, because then there is nothing to say.
   #
   # "Waiting for one" rather than "queued": the population is every row with a
-  # turn coming that no worker has started, which is turns in the `agents` lane
-  # plus rows between jobs. See RunningTurns::Reading.
+  # turn coming that no agent process is executing yet, which is turns in the
+  # `agents` lane, turns whose worker is still making the clone, and rows between
+  # jobs. See RunningTurns::Reading.
   def awaiting_clause
     return "" unless awaiting_sessions.positive?
 

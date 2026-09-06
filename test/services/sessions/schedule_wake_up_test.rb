@@ -198,9 +198,10 @@ class Sessions::ScheduleWakeUpTest < ActiveSupport::TestCase
       ScheduleTriggerJob.perform_now
     end
 
-    assert_not session.reload.waiting?,
+    # Still `waiting` — a handed-over turn queues for a worker (#1036) — so the
+    # delivered prompt, not the status, is what says the wake landed.
+    assert_equal "Resume", session.reload.metadata["pending_follow_up_prompt"],
       "the wake should have resumed its session, not left it asleep"
-    assert_equal "Resume", session.metadata["pending_follow_up_prompt"]
     assert_not_nil trigger.reload.wake_held_at,
       "a one-time wake that fires is held for the turn it woke — an unheld trigger means it was parked instead"
     assert_equal "enabled", trigger.status

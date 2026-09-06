@@ -71,8 +71,15 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert session.may_resume?, "Session should be able to resume"
     session.resume!
 
-    assert session.running?, "Session should be running after resume"
+    # `waiting`, not `running`: the resume HANDS the turn over and the session
+    # queues for one of the `agents` lane's worker threads. `start` — fired from
+    # inside AgentSessionJob#perform — is the only way into `running` (#1036).
+    assert session.waiting?, "Session should be queued for a worker after resume"
     assert_equal 1, session.logs.where("content LIKE ?", "%Session resumed%").count
+
+    session.start!
+
+    assert session.running?, "Session should be running once a worker starts the turn"
   ensure
     FileUtils.rm_rf("/tmp/test-clone")
   end
@@ -88,7 +95,11 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert session.may_resume?, "Session should be able to resume from failed"
     session.resume!
 
-    assert session.running?, "Session should be running after resume from failed"
+    assert session.waiting?, "Session should be queued for a worker after resume from failed"
+
+    session.start!
+
+    assert session.running?, "Session should be running once a worker starts the turn"
   ensure
     FileUtils.rm_rf("/tmp/test-clone-2")
   end
@@ -1129,7 +1140,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.resume!
     session.reload
 
-    assert session.running?, "Session should be running after resume"
+    assert session.waiting?, "the resume queues the turn; a worker's `start` makes it running"
     assert_equal({ "mcp_servers_status" => { "context7" => { "status" => "pending" } } },
       session.custom_metadata)
   end
@@ -1143,7 +1154,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.resume!
     session.reload
 
-    assert session.running?, "Session should be running after resume"
+    assert session.waiting?, "the resume queues the turn; a worker's `start` makes it running"
     assert_equal({ "context7" => { "status" => "pending" } },
       session.custom_metadata["mcp_servers_status"],
       "a nil custom_metadata is still floored, not left absent")
@@ -1285,7 +1296,10 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.update!(metadata: { "clone_path" => clone_path }, archived_at: Time.current)
 
     session.resume!
-    assert session.running?, "Session should be running after resume"
+    assert session.waiting?, "Session should be queued for a worker after resume"
+
+    session.start!
+    assert session.running?, "Session should be running once a worker starts the turn"
 
     # Pause again
     session.pause!
@@ -1469,7 +1483,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       end
     end
 
-    assert session.running?, "Session should still transition to running despite notification error"
+    assert session.waiting?, "Session should still transition out of needs_input despite notification error"
   end
 
   test "archive does not fail if dismissing notifications raises an error" do
@@ -1555,7 +1569,10 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert session.waiting?, "Session should be waiting after sleep"
 
     session.resume!
-    assert session.running?, "Session should be running after resume from sleeping/waiting"
+    assert session.waiting?, "the resume queues the turn for a worker"
+
+    session.start!
+    assert session.running?, "Session should be running once a worker starts the turn"
   end
 
   # === Tests for warn_if_pr_goal_captured_no_url (pause/fail/archive callback) ===
@@ -1728,9 +1745,10 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.pause!
     assert_empty missing_pr_url_warnings(session), "the interrupt pause must say nothing"
 
-    # 13:11:24Z — the auto-continue. `resume` clears the marker.
+    # 13:11:24Z — the auto-continue. `resume` clears the marker and queues the turn.
     session.resume!
     assert_not session.recovery_pause?, "resume clears the recovery marker"
+    session.start!
 
     # Two days later: the turn ends, the session hands back to its human, and
     # still nothing is recorded.
@@ -1739,7 +1757,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     warnings = missing_pr_url_warnings(session)
     assert_equal 1, warnings.size,
       "the pause the session actually came to rest in is the one that must warn"
-    resumed = session.logs.where(content: "[State Machine] Session resumed").last
+    resumed = session.logs.where("content LIKE ?", "%Session resumed%").last
     assert_operator warnings.first.id, :>, resumed.id,
       "and it must be written at that pause, not carried over from the interrupt"
   end
@@ -1755,10 +1773,12 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       session.update!(metadata: session.metadata.to_h.merge("paused_by" => "recovery"))
       session.pause!
       session.resume!
+      session.start!
     end
 
     session.pause!
     session.resume!
+    session.start!
     session.pause!
 
     assert_equal 1, missing_pr_url_warnings(session).size,
@@ -1946,7 +1966,10 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert session.waiting?, "Session should be waiting after deferred sleep"
 
     session.resume!
-    assert session.running?, "Session should be running after resume from deferred sleep"
+    assert session.waiting?, "the resume queues the turn for a worker"
+
+    session.start!
+    assert session.running?, "Session should be running once a worker starts the turn"
   end
 
   # === Tests for enqueue_session_inference_if_needed (pause callback) ===
@@ -2173,6 +2196,8 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_not session.reload.metadata["pending_sleep"],
       "a follow-up wants an answer, so the turn must not be re-slept out from under it"
 
+    # The resume queues the turn; a worker picks it up and the turn then ends.
+    session.start!
     session.pause!
 
     assert session.reload.needs_input?
@@ -2208,6 +2233,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.reload.resume_for_follow_up!
     assert_not session.follow_up_resume, "the flag is cleared in an ensure"
 
+    session.start!
     session.pause!
     session.reload.resume!
 
@@ -2274,9 +2300,10 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
     session.reload
     session.resume_for_system_recovery!
-    assert session.running?
+    assert session.waiting?, "the resume queues the turn for a worker"
     assert_equal true, session.reload.metadata["pending_sleep"]
 
+    session.start!
     session.pause!
 
     assert session.reload.waiting?,
@@ -2337,6 +2364,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_not session.reload.metadata["pending_sleep"],
       "no scheduled backstop means no guaranteed wake, so the session must not be put back to sleep"
 
+    session.start!
     session.pause!
 
     assert session.reload.needs_input?
@@ -2352,6 +2380,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.resume_for_system_recovery!
     assert_not session.system_recovery_resume
 
+    session.start!
     session.pause!
     conditions = wake_set_for(session, watched: [ child ])
 
@@ -2382,6 +2411,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     # The backstop fires mid-turn and takes its siblings with it.
     conditions.each { |condition| condition.trigger.destroy! }
 
+    session.start!
     session.pause!
 
     session.reload

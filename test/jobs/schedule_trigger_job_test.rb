@@ -497,7 +497,8 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     # The requester's next pause must leave the parked evidence alone, hold mark
     # or not — and re-arming it sheds the mark, so the re-arm is not destroyed by
     # the pause after that.
-    requester.reload.pause!
+    requester.reload.start!
+    requester.pause!
     assert Trigger.exists?(trigger.id), "a parked wake is the user's to clear"
 
     trigger.toggle!
@@ -587,7 +588,9 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     assert_not_nil sibling_needs_input.reload.wake_held_at, "ao_event sibling held"
     assert_not_nil sibling_deadline.reload.wake_held_at, "schedule sibling held"
 
-    requester.reload.pause!
+    # The wake queued the turn; a worker takes it, and the turn then ends.
+    requester.reload.start!
+    requester.pause!
 
     assert_not Trigger.exists?(firing_trigger.id), "firing one-time trigger retired with the turn"
     assert_not Trigger.exists?(sibling_needs_input.id), "ao_event sibling retired"

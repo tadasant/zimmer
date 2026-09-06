@@ -771,11 +771,18 @@ class AgentSessionJob < ApplicationJob
         )
 
         # Verify session is in the correct state for follow-up.
-        # A follow-up job should proceed if the session is running OR needs_input.
-        # The session may have reverted to needs_input between the controller's resume!
-        # call and job execution (e.g., recovery/cleanup detected no active process).
-        # In that case, re-transition to running since we're about to spawn a new process.
-        unless session.running?
+        #
+        # `waiting` is the ORDINARY state here since #1036: whoever handed this
+        # turn over fired `resume`, which lands in `waiting`, and this job is what
+        # takes it out of the queue. The transition into `running` happens below,
+        # once the process has been spawned, exactly as it does for a first start.
+        #
+        # `running` is also fine and is the resume-monitoring / re-entry shape.
+        # Anything else means the session moved under us — recovery or cleanup
+        # detected no active process and paused it to `needs_input`, or it failed
+        # — so hand the turn back over before spawning, or stand down if even that
+        # is refused.
+        unless session.running? || session.waiting?
           if session.may_resume?
             log_buffer.add(
               "Follow-up job re-resuming session (status was #{session.status})",
@@ -1786,21 +1793,32 @@ class AgentSessionJob < ApplicationJob
         )
 
         # Now that process_pid is stored, transition to running (unless clone-only).
-        # Use start! for the normal waiting->running path. If the session was
-        # externally moved to needs_input (e.g., CleanupOrphanedSessionsJob ran
-        # between session creation and process spawn), fall back to resume! to
-        # recover. Without this, the monitoring loop would see needs_input and
-        # immediately exit, leaving the just-spawned process orphaned.
+        #
+        # THIS IS THE ONLY PLACE `running` IS STAMPED for a turn this job runs, and
+        # it is stamped here — on the worker thread, with a process spawned — so
+        # that `running` means what the /inference page has always meant by it:
+        # one of the `agents` lane's worker threads is executing this turn (#1036).
+        # Every route that merely HANDS a turn over leaves the session `waiting`.
+        #
+        # `start!` is the normal waiting->running path for every turn now, a first
+        # start and a follow-up alike. If the session was externally moved to
+        # `needs_input` or `failed` between the hand-over and this line (a recovery
+        # sweep that found no live process, say), hand the turn back over first —
+        # `resume` lands in `waiting`, from which `start!` can run. Without this
+        # the monitoring loop would see `needs_input` and immediately exit, leaving
+        # the just-spawned process orphaned.
         unless clone_only
-          if session.may_start?
-            session.start!
-          elsif session.may_resume?
-            log_buffer.add(
-              "Session was externally moved to #{session.status} before process spawn — re-transitioning to running",
-              level: "warning"
-            )
-            resume_for_recovery_prompt(session, follow_up_prompt)
+          unless session.may_start?
+            if session.may_resume?
+              log_buffer.add(
+                "Session was externally moved to #{session.status} before process spawn — re-transitioning to running",
+                level: "warning"
+              )
+              resume_for_recovery_prompt(session, follow_up_prompt)
+            end
           end
+
+          session.start! if session.may_start?
         end
 
         log_buffer.add(
@@ -3708,8 +3726,17 @@ class AgentSessionJob < ApplicationJob
     # during SIGTERM shutdown, and a deploy is exactly when somebody is most
     # likely to be emptying the trash. The authoritative read is the locked one in
     # claim_system_recovery_turn! below.
-    unless session.needs_input?
-      Rails.logger.warn "[AgentSessionJob] Cannot auto-continue session #{session.id}: not in needs_input (#{session.status})"
+    # `waiting` as well as `needs_input`. A turn interrupted BEFORE its process
+    # spawned leaves the session in `waiting` — `pause` transitions from `running`
+    # only, so the recovery pause above is a no-op for it — and since #1036 that is
+    # the ordinary shape of every interrupted follow-up, not just a first start.
+    # Refusing it here would hand the whole population to the five-minute recovery
+    # cron, which is exactly the dead air this immediate continue exists to close.
+    # `claim_system_recovery_turn!` below is the authoritative check either way,
+    # and it refuses a `waiting` session that already has a turn queued.
+    unless session.needs_input? || session.waiting?
+      Rails.logger.warn "[AgentSessionJob] Cannot auto-continue session #{session.id}: " \
+                        "not at rest in needs_input or waiting (#{session.status})"
       return
     end
 

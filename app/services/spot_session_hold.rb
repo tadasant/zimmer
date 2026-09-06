@@ -71,19 +71,25 @@
 #     Holding it would orphan that process rather than save a token.
 #
 # One hold reason does not apply to a session that is ALREADY `running` when the
-# gate runs: `fleet_at_cap`. Such a session has been flipped to `running` by
-# whoever delivered the turn, so it is counted in
+# gate runs: `fleet_at_cap`. Such a session is counted in
 # `Session.running_claude_code_count` itself — refusing it for a full fleet would
-# refuse it on the strength of its own slot, and would refuse every session
-# SpotSessionPause resumes, which are flipped to `running` before their jobs run.
-# The utilization reading has no such problem: the pool's windows are measured
-# independently of this session.
+# refuse it on the strength of its own slot. The utilization reading has no such
+# problem: the pool's windows are measured independently of this session.
 #
 # That exemption is keyed on the session's STATUS, never on "this turn carries a
-# prompt". A resume the gate has already deferred is sitting in `waiting` and
-# holds no slot, so its re-check is an admission like any other — keying on the
-# prompt would have exempted the entire population this class creates, and the
-# cap would go unenforced for exactly the sessions it was holding.
+# prompt" — keying on the prompt would have exempted the entire population this
+# class creates, and the cap would go unenforced for exactly the sessions it was
+# holding.
+#
+# **Since #1036 the exemption is residual, and the fleet cap applies to every
+# ordinary turn.** `running` is now stamped by `AgentSessionJob#perform` after the
+# process spawns, which is downstream of this gate, so a resume arriving here
+# reads `waiting` exactly as a first start always did — and is not counted in the
+# occupancy either, because `RunningTurns` counts `running` rows alone. The two
+# facts move together, so the exemption still means what it says; it simply
+# stopped applying to resumes, which used to be flipped to `running` by their
+# deliverer and so slipped past the cap. A full fleet now defers them with the
+# same re-check ladder it gives a first start.
 #
 # == A deferral must not lose the turn, even when a second one arrives
 #
@@ -211,14 +217,14 @@ class SpotSessionHold
   UTILIZATION_REASON = "at_utilization_limit"
 
   # The hold reasons that apply to a turn taken by a session that ALREADY HOLDS A
-  # SLOT — one whose deliverer has flipped it to `running`. See the class
-  # comment: it is counted in `Session.running_claude_code_count` itself, so only
-  # the utilization reading can honestly refuse it.
+  # SLOT — one that reads `running` when the gate runs. See the class comment: it
+  # is counted in `Session.running_claude_code_count` itself, so only the
+  # utilization reading can honestly refuse it.
   #
-  # Not "a resume". A resume the gate has already deferred once sits in `waiting`
-  # and holds nothing, so its re-check is an admission like any other and the
-  # fleet cap applies to it in full. Keying this on the prompt rather than on the
-  # session's status would exempt exactly the population this class creates.
+  # Residual since #1036: an ordinary turn reaches this gate `waiting`, because
+  # `running` is stamped after the process spawns and this gate runs before that.
+  # Keying this on the prompt rather than on the session's status would exempt
+  # exactly the population this class creates.
   RUNNING_HOLD_REASONS = [ UTILIZATION_REASON ].freeze
 
   # How far past its own re-check time a hold has to be before #sweep! treats the
@@ -753,8 +759,9 @@ class SpotSessionHold
     end
 
     # Whether this decision refuses this turn. Every hold reason refuses a session
-    # that holds no slot; a session already counted in the running fleet is
-    # refused only by the utilization reading.
+    # that holds no slot; a session already counted in the running fleet — one
+    # reading `running` here, which since #1036 is a residual case — is refused
+    # only by the utilization reading.
     def applies_to?(decision, session)
       return true unless session.running?
 
@@ -999,19 +1006,19 @@ class SpotSessionHold
     end
 
     # Put a session whose turn was refused into the dormant `waiting` state a held
-    # session sits in. A no-op for the ordinary first start, which is already
-    # there.
+    # session sits in. Since #1036 that is where every ordinary turn already is
+    # when it reaches the gate — a hand-over lands in `waiting` and only
+    # `AgentSessionJob#perform` stamps `running` — so the `running` branch below
+    # is a backstop rather than the common path.
     #
-    # It is not always there. A resume's deliverer has already flipped the session
-    # to `running`, and so has every "restart from scratch" path — the Restart
-    # button, `action_session`, `POST /api/v1/sessions/:id/restart` — all three of
-    # which run `Sessions::RestartFromScratch`, which calls `resume!` and only then
-    # enqueues the job. Leaving it in `running` is a lie with consequences: it
-    # counts against the fleet cap, the session card claims work is happening, and
-    # `CleanupOrphanedSessionsJob` reaps a session whose recorded job is gone on
-    # its next five-minute pass, long before the ten-minute re-check the hold
-    # scheduled (issue #589). `waiting` makes a deferred turn indistinguishable
-    # from a hold at the starting line, which is exactly what it is.
+    # It is still needed. Anything that reaches the gate already `running` (a
+    # re-entrant job, a turn re-checked after the process came up) must not be
+    # left there: `running` counts against the fleet cap, the session card claims
+    # work is happening, and `CleanupOrphanedSessionsJob` reaps a session whose
+    # recorded job is gone on its next five-minute pass, long before the
+    # ten-minute re-check the hold scheduled (issue #589). `waiting` makes a
+    # deferred turn indistinguishable from a hold at the starting line, which is
+    # exactly what it is.
     #
     # Deliberately NOT `pause!`. That event means "a turn ended and the session
     # wants a human": it fires the `session_needs_input` event triggers — waking

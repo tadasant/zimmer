@@ -63,7 +63,8 @@ class EnqueuedMessageProcessorService
   # 1. Atomically claim the next message using FOR UPDATE SKIP LOCKED
   # 2. Update the session's goal if the message carries a non-blank one
   # 3. Reset SIGTERM retry state for fresh execution
-  # 4. Resume the session back to running (only if it was needs_input)
+  # 4. Resume the session — into `waiting`, where a session whose turn is queued
+  #    for a worker belongs (the handoff branch writes that state directly)
   # 5. Delete the message and enqueue a new job with the message content
   #
   # @return [Boolean] true if a message was processed, false otherwise
@@ -82,16 +83,18 @@ class EnqueuedMessageProcessorService
         session.lock!
 
         # Process if the session is needs_input (post-pause path), running
-        # (pre-pause handoff path — see method comment), or waiting (interrupt
-        # path on a not-yet-started session — Sessions::InterruptService). All
-        # three are accepted because session.may_resume? returns true for
-        # each (resume transitions waiting/needs_input/failed → running).
+        # (pre-pause handoff path — see method comment), or waiting (the interrupt
+        # path on a not-yet-started session — Sessions::InterruptService — and the
+        # ordinary rest state of a session whose turn is queued). `may_resume?` is
+        # true for `needs_input` and `waiting`; the `running` case is the handoff
+        # branch below, which returns the session to `waiting` itself.
         return false unless session.needs_input? || session.running? || session.waiting?
 
         # Track whether we're entering via the handoff path (running already).
         # If so, no pause! → resume! cycle happens, so the cleanup_running_job
         # (after pause!) and reset_elapsed_time_counter (after resume!) callbacks
-        # never fire. We have to apply their effects manually below to avoid:
+        # never fire. We have to apply their effects — and the return to
+        # `waiting` — manually below to avoid:
         # - Orphaning the new AgentSessionJob: without clearing running_job_id,
         #   the new job sees the old (still-finishing) job as the lock holder
         #   and skips itself via the concurrency guard in AgentSessionJob#perform.
@@ -158,10 +161,24 @@ class EnqueuedMessageProcessorService
         session.resume_for_follow_up!
 
         if handoff_from_running
-          # Handoff path: clear the outgoing job's lock and refresh the
-          # elapsed-time counter for the new turn. Use update_columns to avoid
-          # firing model callbacks (which would re-broadcast status, etc.).
-          session.update_columns(
+          # Handoff path: clear the outgoing job's lock, refresh the elapsed-time
+          # counter for the new turn, and put the session back in `waiting`.
+          #
+          # `waiting` because that is what is true from here until a worker picks
+          # the job up below: the outgoing turn's process has exited and the next
+          # turn is a row in the `agents` queue. Leaving it `running` across this
+          # window is the handoff half of #1036 — and it is not a short window on a
+          # busy deployment, because the new job joins the BACK of a queue that may
+          # already be deeper than the pool.
+          #
+          # `update!` rather than `update_columns` for exactly that reason: the
+          # status really changed, so the card has to re-broadcast. It is a direct
+          # write rather than an AASM event because `resume` is refused from
+          # `running` on purpose (see Session#claim_system_recovery_turn!), and
+          # SpotSessionHold#return_to_queue! already returns a running session to
+          # the queue the same way.
+          session.update!(
+            status: :waiting,
             running_job_id: nil,
             last_timeline_entry_at: Time.current
           )

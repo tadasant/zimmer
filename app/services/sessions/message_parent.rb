@@ -271,7 +271,11 @@ module Sessions
         refusal ||= parent_failed if parent.failed?
 
         if refusal.nil?
-          if parent.running?
+          # `Sessions::LiveTurn.underway?`, not `parent.running?`: since #1036 a
+          # turn that has been handed over but is still queued for a worker reads
+          # `waiting`, and delivering into that would start a second turn on one
+          # clone. See Sessions::LiveTurn#underway?.
+          if Sessions::LiveTurn.underway?(parent)
             branch = :queued
             queued = enqueue
             delivered = :queued
@@ -326,7 +330,7 @@ module Sessions
         origin: "caller"
       )
       log_both(
-        "queued at position #{enqueued.position} (parent session ##{parent.id} is running)"
+        "queued at position #{enqueued.position} (parent session ##{parent.id} already has a turn underway)"
       )
       enqueued
     end

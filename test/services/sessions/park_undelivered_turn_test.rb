@@ -165,6 +165,8 @@ class Sessions::ParkUndeliveredTurnTest < ActiveSupport::TestCase
     assert_nil @session.metadata["exception_message"]
     assert_nil @session.metadata["undelivered_prompt"]
 
+    # The resume queues the turn; a worker takes it and the turn then ends.
+    @session.start!
     @session.pause!
     refute @session.reload.parked_undelivered_turn?,
            "an ordinary pause after a recovered park must not still render the park's failure"

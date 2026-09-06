@@ -188,7 +188,8 @@ class Github::MergeConflictEvaluatorTest < ActiveSupport::TestCase
     Github::MergeConflictEvaluator.new.send(:enqueue_merge_conflict_message, @session_with_pr, PR_URL)
 
     @session_with_pr.reload
-    assert_equal "running", @session_with_pr.status
+    # Delivered: the session left `needs_input` and its turn queued for a worker.
+    assert_equal "waiting", @session_with_pr.status
     assert @session_with_pr.logs.where("content LIKE ?", "%sent immediately%").exists?
   end
 

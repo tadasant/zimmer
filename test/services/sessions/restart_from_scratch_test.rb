@@ -32,7 +32,7 @@ class Sessions::RestartFromScratchTest < ActiveSupport::TestCase
     assert result.ok?
     assert_nil result.error
     assert_nil result.error_code
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
     assert_nil session.session_id
   end
 
@@ -46,7 +46,7 @@ class Sessions::RestartFromScratchTest < ActiveSupport::TestCase
                "(git clone, MCP config, process spawn)"
     ).exists?
     assert session.logs.where(
-      content: "Session resumed - status changed to running, full setup will be re-attempted"
+      content: "Session resumed - its turn is queued for a worker, full setup will be re-attempted"
     ).exists?
   end
 
@@ -113,7 +113,7 @@ class Sessions::RestartFromScratchTest < ActiveSupport::TestCase
       assert result.ok?
     end
 
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
     assert_nil session.running_job_id
   end
 
@@ -149,7 +149,7 @@ class Sessions::RestartFromScratchTest < ActiveSupport::TestCase
       end
     end
 
-    assert_equal "running", session.reload.status
+    assert_equal "waiting", session.reload.status
   end
 
   # --- refusals and failures --------------------------------------------------
@@ -222,10 +222,10 @@ class Sessions::RestartFromScratchTest < ActiveSupport::TestCase
 
     assert_equal 2, attempts
     session.reload
-    assert_equal "running", session.status
+    assert_equal "waiting", session.status
     assert_nil session.metadata["pending_sleep"],
       "the second attempt skipped resume!, so clear_pending_sleep never ran"
-    assert session.logs.where(content: "[State Machine] Session resumed").exists?,
+    assert session.logs.where("content LIKE ?", "%[State Machine] Session resumed%").exists?,
       "the resume event did not fire on the successful attempt"
   end
 

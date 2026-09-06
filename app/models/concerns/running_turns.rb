@@ -1,20 +1,31 @@
 # frozen_string_literal: true
 
-# What `sessions.status = running` actually holds, and how much of it is work
-# the fleet can be doing.
+# How much of the fleet's turn capacity is in use, and what is stacked up behind
+# it.
 #
-# == Why one row in `running` is not one turn being executed
+# == `running` is the answer now, not the question
 #
-# `running` is stamped when a turn is HANDED to a session, not when a worker
-# starts executing it. Every delivery path does the same two things in order —
-# flip the session to `running`, then enqueue an AgentSessionJob: a fired wake
-# trigger, a web or API follow-up, a poller's comment, the enqueued-message
-# handoff at the end of a turn (AgentSessionJob#handed_off_to_enqueued_message?),
-# and every recovery sweep. The `agents` GoodJob queue sits between the two, and
-# it is only `ConnectionBudget.good_job_queue_threads[:agents]` deep. On a busy
-# deployment that gap runs to minutes, so `running` routinely holds a
-# substantial population of turns that are queued for a worker rather than being
-# run by one.
+# `running` used to be stamped when a turn was HANDED to a session rather than
+# when a worker started executing it, so the column held both populations at
+# once and this concern existed to tell them apart. Since #1036 the hand-over
+# lands in `waiting` and `AgentSessionJob#perform` is the only thing that stamps
+# `running`, so a `running` row IS a turn on one of the
+# `ConnectionBudget.good_job_queue_threads[:agents]` worker threads.
+#
+# The split still has to be computed rather than counted, for two reasons that
+# outlive the fix. The queue is now inside `waiting`, which also holds every
+# dormant session in the deployment, so "how many turns are stacked up behind the
+# pool" cannot be a `COUNT(*)` either — it is the `waiting` rows with a READY job
+# in the `agents` lane, which is what PendingAgentTurns::Reading#queued means.
+# And a `running` row can still briefly hold no worker: a job whose worker was
+# SIGKILLed leaves the row `running` until a recovery sweep reaches it.
+#
+# The counted population is therefore unchanged by #1036, deliberately. It was
+# `running` rows whose job had a `performed_at`, and it still is — a `waiting`
+# row whose worker is making its clone is reported as awaiting a worker, exactly
+# as a first start was before the change. Every ceiling's denominator kept its
+# meaning across the refactor; what moved is which STATUS the uncounted turns
+# wear.
 #
 # == The ceilings count worker occupancy, and nothing else
 #
@@ -30,7 +41,9 @@
 # discarded — see FleetTopUpStatus, SpotGateService#awaiting_clause and the
 # /inference cards. It is the same number that made "15 sessions running" read as
 # a broken counter in
-# [#957](https://github.com/tadasant/zimmer/issues/957).
+# [#957](https://github.com/tadasant/zimmer/issues/957), and that the session
+# list now shows as `waiting` rather than folding into `running`
+# ([#1036](https://github.com/tadasant/zimmer/issues/1036)).
 #
 # **This bounds every ceiling at .worker_slots**, and deliberately so: the
 # counted population is turns a worker is executing, and the pool runs
@@ -49,14 +62,20 @@
 # than a worker. Both read the split rather than the occupancy, and say why where
 # they do it.
 #
-# == The population that is not even in flight
+# == The two populations that are not in flight at all
 #
-# A row that is asleep on its own future wake AND has **no AgentSessionJob at
-# all** — none running, none queued. Nothing will happen to that session until
-# its wake fires, so it is neither on a worker nor waiting for one, and holding a
-# slot in two ceilings against it is what pinned both of the deployment's
-# throughput controls in #957.
+# **A dormant `waiting` row.** Most of `waiting` is this: a spot start-hold, a
+# ceiling pause, an auth-outage park, a session asleep on its own wake, a
+# clone-only session that has never been given a prompt. None of them has a
+# READY job in the `agents` lane, which is exactly how they are excluded — the
+# queue bucket is built from PendingAgentTurns, not from the status column. A
+# spot-held session's re-check job is `scheduled` rather than `queued` for the
+# same reason: its owner is the spot ladder, not the worker pool.
 #
+# **A `running` row asleep on its own future wake, with no AgentSessionJob at
+# all.** Nothing will happen to that session until its wake fires, so it is
+# neither on a worker nor waiting for one, and holding a slot in two ceilings
+# against it is what pinned both of the deployment's throughput controls in #957.
 # It is dropped from `awaiting_a_worker` rather than left in it, so the queue
 # figure beside the ceiling stays a count of turns that are genuinely coming.
 # Both conditions are load-bearing, and each rules out a way of being wrong:
@@ -64,13 +83,8 @@
 #   * **Asleep**, read exactly the way the start paths read it
 #     (.ids_paused_until_scheduled_time). Without it this would be dropping
 #     ordinary sessions caught between two jobs.
-#   * **Nothing queued for it.** This is the one that is easy to get wrong, and
-#     it is NOT interchangeable with "a start path would refuse it".
-#     AgentSessionJob's pause guard is conjoined with `session.waiting?` and
-#     `follow_up_prompt.blank?`, so it does not fire for a `running` row at all:
-#     a queued job would run the session and take a worker while this concern
-#     had stopped counting it. PendingAgentTurns is the existing answer to "is a
-#     turn already coming for these sessions", and it reads the job rows rather
+#   * **Nothing queued for it.** PendingAgentTurns is the existing answer to "is
+#     a turn already coming for these sessions", and it reads the job rows rather
 #     than `sessions.running_job_id` for the reason documented there —
 #     `running_job_id` is written from inside `perform`, so a session whose job
 #     is still queued has a blank one.
@@ -114,20 +128,22 @@ module RunningTurns
   # both decide on `on_a_worker` and say what the other two hold.
   #
   # `awaiting_a_worker` is deliberately the wider word. It is every row with a
-  # turn coming that no worker has started: turns queued in the `agents` lane,
-  # and rows between jobs — the handoff window, a first spawn not yet enqueued,
-  # and the orphans CleanupOrphanedSessionsJob repairs. Calling all of that
-  # "queued" would put a new false claim in place of the one #957 was about.
+  # turn coming that no agent process is executing yet: turns queued in the
+  # `agents` lane (which read `waiting`), turns a worker is holding while it makes
+  # the clone and spawns the CLI, and `running` rows between jobs — the handoff
+  # window, a first spawn not yet enqueued, and the orphans
+  # CleanupOrphanedSessionsJob repairs. Calling all of that "queued" would put a
+  # new false claim in place of the one #957 was about.
   #
   # There is deliberately no `total`. Both ceilings compare against
   # `on_a_worker` alone, and a method that added the queue back would be read as
   # the number they act on — see "The ceilings count worker occupancy" above. The
   # other two buckets exist to be REPORTED beside it.
   Reading = Data.define(:on_a_worker, :awaiting_a_worker, :asleep) do
-    # Every `running` row, queue and sleepers included: the number a bare
-    # `COUNT(*) WHERE status = 'running'` gives, which is what the session list
-    # and every other status query show. Kept as the reference point the three
-    # buckets have to add up to.
+    # Every row this reading looked at that has a turn or is between jobs. It is
+    # no longer `COUNT(*) WHERE status = 'running'` — the queue moved into
+    # `waiting` in #1036 — so it is kept as the reference point the three buckets
+    # add up to, not as a claim about any one status.
     def rows = on_a_worker + awaiting_a_worker + asleep
   end
 
@@ -155,44 +171,69 @@ module RunningTurns
   def self.ceiling_out_of_reach?(configured) = configured > worker_slots
 
   class_methods do
-    # The `running` rows in this scope, split by what the fleet is actually doing
+    # The in-flight rows in this scope, split by what the fleet is actually doing
     # with them. Only the first bucket is work in progress.
     #
-    # Two queries beyond the row read, and both callers memoise the result
-    # (SpotGateService#turns, FleetIdleMonitor#check!) because this sits on the
-    # spot gate's admission path.
+    # Four queries, and both callers memoise the result (SpotGateService#turns,
+    # FleetIdleMonitor#check!) because this sits on the spot gate's admission
+    # path.
     #
     # @return [RunningTurns::Reading]
     def running_turns
       # Table-qualified: .not_in_frozen_category left-joins `categories`, which
       # also has an `id`, and a bare `pluck(:id)` is ambiguous under it.
-      ids = where(status: :running).pluck("sessions.id")
+      #
+      # Both statuses, because the turn a worker is executing and the turn queued
+      # behind it now live in different ones (#1036). `waiting` also holds every
+      # dormant session in the deployment, which is why only its rows with a READY
+      # `agents` job survive the split below.
+      ids = where(status: [ :running, :waiting ]).pluck("sessions.id")
       return EMPTY if ids.empty?
 
-      on_a_worker, queued = agent_turns_for(ids)
-      between_jobs = ids.to_set - on_a_worker - queued
+      running_ids = where(status: :running).pluck("sessions.id").to_set
+      turns = agent_turns_for(ids)
+
+      # BOTH conditions, and the conjunction is the definition. A job with
+      # `performed_at` set is on a worker thread; a session that also says
+      # `running` has had its agent process spawned by that thread. The rows
+      # where the two disagree are the pre-spawn window — a worker holding the
+      # job while it makes the clone and starts the CLI — and no agent is
+      # executing there yet, which is why they are reported as still awaiting a
+      # worker rather than occupying one. That is also exactly the population the
+      # `running`-only count excluded before #1036, so the ceilings' denominator
+      # is unchanged.
+      on_a_worker = turns.on_a_worker & running_ids
+      being_set_up = turns.on_a_worker - running_ids
+
+      # A `running` row with no job of its own at all: the handoff window, a first
+      # spawn not yet enqueued, and the orphans CleanupOrphanedSessionsJob repairs.
+      # A `waiting` row in the same position is simply dormant and is dropped.
+      between_jobs = running_ids - turns.on_a_worker - turns.queued
       asleep = ids_asleep_until_a_future_wake(between_jobs.to_a)
 
       Reading.new(
         on_a_worker: on_a_worker.size,
-        awaiting_a_worker: queued.size + between_jobs.size - asleep.size,
+        awaiting_a_worker: turns.queued.size + being_set_up.size + between_jobs.size - asleep.size,
         asleep: asleep.size
       )
     end
 
     private
 
-    # Of these sessions, which have a turn a worker has started and which have
-    # one merely queued. See PendingAgentTurns.split.
+    # Of these sessions, which have a turn a worker has started, which have one
+    # ready in the queue, and which have one parked on a future `scheduled_at`.
+    # See PendingAgentTurns.split.
     #
     # Rescued toward "all of them are on a worker", which counts every row and
-    # leaves nothing for the asleep probe to drop.
+    # leaves nothing for the asleep probe to drop. That over-reports rather than
+    # under-reports, which is the direction a monitoring gap has to fail in — see
+    # "Fail safe means COUNT it" above.
     def agent_turns_for(ids)
       PendingAgentTurns.split(ids)
     rescue StandardError => e
       Rails.logger.warn("[RunningTurns] Could not read the agents queue (#{e.class}: #{e.message}) — " \
         "treating every running turn as executing")
-      [ ids.to_set, Set.new ]
+      PendingAgentTurns::Reading.new(on_a_worker: ids.to_set, queued: Set.new, scheduled: Set.new)
     end
 
     # Of these session ids, the ones paused until a wall-clock time that has not

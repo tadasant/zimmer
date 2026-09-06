@@ -164,4 +164,72 @@ class Sessions::LiveTurnTest < ActiveSupport::TestCase
   test "the batch refusal says force applies to the whole batch" do
     assert_includes Sessions::LiveTurn.refusal_message(session, batch: true), "every session in the batch"
   end
+
+  # === #underway?, the guard `running?` used to be (#1036) ===================
+  #
+  # Since a handed-over turn reads `waiting`, every caller that decided "queue
+  # this prompt rather than starting a second turn" on `session.running?` has to
+  # ask this instead. It is a pure widening: `running` still answers yes on its
+  # own, without a query.
+
+  test "a running session has a turn underway whatever its job rows say" do
+    assert Sessions::LiveTurn.underway?(session),
+      "a running row with no job is an orphan a sweep owns — a follow-up still queues behind it"
+  end
+
+  # THE #1036 CASE. This session reads `waiting` and a worker is coming for it
+  # within minutes; delivering into it would be a second turn on one clone.
+  test "a waiting session with a ready turn in the agents lane has one underway" do
+    target = session(status: :waiting)
+    enqueue_turn!(target)
+
+    assert Sessions::LiveTurn.underway?(target)
+  end
+
+  test "a waiting session whose turn a worker already has has one underway" do
+    target = session(status: :waiting)
+    on_a_worker!(target)
+
+    assert Sessions::LiveTurn.underway?(target)
+  end
+
+  # A spot-gate re-check or a clone backoff. The turn runs LATER, and a follow-up
+  # sent now is supposed to be DELIVERED rather than queued behind a job that may
+  # be an hour away — which is why #underway? is narrower than #coming? here.
+  test "a waiting session whose turn is parked on a future scheduled_at has none underway" do
+    target = session(status: :waiting)
+    enqueue_turn!(target, scheduled_at: 30.minutes.from_now)
+
+    assert_not Sessions::LiveTurn.underway?(target)
+    assert Sessions::LiveTurn.coming?(target), "it is still a turn that is coming"
+  end
+
+  test "a dormant waiting session has no turn underway" do
+    assert_not Sessions::LiveTurn.underway?(session(status: :waiting))
+  end
+
+  test "a session at rest has no turn underway" do
+    assert_not Sessions::LiveTurn.underway?(session(status: :needs_input))
+    assert_not Sessions::LiveTurn.underway?(session(status: :failed))
+  end
+
+  # A queued job nobody has claimed for half an hour is a corpse, not a turn on
+  # its way: `JobLiveness` calls it `:abandoned`, and a follow-up must not be
+  # parked behind it forever.
+  test "a turn abandoned in the queue is not underway" do
+    target = session(status: :waiting)
+    enqueue_turn!(target, scheduled_at: 2.hours.ago, created_at: 2.hours.ago)
+
+    assert_not Sessions::LiveTurn.underway?(target)
+  end
+
+  # Fails closed, like #in_flight?: the prompt goes into the durable queue and
+  # drains at the next turn boundary, which is recoverable. A second concurrent
+  # turn is not.
+  test "an unreadable agents queue reads as a turn underway" do
+    target = session(status: :waiting)
+    Sessions::LiveTurn.stubs(:unfinished_turns).raises(ActiveRecord::StatementInvalid, "boom")
+
+    assert Sessions::LiveTurn.underway?(target)
+  end
 end

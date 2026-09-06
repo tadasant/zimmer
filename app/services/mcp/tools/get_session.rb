@@ -167,9 +167,9 @@ module Mcp
 
       private
 
-      # Why this session is sitting in `waiting`, when it is dormant on one of the
-      # three park mechanisms — and, when it carries more than one of them, WHICH
-      # of them is the answer.
+      # Why this session is sitting in `waiting` — one of the three park mechanisms,
+      # or a turn already queued for a worker — and, when it carries more than one
+      # of them, WHICH of them is the answer.
       #
       # The three used to be concatenated back to back with no precedence between
       # them, and the auth-outage park was never rendered here at all. A session
@@ -216,8 +216,25 @@ module Mcp
         when SessionWaitingReason::SPOT_HOLD then spot_hold_lines(session)
         when SessionWaitingReason::SPOT_PAUSE then spot_pause_lines(session)
         when SessionWaitingReason::AUTH_OUTAGE_PARK then auth_outage_lines(session)
+        when SessionWaitingReason::TURN_QUEUED then turn_queued_lines(mechanism)
         else raise ArgumentError, "no lines for waiting mechanism #{mechanism.key}"
         end
+      end
+
+      # A session whose turn has been handed over and is waiting for one of the
+      # `agents` lane's worker threads.
+      #
+      # Says plainly that nothing is wrong and nobody has to act, because the
+      # caller that reads this most is a router deciding whether a child is stuck.
+      # `waiting` is the state a queued turn has read since #1036; before that it
+      # read `running`, and the dashboard's session count was the sum of both.
+      def turn_queued_lines(mechanism)
+        [
+          "- **Its turn is #{mechanism.label}.** Nothing is stuck and nobody needs to act: " \
+          "the turn was handed over#{" at #{mechanism.at.utc.iso8601}" if mechanism.at} and GoodJob's " \
+          "`agents` queue starts it as soon as a thread frees up. `running` means a worker is " \
+          "executing a turn, so a session queued behind the pool reads `waiting`."
+        ]
       end
 
       # A mechanism still on the row that is NOT the current reason. Named rather
