@@ -565,6 +565,51 @@ class Session < ApplicationRecord
     runtime_started
   ].freeze
 
+  # The four reset policies, in one place.
+  #
+  # Every restart, resume and recovery path drops stale per-turn metadata before it
+  # hands the session back to a job, and each wants a slightly different set. Those
+  # sets used to be assembled at the call site — sixteen of them — which is what
+  # made the differences invisible: anyone adding a key to
+  # STALE_RETRY_METADATA_KEYS had to find every site and decide, per site, whether
+  # their key belonged in that site's exception list, and nothing failed if they
+  # missed one. Naming the variants here puts all four policies on one screen.
+  #
+  # 1. STALE_RETRY_METADATA_KEYS (above) — the default, and what an ordinary
+  #    resume or restart clears.
+  #
+  # 2. RESTART_FROM_SCRATCH_KEYS — the default plus the setup artifacts and the
+  #    spot-hold backoff ladder. Sessions::RestartFromScratch is the only user.
+  #    The artifacts go because the setup attempt this restart replaces failed
+  #    partway through and may have left partial or inconsistent state; the ladder
+  #    goes because a person (or an agent) asking for this session by name is not
+  #    the scheduled re-check the gate would otherwise read it as, and leaving the
+  #    rungs behind would push a session held at 40 minutes to an hour. See
+  #    SpotSessionHold::METADATA_KEYS.
+  #
+  # 3. PRE_PROMPT_RESTART_KEYS — the default plus `runtime_started`, for restarting
+  #    a session that failed BEFORE its initial prompt was ever processed. Dropping
+  #    `runtime_started` makes the replacement spawn with `--session-id` (and
+  #    `--mcp-config`) instead of `--resume`; `--resume` against a conversation
+  #    that was never written raises "No conversation found". An ordinary restart
+  #    keeps the key, because those sessions have real history worth resuming.
+  #
+  # 4. RECOVERY_CONTINUE_KEYS — the default MINUS `paused_by`, and the one variant
+  #    where getting the set wrong loses a session rather than leaving a stale
+  #    counter behind. `paused_by` is the marker both recovery sweeps select on, so
+  #    it has to outlive the clear: SessionContinuation drops everything else
+  #    before handing the turn to EnqueuedMessageProcessorService and removes
+  #    `paused_by` only once delivery has actually succeeded, so a refused delivery
+  #    falls through to the automated recovery prompt with the session still
+  #    detectable. Clearing it up front strands the session outside every later
+  #    recovery pass. See SessionContinuation#continue_with_queued_user_message for
+  #    the full ordering argument.
+  RESTART_FROM_SCRATCH_KEYS = (
+    STALE_RETRY_METADATA_KEYS + SETUP_ARTIFACT_KEYS + SpotSessionHold::METADATA_KEYS
+  ).uniq.freeze
+  PRE_PROMPT_RESTART_KEYS = (STALE_RETRY_METADATA_KEYS + %w[runtime_started]).uniq.freeze
+  RECOVERY_CONTINUE_KEYS = (STALE_RETRY_METADATA_KEYS - %w[paused_by]).freeze
+
   # Marks an empty mcp_servers column as a deliberate "no servers" choice rather
   # than a column that landed empty by accident. See #record_explicit_mcp_servers.
   EXPLICIT_EMPTY_MCP_SERVERS_KEY = "mcp_servers_explicitly_empty"

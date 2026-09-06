@@ -535,6 +535,55 @@ The sender is told, too. `action_session follow_up` adds an **Its own wake-up** 
 and `POST /api/v1/sessions/:id/follow_up` returns a `pending_wake` object, so a router redirecting a
 sleeping session can see that the session still wakes itself and does not schedule a duplicate.
 
+#### Four reset policies, declared together
+
+Every path that hands a session back to a job first drops the per-turn metadata the last turn left
+behind — retry counters, failure reasons, dormancy markers. Four sets are in use, and they are
+declared next to each other on `Session` so the differences read in one place
+([#508](https://github.com/tadasant/zimmer/issues/508)).
+
+| Constant | What it is | Who uses it |
+| --- | --- | --- |
+| `STALE_RETRY_METADATA_KEYS` | the default | every ordinary resume and restart |
+| `RESTART_FROM_SCRATCH_KEYS` | the default **plus** `SETUP_ARTIFACT_KEYS` and the spot-hold ladder | `Sessions::RestartFromScratch` |
+| `PRE_PROMPT_RESTART_KEYS` | the default **plus** `runtime_started` | restarting a session that failed before its initial prompt |
+| `RECOVERY_CONTINUE_KEYS` | the default **minus** `paused_by` | `SessionContinuation`, when it delivers a queued message |
+
+`RESTART_FROM_SCRATCH_KEYS` takes the setup artifacts because the attempt it replaces failed partway
+through and may have left half a clone behind, and the spot-hold ladder because a person asking for
+this session by name is not the scheduled re-check the gate would otherwise read it as.
+`PRE_PROMPT_RESTART_KEYS` drops `runtime_started` so the replacement spawns with `--session-id`
+rather than `--resume`; `--resume` against a conversation that was never written raises *No
+conversation found*.
+
+`RECOVERY_CONTINUE_KEYS` is the one where a wrong key set loses a session rather than leaving a stale
+counter. `paused_by` is the marker both recovery sweeps select on, so `SessionContinuation` clears
+everything else before it hands the turn to `EnqueuedMessageProcessorService` and drops `paused_by`
+only once delivery has succeeded. A refused delivery then falls through to the automated recovery
+prompt with the session still detectable. Clearing it up front puts the session outside every later
+recovery pass.
+
+The API and auth error-scan positions — `api_error_last_checked_line` and
+`auth_error_last_checked_line` — are in none of the four. They record which transcript errors have
+already been handled, and clearing one makes the scanner re-read old entries, which is how a stale
+quota error misclassifies a new transient rate limit. `context_length_last_checked_line` is the
+deliberate exception: it *is* on the default set, so every reset clears it.
+
+#### Restart from scratch is one operation behind three doors
+
+The session page's **Restart** button, `POST /api/v1/sessions/:id/restart` and MCP
+`action_session`'s `restart` all reach `Sessions::RestartFromScratch` when there is no conversation
+to prompt into — setup never completed, or the session never ran. It owns the whole sequence: the
+`git_root` guard, `RESTART_FROM_SCRATCH_KEYS`, the transaction and its database retry, the two log
+rows, the `resume`, the enqueue of a fresh first turn carrying its attachments, and the claim of the
+new job's id. Each surface keeps only its own authorization and its own way of rendering the answer,
+so a dropped Postgres connection during a restart is retried identically through every door.
+
+Refusing a session **asleep on a wake-up it has not reached** stays at the surface, because the doors
+genuinely disagree: MCP and the REST API refuse (an agent working a ranked queue must not start a
+session that asked to be left alone), and the Restart button does not (a person clicking it on one
+session is taking that session over).
+
 #### `mcp_servers_status` is reset on resume, not deleted
 
 `clear_stale_mcp_failure_metadata` drops four keys outright — `should_fail_session`,

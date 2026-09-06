@@ -498,10 +498,11 @@ module Mcp
         restart_prompt = use_initial_prompt ? session.prompt : AutomatedPrompts::SYSTEM_RECOVERY
 
         ActiveRecord::Base.transaction do
-          stale_keys = Session::STALE_RETRY_METADATA_KEYS
-          # For pre-prompt failures, drop runtime_started so the restart uses
-          # --session-id (with --mcp-config) instead of --resume.
-          stale_keys += [ "runtime_started" ] if use_initial_prompt
+          # For pre-prompt failures, drop runtime_started too so the restart uses
+          # --session-id (with --mcp-config) instead of --resume. Both key sets
+          # are declared on Session with the two others — see
+          # Session::PRE_PROMPT_RESTART_KEYS.
+          stale_keys = use_initial_prompt ? Session::PRE_PROMPT_RESTART_KEYS : Session::STALE_RETRY_METADATA_KEYS
 
           session.remove_metadata!(stale_keys)
           session.update!(running_job_id: nil)
@@ -513,41 +514,22 @@ module Mcp
         summary("Session Restarted", session.reload, status_label: "New Status", message: "Session restarted")
       end
 
+      # Restart from scratch: throw the clone away and re-run the whole setup
+      # pipeline. The operation is Sessions::RestartFromScratch's, shared with the
+      # web UI's Restart button and `POST /api/v1/sessions/:id/restart` — including
+      # the `with_db_retry` this copy used to go without, so a dropped Postgres
+      # connection is retried here now instead of surfacing as a ToolError on the
+      # one action whose point is recovering an already-broken session.
+      #
+      # The pause refusal stays here rather than moving into the service: an agent
+      # working a ranked queue must not start a session that asked to be left
+      # alone, and the web UI's Restart button deliberately does the opposite. See
+      # #refuse_if_paused!.
       def restart_from_scratch(session)
-        raise ToolError, "No git_root configured for restart from scratch" if session.git_root.blank?
-
         refuse_if_paused!(session)
 
-        # The replacement turn IS the original first turn — same prompt, new
-        # clone, new session_id — so it carries the attachments that turn was
-        # created with (Sessions::FirstTurnAttachments, which never raises, so the
-        # fleet sweep's restart cannot start failing on an unreadable volume).
-        # Replaying all of them is deliberate: this path is reached only when
-        # there is no conversation to prompt into — a pre-prompt failure with setup
-        # incomplete, or a session that never ran — and a restart from scratch
-        # discards the conversation any earlier delivery went to.
-        images, files = Sessions::FirstTurnAttachments.for(session)
-        carrying = Sessions::FirstTurnAttachments.carrying_clause(images, files)
-
-        ActiveRecord::Base.transaction do
-          session.logs.create!(
-            content: "Restarting session from scratch: re-running full setup pipeline " \
-                     "(git clone, MCP config, process spawn)#{carrying}",
-            level: "info"
-          )
-          session.remove_metadata!(
-            Session::STALE_RETRY_METADATA_KEYS,
-            Session::SETUP_ARTIFACT_KEYS,
-            SpotSessionHold::METADATA_KEYS
-          )
-          session.update!(running_job_id: nil, session_id: nil)
-          session.resume! if session.may_resume?
-          AgentSessionJob.enqueue_new_session(session.id, images: images.presence, files: files.presence)
-          session.logs.create!(
-            content: "Session resumed - status changed to running, full setup will be re-attempted",
-            level: "info"
-          )
-        end
+        result = Sessions::RestartFromScratch.call(session, actor: :mcp)
+        raise ToolError, result.error unless result.ok?
 
         summary("Session Restarted", session.reload, status_label: "New Status", message: "Session restarted from scratch")
       end

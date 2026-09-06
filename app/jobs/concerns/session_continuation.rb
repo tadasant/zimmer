@@ -307,8 +307,10 @@ module SessionContinuation
   # @return [Boolean] true if a queued message was delivered, false otherwise
   #   (caller then falls back to the automated recovery prompt)
   def continue_with_queued_user_message(session)
-    stale_keys_except_paused_by = Session::STALE_RETRY_METADATA_KEYS - %w[paused_by]
-    session.remove_metadata!(stale_keys_except_paused_by)
+    # Session::RECOVERY_CONTINUE_KEYS is STALE_RETRY_METADATA_KEYS minus
+    # `paused_by`, declared there with the other three reset policies so the
+    # exception is visible next to the set it excepts from.
+    session.remove_metadata!(Session::RECOVERY_CONTINUE_KEYS)
     session.update!(running_job_id: nil)
 
     return false unless EnqueuedMessageProcessorService.new(session).process_next_message
