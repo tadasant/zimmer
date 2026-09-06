@@ -89,10 +89,10 @@
 
     <h2 class="text-sm font-semibold text-gray-900 mb-2">
       Finished recently
-      <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.recently_ended_rows.length) %> started in the last <%= Issues::Board::RECENTLY_ENDED_WINDOW.inspect %>, session now ended</span>
+      <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.recently_ended_rows.length) %> whose session ended in the last <%= pluralize(Issues::Board::RECENTLY_ENDED_WINDOW.in_hours.to_i, "hour") %></span>
     </h2>
     <%= render "started_rows", rows: @board.recently_ended_rows,
-        empty_message: "The backlog has produced nothing in the last #{Issues::Board::RECENTLY_ENDED_WINDOW.inspect}." %>
+        empty_message: "No session the backlog started has ended in the last #{pluralize(Issues::Board::RECENTLY_ENDED_WINDOW.in_hours.to_i, 'hour')}." %>
 
     <h2 class="text-sm font-semibold text-gray-900 mb-2">In GitHub, not on the queue</h2>
     <%= render "repo_summaries", summaries: @board.repo_summaries %>

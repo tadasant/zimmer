@@ -28,11 +28,14 @@ and a repo filter that emptied the list would read as "nothing is running".
 **Parked on a person** is every `started` item whose session has stopped in `needs_input`. Nothing
 is advancing these; a human is what they are waiting on, and the usual reason is a finished PR the
 [merge gate](/operate/gate-decisions/) has held. They are **not** in flight, and the distinction is
-not cosmetic — see [what "in flight" counts](/operate/work-backlog/#what-in-flight-counts).
+not cosmetic — see [what "in flight" counts](/operate/work-backlog/#what-in_flight-counts).
 
-**Finished recently** is every `started` item from the last 24 hours whose session has since ended,
-archived or failed. It exists because the alternative is a page that shows no trace of a night's
-work an hour after that work finished, and therefore reads as a fleet that did nothing.
+**Finished recently** is every `started` item whose session *ended* — archived or failed — inside
+the last 24 hours. It exists because the alternative is a page that shows no trace of a night's work
+an hour after that work finished, and therefore reads as a fleet that did nothing. The window is
+measured from the end and not from the start, because an item started on Monday that only finishes
+on Wednesday — its session parked on a PR in between — is exactly the one this list must not drop
+at the moment it lands.
 
 **In GitHub, not on the queue** is every open issue across the six repos with no live backlog row —
 held by the gate, unrated, or simply not picked up yet. This is the half that makes the page "what

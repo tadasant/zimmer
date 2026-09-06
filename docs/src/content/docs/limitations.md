@@ -5551,6 +5551,26 @@ to a structured value, or routing the hand-back through the queue instead, would
 was worth doing inside the fix that made the text survive at all, where the alternative was losing
 the whole message.
 
+## Nothing bounds the work backlog's pile of parked sessions
+
+[`in_flight`](/operate/work-backlog/#what-in_flight-counts) counts started items whose session is
+`running` or `waiting`, so a session parked in `needs_input` holding a finished PR no longer holds a
+WIP slot. That is right for the throttle — the alternative ratchets the ceiling shut and stops the
+queue draining — but it means nothing counts the parked pile down any more, and nothing else picks
+up the slack: `SpotGateService`'s fleet cap measures turns on or awaiting a worker, so parked
+sessions are outside it too, and `needs_input` is in `Session::NON_REAPABLE_STATUSES`, so each
+parked session holds its repository clone indefinitely.
+
+So if merging stalls for a fortnight, the nightly pull keeps pulling three a night against an
+`in_flight` that never rises, `parked` climbs, and the clones accumulate on disk with no reaper.
+
+There is no automatic bound, deliberately: the fix for "the fleet is finishing work nobody is
+merging" is to merge it, not to stop the fleet. What ships instead is visibility — `counts.parked`
+on every read surface, `status: "parked"` to list the items, a **Parked on a person** section on
+[the Issues view](/operate/issues-view/), and prose in `pull_work_backlog_items` telling a groomer
+that a growing `parked` pile means go and merge rather than pull more. A ceiling on `parked` that
+halts pulling by itself would be the next step if the prose turns out not to be enough.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

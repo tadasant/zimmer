@@ -62,9 +62,33 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
 
     assert_raises(Mcp::ToolError) { @read.call("status" => "done") }
     assert_raises(Mcp::ToolError) { @read.call("limit" => 0) }
+    assert_raises(Mcp::ToolError) { @read.call("status" => "in-flight") }
     assert_raises(Mcp::ToolError) { @read.call("offset" => "abc") }
     assert_raises(Mcp::ToolError) { @read.call("pinned" => "maybe") }
     assert_equal WorkBacklog::Filters::MAX_LIMIT, WorkBacklog::Filters.new("limit" => 10_000).limit
+  end
+
+  # `counts.parked` says HOW MANY have stopped on a person; these say WHICH. A
+  # caller told "parked is not part of your WIP arithmetic" has to be able to go
+  # and look at them, or the advice is unactionable.
+  test "read lists the started items by what became of their session" do
+    running = backlog_item(key: "zimmer#1")
+    running.mark_started!(session: sessions(:running), by: nil)
+    parked = backlog_item(key: "zimmer#2")
+    parked.mark_started!(session: sessions(:needs_input), by: nil)
+    done = backlog_item(key: "zimmer#3")
+    done.mark_started!(session: sessions(:archived), by: nil)
+    backlog_item(key: "zimmer#4") # still queued
+
+    assert_equal [ "zimmer#1" ], @read.call("status" => "in_flight")[:items].map { |i| i[:key] }
+    assert_equal [ "zimmer#2" ], @read.call("status" => "parked")[:items].map { |i| i[:key] }
+    assert_equal [ "zimmer#1", "zimmer#2" ], @read.call("status" => "claimed")[:items].map { |i| i[:key] }.sort
+    assert_equal 3, @read.call("status" => "started")[:total_matching],
+                 "the plain `started` status still means every started item, however it ended"
+
+    counts = @read.call("status" => "claimed")[:counts]
+    assert_equal 1, counts[:in_flight]
+    assert_equal 1, counts[:parked]
   end
 
   # --- append ---------------------------------------------------------------

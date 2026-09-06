@@ -18,6 +18,7 @@ class IssuesControllerTest < ActionDispatch::IntegrationTest
     parked.mark_started!(session: sessions(:needs_input), by: nil, now: 20.hours.ago)
     finished = backlog_item(key: "zimmer#501", title: "Ran and archived", issue_url: url(501))
     finished.mark_started!(session: sessions(:archived), by: nil, now: 6.hours.ago)
+    sessions(:archived).update!(archived_at: 1.hour.ago)
 
     with_github_snapshot(github_snapshot(issues: [ github_issue(number: 498), github_issue(number: 700, title: "Not on the queue") ])) do
       get issues_path

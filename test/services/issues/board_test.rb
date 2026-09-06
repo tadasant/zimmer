@@ -131,6 +131,7 @@ class Issues::BoardTest < ActiveSupport::TestCase
 
     finished = backlog_item(key: "zimmer#3")
     finished.mark_started!(session: sessions(:archived), by: nil, now: 6.hours.ago)
+    sessions(:archived).update!(archived_at: 1.hour.ago)
 
     result = board
 
@@ -141,14 +142,18 @@ class Issues::BoardTest < ActiveSupport::TestCase
     assert_equal %w[zimmer#3], result.recently_ended_rows.map(&:key)
   end
 
-  test "the finished-recently list stops at its window" do
+  # The window is measured from the END of the session, so the item that proves it
+  # is one started days before the window opened whose session archived inside it.
+  test "the finished-recently list stops at its window, measured from when each session ended" do
     recent = backlog_item(key: "zimmer#1")
-    recent.mark_started!(session: sessions(:archived), by: nil, now: 1.hour.ago)
+    recent.mark_started!(session: sessions(:archived), by: nil, now: 4.days.ago)
+    sessions(:archived).update!(archived_at: 1.hour.ago)
     stale = backlog_item(key: "zimmer#2")
-    stale.mark_started!(session: sessions(:failed), by: nil,
-                        now: Issues::Board::RECENTLY_ENDED_WINDOW.ago - 1.hour)
+    stale.mark_started!(session: sessions(:failed), by: nil, now: 1.hour.ago)
+    sessions(:failed).update_columns(updated_at: Issues::Board::RECENTLY_ENDED_WINDOW.ago - 1.hour)
 
-    assert_equal %w[zimmer#1], board.recently_ended_rows.map(&:key)
+    assert_equal %w[zimmer#1], board.recently_ended_rows.map(&:key),
+                 "a long-running item that just finished is in; one that ended before the window is out"
   end
 
   test "an issue whose session is parked on an open PR is claimed, not loose" do

@@ -149,6 +149,12 @@ class WorkBacklogItem < ApplicationRecord
   # is what they are waiting on. Rendered as its own section on the Issues page,
   # because "these are waiting on you" is the answer to "why is the queue not
   # draining", and the old single `in_flight` list hid it inside "what is running".
+  #
+  # One session shape sits on the wrong side of the line and is left there: a
+  # `needs_input` session with an enqueued message will be resumed by the drain
+  # with no human involved, so for the minute or two before that happens it reads
+  # as parked. Transient, self-correcting, and the alternative is a second query
+  # per row on a page that is already several counts deep.
   scope :parked, -> {
     started.where(started_session_id: Session.where(status: :needs_input).select(:id))
   }
@@ -162,13 +168,26 @@ class WorkBacklogItem < ApplicationRecord
     started.where(started_session_id: Session.where.not(status: [ :archived, :failed ]).select(:id))
   }
 
-  # Started items whose session has ended, archived or failed. History — but
-  # recent history is the other half of an honest picture of the fleet: without
-  # it, a page read an hour after seven items ran and finished shows no trace of
-  # them and reads as a fleet that did nothing.
+  # Started items whose session ENDED — archived or failed — since `cutoff`.
+  # History, but recent history is the other half of an honest picture of the
+  # fleet: without it, a page read an hour after seven items ran and finished
+  # shows no trace of them and reads as a fleet that did nothing.
+  #
+  # Dated from the END, never from `started_at`, and the difference is the whole
+  # point. This queue's own premise is that an item can be started on Monday and
+  # only finish on Wednesday, because its session parked on a PR in between — so
+  # a window measured from the start would drop exactly the long-running items at
+  # the moment they finished, which is the failure this list exists to fix.
+  #
+  # `archived_at` is stamped by the archive transition; `failed` has no timestamp
+  # of its own, so `updated_at` is the proxy, and COALESCE keeps one comparison
+  # over both. `updated_at` can be nudged by a later write to an ended session,
+  # which can only ever pull a stale row INTO the window — visible and harmless,
+  # where the reverse would be silent.
   scope :ended_since, ->(cutoff) {
-    started.where(started_session_id: Session.where(status: [ :archived, :failed ]).select(:id))
-           .where(started_at: cutoff..)
+    started.where(started_session_id: Session.where(status: [ :archived, :failed ])
+                                             .where("COALESCE(sessions.archived_at, sessions.updated_at) >= ?", cutoff)
+                                             .select(:id))
   }
 
   def queued? = status == QUEUED
