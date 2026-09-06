@@ -4,12 +4,13 @@ require "test_helper"
 require "tmpdir"
 
 # CI wiring, and the behavioural spec, for TwoPhaseColumnDropGuard — the guard
-# behind "Dropping a column takes two deploys"
+# behind "Dropping a column takes two deploys" and "Renames and table drops
+# expand before they contract"
 # (docs/src/content/docs/operate/deploying.md). The guard itself is Rails-free
 # and the `lint` job runs it directly; only the `ignored_columns` assertion
 # below needs a booted app.
 class TwoPhaseColumnDropTest < ActiveSupport::TestCase
-  test "no migration drops a column without evidence that phase 1 shipped" do
+  test "no migration drops or renames without evidence that the earlier phase shipped" do
     violations = TwoPhaseColumnDropGuard.violations
 
     assert_empty violations, TwoPhaseColumnDropGuard.report(violations)
@@ -19,10 +20,10 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
   # narrow: a name left behind after its migration was deleted or squashed, and
   # a seventh entry added instead of doing the two deploys.
   test "the grandfather list is honest and closed" do
-    still_dropping = TwoPhaseColumnDropGuard.scan_directory.map(&:basename)
+    still_hazardous = TwoPhaseColumnDropGuard.scan_directory.map(&:basename)
 
-    assert_empty TwoPhaseColumnDropGuard::GRANDFATHERED - still_dropping,
-      "GRANDFATHERED names migrations that no longer drop a column in the forward " \
+    assert_empty TwoPhaseColumnDropGuard::GRANDFATHERED - still_hazardous,
+      "GRANDFATHERED names migrations that no longer drop or rename in the forward " \
       "direction (or no longer exist). Remove them from the list."
 
     added_since = TwoPhaseColumnDropGuard::GRANDFATHERED
@@ -30,7 +31,7 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
 
     assert_empty added_since,
       "These postdate the guard, so they were never grandfathered — they are new drops " \
-      "that belong in two deploys with a `# two-phase-drop: phase 2 of #<ref>` annotation."
+      "or renames that belong in separate deploys, with the annotation their shape calls for."
   end
 
   # The other half of the convention: deploy 2 drops the column AND removes the
@@ -75,11 +76,28 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
         "20260815100000_drop_blocked_by_session_from_sessions.rb")
     )
 
-    assert result.drops_columns?
+    assert result.hazardous?
+    assert_equal [ :column_drop ], result.shapes
     assert_equal [ "remove_reference :sessions, :blocked_by_session, index: true" ],
-      result.removals.map(&:source)
-    assert_not result.annotation_names_a_ref?
+      result.hazards.map(&:source)
+    assert_not result.proven?(:two_phase_drop)
     assert_includes TwoPhaseColumnDropGuard.report([ result ]), "phase 2 of #474"
+  end
+
+  # The rename half of the same argument, and the reason zimmer#722 exists: this
+  # one shipped three column renames in a single deploy and the guard, as it
+  # stood, said nothing. It is grandfathered, so it is not a violation — but it
+  # is a hazard, and the widened guard has to see it.
+  test "the shipped single-phase rename of stop_condition is what the widened guard catches" do
+    result = TwoPhaseColumnDropGuard.scan_file(
+      File.join(TwoPhaseColumnDropGuard::MIGRATION_DIR,
+        "20260503180000_rename_stop_condition_to_goal.rb")
+    )
+
+    assert_equal [ :column_rename ], result.shapes
+    assert_equal 3, result.hazards.size
+    assert_not result.proven?(:expand_contract)
+    assert_includes TwoPhaseColumnDropGuard::GRANDFATHERED, result.basename
   end
 
   test "an annotated phase-2 migration passes" do
@@ -92,8 +110,8 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
       end
     RUBY
 
-    assert result.drops_columns?
-    assert result.annotation_names_a_ref?
+    assert result.hazardous?
+    assert result.proven?(:two_phase_drop)
   end
 
   test "an annotation that names nothing does not count as evidence" do
@@ -106,8 +124,8 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
       end
     RUBY
 
-    assert result.annotated?
-    assert_not result.annotation_names_a_ref?
+    assert result.annotated?(:two_phase_drop)
+    assert_not result.proven?(:two_phase_drop)
   end
 
   test "a real annotation still counts when a vaguer one comes first" do
@@ -121,7 +139,7 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
       end
     RUBY
 
-    assert result.annotation_names_a_ref?
+    assert result.proven?(:two_phase_drop)
   end
 
   test "an annotation inside a string is not a comment and is not evidence" do
@@ -136,8 +154,8 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
       end
     RUBY
 
-    assert result.drops_columns?
-    assert_not result.annotated?
+    assert result.hazardous?
+    assert_not result.annotated?(:two_phase_drop)
   end
 
   test "removals in the reverse direction are not drops" do
@@ -149,12 +167,15 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
 
         def down
           remove_column :sessions, :widget
+          rename_column :sessions, :gizmo, :gadget
+          drop_table :widgets
           execute "ALTER TABLE sessions DROP COLUMN gadget"
+          execute "ALTER TABLE gadgets RENAME TO widgets"
         end
       end
     RUBY
 
-    assert_not result.drops_columns?
+    assert_not result.hazardous?
   end
 
   test "removals inside reversible's down branch and inside revert are not drops" do
@@ -167,12 +188,12 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
             dir.down { remove_column :sessions, :gadget }
           end
 
-          revert { remove_column :sessions, :gizmo }
+          revert { rename_column :sessions, :gizmo, :doohickey }
         end
       end
     RUBY
 
-    assert_not result.drops_columns?
+    assert_not result.hazardous?
   end
 
   test "every spelling of a forward drop is caught" do
@@ -191,7 +212,8 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
       end
     RUBY
 
-    assert_equal 6, result.removals.size
+    assert_equal 6, result.hazards.size
+    assert_equal [ :column_drop ], result.shapes
   end
 
   # A heredoc is how anyone actually writes raw SQL in a migration, and Prism's
@@ -209,9 +231,9 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
       end
     RUBY
 
-    assert_equal 1, result.removals.size
-    assert_equal 5, result.removals.first.line
-    assert_equal "DROP COLUMN widget", result.removals.first.source
+    assert_equal 1, result.hazards.size
+    assert_equal 5, result.hazards.first.line
+    assert_equal "DROP COLUMN widget", result.hazards.first.source
   end
 
   test "violations names the unannotated drop and clears once it is annotated" do
@@ -236,6 +258,194 @@ class TwoPhaseColumnDropTest < ActiveSupport::TestCase
         TwoPhaseColumnDropGuard.violations(dir).map(&:basename)
 
       File.write(drop, "# two-phase-drop: phase 2 of #999\n#{File.read(drop)}")
+
+      assert_empty TwoPhaseColumnDropGuard.violations(dir)
+    end
+  end
+
+
+  test "every spelling of a forward rename or table change is caught, with its shape" do
+    result = scan_source(<<~RUBY)
+      class RenameEverything < ActiveRecord::Migration[8.0]
+        def change
+          rename_column :sessions, :widget, :gadget
+          rename_table :widgets, :gadgets
+          drop_table :gizmos
+          change_table :sessions, bulk: true do |t|
+            t.rename :doohickey, :thingamajig
+          end
+          execute "ALTER TABLE sessions RENAME COLUMN alpha TO beta"
+          execute "ALTER TABLE alphas RENAME TO betas"
+          execute "DROP TABLE gammas"
+        end
+      end
+    RUBY
+
+    assert_equal(
+      { column_rename: 3, table_rename: 2, table_drop: 2 },
+      result.hazards.group_by(&:shape).transform_values(&:size)
+    )
+  end
+
+  # `t.rename` follows `t.remove`: a receiver is what makes it a schema change.
+  # A bare `rename` or `remove` is something else entirely.
+  test "a receiverless rename or remove is not a schema change" do
+    result = scan_source(<<~RUBY)
+      class NotAMigrationReally < ActiveRecord::Migration[8.0]
+        def change
+          rename "a", "b"
+          remove :widget
+        end
+      end
+    RUBY
+
+    assert_not result.hazardous?
+  end
+
+  # An index carries no attribute and no query of the old container names it, so
+  # neither of these strands anything mid-swap.
+  test "index churn is not a schema change the old containers can see" do
+    result = scan_source(<<~RUBY)
+      class ShuffleIndexes < ActiveRecord::Migration[8.0]
+        def change
+          rename_index :sessions, :index_old, :index_new
+          remove_index :sessions, :widget
+        end
+      end
+    RUBY
+
+    assert_not result.hazardous?
+  end
+
+  test "a rename takes the expand-contract annotation, and the drop annotation does not cover it" do
+    wrong = scan_source(<<~RUBY)
+      # two-phase-drop: phase 2 of #474
+      class RenameWidget < ActiveRecord::Migration[8.0]
+        def change
+          rename_column :sessions, :widget, :gadget
+        end
+      end
+    RUBY
+
+    assert_equal 1, wrong.unproven_hazards.size
+
+    right = scan_source(<<~RUBY)
+      # expand-contract: contract of #474
+      class RenameWidget < ActiveRecord::Migration[8.0]
+        def change
+          rename_column :sessions, :widget, :gadget
+        end
+      end
+    RUBY
+
+    assert right.hazardous?
+    assert_empty right.unproven_hazards
+  end
+
+  test "an expand-contract annotation that names nothing does not count as evidence" do
+    result = scan_source(<<~RUBY)
+      # expand-contract: contract of the earlier PR
+      class DropWidgets < ActiveRecord::Migration[8.0]
+        def up
+          drop_table :widgets
+        end
+      end
+    RUBY
+
+    assert result.annotated?(:expand_contract)
+    assert_not result.proven?(:expand_contract)
+    assert_equal 1, result.unproven_hazards.size
+  end
+
+  # A migration that renames one column and drops another needs both recipes,
+  # and one annotation clears only its own half.
+  test "each shape is annotated on its own, and the report names the ones still unproven" do
+    result = scan_source(<<~RUBY)
+      # two-phase-drop: phase 2 of #474
+      class MixedBag < ActiveRecord::Migration[8.0]
+        def up
+          remove_column :sessions, :widget
+          rename_column :sessions, :gadget, :gizmo
+        end
+      end
+    RUBY
+
+    assert_equal [ :column_rename ], result.unproven_hazards.map(&:shape)
+
+    report = TwoPhaseColumnDropGuard.report([ result ])
+    assert_includes report, "renames a column in the forward direction"
+    assert_not_includes report, "drops a column in the forward direction"
+  end
+
+  test "each shape's failure message points at its own recipe" do
+    messages = {
+      "rename_column :sessions, :a, :b" =>
+        [ "renames a column in the forward direction", "expand-contract: contract of" ],
+      "rename_table :widgets, :gadgets" =>
+        [ "renames a table in the forward direction", "expand-contract: contract of" ],
+      "drop_table :widgets" =>
+        [ "drops a table in the forward direction", "expand-contract: contract of" ],
+      "remove_column :sessions, :widget" =>
+        [ "drops a column in the forward direction", "two-phase-drop: phase 2 of" ]
+    }
+
+    messages.each do |call, (headline, annotation)|
+      result = scan_source(<<~RUBY)
+        class Whatever < ActiveRecord::Migration[8.0]
+          def up
+            #{call}
+          end
+        end
+      RUBY
+
+      report = TwoPhaseColumnDropGuard.report([ result ])
+      assert_includes report, headline
+      assert_includes report, annotation
+    end
+  end
+
+  # The `down` of nearly every `create_table` migration in this repo ends in a
+  # `drop_table`, and none of them is a hazard. The guard would be unusable if
+  # they were.
+  test "the drop_table that closes a create_table's down is not a hazard" do
+    result = TwoPhaseColumnDropGuard.scan_file(
+      File.join(TwoPhaseColumnDropGuard::MIGRATION_DIR, "20260802120000_create_users.rb")
+    )
+
+    assert_not result.hazardous?
+  end
+
+  test "a heredoc reports every line it renames on, not just the first" do
+    result = scan_source(<<~'RUBY')
+      class RenameTwo < ActiveRecord::Migration[8.0]
+        def up
+          execute <<~SQL
+            ALTER TABLE sessions RENAME COLUMN alpha TO beta;
+            ALTER TABLE sessions RENAME COLUMN gamma TO delta;
+          SQL
+        end
+      end
+    RUBY
+
+    assert_equal [ 4, 5 ], result.hazards.map(&:line)
+    assert_equal [ :column_rename, :column_rename ], result.hazards.map(&:shape)
+  end
+
+  test "violations names the unannotated rename and clears once it is annotated" do
+    Dir.mktmpdir do |dir|
+      rename = File.join(dir, "20260101000001_rename_widget.rb")
+      File.write(rename, <<~RUBY)
+        class RenameWidget < ActiveRecord::Migration[8.0]
+          def change
+            rename_column :sessions, :widget, :gadget
+          end
+        end
+      RUBY
+
+      assert_equal [ "20260101000001_rename_widget.rb" ],
+        TwoPhaseColumnDropGuard.violations(dir).map(&:basename)
+
+      File.write(rename, "# expand-contract: contract of #999\n#{File.read(rename)}")
 
       assert_empty TwoPhaseColumnDropGuard.violations(dir)
     end
