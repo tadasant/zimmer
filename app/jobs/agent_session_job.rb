@@ -760,17 +760,22 @@ class AgentSessionJob < ApplicationJob
       # Routing it through the follow-up branch raises "Cannot send follow-up
       # prompt: session_id is missing" and the session fails again in a loop.
       #
-      # Instead, drop the follow-up classification so the new-session setup path
-      # runs (create the clone, generate a session_id, spawn fresh). The session's
-      # own prompt drives the fresh run; if it has none, the follow-up text becomes
-      # the prompt so the agent still has a task to act on.
+      # So drop the follow-up classification, which is what routes this job down
+      # the new-session setup path (create the clone, generate a session_id, spawn
+      # fresh). That path spawns `session.prompt`, so whatever this turn is
+      # supposed to say has to be ON THE ROW by the time we leave here — which is
+      # the whole of the question this block answers, and #fresh_start_prompt is
+      # where it is answered.
       if follow_up_prompt.present? && !resume_monitoring && !clone_only && session.session_id.blank?
         log_buffer.add(
           "Follow-up/recovery prompt received for session with no session_id " \
           "(never started) — treating as a fresh start instead of a resume",
           level: "warning"
         )
-        session.update!(prompt: follow_up_prompt) if session.prompt.blank?
+
+        fresh_prompt = fresh_start_prompt(session, follow_up_prompt, log_buffer)
+        session.update!(prompt: fresh_prompt) if fresh_prompt != session.prompt
+
         follow_up_prompt = nil
 
         # Drop the delivery marker Session#deliver_follow_up! stamped for this
@@ -778,11 +783,11 @@ class AgentSessionJob < ApplicationJob
         # the new-session path — and that path never reaches the follow-up arm
         # below, which is the only other place the marker is consumed. Left
         # behind, it is not merely stale: the arm reads
-        # `pending_follow_up_prompt || follow_up_prompt`, so THIS turn's
-        # discarded text would win over the next turn's real prompt and be
-        # delivered in its place, silently swallowing the message a human just
-        # sent. The prompt for this run is the session's own, which is already
-        # on the row.
+        # `pending_follow_up_prompt || follow_up_prompt`, so THIS turn's text
+        # would win over the next turn's real prompt and be delivered in its
+        # place, silently swallowing the message a human just sent. The prompt
+        # for this run is `session.prompt`, which #fresh_start_prompt has just
+        # made carry it.
         session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
       end
 
@@ -1609,9 +1614,11 @@ class AgentSessionJob < ApplicationJob
           # It inherits fresh_start!'s exposure with it: until transcript polling reads
           # the new rollout's id back, a session with no `session_id` reclassifies a
           # follow-up as a fresh start (see the branch this method opens with), so a
-          # message arriving in that window runs `session.prompt` instead. The window is
-          # seconds and the alternative — a poller pinned to a file the runtime has
-          # abandoned — lasts the whole turn.
+          # message arriving in that window is folded into `session.prompt` and runs
+          # there rather than as a turn of its own. It is not lost — #fresh_start_prompt
+          # carries it — but it arrives merged with the session's original prompt. The
+          # window is seconds and the alternative — a poller pinned to a file the
+          # runtime has abandoned — lasts the whole turn.
           if TranscriptRuntime.normalizer_for(session).mints_own_session_id? && session.session_id.present?
             log_buffer.add(
               "Releasing stale runtime session id #{session.session_id} so transcript polling " \
@@ -2828,10 +2835,12 @@ class AgentSessionJob < ApplicationJob
   # 2. **The turn carried no prompt.** An undelivered prompt is
   #    `Sessions::ParkUndeliveredTurn`'s case (#439) and it must stay there: this
   #    retry clears the runtime session id, which routes the replacement down
-  #    #perform's fresh-start reclassification — and that arm drops the follow-up
-  #    text when the session already has a prompt of its own. Retrying a turn
-  #    carrying a human's message would swallow the message. The two paths are
-  #    disjoint by this line, which is why order between them does not matter.
+  #    #perform's fresh-start reclassification — and that arm folds the follow-up
+  #    text into `session.prompt` when the session already has one, permanently
+  #    rewriting the column. Retrying a turn carrying a human's message would
+  #    deliver it merged with the original prompt instead of as the turn they
+  #    sent. The two paths are disjoint by this line, which is why order between
+  #    them does not matter.
   # 3. **The session is `waiting`.** Since #1040 that is what a turn still in
   #    setup reads as — queued for a worker, `start!` not yet fired. A session
   #    that has moved on is not this job's to re-enqueue. This is also what keeps
@@ -5619,6 +5628,127 @@ class AgentSessionJob < ApplicationJob
       # session created from the chat bubble it still holds the human's own words.
       session.metadata&.dig("original_prompt")
     ].filter_map(&:presence).find { |candidate| !AutomatedPrompts.nudge?(candidate) }
+  end
+
+  # The prompt a NEVER-STARTED session runs when a turn is delivered to it.
+  #
+  # A session with no `session_id` has no conversation, so the turn cannot be a
+  # follow-up to anything — #perform reclassifies it as a fresh start, and a fresh
+  # start spawns `session.prompt`. This decides what that column should hold, and
+  # the answer turns on one question: does the arriving text name work of its own?
+  #
+  # **A nudge does not.** `AutomatedPrompts.nudge?` is the class of message that
+  # only means anything read against a conversation that already exists — "you may
+  # have been interrupted, carry on", "keep making progress toward the goal". Every
+  # recovery and respawn caller sends one, and for them re-running the session's own
+  # prompt IS carrying on: the work never happened, so doing it is the correct
+  # continuation and the nudge's text is worth nothing on its own. They keep exactly
+  # the behaviour they have always had, byte for byte.
+  #
+  # **Anything else does.** A human's typed follow-up, a trigger's prompt, a poller's
+  # message, a child reporting to its parent, a `sent_message` RestartUnstartedTurn is
+  # replaying — each is somebody saying something specific, and discarding it is how a
+  # person's message disappeared with nothing but a `warning` log to show for it
+  # (#833). Since #557 that is reachable from the ordinary UI: a session that never
+  # started can be restored from the trash, lands in `needs_input` with no job
+  # enqueued, and typing into the follow-up box is how a human continues it.
+  #
+  # For those, the message is carried into the fresh start ALONGSIDE the session's own
+  # prompt rather than in place of it. Replacing would lose the task the session was
+  # created to do — which has not run either — and would leave a continuation-shaped
+  # message ("go ahead", "also add tests") standing alone in an empty conversation
+  # naming no work at all, which is the same emptiness zimmer#401 is about. The pair is
+  # the honest reading: the prompt is the task, the message is what was said about it
+  # since, and neither has been seen by an agent yet.
+  #
+  # The composition is written to the `prompt` column rather than carried in a local,
+  # and that is deliberate: the fresh-start spawn reads the column, the marker this
+  # turn arrived with is dropped right after, and a turn lost to a SIGTERM before the
+  # spawn must not take the message with it. It is idempotent — a message already in
+  # the column, or one identical to the prompt, is not appended twice — so a recovery
+  # loop redelivering the same text cannot grow the prompt without bound.
+  #
+  # @param session [Session]
+  # @param follow_up_prompt [String] the text this turn was delivered with
+  # @param log_buffer [LogBuffer]
+  # @return [String] the prompt the fresh start should run
+  def fresh_start_prompt(session, follow_up_prompt, log_buffer)
+    own = session.prompt.to_s.strip
+    message = follow_up_prompt.to_s.strip
+
+    # No prompt of its own: the message is the whole task. Unchanged behaviour.
+    if own.blank?
+      log_buffer.add(
+        "The session has no prompt of its own, so this turn's message becomes the prompt for the fresh start",
+        level: "info"
+      )
+      return follow_up_prompt
+    end
+
+    if AutomatedPrompts.nudge?(follow_up_prompt)
+      log_buffer.add(
+        "The turn is a nudge, which names no work of its own — the fresh start runs the session's own prompt",
+        level: "info"
+      )
+      return session.prompt
+    end
+
+    # RestartUnstartedTurn replays the session's own prompt through this same path,
+    # so "already the prompt" is an ordinary arrival, not a curiosity.
+    return session.prompt if own == message
+
+    # Two populations reach this, and telling them the same thing would make one of
+    # the two sentences false. A session that NEVER RAN has not done the prompt
+    # above either, so both halves are new work. A session that has a transcript but
+    # whose runtime session id was released — ProcessLifecycleManager#
+    # release_stale_runtime_session_id! and the failed-resume recovery both write
+    # `session_id = nil` over a full transcript — HAS done work; what it has lost is
+    # the conversation, not the history. Claiming "nothing above this has been said"
+    # to that one would be a lie the agent has no way to check.
+    preamble =
+      if session.never_ran?
+        "There was not: this session had never started, so nothing above this point has been " \
+        "said to an agent before — including the prompt, which has not run either. Read the " \
+        "two together: the prompt is the task, and this is what was said about it afterwards."
+      else
+        "There was not: the conversation this session had could no longer be resumed, so you " \
+        "are starting a fresh one with no history in it. The prompt above may already have " \
+        "been worked on in that lost conversation — check the working tree and the git log " \
+        "before redoing any of it. Read this message as the more recent of the two."
+      end
+
+    carried = <<~BLOCK.strip
+      <message-received-before-this-session-started>
+      This message was sent to the session while it was idle, as though there were a conversation for it to continue. #{preamble}
+
+      #{message}
+      </message-received-before-this-session-started>
+    BLOCK
+
+    # The same message arriving twice — a recovery loop redelivering it, a sweep and a
+    # human landing on the same turn — must not append it twice.
+    return session.prompt if own.include?(carried)
+
+    composed = "#{session.prompt}\n\n#{carried}"
+
+    # Refusing to carry it is a real loss, so it is said out loud rather than logged as
+    # a detail. Unreachable in practice: the cap is 500,000 characters.
+    if composed.length > Session::PROMPT_MAX_LENGTH
+      log_buffer.add(
+        "This turn's message could not be carried into the fresh start: together with the session's " \
+        "own prompt it exceeds the #{Session::PROMPT_MAX_LENGTH} character prompt limit. The fresh " \
+        "start runs the session's own prompt alone, and the message was not delivered",
+        level: "warning"
+      )
+      return session.prompt
+    end
+
+    log_buffer.add(
+      "This turn's message names work of its own and the session's own prompt has never run, " \
+      "so the fresh start carries both",
+      level: "info"
+    )
+    composed
   end
 
   # A process Zimmer killed before the runtime wrote anything leaves no

@@ -1377,9 +1377,10 @@ Restoring one of those is fine on its own — that is what
 [restoring a session that never ran](/sessions/lifecycle/#restoring-a-session-that-never-ran) does,
 and `UnarchiveSessionService` no longer refuses it. **Reusing one is not.** A follow-up prompt to a
 session with no `session_id` is reclassified by `AgentSessionJob` as a fresh start, and a fresh start
-runs the session's **own** prompt — so this fire's prompt would be silently dropped in favour of the
-one the session was created with. Spawning gives the trigger a session that runs the prompt it
-actually sent.
+runs the session's **own** prompt — with this fire's prompt
+[merged into it](/sessions/spawning/#a-turn-into-a-session-that-never-started) and the column
+permanently rewritten. A fire folded into somebody else's prompt is not a fire. Spawning gives the
+trigger a session that runs the prompt it actually sent, on its own.
 
 It also has to stay a screen because it once bricked triggers outright. The unarchive refused such a
 session, the fire raised, `ScheduleTriggerJob` advanced `last_triggered_at` to close the retry loop,
