@@ -52,6 +52,12 @@
       deliberately. Nothing interrupted it and no turn was lost, so it gets its
       own sentence rather than being described as a casualty of the ceiling. %>
   <% queued_by_user = SpotSessionPause.queued_by_user?(agent_session) %>
+  <%# And a fourth: a priority session took this one's slot. Same record and same
+      resume sweep as a ceiling pause, but not the same story — nothing about a
+      quota window happened here, and telling the reader utilization has to fall
+      5 points would point them at a number that has nothing to do with why this
+      session stopped. %>
+  <% preempted = SpotSessionPause.preempted?(agent_session) %>
   <%# A hold record the session's own CLASS has overtaken. The gate holds spot
       sessions only, so a priority session carrying one is reading back a
       sentence — "Priority sessions are unaffected" — that describes a session it
@@ -71,6 +77,8 @@
         <h3 class="text-sm font-medium text-amber-900">
           <% if queued_by_user %>
             Waiting in the spot queue
+          <% elsif preempted %>
+            Preempted by a priority session
           <% elsif paused_mid_run %>
             Paused mid-run for quota headroom
           <%# BELOW the overdue headline, not above it. A promoted session whose
@@ -151,6 +159,10 @@
             it was parked in the queue deliberately, with no wake-up time, and it resumes
             when a Claude account is under both quota targets and a slot is free, ahead of everything
             ranked below precedence <%= agent_session.precedence %>.
+          <% elsif preempted %>
+            it gave its session slot to a priority session, and it resumes from the spot queue —
+            highest precedence first — as soon as the fleet is back under its concurrency limit.
+            No quota window is involved.
           <% elsif paused_mid_run %>
             it was already running when a window reached its target, and it resumes on its own
             once utilization falls <%= SpotGateService::RESUME_MARGIN_PCT %> points below it.

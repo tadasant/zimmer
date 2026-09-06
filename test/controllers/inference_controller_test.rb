@@ -1838,4 +1838,38 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
         client: pi_fake.write_client, identity: :resolver, reason: nil
       ))
   end
+  # The third dormant population on the spot card. Printing it inside the paused
+  # figure would report the concurrency limit's cost under the budget ceiling's
+  # label — the same conflation SpotHoldExplanation exists to undo.
+  test "the spot card reports spot sessions preempted by priority work" do
+    AppSetting.editable.update!(spot_gating_enabled: true)
+    Session.create!(
+      git_root: "https://github.com/t/r.git", prompt: "work",
+      genesis: SessionGenesis::GITHUB_ISSUE, scheduling_class: SessionGenesis::SPOT,
+      status: :waiting, agent_runtime: "claude_code",
+      metadata: {
+        SpotSessionPause::PAUSED_AT => 1.hour.ago.utc.iso8601,
+        SpotSessionPause::PAUSED_REASON => SpotSessionPause::PREEMPTED_REASON,
+        SpotSessionPause::PAUSED_DETAIL => "Preempted by a priority session.",
+        "paused_by" => SpotSessionPause::PAUSED_BY
+      }
+    )
+
+    get inference_path
+
+    assert_response :success
+    assert_select "#spot-preempted-count", text: "1"
+    assert_select "#spot-paused-count", text: "0"
+  end
+
+  test "the spot card offers the preemption switch, reflecting the stored value" do
+    AppSetting.editable.update!(spot_gating_enabled: true, spot_preemption_enabled: false)
+
+    get inference_path
+
+    assert_response :success
+    assert_select "input#app_setting_spot_preemption_enabled" do |inputs|
+      refute inputs.first.attributes.key?("checked")
+    end
+  end
 end

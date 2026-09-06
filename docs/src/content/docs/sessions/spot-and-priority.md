@@ -273,8 +273,16 @@ semantics are deliberately asymmetric:
 - **So ten running priority sessions leave zero spot slots** — priority work is meant to crowd spot
   work out, and that is the intent rather than a side effect.
 
-It is checked **when a session starts** and never again. Lowering the limit under a running fleet
-holds the next start; it never interrupts work already underway.
+It is checked **when a session starts**, and for a spot session that is the whole of it: lowering the
+limit under a running fleet holds the next spot start and never interrupts spot work already underway
+on the strength of the number alone.
+
+A **priority** start is the exception, and it is the third bullet made true of work already in
+flight. Until [preemption](#a-priority-session-takes-a-slot) a priority session starting into a full
+fleet simply ran one over the ceiling, so "ten running priority sessions leave zero spot slots" was a
+claim about sessions that had not begun yet — the spot work already running kept every slot it had.
+Now the priority session takes a slot off a running spot session instead, and the fleet converges back
+to the operator's number rather than growing past it.
 
 #### What the ceiling counts, and what it does not
 
@@ -891,7 +899,7 @@ sessions:
 | --- | --- |
 | `at_utilization_limit`, ceiling `spot_budget` | Every running spot session is **paused**. |
 | `at_utilization_limit`, ceiling `pacing_curve` | Nothing. The pace is an admission device: killing a running turn to enforce a curve spends a lost tool call protecting nothing, since the same money is spent either way, just later. It is also what keeps the idle-fleet waiver coherent — otherwise the sweep would pause the session the waiver had just admitted, and the two would flap. |
-| `fleet_at_cap` | Nothing. A running session already holds its slot; pausing it would free that slot only for another spot session the same cap would hold. |
+| `fleet_at_cap` | Nothing. A running session already holds its slot; pausing it would free that slot only for another spot session the same cap would hold. A **priority** session arriving at a full fleet is the one case that does take a slot — see [A priority session takes a slot](#a-priority-session-takes-a-slot), which is a different trigger on a different path. |
 | anything else | Sessions dormant in the queue are **resumed**, highest precedence first (oldest pause first within a tie). |
 
 `SpotSessionPause` reads `Decision#stops_running_work?`, not `held?`, which is what draws that
@@ -948,6 +956,90 @@ windows say, because priority work is never gated on quota.
 
 One thing outranks even that: a session with a **wake-up still ahead of it** is left alone. See
 [A pause outranks precedence](#a-pause-outranks-precedence) below.
+
+### A priority session takes a slot
+
+The budget ceiling above stops running spot work when a quota window runs out of money. The
+**concurrency** ceiling now does the same thing for slots: when a priority session is about to start
+and every slot is taken, one running spot session yields its slot instead of the fleet running one
+wider than **Max sessions at once**.
+
+`SpotPreemption` owns this. It is evaluated at the same choke point the gate already uses —
+`SpotSessionHold.hold_if_needed`, which every quota-spending turn passes through — so the moment "a
+priority session is about to take a slot" is knowable there and nowhere else. The priority session is
+never held either way; what preemption decides is whether the fleet grows or a slot changes hands.
+
+#### Who yields
+
+The spot queue's own order, read backwards. The resume sweep takes the **highest** precedence first,
+so the session that yields is the **lowest** — the queue decides who runs and who stops, or it is not
+the queue. Precedence ties (the default is 0 for everything nobody has ranked) break on:
+
+1. **Fewest prior preemptions**, from a durable per-session ledger, so the cost is spread rather than
+   charged to whichever row sorts first every time.
+2. **Least human involvement** — `HumanMessage` rows on the session itself, the same reading
+   [human intervention](#a-human-message-jumps-the-queue) uses. A session someone is in the middle of
+   a conversation with is the last to lose its turn.
+3. **Newest**, which has least in flight to lose.
+
+Exactly **one** session yields per priority start: each priority session pays for the one slot it
+takes, so a fleet several over its cap converges a start at a time rather than emptying in one pass.
+
+#### The pause is graceful, and often free
+
+A preemption does **not** kill the victim's process. It writes the pause record and `pending_sleep`
+while the session runs, and the session's own turn end carries it needs_input → waiting through the
+same `execute_pending_sleep` a deliberate park uses. No tool call is lost and no unflushed reasoning.
+
+`SpotCeilingSweepJob` resolves the mark on its five-minute pass, and there are only two outcomes:
+
+| The fleet, on the next pass | What happens |
+| --- | --- |
+| Back **under** its cap | The mark is **released**. The priority session finished, or something else did; the preemption was never needed, the session keeps its turn, and nothing was lost at all. |
+| Still **at or over** its cap, and the mark is older than `SpotPreemption::GRACE` (10 minutes) | The turn is **halted** where it stands, exactly as a budget pause halts one. This is the only path that costs anything, and it is paid only by turns that would otherwise make the ceiling mean nothing. |
+
+A mark inside its grace is left alone, and a mark with no readable timestamp is never escalated.
+
+#### It joins the queue that already exists
+
+The victim lands in `SpotSessionPause`'s queue carrying `spot_pause_reason: preempted_by_priority` —
+the same record, the same dormancy, the same sweep, the same precedence order. That is deliberate and
+it is the most important property here: a dormant spot session must have exactly **one** resume owner,
+and giving preemption its own park would have given it its own sweep, which is
+[#617](https://github.com/tadasant/zimmer/issues/617) rather than a feature. Its resume condition was
+already exactly right — a free slot inside the budget — and the slot the priority session frees when
+it finishes is precisely that.
+
+**Thrash is bounded by a cooldown.** A session preempted within `SpotPreemption::COOLDOWN` (30
+minutes) is not eligible again, read off a ledger a resume deliberately does *not* clear. Without it a
+session resumed into a free slot is the lowest-ranked running spot session again a minute later and
+yields again immediately — pause, resume, pause, with a lost turn each cycle and no work in between.
+A session already carrying any pause record is never a candidate either; its slot is on its way back
+already.
+
+**When nothing is eligible, nothing happens** and the fleet stays one over its cap, which is what it
+did before preemption existed. Every error path lands there too: preemption is called from the gate
+whose whole promise is that it only defers, so it never raises and never holds anything.
+
+#### Where you see it
+
+| Surface | What it says |
+| --- | --- |
+| The session page | A **Preempted by a priority session** banner, naming the slot it gave up and the free slot it is waiting for. No quota window is mentioned, because none is involved. |
+| The session log | The mark, and then either the release or the halt |
+| `/inference` | **Spot sessions preempted by priority work**, its own figure beside the paused and held ones |
+| `get_session` | The same lines, plus which session took the slot and how often this session has been preempted |
+| `get_spot_policy` | **Priority preemption: on/off**, and the same count |
+
+#### Turning it off
+
+`spot_preemption_enabled` on `AppSetting`, on by default. It is a separate switch from
+`spot_gating_enabled` so an operator can stop the one part of the policy that interrupts work already
+underway without turning the gate off and letting the whole fleet run unpaced. With it off, a priority
+session starting into a full fleet runs one over the limit — the behaviour that predates this.
+
+Both surfaces can set it: the **Let priority work take a slot** checkbox on `/inference`, and
+`action_spot_policy` with `"action": "set_gating", "preemption_enabled": false`.
 
 ### Joining the queue on purpose
 
@@ -1059,6 +1151,82 @@ same instant read the same maximum and write the same value, and `ranked` breaks
 `created_at` — the older session goes first. That is the honest claim, and it is the one the tool
 descriptions make.
 :::
+
+### A human message jumps the queue
+
+A named human speaking to a spot session moves it to the **head** of the spot queue and gets its next
+turn moving, and sends the least human-involved queued session to the bottom in exchange.
+
+#### "A human intervened" is a fact, not a guess
+
+It means a **`HumanMessage` row on this session**. Nothing else.
+
+Zimmer already draws that line at the input boundary rather than from the text: `HumanMessageCapture`
+writes a record only when the authenticated actor was established — Tadas typing into the web UI, or a
+Slack user id that resolves through the seeded roster. An agent's `follow_up` over MCP, a
+router-composed spawn prompt, a fired `wake_me_up_later`, a heartbeat nudge, a polled GitHub comment
+and a system-recovery resume all arrive as the same kind of `user` turn and record **nothing**. So the
+trigger has no heuristic in it, and the mistake that would have promoted half the fleet — treating "a
+prompt arrived" as a person — is not reachable.
+
+**Here, not the hierarchy.** A human talking to a router is not intervening in the twelve sessions
+under it; that is exactly the `here` / `elsewhere` distinction
+[`get_session_provenance`](/sessions/lifecycle/) already draws.
+
+**Creating a session is not intervening in one.** The new-session form and the Quick Router's prompt
+box capture a `HumanMessage` too, and they already decide placement for themselves — the Quick
+Router's **Run as spot** checkbox is where `top_of_spot` came from. Those two entry points are named
+and skipped, so a fresh human-typed session is not re-placed and does not demote anybody.
+
+#### The rank alone is not enough
+
+The promotion goes through `Sessions::StartNow`, the same door the Ranked view's **Start** entry and a
+promote-to-priority use. Landing the rank and stopping there is
+[#423](https://github.com/tadasant/zimmer/issues/423): the class change applied, and the session then
+sat exactly as long as before because its deferred re-check was still up to an hour out.
+
+Moving a turn is not passing the gate, and this does not pretend otherwise. The session stays spot, so
+a full fleet or a spent budget holds it again — what it buys is the front of the queue and the next
+slot, which is what "get going immediately" can honestly mean for spot work.
+
+The placement uses the instance form of `top_of_spot`, so a session **already** at the head keeps its
+number rather than walking up `SLOT_GAP` on every message.
+
+#### The exchange, and why it refuses more often than it fires
+
+Without a counterweight every intervention adds `SLOT_GAP` to the top of the queue forever and the
+numbers inflate away from anything an operator set by hand. So one session goes to the bottom —
+chosen by fewest human messages, then oldest last human message, then fewest prior demotions, then
+lowest precedence, then newest.
+
+Three rules each end in demoting **nobody**, which is a perfectly good outcome:
+
+- **Nobody less involved.** The promoted session has just been spoken to, so a candidate has to be
+  *strictly* below its count. A queue in which everything has had as much human attention as this one
+  has nothing less wanted in it.
+- **The starvation exemption.** A session queued longer than
+  `Sessions::HumanInterventionPromotion::STARVATION_EXEMPTION` (24 hours) is never demoted, whatever
+  its involvement. This is the anti-starvation rule stated as a rule rather than left to luck:
+  "least human involvement" is a property that never changes on a session nobody talks to, so without
+  it the same row would be demoted forever. An unattended session sinks at most until it is a day
+  old; from then on every promotion goes *past* it rather than over it.
+- **Already at the bottom.** A session whose rank is already the lowest is left alone rather than
+  walked down another `SLOT_GAP` for no change in the order.
+
+Candidates are spot sessions dormant in **`waiting`** — the queue itself. A running session is not in
+it, and a priority session is not ordered by precedence at all.
+
+The demoted session is not stopped, not cancelled and not held. It keeps its turn, its park record and
+its resume owner; the only thing that changed is an integer. It runs when the queue above it drains —
+and one message from a human puts it straight back on top.
+
+#### Where it runs
+
+`HumanMessage`'s `after_create_commit` enqueues `HumanInterventionPromotionJob` on the `default`
+queue. Out of process on purpose: the work is a queue read, a placement write, a `StartNow` that
+reaches into GoodJob's own tables and a second write on another session, and none of that belongs in
+front of the request that was delivering the human's message. A failure in the re-ranking is logged
+and swallowed — the message itself has already been delivered.
 
 ### A pause outranks precedence
 
@@ -1305,11 +1473,16 @@ Two sweeps hand out recovered capacity, and both read precedence:
 The two populations are different (`auth_outage_reason` parks versus `paused_by: "spot_quota"`) and
 neither can start the other's sessions.
 
-Within the outage-parked population there is a third boundary, and it runs between Zimmer and the
+Within the outage-parked population there is a further boundary, and it runs between Zimmer and the
 fleet wake rather than between two Zimmer sweeps: `AuthOutageWakeAuthority` says whether a given park
 is the ranked fleet wake's to start (**spot**) or Zimmer's own 15-minute sweep's to resume
 (**priority**). Zimmer's sweep starts only what it owns, and asks for a fleet wake on behalf of what
 it does not — see [When the pool runs dry](/auth/harness/#when-the-pool-runs-dry).
+
+The `paused_by: "spot_quota"` population has no such split. A session a priority session
+[preempted](#a-priority-session-takes-a-slot) is in it, not in a population of its own: same record,
+same sweep, same precedence order. It is reported under its own number because its *cause* is
+different, not because anything else about it is.
 
 ### Three parks, one headline
 
@@ -1349,6 +1522,9 @@ control that combines with the others, and each persists exactly as pressing **A
 | Capability | Web UI | MCP |
 | --- | --- | --- |
 | Read a session's genesis and class | Hierarchy panel, dashboard card | `get_session` |
+| See whether priority preemption is on, and what it has stopped | `/inference` spot gate card | `get_spot_policy` |
+| Turn priority preemption on or off | `/inference` spot gate form | `action_spot_policy` (`set_gating`, `preemption_enabled`) |
+| See that a session was preempted, and which session took its slot | Session page banner | `get_session` |
 | Filter by class or genesis | Dashboard segmented control | `quick_search_sessions` (`priority_class`, `genesis`) |
 | Read the windows, the concurrency limit, and the current decision | Spot gate card on the Claude Code tab of `/inference` | `get_spot_policy` |
 | Read each window's estimated capacity, dollars remaining, dollars reserved, and spot budget left | Account Pool section and spot gate card on `/inference` | `get_spot_policy` |

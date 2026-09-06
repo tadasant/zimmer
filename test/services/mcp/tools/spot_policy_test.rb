@@ -491,6 +491,28 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_raises(Mcp::ToolError) { action(action: "set_gating") }
   end
 
+  # Parity again, and this one is the argument's whole point: `false` is the only
+  # value anybody sends `preemption_enabled`, so a truthiness check here would
+  # make the switch unreachable over MCP while the /inference checkbox worked.
+  test "set_gating turns priority preemption off, and get reports it" do
+    AppSetting.editable.update!(spot_gating_enabled: true, spot_preemption_enabled: true)
+
+    action(action: "set_gating", preemption_enabled: false)
+
+    refute AppSetting.current.spot_preemption_enabled
+    assert_match(/Priority preemption:\*\* off/, get_policy)
+  end
+
+  test "set_gating turns priority preemption back on without touching the gate" do
+    AppSetting.editable.update!(spot_gating_enabled: true, spot_preemption_enabled: false)
+
+    action(action: "set_gating", preemption_enabled: true)
+
+    assert AppSetting.current.spot_preemption_enabled
+    assert AppSetting.current.spot_gating_enabled, "the gate is a separate switch"
+    assert_match(/Priority preemption:\*\* on/, get_policy)
+  end
+
   # --- backlog top-up ---------------------------------------------------------
   #
   # Parity: the three knobs are on the /inference card, so an agent has to be

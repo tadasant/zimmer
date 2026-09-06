@@ -121,4 +121,31 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
     assert_equal "gpt-5.5", setting.default_model
     assert AppSetting.extension_enabled?("some_experiment")
   end
+
+  # The preemption switch is separate from the gate's own so an operator can stop
+  # the one part of the policy that interrupts work already underway without
+  # turning the gate off and letting the whole fleet run unpaced.
+  test "the preemption switch is written by the spot policy form" do
+    AppSetting.editable.update!(spot_gating_enabled: true, spot_preemption_enabled: true)
+
+    patch spot_policy_path, params: { app_setting: {
+      spot_gating_enabled: "1", spot_preemption_enabled: "0"
+    } }
+
+    setting = AppSetting.current
+    refute setting.spot_preemption_enabled
+    assert setting.spot_gating_enabled, "the gate is untouched"
+  end
+
+  # A hand-built PATCH that omits the key must leave the column as it was rather
+  # than casting nil into a NOT NULL column — the same rule every other field on
+  # this form follows.
+  test "a request that omits the preemption switch leaves it alone" do
+    AppSetting.editable.update!(spot_preemption_enabled: false)
+
+    patch spot_policy_path, params: { app_setting: { spot_reserve_weekly_pct: "30" } }
+
+    refute AppSetting.current.spot_preemption_enabled
+    assert_equal 30, AppSetting.current.spot_reserve_weekly_pct
+  end
 end
