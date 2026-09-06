@@ -74,8 +74,11 @@
 # the pool directly, because a recovery this monitor has not got round to
 # announcing is not an outage.
 #
-# The hold that defers is the WINDOW's (`at_utilization_limit`), never the fleet
-# cap; #spot_gate_hold has the reasoning.
+# The hold that defers the recovery's own EDGE is the WINDOW's
+# (`at_utilization_limit`), never the fleet cap; #spot_gate_hold has the
+# reasoning. A re-announcement of an already-spent recovery defers on any hold,
+# because it is a fifteen-minute re-ask standing behind that edge rather than the
+# edge itself — see #request_wake!.
 #
 # == Fail quiet
 #
@@ -270,6 +273,21 @@ class QuotaAvailabilityMonitor
         Rails.logger.info(
           "[QuotaAvailabilityMonitor] #{EVENT_NAME} already fired for this recovery" \
           "#{" (#{reason})" if reason}"
+        )
+        return false
+      end
+
+      # `check!` never announces a level it has not just read; this one is handed
+      # a count by a caller and would otherwise announce a recovery it never
+      # looked at. A pool CONFIRMED unable to serve anything has not recovered,
+      # whatever the caller believes, so refuse. `nil` — unreadable — is not that
+      # confirmation and falls through, matching this file's rule that a
+      # monitoring gap must not become an outage of a parked session's only wake
+      # path.
+      if pool_available?(ClaudeAuthProvider::RUNTIME) == false
+        Rails.logger.info(
+          "[QuotaAvailabilityMonitor] Not firing #{EVENT_NAME}#{" (#{reason})" if reason}: " \
+          "the pool can still serve nothing"
         )
         return false
       end

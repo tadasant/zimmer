@@ -1242,9 +1242,15 @@ different populations end up in the count, and this is the only path either has:
   found 33 hours past its own recorded recovery time in exactly that position.
 
 It is a *request* and never a wake: the fleet session re-reads the gate, the ceiling and the ordering
-for itself, so the sweep never decides which spot session starts.
+for itself, so the sweep never decides which spot session starts. Only **Claude Code** parks are
+counted into it, mirroring the scope `record_unavailable!` keeps: `quota_available` is announced
+against one global level that only ever reads the Claude pool, so a Codex park asking for it would
+spend the Claude edge on a recovery of a pool it was never blocked on — and the fleet wake scopes its
+own enumeration to the recovered runtime, so it would not have started that session anyway.
 
-An **unspent** level is announced exactly as `check!` announces one. A **spent** level may be
+An **unspent** level is claimed exactly as `check!` claims one — and, because this path is handed a
+count rather than a reading, it first refuses outright on a pool that is *confirmed* able to serve
+nothing (an unreadable pool falls through, per the fail-open rule above). A **spent** level may be
 announced again once it has stood for `ANNOUNCEMENT_STALE_AFTER` (1 hour) — the same conditional
 `UPDATE` claim against a different predicate, which renews the stamp so the next re-ask is another
 hour away. What must **not** happen is a re-arm: putting the level back to `false` would make the next

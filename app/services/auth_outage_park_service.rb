@@ -402,6 +402,17 @@ class AuthOutageParkService
     # fleet session running out of headroom before it reaches this session. The
     # ask is the same in both cases, and QuotaAvailabilityMonitor.request_wake!
     # is what decides whether the recovery may be announced again.
+    #
+    # ONE RUNTIME's parks count, and it is the runtime the event is about.
+    # `quota_available` is announced against one global level that only ever
+    # reads the Claude Code pool, so a Codex park asking for it would announce a
+    # recovery of a pool it was never blocked on — spending the Claude edge, and
+    # swallowing the real Claude recovery when it came. That is the mirror of the
+    # scope QuotaAvailabilityMonitor.record_unavailable! already keeps, and it
+    # costs the Codex park nothing it had: the fleet wake scopes its own
+    # enumeration to the recovered runtime, so it would not have started that
+    # session either. Codex has no quota API, and a parked Codex session is
+    # woken by this sweep or not at all.
     fleet_owned_eligible = 0
 
     # `.each`, not `find_each`: find_each imposes its own primary-key order and
@@ -435,7 +446,7 @@ class AuthOutageParkService
       # Eligible, and not this sweep's to start. Count it — that number is what
       # asks the fleet wake to come round again — and leave it where it is.
       unless AuthOutageWakeAuthority.sweep_owned?(session)
-        fleet_owned_eligible += 1
+        fleet_owned_eligible += 1 if runtime.to_s == ClaudeAuthProvider::RUNTIME
         next
       end
 

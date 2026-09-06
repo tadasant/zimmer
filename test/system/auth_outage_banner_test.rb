@@ -27,7 +27,7 @@ class AuthOutageBannerTest < ApplicationSystemTestCase
     assert_text "there is nothing to rotate into"
     # The sentence comes from AuthOutageWakeAuthority, so it names the mechanism
     # that is actually coming — the same one `get_session` names for an agent.
-    assert_text "Zimmer's own auth-outage sweep resumes it, within fifteen minutes"
+    assert_text "Zimmer's own auth-outage sweep resumes it, and that sweep runs every fifteen minutes"
     assert_text "The pool's earliest reset is"
   end
 
