@@ -55,6 +55,17 @@ class HumanMessage < ApplicationRecord
     raise ActiveRecord::ReadOnlyRecord, "HumanMessage is read-only once recorded" unless destroyed_by_association
   end
   after_create_commit -> { session.enqueue_provenance_broadcast }
+  # A human speaking to a spot session moves it to the head of the spot queue.
+  # THIS is the trigger for that, and it is the only honest one there is: the
+  # record exists exactly when the authenticated actor at an input boundary was
+  # established, so keying on it cannot mistake a router's `follow_up` or a fired
+  # wake-up for a person. See Sessions::HumanInterventionPromotion.
+  #
+  # `after_create_commit`, like the broadcast above, and out of process: the job
+  # reads the queue, writes a placement, pulls a turn forward and re-ranks a
+  # second session, none of which the request delivering the human's message
+  # should wait on.
+  after_create_commit -> { HumanInterventionPromotionJob.perform_later(id) }
 
   # Renderers fall back to the raw key rather than dropping the record — a human
   # said it even if the roster has since changed.

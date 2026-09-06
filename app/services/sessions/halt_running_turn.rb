@@ -127,20 +127,35 @@ module Sessions
       false
     end
 
+    # The reasons that mean "the caller has already written a spot-queue park
+    # record, and this halt is only the way the session gets there". Both of them
+    # do: `pause_into_spot_queue` is a session parking itself, `spot_preemption`
+    # is SpotPreemption escalating a mark whose turn would not end.
+    #
+    # Naming them matters twice over. The record's own provenance (#608) is
+    # written by the caller as SPOT_PAUSE, and a halt that wrote HALTED_TURN over
+    # it would make a preempted session that was halted report a different cause
+    # from one that slept gracefully — for the same mechanism, with the same
+    # resume owner. And the timeline prefix is what a reader uses to tell the two
+    # apart from an ordinary halt.
+    SPOT_QUEUE_REASONS = %i[pause_into_spot_queue spot_preemption].freeze
+
+    def spot_queue_park? = SPOT_QUEUE_REASONS.include?(reason)
+
     # Which cause Sessions::StopRecord writes when the deferred sleep this arms is
-    # executed. The caller has already written the park record itself (today, the
+    # executed. The caller has already written the park record itself (the
     # spot-queue keys), so a halt into the queue names that mechanism; a halt for
     # any other reason names the halt, which is the only thing on the record for it.
     def stop_reason
-      reason == :pause_into_spot_queue ? Sessions::StopRecord::SPOT_PAUSE : Sessions::StopRecord::HALTED_TURN
+      spot_queue_park? ? Sessions::StopRecord::SPOT_PAUSE : Sessions::StopRecord::HALTED_TURN
     end
 
     # What the session's own timeline calls this. Every caller today parks into
-    # the spot queue, so the other branch is reachable only from a test — it is
-    # kept so a future caller parking a session some other way names its own
-    # gesture rather than borrowing the queue's.
+    # the spot queue one way or the other, so the `[Paused]` branch is reachable
+    # only from a test — it is kept so a future caller parking a session some
+    # other way names its own gesture rather than borrowing the queue's.
     def log_prefix
-      reason == :pause_into_spot_queue ? "[Spot Queue]" : "[Paused]"
+      spot_queue_park? ? "[Spot Queue]" : "[Paused]"
     end
 
     # Written after the pause lands, and unconditionally: a session whose process

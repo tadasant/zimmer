@@ -52,11 +52,17 @@ class SpotHoldExplanation
   #   owner, which is why it gets its own figure rather than being folded in.
   # @param overdue_hold_count [Integer] how many of those are past their own
   #   re-check time, i.e. how many ladders have stalled
-  def initialize(decision, paused_count:, held_count: 0, overdue_hold_count: 0)
+  # @param preempted_count [Integer] SpotSessionPause.preempted_count — spot
+  #   sessions a PRIORITY session took the slot of. The third dormant population,
+  #   and its own number for the same reason the other two are: it shares the
+  #   paused queue's resume owner but not its cause, so folding it into
+  #   `paused_count` would report the concurrency limit's cost as the budget's.
+  def initialize(decision, paused_count:, held_count: 0, overdue_hold_count: 0, preempted_count: 0)
     @decision = decision
     @paused_count = paused_count.to_i
     @held_count = held_count.to_i
     @overdue_hold_count = overdue_hold_count.to_i
+    @preempted_count = preempted_count.to_i
   end
 
   # @return [Array<Line>] empty when spot work is running — there is no hold to
@@ -92,6 +98,28 @@ class SpotHoldExplanation
         "running, so they count toward neither the sessions-running figure nor the concurrency limit. " \
         "#{resumption_clause}"
     end
+  end
+
+  # The population a PRIORITY session displaced, as opposed to a quota window.
+  #
+  # Rendered whether or not any exist, like the other two: "0 preempted" is the
+  # answer to "is the concurrency limit actually crowding spot work out, or does
+  # it just say so?", and until SpotPreemption the honest answer was that it just
+  # said so.
+  def sessions_preempted
+    return "No spot session has had its slot taken by priority work, or they have all been put back." if
+      @preempted_count.zero?
+
+    subject = @preempted_count == 1 ? "It was" : "Each was"
+    pronoun = @preempted_count == 1 ? "It resumes" : "They resume"
+
+    "#{subject} running when a priority session needed a slot and the fleet was at its concurrency " \
+      "limit, so it yielded the slot rather than the fleet running one wider than the limit. " \
+      "Priority work is meant to crowd spot work out, and this is the half of that which applies to " \
+      "work already underway. Nothing was cancelled: #{pronoun.downcase} from the same queue as the " \
+      "paused sessions above, highest precedence first, once the fleet has a free slot AND the gate " \
+      "allows spot work — the same resume decision, because it is the same queue, so a spent budget " \
+      "keeps them asleep even after a slot frees."
   end
 
   # The other dormant population.
@@ -157,7 +185,9 @@ class SpotHoldExplanation
     kind, seconds = @decision.resume_outlook
 
     case kind
-    when :fleet_cap then "A slot frees up when a running session finishes. Nothing here predicts when."
+    when :fleet_cap
+      "A slot frees up when a running session finishes. Nothing here predicts when — except for a " \
+        "priority session, which does not wait for one: it preempts a running spot session instead."
     when :spot_budget then spot_budget_until(seconds)
     when :burn_must_fall then burn_must_fall_until(seconds)
     else @decision.detail
@@ -167,7 +197,8 @@ class SpotHoldExplanation
   def fleet_cap_why
     "Every session slot is taken — #{@decision.active_sessions} of #{@decision.fleet_cap} being run by " \
       "a worker right now. No quota window is holding anything. Priority sessions occupy slots too, and " \
-      "are meant to crowd spot work out of them."
+      "are meant to crowd spot work out of them — a priority session starting into a full fleet takes " \
+      "the slot off the lowest-ranked spot session running rather than making the fleet one wider."
   end
 
   # Names only the windows whose budget is actually SPENT, not every window that
