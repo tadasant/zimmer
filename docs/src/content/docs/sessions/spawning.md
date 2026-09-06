@@ -254,7 +254,7 @@ hold, and it turns on whether the arriving text **names work of its own**.
 | The turn is… | The fresh start runs |
 | --- | --- |
 | A nudge (`AutomatedPrompts.nudge?` — `SYSTEM_RECOVERY`, with or without its reason suffix, and `HEARTBEAT`) | The session's own prompt, unchanged. The nudge text is not carried. |
-| Anything else — a human's typed follow-up, a trigger's prompt, a poller's message, a child reporting to its parent | The session's own prompt **with the message appended**, inside a `<message-received-before-this-session-started>` block that says the prompt has not run either and that the message is the more recent of the two. |
+| Anything else — a human's typed follow-up, a trigger's prompt, a poller's message, a child reporting to its parent | The session's own prompt **with the message appended**, inside a `<message-received-before-this-session-started>` block that explains why the two arrive together and that the message is the more recent of them. |
 | Anything at all, on a session with no prompt of its own | The message, as the whole prompt. |
 
 The nudge row is the one every recovery and respawn caller takes, and for them re-running the
@@ -268,6 +268,15 @@ re-run the prompt it was created with. It is appended rather than substituted be
 has not run either: replacing it would lose the task the session was created to do, and would leave
 a continuation-shaped message ("go ahead", "also add tests") standing alone in an empty conversation
 naming no work at all — the same emptiness the nudge downgrade below exists to avoid.
+
+Two populations arrive here and the block says something different to each, because one sentence
+would be false for the other. A session that **never ran** has not done the prompt above either, so
+both halves are new work. A session that has a **transcript** but whose runtime session id was
+released — `ProcessLifecycleManager#release_stale_runtime_session_id!` and the failed-resume
+recovery both write `session_id = nil` over a full transcript — has done work; what it lost is the
+conversation, not the history. That one is told to check the working tree and the git log before
+redoing anything, because claiming nothing above had been said would be a lie it has no way to
+check.
 
 The composition is written to the `prompt` column rather than held in memory, because the
 fresh-start spawn reads that column, the delivery marker this turn arrived with is dropped

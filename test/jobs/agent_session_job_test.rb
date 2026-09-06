@@ -480,6 +480,48 @@ class AgentSessionJobTest < ActiveJob::TestCase
     assert_equal "Fix the login bug", @session.prompt
   end
 
+  # Two populations reach the reclassification, and the block that carries the message has
+  # to tell them different things. `release_stale_runtime_session_id!` and the
+  # failed-resume recovery both write `session_id = nil` over a FULL transcript, so a
+  # session that has done hours of work arrives here looking exactly like one that never
+  # started. Telling it "nothing above this point has been said to an agent before" would
+  # be a lie it has no way to check — and the merge-conflict, PR-merged and lost-clone
+  # notices, none of which are nudges, are delivered to precisely that population.
+  test "a message carried into a session that HAS a transcript does not claim it never started" do
+    @session.update!(
+      session_id: nil,
+      prompt: "Fix the login bug",
+      status: :waiting,
+      metadata: {},
+      transcript: { "type" => "user", "message" => { "content" => "Fix the login bug" } }.to_json
+    )
+    refute @session.never_ran?, "this session has a transcript — only its runtime id was released"
+
+    job = nil
+    perform_session_job(@session, "There are merge conflicts on your PR.") { |j| job = j }
+
+    @session.reload
+    assert_includes @session.prompt, "There are merge conflicts on your PR."
+    refute_includes @session.prompt, "this session had never started"
+    assert_includes @session.prompt, "check the working tree and the git log",
+      "a session with history must be told to look before it redoes work"
+
+    assert_includes job.cli_adapter.executed_commands.first[:prompt], "There are merge conflicts on your PR."
+  end
+
+  # The other half of the same pair, asserted from the never-ran side so a future edit
+  # cannot collapse the two branches into one message.
+  test "a message carried into a session that never ran says so" do
+    @session.update!(session_id: nil, prompt: "Fix the login bug", status: :waiting, metadata: {}, transcript: nil)
+    assert @session.never_ran?
+
+    perform_session_job(@session, "Also add a regression test.")
+
+    @session.reload
+    assert_includes @session.prompt, "this session had never started"
+    refute_includes @session.prompt, "check the working tree and the git log"
+  end
+
   # A recovery loop can redeliver the same text, and a sweep and a human can land on the
   # same turn. The message must not stack up in the prompt column.
   test "the same message delivered twice to a never-started session is carried once" do
