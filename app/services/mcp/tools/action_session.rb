@@ -1079,9 +1079,9 @@ module Mcp
         # Never let a refresh shrink the stored transcript: a shorter filesystem
         # transcript means the clone was recreated at a new path and started a
         # fresh file, and session.transcript is the only durable record.
-        if Session.transcript_regression?(session.transcript, content)
+        if session.transcript_regression?(content)
           Rails.logger.warn "[Mcp::Tools::ActionSession] Refused transcript regression for session #{session.id} " \
-                            "(stored #{Session.transcript_line_count(session.transcript)} events, filesystem #{message_count}); preserving stored transcript"
+                            "(stored #{session.transcript_line_count} events, filesystem #{message_count}); preserving stored transcript"
           return summary(
             "Session Refreshed",
             session,
@@ -1194,9 +1194,9 @@ module Mcp
 
         message_count = count_transcript_messages(content)
 
-        if Session.transcript_regression?(session.transcript, content)
+        if session.transcript_regression?(content)
           Rails.logger.warn "[Mcp::Tools::ActionSession] Skipped transcript regression for session #{session.id} " \
-                            "(stored #{Session.transcript_line_count(session.transcript)} events, filesystem #{message_count}); preserving stored transcript"
+                            "(stored #{session.transcript_line_count} events, filesystem #{message_count}); preserving stored transcript"
           return false
         end
 

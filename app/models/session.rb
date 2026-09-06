@@ -11,6 +11,9 @@ class Session < ApplicationRecord
   include SessionVisibility
   include RunningTurns
   include CatalogArtifactReferences
+  # `transcript` is not a column any more: it is assembled from, and appended to,
+  # `session_transcript_chunks`. The accessor's shape is unchanged. See #110.
+  include ChunkedTranscript
 
   # Phase 1 of the two-phase drop of `execution_provider` (#172). The column
   # named a Strategy-pattern execution layer under `lib/execution/` that nothing
@@ -1167,6 +1170,13 @@ class Session < ApplicationRecord
   # the prior history. Callers use this to refuse such overwrites. Equal-or-greater
   # counts are NOT regressions (normal append growth, or an in-place edit of the
   # latest event).
+  #
+  # Prefer the instance form, `session.transcript_regression?(incoming)`, whenever
+  # the stored side IS a session: it reads that side's line count off the row
+  # instead of materialising the whole conversation to count newlines in it. This
+  # two-argument form is for the callers comparing two values neither of which is
+  # the stored transcript — UnarchiveSessionService weighing an on-disk file
+  # against a file it just wrote, for instance.
   def self.transcript_regression?(stored, incoming)
     transcript_line_count(incoming) < transcript_line_count(stored)
   end
@@ -1239,12 +1249,6 @@ class Session < ApplicationRecord
       parsed["_transcript_index"] = start_idx + i
       parsed
     end
-  end
-
-  # Count total transcript lines without parsing.
-  # Orders of magnitude faster than parsed_transcript.count for large transcripts.
-  def transcript_line_count
-    self.class.transcript_line_count(transcript)
   end
 
   # Count the lines (events) in any transcript value, without needing a Session

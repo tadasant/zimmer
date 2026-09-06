@@ -69,6 +69,11 @@ class SessionDashboard < Administrate::BaseDashboard
     auto_compact_window: Field::Number,
     last_broadcast_to_index_at: Field::DateTime,
     last_timeline_entry_at: Field::DateTime,
+    # Summaries of the chunk set in `session_transcript_chunks`, which is where the
+    # conversation itself lives (#110). Rendered because they are the cheap answer
+    # to "how big is this session" that the transcript itself is not.
+    transcript_byte_size: Field::Number,
+    transcript_line_count: Field::Number,
     created_at: Field::DateTime,
     updated_at: Field::DateTime
   }.freeze
@@ -82,6 +87,10 @@ class SessionDashboard < Administrate::BaseDashboard
     # session — rendering it would make the show page unusable and the index
     # page slow enough to time out. /sessions/:id streams it properly.
     :transcript,
+    # SHA-256 of the whole transcript, used by the append fast path to recognise
+    # that an incoming value extends the stored one. A 64-character hex string
+    # tells a human nothing the two counters above it do not.
+    :transcript_digest,
     # The jsonb shadows of the five columns above them in ATTRIBUTE_TYPES, written
     # by JsonbDualWrite while #847's conversion is in flight. Nothing reads them
     # yet and their contents are by construction identical to the columns already

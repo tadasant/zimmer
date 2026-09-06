@@ -21,10 +21,53 @@ flowchart LR
     NM --> SUB["discover agent-*.jsonl<br/>→ SubagentTranscript rows"]
     NM --> MCP["MCP status detector"]
     NM --> HK["Transcript hooks<br/>(GithubPrUrlHook)"]
-    NM --> DB[("sessions.transcript<br/>(whole raw file as a string)")]
+    NM --> DB[("session_transcript_chunks<br/>(append-only slices of the JSONL)")]
     NM --> BC["BroadcastService<br/>Turbo Stream → session_&lt;id&gt;_timeline"]
     BC --> UI["Browser"]
 ```
+
+## Where a transcript is stored
+
+A transcript is one JSONL document, and `session.transcript` still hands you the whole thing as a
+String. Underneath, it lives in **`session_transcript_chunks`** — line-aligned slices of at most
+256 KiB, ordered by `seq`, whose concatenation is the document byte for byte.
+
+It used to be a single `sessions.transcript` column, and that is what made a poll expensive.
+Postgres cannot update a TOASTed value in place: `UPDATE sessions SET transcript = …` writes a new
+tuple, re-compresses and re-stores the whole document, and WALs it. So recording ten new lines cost
+a function of everything the session had already said — every five seconds, for the life of a
+session, on exactly the long autonomous runs Zimmer exists for (#110).
+
+Writing through the chunk table costs what was added instead:
+
+| The write | What it touches |
+| --- | --- |
+| The incoming value **extends** what is stored (every ordinary poll) | The open tail chunk, plus new chunks for the overflow. Nothing already closed is rewritten. |
+| The incoming value is **byte-identical** (a poll with nothing new) | Nothing. |
+| The incoming value **diverges** (a rotation carryover, a recovery merge, a fork's truncation) | The whole chunk set is replaced, and the byte counts on both sides are logged. |
+
+"Extends" is decided without reading the transcript back. `sessions.transcript_byte_size` and
+`sessions.transcript_digest` (SHA-256 of the whole document) live on the session row, so the check
+is a hash of a value the caller already has in memory. `sessions.transcript_line_count` is on the
+row for the same reason: the regression guard below compares line counts, and computing that used
+to mean detoasting megabytes to count newlines.
+
+Two invariants the writer maintains, both relied on elsewhere:
+
+1. **Every chunk but the last ends at a line break.** Content search matches per chunk, and a
+   boundary inside a JSON event would make a phrase silently unfindable. A boundary *between*
+   events cannot, because that newline is a record separator, not something anybody typed.
+2. **Chunk line counts sum to the document's line count**, so `transcript_line_count` is exact.
+
+:::note[The old column is still there, for one more deploy]
+`sessions.transcript` cannot be dropped in the same deploy that stopped writing it — the old
+containers kamal-proxy is still serving would break on it
+([Dropping a column takes two deploys](/operate/deploying/#dropping-a-column-takes-two-deploys)).
+Until the `BackfillSessionTranscriptChunks` post-deploy task has emptied it, `Session#transcript`
+falls back to that column for any row the backfill has not reached, and content search matches both
+storages. The backfill verifies each copy byte for byte before it frees a row's column; a row that
+fails verification keeps its column and is counted in the task's `verification_failures`.
+:::
 
 ## OpenTranscripts — the normalization layer
 
@@ -150,9 +193,9 @@ transcript — and the transcript is stored, rendered, and downloadable through 
 transcript-archive API.
 
 `TranscriptRedactor` runs inside `TranscriptSource#read`, where transcript bytes are pulled off
-disk. That is deliberately **on write, not on read**: Zimmer stores the whole raw transcript string
-in `sessions.transcript`, so redacting at the read boundary is what keeps a credential out of the
-database rather than only out of the rendered page.
+disk. That is deliberately **on write, not on read**: Zimmer stores the whole raw transcript string,
+so redacting at the read boundary is what keeps a credential out of the database rather than only out
+of the rendered page.
 
 Reading through that method is a requirement on callers, not a property of the code — Zimmer has
 three *other* places that re-read a transcript and persist it (the manual refresh in
@@ -305,7 +348,7 @@ Those are [#434](https://github.com/tadasant/zimmer/issues/434)'s half —
 
 ## Writing a transcript back to disk
 
-The stored transcript in `sessions.transcript` is the durable record; the file on disk is what the
+The stored transcript is the durable record; the file on disk is what the
 runtime actually resumes from. Three paths re-materialize the former as the latter — resuming a
 session whose clone was recreated (`AgentSessionJob#write_transcript_to_clone`), unarchiving
 (`UnarchiveSessionService`), and forking (`ForkSessionService`).
@@ -438,7 +481,7 @@ See [limitations](/limitations/).
 ## The regression guard
 
 If the clone is recreated, the agent starts a *fresh* transcript file. Naively overwriting
-`sessions.transcript` with it would wipe the session's history.
+the stored transcript with it would wipe the session's history.
 
 So `Session.transcript_regression?` refuses to overwrite a stored transcript with a shorter one,
 and logs it once via `metadata["transcript_regression_detected"]`. If a *resume* hits an
@@ -455,6 +498,21 @@ The same poll also repairs a stale `broadcast_message_count` that points past th
 so the recovered messages are not silently skipped.
 
 That guard exists because the underlying condition happens.
+
+### Append-only storage does not retire it
+
+It would be tidy if moving to an append-only chunk table made truncation structurally impossible,
+and it does not. The guard is not an artifact of how the transcript was stored — it encodes a
+**policy**: a file on disk that is shorter than what Zimmer recorded means the clone was recreated
+and the runtime started over, not that the conversation got shorter. Only the caller knows which
+reading applies, and both readings occur — the Codex recovery merge two paragraphs up is a
+deliberate rewrite to a *shorter* document, and it is correct.
+
+What the chunk store changes is the shape of the risk rather than its existence. A truncating write
+is now an explicit `delete_all` of a session's chunks, logged with the byte counts on both sides,
+instead of an `UPDATE` indistinguishable from every other one — and the guard itself got cheaper,
+because `session.transcript_regression?(incoming)` reads the stored side's line count off the
+session row instead of loading the conversation to count newlines in it.
 
 ## Rotation: when a shorter file is *new*, not lost
 
@@ -652,12 +710,12 @@ posted so the comment poller never reads one back as if a human wrote it.
 ## Searching what was said
 
 `GET /api/v1/sessions/search?search_contents=true` and the `quick_search_sessions` MCP tool
-(`search_contents: true`) both match `sessions.transcript`, so a session can be found by a phrase
+(`search_contents: true`) both match the stored transcript, so a session can be found by a phrase
 from its conversation rather than by its title. A multi-word query is matched as one literal
 substring — [the words have to be adjacent and in order](/extend/rest-api/#searching-transcript-contents),
 against the transcript's stored JSON.
 
-The column is `json` with no index a substring match can use, so the scan is **bounded rather than
+There is no index a leading-wildcard substring match can use, so the scan is **bounded rather than
 best-effort**: `SessionContentSearch` walks candidates newest-first in chunks, stops at the result
 limit or a wall-clock budget under the proxy's timeout, and always returns. What it hands back with
 the results is how far it got — `complete`, `scanned_sessions`, `candidate_sessions` and a
@@ -679,9 +737,9 @@ therefore drains over several ticks instead of being retried whole. Steady state
 changed sessions per tick, where neither bound is reached.
 
 That makes the job's peak a function of the largest single transcript rather than of the corpus. Not
-one copy of it: `sessions.transcript` is a `json` column, so a loaded row holds the raw database
-string *and* the type-cast value, and serializing it builds a third copy before the write. Budget
-about three times the largest transcript.
+one copy of it: reassembling a transcript from its chunks holds the chunk contents and the joined
+string at once, and serializing it builds a third copy before the write. Budget about three times the
+largest transcript.
 
 What counts as "changed" is the whole of a session's zip entry, not just the session row. An entry
 carries the session's subagent transcripts alongside its own, and `SubagentTranscript` does not

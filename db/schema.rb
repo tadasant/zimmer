@@ -622,6 +622,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_06_170000) do
     t.index ["session_id"], name: "index_session_token_usages_on_session_id"
   end
 
+  create_table "session_transcript_chunks", force: :cascade do |t|
+    t.integer "byte_size", default: 0, null: false
+    t.text "content", null: false
+    t.datetime "created_at", null: false
+    t.integer "line_count", default: 0, null: false
+    t.integer "seq", null: false
+    t.bigint "session_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["session_id", "seq"], name: "index_session_transcript_chunks_on_session_and_seq", unique: true
+  end
+
   create_table "session_uncle_links", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.bigint "session_id", null: false
@@ -683,6 +694,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_06_170000) do
     t.string "subdirectory"
     t.string "title"
     t.json "transcript"
+    t.integer "transcript_byte_size", default: 0, null: false
+    t.string "transcript_digest"
+    t.integer "transcript_line_count", default: 0, null: false
     t.datetime "trash_after"
     t.datetime "updated_at", null: false
     t.string "visibility", default: "visible", null: false
@@ -701,6 +715,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_06_170000) do
     t.index ["genesis"], name: "index_sessions_on_genesis"
     t.index ["heartbeat_enabled"], name: "index_sessions_on_heartbeat_enabled", where: "heartbeat_enabled"
     t.index ["id"], name: "index_sessions_on_id_where_transcript_present", where: "(transcript IS NOT NULL)"
+    t.index ["id"], name: "index_sessions_on_id_where_transcript_stored", where: "(transcript_byte_size > 0)"
     t.index ["id"], name: "index_sessions_on_pr_url_active_id", where: "((status <> ALL (ARRAY[3, 4])) AND ((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL))"
     t.index ["idempotency_key"], name: "index_sessions_on_idempotency_key", unique: true, where: "(idempotency_key IS NOT NULL)"
     t.index ["job_id"], name: "index_sessions_on_job_id"
@@ -935,6 +950,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_06_170000) do
   add_foreign_key "session_status_summaries", "sessions", column: "fork_session_id", on_delete: :nullify
   add_foreign_key "session_status_summaries", "sessions", on_delete: :cascade
   add_foreign_key "session_token_usages", "sessions", on_delete: :nullify
+  add_foreign_key "session_transcript_chunks", "sessions", on_delete: :cascade
   add_foreign_key "session_uncle_links", "sessions", column: "uncle_session_id", on_delete: :cascade
   add_foreign_key "session_uncle_links", "sessions", on_delete: :cascade
   add_foreign_key "sessions", "categories", on_delete: :nullify
