@@ -77,6 +77,12 @@
 #   is the single source of truth callers rebuild a stderr path from — see
 #   .stderr_log_path and Session#stderr_log_path.
 #
+# == Optional class hooks (sensible defaults provided in ClassMethods) ==
+#
+# .spawn_artifact_paths(working_dir) -> Array<String>
+#   Files the spawned process writes into the working directory, which a session
+#   starting in a copied clone must shed. Defaults to the stderr log alone.
+#
 # == Optional hooks (sensible defaults provided here) ==
 #
 # disallowed_tools -> Array<String>
@@ -127,6 +133,21 @@ module RuntimeCliAdapter
       return nil if working_dir.blank?
 
       File.join(working_dir, stderr_log_filename)
+    end
+
+    # Files this runtime's spawned process writes INTO the working directory.
+    #
+    # A session that starts in a copied clone (ForkSessionService) must shed all
+    # of them: they describe the run that produced the clone, not the one about
+    # to start. Every runtime writes a stderr log, so that is the default; a
+    # runtime with more spawn-time output overrides and appends to `super`
+    # (CodexRuntimeAdapter adds its `--json` event log, which names the SOURCE
+    # session's Codex thread — inheriting it would resume the wrong conversation).
+    #
+    # @param working_dir [String, nil]
+    # @return [Array<String>] absolute paths, empty when there is no working dir
+    def spawn_artifact_paths(working_dir)
+      [ stderr_log_path(working_dir) ].compact
     end
 
     # The error class this runtime raises when a spawn precondition fails.

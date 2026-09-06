@@ -727,15 +727,52 @@ the cable adapter itself sleeps on, parsed from `config/cable.yml` — and multi
 to hardcode, but changing `cable.yml` now moves the spacing with it instead of silently breaking the
 relationship (#108). It remains a real throughput cost on a bursty transcript.
 
-Two independent output channels:
+Three output channels:
 
 - **stderr → session logs.** A thread tails the stderr file by byte offset every 0.5 s into a
   `LogBuffer`, flushed every `LOG_FLUSH_EVERY_ITERATIONS` (5) iterations and once more on the way out.
 - **transcript → UI.** `TranscriptPollerService` reads the JSONL, normalizes it, and pushes Turbo
   Streams. See [Transcripts](/sessions/transcripts/).
+- **Codex stdout → `codex_events.jsonl`.** `codex exec --json` prints an event stream, and its first
+  line names the thread. See below.
 
-stdout is discarded for both runtimes, even though both CLIs are launched with a JSON
-streaming flag. The transcript file on disk is the only source of truth.
+The transcript file on disk remains the conversation's only source of truth. Claude's stdout is
+still discarded — its `--output-format stream-json` flag is only passed on the images / large-prompt
+path anyway, and Zimmer already knows a Claude session's id because it supplies it.
+
+#### The Codex `--json` event stream
+
+Codex is a different case, and used to be handled the same way. It mints its **own** thread UUID and
+ignores the one Zimmer supplies, and that UUID is what names its rollout file
+(`rollout-<ts>-<uuid>.jsonl`) inside a date-partitioned tree **shared by every session on the host**.
+So until Zimmer learned the UUID it could not say which rollout was this session's, and until it read
+a rollout it could not learn the UUID. `CodexTranscriptSource` broke that circle by inferring: take
+the most recently modified rollout whose recorded `cwd` matches this session's clone.
+
+`codex exec --json` answers it outright. Its first line, printed before the model is even contacted,
+is `{"type":"thread.started","thread_id":"…"}` — the same UUID that names the rollout, that the
+rollout's own `session_meta` line carries as `id`, and that `codex exec resume <uuid>` requires.
+Zimmer was already passing `--json` and sending stdout to `/dev/null`.
+
+`CodexRuntimeAdapter#spawn_process` now redirects stdout into `codex_events.jsonl` in the working
+directory, exactly as it already redirects stderr into `codex_stderr.log`, and `CodexEventStream`
+reads it back:
+
+- `TranscriptPollerService#capture_runtime_session_id_from_stream!` runs **before** the transcript is
+  located, so `sessions.session_id` holds the real resume target from the first poll — even on a poll
+  where no rollout is found at all.
+- `CodexTranscriptSource#find_main_transcript` globs the rollout by that UUID. The `cwd` heuristic
+  survives as the fallback for the window before the first line is flushed.
+- `ForkSessionService` sheds the file along with the stderr log
+  (`RuntimeCliAdapter.spawn_artifact_paths`): it names the **source** session's thread, and a fork
+  that inherited it would resume someone else's conversation.
+
+A file rather than a pipe, deliberately. The monitoring loop does not always outlive the process it
+watches — `ProcessLifecycleManager#resume_monitoring` exists to re-attach to an agent whose worker was
+restarted mid-turn. A pipe whose read end goes away leaves the child writing into a broken pipe, or
+blocked on a buffer nobody drains; a file has neither failure mode and is readable by whichever
+process is monitoring now. Both redirects open with `"w"`, so each spawn starts a log describing only
+its own run and a resumed or fresh-started turn never reads the previous run's thread id back.
 
 ### Every exit polls the transcript one last time
 

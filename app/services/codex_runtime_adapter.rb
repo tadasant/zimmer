@@ -14,11 +14,13 @@
 #
 # - `exec` is Codex's non-interactive ("print") mode.
 # - `--json` streams JSONL events to stdout (thread/turn/tool-call/message/usage),
-#   the closest analog to Claude's `--output-format stream-json`. We discard
-#   stdout (out: NULL) and let the transcript pipeline read Codex's own rollout
-#   JSONL file (~/.codex/sessions/YYYY/MM/DD/rollout-*-<uuid>.jsonl) — the single
-#   source of truth, mirroring how the Claude transcript flow works. Transcript
-#   reading itself is pulsemcp/pulsemcp#3779.
+#   the closest analog to Claude's `--output-format stream-json`. Stdout is
+#   redirected into `codex_events.jsonl` in the working directory and read back
+#   by CodexEventStream (#109) — its first line names the thread UUID, which is
+#   how the transcript pipeline identifies this session's rollout instead of
+#   guessing at it. The rollout JSONL
+#   (~/.codex/sessions/YYYY/MM/DD/rollout-*-<uuid>.jsonl) remains the transcript
+#   itself, mirroring how the Claude transcript flow works.
 # - `--dangerously-bypass-approvals-and-sandbox` skips all approval prompts AND
 #   disables Codex's own sandbox. This is the Codex analog to Claude's
 #   `--dangerously-skip-permissions`. We must NOT use `--full-auto` here:
@@ -73,8 +75,38 @@ class CodexRuntimeAdapter
   # (Session#stderr_log_path, CodexMcpStatusDetector) read it from here.
   STDERR_LOG_FILENAME = "codex_stderr.log"
 
+  # The `--json` event stream Codex prints to stdout, captured inside the
+  # working directory alongside the stderr log. Read back by CodexEventStream;
+  # see that class for why this is a file rather than a pipe.
+  EVENT_LOG_FILENAME = "codex_events.jsonl"
+
   def self.stderr_log_filename
     STDERR_LOG_FILENAME
+  end
+
+  def self.event_log_filename
+    EVENT_LOG_FILENAME
+  end
+
+  # The event log path for a working directory. Mirrors .stderr_log_path: nil
+  # when there is no working directory to join onto, so callers never build a
+  # relative path rooted at nothing.
+  #
+  # @param working_dir [String, nil]
+  # @return [String, nil]
+  def self.event_log_path(working_dir)
+    return nil if working_dir.blank?
+
+    File.join(working_dir, EVENT_LOG_FILENAME)
+  end
+
+  # @see RuntimeCliAdapter::ClassMethods#spawn_artifact_paths
+  #
+  # Codex sheds its `--json` event log too: it names the thread the SOURCE
+  # session was running, and a fork that inherited it would resume someone
+  # else's Codex conversation.
+  def self.spawn_artifact_paths(working_dir)
+    super + [ event_log_path(working_dir) ].compact
   end
 
   # Keep the runtime's own error type for the shared spawn guards
@@ -299,23 +331,25 @@ class CodexRuntimeAdapter
   # Spawn the Codex process. Mirrors ClaudeCliAdapter#spawn_process: stderr is
   # redirected to codex_stderr.log for the monitoring loop to tail, the process
   # gets its own group (pgroup: true) so the whole tree can be terminated, and
-  # stdin/stdout are detached (the transcript pipeline reads Codex's rollout file
-  # rather than stdout).
+  # stdin is detached.
+  #
+  # Stdout is NOT detached: `--json` prints the event stream there, and it is
+  # captured into codex_events.jsonl for CodexEventStream to read (#109). Both
+  # redirects open with "w", so each spawn starts a log describing only its own
+  # run — a resume or a fresh-started turn never reads the previous run's
+  # thread id back.
   def spawn_process(command, working_dir:)
     self.class.validate_working_dir!(working_dir)
 
     @logger.info "Spawning Codex CLI: #{command.join(' ')}"
 
     stderr_log_path = self.class.stderr_log_path(working_dir)
+    event_log_path = self.class.event_log_path(working_dir)
 
-    # For mock testing, create the file in the mock file system and redirect the
-    # real process's stderr to /dev/null; otherwise open the real log file.
-    stderr_file = if !@file_system.is_a?(RealFileSystemAdapter)
-      @file_system.write(stderr_log_path, "")
-      File.open(File::NULL, "w")
-    else
-      File.open(stderr_log_path, "w")
-    end
+    # For mock testing, create the files in the mock file system and send the
+    # real process's streams to /dev/null; otherwise open the real logs.
+    stderr_file = open_spawn_log(stderr_log_path)
+    event_log_file = open_spawn_log(event_log_path)
 
     env_vars = load_env_file(working_dir)
     env_vars = clear_inherited_env_vars(env_vars)
@@ -339,16 +373,29 @@ class CodexRuntimeAdapter
       chdir: working_dir,
       pgroup: true,
       in: File::NULL,
-      out: File::NULL,
+      out: event_log_file,
       err: stderr_file
     )
 
     stderr_file.close
+    event_log_file.close
 
     { pid: pid, stderr_log_path: stderr_log_path }
   rescue => e
     stderr_file&.close
+    event_log_file&.close
     raise CodexCliError, "Failed to spawn Codex CLI: #{e.message}"
+  end
+
+  # Open one of the spawn-time log files the child writes into its working
+  # directory. Under a mock file system the file is registered there and the
+  # real process writes to /dev/null instead, so the tests that fake the
+  # process-manager seam never touch disk.
+  def open_spawn_log(path)
+    return File.open(path, "w") if @file_system.is_a?(RealFileSystemAdapter)
+
+    @file_system.write(path, "")
+    File.open(File::NULL, "w")
   end
 
   # Enable rmcp client logging so Codex emits a "Service initialized as client"

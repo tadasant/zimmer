@@ -2074,6 +2074,26 @@ of them to `zimmer`. Same root cause as [#67](https://github.com/tadasant/zimmer
 
 ## Sessions
 
+### A Codex session's `--json` event log costs a second copy of the turn, on the clones volume
+
+🟡 Capturing Codex's stdout into `codex_events.jsonl`
+([#109](https://github.com/tadasant/zimmer/issues/109)) is what lets Zimmer be *told* which rollout is
+this session's rather than infer it, but the file is the whole stream, not just the first line Zimmer
+reads: it grows for the life of the turn, roughly mirroring the rollout's own content, and nothing
+rotates or truncates it mid-turn. That is a second copy of a long session's output living inside the
+clone, on the same volume `CloneDiskGuard` sizes new clones against.
+
+Three things bound it. Each spawn reopens the file with `"w"`, so a session accumulates one turn's
+stream at a time rather than the whole conversation's. The file dies with the clone. And it is the
+same trade `codex_stderr.log` already makes — the CLI writes, nothing rotates, the clone's removal is
+the cleanup.
+
+Truncating it live is not available: the child holds the descriptor and appends to it, so anything
+Zimmer did to the file underneath would move the offsets the child is writing at. The alternative
+that costs no disk is a pipe, and that is worse here — `ProcessLifecycleManager#resume_monitoring`
+exists precisely because the monitoring loop does not always outlive the process, and a pipe whose
+read end goes away leaves the agent writing into a broken pipe mid-turn.
+
 ### An unarchive whose subdirectory is gone still opens a second transcript directory
 
 A re-clone lands back at the path the session already occupied, so a conversation keeps one

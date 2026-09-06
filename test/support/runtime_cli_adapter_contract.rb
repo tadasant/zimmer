@@ -95,6 +95,30 @@ module RuntimeCliAdapterContractAssertions
     assert_nil klass.stderr_log_path(nil),
       "#{klass}.stderr_log_path(nil) must be nil, not a relative path rooted at nothing"
     assert_nil klass.stderr_log_path("")
+
+    assert_runtime_cli_adapter_spawn_artifacts(klass)
+  end
+
+  # Everything the spawned process writes into the working directory, which
+  # ForkSessionService sheds so a fork does not inherit the source session's run.
+  # Asserted for every runtime because the fork service asks the contract, not a
+  # concrete adapter: a runtime that answered with a relative path, or omitted its
+  # own stderr log, would leave the fork reading the source's state (#109).
+  def assert_runtime_cli_adapter_spawn_artifacts(klass)
+    paths = klass.spawn_artifact_paths("/tmp/contract-test")
+    assert_kind_of Array, paths
+    assert_includes paths, klass.stderr_log_path("/tmp/contract-test"),
+      "#{klass}.spawn_artifact_paths must include its own stderr log"
+    paths.each do |path|
+      assert_kind_of String, path
+      assert path.start_with?("/tmp/contract-test/"),
+        "#{klass}.spawn_artifact_paths must return paths under the working dir, got #{path.inspect}"
+    end
+    assert_equal paths.uniq, paths, "#{klass}.spawn_artifact_paths must not repeat a path"
+
+    assert_empty klass.spawn_artifact_paths(nil),
+      "#{klass}.spawn_artifact_paths(nil) must be empty, not a relative path rooted at nothing"
+    assert_empty klass.spawn_artifact_paths("")
   end
 
   # The nil/blank working-directory guard is part of the shared contract, not one
