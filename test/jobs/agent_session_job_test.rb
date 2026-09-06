@@ -9734,7 +9734,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     first = AgentSessionJob.new
     first.process_manager = MockProcessManager.new
     first.broadcast_service = BroadcastService.new
-    first.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", LogBuffer.new(@session))
+    first.send(:check_and_handle_mcp_failure, @session, 12345, LogBuffer.new(@session))
 
     @session.reload
     assert_equal [ "slack-workspace" ], @session.metadata["mcp_degraded_servers"].map { |s| s["name"] }
@@ -9759,7 +9759,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     second.broadcast_service = BroadcastService.new
     jobs_before = enqueued_jobs.count { |j| j["job_class"] == "AgentSessionJob" }
 
-    result = second.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", LogBuffer.new(@session))
+    result = second.send(:check_and_handle_mcp_failure, @session, 12345, LogBuffer.new(@session))
 
     assert_equal false, result, "an already-degraded server is not a new event"
     assert_empty killed, "the live process must not be terminated over a failure already reported"
@@ -9865,7 +9865,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     first = AgentSessionJob.new
     first.process_manager = MockProcessManager.new
     first.broadcast_service = BroadcastService.new
-    first.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", LogBuffer.new(@session))
+    first.send(:check_and_handle_mcp_failure, @session, 12345, LogBuffer.new(@session))
 
     stamped_at = @session.reload.metadata["mcp_degraded_servers"].first["degraded_at"]
     assert stamped_at.present?
@@ -9886,7 +9886,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       second = AgentSessionJob.new
       second.process_manager = MockProcessManager.new
       second.broadcast_service = BroadcastService.new
-      second.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", LogBuffer.new(@session))
+      second.send(:check_and_handle_mcp_failure, @session, 12345, LogBuffer.new(@session))
     end
 
     assert_equal stamped_at, @session.reload.metadata["mcp_degraded_servers"].first["degraded_at"],
@@ -9916,7 +9916,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job = AgentSessionJob.new
     job.process_manager = MockProcessManager.new
     job.broadcast_service = BroadcastService.new
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", LogBuffer.new(@session))
+    job.send(:check_and_handle_mcp_failure, @session, 12345, LogBuffer.new(@session))
 
     @session.reload
     assert_equal "mcp_retry", @session.metadata["paused_by"]
@@ -9992,7 +9992,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     job.broadcast_service = BroadcastService.new
 
-    assert_equal true, job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", LogBuffer.new(@session))
+    assert_equal true, job.send(:check_and_handle_mcp_failure, @session, 12345, LogBuffer.new(@session))
 
     @session.reload
     assert_equal 1, @session.metadata["mcp_retry_count"]
