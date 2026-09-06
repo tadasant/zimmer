@@ -107,8 +107,7 @@ class SelfSessionInjector
   #
   # The env var names carry the ZIMMER_ prefix, provisioned as deploy secrets
   # (config/deploy.*.yml, .kamal/secrets.*), as prod's encrypted mcp_secrets, and as
-  # what the AIR catalog interpolates. The prod/staging names are dual-set alongside
-  # the legacy AGENT_ORCHESTRATOR_* names (same values) until those are retired.
+  # what the AIR catalog interpolates.
   def self_target
     @self_target ||= {
       base_url: AppUrl.base_url(env: @env, secrets_interpolator: @secrets_interpolator),

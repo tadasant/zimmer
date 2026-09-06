@@ -1,8 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
-require "erb"
-require "yaml"
+require "kamal"
 
 # Nested Docker is three settings that are only safe together: the sysbox runtime (which
 # gives the container a user namespace), starting as container-root (so the entrypoint can
@@ -16,27 +15,17 @@ require "yaml"
 # else's work, so it is where the arrangement gets proven; production is where agent
 # sessions actually live, so it gets the switch only once staging has run on it.
 class NestedDockerSwitchTest < ActiveSupport::TestCase
+  include KamalConfigHelpers
+
   # destination => whether an unset ZIMMER_NESTED_DOCKER deploys nested Docker armed.
   DEFAULTS = { "production" => false, "staging" => true }.freeze
   DESTINATIONS = DEFAULTS.keys.freeze
 
-  RENDER_ENV = {
-    "PRODUCTION_HOST" => "198.51.100.10",
-    "STAGING_HOST" => "198.51.100.11",
-    "PRODUCTION_DB_HOST" => "managed-db.example.internal"
-  }.freeze
-
+  # The MERGED config, not the destination file alone: `init: true` and the volume list
+  # live in config/deploy.yml now, and the switch's own three settings only mean
+  # anything alongside them.
   def deploy_config(destination, nested: nil)
-    path = Rails.root.join("config/deploy.#{destination}.yml")
-    overrides = RENDER_ENV.merge(nested ? { "ZIMMER_NESTED_DOCKER" => nested } : {})
-    keys = overrides.keys | [ "ZIMMER_NESTED_DOCKER" ]
-
-    previous = ENV.to_h.slice(*keys)
-    keys.each { |k| ENV.delete(k) }
-    ENV.update(overrides)
-    YAML.safe_load(ERB.new(path.read).result, aliases: true)
-  ensure
-    keys.each { |k| previous.key?(k) ? ENV[k] = previous[k] : ENV.delete(k) }
+    kamal_raw_config(destination, nested_docker: nested)
   end
 
   # All three armed, or none of them. Asserted as one unit because that is the actual
@@ -97,7 +86,7 @@ class NestedDockerSwitchTest < ActiveSupport::TestCase
     # reintroduce exactly the root-equivalent exposure, and silently.
     test "#{destination}'s worker does not mount the host Docker socket" do
       %w[0 1].each do |state|
-        volumes = Array(deploy_config(destination, nested: state).dig("servers", "worker", "options", "volume"))
+        volumes = kamal_volumes(destination, :worker, nested_docker: state)
 
         refute volumes.any? { |v| v.include?("/var/run/docker.sock") },
           "the worker mounts the host Docker socket (switch=#{state}); nested Docker exists so it does not have to"
@@ -110,7 +99,7 @@ class NestedDockerSwitchTest < ActiveSupport::TestCase
 
       refute_equal "sysbox-runc", web["runtime"]
       refute_equal "0:0", web["user"]
-      refute Array(web["volume"]).any? { |v| v.include?("/var/run/docker.sock") }
+      refute kamal_volumes(destination, :web, nested_docker: "1").any? { |v| v.include?("/var/run/docker.sock") }
     end
   end
 
