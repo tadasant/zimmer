@@ -2,7 +2,7 @@
 //
 // EVERY class name here is written out in full, deliberately. Tailwind's content
 // scanner reads this file as text (`@source "../../javascript/**/*.js"` in
-// app/assets/stylesheets/application.css) and keeps only the class names it can
+// app/assets/tailwind/application.css) and keeps only the class names it can
 // literally see. A tidier `bg-${accent}-100` would compile to nothing: the widget
 // would look right in dev, where the JIT has already seen the token from some
 // other file, and render unstyled in production. So: a lookup table of complete
@@ -36,10 +36,14 @@ export const ACCENTS = {
   }
 }
 
-// The tone an item carries when the catalog declares it unavailable. One row,
-// not per-accent: the flag means the same thing whatever the artifact type, and
-// amber is the colour the rest of Zimmer already uses for it (see
-// lib/mcp_server_availability.js).
+// The tone an item carries when the catalog declares it unavailable. Two keys,
+// not four: the flag only ever reaches a CHIP, so `row` and `categoryHeader`
+// would be unreachable. Not interchangeable with an ACCENTS row — read only
+// `chip` and `chipRemove` off it.
+//
+// One row rather than one per accent: the flag means the same thing whatever the
+// artifact type, and amber is the colour the rest of Zimmer already uses for it
+// (see lib/mcp_server_availability.js).
 export const UNAVAILABLE = {
   chip: "bg-amber-100 text-amber-900",
   chipRemove: "text-amber-700 hover:text-amber-900"
