@@ -7,7 +7,7 @@ require "test_helper"
 # for byte, one row at a time, without ever leaving a session unreadable.
 class BackfillSessionTranscriptChunksTest < ActiveSupport::TestCase
   setup do
-    @entry = PostDeployTask::Registry.find("20260906170500")
+    @entry = PostDeployTask::Registry.find("20260906190500")
     assert @entry, "the task file must ship in db/post_deploy"
     @task_class = @entry.task_class
 
