@@ -6407,7 +6407,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       end.map { |link| "#{link["href"]} (#{link.text.strip[0, 30]})" }
 
       assert_empty offenders,
-        "these links in #{url} would navigate a Turbo Frame to a page with no matching " \
+        "these links in #{url} would navigate their Turbo Frame to a body with no matching " \
         "frame, rendering \"Content missing\". Give each data-turbo-frame=\"_top\": " \
         "#{offenders.join(", ")}"
     end
@@ -6517,6 +6517,17 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     assert_select "[data-infinite-scroll-filter-level-value='minimal']"
+  end
+
+  # A frame whose src 404s gets a body with no matching frame in it, which Turbo
+  # reports as turbo:frame-missing and lib/frame_missing_recovery.js turns into a
+  # top-level visit. The thing that must not happen is a 500.
+  test "the panel actions 404 for a session that does not exist" do
+    get transcript_panel_session_url(id: "no-such-session")
+    assert_response :not_found
+
+    get provenance_panel_session_url(id: "no-such-session")
+    assert_response :not_found
   end
 
   # A panel is fetched by a frame, so it must not drag the application layout

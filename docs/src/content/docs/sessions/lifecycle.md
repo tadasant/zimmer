@@ -2347,8 +2347,12 @@ infinite scroll had pulled in and the reader's place among them. The transcript'
 `data-live-append-into="session_<id>_timeline"` rather than that id itself — the page already renders
 the broadcast target under that name, just after the frame — and the recovery renames it before
 reconciling. That is what puts a recovered row in the same container, and therefore the same order,
-as one that arrived over the socket. A panel that will not come back is skipped rather than escalated
-to a full reload: by that point the socket is open again, so the next broadcast reaches it anyway.
+as one that arrived over the socket. It then sweeps `data-live-transient` placeholders inside the
+frame that the panel response no longer renders: the region reconcile only sweeps transients that are
+*children* of the region, and the transcript's empty state sits beside the append target rather than
+inside it, so it would otherwise stay above the rows the backfill just recovered. A panel that will
+not come back is skipped rather than escalated to a full reload: by that point the socket is open
+again, so the next broadcast reaches it anyway.
 
 Three rules keep the backfill from taking something away from the reader:
 

@@ -9,11 +9,12 @@
     whose size grows with the session — is not built at all until a reader opens
     the panel. See _detail.html.erb.
 
-    Turbo Stream appends do NOT land here. They target
-    #session_<id>_timeline, which _detail.html.erb keeps in the first paint just
-    after this frame, so a message broadcast before (or instead of) this frame
-    loading always has somewhere to go. New items therefore appear below this
-    batch, which is where the newest items belong anyway. %>
+    Turbo Stream appends do not land here. They target #session_<id>_timeline,
+    which _detail.html.erb keeps in the first paint just after this frame, so a
+    message broadcast before (or instead of) this frame loading always has
+    somewhere to go, and appears below this batch — where the newest items
+    belong. A row that landed there while the panel was closed is in this batch
+    too, and transcript-panel#dropStreamedDuplicates drops the other copy. %>
 <div data-controller="infinite-scroll"
      data-infinite-scroll-url-value="<%= timeline_items_session_path(@session) %>"
      data-infinite-scroll-before-index-value="<%= @oldest_displayed_index %>"
@@ -35,7 +36,10 @@
         <%= pluralize(@total_timeline_items_count, "item") %>
       <% end %>
     </span>
-    <span class="text-gray-400"><%= @filter_level.humanize %> view</span>
+    <%# Spelled the way the four log-level selects spell it. `humanize` would
+        render "show-logs" as "Show-logs", which is a fifth spelling of a value
+        the reader has just picked from a menu. %>
+    <span class="text-gray-400"><%= @filter_level.tr("-", " ").split.map(&:capitalize).join(" ") %> view</span>
   </div>
 
   <div data-infinite-scroll-target="timelineContent">
@@ -69,10 +73,10 @@
         not carry that id: #session_<id>_timeline already exists on the page, just
         after this frame, and two elements cannot share it.
 
-        The reconnect backfill reads the attribute. Fetching the page cannot
-        recover missed timeline items any more — the page's copy of this frame is
-        unloaded and holds only a skeleton — so the recovery fetches this panel
-        instead and grafts this container onto that id before reconciling, which
+        The reconnect backfill reads the attribute. Fetching the page recovers
+        no timeline items — the page's copy of this frame is unloaded and holds
+        only a skeleton — so the recovery fetches this panel instead and grafts
+        this container onto that id before reconciling, which
         puts recovered rows in the same container, and therefore the same order,
         as rows that arrived over the socket. See
         stream_visibility_recovery_controller#backfillDeferredPanels. %>

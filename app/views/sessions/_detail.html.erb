@@ -199,11 +199,11 @@
             <% end %>
             <div class="flex items-center gap-4 mb-3">
               <%= render "sessions/status_badge", agent_session: @session %>
-              <%# Log level filter (lifted to sticky header). The item count that
-                  used to sit beside it is now inside the transcript panel: it
-                  cost a full normalize of the transcript to produce, and it was
-                  never live here anyway — infinite-scroll only updates an
-                  itemsCount target within its own element. %>
+              <%# Log level filter (lifted to sticky header). The item count it
+                  applies to is stated inside the transcript panel rather than
+                  beside the control: producing it costs a full normalize of the
+                  transcript, and infinite-scroll can only keep an itemsCount
+                  target current when that target is inside its own element. %>
               <div class="flex items-center gap-4 ml-4 border-l border-gray-300 pl-4">
                 <label class="flex items-center text-sm text-gray-600">
                   <span class="mr-2">Log Level:</span>
@@ -287,7 +287,11 @@
 
     <div class="border-t border-gray-200" id="timeline-container" data-session-scroll-target="timeline"
          data-transcript-panel-target="body">
-      <div class="divide-y divide-gray-200" data-auto-scroll-target="timelineContainer" data-log-level-filter-target="timeline">
+      <%# data-controller="timeline" wraps BOTH the frame and the append target
+          below, because the empty state it clears is rendered by the frame while
+          the items that supersede it can arrive in either. %>
+      <div class="divide-y divide-gray-200" data-controller="timeline"
+           data-auto-scroll-target="timelineContainer" data-log-level-filter-target="timeline">
         <%= turbo_frame_tag "session_#{@session.id}_transcript",
                             src: transcript_panel_session_path(@session, filter: @filter_level),
                             loading: "lazy",
@@ -301,13 +305,22 @@
             still in flight — still has somewhere to land, and lands below the
             batch the frame brings, which is where the newest items belong.
 
+            A row that landed here while the panel was closed is in the frame's
+            batch too, because the frame renders the server's current tail. Both
+            copies carry the id SessionsHelper#timeline_item_dom_id derives, which
+            is deliberately identical across the broadcast and render paths — so
+            transcript-panel#frameLoaded drops the copy here whenever the frame
+            brings its own. A row that arrived DURING the fetch is not in the
+            batch, and survives.
+
             data-live-region="append": a reopen after a dead socket backfills the
             items it missed rather than re-rendering the page. It reconciles
             against the same region in a freshly fetched copy of this page, whose
             frame is unloaded and whose copy of this div is therefore empty — so
-            the backfill for a loaded panel is the frame reload that
+            the backfill for a loaded panel is the frame fetch that
             stream-visibility-recovery does instead (see data-deferred-panel). %>
-        <div id="session_<%= @session.id %>_timeline" data-controller="timeline"
+        <div id="session_<%= @session.id %>_timeline"
+             data-transcript-panel-target="streamed"
              data-live-region="append">
         </div>
       </div>

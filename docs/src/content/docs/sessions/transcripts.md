@@ -492,14 +492,25 @@ Three things are deliberately *not* behind the frame, and each is load-bearing:
 - **The log-level select**, which lives in the sticky header and has to be there to be usable.
 - **The disclosure itself**, so the reader can see there is a transcript to open.
 
-Content broadcast while the panel is closed is dropped, and that is correct rather than tolerated:
-opening the panel fetches the current tail, so the reader never sees a gap. What the deferral does
-change is the reconnect backfill — a fetched copy of the page has an unloaded frame and so cannot
-carry the rows — so the recovery fetches the panel's own URL for any deferred frame the reader had
-opened, and grafts its batch onto the append target's id before reconciling. That is what keeps a
-recovered row in the same container, and therefore the same order, as one that arrived over the
-socket. See [The reopen
-backfill](/sessions/lifecycle/#the-reopen-backfill).
+**Both containers are live at once, so one of them has to give a row up.** A message broadcast while
+the panel is closed lands in the append target; opening the panel then renders the server's current
+tail, which contains that same message, into the frame just above it. Nothing dedupes across the two
+by itself — Turbo's `append` only compares direct children of its target, and a frame swap does no id
+reconciliation at all — so `transcript-panel#dropStreamedDuplicates` runs on every `turbo:frame-load`
+and removes any row from the append target whose id the frame has just brought its own copy of. It is
+keyed on presence *inside the frame*, which is what makes the in-flight case safe: a row broadcast
+after the server rendered its response is not in the batch, is not a duplicate, and stays where it
+landed. Both copies carry the id `SessionsHelper#timeline_item_dom_id` derives, which is deliberately
+identical across the broadcast and render paths — that shared id is what makes the check possible at
+all.
+
+The reconnect backfill needs the same treatment from the other side: a fetched copy of the page has an
+unloaded frame and so cannot carry the rows. The recovery fetches the panel's own URL for any deferred
+frame the reader had opened, grafts its batch onto the append target's id before reconciling — which
+keeps a recovered row in the same container, and therefore the same order, as one that arrived over
+the socket — and sweeps the panel's empty-state placeholder if the server has stopped rendering it,
+which the region reconcile cannot see because it sits beside the append target rather than inside it.
+See [The reopen backfill](/sessions/lifecycle/#the-reopen-backfill).
 
 ## Broadcast bookkeeping
 
