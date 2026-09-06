@@ -26,7 +26,9 @@ module GateDecisions
       @artifact_url = source["artifact_url"].presence&.to_s&.strip
       # Deliberately a second key rather than a looser reading of `artifact_url`.
       # A gate asking "has THIS pull request been rated before" must keep getting
-      # the exact match; the substring search is what a person browsing wants.
+      # the exact match; the substring search is what a person browsing — or a
+      # caller holding only a fragment of the URL — wants. All three surfaces
+      # declare both keys, so the choice between them is the caller's.
       @artifact_query = source["artifact_query"].presence&.to_s&.strip
       @from = parse_date(source["from"], "from")
       @to = parse_date(source["to"], "to")
