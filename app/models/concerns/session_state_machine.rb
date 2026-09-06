@@ -192,6 +192,7 @@ module SessionStateMachine
       event :start do
         transitions from: :waiting, to: :running, guard: :can_start?
         after do
+          clear_stop_record
           reset_elapsed_time_counter
           record_experimental_setting_flags
           log_state_change("Session started")
@@ -205,6 +206,14 @@ module SessionStateMachine
         transitions from: :needs_input, to: :waiting
         after do
           log_state_change("Session sleeping, waiting for scheduled wake-up")
+          # Every sleep, not only the ones a mechanism claims. This is the single
+          # funnel every `running -> waiting` passes through — a running session is
+          # marked `pending_sleep`, paused to needs_input, and slept from here — so
+          # recording here is what makes "a session that stops says why" true of the
+          # whole class rather than of the three paths that already wrote a record
+          # (#608). Sessions::StopRecord swallows its own failures: losing the note
+          # must not also lose the transition.
+          Sessions::StopRecord.record!(self)
         end
       end
 
@@ -287,6 +296,7 @@ module SessionStateMachine
           clear_blocked_on_elicitation_marker
           clear_lost_elicitation_marker
           clear_pending_sleep
+          clear_stop_record
           reset_elapsed_time_counter
           record_experimental_setting_flags
           mark_notifications_stale
@@ -770,9 +780,7 @@ module SessionStateMachine
   # a session that is stuck, not one that is resting — and that is exactly the
   # session a refresh, and StrandedSleepRescue, exist to rescue.
   def awaiting_scheduled_wake?
-    conditions = pending_one_time_wake_conditions.to_a
-    watched = self.class.watched_session_states(conditions)
-    conditions.any? { |condition| self.class.one_time_wake_pending?(condition, watched_states: watched) }
+    armed_scheduled_wake?
   rescue ActiveRecord::ActiveRecordError => e
     Rails.logger.error(
       "[SessionStateMachine] Failed to check pending wake-up triggers for session #{id}: #{e.message}"
@@ -780,6 +788,18 @@ module SessionStateMachine
     # Fail safe: treat an unreadable trigger table as "asleep on purpose" so a
     # refresh never wakes a sleeping session on the strength of a DB error.
     true
+  end
+
+  # The same question as #awaiting_scheduled_wake?, asked WITHOUT its fail-safe.
+  #
+  # The fail-safe above exists because acting on a DB error must never wake a
+  # sleeping session. A DIAGNOSTIC caller wants the opposite bias: attributing a
+  # stop to a wake nobody could read is exactly the borrowed explanation
+  # Sessions::StopRecord refuses to write. So this raises, and the caller chooses.
+  def armed_scheduled_wake?
+    conditions = pending_one_time_wake_conditions.to_a
+    watched = self.class.watched_session_states(conditions)
+    conditions.any? { |condition| self.class.one_time_wake_pending?(condition, watched_states: watched) }
   end
 
   # Whether this session is paused until a wall-clock time it has not reached.
@@ -1887,7 +1907,7 @@ module SessionStateMachine
     # the one this preserve branch exists to prevent. Drop the intent instead and
     # let the session come to rest in needs_input, where the operator can see it.
     if metadata[PENDING_SLEEP_REQUIRES_WAKE] && !armed_one_time_wake?
-      remove_metadata!("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE)
+      remove_metadata!("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE, Sessions::StopRecord::PENDING_SLEEP_REASON)
       Rails.logger.info(
         "[SessionStateMachine] Dropped the preserved re-sleep for session #{id} — its wake-ups " \
         "fired or were destroyed during the recovery turn, so sleeping would strand it"
@@ -1896,7 +1916,7 @@ module SessionStateMachine
     end
 
     sleep!
-    remove_metadata!("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE)
+    remove_metadata!("pending_sleep", PENDING_SLEEP_REQUIRES_WAKE, Sessions::StopRecord::PENDING_SLEEP_REASON)
   rescue => e
     # Alert: the session asked to sleep and did not. It sits in needs_input on
     # the user's homepage as if it wanted attention, and the pending_sleep flag
@@ -1992,8 +2012,9 @@ module SessionStateMachine
       # sleep_session, which arms nothing) carries no such marker and is executed
       # unconditionally.
       merge_metadata!(
-        "pending_sleep" => true,
-        PENDING_SLEEP_REQUIRES_WAKE => true
+        Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SYSTEM_RECOVERY_RESLEEP).merge(
+          PENDING_SLEEP_REQUIRES_WAKE => true
+        )
       )
     end
 
@@ -2169,14 +2190,36 @@ module SessionStateMachine
   # Clearing on resume makes the user's explicit "keep this active" action
   # win over any stale auto-sleep intent.
   def clear_pending_sleep
-    return unless metadata&.dig("pending_sleep") == true
+    # The stamp is dropped whenever it is present, not only alongside a live flag.
+    # SessionRecoveryService strips `pending_sleep` on its own, so a resume that
+    # keyed on the flag would leave the stamp on a RUNNING session — where it would
+    # then name the cause of some later, unrelated stop.
+    return unless metadata&.dig("pending_sleep") == true ||
+                  metadata&.key?(Sessions::StopRecord::PENDING_SLEEP_REASON)
 
-    remove_metadata!("pending_sleep")
+    remove_metadata!("pending_sleep", Sessions::StopRecord::PENDING_SLEEP_REASON)
     Rails.logger.info "[SessionStateMachine] Cleared pending_sleep on resume for session #{id}"
   rescue => e
     # Alert: the user explicitly said "keep this active" and the stale auto-sleep
     # intent survived. The next pause silently drops the session to waiting.
     report_swallowed_side_effect(__method__, e, alert: true)
+  end
+
+  # Drop the "why it stopped" record when the session starts running again.
+  #
+  # The record answers a question about a session that is dormant NOW. Left on a
+  # running row it answers it about a stop that is over, and the surfaces that
+  # render it would say a live session had gone quiet — the same staleness every
+  # other dormancy marker is cleared on resume to avoid.
+  def clear_stop_record
+    keys = [ Sessions::StopRecord::REASON, Sessions::StopRecord::DETAIL, Sessions::StopRecord::AT ]
+    return unless keys.any? { |key| metadata&.key?(key) }
+
+    remove_metadata!(keys)
+  rescue => e
+    # Log-only: a stale stop record is wrong on screen and drives no behavior —
+    # nothing selects sessions by it — and the next stop overwrites it.
+    report_swallowed_side_effect(__method__, e, alert: false)
   end
 
   # Mark that this session's needs_input state is caused by a pending MCP

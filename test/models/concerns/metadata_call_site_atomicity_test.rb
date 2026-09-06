@@ -231,10 +231,12 @@ class MetadataCallSiteAtomicityTest < ActiveSupport::TestCase
     concurrent_write!(session)
     session.stubs(:reload).returns(session)
 
-    service.send(:sleep_session!)
+    service.send(:record_park!, AuthOutageParkService::QUOTA_EXHAUSTED, nil)
 
     assert_concurrent_key_survived(Session.find(session.id))
-    assert_equal true, Session.find(session.id).metadata["pending_sleep"]
+    reloaded = Session.find(session.id)
+    assert_equal true, reloaded.metadata["pending_sleep"]
+    assert_equal AuthOutageParkService::QUOTA_EXHAUSTED, reloaded.metadata["auth_outage_reason"]
   end
 
   test "the MCP pause action keeps a key written since the object was loaded" do

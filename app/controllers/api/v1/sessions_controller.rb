@@ -594,7 +594,9 @@ class Api::V1::SessionsController < Api::BaseController
       @session.merge_metadata!(updates)
       @session.sleep!
     else
-      @session.merge_metadata!(updates.merge("pending_sleep" => true))
+      @session.merge_metadata!(
+        updates.merge(Sessions::StopRecord.pending_sleep(Sessions::StopRecord::DELIBERATE_SLEEP))
+      )
     end
 
     render json: { session: session_json(@session) }

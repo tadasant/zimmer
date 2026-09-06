@@ -24,14 +24,15 @@ require "automated_prompts"
 #
 # == What parking does ==
 #
-# 1. Writes an unmistakable session log naming the outage.
-# 2. Sends a push notification so the user learns about it away from the UI.
-# 3. Records the outage on the session (`auth_outage_*` metadata).
-# 4. Puts the session to sleep. A `waiting` session is dormant: the heartbeat
-#    sweep anchors its cadence instead of nudging it, so a parked session cannot
-#    be re-poked into the same wall. A session that is still RUNNING is marked
-#    `pending_sleep` and carried needs_input \u2192 waiting by the pause callback;
-#    one that has already come to rest is slept outright.
+# 1. Records the outage on the session (`auth_outage_*` metadata) AND puts it to
+#    sleep, in one write. A `waiting` session is dormant: the heartbeat sweep
+#    anchors its cadence instead of nudging it, so a parked session cannot be
+#    re-poked into the same wall. A session that is still RUNNING is marked
+#    `pending_sleep` and carried needs_input -> waiting by the pause callback;
+#    one that has already come to rest is slept outright. One write, not two:
+#    a failure between them is tadasant/zimmer#608 - see #park!.
+# 2. Writes an unmistakable session log naming the outage.
+# 3. Sends a push notification so the user learns about it away from the UI.
 #
 # == Waking is an event, not a timer ==
 #
@@ -137,29 +138,24 @@ class AuthOutageParkService
     # An estimate for the banner, not a schedule. Nothing fires at it.
     recovers_at = (reason == QUOTA_EXHAUSTED) ? earliest_pool_reset : nil
 
-    # Sleep BEFORE recording, for the same reason the old path created its trigger
-    # first: the metadata is what renders the banner saying the session is dormant
-    # and will come back, so writing it while the session sat awake in needs_input
-    # would put a promise on screen that nothing was keeping.
-    sleep_session!
+    # The dormancy and the record of it are ONE write, and the announcement comes
+    # after both — the ordering this method exists to keep (tadasant/zimmer#608).
+    #
+    # A RUNNING session is made dormant by a `pending_sleep` mark the pause callback
+    # reads at the END of its turn, so a mark written apart from the outage record
+    # can outlive a failure that loses the record. That row is invisible: with
+    # `auth_outage_reason` absent, AgentSessionJob reads the exit as an ordinary
+    # completed turn, writes no `exit_status`, pauses, and `execute_pending_sleep`
+    # carries the session running -> needs_input -> waiting saying nothing at all.
+    # Priority sessions reach that shape and no other, because they are what no
+    # spot mechanism can touch.
+    #
+    # One statement makes the failure atomic in the direction that matters: either
+    # the session is marked to sleep AND says why, or it is neither and comes to
+    # rest in needs_input, where this method's rescue says it does.
+    return false unless record_park!(reason, recovers_at)
 
-    add_log(park_message(reason, recovers_at, detail), level: "error")
-    log_buffer&.flush
-
-    record_outage!(reason, recovers_at)
-
-    # A park is POSITIVE evidence that the pool is empty, and the earliest Zimmer
-    # has it. QuotaAvailabilityMonitor otherwise only samples every fifteen
-    # minutes, so an outage that opens and closes inside one tick is never
-    # observed as unavailable — the recovery is then not an edge, no event fires,
-    # and everything parked in that window waits forever. Recording it here is
-    # what makes the next recovery a real rising edge.
-    QuotaAvailabilityMonitor.record_unavailable!(runtime: session.agent_runtime) if reason == QUOTA_EXHAUSTED
-
-    notify!(reason)
-
-    @logger.warn("Session parked for auth outage",
-      reason: reason, pool_recovers_at: recovers_at&.utc&.iso8601)
+    announce_park(reason, recovers_at, detail)
 
     true
   rescue ArgumentError
@@ -515,7 +511,7 @@ class AuthOutageParkService
   # session asleep longest goes in the first batch, instead of the sweep
   # re-picking whichever ids sort lowest every 15 minutes and starving the rest.
   # A session that re-parks earns a newer stamp and goes to the back. Sorting is
-  # lexicographic over the stored string, which is why #record_outage! writes that
+  # lexicographic over the stored string, which is why #outage_record writes that
   # stamp in UTC.
   def self.parked_sessions
     Session
@@ -533,11 +529,11 @@ class AuthOutageParkService
   # `SpotSessionPause.paused?` is the sibling for the other park, and this reads
   # the same way at the call site.
   #
-  # The `waiting` half is deliberate and matches .parked_sessions. A running
-  # session can carry `auth_outage_reason` for the moments between #record_outage!
-  # and the sleep that follows it, and it is not dormant then — it is a session
-  # about to go to sleep, and answering "yes" for it would let a caller stand down
-  # on a park that has not happened yet.
+  # The `waiting` half is deliberate and matches .parked_sessions. A RUNNING
+  # session carries `auth_outage_reason` from the moment #record_park! writes it
+  # until its turn ends and the pause callback sleeps it, and it is not dormant in
+  # that window — it is a session about to go to sleep, and answering "yes" for it
+  # would let a caller stand down on a park that has not happened yet.
   #
   # @param session [Session, nil]
   # @return [Boolean]
@@ -739,7 +735,37 @@ class AuthOutageParkService
     nil
   end
 
-  def record_outage!(reason, recovers_at)
+  # Everything a park says about itself once it has happened: the session log, the
+  # positive evidence for QuotaAvailabilityMonitor, and the push notification.
+  #
+  # Separately rescued, and NOT allowed to change #park!'s answer. The park is
+  # committed before this runs, so an exception reaching #park!'s own rescue would
+  # report "not parked" for a session that is dormant — the reporting half of
+  # tadasant/zimmer#608, whose other half #record_park! closes.
+  def announce_park(reason, recovers_at, detail)
+    add_log(park_message(reason, recovers_at, detail), level: "error")
+    log_buffer&.flush
+
+    # A park is POSITIVE evidence that the pool is empty, and the earliest Zimmer
+    # has it. QuotaAvailabilityMonitor otherwise only samples every fifteen
+    # minutes, so an outage that opens and closes inside one tick is never
+    # observed as unavailable — the recovery is then not an edge, no event fires,
+    # and everything parked in that window waits forever. Recording it here is
+    # what makes the next recovery a real rising edge.
+    QuotaAvailabilityMonitor.record_unavailable!(runtime: session.agent_runtime) if reason == QUOTA_EXHAUSTED
+
+    notify!(reason)
+
+    @logger.warn("Session parked for auth outage",
+      reason: reason, pool_recovers_at: recovers_at&.utc&.iso8601)
+  rescue => e
+    @logger.error("Parked the session but could not announce it",
+      reason: reason, error: "#{e.class}: #{e.message}")
+  end
+
+  # The outage keys, without the write. Assembled before the write so the
+  # fingerprint read cannot sit between the sleep intent and the record of it.
+  def outage_record(reason, recovers_at)
     outage = {
       "auth_outage_reason" => reason,
       # UTC explicitly: .parked_sessions orders on this value as a STRING, and an
@@ -751,46 +777,64 @@ class AuthOutageParkService
     }
     outage["auth_outage_pool_recovers_at"] = recovers_at.utc.iso8601 if recovers_at
 
-    with_db_retry do
-      # The pool that just failed this session. wake_parked_sessions! wakes an
-      # AUTH_UNRECOVERABLE park only once this stops describing the pool. Read
-      # inside the retry because it is a DB read like the write below: a blip
-      # that dropped it would cost this park its fast path for the rest of its
-      # life, since an absent fingerprint means "nothing to compare against".
-      fingerprint = self.class.pool_fingerprint(session.agent_runtime)
-      outage[POOL_FINGERPRINT_KEY] = fingerprint if fingerprint.present?
+    # The pool that just failed this session. wake_parked_sessions! wakes an
+    # AUTH_UNRECOVERABLE park only once this stops describing the pool. Retried
+    # like any other DB read: a blip that dropped it would cost this park its fast
+    # path for the rest of its life, since an absent fingerprint means "nothing to
+    # compare against".
+    fingerprint = with_db_retry { self.class.pool_fingerprint(session.agent_runtime) }
+    outage[POOL_FINGERPRINT_KEY] = fingerprint if fingerprint.present?
 
-      # The merge is a single statement, so #sleep_session!'s `pending_sleep` —
-      # written straight to the row, and the whole mechanism by which a parked
-      # session goes dormant — survives it whatever this object holds. The reload
-      # is here so the in-memory copy the caller goes on to read is that row.
-      session.reload
-      session.merge_metadata!(outage)
-    end
+    outage
   end
 
-  # Put the session to sleep, so it is dormant rather than sitting on the human's
-  # action queue asking for attention it does not need.
+  # Put the session to sleep AND record why, in one write.
   #
   # The same two cases Trigger#sleep_target_session_if_applicable handles, because
   # they are the same two states a session can be parked from. A RUNNING session
   # cannot be transitioned out from under its own turn, so it is marked
-  # `pending_sleep` and the pause callback carries it needs_input → waiting once
-  # the turn ends; a session already at rest is slept outright.
+  # `pending_sleep` — alongside the outage keys and the provenance stamp, in a
+  # single merge — and the pause callback carries it needs_input → waiting once the
+  # turn ends. A session already at rest gets the same merge and is then slept
+  # outright, inside a transaction so a failed transition takes the record with it.
   #
-  # Anything else — already waiting, archived, failed — is left alone: it is
-  # dormant or terminal already, and forcing a transition would be the caller's
-  # decision to undo, not this one's.
-  def sleep_session!
-    session.reload
+  # Anything else — already waiting, archived, failed — takes no transition: it is
+  # dormant or terminal already, and forcing one would be the caller's decision to
+  # undo, not this one's. It still gets the outage record: there is no sleep on that
+  # branch for the record to be atomic with, and the session is dormant regardless.
+  #
+  # @return [Boolean] whether the outage was recorded
+  def record_park!(reason, recovers_at)
+    outage = outage_record(reason, recovers_at)
 
-    if session.needs_input?
-      session.sleep!
-    elsif session.running?
-      session.merge_metadata!("pending_sleep" => true)
-    else
-      @logger.info("Not sleeping a parked session that is neither running nor idle",
-        status: session.status)
+    with_db_retry do
+      # The reload is here so the in-memory copy the caller goes on to read is the
+      # row this wrote.
+      session.reload
+
+      if session.needs_input?
+        ActiveRecord::Base.transaction do
+          session.merge_metadata!(outage)
+          session.sleep!
+        end
+        true
+      elsif session.running?
+        # One statement, so the mark that makes the session dormant and the record
+        # that explains it cannot land apart (#608).
+        session.merge_metadata!(
+          outage.merge(Sessions::StopRecord.pending_sleep(Sessions::StopRecord::AUTH_OUTAGE_PARK))
+        )
+        true
+      else
+        # Already dormant or terminal, so there is no transition to make — but the
+        # record is still written, exactly as it was before the two writes were
+        # merged. This branch never had a sleep to be atomic WITH, so nothing about
+        # it changes: the caller is told the outage was recorded, because it was.
+        @logger.info("Not sleeping a parked session that is neither running nor idle",
+          status: session.status)
+        session.merge_metadata!(outage)
+        true
+      end
     end
   end
 

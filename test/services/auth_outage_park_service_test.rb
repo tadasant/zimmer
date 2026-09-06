@@ -161,6 +161,74 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     assert_equal "waiting", @session.reload.status
   end
 
+  # ===========================================================================
+  # tadasant/zimmer#608 — the park and the record of it are ONE write
+  # ===========================================================================
+
+  # The discriminating test. #park! used to mark the session `pending_sleep`
+  # FIRST and record the outage several statements later, with a session-log
+  # insert in between and one rescue around the lot. A log insert that raised —
+  # a DB blip outlasting #with_db_retry's three attempts — therefore left the
+  # sleep intent behind with no park record beside it. AgentSessionJob reads
+  # `auth_outage_reason` to decide whether a stop was a park, so it saw an
+  # ordinary completed turn: no `exit_status`, a pause, and
+  # `execute_pending_sleep` carrying the session running -> needs_input ->
+  # waiting. That row — dormant, no exit status, no park reason — is the exact
+  # signature reported for priority sessions 6781, 7547 and 7324.
+  test "a park whose announcement fails still records why the session stopped" do
+    AuthOutageParkService.any_instance.stubs(:add_log)
+      .raises(ActiveRecord::StatementInvalid, "log insert failed")
+
+    assert park!, "the record is committed before the announcement, so this is still a park"
+
+    reloaded = @session.reload
+    assert_equal true, reloaded.metadata["pending_sleep"]
+    assert_equal AuthOutageParkService::QUOTA_EXHAUSTED, reloaded.metadata["auth_outage_reason"],
+      "the sleep intent must never outlive the record that explains it"
+    assert reloaded.metadata["auth_outage_parked_at"].present?
+  end
+
+  # The other direction of the same atomicity: a park that genuinely cannot write
+  # leaves NOTHING behind, so the session comes to rest in needs_input — where
+  # #park!'s own rescue comment has always claimed it does.
+  test "a park whose write fails leaves no sleep intent behind" do
+    AuthOutageParkService.any_instance.stubs(:outage_record)
+      .raises(ActiveRecord::StatementInvalid, "metadata write failed")
+
+    assert_not park!
+
+    reloaded = @session.reload
+    assert_nil reloaded.metadata["pending_sleep"]
+    assert_nil reloaded.metadata["auth_outage_reason"]
+
+    reloaded.pause!
+    assert_equal "needs_input", reloaded.reload.status,
+      "a failed park must not silently sleep the session anyway"
+  end
+
+  test "the sleep a park defers records the park as its reason" do
+    park!
+
+    @session.reload.pause!
+
+    reloaded = @session.reload
+    assert_equal "waiting", reloaded.status
+    assert_equal Sessions::StopRecord::AUTH_OUTAGE_PARK,
+      reloaded.metadata[Sessions::StopRecord::REASON]
+    assert reloaded.metadata[Sessions::StopRecord::AT].present?
+  end
+
+  # The already-dormant branch is unchanged by the merge above: it never had a
+  # sleep to be atomic with, so it still records the outage and still reports a
+  # park. Pinned because the merge is where that could quietly have been dropped.
+  test "parking an already dormant session still records the outage" do
+    @session.update!(status: :waiting)
+
+    assert park!
+    assert_equal AuthOutageParkService::QUOTA_EXHAUSTED, @session.reload.metadata["auth_outage_reason"]
+    assert_nil @session.metadata["pending_sleep"], "nothing was running, so nothing is deferred"
+  end
+
   test "parking a needs_input session puts it straight to sleep" do
     @session.update!(status: :needs_input)
 

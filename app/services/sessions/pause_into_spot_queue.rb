@@ -148,7 +148,7 @@ module Sessions
         "paused_by" => SpotSessionPause::PAUSED_BY
       }
       updates[SpotSessionPause::QUEUED_PROMPT] = prompt if prompt.present?
-      updates["pending_sleep"] = true if session.running?
+      updates.merge!(Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SPOT_PAUSE)) if session.running?
 
       # PENDING_SLEEP_REQUIRES_WAKE goes, and it is not housekeeping: it means
       # "sleep only if something is still armed to wake you", and this park has
