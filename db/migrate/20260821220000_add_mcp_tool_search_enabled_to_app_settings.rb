@@ -5,8 +5,8 @@
 #
 # The extension-gated version (`mcp_tool_search`, id-keyed in
 # `extension_states`) could never take effect in a deployed container:
-# `.dockerignore` excludes `/app/extensions/*/`, so the class does not exist in
-# the image, `ExtensionRegistry` skips it, and the spawn-env baseline of
+# `.dockerignore` excluded `/app/extensions/*/` at the time, so the class did not
+# exist in the image, `ExtensionRegistry` skipped it, and the spawn-env baseline of
 # ENABLE_TOOL_SEARCH=false always stood. A column ships in the image like every
 # other setting, so the toggle actually does something in production.
 #

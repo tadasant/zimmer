@@ -1675,7 +1675,16 @@ npx installs during `air prepare` rather than at the first MCP handshake, remain
 `scripts/assert-extensions-shipped.sh` fails the build and the PR if anything puts that exclusion
 back — see [Extensions do ship in the image](/operate/deploying/#extensions-do-ship-in-the-image).
 What the guardrail asserts is *presence*: the tree arrived, a subdirectory of it arrived, and no
-extension directory arrived hollow.
+directory under it arrived hollow.
+
+Because there is no real extension to key on, the subdirectory it looks for is a marker directory it
+ships itself, and that is the seam in the outcome check: a `.dockerignore` that excluded
+`/app/extensions/*/` and then whitelisted `!/app/extensions/image_canary/` would leave a context
+holding the canary and nothing else, and both Docker-side callers would pass. What catches that is
+`test/infra/extensions_shipped_in_image_test.rb`, which rejects *any* `.dockerignore` pattern naming
+the path, negations included — so the check exists, but it is on the Ruby side, not on the half that
+gates the published image. The first real extension in the tree closes the gap by giving the script
+something other than its own canary to find.
 
 It does not assert that a registered extension resolves and loads at boot, because there is no
 extension to assert it about — `BUILTIN_EXTENSION_CLASSES` is empty, and `app/extensions/` holds only
