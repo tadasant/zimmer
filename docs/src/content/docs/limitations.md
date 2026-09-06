@@ -1073,27 +1073,126 @@ matching dialect. **A hook adopted from elsewhere will not have been written tha
 nothing checks. Note also that Pi's `content` replaces rather than appends, so a body that
 returns only its own text silently discards the command's real output.
 
-### A Pi session gets no per-server MCP status, no MCP OAuth, and no token-usage ingestion
+### What actually works on the Pi runtime — the harness matrix
 
-🟡 Three things a Claude Code session gets for free do not reach a Pi session, all for the same
-underlying reason — Pi keeps the relevant state somewhere Zimmer does not write or read:
+Pi is Zimmer's third runtime and the only one that arrives with **no MCP, hooks or plugins of
+its own**; all three are supplied by pinned Pi extensions (see
+[the agent harness](/extend/agent-harness/)). That makes "which harness features work on Pi"
+a question with a per-feature answer rather than a yes or no, and the answers below are
+**measured on live sessions**, not read off the code.
 
-- **No per-server MCP status.** Pi writes no MCP log files, and the `pi-mcp-adapter` extension
-  routes every server through one `mcp` proxy tool, so a transcript shows `mcp` being called and
-  never names the server behind it. `NullMcpStatusDetector` fills the bundle slot and reports
-  nothing, so a Pi session's servers stay at their `pending` placeholder rather than turning
-  green or red. (The slot is a null object rather than `nil` on purpose:
-  `TranscriptPollerService` dereferences it unconditionally, so `nil` there would raise on every
-  poll.)
-- **No MCP OAuth credential delivery.** `mcp_credential_writer_class` is `nil` for Pi, because
-  `pi-mcp-adapter` holds OAuth tokens in its own state rather than in a host-global file Zimmer
-  owns. `McpOauthCredentialInjector#credential_store?` makes injection a logged no-op instead of
-  a raise — which matters, because `McpOauthController#reinject_and_resume` calls injection and
-  the resume service inside one `rescue`, so a raise would leave a Pi session parked on an OAuth
-  gate permanently un-resumable. **An OAuth-backed MCP server does not work on Pi.**
-- **No token-usage or cost ingestion.** `TokenUsageIngestionService` reads
-  `~/.claude/projects`, which is Claude-specific, so Pi sessions contribute nothing to spend
-  tracking.
+Two rows read differently from the rest and are worth knowing before the table. Pi connects an
+MCP server **lazily** — at spawn every server reports "not listening; disconnected", and that
+is the healthy resting state, not a fault. And the adapter routes tool calls through proxy
+tools (`mcp__<server>`, or the bare `mcp`), so a Pi transcript names MCP tools differently from
+a Claude Code one.
+
+Lazy connect changes what `pending` means on a Pi session, and it is worth reading correctly.
+Every runtime resets `mcp_servers_status` to `pending` at the start of a turn, because a
+`connected` from the process that just exited says nothing about the one starting. Claude Code
+then re-greens a server as it starts up, whether or not the agent uses it; **Pi cannot, because
+it does not connect a server until something calls it.** So a Pi turn that needs no MCP leaves
+every server `pending` for that turn, correctly: nothing connected, because nothing asked.
+`pending` on Pi means "not connected yet", not "broken" and not "unknown".
+
+| Feature | Pi | Evidence |
+| --- | --- | --- |
+| MCP — no-auth stdio | ✅ works | 6 tools listed, `browser_get_state` returned state (`playwright-custom`) |
+| MCP — `${VAR}` secret-injected stdio | ✅ works | 16 tools listed, `airtable_list_bases` returned 69 bases |
+| MCP — strad-proxied HTTP (bearer header) | ✅ works | `strad-fetch` scraped a page; `remote-fs-screenshots` listed 42 directories |
+| MCP — Zimmer's auto-injected `zimmer-self-session` | ✅ works | 7 tools listed, `get_session` returned the session |
+| MCP — OAuth-credentialed | ⚠️ works, with a caveat | Token verified on the wire as `Authorization: Bearer`; Zimmer cannot adopt one Pi refreshes (below) |
+| Per-server MCP status (`mcp_servers_status`) | ✅ works, green-or-grey | `PiMcpStatusDetector` mines the transcript; was permanently `pending` before it. Never reports red (below) |
+| Skills | ✅ works | `air prepare pi` installs them into `.pi/skills/` — the one artifact `adapter-pi` handles natively |
+| AIR hooks | ❌ do not fire | Loaded and never dispatched — not Zimmer's layer (below) |
+| AIR plugins | ✅ works | `screenshots-videos` activated; its two bundled MCP servers reached the session |
+| Token-usage / cost ingestion | ❌ does not work | `TokenUsageIngestionService` reads `~/.claude/projects` (below) |
+| Status summary by forking the session | ❌ does not work | `PiAuthProvider` pools no accounts (below) |
+| Retrying a failed model call | ❌ does not work | Pi reports the failure but exposes no retry (below) |
+
+### A selected AIR hook loads on Pi and never fires
+
+🔴 Every layer Zimmer owns works, and the hook still does not run. Measured end to end on a
+staging Pi session with `git-push-ci-reminder` selected:
+
+- `PiAirBridge` generates the index, and it is correct — one entry, pointing at the installed
+  hook directory.
+- The hook body is on disk at that path, with its `HOOK.json`.
+- `@tadasant/pi-hooks` loads it: `[pi-hooks] loaded 1 hook(s) from …/.pi/zimmer-air/hooks.json`.
+- Pi 0.84.4 emits the event the hook is bound to. Subscribing a debug extension to `tool_result`
+  shows `toolName: "bash"` with `input` and `content` populated — exactly the payload shape the
+  extension expects, and the shape its AIR mapping (`post_tool_call` → `tool_result`) and its
+  matcher (`Bash`, aliased to `bash`) are written against.
+- The hook body works when handed that payload directly: piping the event JSON into it with
+  `PI_HOOK=1` returns the reminder.
+
+But running `echo "git push origin main"` inside the session returns the command's output
+verbatim, with nothing appended — on the first attempt and on a retry designed to rule out the
+body's own `--dry-run` suppression.
+
+**This is not Zimmer's to fix.** The gap is between "loaded" and "dispatched", inside
+`@tadasant/pi-hooks`, which belongs to the `pi-extensions` root and ships from
+`tadasant/pi-extensions`. Zimmer's side of the seam is verified correct above, so a fix there
+should need no change here.
+
+Note what this does *not* say: AIR hooks are still selected, generated and installed for a Pi
+session, and the [dialect mismatch above](#an-air-hook-body-written-for-claude-code-loads-on-pi-and-does-nothing)
+remains true and separate. A body that fires on Claude Code is silently inert on Pi *twice
+over* today — once for the payload shape, and once because nothing dispatches it at all.
+
+### A Pi session's MCP status pills go green or stay grey — never red
+
+🟡 `PiMcpStatusDetector` reports `connected` and nothing else. A Pi server that is not green is
+grey, and grey covers three different things: nobody called it, it was called and refused, or
+it was called and the provider rejected the credential.
+
+That is deliberate rather than unfinished, for two reasons that compound. Pi connects lazily, so
+"not connected" is the normal resting state and a red pill for it would be wrong on most
+sessions. And the adapter's refusal text does not say what it appears to: `Server "x" requires
+OAuth authentication` is its message for **any `401` during connect** —
+`isUnauthorizedHttpError` routes both cases to the same `getAuthRequiredMessage` — so it reads
+like "Zimmer never gave me a token" and equally means "the token I was given was rejected",
+including one that merely expired mid-turn. `McpStatusPersisting` escalates a *configured*
+server's `failed` to a session-level failure, one-shot and irreversible, so reporting that
+message as `failed` would have invented a new way to kill a Pi session on a signal that cannot
+tell a misconfiguration from a bad minute at the provider.
+
+The distinction between the two OAuth cases is visible elsewhere, and worth knowing before
+debugging one: Zimmer logs
+`Wrote N Pi MCP OAuth credential(s) for import` when it stages a credential, and the adapter
+deletes the staged file once it imports it, so an empty `<pi agent dir>/mcp-oauth/` after a spawn
+means the handover happened.
+
+### Zimmer cannot adopt an MCP OAuth token that Pi refreshed
+
+🟡 `PiMcpCredentialWriter` stages Zimmer's token where `pi-mcp-adapter` imports it, which is
+what makes an OAuth-credentialed MCP server usable on Pi at all. The flow is deliberately
+**one-way**: Zimmer is the source of truth and re-stamps the runtime's copy at every spawn, and
+`#read_runtime_credentials` returns `{}`.
+
+It has to. After import the entry lives in the OS credential store, which is keyed by
+`sha256(server_name)` and offers no listing, so the contract's zero-argument reader has nothing
+to enumerate. Claude Code and Codex both keep a single readable file and so can be read back;
+Pi cannot.
+
+The consequence: **if a provider rotates the refresh token during a refresh Pi performed,
+Zimmer's stored refresh token goes stale**, and the credential has to be re-authorized through
+Zimmer rather than healing itself. A provider that leaves the refresh token alone — the common
+case — is unaffected, because Zimmer refreshes its own copy on its own schedule and overwrites
+Pi's at the next spawn.
+
+A second, smaller edge falls out of the same import path. The adapter reads the credential
+store **before** the plaintext file and deletes the file unread when it finds an entry there, so
+a stale store entry would shadow a freshly written token. `#write!` clears the entry first,
+through the adapter's own keyring helper. If that helper cannot run — an image without the
+extension, or a credential store that will not answer — the clear is skipped with a warning and
+the spawn continues, and in that window the runtime may keep using the older token.
+
+### A Pi session contributes nothing to token-usage or cost tracking
+
+🟡 `TokenUsageIngestionService` reads `~/.claude/projects`, which is Claude Code's own
+transcript tree. Pi writes its session JSONL into the clone instead, so a Pi session's tokens
+are invisible to spend tracking: its cost reads as zero rather than as unknown.
 
 ### A Pi session's status summary always takes the cheap path
 
