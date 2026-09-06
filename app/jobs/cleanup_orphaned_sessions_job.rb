@@ -4,6 +4,16 @@ class CleanupOrphanedSessionsJob < ApplicationJob
   queue_as :default
   include SingletonSweep
 
+  # How long a `running` session may go without a timeline entry before this sweep
+  # calls its process hung, terminates it and restarts the session.
+  #
+  # Named rather than repeated as a literal because it is not only this job's number:
+  # it is the interval after which Zimmer stops believing a quiet session is working,
+  # and `Mcp::Tools::GetSession` renders the status summary's freshness line against
+  # the same threshold so an agent reading a session sees the same silence this sweep
+  # is about to act on (#988).
+  INACTIVITY_THRESHOLD = 15.minutes
+
   def perform
     recover_running_orphans
     continue_recovery_paused_sessions
@@ -200,7 +210,8 @@ class CleanupOrphanedSessionsJob < ApplicationJob
 
     # Also check for sessions with no recent activity - their agent process may have died
     # even though the job is still "running" (polling a dead transcript)
-    if session.last_timeline_entry_at.present? && session.last_timeline_entry_at < 15.minutes.ago
+    if session.last_timeline_entry_at.present? &&
+        session.last_timeline_entry_at < INACTIVITY_THRESHOLD.ago
       return true
     end
 
@@ -223,7 +234,8 @@ class CleanupOrphanedSessionsJob < ApplicationJob
     job = GoodJob::Job.find_by(active_job_id: session.running_job_id)
 
     # Determine the reason for orphan detection
-    is_hung_process = session.last_timeline_entry_at.present? && session.last_timeline_entry_at < 15.minutes.ago
+    is_hung_process = session.last_timeline_entry_at.present? &&
+      session.last_timeline_entry_at < INACTIVITY_THRESHOLD.ago
 
     error_message = if job&.error.present?
       "Job failed: #{job.error.truncate(100)}"
@@ -245,7 +257,7 @@ class CleanupOrphanedSessionsJob < ApplicationJob
     end
 
     # Use SessionRecoveryService to attempt recovery
-    # If the session has no activity for 15+ minutes, the process is likely hung.
+    # If the session has had no activity for INACTIVITY_THRESHOLD, the process is likely hung.
     # Pass force_terminate_hung_process: true to terminate it instead of re-monitoring.
     recovery_service = SessionRecoveryService.new(
       session,
