@@ -11,17 +11,28 @@ Rails.application.configure do
   # dev/test air.json today; the split is a seam, so the image can change its own
   # catalog sources without touching dev. AIR_CONFIG env still wins.
   #
-  # AIR_CATALOG_REF (optional): when set, generate a temp air.staging.json that
-  # rewrites every `github://tadasant/zimmer-catalog/...` URI to pin the catalog to
-  # the given ref (branch / tag / commit SHA). Lets a staging deploy test catalog
-  # changes from a feature branch without merging them to main.
+  # AIR_CATALOG_REF (optional): pins every `github://tadasant/zimmer-catalog/...`
+  # URI in the catalog to one ref (branch / tag / commit SHA), so a staging deploy
+  # can test catalog changes from a feature branch without merging them to main.
+  # The rewritten copy is written to tmp/ and resolved from there.
   #
-  # It only bites on a catalog that declares github:// sources. The in-image
-  # air.production.json declares none, so with the default catalog this rewrite is
-  # a no-op and AIR_CATALOG_REF changes nothing — hence the warning below, so an
-  # operator who sets it learns that immediately instead of trusting a pin that was
-  # never applied. It takes effect when AIR_CONFIG points at a catalog that does
-  # declare them.
+  # Its reach is narrower than it looks, in two ways that are easy to misread:
+  #
+  #   1. It applies to the in-image air.production.json ONLY. It sits inside the
+  #      ENV.fetch("AIR_CONFIG") block, so a deployment that sets AIR_CONFIG —
+  #      which is how an operator mounts their own catalog, and what
+  #      config/deploy.production.yml does — bypasses it entirely.
+  #   2. air.production.json declares no github:// URIs, so there is nothing in it
+  #      for the rewrite to match.
+  #
+  # Together those mean the knob pins nothing on any deployment as configured
+  # today, which is why an unmatched rewrite says so and falls back to the base
+  # config. Falling back is not cosmetic: the rewritten copy lands in tmp/, and
+  # air.production.json's index paths are RELATIVE to the config file's directory
+  # (`./skills/skills.json`), so resolving the copy from tmp/ would look for
+  # tmp/skills/skills.json and find nothing. Returning base_path when the rewrite
+  # matched nothing keeps a set-but-inert AIR_CATALOG_REF from emptying the
+  # catalog. See docs/limitations.md for the same trap on the CatalogPin path.
   config.air_json_path = ENV.fetch("AIR_CONFIG") {
     base_path = Rails.root.join("air.production.json").to_s
     catalog_ref = ENV["AIR_CATALOG_REF"].to_s.strip
@@ -33,16 +44,22 @@ Rails.application.configure do
         source,
         pins: { AirCatalogRefRewriter::CATALOG_PREFIX => catalog_ref }
       )
-      # `rewrite` re-serializes with JSON.pretty_generate either way, so the
-      # comparison is against a zero-pin rewrite, not against the source text.
-      if rewritten == AirCatalogRefRewriter.rewrite(source, pins: {})
-        warn "[staging] AIR_CATALOG_REF=#{catalog_ref} pinned nothing: " \
-             "#{base_path} declares no #{AirCatalogRefRewriter::CATALOG_PREFIX} URIs."
+      # Compare parsed documents: `rewrite` re-serializes with JSON.pretty_generate
+      # whether or not it matched anything, so the source text is never the baseline.
+      if JSON.parse(rewritten) == JSON.parse(source)
+        # Kernel#warn, not Rails.logger: config.logger is assigned further down this
+        # same block, so there is no configured logger yet. Fires once per process
+        # (each Puma worker, each GoodJob worker).
+        warn "[staging] AIR_CATALOG_REF=#{catalog_ref} changed nothing in #{base_path} " \
+             "(no #{AirCatalogRefRewriter::CATALOG_PREFIX} URI needed pinning). " \
+             "Resolving the catalog unrewritten."
+        base_path
+      else
+        out_path = Rails.root.join("tmp", "air.staging.json")
+        FileUtils.mkdir_p(out_path.dirname)
+        File.write(out_path, rewritten)
+        out_path.to_s
       end
-      out_path = Rails.root.join("tmp", "air.staging.json")
-      FileUtils.mkdir_p(out_path.dirname)
-      File.write(out_path, rewritten)
-      out_path.to_s
     end
   }
 

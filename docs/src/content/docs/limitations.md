@@ -2054,21 +2054,36 @@ mid-work — not anything the prepare path chose.
 
 Only a `github://` catalog can be pinned, and Zimmer's default catalog — in-image or mounted via
 `AIR_CONFIG` — is entirely local paths. So on this deployment `pinnable_catalogs` is empty,
-`resolved_sha_for` is never called, no `catalog_pins` row is ever written, and `AIR_CATALOG_REF` on
-staging rewrites nothing. The machinery is correct and exercised in CI; it is simply inert here, and
-becomes live the moment an operator points `AIR_CONFIG` at a catalog that declares `github://`
-sources.
+`resolved_sha_for` is never called, the settings page offers no pin to write, and `AIR_CATALOG_REF`
+matches nothing. The machinery is correct and exercised in CI; it is simply inert here, and becomes
+live the moment an operator points `AIR_CONFIG` at a catalog that declares `github://` sources.
 
-Two things used to make that inertness worse than it needed to be, and both are fixed:
+Two things made that inertness read as live, and both are fixed. The settings page rendered an empty
+**Catalog Pins** card — prose, no rows, and a save button that did nothing — and now hides it unless
+at least one catalog is pinnable. `AIR_CATALOG_REF` pinned nothing silently, and now warns at boot
+and resolves the catalog unrewritten.
 
-- The settings page rendered an empty **Catalog Pins** card — prose, no rows, and a save button that
-  did nothing. It is now hidden unless at least one catalog is pinnable.
-- `AIR_CATALOG_REF` on staging pinned nothing, silently. It now warns at boot when the rewrite
-  matched no URI, so an operator does not trust a pin that was never applied.
+`AIR_CATALOG_REF` is narrower than it reads, in a way worth stating plainly: it lives inside
+`staging.rb`'s `ENV.fetch("AIR_CONFIG")` fallback, so a deployment that sets `AIR_CONFIG` — which is
+how you mount your own catalog, and what `config/deploy.production.yml` does — never reaches it.
+`production.rb` has no equivalent at all. It therefore applies to the in-image `air.production.json`
+and nothing else.
 
-The `staging.rb` comment that described the in-image catalog as `github://`-backed has been
-corrected. (`production.rb`'s equivalent comment was already corrected, in
-[#125](https://github.com/tadasant/zimmer/pull/125).)
+:::caution[A pin rewrites the catalog into `tmp/`, and relative index paths do not follow it]
+Both pinning paths write the rewritten catalog to a new location — `tmp/air.staging.json` for
+`AIR_CATALOG_REF`, `tmp/air.effective.<pid>.json` for a `CatalogPin` row — and AIR resolves a
+catalog's local index paths **relative to the config file's own directory**. Zimmer's catalogs
+declare exactly such paths (`./skills/skills.json`), so a copy resolved from `tmp/` looks for
+`tmp/skills/skills.json` and finds nothing: an empty catalog, which
+[Zimmer treats as a failed resolve](/air/zimmer-integration/#a-dangling-reference-is-treated-as-a-failed-resolve).
+
+`AIR_CATALOG_REF` no longer has this problem — an unmatched rewrite returns the base path instead of
+writing a copy. The `CatalogPin` path still does, and it is reachable: `effective_air_json_path`
+switches to the tmp copy when **any** `catalog_pins` row exists, the settings form cannot create one
+on a local-only catalog, but `/supervisor/catalog_pins` is full Administrate CRUD and can. The fix is
+for the rewritten copy to carry absolute source paths, or to be written beside the base config rather
+than in `tmp/`. Tracked in [#1078](https://github.com/tadasant/zimmer/issues/1078).
+:::
 
 Reported as [#69](https://github.com/tadasant/zimmer/issues/69).
 
@@ -3932,10 +3947,10 @@ noted as having turned `main` red), [#5](https://github.com/tadasant/zimmer/issu
 
 ### Tests that skip themselves in CI
 
-`preregistered_oauth_config_test.rb`, `secrets_loader_test.rb`, `references_config_test.rb`, and
-`air_catalog_ref_rewriter_test.rb` (×2). Catalog pinning has zero CI coverage.
-
-Tracked in [#69](https://github.com/tadasant/zimmer/issues/69).
+`preregistered_oauth_config_test.rb` and `secrets_loader_test.rb` skip without credentials, so in CI
+they never run. The catalog-pinning skips that used to sit alongside them are gone — see
+[Tests that skip themselves](/operate/testing/#tests-that-skip-themselves) for the full list and for
+why a `github://` catalog turned out not to be needed to cover them.
 
 ### `logs.session_id` is an `integer` referencing a `bigint` primary key
 

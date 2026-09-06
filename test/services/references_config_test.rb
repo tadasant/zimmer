@@ -71,40 +71,39 @@ class ReferencesConfigTest < ActiveSupport::TestCase
   end
 
   # Test that reference files actually exist on disk.
-  # Local catalog entries carry `file` relative to the references index that
+  # Local catalog entries carry `file`, relative to the references index that
   # declared them. GitHub-catalog entries carry `path` (an absolute path AIR
   # resolved into the provider cache). Validate whichever the entry has.
   #
-  # The index directories come from air.json's own `references` list rather than
-  # a guessed sibling of air.json: this used to look in
-  # `File.expand_path("../references", air_json_dir)`, which resolves one level
-  # ABOVE the catalog root, so the directory was never found and the whole test
-  # skipped itself in CI.
+  # `file` is anchored on the directories air.json itself names in `references`,
+  # which is the only place that relationship is stated. Guessing a conventional
+  # directory next to air.json is what made this test unrunnable (#69).
   test "all references should point to existing files" do
-    assert index_dirs.any?, "air.json declares no local references index"
+    local, resolved = ReferencesConfig.all.partition { |ref| ref.path.blank? }
 
-    ReferencesConfig.all.each do |ref|
-      assert ref.file.present? || ref.path.present?,
-        "Reference '#{ref.id}' has neither file nor path"
+    assert index_dirs.any?, "air.json declares no local references index" if local.any?
 
-      if ref.path.present?
-        assert File.exist?(ref.path),
-          "Reference '#{ref.id}' points to missing file: #{ref.path}"
-      else
-        candidates = index_dirs.map { |dir| File.join(dir, ref.file) }
-        assert candidates.any? { |p| File.exist?(p) },
-          "Reference '#{ref.id}' points to missing file; tried: #{candidates.join(', ')}"
-      end
+    local.each do |ref|
+      assert ref.file.present?, "Reference '#{ref.id}' has neither file nor path"
+
+      candidates = index_dirs.map { |dir| File.join(dir, ref.file) }
+      assert candidates.any? { |p| File.exist?(p) },
+        "Reference '#{ref.id}' points to missing file; tried: #{candidates.join(', ')}"
+    end
+
+    resolved.each do |ref|
+      assert File.exist?(ref.path),
+        "Reference '#{ref.id}' points to missing file: #{ref.path}"
     end
   end
 
   private
 
   # Directories holding the local references indexes air.json declares, which is
-  # what a local entry's `file` is relative to.
+  # what a local entry's `file` is relative to. A `github://` index contributes
+  # none: its entries arrive with `path` already resolved into the provider cache.
   def index_dirs
-    air_json = AirCatalogService.air_json_path
-    Array(JSON.parse(File.read(air_json))["references"])
+    @index_dirs ||= Array(JSON.parse(File.read(AirCatalogService.air_json_path))["references"])
       .reject { |entry| entry.to_s.include?("://") }
       .map { |entry| File.dirname(File.expand_path(entry.to_s, AirCatalogService.air_json_dir)) }
       .uniq

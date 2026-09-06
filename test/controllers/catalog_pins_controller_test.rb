@@ -4,14 +4,12 @@ require "test_helper"
 require "mocha/minitest"
 
 class CatalogPinsControllerTest < ActionDispatch::IntegrationTest
-  # Zimmer's own catalog is local-only, so `pinnable_catalogs` is empty in this
-  # environment and every write below would be a no-op against the real value.
-  # The remote catalog is the configuration under test, not the environment, so
-  # each test declares it by stubbing the one method that reads air.json —
-  # which is also all the controller consults. No network, no fixture repo.
-  #
-  # These tests used to `skip` for want of a real github:// catalog, which left
-  # the pin write path with no CI coverage at all (#69).
+  # A remote catalog is a *configuration*, not an environment, so these tests
+  # declare one rather than waiting for one. `pinnable_catalogs` is the only
+  # thing the controller consults and the only thing that reads air.json, so
+  # stubbing it is the whole fixture: no network, no token, no catalog repo.
+  # Zimmer's own catalog is local-only, which leaves the real value empty — and
+  # a test that waits for it to be non-empty never runs at all (#69).
   PINNABLE = "github://pulsemcp/ai-artifacts"
 
   setup do
