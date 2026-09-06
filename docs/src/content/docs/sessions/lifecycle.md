@@ -33,7 +33,7 @@ queue sits between that hand-over and any worker picking the job up, so `running
 large population of turns nothing was executing: the dashboard would read "20 running" while
 `/inference` correctly said the pool runs 8 turns at once, and both were right about different
 things ([#957](https://github.com/tadasant/zimmer/issues/957),
-[#1036](https://github.com/tadasant/zimmer/issues/1036)).
+[#1040](https://github.com/tadasant/zimmer/pull/1040)).
 
 So the split is now in the status column:
 

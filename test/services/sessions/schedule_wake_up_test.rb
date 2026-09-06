@@ -198,7 +198,7 @@ class Sessions::ScheduleWakeUpTest < ActiveSupport::TestCase
       ScheduleTriggerJob.perform_now
     end
 
-    # Still `waiting` — a handed-over turn queues for a worker (#1036) — so the
+    # Still `waiting` — a handed-over turn queues for a worker (#1040) — so the
     # delivered prompt, not the status, is what says the wake landed.
     assert_equal "Resume", session.reload.metadata["pending_follow_up_prompt"],
       "the wake should have resumed its session, not left it asleep"

@@ -1448,7 +1448,7 @@ that does it has known limits:
   what binds first, but they are not roomy either: 15 threads derive 97 required backends, which is
   the *entire* capacity of a `db-s-2vcpu-4gb` cluster — zero margin.
 - **A turn is queued for a worker for as long as the `agents` lane is deep, and only the session
-  page says so.** Since [#1036](https://github.com/tadasant/zimmer/issues/1036) that turn reads
+  page says so.** Since [#1040](https://github.com/tadasant/zimmer/pull/1040) that turn reads
   `waiting` rather than `running`, so the dashboard count and `/inference`'s ceiling agree — but
   `waiting` is a state with four meanings (a spot hold, a ceiling pause, a quota park, a queued
   turn), and only the session detail page and `get_session` name which one. A session list showing
@@ -1458,7 +1458,7 @@ that does it has known limits:
   message the handoff path picks up, or a recovery job — the row can stay `running` while the session
   sleeps. Once nothing is left queued for it the ceilings stop counting it, which is the fix in #957,
   but the row itself still reads `running` on the dashboard and in every status query until its wake
-  fires. #1036 narrowed this — the enqueued-message handoff now returns the session to `waiting`
+  fires. #1040 narrowed this — the enqueued-message handoff now returns the session to `waiting`
   when it hands the next turn to the queue — without closing it: a turn that ends with a *recovery*
   job already in flight still leaves the row `running`. The counting is right; the status is still
   misleading in that residue.

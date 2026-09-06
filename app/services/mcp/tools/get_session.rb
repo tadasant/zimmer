@@ -226,7 +226,7 @@ module Mcp
       #
       # Says plainly that nothing is wrong and nobody has to act, because the
       # caller that reads this most is a router deciding whether a child is stuck.
-      # `waiting` is the state a queued turn has read since #1036; before that it
+      # `waiting` is the state a queued turn has read since #1040; before that it
       # read `running`, and the dashboard's session count was the sum of both.
       def turn_queued_lines(mechanism)
         [

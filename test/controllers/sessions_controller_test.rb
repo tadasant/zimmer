@@ -4531,7 +4531,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     post refresh_all_sessions_url
 
     # All 30 failed sessions should be restarted (prioritized). A restarted session
-    # queues for a worker rather than going straight to `running` (#1036), so the
+    # queues for a worker rather than going straight to `running` (#1040), so the
     # population to count is `waiting`.
     restarted_count = Session.where(status: :waiting).count
     assert_equal 50, restarted_count

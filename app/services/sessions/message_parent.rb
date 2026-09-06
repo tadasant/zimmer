@@ -271,7 +271,7 @@ module Sessions
         refusal ||= parent_failed if parent.failed?
 
         if refusal.nil?
-          # `Sessions::LiveTurn.underway?`, not `parent.running?`: since #1036 a
+          # `Sessions::LiveTurn.underway?`, not `parent.running?`: since #1040 a
           # turn that has been handed over but is still queued for a worker reads
           # `waiting`, and delivering into that would start a second turn on one
           # clone. See Sessions::LiveTurn#underway?.

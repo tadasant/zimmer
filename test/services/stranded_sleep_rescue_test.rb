@@ -98,7 +98,7 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     assert_equal 1, result.rescued
     assert_equal 1, result.found
     # Still `waiting` — the rescue hands a turn over and it queues for a worker
-    # (#1036), so the rescue count and the enqueued job above are what say it
+    # (#1040), so the rescue count and the enqueued job above are what say it
     # happened, not the status column.
     assert_equal "waiting", session.reload.status
     assert_equal 1, session.metadata[StrandedSleepRescue::RESCUE_COUNT]

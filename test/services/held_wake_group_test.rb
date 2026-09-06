@@ -102,7 +102,7 @@ class HeldWakeGroupTest < ActiveSupport::TestCase
 
     child_reaches_needs_input!(child)
 
-    # `waiting`: the fire hands the turn over and it queues for a worker (#1036).
+    # `waiting`: the fire hands the turn over and it queues for a worker (#1040).
     assert requester.reload.waiting?, "precondition: the fire resumed the requester"
     assert Trigger.exists?(deadline.id),
       "the deadline backstop must survive the fire — it is the only thing that wakes an interrupted turn"

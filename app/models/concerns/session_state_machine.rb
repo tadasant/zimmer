@@ -32,7 +32,7 @@ require "aasm"
 # routinely held a large population of turns no worker had started. The
 # dashboard read "20 running" while /inference correctly said the pool runs 8
 # turns at once, and the two were both right about different things
-# (tadasant/zimmer#957, #1036).
+# (tadasant/zimmer#957, #1040).
 #
 # So `resume` now lands in `waiting` — the state a session queued for compute has
 # always been in — and `start` is the only way into `running`. `start` is fired
@@ -504,7 +504,7 @@ module SessionStateMachine
     # that produces it has to count — `start`, an elicitation unblocking, a
     # session created directly in `running`. Missing one would leave the latch
     # spent against a fleet that had gone back to work. (`resume` used to be one
-    # of those paths; since #1036 it lands in `waiting` and the worker's `start`
+    # of those paths; since #1040 it lands in `waiting` and the worker's `start`
     # is what re-arms.)
     #
     # It does NOT cover `update_column`/`update_all`, which skip callbacks; no

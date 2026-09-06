@@ -132,7 +132,7 @@ class RearmWakesBrickedByUnresolvableAgentRootTest < ActiveSupport::TestCase
 
     session.reload
     # It is still `waiting`, because a handed-over turn queues for a worker
-    # (#1036) — so the marker below, not the status, is what proves the wake
+    # (#1040) — so the marker below, not the status, is what proves the wake
     # landed rather than leaving the session asleep with nothing coming.
     assert_equal "time to wake up", session.metadata["pending_follow_up_prompt"],
       "the wake should have resumed its session, not left it asleep"

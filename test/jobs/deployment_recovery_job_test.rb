@@ -19,7 +19,7 @@ class DeploymentRecoveryJobTest < ActiveJob::TestCase
 
     session.reload
     # `waiting`, not `running`: the recovery resume hands the turn to the `agents`
-    # queue and a worker's `start` is what makes the session `running` (#1036).
+    # queue and a worker's `start` is what makes the session `running` (#1040).
     # `paused_by` going away is what distinguishes it from the pause it was in.
     assert_equal "waiting", session.status
     assert_nil session.metadata["paused_by"]

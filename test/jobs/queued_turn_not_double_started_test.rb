@@ -5,7 +5,7 @@ require "mocha/minitest"
 
 # A turn that has been handed over but not yet started must not be started twice.
 #
-# THE HAZARD #1036 CREATED, and the guard that closes it. Before that change a
+# THE HAZARD #1040 CREATED, and the guard that closes it. Before that change a
 # session with a turn in flight read `running`, and `running` is the one status
 # `resume` is refused from — so `may_resume?` alone answered "is somebody else
 # already driving this session". Now a handed-over turn reads `waiting`, which is

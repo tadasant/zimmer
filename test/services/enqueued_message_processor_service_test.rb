@@ -30,7 +30,7 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
 
     @session.reload
     # `waiting`: the resume hands the turn to the `agents` queue and a worker's
-    # `start` is what makes the session `running` (#1036).
+    # `start` is what makes the session `running` (#1040).
     assert_equal "waiting", @session.status
     assert_not EnqueuedMessage.exists?(message.id), "Message should be deleted"
   end

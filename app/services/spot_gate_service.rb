@@ -65,7 +65,7 @@
 # /inference card and they are legitimately different; #awaiting_clause is what
 # explains the gap.
 #
-# Since #1036 a handed-over turn reads `waiting` rather than `running`, so
+# Since #1040 a handed-over turn reads `waiting` rather than `running`, so
 # neither number is a `COUNT(*)` on the status column any more — both are read
 # through the `agents` job rows. What each one MEANS is unchanged.
 #

@@ -169,7 +169,7 @@ module Sessions
         stamped = metadata[PENDING_SLEEP_REASON].presence
         return stamped if stamped
 
-        # `.dormancy`, not `.current`: since #1036 the highest-ranked mechanism can
+        # `.dormancy`, not `.current`: since #1040 the highest-ranked mechanism can
         # be a turn queued for a worker, which is not a stop at all — reading it
         # here would hide the spot hold or the quota park underneath it.
         mechanism = SessionWaitingReason.for(session)&.dormancy

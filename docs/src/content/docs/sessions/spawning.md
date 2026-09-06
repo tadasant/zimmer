@@ -46,7 +46,7 @@ the job is enqueued and no archive can land in between. It answers `:archived` (
 own defect), `:superseded` (another session took this session's work over — below) or `:claimed`,
 and the enqueuer starts a turn only on `:claimed`.
 
-`:not_resumable` has two halves since [#1036](https://github.com/tadasant/zimmer/issues/1036). The
+`:not_resumable` has two halves since [#1040](https://github.com/tadasant/zimmer/pull/1040). The
 state machine refuses `resume` from `running`, which catches a session with a process alive — and
 because a turn that has merely been *handed over* now reads `waiting` rather than `running`, the
 claim also asks the `agents` job rows through `Sessions::LiveTurn.underway?`. Without that second

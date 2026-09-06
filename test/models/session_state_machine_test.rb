@@ -73,7 +73,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
     # `waiting`, not `running`: the resume HANDS the turn over and the session
     # queues for one of the `agents` lane's worker threads. `start` — fired from
-    # inside AgentSessionJob#perform — is the only way into `running` (#1036).
+    # inside AgentSessionJob#perform — is the only way into `running` (#1040).
     assert session.waiting?, "Session should be queued for a worker after resume"
     assert_equal 1, session.logs.where("content LIKE ?", "%Session resumed%").count
 

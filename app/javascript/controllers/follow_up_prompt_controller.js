@@ -15,7 +15,7 @@ export default class extends Controller {
   static values = {
     promptMaxLength: { type: Number, default: 500000 },
     // True when a turn is already underway for this session — on a worker, or
-    // ready in the `agents` queue with a worker coming for it. Since #1036 that is
+    // ready in the `agents` queue with a worker coming for it. Since #1040 that is
     // NOT the same as `status == running`: a handed-over turn reads `waiting`
     // until a worker spawns its process, and the composer must still queue.
     turnUnderway: { type: Boolean, default: false },

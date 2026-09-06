@@ -64,7 +64,7 @@ class SessionLifecycleTest < IntegrationTestCase
     session.reload
 
     # `waiting`: the follow-up hands the turn to the `agents` queue, and a worker's
-    # `start` is what makes the session `running` (#1036).
+    # `start` is what makes the session `running` (#1040).
     assert_equal "waiting", session.status
 
     # Verify job is enqueued

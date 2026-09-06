@@ -167,7 +167,7 @@ class EnqueuedMessageProcessorService
           # `waiting` because that is what is true from here until a worker picks
           # the job up below: the outgoing turn's process has exited and the next
           # turn is a row in the `agents` queue. Leaving it `running` across this
-          # window is the handoff half of #1036 — and it is not a short window on a
+          # window is the handoff half of #1040 — and it is not a short window on a
           # busy deployment, because the new job joins the BACK of a queue that may
           # already be deeper than the pool.
           #

@@ -165,7 +165,7 @@ class Sessions::LiveTurnTest < ActiveSupport::TestCase
     assert_includes Sessions::LiveTurn.refusal_message(session, batch: true), "every session in the batch"
   end
 
-  # === #underway?, the guard `running?` used to be (#1036) ===================
+  # === #underway?, the guard `running?` used to be (#1040) ===================
   #
   # Since a handed-over turn reads `waiting`, every caller that decided "queue
   # this prompt rather than starting a second turn" on `session.running?` has to
@@ -177,7 +177,7 @@ class Sessions::LiveTurnTest < ActiveSupport::TestCase
       "a running row with no job is an orphan a sweep owns — a follow-up still queues behind it"
   end
 
-  # THE #1036 CASE. This session reads `waiting` and a worker is coming for it
+  # THE #1040 CASE. This session reads `waiting` and a worker is coming for it
   # within minutes; delivering into it would be a second turn on one clone.
   test "a waiting session with a ready turn in the agents lane has one underway" do
     target = session(status: :waiting)

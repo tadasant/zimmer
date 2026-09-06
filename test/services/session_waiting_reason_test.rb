@@ -167,7 +167,7 @@ class SessionWaitingReasonTest < ActiveSupport::TestCase
     assert_nil SessionWaitingReason.for(session.reload)
   end
 
-  # === the fourth mechanism: queued for a worker (#1036) =====================
+  # === the fourth mechanism: queued for a worker (#1040) =====================
 
   def queue_a_turn_for(session, **attrs)
     GoodJob::Job.create!({
