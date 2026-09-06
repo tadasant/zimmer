@@ -294,7 +294,7 @@ jobs:
   # the app while migrating from zero means model code meeting a half-built schema.
   # This job reproduces exactly what a developer runs locally.
   #
-  # See docs/operate/testing.md and lib/tasks/schema_verify.rake.
+  # See docs/operate/testing.md and lib/schema_verify_task.rb.
   schema_verify:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: self-hosted
@@ -322,8 +322,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      # Asserted, not just written: config/database.yml defaults DATABASE_PORT to
+      # 5432, and this is the only job in the file that runs an unconditional
+      # `db:drop`. An empty expansion here would point it at whatever Postgres
+      # answers on the shared runner's localhost:5432.
       - name: Resolve dynamic service ports
-        run: echo "DATABASE_PORT=${{ job.services.postgres.ports[5432] }}" >> "$GITHUB_ENV"
+        run: |
+          port="${{ job.services.postgres.ports[5432] }}"
+          [ -n "$port" ] || { echo "::error::no dynamic Postgres port for the service container"; exit 1; }
+          echo "DATABASE_PORT=$port" >> "$GITHUB_ENV"
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"

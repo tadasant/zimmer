@@ -16,7 +16,7 @@ require "test_helper"
 # moves, or a schema version that no longer matches the migrations on disk. The
 # expensive half — proving that migrating from zero and loading the schema
 # produce the same database — is `bin/rails db:schema:verify`
-# (lib/tasks/schema_verify.rake). It drops and recreates databases, so it runs in
+# (lib/schema_verify_task.rb). It drops and recreates databases, so it runs in
 # the merge gate as its own job, `schema_verify`, against its own scratch
 # Postgres service container rather than the one this suite is using.
 class SchemaDumpTest < ActiveSupport::TestCase
