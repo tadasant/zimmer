@@ -303,10 +303,11 @@ module Mcp
       # be and what made both surfaces claim a stretch far shorter than the real
       # one.
       def under_ceiling_since_phrase(status)
-        return "— (the fleet was at or over its ceiling at the last check)" if status.idle_since.nil?
+        since = status.under_ceiling_since
+        return "— (the fleet is at or over its ceiling, so no stretch is running)" if since.nil?
 
-        "#{status.idle_since.utc.iso8601} (#{ago(status.idle_since)}) — the crossing below " \
-          "#{status.max_sessions}, not the last session start"
+        "#{since.utc.iso8601} (#{ago(since)}) — the crossing below #{status.max_sessions}, not the " \
+          "last session start"
       end
 
       def next_fire_phrase(status)

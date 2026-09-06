@@ -326,10 +326,15 @@ class FleetIdleMonitor
     # @return [Boolean] true when the idle clock was actually cleared
     def record_session_started!
       setting = AppSetting.current
-      # No stretch to end. Also the cheap answer on a fleet that is already at
-      # its ceiling — which is exactly when session starts come thickest — since
-      # reading the fleet below costs three queries and this runs on every one.
+      # Two free answers before the expensive one, because reading the fleet
+      # costs three queries and this runs on every session start. There is
+      # nothing to end when no stretch is running; and a ceiling the `agents`
+      # pool cannot reach is one `on_a_worker` can never meet, so the read below
+      # would ask a question whose answer is already known. The second guard is
+      # not a corner case — it is the shape of the deployment that reported this,
+      # where the clock runs for weeks at a time.
       return false if setting.fleet_idle_since.nil?
+      return false if RunningTurns.ceiling_out_of_reach?(max_sessions(setting))
       return false if running_turns.on_a_worker < max_sessions(setting)
 
       clear_idle_clock!(setting)
