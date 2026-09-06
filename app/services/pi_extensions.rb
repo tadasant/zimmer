@@ -104,6 +104,10 @@ module PiExtensions
                "extension API and has no hooks concept of its own).",
       pending_publish: false
     ),
+    # Held to the same floor, and not only for symmetry: pi-plugins dispatches a
+    # selected plugin's bundled hooks through the copy of pi-hooks it bundles, so a
+    # pi-plugins below 0.2.0 would reintroduce the silent no-op above for every hook
+    # that reaches a session through a plugin rather than directly.
     Extension.new(
       package: "@tadasant/pi-plugins",
       version: "0.2.0",
