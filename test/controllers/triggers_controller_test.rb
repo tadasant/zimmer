@@ -20,6 +20,127 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", "Triggers"
   end
 
+  # --- agent_root_name against the catalog (zimmer#448) ---------------------
+
+  def trigger_named_for_a_root_that_does_not_exist
+    Trigger.create!(
+      name: "Written before its root exists",
+      status: "enabled",
+      agent_root_name: "root-that-lands-tomorrow",
+      prompt_template: "Do the thing",
+      trigger_conditions: [ TriggerCondition.new(condition_type: "schedule",
+                                                 configuration: { "interval" => 1, "unit" => "days", "time" => "03:00" }) ]
+    )
+  end
+
+  test "creating a trigger against a root the catalog does not carry succeeds and says so" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+
+    assert_difference("Trigger.count", 1) do
+      post triggers_path, params: { trigger: {
+        name: "Written before its root exists",
+        status: "enabled",
+        agent_root_name: "root-that-lands-tomorrow",
+        prompt_template: "Do the thing",
+        trigger_conditions_attributes: {
+          "0" => { condition_type: "schedule", configuration: { interval: 1, unit: "days", time: "03:00" } }
+        }
+      } }
+    end
+
+    assert_redirected_to trigger_path(Trigger.last)
+    assert_equal "root-that-lands-tomorrow", Trigger.last.agent_root_name
+    assert_includes flash[:notice], "Trigger created successfully."
+    assert_includes flash[:notice], "root-that-lands-tomorrow' is not in this deployment's catalog"
+  end
+
+  test "creating a trigger against a known root says only that it was created" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+
+    post triggers_path, params: { trigger: {
+      name: "Ordinary Trigger",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Do the thing",
+      trigger_conditions_attributes: {
+        "0" => { condition_type: "schedule", configuration: { interval: 1, unit: "days", time: "03:00" } }
+      }
+    } }
+
+    assert_equal "Trigger created successfully.", flash[:notice]
+  end
+
+  test "the list badges a trigger whose agent root is not in the catalog" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+    trigger_named_for_a_root_that_does_not_exist
+
+    get triggers_path
+    assert_response :success
+    assert_select "span", text: "Agent root not in catalog", count: 1
+  end
+
+  # The @catalog_agent_root_names ivar is the whole reason the badge is not an
+  # N+1 — AgentRootsConfig.all rebuilds every root and reads AppSetting.current
+  # per call. Nothing else fails if a future edit drops it, so this does.
+  # A catalog that failed to resolve leaves AgentRootsConfig.all == [], so EVERY
+  # stored root falls into the "no option for it" branch. Carrying the name is
+  # still right — the form has to post it back — but labelling it "(not in
+  # catalog)" on that reading would smear the outage across every trigger.
+  test "the edit form carries the stored root unlabelled when the catalog could not be read" do
+    AgentRootsConfig.stubs(:all).returns([])
+    AgentRootsConfig.stubs(:names).returns([])
+    trigger = trigger_named_for_a_root_that_does_not_exist
+
+    get edit_trigger_path(trigger)
+    assert_response :success
+    assert_select "select#trigger_agent_root_name option[selected][value=?]", "root-that-lands-tomorrow"
+    assert_not_includes response.body, "root-that-lands-tomorrow (not in catalog)"
+  end
+
+  test "the list reads the catalog once for the whole page" do
+    trigger_named_for_a_root_that_does_not_exist
+    assert_operator Trigger.count, :>, 1
+
+    AgentRootsConfig.expects(:names).at_most_once.returns(%w[zimmer general-agent])
+
+    get triggers_path
+    assert_response :success
+  end
+
+  test "the list badges nothing when the catalog could not be read" do
+    AgentRootsConfig.stubs(:names).returns([])
+    trigger_named_for_a_root_that_does_not_exist
+
+    get triggers_path
+    assert_response :success
+    assert_select "span", text: "Agent root not in catalog", count: 0
+  end
+
+  test "the trigger page marks an agent root the catalog does not carry" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+    trigger = trigger_named_for_a_root_that_does_not_exist
+
+    get trigger_path(trigger)
+    assert_response :success
+    assert_includes response.body, "root-that-lands-tomorrow (not in catalog)"
+  end
+
+  test "the edit form carries an agent root the catalog does not carry, so an unrelated edit still saves" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+    trigger = trigger_named_for_a_root_that_does_not_exist
+
+    get edit_trigger_path(trigger)
+    assert_response :success
+    # Without the option the select would fall back to the blank prompt, post
+    # back "", and fail presence — locking the operator out of the whole form.
+    assert_select "select#trigger_agent_root_name option[selected][value=?]", "root-that-lands-tomorrow"
+
+    patch trigger_path(trigger), params: { trigger: { name: "Renamed, root untouched" } }
+    assert_redirected_to trigger_path(trigger)
+    assert_equal "Renamed, root untouched", trigger.reload.name
+    assert_equal "root-that-lands-tomorrow", trigger.agent_root_name
+  end
+
   # The icon a row renders is asserted by name, not merely by presence: a
   # `system_event` trigger that quietly fell through to the gray fallback would
   # still show *an* icon, and that is the shape of the bug this pins.

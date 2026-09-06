@@ -779,6 +779,42 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/proof-trigger-detail-failed-375.png")
   end
 
+  # zimmer#448: a trigger may name an agent root the catalog does not carry, which
+  # adds a badge to an already-crowded row and a red note to the detail page. The
+  # name is the operator's, so it is exactly the unbreakable-token shape.
+  UNCATALOGUED_ROOT = "zimmer-production-deploy-and-verify-nightly-catalog-resolve".freeze
+
+  test "a trigger naming a root the catalog does not carry does not overflow on a phone" do
+    trigger = create_trigger
+    trigger.update_column(:agent_root_name, UNCATALOGUED_ROOT)
+
+    visit triggers_path
+    assert_text "Agent root not in catalog"
+    assert_no_horizontal_overflow("triggers index with an uncatalogued agent root")
+    # Uploaded by CI on success too (see the workflow's screenshot step) — an agent
+    # session has no local Postgres, so this is where a PR's UI evidence comes from.
+    page.save_screenshot("tmp/screenshots/proof-triggers-index-uncatalogued-root-375.png")
+
+    visit trigger_path(trigger)
+    assert_text "#{UNCATALOGUED_ROOT} (not in catalog)"
+    assert_no_horizontal_overflow("trigger detail with an uncatalogued agent root")
+    page.save_screenshot("tmp/screenshots/proof-trigger-detail-uncatalogued-root-375.png")
+
+    # The edit form has to carry the stored name as an option, or the select falls
+    # back to its blank prompt and the operator cannot save the form at all.
+    visit edit_trigger_path(trigger)
+    assert_select_option_selected(UNCATALOGUED_ROOT)
+    assert_no_horizontal_overflow("trigger edit form with an uncatalogued agent root")
+  end
+
+  def assert_select_option_selected(value)
+    selected = page.evaluate_script(
+      "document.querySelector('select#trigger_agent_root_name').value"
+    )
+    assert_equal value, selected,
+      "the edit form's agent-root select fell back to \"#{selected}\" instead of carrying the stored name"
+  end
+
   # The account card only crowds once several accounts are listed, and the email is
   # the token that has to wrap — so this owns both rather than leaning on fixtures.
   # The readings matter too: with them the spot gate renders its live decision and

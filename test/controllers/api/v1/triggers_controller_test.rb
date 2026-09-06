@@ -245,6 +245,117 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_includes JSON.parse(response.body)["messages"].join, "Max sessions per minute must be greater than 0"
   end
 
+  # --- agent_root_name against the catalog (zimmer#448) ---------------------
+
+  def daily_schedule_attributes
+    [ { condition_type: "schedule", configuration: { interval: 1, unit: "days", time: "03:00" } } ]
+  end
+
+  test "creating a trigger against a root the catalog does not carry succeeds and warns" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+
+    assert_difference("Trigger.count", 1) do
+      post api_v1_triggers_path, params: {
+        name: "Written before its root exists",
+        agent_root_name: "root-that-lands-tomorrow",
+        prompt_template: "Do the thing",
+        trigger_conditions_attributes: daily_schedule_attributes
+      }, headers: @headers
+    end
+
+    assert_response :created
+    json = JSON.parse(response.body)
+    # The create-ahead workflow is intact: stored, enabled, and named as written.
+    assert_equal "root-that-lands-tomorrow", json["trigger"]["agent_root_name"]
+    assert_equal "enabled", json["trigger"]["status"]
+    # And the caller is told, in the same response, what used to surface at 03:00.
+    assert_equal true, json["trigger"]["agent_root_missing_from_catalog"]
+    assert_equal 1, json["warnings"].length
+    assert_includes json["warnings"].first, "root-that-lands-tomorrow"
+    assert_includes json["warnings"].first, "is not in this deployment's catalog"
+  end
+
+  test "creating a trigger against a known root carries no warnings key" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+
+    post api_v1_triggers_path, params: {
+      name: "Ordinary Trigger",
+      agent_root_name: "zimmer",
+      prompt_template: "Do the thing",
+      trigger_conditions_attributes: daily_schedule_attributes
+    }, headers: @headers
+
+    assert_response :created
+    json = JSON.parse(response.body)
+    assert_equal false, json["trigger"]["agent_root_missing_from_catalog"]
+    assert_not json.key?("warnings"), "expected no warnings key, got #{json['warnings'].inspect}"
+  end
+
+  test "moving an existing trigger onto an unknown root warns on update" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+
+    patch api_v1_trigger_path(@trigger), params: { agent_root_name: "root-that-lands-tomorrow" }, headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal "root-that-lands-tomorrow", @trigger.reload.agent_root_name
+    assert_equal 1, json["warnings"].length
+    assert_includes json["warnings"].first, "root-that-lands-tomorrow"
+  end
+
+  test "a catalog that could not be read warns on nothing" do
+    # Every name looks missing against an empty catalog. Warning on that reading
+    # would fire on every trigger write during an unrelated catalog outage.
+    AgentRootsConfig.stubs(:names).returns([])
+
+    post api_v1_triggers_path, params: {
+      name: "Written During An Outage",
+      agent_root_name: "zimmer",
+      prompt_template: "Do the thing",
+      trigger_conditions_attributes: daily_schedule_attributes
+    }, headers: @headers
+
+    assert_response :created
+    json = JSON.parse(response.body)
+    assert_equal false, json["trigger"]["agent_root_missing_from_catalog"]
+    assert_not json.key?("warnings")
+  end
+
+  # The `catalog_root_names:` kwarg is the whole reason this is not an N+1:
+  # AgentRootsConfig.all rebuilds every root and reads AppSetting.current on each
+  # call. Nothing else fails if a future edit drops it, so this does.
+  test "the index reads the catalog once for the whole page" do
+    Trigger.create!(
+      name: "Second Trigger",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Do the thing",
+      trigger_conditions: [ TriggerCondition.new(condition_type: "schedule",
+                                                 configuration: { "interval" => 1, "unit" => "days", "time" => "03:00" }) ]
+    )
+    assert_operator Trigger.count, :>, 1
+
+    AgentRootsConfig.expects(:names).at_most_once.returns(%w[zimmer general-agent])
+
+    get api_v1_triggers_path, headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert json["triggers"].all? { |t| t.key?("agent_root_missing_from_catalog") },
+      "every row should report whether its agent root resolves"
+  end
+
+  test "the index marks a row whose agent root the catalog does not carry" do
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer general-agent])
+    @trigger.update_column(:agent_root_name, "root-that-lands-tomorrow")
+
+    get api_v1_triggers_path, headers: @headers
+
+    assert_response :success
+    row = JSON.parse(response.body)["triggers"].find { |t| t["id"] == @trigger.id }
+    assert_equal true, row["agent_root_missing_from_catalog"]
+  end
+
   test "should create schedule trigger with conditions" do
     assert_difference("Trigger.count", 1) do
       post api_v1_triggers_path, params: {

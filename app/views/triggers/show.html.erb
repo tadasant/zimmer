@@ -240,7 +240,21 @@
         <dl class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <dt class="text-sm font-medium text-gray-500">Agent Root</dt>
-            <dd class="mt-1 text-sm text-gray-900"><%= @trigger.agent_root_name %></dd>
+            <%# A name the catalog does not carry is stored on purpose — writing the
+                trigger ahead of the catalog entry that defines its root is allowed —
+                so it has to read differently from a working one here. Every spawn
+                fire raises until the name resolves. See zimmer#448. %>
+            <% agent_root_missing = @trigger.agent_root_missing_from_catalog? %>
+            <dd class="mt-1 text-sm break-words <%= agent_root_missing ? "text-red-900" : "text-gray-900" %>">
+              <%= @trigger.agent_root_name %><%= " (not in catalog)" if agent_root_missing %>
+            </dd>
+            <% if agent_root_missing %>
+              <p class="mt-1 text-xs text-red-700">
+                Not in this deployment&rsquo;s catalog. The trigger is saved and enabled, but every fire
+                that has to spawn a session will fail until that name resolves &mdash; either add the
+                agent root to the catalog, or point this trigger at one that exists.
+              </p>
+            <% end %>
           </div>
           <div>
             <dt class="text-sm font-medium text-gray-500">Session Re-use</dt>

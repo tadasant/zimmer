@@ -1,3 +1,7 @@
+<%# `catalog_agent_root_names` is supplied by the index, which reads it once for
+    the whole list; a single-row re-render over Turbo Streams reads it here. See
+    Trigger.catalog_agent_root_names. %>
+<% catalog_agent_root_names = local_assigns.fetch(:catalog_agent_root_names) { Trigger.catalog_agent_root_names } %>
 <%= turbo_frame_tag "trigger_#{trigger.id}" do %>
   <li class="hover:bg-gray-50">
     <div class="px-6 py-4">
@@ -28,6 +32,16 @@
               <% else %>
                 <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
                   Disabled
+                </span>
+              <% end %>
+              <%# A root the catalog does not carry is saved on purpose — a trigger may
+                  be written ahead of the catalog entry that defines its root — so the
+                  row still reads `Enabled`. This is the only thing that says the next
+                  spawn fire will raise. See zimmer#448. %>
+              <% if trigger.agent_root_missing_from_catalog?(catalog_agent_root_names) %>
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-900"
+                      title="Agent root '<%= trigger.agent_root_name %>' is not in this deployment's catalog. Until it is, every fire that has to spawn a session will fail.">
+                  Agent root not in catalog
                 </span>
               <% end %>
               <% if trigger.reuse_session %>
