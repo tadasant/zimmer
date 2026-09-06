@@ -161,8 +161,9 @@
             ranked below precedence <%= agent_session.precedence %>.
           <% elsif preempted %>
             it gave its session slot to a priority session, and it resumes from the spot queue —
-            highest precedence first — as soon as the fleet is back under its concurrency limit.
-            No quota window is involved.
+            highest precedence first — once the fleet is back under its concurrency limit and a
+            Claude account is under both quota targets. It waits in the same queue as the sessions
+            the budget ceiling paused, on the same resume decision.
           <% elsif paused_mid_run %>
             it was already running when a window reached its target, and it resumes on its own
             once utilization falls <%= SpotGateService::RESUME_MARGIN_PCT %> points below it.

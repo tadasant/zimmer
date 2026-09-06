@@ -196,6 +196,41 @@ class Sessions::HumanInterventionPromotionTest < ActiveSupport::TestCase
     assert_nil result.demoted
   end
 
+  # The counterweight has to keep working, not fire once. Taking the LOWEST-
+  # precedence session among the least involved made it a permanent no-op after a
+  # single round: that session sinks to the bottom, is selected every time after,
+  # and the demotion refuses because it is already there — while the promotion
+  # goes on adding SLOT_GAP to the top forever.
+  test "the exchange keeps working across repeated interventions" do
+    session = spot_session(precedence: 0)
+    a = spot_session(precedence: 30)
+    b = spot_session(precedence: 20)
+
+    first = Sessions::HumanInterventionPromotion.call(human_message(session))
+    second = Sessions::HumanInterventionPromotion.call(human_message(session))
+
+    assert_not_nil first.demoted, "the first intervention demotes somebody"
+    assert_not_nil second.demoted, "and so does the second"
+    assert_equal [ a.id, b.id ].sort, [ first.demoted.id, second.demoted.id ].sort,
+      "both uninvolved sessions took a turn at the bottom"
+    # The whole point of the counterweight: the queue's span does not grow without
+    # bound as the top is pushed up.
+    assert_operator session.reload.precedence, :>, a.reload.precedence
+    assert_operator session.precedence, :>, b.reload.precedence
+  end
+
+  test "among equally-uninvolved sessions the highest-ranked one goes down" do
+    session = spot_session(precedence: 0)
+    low = spot_session(precedence: 5)
+    high = spot_session(precedence: 40)
+
+    result = Sessions::HumanInterventionPromotion.call(human_message(session))
+
+    assert_equal high.id, result.demoted&.id,
+      "the one jumping the queue on nothing is the one to send down"
+    assert_equal 5, low.reload.precedence
+  end
+
   test "a session already at the bottom is not walked further down" do
     session = spot_session(precedence: 100)
     bottom = spot_session(precedence: -50)
@@ -211,17 +246,24 @@ class Sessions::HumanInterventionPromotionTest < ActiveSupport::TestCase
   end
 
   test "the demoted session keeps its turn, its record and its class" do
-    session = spot_session
-    victim = spot_session(precedence: 10, metadata: {
+    session = spot_session(precedence: 0)
+    # Above a second queued session, so a demotion actually lands — otherwise the
+    # already-at-the-bottom guard fires and this asserts on an untouched row.
+    victim = spot_session(precedence: 40, metadata: {
       SpotSessionPause::PAUSED_REASON => SpotSessionPause::QUEUED_REASON,
       SpotSessionPause::PAUSED_DETAIL => "parked deliberately"
     })
+    floor = spot_session(precedence: 20)
+    human_message(floor)
 
-    Sessions::HumanInterventionPromotion.call(human_message(session))
+    result = Sessions::HumanInterventionPromotion.call(human_message(session))
 
+    assert_equal victim.id, result.demoted&.id, "the demotion has to have landed"
     victim.reload
-    assert victim.waiting?
-    assert_equal SpotSessionPause::QUEUED_REASON, victim.metadata[SpotSessionPause::PAUSED_REASON]
+    assert_operator victim.precedence, :<, 40
+    assert victim.waiting?, "it is not stopped"
+    assert_equal SpotSessionPause::QUEUED_REASON, victim.metadata[SpotSessionPause::PAUSED_REASON],
+      "and its park record and resume owner are untouched"
     assert victim.spot?
   end
 

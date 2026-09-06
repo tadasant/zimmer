@@ -76,13 +76,21 @@ module Sessions
   #     has just been spoken to, so its count is at least one; a candidate must be
   #     STRICTLY below it. When every queued session is as involved as this one,
   #     the queue has no less-wanted work in it and there is nothing to trade.
-  #   * **Age exemption.** A session that has been in the queue longer than
-  #     STARVATION_EXEMPTION is never demoted, whatever its involvement. This is
-  #     the anti-starvation rule, and it is stated as a rule rather than left to
-  #     luck: an unattended session sinks at most until it is a day old, and from
-  #     then on every promotion goes past it rather than over it. Without it,
-  #     "least human involvement" is a property that never changes on a session
-  #     nobody talks to, so the same row would be demoted forever.
+  #   * **Age exemption.** A session CREATED longer ago than STARVATION_EXEMPTION
+  #     is never demoted, whatever its involvement. This is the anti-starvation
+  #     rule, and it is stated as a rule rather than left to luck: an unattended
+  #     session sinks at most until it is a day old, and from then on every
+  #     promotion goes past it rather than over it. Without it, "least human
+  #     involvement" is a property that never changes on a session nobody talks
+  #     to, so the same row would be demoted forever.
+  #
+  #     `created_at` rather than how long it has sat in the queue, and the
+  #     difference is named because it is real: a session created yesterday that
+  #     joined the queue a minute ago is exempt. That errs toward demoting NOBODY,
+  #     which is the direction an anti-starvation rule should be wrong in, and it
+  #     is the only clock that is monotonic — queue time resets every time a
+  #     session runs, so a session that keeps almost-running would never accrue
+  #     any.
   #   * **The spot queue only.** Candidates are spot sessions dormant in
   #     `waiting`. A running session is not in the queue — re-ranking it changes
   #     nothing about what it is doing and only charges it later — and a priority
@@ -98,8 +106,8 @@ module Sessions
     # the specific boundary the capture recorded rather than the coarse channel.
     CREATION_ENTRY_POINTS = %w[web_ui.new_session web_ui.quick_prompt].freeze
 
-    # How long a session has to have been waiting before it stops being
-    # demotable. The anti-starvation floor — see the class comment.
+    # How old a session has to be before it stops being demotable, measured from
+    # `created_at`. The anti-starvation floor — see the class comment.
     STARVATION_EXEMPTION = 24.hours
 
     # How far below the bottom of the queue a demoted session lands, and the
@@ -201,6 +209,8 @@ module Sessions
       # @return [Session, nil] the session sent to the bottom, or nil for "nobody
       #   in this queue is less involved than the one that was just promoted"
       def demote_least_involved!(promoted, logger)
+        # `created_at` is the anti-starvation clock — see the class comment for why
+        # it is that rather than time-in-queue.
         candidates = queued_spot_sessions.where.not(id: promoted.id)
           .where(created_at: STARVATION_EXEMPTION.ago..).to_a
         return nil if candidates.empty?
@@ -212,9 +222,19 @@ module Sessions
         candidates = candidates.select { |s| involvement.fetch(s.id, [ 0, nil ]).first < bar }
         return nil if candidates.empty?
 
+        # `-precedence`: among equally-uninvolved sessions the one to send down is
+        # the one currently HIGHEST, which is both the one whose demotion actually
+        # changes the order and the one that is jumping the queue on nothing.
+        #
+        # Taking the lowest instead made the exchange a permanent no-op after a
+        # single round: the least-involved session sinks to the bottom, is then
+        # selected every time, and #demote! refuses because it is already there —
+        # so the top went on inflating by SLOT_GAP per intervention with nothing
+        # ever coming down, which is precisely what the counterweight exists to
+        # prevent.
         victim = candidates.min_by do |s|
           count, last_at = involvement.fetch(s.id, [ 0, nil ])
-          [ count, last_at&.to_i || 0, demoted_count(s), s.precedence.to_i, -s.created_at.to_i, -s.id ]
+          [ count, last_at&.to_i || 0, demoted_count(s), -s.precedence.to_i, -s.created_at.to_i, -s.id ]
         end
 
         demote!(victim, promoted, logger)
@@ -273,8 +293,8 @@ module Sessions
           "##{promoted.id}, which went to the head of the queue; this session was the least " \
           "human-involved one queued, so it made room. Nothing was cancelled and no turn was lost — " \
           "it runs when the queue above it drains, and one message from a human puts it back on top. " \
-          "A session that has been queued for over #{STARVATION_EXEMPTION.inspect} is never demoted " \
-          "again, so this cannot repeat indefinitely."
+          "A session created more than #{STARVATION_EXEMPTION.inspect} ago is never demoted again, so " \
+          "this cannot repeat indefinitely."
       end
     end
   end
