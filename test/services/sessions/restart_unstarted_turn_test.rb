@@ -16,7 +16,6 @@ class Sessions::RestartUnstartedTurnTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       transcript: nil,
       metadata: { "clone_path" => @clone_path, "working_directory" => @clone_path, "runtime_started" => true }

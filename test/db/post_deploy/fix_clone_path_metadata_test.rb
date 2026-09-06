@@ -14,8 +14,7 @@ class FixClonePathMetadataTest < ActiveSupport::TestCase
 
   def session(metadata)
     Session.create!(prompt: "clone path #{SecureRandom.hex(4)}", agent_runtime: "claude_code",
-                    status: :waiting, git_root: "https://github.com/test/repo.git", branch: "main",
-                    execution_provider: "local_filesystem", metadata: metadata)
+                    status: :waiting, git_root: "https://github.com/test/repo.git", branch: "main", metadata: metadata)
   end
 
   def run_task

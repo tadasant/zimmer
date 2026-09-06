@@ -46,8 +46,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
 
   def log_retention_session
     Session.create!(prompt: "Log retention", agent_runtime: "claude_code", status: :running,
-                    git_root: "https://github.com/test/repo.git", branch: "main",
-                    execution_provider: "local_filesystem")
+                    git_root: "https://github.com/test/repo.git", branch: "main")
   end
 
   test "log_retention_health reports the size of the logs table and the policy in force" do
@@ -252,8 +251,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
 
   test "a session with no recorded agent process does not make the report unobservable" do
     Session.create!(prompt: "Test", agent_runtime: "claude_code", status: :running,
-                    git_root: "https://github.com/test/repo.git", branch: "main",
-                    execution_provider: "local_filesystem")
+                    git_root: "https://github.com/test/repo.git", branch: "main")
 
     health = with_no_local_claude_processes { @service.process_health }
 
@@ -280,8 +278,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   # process looked and found nothing restores the false green.
   test "a recorded pid with no identity is not evidence that anything was observed" do
     session = Session.create!(prompt: "Test", agent_runtime: "claude_code", status: :running,
-                              git_root: "https://github.com/test/repo.git", branch: "main",
-                              execution_provider: "local_filesystem")
+                              git_root: "https://github.com/test/repo.git", branch: "main")
     session.update!(metadata: session.metadata.merge("process_pid" => 4242))
 
     health = with_no_local_claude_processes { @service.process_health }
@@ -320,8 +317,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :running,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     session.update!(metadata: session.metadata.merge(
       "process_pid" => pid,
@@ -350,9 +346,9 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
 
   test "session_health counts sessions by status" do
     # Create sessions with different statuses
-    Session.create!(prompt: "Test 1", agent_runtime: "claude_code", status: :running, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
-    Session.create!(prompt: "Test 2", agent_runtime: "claude_code", status: :running, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
-    Session.create!(prompt: "Test 3", agent_runtime: "claude_code", status: :failed, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
+    Session.create!(prompt: "Test 1", agent_runtime: "claude_code", status: :running, git_root: "https://github.com/test/repo.git", branch: "main")
+    Session.create!(prompt: "Test 2", agent_runtime: "claude_code", status: :running, git_root: "https://github.com/test/repo.git", branch: "main")
+    Session.create!(prompt: "Test 3", agent_runtime: "claude_code", status: :failed, git_root: "https://github.com/test/repo.git", branch: "main")
 
     health = @service.session_health
 
@@ -363,10 +359,10 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   test "session_health calculates failure rate" do
     # Create 10 sessions, 2 failed
     8.times do |i|
-      Session.create!(prompt: "Test #{i}", agent_runtime: "claude_code", status: :needs_input, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
+      Session.create!(prompt: "Test #{i}", agent_runtime: "claude_code", status: :needs_input, git_root: "https://github.com/test/repo.git", branch: "main")
     end
     2.times do |i|
-      Session.create!(prompt: "Failed #{i}", agent_runtime: "claude_code", status: :failed, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
+      Session.create!(prompt: "Failed #{i}", agent_runtime: "claude_code", status: :failed, git_root: "https://github.com/test/repo.git", branch: "main")
     end
 
     health = @service.session_health
@@ -376,7 +372,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
 
   test "session_health status is healthy with low failure rate" do
     8.times do |i|
-      Session.create!(prompt: "Test #{i}", agent_runtime: "claude_code", status: :needs_input, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
+      Session.create!(prompt: "Test #{i}", agent_runtime: "claude_code", status: :needs_input, git_root: "https://github.com/test/repo.git", branch: "main")
     end
 
     health = @service.session_health
@@ -387,10 +383,10 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   test "session_health status is warning with elevated failure rate" do
     # Create 10 sessions, 2 failed (20% failure rate)
     8.times do |i|
-      Session.create!(prompt: "Test #{i}", agent_runtime: "claude_code", status: :needs_input, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
+      Session.create!(prompt: "Test #{i}", agent_runtime: "claude_code", status: :needs_input, git_root: "https://github.com/test/repo.git", branch: "main")
     end
     2.times do |i|
-      Session.create!(prompt: "Failed #{i}", agent_runtime: "claude_code", status: :failed, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
+      Session.create!(prompt: "Failed #{i}", agent_runtime: "claude_code", status: :failed, git_root: "https://github.com/test/repo.git", branch: "main")
     end
 
     health = @service.session_health
@@ -401,10 +397,10 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   test "session_health status is critical with high failure rate" do
     # Create 10 sessions, 4 failed (40% failure rate)
     6.times do |i|
-      Session.create!(prompt: "Test #{i}", agent_runtime: "claude_code", status: :needs_input, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
+      Session.create!(prompt: "Test #{i}", agent_runtime: "claude_code", status: :needs_input, git_root: "https://github.com/test/repo.git", branch: "main")
     end
     4.times do |i|
-      Session.create!(prompt: "Failed #{i}", agent_runtime: "claude_code", status: :failed, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
+      Session.create!(prompt: "Failed #{i}", agent_runtime: "claude_code", status: :failed, git_root: "https://github.com/test/repo.git", branch: "main")
     end
 
     health = @service.session_health
@@ -420,7 +416,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       title: "Old Failure Title"
     )
     old_session.update_column(:updated_at, 2.days.ago)
@@ -432,7 +427,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       title: "Recent Failure Title"
     )
 
@@ -1751,8 +1745,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :running,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     session.logs.create!(content: "Test error message", level: "error")
 
@@ -1785,8 +1778,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
 
   test "recent_errors merges both streams newest first" do
     session = Session.create!(prompt: "Test", agent_runtime: "claude_code", status: :running,
-                              git_root: "https://github.com/test/repo.git", branch: "main",
-                              execution_provider: "local_filesystem")
+                              git_root: "https://github.com/test/repo.git", branch: "main")
     session.logs.create!(content: "session error", level: "error")
     insert_good_jobs(1) do
       { job_class: "SessionTitleJob", queue_name: "inference", updated_at: 30.minutes.ago, error: "boom" }
@@ -1827,13 +1819,11 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     frozen = Session.create!(
       prompt: "parked", agent_runtime: "claude_code", status: :failed,
       git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem",
       category: Category.create!(name: "frozen-retry", is_frozen: true)
     )
     active = Session.create!(
       prompt: "active", agent_runtime: "claude_code", status: :failed,
-      git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem"
+      git_root: "https://github.com/test/repo.git", branch: "main"
     )
 
     results = @service.retry_failed_sessions
@@ -1851,7 +1841,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     frozen = Session.create!(
       prompt: "parked", agent_runtime: "claude_code", status: :failed,
       git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem",
       category: Category.create!(name: "frozen-targeted", is_frozen: true)
     )
 
@@ -1872,8 +1861,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     old_session.update_column(:updated_at, 10.days.ago)
 
@@ -1883,8 +1871,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
 
     results = @service.archive_old_sessions(older_than: 7.days)
@@ -1910,8 +1897,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :waiting,
       goal: "Open a PR, confirm CI is green, and stop.",
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     ran = Session.create!(
       prompt: "Ran and recorded nothing",
@@ -1920,8 +1906,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       goal: "Open a PR, confirm CI is green, and stop.",
       metadata: { "runtime_started" => true },
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     [ never_ran, ran ].each { |session| session.update_column(:updated_at, 10.days.ago) }
 
@@ -1947,8 +1932,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
         agent_runtime: "claude_code",
         status: :needs_input,
         git_root: "https://github.com/test/repo.git",
-        branch: "main",
-        execution_provider: "local_filesystem"
+        branch: "main"
       )
       session.enqueued_messages.create!(content: "queued for ##{session.id}", position: 1, status: "pending")
       session.update_column(:updated_at, 10.days.ago)
@@ -1991,10 +1975,10 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   test "overall_status is warning when any subsystem has warning" do
     # Create sessions with elevated failure rate (20%)
     8.times do |i|
-      Session.create!(prompt: "Test #{i}", agent_runtime: "claude_code", status: :needs_input, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
+      Session.create!(prompt: "Test #{i}", agent_runtime: "claude_code", status: :needs_input, git_root: "https://github.com/test/repo.git", branch: "main")
     end
     2.times do |i|
-      Session.create!(prompt: "Failed #{i}", agent_runtime: "claude_code", status: :failed, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
+      Session.create!(prompt: "Failed #{i}", agent_runtime: "claude_code", status: :failed, git_root: "https://github.com/test/repo.git", branch: "main")
     end
 
     report = @service.full_health_report
@@ -2005,10 +1989,10 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   test "overall_status is critical when any subsystem is critical" do
     # Create sessions with high failure rate (40%)
     6.times do |i|
-      Session.create!(prompt: "Test #{i}", agent_runtime: "claude_code", status: :needs_input, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
+      Session.create!(prompt: "Test #{i}", agent_runtime: "claude_code", status: :needs_input, git_root: "https://github.com/test/repo.git", branch: "main")
     end
     4.times do |i|
-      Session.create!(prompt: "Failed #{i}", agent_runtime: "claude_code", status: :failed, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
+      Session.create!(prompt: "Failed #{i}", agent_runtime: "claude_code", status: :failed, git_root: "https://github.com/test/repo.git", branch: "main")
     end
 
     report = @service.full_health_report
@@ -2065,8 +2049,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :failed,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     session.logs.create!(content: "Connection timeout occurred", level: "error")
 
@@ -2081,8 +2064,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :failed,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     session.logs.create!(content: "Permission denied for operation", level: "error")
 
@@ -2097,8 +2079,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :failed,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     session.logs.create!(content: "Connection refused", level: "error")
 
@@ -2113,8 +2094,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :failed,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     session.logs.create!(content: "API rate limit exceeded", level: "error")
 
@@ -2148,7 +2128,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {
         "sigterm_retry_count" => 2,
         "last_sigterm_at" => Time.current.iso8601
@@ -2161,8 +2140,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
 
     health = @service.sigterm_retry_health
@@ -2179,7 +2157,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {
         "sigterm_retry_count" => 1,
         "last_sigterm_at" => Time.current.iso8601
@@ -2193,7 +2170,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {
         "sigterm_retry_count" => 2,
         "last_sigterm_at" => Time.current.iso8601
@@ -2213,7 +2189,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {
         "sigterm_retry_count" => 3,
         "last_sigterm_at" => Time.current.iso8601
@@ -2227,7 +2202,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {
         "sigterm_retry_count" => 1,
         "last_sigterm_at" => Time.current.iso8601
@@ -2247,7 +2221,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       title: "Recent SIGTERM Session",
       metadata: {
         "sigterm_retry_count" => 1,
@@ -2262,7 +2235,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       title: "Old SIGTERM Session",
       metadata: {
         "sigterm_retry_count" => 1,
@@ -2307,7 +2279,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {
         "sigterm_retry_count" => 1,
         "last_sigterm_at" => "not-a-valid-timestamp"
@@ -2334,7 +2305,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {
         "sigterm_retry_count" => 1
       }
@@ -2374,13 +2344,11 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     Session.create!(
       prompt: "Recovered from a failed MCP handshake", agent_runtime: "claude_code",
       status: :running, git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "mcp_retry_count" => 1, "mcp_last_retry_at" => 2.hours.ago.iso8601 }
     )
     Session.create!(
       prompt: "Burned the whole MCP budget", agent_runtime: "claude_code",
       status: :failed, git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "mcp_retry_count" => 3, "mcp_last_retry_at" => 30.hours.ago.iso8601 }
     )
 
@@ -2399,7 +2367,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     Session.create!(
       prompt: "Corrupt compact stamp", agent_runtime: "claude_code",
       status: :needs_input, git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "compact_retry_count" => 1, "last_compact_at" => "not-a-valid-timestamp" }
     )
 
@@ -2446,7 +2413,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {
         "api_error_retry_count" => 3,
         "last_api_error_retry_at" => Time.current.iso8601
@@ -2466,7 +2432,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {
         "api_error_retry_count" => 2,
         "last_api_error_retry_at" => Time.current.iso8601
@@ -2485,7 +2450,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {
         "api_error_retry_count" => 6,
         "last_api_error_retry_at" => Time.current.iso8601
@@ -2527,7 +2491,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "failure_reason" => "git_clone_failed" }
     )
 
@@ -2537,7 +2500,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "failure_reason" => "process_failed", "exit_status" => "exit code: 1" }
     )
 
@@ -2547,7 +2509,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "failure_reason" => "process_failed", "exit_status" => "exit code: 1" }
     )
 
@@ -2565,7 +2526,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {}
     )
 
@@ -2576,7 +2536,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "failure_reason" => "exception" }
     )
 
@@ -2594,7 +2553,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "failure_reason" => "old_reason" }
     )
     old_session.update_column(:updated_at, 2.days.ago)
@@ -2606,7 +2564,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "failure_reason" => "recent_reason" }
     )
 
@@ -2625,7 +2582,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
         status: :failed,
         git_root: "https://github.com/test/repo.git",
         branch: "main",
-        execution_provider: "local_filesystem",
         metadata: { "failure_reason" => "process_failed" }
       )
     end
@@ -2637,7 +2593,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
         status: :failed,
         git_root: "https://github.com/test/repo.git",
         branch: "main",
-        execution_provider: "local_filesystem",
         metadata: { "failure_reason" => "git_clone_failed" }
       )
     end
@@ -2648,7 +2603,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "failure_reason" => "exception" }
     )
 
@@ -2673,8 +2627,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :archived,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     s1.update_columns(created_at: 120.seconds.ago, updated_at: 60.seconds.ago)
 
@@ -2684,8 +2637,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     s2.update_columns(created_at: 240.seconds.ago, updated_at: 120.seconds.ago)
 
@@ -2701,8 +2653,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :archived,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     s1.update_columns(created_at: 11.seconds.ago, updated_at: 10.seconds.ago)
 
@@ -2711,8 +2662,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     s2.update_columns(created_at: 12.seconds.ago, updated_at: 10.seconds.ago)
 
@@ -2727,8 +2677,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :archived,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     in_window.update_columns(created_at: 200.seconds.ago, updated_at: 100.seconds.ago)
 
@@ -2738,8 +2687,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :archived,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     old.update_columns(created_at: 10.days.ago, updated_at: 8.days.ago)
 
@@ -2749,8 +2697,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :running,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     running.update_columns(created_at: 1000.seconds.ago, updated_at: 1.second.ago)
 
@@ -2765,7 +2712,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "failure_reason" => "sigterm_retries_exhausted" }
     )
 
@@ -2781,7 +2727,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {}
     )
 

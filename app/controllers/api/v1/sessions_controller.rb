@@ -1347,7 +1347,7 @@ class Api::V1::SessionsController < Api::BaseController
   def session_params
     params.permit(
       :agent_root, :agent_runtime, :prompt, :git_root, :branch, :subdirectory,
-      :title, :slug, :goal, :execution_provider, :is_autonomous,
+      :title, :slug, :goal, :is_autonomous,
       :parent_session_id, :auto_compact_window, :scheduling_class, :precedence, :place,
       :idempotency_key,
       mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [], config: {}, custom_metadata: {}

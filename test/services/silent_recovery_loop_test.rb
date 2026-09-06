@@ -26,7 +26,6 @@ class SilentRecoveryLoopTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       last_timeline_entry_at: 20.minutes.ago,
       metadata: {

@@ -9,8 +9,7 @@ class RetryBudgetTest < ActiveSupport::TestCase
       agent_runtime: "claude_code",
       status: :running,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
   end
 
@@ -280,13 +279,11 @@ class RetryBudgetTest < ActiveSupport::TestCase
     spent = Session.create!(
       prompt: "Spent", agent_runtime: "claude_code", status: :failed,
       git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "mcp_retry_count" => 3, "mcp_last_retry_at" => 1.hour.ago.iso8601 }
     )
     Session.create!(
       prompt: "Recovering", agent_runtime: "claude_code", status: :running,
       git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "mcp_retry_count" => 1 }
     )
 
@@ -306,13 +303,11 @@ class RetryBudgetTest < ActiveSupport::TestCase
     abandoned = Session.create!(
       prompt: "Never wrote a line", agent_runtime: "claude_code", status: :needs_input,
       git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "empty_turn_recovery_count" => RetryBudget::EMPTY_TURN.max }
     )
     restarted = Session.create!(
       prompt: "Restarted and running", agent_runtime: "claude_code", status: :running,
       git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "empty_turn_recovery_count" => 1 }
     )
 

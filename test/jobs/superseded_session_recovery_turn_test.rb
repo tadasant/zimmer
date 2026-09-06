@@ -36,7 +36,6 @@ class SupersededSessionRecoveryTurnTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       status: :needs_input,
       running_job_id: nil,
@@ -266,7 +265,6 @@ class SupersededSessionRecoveryTurnTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       status: :needs_input
     )
@@ -411,7 +409,6 @@ class SupersededSessionRecoveryTurnTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       status: :needs_input,
       metadata: { "paused_by" => "recovery" }
     )
@@ -431,7 +428,6 @@ class SupersededSessionRecoveryTurnTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       status: :needs_input,
       metadata: { "paused_by" => "recovery" }
     )
@@ -458,7 +454,6 @@ class SupersededSessionRecoveryTurnTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       status: :needs_input,
       metadata: { "working_directory" => @working_directory, "paused_by" => "recovery" }
@@ -480,7 +475,6 @@ class SupersededSessionRecoveryTurnTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       status: :needs_input,
       custom_metadata: metadata

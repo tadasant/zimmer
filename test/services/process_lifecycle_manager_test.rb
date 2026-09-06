@@ -10,7 +10,6 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       metadata: { "clone_path" => "/tmp/test-clone", "working_directory" => "/tmp/test-clone" },
       # A session whose agent process has run has a transcript. handle_exit treats a
@@ -1563,7 +1562,6 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       metadata: { "clone_path" => "/tmp/codex-clone", "working_directory" => "/tmp/codex-clone" },
       # See the note on the Claude session in `setup`.
@@ -3814,7 +3812,6 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid
     )
     @session.update!(

@@ -206,7 +206,6 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid
     )
 
@@ -233,7 +232,6 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       metadata: { "working_directory" => "/nonexistent/clone/path" }
     )
@@ -282,8 +280,7 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
       agent_runtime: "claude_code",
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
     session.update_column(:updated_at, 10.days.ago)
 
@@ -301,8 +298,7 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
       agent_runtime: "claude_code",
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      execution_provider: "local_filesystem"
+      branch: "main"
     )
 
     post archive_old_health_url, params: { days: 7 }
@@ -427,8 +423,8 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
 
   test "dashboard shows session statistics" do
     # Create sessions with different statuses
-    Session.create!(prompt: "Running", agent_runtime: "claude_code", status: :running, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
-    Session.create!(prompt: "Failed", agent_runtime: "claude_code", status: :failed, git_root: "https://github.com/test/repo.git", branch: "main", execution_provider: "local_filesystem")
+    Session.create!(prompt: "Running", agent_runtime: "claude_code", status: :running, git_root: "https://github.com/test/repo.git", branch: "main")
+    Session.create!(prompt: "Failed", agent_runtime: "claude_code", status: :failed, git_root: "https://github.com/test/repo.git", branch: "main")
 
     get health_dashboard_url
     assert_response :success
@@ -447,7 +443,6 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       title: "My Failed Session"
     )
     session.logs.create!(content: "Something went wrong", level: "error")
@@ -477,7 +472,6 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {
         "sigterm_retry_count" => 2,
         "last_sigterm_at" => Time.current.iso8601
@@ -502,7 +496,6 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       title: "My SIGTERM Session",
       metadata: {
         "sigterm_retry_count" => 1,

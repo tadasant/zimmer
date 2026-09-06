@@ -32,7 +32,6 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       transcript: @transcript_content,
       mcp_servers: [ "playwright-custom" ],

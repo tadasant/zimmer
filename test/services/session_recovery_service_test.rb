@@ -9,7 +9,6 @@ class SessionRecoveryServiceTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "process_pid" => 12345, "clone_path" => "/tmp/test-clone" }
     )
 
@@ -388,7 +387,6 @@ class SessionRecoveryServiceTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/other-repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "process_pid" => 99999 }
     )
 

@@ -36,7 +36,6 @@ class BackfillSessionsJsonbTest < ActiveSupport::TestCase
       status: :waiting,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       **values
     )
     Session.where(id: session.id).update_all(COLUMNS.map { |c| "#{c}_jsonb = NULL" }.join(", "))
@@ -122,7 +121,6 @@ class BackfillSessionsJsonbTest < ActiveSupport::TestCase
       title: "already dual-written",
       agent_runtime: "claude_code", status: :waiting,
       git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "process_pid" => 99 }
     )
     assert_equal({ "process_pid" => 99 }, Session.find(session.id).metadata_jsonb)
@@ -142,7 +140,6 @@ class BackfillSessionsJsonbTest < ActiveSupport::TestCase
       title: "stale shadow",
       agent_runtime: "claude_code", status: :waiting,
       git_root: "https://github.com/test/repo.git", branch: "main",
-      execution_provider: "local_filesystem",
       metadata: { "process_pid" => 7 }
     )
     Session.where(id: session.id).update_all("metadata_jsonb = '{\"written_by\": \"an old container\"}'::jsonb")

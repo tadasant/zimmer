@@ -545,7 +545,6 @@ module Mcp
 
         lines << ""
         lines << "### Execution"
-        lines << "- **Execution Provider:** #{session.execution_provider}"
         lines << "- **Goal:** #{session.goal}" if session.goal.present?
         lines << "- **MCP Servers:** #{session.mcp_servers.join(', ')}" if session.mcp_servers.present?
         lines << "- **Skills:** #{session.catalog_skills.join(', ')}" if session.catalog_skills.present?

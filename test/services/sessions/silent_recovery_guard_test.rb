@@ -17,7 +17,6 @@ class Sessions::SilentRecoveryGuardTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       metadata: { "job_started_at" => "2026-09-05T11:23:16Z" }
     )

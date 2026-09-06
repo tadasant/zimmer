@@ -21,7 +21,6 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
       status: :failed,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       metadata: {
         "failure_reason" => "oauth_required",
         "oauth_required_servers" => [
@@ -205,7 +204,6 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       mcp_servers: [ "notion" ]
     )
     flow = McpOauthPendingFlow.create!(

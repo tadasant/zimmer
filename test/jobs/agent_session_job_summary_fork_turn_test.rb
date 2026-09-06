@@ -37,7 +37,6 @@ class AgentSessionJobSummaryForkTurnTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       status: :waiting,
       transcript: { "type" => "user", "message" => { "content" => "Route this issue" } }.to_json
@@ -47,7 +46,6 @@ class AgentSessionJobSummaryForkTurnTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       status: :running,
       metadata: {
@@ -160,7 +158,6 @@ class AgentSessionJobSummaryForkTurnTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       status: :running,
       metadata: { "clone_path" => CLONE_PATH, "working_directory" => CLONE_PATH, "runtime_started" => true },

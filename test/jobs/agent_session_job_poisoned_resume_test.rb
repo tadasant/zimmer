@@ -29,7 +29,6 @@ class AgentSessionJobPoisonedResumeTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: POISONED_ID,
       transcript: nil,
       metadata: {
@@ -258,7 +257,6 @@ class RestartOfAWedgedSessionTest < ActiveJob::TestCase
       status: :needs_input,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       transcript: nil,
       metadata: {
@@ -366,7 +364,6 @@ class CodexPoisonedResumeTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: @stale_rollout_id,
       transcript: nil,
       metadata: {

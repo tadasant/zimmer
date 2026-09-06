@@ -26,9 +26,8 @@
 # The identity could equally be set per clone with `git config --local`. The global
 # config wins because a session's working trees are not all clones Zimmer made:
 # `GitCloneService` clones the session's own, `ForkSessionService` `git init`s a
-# scaffold for a fork with no source tree to copy, `Execution::Providers::LocalFilesystem`
-# runs its own `git clone`, and an agent freely makes worktrees and scratch repos of
-# its own. One `[user]` section covers all of them — including whatever creates a
+# scaffold for a fork with no source tree to copy, and an agent freely makes worktrees
+# and scratch repos of its own. One `[user]` section covers all of them — including whatever creates a
 # working tree next — where a clone-local write covers exactly the call sites that
 # remembered to make it. It also puts identity where credentials already are, which
 # is the consistency the issue asks for.

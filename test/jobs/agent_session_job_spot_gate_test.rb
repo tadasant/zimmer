@@ -28,7 +28,6 @@ class AgentSessionJobSpotGateTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       scheduling_class: SessionGenesis::SPOT,
       session_id: SecureRandom.uuid,
       status: :running,

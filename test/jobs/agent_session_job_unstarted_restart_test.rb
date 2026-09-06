@@ -23,7 +23,6 @@ class AgentSessionJobUnstartedRestartTest < ActiveJob::TestCase
       status: :running,
       git_root: "https://github.com/test/repo.git",
       branch: "main",
-      execution_provider: "local_filesystem",
       session_id: "550e8400-e29b-41d4-a716-446655440000",
       transcript: nil,
       metadata: {

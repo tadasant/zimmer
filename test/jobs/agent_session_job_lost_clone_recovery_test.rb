@@ -30,7 +30,6 @@ class AgentSessionJobLostCloneRecoveryTest < ActiveJob::TestCase
       agent_runtime: "claude_code",
       git_root: "https://github.com/test/repo.git",
       branch: "feature/x",
-      execution_provider: "local_filesystem",
       session_id: SecureRandom.uuid,
       status: :running,
       metadata: {
@@ -78,7 +77,7 @@ class AgentSessionJobLostCloneRecoveryTest < ActiveJob::TestCase
   test "the rebuild keeps the session's identity, transcript and place in its hierarchy" do
     parent = Session.create!(
       prompt: "Parent", agent_runtime: "claude_code", status: :running,
-      git_root: "https://github.com/test/repo.git", execution_provider: "local_filesystem"
+      git_root: "https://github.com/test/repo.git"
     )
     @session.update!(parent_session_id: parent.id)
     original_session_id = @session.session_id
