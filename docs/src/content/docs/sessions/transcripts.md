@@ -59,6 +59,13 @@ Two invariants the writer maintains, both relied on elsewhere:
    events cannot, because that newline is a record separator, not something anybody typed.
 2. **Chunk line counts sum to the document's line count**, so `transcript_line_count` is exact.
 
+One byte does not survive the move: a raw NUL. The old `json` column stored a transcript as a JSON
+string, so Rails encoded `0x00` as the escape `\u0000` and Postgres never saw the byte; `text` does
+see it and rejects it. `Session.normalize_transcript` strips NULs on the way in — every write goes
+through that one funnel, so the chunks, the digest and the byte count always describe the same bytes
+— because the alternative is a poll that raises inside its own transaction and freezes that
+session's transcript for good. Nothing readable is lost, and the line count is unaffected.
+
 :::note[The old column is still there, for one more deploy]
 `sessions.transcript` cannot be dropped in the same deploy that stopped writing it — the old
 containers kamal-proxy is still serving would break on it
@@ -66,7 +73,9 @@ containers kamal-proxy is still serving would break on it
 Until the `BackfillSessionTranscriptChunks` post-deploy task has emptied it, `Session#transcript`
 falls back to that column for any row the backfill has not reached, and content search matches both
 storages. The backfill verifies each copy byte for byte before it frees a row's column; a row that
-fails verification keeps its column and is counted in the task's `verification_failures`.
+fails verification keeps its column, goes on reading from it, and is named in the task's
+`unmigrated_session_ids` — which is what phase 2 must see empty, rather than merely seeing the task
+green.
 :::
 
 ## OpenTranscripts — the normalization layer

@@ -4,11 +4,14 @@
 #
 # The problem this exists to solve
 # --------------------------------
-# `sessions.transcript` is a `json` column holding the entire conversation. There is
-# no index an `ILIKE '%…%'` can use — a leading wildcard rules out a btree, and the
-# only transcript-related index on the table is a partial index on `id`. So the
-# predicate is a sequential scan that detoasts and decompresses every transcript it
-# passes: on production that is thousands of sessions and gigabytes of TOAST.
+# A transcript is the whole conversation, and there is no index an `ILIKE '%…%'` can
+# use — a leading wildcard rules out a btree, and the only transcript-related indexes
+# on `sessions` are partial ones on `id`. So the predicate is a sequential scan that
+# detoasts and decompresses every transcript it passes: on production that is
+# thousands of sessions and gigabytes of TOAST. Since #110 the transcript half of it
+# is an `EXISTS` over `session_transcript_chunks`, which can stop at the first
+# matching chunk instead of materialising a 32 MB conversation to find a phrase in
+# its first megabyte — a real saving, and not an index.
 #
 # Run as one statement behind kamal-proxy's 30-second target timeout, that is a coin
 # flip. It returned sub-second on a quiet box and `real 0m30.069s` under load — a 504
@@ -38,10 +41,11 @@
 # Why not an index
 # ----------------
 # Weighed and rejected for now, both stated so the next person does not re-derive it:
-# a `pg_trgm` GIN index over `transcript::text` would be built over gigabytes of
+# a `pg_trgm` GIN index over the transcript text would be built over gigabytes of
 # TOASTed text (staging measured 5,038 MB compressed across 5,096 sessions in #495) and
 # would be a large multiple of the table it indexes; and `to_tsvector` refuses
-# documents over 1 MB, which most transcripts exceed. Either would also have to be
+# documents over 1 MB, which most transcripts exceed — though a chunk is capped at
+# 256 KiB, so that second objection is one the chunk table has quietly removed. Either would also have to be
 # built and backfilled blind against a managed Postgres this repository's sessions
 # cannot reach. Both remain open options once someone can measure them there — this
 # class is what makes the surface work in the meantime, and nothing about it forecloses

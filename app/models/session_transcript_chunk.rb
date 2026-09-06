@@ -14,7 +14,12 @@
 #      `content ILIKE` per chunk, so a boundary inside a JSON event would make a
 #      phrase silently unfindable; a boundary between events cannot, because a
 #      phrase spanning two events is not a phrase anybody typed.
-#   2. **`line_count` sums to the document's line count.** `Session.transcript_line_count`
+#   2. **`line_count` sums to the document's line count.** Nothing reads the sum today
+#      — `sessions.transcript_line_count` is computed from the whole value on write —
+#      but the per-chunk number is what makes this table incrementally readable at
+#      all: a reader that wants the last N events, or the events between two offsets,
+#      can pick the chunks it needs from these counts without touching the rest. That
+#      is the shape #477 and the timeline's paging want. `Session.transcript_line_count`
 #      counts newlines and adds one for an unterminated final line; because only the
 #      last chunk may lack its terminator, applying the same rule per chunk and
 #      summing gives exactly that number. This is what makes the regression guard a
@@ -36,7 +41,10 @@ class SessionTranscriptChunk < ApplicationRecord
   # reassemble; 256 KiB keeps both unremarkable.
   TARGET_BYTES = 256 * 1024
 
-  validates :seq, presence: true, uniqueness: { scope: :session_id }
+  # No uniqueness validation on `seq`: the unique index makes a duplicate
+  # impossible in the database, and a validation would only add a SELECT to the
+  # tail chunk's `update!` on every poll to re-derive what the index guarantees.
+  validates :seq, presence: true
   validates :content, presence: true
 
   # Where a run of bytes may be cut so the piece ends at a line break.

@@ -188,7 +188,7 @@ class SessionTitleJob < ApplicationJob
   # This is the strong signal the combined inference prefers; without it the job
   # falls back to a deterministic prompt-derived title (see #perform).
   def transcript_context(session)
-    return nil if session.transcript.blank?
+    return nil unless session.transcript_present?
 
     conversation = normalized_conversation(session)
     return nil if conversation.blank?

@@ -69,6 +69,9 @@ module ChunkedTranscript
       inverse_of: :session
 
     after_save :flush_transcript_chunks
+    # A rollback restores the attributes and not the ivars, so without this the
+    # accessor would keep handing back text the database no longer holds.
+    after_rollback :forget_transcript_cache
   end
 
   # The whole transcript, as the JSONL String every caller has always received.
@@ -145,27 +148,55 @@ module ChunkedTranscript
   end
 
   def reload(*)
-    remove_instance_variable(:@staged_transcript) if defined?(@staged_transcript)
-    remove_instance_variable(:@chunked_transcript_text) if defined?(@chunked_transcript_text)
+    forget_transcript_cache
     super
   end
 
   class_methods do
-    # Everything that reaches storage is JSONL text. The legacy Array format —
-    # one parsed event per element, predating JSONL — is encoded rather than
-    # rejected, because a handful of very old rows and a number of tests still
-    # speak it. `JSON.generate` escapes newlines inside values, so one element
-    # becomes exactly one line and the event count is preserved.
+    # Everything that reaches storage is JSONL text, and this is the single funnel
+    # it goes through — which is what keeps the chunk contents, `transcript_digest`
+    # and `transcript_byte_size` describing the same bytes.
+    #
+    # The legacy Array format — one parsed event per element, predating JSONL — is
+    # encoded rather than rejected, because a handful of very old rows and a number
+    # of tests still speak it. `JSON.generate` escapes newlines inside values, so
+    # one element becomes exactly one line and the event count is preserved.
+    #
+    # NUL BYTES ARE STRIPPED, and that is a real behaviour change. `sessions.transcript`
+    # was a `json` column, so Rails encoded a raw 0x00 in the transcript as the
+    # six-character escape `\u0000` and Postgres never saw the byte; `text` does see
+    # it, and rejects it. An agent that prints a NUL — a partially flushed file, a
+    # binary blob echoed into a tool result — would otherwise raise inside the poll's
+    # transaction, rolling the whole save back and freezing that session's transcript
+    # for good. Dropping the byte costs nothing anybody can read and keeps the poll
+    # advancing. Line count is unaffected: 0x00 is not a newline.
+    #
+    # Only a genuinely EMPTY string means "no transcript". `String#presence` would
+    # also swallow `"\n"` and `" "`, and a transcript whose current content is one
+    # blank line is a real (if brief) state a poll can read off disk.
     def normalize_transcript(value)
-      case value
-      when nil then nil
-      when Array then value.empty? ? nil : value.map { |event| JSON.generate(event) }.join("\n") + "\n"
-      else value.to_s.presence
-      end
+      text =
+        case value
+        when nil then nil
+        when Array then value.empty? ? nil : value.map { |event| JSON.generate(event) }.join("\n") + "\n"
+        else value.to_s
+        end
+
+      return nil if text.nil? || text.empty?
+
+      text = text.delete("\u0000") if text.include?("\u0000")
+      text.empty? ? nil : text
     end
   end
 
   private
+
+  # Drop both the unsaved assignment and the memoised read, so the next read goes
+  # back to the database.
+  def forget_transcript_cache
+    remove_instance_variable(:@staged_transcript) if defined?(@staged_transcript)
+    remove_instance_variable(:@chunked_transcript_text) if defined?(@chunked_transcript_text)
+  end
 
   # Whether the chunk table is the authority for this session. False only for a row
   # the backfill has not reached yet, whose transcript is still in the old column.
@@ -214,7 +245,11 @@ module ChunkedTranscript
       SessionTranscriptChunk.where(session_id: id).delete_all if stored_bytes.positive?
     elsif base_is_chunked && value.bytesize > base_bytes && base_digest.present? &&
           Digest::SHA256.hexdigest(value.byteslice(0, base_bytes)) == base_digest
-      append_transcript_bytes(value.byteslice(base_bytes, value.bytesize - base_bytes))
+      appended = append_transcript_bytes(
+        value.byteslice(base_bytes, value.bytesize - base_bytes),
+        extending: value, extended_bytes: base_bytes
+      )
+      replace_transcript_chunks(value, base_bytes: stored_bytes, base_is_chunked: true) unless appended
     elsif base_is_chunked && value.bytesize == base_bytes &&
           base_digest.present? && Digest::SHA256.hexdigest(value) == base_digest
       # Byte-identical to what is stored. Every poll that finds nothing new lands
@@ -248,11 +283,29 @@ module ChunkedTranscript
   end
 
   # Append +delta+ to the end of the chunk sequence, topping up the open tail chunk
-  # first and cutting new chunks at line breaks.
-  def append_transcript_bytes(delta)
+  # first and cutting new chunks at line breaks. Returns false when it declined,
+  # which the caller turns into a replace.
+  #
+  # `extending`/`extended_bytes` are the whole incoming value and the length of the
+  # prefix it is supposed to already agree with, and they are what closes the last
+  # gap between the base this write decided from and the bytes actually stored. The
+  # base is a snapshot of the session row taken before the save took its row lock,
+  # so a writer that committed in that window is invisible to it; `stored_bytes ==
+  # base_bytes` catches such a writer whenever it changed the length, and comparing
+  # the tail chunk against the same range of the incoming value catches it when it
+  # did not. What survives both is a same-length divergence confined to chunks this
+  # append never touches, which no writer in this codebase produces — a carryover
+  # re-attachment, a recovery merge and a fork's truncation all rewrite the end.
+  def append_transcript_bytes(delta, extending: nil, extended_bytes: 0)
     remaining = delta.dup.force_encoding(Encoding::BINARY)
     last = SessionTranscriptChunk.where(session_id: id).order(seq: :desc).first
     seq = last&.seq || -1
+
+    if last && extending
+      tail_start = extended_bytes - last.byte_size
+      return false if tail_start.negative?
+      return false unless extending.byteslice(tail_start, last.byte_size) == last.content
+    end
 
     if last&.open?
       room = [ SessionTranscriptChunk::TARGET_BYTES - last.byte_size, 0 ].max
@@ -269,5 +322,6 @@ module ChunkedTranscript
 
     rows = SessionTranscriptChunk.rows_for(session_id: id, content: remaining, first_seq: seq + 1)
     SessionTranscriptChunk.insert_all!(rows) if rows.any?
+    true
   end
 end

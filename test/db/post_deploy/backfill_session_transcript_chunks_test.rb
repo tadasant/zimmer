@@ -116,6 +116,25 @@ class BackfillSessionTranscriptChunksTest < ActiveSupport::TestCase
       "the unverified chunks are removed so the fallback stays in charge"
   end
 
+  test "a row that did not migrate is named on the ledger, not just counted" do
+    # `sweep` advances its cursor past a batch whether or not every row in it
+    # worked, so this task can finish `succeeded` with transcripts still in the
+    # column. Phase 2 gates on this list being empty rather than on the run being
+    # green, which only works if the list actually names the rows.
+    session = legacy_session(jsonl(4))
+
+    SessionTranscriptChunk.stub(:rows_for, ->(**kwargs) { [ { session_id: kwargs[:session_id], seq: 0, content: "wrong\n", byte_size: 6, line_count: 1, created_at: Time.current, updated_at: Time.current } ] }) do
+      run, = run_task
+
+      assert_includes run.stats["unmigrated_session_ids"], session.id
+      assert_equal run.stats["verification_failures"], run.stats["unmigrated_session_ids"].size,
+        "every failure is small enough here to be named"
+    end
+
+    assert_equal jsonl(4), Session.find(session.id).transcript
+    assert_not_nil Session.find(session.id).read_attribute(:transcript)
+  end
+
   test "an empty legacy value is retired without writing a chunk" do
     session = legacy_session([])
 
