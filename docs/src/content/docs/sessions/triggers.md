@@ -662,6 +662,17 @@ directly, ungated. But the precondition applies to the *event*, not just to the 
 operator trigger listening on `quota_available` to do priority work is deferred by the spot gate too,
 even though nothing would have held that work.
 
+**The edge is claimed, not merely observed.** `AppSetting#quota_pool_available` records whether a
+recovery has been *announced*, and everything above — the pool read, the baseline check, the spot
+gate — happens between reading that column and acting on it. Two passes can therefore hold the same
+unspent recovery at once: `QuotaResetCheckerJob`'s `check!` and the same pass's
+`request_wake!` for a parked spot session, or two overlapping sweeps. So the false→true transition is
+made by one conditional `UPDATE` and *that* is the claim
+([#606](https://github.com/tadasant/zimmer/issues/606)) — the loser is told the recovery was already
+announced and fires nothing. It collapses only concurrent observations of **one** transition: a pool
+that genuinely re-exhausts and recovers again writes `false` on the way down, so the next rising edge
+finds an unspent level and fires normally.
+
 #### `no_sessions_in_progress`
 
 Fires when the deployment has been **running fewer sessions on a worker than its configured ceiling**
@@ -1620,8 +1631,28 @@ A burst-notice session never counts as pending: it carries "investigate this bur
 trigger's own intent.
 
 The gate sits at `Trigger#create_session!`, in front of burst control, so it covers every condition
-type at once, and the check and the spawn share one row lock — two jobs firing the same trigger at
-once cannot both read "nothing pending" and both spawn.
+type at once.
+
+**The check and the spawn are one decision, and they run under one lock.** Without it this is a plain
+check-then-act, and two fires landing in the same instant both read "nothing pending" and both spawn
+— which is exactly what one `quota_available` recovery did on 2026-08-22, producing two
+fleet-maintenance sessions in the same second (one from the edge, one from a hand-fired **Invoke**),
+each applying the wake policy's caps to the same waiting queue. The lock is a per-trigger Postgres
+**advisory** lock (`Trigger.with_spawn_lock`), not a row lock: a row lock would hold the trigger row
+across the spawn and drag [burst control](#burst-control)'s slot reservation into the same
+transaction, so a spawn that raised would roll back the attempt it is meant to consume.
+
+It serializes; it does not suppress. Only the read and the spawn are inside it, and the answer a
+serialized fire gets is the answer it would have got anyway — the second fire simply sees a session
+that is really committed rather than one still in flight. A fire that arrives once the earlier
+session has left `waiting`/`running` spawns exactly as before. A fire that cannot take the lock —
+the wait ran out, or its caller had already opened a transaction the lock could not usefully be
+taken inside — proceeds unserialized and says so in the log: a dropped wake would strand every
+parked session until the next recovery, so under-spawning is the wrong direction to fail in. Both
+cases are in [limitations](/limitations/#the-spawn-lock-is-a-postgres-advisory-lock-so-two-cases-still-slip-past-it).
+
+Only triggers with the setting on take the lock. A trigger without it is asking for one session per
+fire, and two simultaneous fires are two fires.
 
 :::caution[This setting does nothing on a fire into a reused session]
 It guards the **spawn** path only. A trigger holding a live, reusable `last_session_id` returns out of
