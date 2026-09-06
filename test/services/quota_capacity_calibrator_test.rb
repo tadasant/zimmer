@@ -28,6 +28,19 @@ class QuotaCapacityCalibratorTest < ActiveSupport::TestCase
     )
   end
 
+  # A Pi row: real money, billed by OpenRouter, and no claim on an Anthropic
+  # window. Priced identically to `spend` above so a leak shows up as a doubled
+  # figure rather than as a fraction that has to be reasoned about.
+  def pi_spend(usd:, at: 1.hour.ago)
+    SessionTokenUsage.create!(
+      request_id: "pi:#{SecureRandom.uuid}:#{SecureRandom.hex(4)}",
+      model: "openrouter/anthropic/claude-opus-4.6", agent_runtime: "pi",
+      agent_root: "zimmer", session_id: @session.id, called_at: at,
+      input_tokens: 0, output_tokens: (usd * 1_000_000 / 25).round,
+      cache_read_tokens: 0, cache_creation_tokens: 0
+    )
+  end
+
   # `five_hour_uncorrected` defaults to the same figure; the one test that cares
   # about the difference passes them apart.
   def measure(five_hour:, weekly:, five_hour_uncorrected: nil)
@@ -52,6 +65,20 @@ class QuotaCapacityCalibratorTest < ActiveSupport::TestCase
     assert observation.usable?
     assert_in_delta 400.0, observation.cost_usd, 0.01
     assert_in_delta 0.50, observation.utilization, 0.0001
+    assert_in_delta 800.0, observation.capacity_usd, 0.01
+  end
+
+  # Pi spends against OpenRouter, not against the Anthropic window whose
+  # utilization is the denominator here — so counting it would inflate the
+  # capacity estimate in proportion and let the spot gate admit work the window
+  # cannot afford.
+  test "Pi spend is excluded: it is real money against a different provider" do
+    spend(usd: 400.0, at: 1.hour.ago)
+    pi_spend(usd: 400.0, at: 1.hour.ago)
+
+    observation = QuotaCapacityCalibrator.observe(FIVE_HOUR, measure(five_hour: 0.50, weekly: 0.10))
+
+    assert_in_delta 400.0, observation.cost_usd, 0.01
     assert_in_delta 800.0, observation.capacity_usd, 0.01
   end
 

@@ -84,12 +84,30 @@ Older transcript lines predate the `cache_creation` sub-object. Those are charge
 
 ## How usage gets in
 
-`TokenUsageIngestionService` reads the runtime's transcript files and upserts rows. Two jobs drive
-it, and **both run themselves** — there is no step here that needs a shell on the production box:
+Ingestion is **per runtime**, because where a runtime records what it spent is a property of
+the runtime. `RuntimeRegistry::Bundle#usage_ingestor_class` is the slot that says which:
 
-- **`TokenUsageIngestionJob`**, on a 10-minute cron, scanning only files modified in the last
-  two hours. The lookback overlaps the interval generously so a missed run, a deploy, or a
-  late-written transcript closes itself on the next pass.
+| Runtime | Ingestor | Reads |
+| --- | --- | --- |
+| `claude_code` | `TokenUsageIngestionService` | `~/.claude/projects/<sanitized-working-directory>/*.jsonl` |
+| `pi` | `PiTokenUsageIngestionService` | `sessions.transcript`, for `agent_runtime = 'pi'` |
+| `codex` | — | nothing yet; Codex spend is not in the ledger ([#1077](https://github.com/tadasant/zimmer/issues/1077)) |
+
+Pi is the odd one, and it is the runtime that forces the seam. It is the only runtime whose
+conversation is not in its home — `PiRuntimeAdapter` points `--session-dir` at
+`<clone>/.pi/sessions`, so the transcript is reaped with the clone. Reading it off disk would
+lose a Pi session's whole spend the moment it was archived, so the ingestor reads the durable
+copy `TranscriptPollerService` keeps in `sessions.transcript` instead. See
+[Pi's token usage](#pis-token-usage) below.
+
+Two jobs drive ingestion, and **both run themselves** — there is no step here that needs a
+shell on the production box:
+
+- **`TokenUsageIngestionJob`**, on a 10-minute cron, running every ingestor the registry
+  names and scanning only transcripts touched in the last two hours. The lookback overlaps the
+  interval generously so a missed run, a deploy, or a late-written transcript closes itself on
+  the next pass. One ingestor failing is logged at `error` — which pages — and does not cost
+  the others their sweep.
 - **`TokenUsageBackfillJob`**, on a 5-minute cron, sweeping the whole corpus once. It works
   against a `token_usage_backfills` row — one row per sweep — in two-minute slices, recording a
   cursor after each committed chunk. On the first tick after a deploy, if no sweep has ever
@@ -156,10 +174,10 @@ a write on a hot path — and it would still miss both sessions that finished be
 feature existed and the app's own `claude -p` calls, which have no session and therefore no
 poller.
 
-### How a transcript is attributed
+### How a Claude Code transcript is attributed
 
-Transcripts live under `~/.claude/projects/<sanitized-working-directory>/`, and that
-directory name is the only evidence of what produced them.
+Claude Code transcripts live under `~/.claude/projects/<sanitized-working-directory>/`, and
+that directory name is the only evidence of what produced them.
 
 | Directory | Goes to | Labelled |
 | --- | --- | --- |
@@ -180,6 +198,53 @@ alone: the transcript filename is `<session_id>.jsonl` for a main transcript, an
 directory (created per session) covers `agent-*.jsonl` subagent files and resumed sessions
 whose runtime uuid drifted. A row that matches neither is still stored — spend that happened
 is still spend — and shows up as unattributed rather than disappearing.
+
+### Pi's token usage
+
+A Pi session file is a tree of JSONL entries, and four of its entry shapes can carry a `usage`
+object: an assistant message, a tool result that did nested LLM work, a compaction, and a
+branch summary. All four are ingested, which is what makes Zimmer's total agree with the one
+Pi shows in its own footer.
+
+Three things differ from the Claude Code path, and each follows from the format:
+
+- **The key is synthesised.** Claude Code stamps every call with the API's own `requestId`.
+  Pi records an OpenRouter `responseId` on assistant messages but on none of the other three
+  shapes, so rows are keyed `pi:<pi session uuid>:<entry id>` — globally unique, stable across
+  re-ingestion, and stable across a fork, whose copied transcript prefix therefore writes
+  nothing rather than double-counting its source's spend.
+- **The model is `<provider>/<model>`** — `openrouter/anthropic/claude-opus-4.6`, the same id
+  `ModelCatalog` offers and the session config stores. A compaction or branch summary carries
+  no model of its own, so it is attributed to the model in force when it ran.
+- **A bare `cacheWrite` is a 5-minute write.** Claude Code's unsplit cache-creation figure is
+  charged at the 1-hour rate, the conservative reading of a line that predates the sub-object.
+  Pi is the other way round: `cacheWrite1h` is an explicit field and Pi's own cost math prices
+  anything outside it at the short rate, which is what OpenRouter billed.
+
+That last point is what makes the money right rather than merely plausible. Zimmer prices Pi
+rows the way it prices every other row — stored volumes at `TokenPricing`'s list rates — and
+for the Anthropic models on OpenRouter those rates *are* the published ones, so the figure
+reproduces the cost Pi recorded beside the volumes to the cent. Measured across the three
+production Pi sessions that existed when this shipped: $0.582929 either way.
+
+:::caution[Pi's non-Anthropic models are unpriced]
+`ModelCatalog` also offers Pi `openrouter/openai/gpt-5.4`, `…/gpt-5.4-mini` and
+`openrouter/google/gemini-3.5-flash`. `TokenPricing` carries Anthropic rates only, and it
+derives its cache rates from a multiplier relationship that holds across the Anthropic line
+and does not hold for those three — OpenAI bills nothing for a cache write, Gemini bills a
+storage rate. So a Pi session on one of them lands with its **tokens** correct and its **cost
+at zero**, and shows up in the Costs page's unpriced-models list. That is the existing honest
+behaviour for a model with no rate, not a Pi-specific bug; pricing them needs `Rate` to carry
+explicit cache rates, which is a separate change.
+:::
+
+History is covered by a one-time
+[post-deploy task](/operate/deploying/#one-time-post-deploy-tasks),
+`20260906190000_ingest_pi_session_token_usage`, rather than by `TokenUsageBackfillJob` — that
+job walks a filesystem corpus with a directory cursor, and Pi's corpus is a table. The task
+sweeps every Pi session in id order, 25 at a time, and is a no-op on a second run for the same
+reason every ingestion run is: rows are keyed on `request_id` and written with
+`insert_all ... unique_by`.
 
 ## Picking a window
 
@@ -239,6 +304,19 @@ a two-hour one. A session with a single call is floored at one minute rather tha
 `harness` is the **agent root**, the same dimension the by-root table above breaks spend down by,
 because that is what predicts a session's spend shape: a router turn and a merge-gate turn move very
 different money on the same model.
+
+**Only Claude Code rows are sampled** — `SessionTokenUsage.quota_bearing`. This is the one place
+where "what did we spend" and "what draws down the quota window" come apart, and both readers of
+the distinction are easy to miss because neither says *Claude* in its name. These rates exist for
+the spot gate, which prices the running **Claude** fleet against an **Anthropic** window; a Pi row
+is an OpenRouter invoice with no claim on that window. Its own rate could never be looked up
+anyway — a Pi row's model reads `openrouter/anthropic/claude-opus-4.6` where a Claude session's
+config reads `opus` — but it would still land in the cost-weighted fleet average that prices a
+combination nobody has sampled. `QuotaCapacityCalibrator` carries the same filter for the same
+reason, and there it matters more: it divides spend by Anthropic's reported utilization, so a
+dollar Anthropic never counted inflates the capacity estimate *in proportion*. The Costs page, the
+REST index and `get_costs` are deliberately not filtered — they are asked what Zimmer spent, and
+the answer is every runtime.
 
 The prices are `TokenPricing`'s, applied through the same `cost_sum_sql` the rest of this page uses.
 There is deliberately no second pricing path — a rate priced differently from the page would make

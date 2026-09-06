@@ -24,6 +24,27 @@ class SessionTokenUsage < ApplicationRecord
   scope :subagents, -> { where(subagent: true) }
   scope :for_agent_root, ->(root) { where(agent_root: root) }
 
+  # Spend that draws down an Anthropic quota window.
+  #
+  # NOT the same question as "what did this cost", and the distinction only
+  # started to matter when a second billing relationship arrived in this table.
+  # Every row here is money; only the Claude Code rows are money spent against
+  # the subscription whose 5-hour and weekly windows Anthropic reports a
+  # percentage for. A Pi row is an OpenRouter invoice — real spend, and no claim
+  # at all on those windows.
+  #
+  # Two readers must have this filter and it is easy to miss both, because
+  # neither says "Claude" in its name: QuotaCapacityCalibrator divides observed
+  # spend by observed utilization to answer "what is a full window worth", and
+  # BurnRateCalculator samples $/minute rates that SpotGateService prices the
+  # running Claude fleet with. Feeding either a dollar Anthropic never counted
+  # inflates the estimate and admits spot work the window cannot actually afford.
+  #
+  # Cost surfaces are deliberately NOT scoped this way: the Costs page, the REST
+  # index and `get_costs` are asked what Zimmer spent, and the answer includes
+  # every runtime.
+  scope :quota_bearing, -> { where(agent_runtime: ClaudeAuthProvider::RUNTIME) }
+
   # Spend that could not be attributed to a Session row. Worth being able to see
   # rather than silently folding into the totals: a large unattributed share
   # means the transcript-to-session join is degrading.

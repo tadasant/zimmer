@@ -2,8 +2,15 @@
 
 require "json"
 
-# Reads token usage out of runtime transcript files and writes it to the two
-# usage tables.
+# Reads token usage out of Claude Code's transcript files and writes it to the
+# two usage tables.
+#
+# This is the `claude_code` bundle's `usage_ingestor_class`. It is Claude-shaped
+# throughout — the projects tree, the sanitized clone-directory attribution, the
+# API's own `requestId` as the dedup key — which is why the slot exists rather
+# than one widened scanner: PiTokenUsageIngestionService is the `pi` half, and it
+# reads no file at all. Its adhoc half (`claude -p`, the CLI probe) has no
+# equivalent on another runtime and stays here.
 #
 # WHY A SCANNER AND NOT A HOOK IN THE POLLER
 #

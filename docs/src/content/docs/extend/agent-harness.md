@@ -1,12 +1,12 @@
 ---
 title: Adding an agent harness
-description: The twelve-slot runtime bundle, every interface a new harness must implement, and the three registries that don't go through the bundle.
+description: The fourteen-slot runtime bundle, every interface a new harness must implement, and the three registries that don't go through the bundle.
 sidebar:
   order: 2
 ---
 
-A **runtime** (agent harness) is a `RuntimeRegistry::Bundle` — a struct with twelve slots, one for each
-seam where driving a vendor CLI differs. The bundle is plain data — a struct of class references
+A **runtime** (agent harness) is a `RuntimeRegistry::Bundle` — a struct with fourteen slots, one for
+each seam where driving a vendor CLI differs. The bundle is plain data — a struct of class references
 Zimmer looks up at runtime.
 
 ```ruby
@@ -14,7 +14,8 @@ Bundle = Struct.new(
   :runtime, :air_adapter_name, :cli_adapter_class, :retry_strategy_class,
   :transcript_source_class, :transcript_normalizer_class, :mcp_status_detector_class,
   :prompt_contribution_class, :config_preparer_class, :config_post_processor_class,
-  :auth_provider_class, :mcp_credential_writer_class,
+  :artifact_bridge_class, :auth_provider_class, :mcp_credential_writer_class,
+  :usage_ingestor_class,
   keyword_init: true
 )
 ```
@@ -33,6 +34,8 @@ Core code never says "Claude." It asks `RuntimeRegistry.for(runtime)`.
 | `mcp_status_detector_class` | `McpLogPollerService` | `CodexMcpStatusDetector` | `PiMcpStatusDetector` |
 | `config_post_processor_class` | `ClaudeMcpConfigPostProcessor` | `CodexConfigTomlPostProcessor` | `PiMcpConfigPostProcessor` |
 | `mcp_credential_writer_class` | `ClaudeMcpCredentialWriter` | `CodexMcpCredentialWriter` | `PiMcpCredentialWriter` |
+| `artifact_bridge_class` | `NullRuntimeArtifactBridge` | `NullRuntimeArtifactBridge` | `PiAirBridge` |
+| `usage_ingestor_class` | `TokenUsageIngestionService` | `nil` | `PiTokenUsageIngestionService` |
 | `prompt_contribution_class` | `ClaudeRuntimePromptContribution` | `nil` | `PiRuntimePromptContribution` |
 | `auth_provider_class` | `nil` | `nil` | `nil` |
 | `config_preparer_class` | `nil` | `nil` | `nil` |
@@ -57,6 +60,17 @@ Tracked in [#97](https://github.com/tadasant/zimmer/issues/97).
 two hold a null object: it writes the AIR hooks and plugins config Pi's extensions
 read, which Claude's and Codex's AIR adapters already handle for them. See
 [Pi is the runtime that supplies nothing](#pi-is-the-runtime-that-supplies-nothing).
+
+`usage_ingestor_class` sweeps the runtime's transcripts into the token-spend ledger
+([costs](/operate/costs/#how-usage-gets-in)). The contract is
+`.new(modified_since:)` and `#call`, returning something that responds to `#session_rows`
+and `#to_s`; `TokenUsageIngestionJob` runs every non-`nil` one on
+its cron and isolates a failure to the ingestor that raised it. It is a slot rather than a
+conditional because *where a runtime records what it spent* has no common answer: Claude Code
+writes a host-global tree, Pi writes into the clone (and is therefore read back out of
+`sessions.transcript`, since the clone is reaped), and Codex reports cumulative per-turn totals
+with no per-call identifier — which is why its slot is the one `nil` here that means "not
+ingested yet" rather than "resolved elsewhere" ([#1077](https://github.com/tadasant/zimmer/issues/1077)).
 
 Two `pi` slots are worth reading in full — one because it is emphatically *not*
 `nil`, the other because it is `nil` for a reason of its own rather than by that
@@ -321,9 +335,12 @@ backwards and a session's real history is thrown away; leave it unimplemented an
 7. Config post-processor.
 8. MCP credential writer.
 9. MCP status detector.
-10. Auth provider → `RuntimeAuthProvider.for` and `RUNTIMES`. Login driver →
+10. Usage ingestor — how the runtime's spend reaches `session_token_usages`. Leaving it `nil`
+    is allowed and means the runtime's cost is not tracked; say so in
+    [limitations](/limitations/) rather than leaving it to be discovered from a zero.
+11. Auth provider → `RuntimeAuthProvider.for` and `RUNTIMES`. Login driver →
     `RuntimeLoginDriver.for`.
-11. `Dockerfile.base` — pin the CLI and the matching `@pulsemcp/air-adapter-<runtime>`. Add to
+12. `Dockerfile.base` — pin the CLI and the matching `@pulsemcp/air-adapter-<runtime>`. Add to
     `CliStatusService::CLI_TOOLS` — and note the contract on `check_auth`: it is either a Ruby
     callable, or a shell command whose argv names a **real subcommand** of the binary. An agent
     CLI typically takes a bare positional prompt, so an argv that matches no subcommand is billed
@@ -331,7 +348,7 @@ backwards and a session's real history is thrown away; leave it unimplemented an
     ([#536](https://github.com/tadasant/zimmer/issues/536)). If the runtime needs vendor extensions to reach MCP/hooks
     (Pi does), pin those too and declare them in a registry the Dockerfile is asserted against —
     see `PiExtensions`.
-12. Add the adapter to `RuntimeCliAdapterContractTest::ADAPTERS` and write a mock in `test/support/`.
+13. Add the adapter to `RuntimeCliAdapterContractTest::ADAPTERS` and write a mock in `test/support/`.
 
 ## Pi is the runtime that supplies nothing
 
