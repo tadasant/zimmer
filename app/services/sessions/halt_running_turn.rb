@@ -109,7 +109,7 @@ module Sessions
         # contract self-enforcing: without it a lost write sends the session
         # through a fully observable `needs_input`, firing the ao_event watchers
         # and the queue drain on the way to a sleep it was always going to reach.
-        session.merge_metadata!({ "pending_sleep" => true })
+        session.merge_metadata!(Sessions::StopRecord.pending_sleep(stop_reason))
 
         # The job no longer owns a process; leaving the id set makes the session
         # look owned to the orphan sweep. `pause!`'s own cleanup_running_job does
@@ -125,6 +125,14 @@ module Sessions
         "[Sessions::HaltRunningTurn] Could not pause session #{session.id}: #{e.class}: #{e.message}"
       )
       false
+    end
+
+    # Which cause Sessions::StopRecord writes when the deferred sleep this arms is
+    # executed. The caller has already written the park record itself (today, the
+    # spot-queue keys), so a halt into the queue names that mechanism; a halt for
+    # any other reason names the halt, which is the only thing on the record for it.
+    def stop_reason
+      reason == :pause_into_spot_queue ? Sessions::StopRecord::SPOT_PAUSE : Sessions::StopRecord::HALTED_TURN
     end
 
     # What the session's own timeline calls this. Every caller today parks into

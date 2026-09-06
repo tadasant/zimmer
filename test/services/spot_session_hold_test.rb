@@ -203,6 +203,22 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
     assert session.reload.running?
   end
 
+  # tadasant/zimmer#608. This is the one `running -> waiting` write that does not
+  # pass through the state machine, so it does not inherit the `sleep` callback's
+  # record and has to write its own. Without it a turn refused at the gate lands a
+  # running session in `waiting` saying nothing about who moved it.
+  test "returning a running session to the queue records why it stopped" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotSessionHold.send(:return_to_queue!, session)
+
+    session.reload
+    assert_equal "waiting", session.status
+    assert_equal Sessions::StopRecord::SPOT_HOLD, session.metadata[Sessions::StopRecord::REASON]
+    assert session.metadata[Sessions::StopRecord::AT].present?
+  end
+
   # Defence in depth: the disposal and the log line both swallow their own
   # failures, so in practice only `return_to_queue!` reaches the rescue. What it
   # buys is that a disposal that dies degrades to the behavior it replaced rather

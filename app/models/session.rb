@@ -515,7 +515,7 @@ class Session < ApplicationRecord
     stranded_sleep_abandoned
     deliberate_sleep_at
     orphaned_trigger_fire_reported_at
-  ] + SpotSessionPause::METADATA_KEYS).freeze
+  ] + SpotSessionPause::METADATA_KEYS + Sessions::StopRecord::STOP_KEYS).freeze
 
   # Records that a human (or an API caller) put this session to sleep on purpose
   # with nothing armed to wake it — the one dormancy that carries no wake trigger

@@ -1074,7 +1074,7 @@ class Trigger < ApplicationRecord
         level: "info"
       )
     elsif session.running?
-      session.merge_metadata!("pending_sleep" => true)
+      session.merge_metadata!(Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE))
       session.logs.create!(
         content: "[Trigger##{id}] pending_sleep set — session will transition to waiting after current turn",
         level: "info"

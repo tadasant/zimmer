@@ -1,0 +1,234 @@
+require "test_helper"
+require "mocha/minitest"
+
+# The invariant this file exists to pin: **a session that leaves `running` for
+# `waiting` records why it stopped** (tadasant/zimmer#608).
+#
+# Three PRIORITY sessions started cleanly on 2026-08-22 and were back in `waiting`
+# sixty to seventy-five seconds later carrying no `exit_status`, no
+# `auth_outage_reason` and no `auth_outage_parked_at`. The tests below cover both
+# halves of that: the specific path that produced it (AuthOutageParkServiceTest
+# owns that one), and the recording gap that made it undiagnosable — which is what
+# these assert.
+class Sessions::StopRecordTest < ActiveSupport::TestCase
+  setup do
+    @session = Session.create!(
+      prompt: "Test prompt",
+      agent_runtime: "claude_code",
+      status: :running,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      execution_provider: "local_filesystem",
+      session_id: SecureRandom.uuid,
+      metadata: { "clone_path" => "/tmp/test-clone", "working_directory" => "/tmp/test-clone" }
+    )
+  end
+
+  def stop_reason(session = @session)
+    session.reload.metadata[Sessions::StopRecord::REASON]
+  end
+
+  # ---------------------------------------------------------------------------
+  # The invariant itself
+  # ---------------------------------------------------------------------------
+
+  test "a running session carried to waiting always records a reason" do
+    @session.merge_metadata!("pending_sleep" => true)
+
+    @session.pause!
+
+    assert_equal "waiting", @session.reload.status
+    assert_not_nil stop_reason, "a `running -> waiting` transition must record why"
+    assert @session.metadata[Sessions::StopRecord::AT].present?
+    assert @session.metadata[Sessions::StopRecord::DETAIL].present?
+  end
+
+  # The exact signature reported in #608: dormant, and nothing on the row explains
+  # it. The point is not that the reason is good — it is that the transition is no
+  # longer silent, and says so on the timeline a human reads.
+  test "a stop nothing on the row explains is recorded as unattributed and announced" do
+    @session.merge_metadata!("pending_sleep" => true)
+
+    @session.pause!
+
+    assert_equal Sessions::StopRecord::UNATTRIBUTED, stop_reason
+    warning = @session.logs.where(level: "warning").last
+    assert_not_nil warning, "an unattributed stop must leave an operator signal on the session"
+    assert_match(/no attributable cause|nothing on the record/i, warning.content)
+    assert_match(/608/, warning.content)
+  end
+
+  test "an ordinary needs_input sleep records a reason too" do
+    @session.pause!
+    assert_equal "needs_input", @session.reload.status
+
+    @session.sleep!
+
+    assert_equal "waiting", @session.reload.status
+    assert_not_nil stop_reason
+  end
+
+  # ---------------------------------------------------------------------------
+  # Classification
+  # ---------------------------------------------------------------------------
+
+  test "the provenance stamped with the sleep intent names the cause" do
+    @session.merge_metadata!(
+      Sessions::StopRecord.pending_sleep(Sessions::StopRecord::AUTH_OUTAGE_PARK)
+    )
+
+    @session.pause!
+
+    assert_equal Sessions::StopRecord::AUTH_OUTAGE_PARK, stop_reason
+  end
+
+  test "the provenance survives a park whose own record did not land" do
+    # The auth-outage park now writes both in one statement, so this row cannot be
+    # produced by that path any more. It is still the shape a future two-write
+    # mechanism would leave, and the provenance is what keeps it attributable.
+    @session.merge_metadata!(
+      Sessions::StopRecord.pending_sleep(Sessions::StopRecord::AUTH_OUTAGE_PARK)
+    )
+
+    @session.pause!
+
+    assert_nil @session.reload.metadata["auth_outage_reason"]
+    assert_equal Sessions::StopRecord::AUTH_OUTAGE_PARK, stop_reason
+  end
+
+  test "a park record on the row classifies the stop when no provenance is stamped" do
+    @session.pause!
+    @session.merge_metadata!(
+      "auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED,
+      "auth_outage_parked_at" => Time.current.utc.iso8601
+    )
+
+    @session.sleep!
+
+    assert_equal Sessions::StopRecord::AUTH_OUTAGE_PARK, stop_reason
+    assert_match(/login pool/i, @session.reload.metadata[Sessions::StopRecord::DETAIL])
+  end
+
+  test "a spot ceiling pause on the row classifies the stop" do
+    @session.pause!
+    @session.merge_metadata!(
+      SpotSessionPause::PAUSED_AT => Time.current.utc.iso8601,
+      SpotSessionPause::PAUSED_REASON => SpotSessionPause::UTILIZATION_REASON,
+      SpotSessionPause::PAUSED_DETAIL => "the window is spent"
+    )
+
+    @session.sleep!
+
+    assert_equal Sessions::StopRecord::SPOT_PAUSE, stop_reason
+  end
+
+  test "a deliberate sleep classifies as deliberate rather than unattributed" do
+    @session.pause!
+    @session.merge_metadata!(Session::DELIBERATE_SLEEP_KEY => Time.current.iso8601)
+
+    @session.sleep!
+
+    assert_equal Sessions::StopRecord::DELIBERATE_SLEEP, stop_reason
+  end
+
+  test "a session asleep on a wake it armed classifies as a scheduled wake" do
+    @session.pause!
+    @session.stubs(:awaiting_scheduled_wake?).returns(true)
+
+    @session.sleep!
+
+    assert_equal Sessions::StopRecord::SCHEDULED_WAKE, stop_reason
+  end
+
+  test "a session returned to the queue before it ever ran classifies as such" do
+    @session.pause!
+    @session.merge_metadata!(Sessions::ReturnToQueue::REASON_KEY => "no prompt to run")
+
+    @session.sleep!
+
+    assert_equal Sessions::StopRecord::UNSTARTED_REQUEUE, stop_reason
+  end
+
+  # ---------------------------------------------------------------------------
+  # Lifecycle of the record
+  # ---------------------------------------------------------------------------
+
+  test "the record is dropped when the session runs again" do
+    @session.merge_metadata!("pending_sleep" => true)
+    @session.pause!
+    assert_not_nil stop_reason
+
+    @session.resume!
+
+    assert_equal "running", @session.reload.status
+    Sessions::StopRecord::STOP_KEYS.each do |key|
+      assert_nil @session.metadata[key], "#{key} must not survive onto a running session"
+    end
+  end
+
+  test "the record is dropped when a waiting session starts" do
+    @session.merge_metadata!("pending_sleep" => true)
+    @session.pause!
+    assert_equal "waiting", @session.reload.status
+
+    @session.start!
+
+    assert_equal "running", @session.reload.status
+    assert_nil @session.metadata[Sessions::StopRecord::REASON]
+  end
+
+  test "the sleep intent and its provenance are cleared together" do
+    @session.merge_metadata!(
+      Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE)
+    )
+
+    @session.pause!
+
+    reloaded = @session.reload
+    assert_nil reloaded.metadata["pending_sleep"]
+    assert_nil reloaded.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON],
+      "a provenance stamp outliving its flag would attribute the NEXT stop to this one"
+  end
+
+  test "a resume clears the sleep intent and its provenance together" do
+    @session.merge_metadata!(
+      Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE)
+    )
+    @session.pause!
+    @session.reload
+    # Put the pair back on a needs_input row, as a failed pause would leave it.
+    @session.update!(status: :needs_input)
+    @session.merge_metadata!(
+      Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE)
+    )
+
+    @session.resume!
+
+    reloaded = @session.reload
+    assert_nil reloaded.metadata["pending_sleep"]
+    assert_nil reloaded.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON]
+  end
+
+  # ---------------------------------------------------------------------------
+  # Failure containment
+  # ---------------------------------------------------------------------------
+
+  test "a failure to record the stop does not cost the transition" do
+    @session.merge_metadata!("pending_sleep" => true)
+    Sessions::StopRecord.stubs(:classify).raises(StandardError, "boom")
+
+    @session.pause!
+
+    assert_equal "waiting", @session.reload.status,
+      "losing the note must not also lose the transition it describes"
+  end
+
+  test "an unreadable trigger table does not let an unexplained stop borrow an explanation" do
+    @session.pause!
+    @session.stubs(:awaiting_scheduled_wake?).raises(ActiveRecord::StatementInvalid, "gone")
+
+    @session.sleep!
+
+    assert_equal Sessions::StopRecord::UNATTRIBUTED, stop_reason
+  end
+end
