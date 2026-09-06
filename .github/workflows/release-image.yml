@@ -199,8 +199,17 @@ jobs:
           pull: true
           # Pin the app build to the exact successfully-built base declaration.
           # Never fall back to mutable :latest after a failed base build.
+          #
+          # GIT_SHA is baked into the image as ZIMMER_GIT_SHA and shipped as the
+          # `service.version` resource attribute on every OTLP log record, so an
+          # error burst in VictoriaLogs names the build it came from instead of
+          # having to be matched against this workflow's timings by hand. It is
+          # the same commit the :sha- tag above is cut from. Every attempt must
+          # carry it -- an image published by the retry without it loses the
+          # attribute for that whole deploy.
           build-args: |
             BASE_IMAGE=${{ steps.base.outputs.image }}
+            GIT_SHA=${{ github.sha }}
           push: true
           tags: ${{ steps.version.outputs.tags }}
           cache-from: type=gha
@@ -231,6 +240,7 @@ jobs:
           pull: true
           build-args: |
             BASE_IMAGE=${{ steps.base.outputs.image }}
+            GIT_SHA=${{ github.sha }}
           push: true
           tags: ${{ steps.version.outputs.tags }}
           cache-from: type=gha
@@ -253,6 +263,7 @@ jobs:
           pull: true
           build-args: |
             BASE_IMAGE=${{ steps.base.outputs.image }}
+            GIT_SHA=${{ github.sha }}
           push: true
           tags: ${{ steps.version.outputs.tags }}
           cache-from: type=gha

@@ -15,10 +15,20 @@
 #     services/jobs, and Rails' own unhandled-exception logs).
 #
 # Resource attributes on every batch (the fields a Grafana LogsQL alert
-# selector matches on):
+# selector matches on, and the ones that say WHICH build and WHICH container a
+# record came from):
 #   service.name = zimmer
 #   deployment.environment = <Rails.env>   (production / staging)
+#   service.version = <commit SHA>         (omitted when the build did not bake one)
+#   service.instance.id = <hostname>-<pid> (one value per container process)
 #   severity_text ∈ {INFO, WARN, ERROR, FATAL}   (OTLP severityText)
+#
+# service.version is what makes a burst of errors correlatable with a deploy
+# without cross-referencing GitHub Actions timings. service.instance.id is what
+# separates the several containers a deployment runs under one service.name, so
+# a burst confined to one of them is visible as such rather than reading like a
+# burst affecting everything. It identifies the container, not its role — see
+# the note on resolve_instance_id.
 #
 # Wire format: minimal hand-rolled OTLP/HTTP JSON. We avoid the alpha-quality
 # `opentelemetry-logs-sdk` gem and hit the documented OTLP/HTTP logs endpoint
@@ -30,6 +40,14 @@
 #   OTEL_LOGS_EXPORTER_BEARER_TOKEN  shared secret matching Caddy's bearer gate
 #                                    (matches your obs ingest gateway's token)
 #   OTEL_SERVICE_NAME                optional; defaults to "zimmer"
+#   OTEL_SERVICE_VERSION             optional; overrides the baked ZIMMER_GIT_SHA
+#   OTEL_SERVICE_INSTANCE_ID         optional; overrides the <hostname>-<pid> default
+#
+# ZIMMER_GIT_SHA is baked into the image by the Dockerfile's `ARG GIT_SHA`,
+# which .github/workflows/release-image.yml and deploy-staging.yml pass from the
+# commit being built. A hand-run `docker build`, a dev machine, `rails console`
+# and the test suite all leave it unset — service.version is then omitted from
+# the envelope rather than shipped empty.
 #
 # Failure mode: if the exporter is wedged or the obs droplet is down, the
 # background thread logs once and drops the batch. Job/log handling is never
@@ -38,6 +56,7 @@
 
 require "net/http"
 require "json"
+require "socket"
 require "uri"
 
 class OtelLogsExporter
@@ -107,6 +126,8 @@ class OtelLogsExporter
     @stopped = false
     @service_name = ENV["OTEL_SERVICE_NAME"] || "zimmer"
     @env_name = ENV["RAILS_ENV"] || (defined?(Rails) ? Rails.env.to_s : "unknown")
+    @service_version = resolve_service_version
+    @instance_id = resolve_instance_id
   end
 
   def start
@@ -142,6 +163,8 @@ class OtelLogsExporter
       endpoint: @endpoint.to_s,
       service_name: @service_name,
       environment: @env_name,
+      service_version: @service_version,
+      instance_id: @instance_id,
       running: @thread&.alive? || false,
       pending: pending
     }
@@ -220,15 +243,68 @@ class OtelLogsExporter
 
     JSON.generate(
       resourceLogs: [ {
-        resource: {
-          attributes: [
-            { key: "service.name", value: { stringValue: @service_name } },
-            { key: "deployment.environment", value: { stringValue: @env_name } }
-          ]
-        },
+        resource: { attributes: resource_attributes },
         scopeLogs: scope_logs
       } ]
     )
+  end
+
+  # The build identity, or nil when nothing baked one in. Empty is treated as
+  # absent because that is what an unset Docker `ARG` renders to: the Dockerfile
+  # always sets ZIMMER_GIT_SHA, and outside CI it sets it to "". An empty
+  # service.version is worse than no service.version — it matches a selector for
+  # the attribute while identifying nothing.
+  def resolve_service_version
+    blank_to_nil(ENV["OTEL_SERVICE_VERSION"]) || blank_to_nil(ENV["ZIMMER_GIT_SHA"])
+  end
+
+  # One value per running process, and never nil — every process can name
+  # itself, so unlike service.version this attribute always ships.
+  #
+  # The hostname identifies the container and the pid the process inside it (a
+  # Puma worker builds its own exporter). Under Kamal the hostname is neither
+  # the container id nor the host's real name: `kamal app boot` passes
+  # `--hostname "<deploy host, truncated>-<6 random bytes>"`, freshly generated
+  # on every container boot. So the value is unique per running container, and
+  # deliberately says nothing about which ROLE that container is — a burst is
+  # visibly confined to one instance, but naming it as `web` or `worker` would
+  # need an attribute carrying the role, which this is not.
+  def resolve_instance_id
+    blank_to_nil(ENV["OTEL_SERVICE_INSTANCE_ID"]) || "#{hostname}-#{Process.pid}"
+  end
+
+  def hostname
+    blank_to_nil(Socket.gethostname) || "unknown"
+  rescue => e
+    Kernel.warn "[otel_logs_exporter] could not read hostname: #{e.class}: #{e.message}"
+    "unknown"
+  end
+
+  # Not named `presence`: this class is loaded as an initializer and its
+  # instances are ordinary objects, so a private `presence` would shadow
+  # ActiveSupport's Object#presence with a different arity — and with different
+  # semantics, since this treats only "" as absent, not whitespace.
+  def blank_to_nil(value)
+    value = value.to_s
+    value.empty? ? nil : value
+  end
+
+  # Built per envelope rather than memoized: it is three reads of values
+  # resolved once at construction, and the envelope builder is the only caller.
+  #
+  # Every value goes through `scrub` for the same reason record bodies do, and
+  # with a sharper consequence: these attributes ride on EVERY batch, so one
+  # invalid byte here (the hostname is read from the OS, not from app config)
+  # would raise out of JSON.generate on every export for the life of the
+  # process, not just the batch carrying a bad record.
+  def resource_attributes
+    attributes = [
+      { key: "service.name", value: { stringValue: scrub(@service_name) } },
+      { key: "deployment.environment", value: { stringValue: scrub(@env_name) } },
+      { key: "service.instance.id", value: { stringValue: scrub(@instance_id) } }
+    ]
+    attributes << { key: "service.version", value: { stringValue: scrub(@service_version) } } if @service_version
+    attributes
   end
 
   def log_record(record)

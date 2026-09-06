@@ -331,4 +331,72 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
         "so the retry it guards just spends itself on the same throttle"
     end
   end
+  # Every image that can end up deployed must be able to say which commit it was
+  # built from. The Dockerfile bakes `ARG GIT_SHA` into ZIMMER_GIT_SHA, and
+  # config/initializers/otel_logs_exporter.rb ships it as the `service.version`
+  # resource attribute on every OTLP log record — so a build path that forgets
+  # the arg publishes an image whose error records carry no build identity, and
+  # correlating an error burst with the deploy that caused it goes back to
+  # reading GitHub Actions job timings by hand (tadasant/zimmer#736).
+  #
+  # The release job builds the app image up to three times, so this has to hold
+  # for every attempt, not just the first: an image published by the retry
+  # without the arg loses the attribute for that whole deploy.
+  test "every app image build bakes in the commit it was built from" do
+    app_builds = self.class.image_build_jobs.flat_map do |workflow, job_name, job|
+      (job["steps"] || [])
+        .select { |s| s["uses"].to_s.start_with?("#{BUILD_ACTION}@") }
+        # Exactly the steps that build ./Dockerfile — the one carrying ARG
+        # GIT_SHA. Keyed on `file:` being ABSENT rather than on it not being
+        # Dockerfile.base, so a future build of some other Dockerfile (the
+        # audit images in ci.yml already do this) is not wrongly required to
+        # carry a build arg that means nothing to it.
+        .reject { |s| s.dig("with", "file").present? }
+        .map { |s| [ "#{workflow} job '#{job_name}' step '#{s['name']}'", s ] }
+    end
+
+    assert_operator app_builds.length, :>=, 4,
+      "expected the three release attempts plus the staging build — if the app image builds " \
+      "moved, this guard is looking in the wrong place and would pass forever"
+
+    app_builds.each do |where, step|
+      build_args = step.dig("with", "build-args").to_s
+      assert_match(/^GIT_SHA=\S/, build_args,
+        "#{where}: must pass a non-empty `GIT_SHA=` build arg. Without it the published " \
+        "image ships log records with no service.version, and an error burst cannot be " \
+        "tied to the deploy that caused it.")
+      assert_no_match(/^GIT_SHA=\$\{\{\s*inputs\./, build_args,
+        "#{where}: GIT_SHA must come from the commit actually checked out, not from a " \
+        "dispatch input that may be a branch name or an abbreviated SHA")
+    end
+  end
+
+  # The other end of the same wire. The workflows pass GIT_SHA; the Dockerfile has to
+  # turn it into the environment variable the exporter reads, under exactly that name.
+  # Rename either side alone and every build stays green while the attribute silently
+  # stops shipping.
+  test "the Dockerfile turns the GIT_SHA build arg into the variable the exporter reads" do
+    dockerfile = Rails.root.join("Dockerfile").read
+    exporter = Rails.root.join("config/initializers/otel_logs_exporter.rb").read
+
+    assert_match(/^ARG GIT_SHA=""$/, dockerfile,
+      "Dockerfile must declare `ARG GIT_SHA` with an EMPTY default — an unset arg with no " \
+      "default is a build-time warning and an undefined variable, and any default that " \
+      "looks like a commit would be a lie in every image built outside CI")
+    assert_match(/^ENV ZIMMER_GIT_SHA=\$\{GIT_SHA\}$/, dockerfile,
+      "Dockerfile must export the arg as ZIMMER_GIT_SHA; an ARG alone does not survive " \
+      "into the running container")
+
+    # An ARG produces no layer, so the cache miss lands on its first USE. The ENV
+    # is that use, and its value changes on every commit — placed above the RUN
+    # steps it would rebuild every one of them on every build, silently, with
+    # nothing failing to say so.
+    env_line = dockerfile.lines.index { |l| l.start_with?("ENV ZIMMER_GIT_SHA=") }
+    last_run = dockerfile.lines.rindex { |l| l.start_with?("RUN ") }
+    assert_operator last_run, :<, env_line,
+      "Dockerfile: `ENV ZIMMER_GIT_SHA` must come after the last RUN in the final stage. " \
+      "Its value changes on every commit, so anything below it is rebuilt every time."
+    assert_includes exporter, 'ENV["ZIMMER_GIT_SHA"]',
+      "the exporter must read the same variable name the Dockerfile writes"
+  end
 end
