@@ -28,7 +28,7 @@ flowchart TB
                 WRK["worker<br/>bundle exec good_job start<br/>(no published port)"]
                 RDS["redis:7 accessory<br/>(cache only)"]
                 DBS["postgres:16 accessory<br/>(staging DB)"]
-                VOL[("named volumes<br/>zimmer_data · claude_home · codex_home<br/>gh_config · claude_local")]
+                VOL[("named volumes<br/>zimmer_data · claude_home · codex_home<br/>pi_home · gh_config · claude_local")]
             end
             TS["tailscaled<br/>MagicDNS: zimmer-staging"]
         end
@@ -136,13 +136,41 @@ Both roles mount the same durable named volumes, so state survives a deploy and 
   the entire [account-rotation system](/auth/harness/) hinges on.
 - `codex_home` → `~/.codex` (`CODEX_HOME`) — Codex's rollout transcripts, `auth.json`, and
   thread store.
+- `pi_home` → `~/.pi/agent` (`PI_CODING_AGENT_DIR`) — Pi's credential and provider state
+  (`auth.json`, `models.json`, `settings.json`). Its transcripts live in the session's own clone
+  under `zimmer_data`.
 - `gh_config` → `~/.config/gh` — the GitHub CLI's stored auth (from an interactive `gh auth login`).
   On staging the durable credential is instead `GH_TOKEN`, minted for the non-primary `tadasant-test`
   account and resolved from the Parameter Store into the process environment on every boot and poll
   tick — so it survives a rebuild without anyone logging in again. See
   [Staging `gh` auth](/operate/provisioning/#staging-gh-auth-the-tadasant-test-account).
 - `claude_local` → `~/.local` — where `bin/docker-entrypoint`'s background `claude update` writes.
-- The `worker` role additionally mounts `/var/run/docker.sock`, which `DockerCleanupJob` needs.
+
+No host Docker socket is bind-mounted into either role. The `docker` commands agent sessions and
+`DockerCleanupJob` run reach the **inner** daemon `bin/docker-entrypoint` starts inside the worker
+under sysbox — see [Nested Docker for agent sessions](/operate/nested-docker/).
+
+### Where a mount is declared, and why that matters
+
+The list above lives **once**, in `config/deploy.yml`, on both roles. `config/deploy.staging.yml`
+and `config/deploy.production.yml` carry only what genuinely differs between the two destinations:
+hosts, the worker's `memory:` cap, the nested-Docker `runtime`/`user` pair, and the `env` blocks.
+
+That split is load-bearing, because of how Kamal merges the two files. `load_config_files` folds
+the destination file over the base with ActiveSupport's `deep_merge!`, which recurses into
+**hashes** and **replaces arrays**. So a destination that restates `volume:` does not add to the
+shared list — it overrides it, and the next mount added to the base silently reaches the other
+destination only. That is the shape of the bug
+[`678f768`](https://github.com/tadasant/zimmer/commit/678f768) had to fix for `CODEX_HOME`: the
+runtime home lived on the container layer, every deploy destroyed it, and the next `resume` failed
+with "no rollout found".
+
+**To add a mount everywhere, add it to `config/deploy.yml`. To add one for a single destination,
+use that destination's top-level `volumes:` key** — Kamal appends it to every app role's
+`docker run`, so it stacks with the shared list instead of replacing it. Production does exactly
+that for the two `/opt/zimmer` bind mounts `artifacts-sync-prod` delivers.
+`test/config/kamal_deploy_config_test.rb` asserts the merged result for both destinations, so
+getting this wrong fails CI rather than a deploy.
 
 ### Three memory caps, and what each one protects
 
@@ -1475,8 +1503,9 @@ Two things follow from this that did not used to be true:
 - **Rollback is one command.** `kamal rollback <version> -d staging` (the host retains the last 5
   images).
 - **State survives a deploy.** `web` and `worker` share durable named volumes (`zimmer_data`,
-  `claude_home`, `codex_home`, `gh_config`, `claude_local`), which are re-attached to each new
-  container instead of being destroyed with the droplet.
+  `claude_home`, `codex_home`, `pi_home`, `gh_config`, `claude_local`), declared once in
+  `config/deploy.yml` and re-attached to each new container instead of being destroyed with the
+  droplet.
 
 ### `CanaryJob` is what the post-deploy drain gate enqueues
 
