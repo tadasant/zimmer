@@ -220,8 +220,12 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     assert_not @session.archived?, "Session should not be archived after undo"
   end
 
+  # Read from the constant, not restated: a literal here is what let the window
+  # itself drift (#1036). Undo restores a session onto this clone without
+  # rebuilding it, so a cleanup that ran inside the window would hand the user
+  # back a session with no working tree.
   test "cleanup delay constant is longer than undo window" do
-    undo_window = 5.seconds
+    undo_window = SessionStateMachine::UNDO_ARCHIVE_WINDOW
     assert DeferredCloneCleanupJob::CLEANUP_DELAY > undo_window,
       "Cleanup delay (#{DeferredCloneCleanupJob::CLEANUP_DELAY}) should be longer than undo window (#{undo_window})"
   end

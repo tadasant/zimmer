@@ -1946,11 +1946,29 @@ trigger will not *reuse* a never-run session even though the restore would now s
 follow-up into a session with no `session_id` runs that session's own prompt and silently drops the
 one this fire carried. The trigger spawns instead. See [Triggers](/sessions/triggers/).
 
-:::danger[The Undo button doesn't work]
-[Issue #12](https://github.com/tadasant/zimmer/issues/12): the archive `turbo_stream` response
-never renders the flash toast, so there is no toast and no Undo affordance — even though the
-`undo_archive` endpoint still works. The undo window is unusable from the UI.
-:::
+#### The undo window is one number
+
+Archiving from the web UI leaves a toast with an **Undo** button on it. That button is honored for
+`SessionStateMachine::UNDO_ARCHIVE_WINDOW` — **30 seconds** — after the archive, and it is the only
+place that number is written down. Three things read it and none of them restates it:
+
+| Reader | What it does with it |
+| --- | --- |
+| `ApplicationHelper#flash_duration_ms` | How long the toast stays on screen, so the button is gone the moment it stops working |
+| `SessionsController#undo_archive` | Refuses a click that arrives after the window, with *"The undo window has expired. Use the restore feature instead."* |
+| `DeferredCloneCleanupJob::CLEANUP_DELAY` | Waits the window out, plus five seconds, before reaping the clone — undo puts the session back to work on that clone without rebuilding it |
+
+That is not tidiness. The two numbers were literals in two files and drifted: the toast lived 30
+seconds while the controller accepted 5, so **Undo was already refusing for 25 of the 30 seconds it
+was on screen** ([#1036](https://github.com/tadasant/zimmer/issues/1036)). A test that pinned the
+controller's window to a number would not have caught it, so the regression test reads the duration
+off the rendered toast and asks the controller to honor a click at the last instant that toast is
+still up.
+
+Undo is deliberately generous rather than exact, because it is not a destructive path: it restores a
+session *out* of the trash, which is what the ordinary **Restore** action does with no time limit at
+all. The window scopes the toast affordance; `TRASH_RETENTION_PERIOD` and `EmptyTrashJob` are what
+actually bound the trash.
 
 ## Side effects are swallowed by design — but no longer silently
 

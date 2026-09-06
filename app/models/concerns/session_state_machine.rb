@@ -383,7 +383,8 @@ module SessionStateMachine
       # Can archive from any non-archived state (including running, which may be a user
       # force-archiving a stuck session)
       #
-      # The clone is deleted after the undo window (10 seconds) by DeferredCloneCleanupJob.
+      # The clone is deleted after the undo window (UNDO_ARCHIVE_WINDOW, plus the
+      # grace in DeferredCloneCleanupJob::CLEANUP_DELAY) by DeferredCloneCleanupJob.
       # If unpushed artifacts exist, they are preserved for TRASH_RETENTION_PERIOD (4 days)
       # before deletion.
       # Clean clones are deleted immediately with no retention period.
@@ -2615,6 +2616,26 @@ module SessionStateMachine
   rescue => e
     Rails.logger.error "[SessionStateMachine] Failed to enqueue status summary harvest: #{e.message}"
   end
+
+  # How long after archiving the "Undo" button on the trash toast is honored.
+  #
+  # This is the ONE fact about the undo window. Three things read it and none of
+  # them may restate it as a literal: the toast's own lifetime
+  # (ApplicationHelper#flash_duration_ms, so the button is never on screen after
+  # it has stopped working), SessionsController#undo_archive's check, and
+  # DeferredCloneCleanupJob::CLEANUP_DELAY (which has to outlast it, because undo
+  # restores a session onto the clone the job would otherwise have reaped).
+  #
+  # It drifted once already: the toast said 30 seconds while the controller
+  # accepted 5, so Undo was dead for 25 of the 30 seconds it was on screen
+  # ([#1036](https://github.com/tadasant/zimmer/issues/1036)).
+  #
+  # 30 seconds is what the UI was already promising, and being generous costs
+  # nothing: undo is not a destructive path — it restores a session out of the
+  # trash, exactly what the ordinary Restore action does with no time limit at
+  # all. The window scopes the toast affordance; TRASH_RETENTION_PERIOD and
+  # EmptyTrashJob are what actually bound the trash.
+  UNDO_ARCHIVE_WINDOW = 30.seconds
 
   # Retention period for preserved artifacts (unpushed commits + uncommitted changes).
   # Clean clones have no retention — they are deleted immediately after the undo window.
