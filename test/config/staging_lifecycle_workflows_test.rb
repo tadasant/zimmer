@@ -22,6 +22,12 @@ class StagingLifecycleWorkflowsTest < ActiveSupport::TestCase
   DEPLOY = Rails.root.join(".github/workflows/deploy-staging.yml")
   GUARD = "scripts/staging-lifecycle-guard.sh"
 
+  # Both gated jobs carry this verbatim. Run the schedule's verdict; run every other
+  # trigger regardless, which is what `!cancelled()` buys — a plain `needs:` job is skipped
+  # when its dependency is skipped, and a manual dispatch skips `guard` by design.
+  GATE = "${{ !cancelled() && (github.event_name != 'schedule' || " \
+         "needs.guard.outputs.proceed == 'true') }}"
+
   # `on:` parses as the boolean `true` in YAML 1.1, which is what Psych speaks.
   ON = true
 
@@ -77,12 +83,11 @@ class StagingLifecycleWorkflowsTest < ActiveSupport::TestCase
       "a dispatched teardown must destroy unconditionally, as it did before"
     assert_includes jobs.dig("guard", "steps").last["run"], "#{GUARD} teardown"
 
-    gate = jobs.dig("teardown", "if")
-    assert_includes gate, "needs.guard.outputs.proceed == 'true'", "the cron must be gated on the verdict"
-    assert_includes gate, "github.event_name != 'schedule'", "every other trigger must run anyway"
-    assert_includes gate, "!cancelled()",
-      "a plain `needs:` job is skipped when its dependency is skipped, which is exactly what a " \
-      "manual dispatch does to `guard` — without this the manual path would never run"
+    # The whole expression, not three substrings: `!cancelled() || (…)` contains every one
+    # of them and inverts the meaning, destroying the droplet on any night the guard fails.
+    assert_equal GATE, jobs.dig("teardown", "if"),
+      "the cron is gated on the verdict; every other trigger runs anyway; and `!cancelled()` " \
+      "is what lets this job run past a `guard` that a manual dispatch skipped"
     assert_equal [ "guard" ], jobs.dig("teardown", "needs")
   end
 
@@ -102,6 +107,14 @@ class StagingLifecycleWorkflowsTest < ActiveSupport::TestCase
     assert_includes cert_step["env"].keys, "AWS_SECRET_ACCESS_KEY"
     refute_includes cert_step["env"].keys, "GH_TOKEN",
       "the cert guard asks only whether the box exists; it has no business reading deploy history"
+
+    # Without this the guard cannot tell a fork that never configured staging (skip green)
+    # from this repository having lost the keys to its own state (fail loudly), and would
+    # take the fork branch — switching the schedule off silently in the one repo that runs it.
+    [ step, cert_step ].each do |s|
+      assert_equal "${{ secrets.DIGITALOCEAN_ACCESS_TOKEN != '' }}", s["env"]["STAGING_IS_CONFIGURED"],
+        "a boolean ABOUT the secret, never the secret: it lands in a log line either way"
+    end
   end
 
   test "the cert workflow keeps every path it had, and guards only the schedule" do
@@ -114,10 +127,7 @@ class StagingLifecycleWorkflowsTest < ActiveSupport::TestCase
     assert_equal "github.event_name == 'schedule'", wf.dig("jobs", "guard", "if")
     assert_includes wf.dig("jobs", "guard", "steps").last["run"], "#{GUARD} cert"
 
-    gate = wf.dig("jobs", "cert", "if")
-    assert_includes gate, "needs.guard.outputs.proceed == 'true'"
-    assert_includes gate, "github.event_name != 'schedule'"
-    assert_includes gate, "!cancelled()"
+    assert_equal GATE, wf.dig("jobs", "cert", "if"), "the same gate, for the same reasons"
 
     assert_includes DEPLOY.read, "uses: ./.github/workflows/domain-cert-staging.yml",
       "the chained call is what re-issues the cert after a teardown, so a skipped weekly run " \

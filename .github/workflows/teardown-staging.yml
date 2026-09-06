@@ -21,9 +21,11 @@ name: Teardown staging
 # The two knobs are right here, together, because they are one decision:
 #   the cron below      -- how often the question gets asked.
 #   RECENT_DEPLOY_HOURS -- how long a successful deploy protects the droplet for.
-# At 24h against a daily run the rule is simply "a deploy today keeps the box through
-# tomorrow's run": staging outlives its last successful deploy by between one and two
-# days. That is deliberately generous. A window shorter than the cron period lets the
+# At 24h against a daily run, staging outlives its last successful deploy by between one
+# and two days -- a deploy on any given day normally keeps the box through the next day's
+# run too, the exception being one made in the ~20 minutes before the cron hour, which is
+# already older than the window by the time that run fires. Deliberately generous: a
+# window shorter than the cron period lets the
 # run fall in the gap -- an 18h window would have destroyed the droplet at 06:23 on
 # 2026-08-16, 34 minutes before that morning's deploy -- and every teardown/deploy cycle
 # also costs one of Let's Encrypt's five certificates per 168h for the staging name (see
@@ -84,6 +86,12 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
           GH_TOKEN: ${{ github.token }}
+          # Whether staging exists HERE at all -- a boolean about the secret, never the
+          # secret. It is how the guard tells a fork that never configured staging (skip
+          # green, as `tailnet-reap-node.sh` does) from this repository having lost the
+          # keys to its own remote state (fail loudly, because a green skip there would
+          # switch the nightly teardown off for good and nothing would ever go red).
+          STAGING_IS_CONFIGURED: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN != '' }}
         run: bash scripts/staging-lifecycle-guard.sh teardown
 
   teardown:

@@ -615,8 +615,15 @@ saving, and it is worth knowing which way it cuts before you plan a day in stagi
 
 The guard is deliberately biased against destroying: an unreadable Terraform backend fails the run
 rather than being read as "no droplet", and a GitHub API that will not say when staging was last
-deployed to is read as "in use". The failure mode that remains is therefore the cheap one — a droplet
-kept for a day nobody wanted, about $0.80.
+deployed to — including one answering `200` over a truncated body — is read as "in use". The failure
+mode that remains is therefore the cheap one: a droplet kept for a day nobody wanted, about $0.80.
+
+Two edges the guard reports but does not fix. It looks for the **droplet** specifically, so state
+holding other resources and no droplet — a half-finished destroy, or a droplet deleted out of band —
+is skipped every night; that includes `digitalocean_reserved_ip.zimmer`, which DigitalOcean bills
+while it is unassigned. And a scheduled run cannot tell you the *reason* it skipped without you
+opening it, though the verdict is written to the run summary as well as the log. Both take a manual
+`Teardown staging` dispatch to clear.
 
 ### Double-suffixed Redis URL (fixed, but the sharp edge remains in production)
 

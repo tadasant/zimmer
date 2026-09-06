@@ -42,11 +42,15 @@ permissions:
   contents: read
 
 jobs:
-  # Only the SCHEDULE is guarded. A `workflow_dispatch` or the `workflow_call` from
-  # deploy-staging skips this job entirely and runs the cert job unconditionally, exactly
-  # as before: a human asking for a cert gets the attempt (and its error) they asked for,
-  # and the deploy chain must not pay for a `terraform init` it does not need -- it just
-  # applied, so the droplet is provably there.
+  # Only the SCHEDULE is guarded: a human asking for a cert gets the attempt (and its
+  # error) they asked for, and the deploy chain must not pay for a `terraform init` it does
+  # not need -- it just applied, so the droplet is provably there.
+  #
+  # Note what `github.event_name` means in a REUSABLE workflow: it is the event that
+  # triggered the CALLING run, not `workflow_call`. So the deploy chain skips this job
+  # because `deploy-staging` is dispatch-only, not because it is a workflow_call. If
+  # deploy-staging ever gains a `schedule:` trigger, this guard would start running inside
+  # it -- harmless (it would find the droplet and proceed) but no longer free.
   guard:
     if: github.event_name == 'schedule'
     runs-on: self-hosted
@@ -69,10 +73,16 @@ jobs:
       - name: Is there a staging droplet to certify?
         id: decide
         env:
-          # Read-only: the guard opens the remote state to look for the droplet, and
-          # talks to neither DigitalOcean nor Cloudflare.
+          # Read-only: the guard opens the remote state to look for the droplet, and talks
+          # to neither DigitalOcean nor Cloudflare. `terraform state list` takes no state
+          # lock either, which is why this job stays in the `domain-cert-staging`
+          # concurrency group rather than joining `staging-lifecycle` -- it cannot conflict
+          # with a `terraform apply` running alongside it, and putting it in that group
+          # would make a weekly cert renewal able to queue behind a deploy.
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          # See teardown-staging.yml: a boolean about the secret, never the secret.
+          STAGING_IS_CONFIGURED: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN != '' }}
         run: bash scripts/staging-lifecycle-guard.sh cert
 
   cert:

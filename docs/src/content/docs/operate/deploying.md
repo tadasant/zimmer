@@ -1054,8 +1054,10 @@ the base resolve's read sits inside a loop with a backoff.
 
 ### Staging deploys are Kamal container swaps onto a persistent droplet
 
-The droplet is no longer cattle. Terraform provisions it **once** and then leaves it alone; Kamal
-deploys the app onto it. `deploy-staging.yml`:
+The droplet is no longer cattle *within* a run of use. Terraform provisions it **once** and then
+leaves it alone; Kamal deploys the app onto it. (It is torn down between runs of use, on a nightly
+cron — see [Staging is torn down on the days it is not
+used](#staging-is-torn-down-on-the-days-it-is-not-used).) `deploy-staging.yml`:
 
 1. Builds the base image (`:staging`) and app image (`:staging-<sha>`).
 2. `terraform apply` — reconciles the **existing** droplet through remote state. It does not reap
@@ -1105,9 +1107,16 @@ and the box stays warm for the next container swap.
 
 Both knobs live at the top of `teardown-staging.yml`, next to each other, because they are one
 decision: the cron says how often the question is asked, and `RECENT_DEPLOY_HOURS` (24) says how long
-a deploy protects the droplet for. At 24h against a daily run the rule is simply *a deploy today keeps
-the box through tomorrow's run* — staging outlives its last successful deploy by between one and two
-days.
+a deploy protects the droplet for. At 24h against a daily run, staging outlives its last successful
+deploy by between one and two days. A deploy on any given day normally keeps the box through the next
+day's run as well; the exception is one made in the ~20 minutes before the cron hour, which is already
+older than the window by the time that run fires.
+
+**A state with leftovers but no droplet is skipped, and says so.** The guard looks for the droplet
+specifically, so a half-finished destroy — or a droplet deleted out of band — leaves resources the
+schedule will never clean up, including `digitalocean_reserved_ip.zimmer`, which DigitalOcean bills
+while it is *unassigned*. The guard prints them as GitHub Actions warnings rather than skipping
+silently; clearing them takes a manual `Teardown staging` dispatch.
 
 **A window shorter than the cron period is the trap.** Set it to 18h and a run falls in the gap: on
 this repo's real history that would have destroyed the droplet at 06:23 on 2026-08-16, thirty-four
@@ -1138,9 +1147,17 @@ non-zero exit for the one case that genuinely needs a human: a Terraform backend
 all. It never guesses "absent" from a broken backend — that would silently stop the teardown from ever
 running again, and look green while doing it.
 
-The same bias runs through the deploy-history check. If the GitHub API will not answer, the verdict is
-**do not destroy**: keeping a droplet nobody wanted costs about $0.80 for the day, and destroying one
-somebody is working on costs them a cold rebuild. Unknown is read as "in use".
+The same bias runs through the deploy-history check. If the GitHub API will not answer — or answers
+`200` with a body that is not run history, which is what a truncated response looks like — the verdict
+is **do not destroy**: keeping a droplet nobody wanted costs about $0.80 for the day, and destroying
+one somebody is working on costs them a cold rebuild. Unknown is read as "in use".
+
+The one place the guard deliberately does *not* skip quietly is a repository that has staging and has
+lost the keys to its own remote state. A fork that never configured staging skips green — the posture
+`tailnet-reap-node.sh` already takes — but here that would switch the nightly teardown off for good,
+with the run still going green and the droplet billing round the clock again. `STAGING_IS_CONFIGURED`
+(set from whether a DigitalOcean token exists at all, a boolean about the secret and never the secret)
+is what tells the two apart without naming a repository.
 
 `domain-cert-staging.yml` carries the same guard for the same reason. It upserts the
 `staging.zimmer.tadasant.com -> tailnet IP` A record and pushes the cert **onto the box**, so with

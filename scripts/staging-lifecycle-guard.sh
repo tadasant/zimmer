@@ -33,8 +33,12 @@
 #   TF_BACKEND_CONFIG    partial backend config (default backend.staging.hcl)
 #   DROPLET_ADDRESS      state address to look for (default digitalocean_droplet.zimmer)
 #   DEPLOY_WORKFLOW      workflow file whose successes count (default deploy-staging.yml)
-#   GH_TOKEN/GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_API_URL, GITHUB_OUTPUT
+#   GH_TOKEN/GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_API_URL, GITHUB_OUTPUT,
+#                        GITHUB_STEP_SUMMARY (optional -- the verdict is written there too)
 #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY  Spaces keys that open the remote state
+#   STAGING_IS_CONFIGURED  "true" when this repository has staging credentials at all, so
+#                        missing Spaces keys can be told apart from a fork that never set
+#                        any of them
 set -euo pipefail
 
 MODE="${1:-}"
@@ -45,6 +49,24 @@ case "$MODE" in
     exit 2
     ;;
 esac
+
+# Validated here rather than where it is used: everything between is a slow read of a
+# remote backend, and on the nights staging is down the script answers and exits before it
+# would ever reach the window. A typo in RECENT_DEPLOY_HOURS would then sit undiscovered
+# until the first night the droplet happens to exist.
+if [ "$MODE" = "teardown" ]; then
+  case "${RECENT_DEPLOY_HOURS:-}" in
+    ''|*[!0-9]*)
+      echo "::error::RECENT_DEPLOY_HOURS must be a positive integer of hours (got '${RECENT_DEPLOY_HOURS:-}')."
+      echo "::error::It is set in teardown-staging.yml, next to the cron."
+      exit 2
+      ;;
+  esac
+  if [ "$RECENT_DEPLOY_HOURS" -lt 1 ]; then
+    echo "::error::RECENT_DEPLOY_HOURS must be a positive integer of hours (got '${RECENT_DEPLOY_HOURS}')."
+    exit 2
+  fi
+fi
 
 TF_DIR="${TF_DIR:-infra/terraform}"
 TF_BACKEND_CONFIG="${TF_BACKEND_CONFIG:-backend.staging.hcl}"
@@ -69,21 +91,44 @@ decide() {
     echo "droplet=${droplet}"
     echo "reason=${reason}"
   } >> "$GITHUB_OUTPUT"
+  local line
   if [ "$proceed" = "true" ]; then
-    echo "▶️  Proceeding: ${reason}"
+    line="▶️ Proceeding: ${reason}"
   else
-    echo "⏭️  Skipping: ${reason}"
+    line="⏭️ Skipping: ${reason}"
+  fi
+  echo "$line"
+  # Also onto the run summary, so the nightly answer is readable from the Actions page
+  # without opening a job log -- this is the only place the decision is ever stated.
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    echo "**${MODE} guard** — ${line}" >> "$GITHUB_STEP_SUMMARY"
   fi
   exit 0
 }
 
 # A fork or a fresh self-host that never configured staging has no Spaces keys, so
-# `terraform init` against the remote backend would die -- nightly, on a cron nobody
-# there turned on. Same posture as tailnet-reap-node.sh: skip loudly, never fail over a
-# credential this repository's owner never set.
+# `terraform init` against the remote backend would die -- nightly, on a cron nobody there
+# turned on. Same posture as tailnet-reap-node.sh: never fail over a credential this
+# repository's owner never set.
+#
+# But a green skip is only right for a repository that has no staging AT ALL. In one that
+# does, losing the Spaces keys -- a rotation, a rename, an environment secret dropped --
+# would otherwise disable the nightly teardown permanently and silently, with the run
+# still going green: the droplet bills round the clock again and nothing ever reddens.
+# That is the same silent-do-nothing failure the backend branch below refuses to make.
+# STAGING_IS_CONFIGURED is what tells the two apart, without naming a repository: the
+# workflow sets it from whether a DigitalOcean token exists here at all.
 if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-  echo "::warning::No Spaces credentials (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY), so the staging"
-  echo "::warning::Terraform state cannot be read and this schedule has nothing to act on."
+  if [ "${STAGING_IS_CONFIGURED:-false}" = "true" ]; then
+    echo "::error::This repository configures a staging environment (a DigitalOcean token is set),"
+    echo "::error::but AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY -- the Spaces keys that open the"
+    echo "::error::Terraform remote state -- are missing, so the droplet cannot be found. Failing"
+    echo "::error::rather than skipping: a green skip here would silently switch this schedule off"
+    echo "::error::and staging would bill continuously again with nothing ever going red."
+    exit 1
+  fi
+  echo "::warning::No Spaces credentials (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY) and no staging"
+  echo "::warning::environment configured here, so this schedule has nothing to act on."
   decide false unknown "staging is not configured in this repository (no remote-state credentials)"
 fi
 
@@ -121,6 +166,19 @@ else
   droplet=absent
 fi
 
+# State with no droplet but something still in it. `terraform destroy` would act on those
+# leftovers, and this guard is about to skip past them -- most importantly
+# digitalocean_reserved_ip.zimmer, which DigitalOcean bills while it is UNASSIGNED. A
+# normal teardown destroys the pair together, so this means a half-finished destroy or a
+# droplet removed out of band. Say so where an operator can see it without a shell.
+if [ "$droplet" = "absent" ] && [ -n "$state_log" ]; then
+  echo "::warning::No droplet in the staging state, but the state is not empty -- these resources"
+  echo "::warning::are still managed and this run is about to skip past them:"
+  printf '%s\n' "$state_log" | sed 's/^/::warning::  /'
+  echo "::warning::An unassigned digitalocean_reserved_ip still bills. Dispatch \`Teardown staging\`"
+  echo "::warning::manually to clean the state up; the schedule will not do it for you."
+fi
+
 if [ "$droplet" = "absent" ]; then
   if [ "$MODE" = "cert" ]; then
     # Not a problem to fix: with no droplet there is no tailnet IP to point the A record
@@ -136,18 +194,7 @@ if [ "$MODE" = "cert" ]; then
 fi
 
 # --- Was staging deployed to recently? ----------------------------------------------
-hours="${RECENT_DEPLOY_HOURS:-}"
-case "$hours" in
-  ''|*[!0-9]*)
-    echo "::error::RECENT_DEPLOY_HOURS must be a positive integer of hours (got '${hours}')."
-    echo "::error::It is set in teardown-staging.yml, next to the cron."
-    exit 2
-    ;;
-esac
-if [ "$hours" -lt 1 ]; then
-  echo "::error::RECENT_DEPLOY_HOURS must be a positive integer of hours (got '${hours}')."
-  exit 2
-fi
+hours="$RECENT_DEPLOY_HOURS" # already validated, at the top
 
 api_url="${GITHUB_API_URL:-https://api.github.com}"
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must be set to owner/name}"
@@ -183,12 +230,35 @@ if [ "$code" != "200" ]; then
   decide false present "could not read ${DEPLOY_WORKFLOW} history (HTTP ${code}), so staging is assumed to be in use"
 fi
 
-last="$(jq -r '.workflow_runs[0].updated_at // empty' < "$body" 2>/dev/null || true)"
+# jq's EXIT STATUS is the whole point here, so it is checked rather than swallowed. An
+# empty result and a failed parse both produce an empty string, and only one of them means
+# "no deploy is holding this droplet" -- reading the other one that way destroys a box on
+# any 200 whose body is not run history. That is a real shape: `%{http_code}` is written as
+# soon as the response headers land, so a `--max-time` expiry or a reset mid-body reports
+# 200 over a truncated JSON document.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "::warning::jq is not on PATH, so the ${DEPLOY_WORKFLOW} run history cannot be read. Keeping the droplet."
+  decide false present "could not parse ${DEPLOY_WORKFLOW} history (no jq), so staging is assumed to be in use"
+fi
 
-if [ -z "$last" ]; then
+if ! runs="$(jq -r '.workflow_runs | length' < "$body" 2>/dev/null)" || \
+   ! [[ "$runs" =~ ^[0-9]+$ ]]; then
+  echo "::warning::The ${DEPLOY_WORKFLOW} run history did not parse as JSON (a truncated or"
+  echo "::warning::intercepted response, most likely). Keeping the droplet."
+  decide false present "could not parse ${DEPLOY_WORKFLOW} history, so staging is assumed to be in use"
+fi
+
+if [ "$runs" -eq 0 ]; then
   # No successful deploy has ever been recorded, yet a droplet exists. Nothing is
   # protecting it, so tear it down -- that is the case this whole feature is for.
   decide true present "no successful ${DEPLOY_WORKFLOW} run on record, so nothing is holding the droplet"
+fi
+
+last="$(jq -r '.workflow_runs[0].updated_at // empty' < "$body")"
+if [ -z "$last" ]; then
+  # A run with no timestamp on it. Unreadable, not empty -- keep the droplet.
+  echo "::warning::The newest successful ${DEPLOY_WORKFLOW} run carries no timestamp. Keeping the droplet."
+  decide false present "could not read the last deploy's timestamp, so staging is assumed to be in use"
 fi
 
 if ! last_epoch="$(date -u -d "$last" +%s 2>/dev/null)"; then
