@@ -19,7 +19,11 @@ class GitPushCiReminderTest < ActiveSupport::TestCase
     "git --no-pager push -u origin feature",
     "cd app && git push --force-with-lease",
     # A --dry-run belonging to some *other* command must not suppress a real push.
-    "git push origin main && rsync --dry-run a b"
+    "git push origin main && rsync --dry-run a b",
+    # Quoted. A quote is a boundary like any other: missing these read as a hook
+    # that never fired, which is how zimmer#1073 misread the Pi runtime.
+    %q(echo "git push origin main"),
+    %q(bash -c 'git push origin main')
   ].freeze
 
   # Commands that pushed nothing.

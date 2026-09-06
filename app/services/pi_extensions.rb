@@ -21,7 +21,7 @@
 # == Why an entry can be absent ==
 #
 # `@tadasant/pi-hooks` and `@tadasant/pi-plugins` are the Zimmer-side answer to
-# Pi having no hooks and no AIR-plugin support. Both are published (0.1.0) and
+# Pi having no hooks and no AIR-plugin support. Both are published (0.2.0) and
 # both are in the image, so nothing here is pending today.
 #
 # The absence machinery stays because absence is still possible and still has to
@@ -86,9 +86,19 @@ module PiExtensions
                "PiMcpConfigPostProcessor writes into the clone.",
       pending_publish: false
     ),
+    # 0.2.0 is a floor, not just the latest. Below it these two speak only their
+    # own Pi-native payload (`toolName`, `input`, `content`) and honor only their
+    # own `{"content": ...}` reply, so a *portable* AIR hook — one written against
+    # the dialect AIR's reference adapter registers with, reading `tool_name` /
+    # `tool_input` and answering with `hookSpecificOutput.additionalContext` —
+    # loads, matches, spawns, and has everything it wrote thrown away. It is a
+    # silent no-op whose logs are indistinguishable from a hook that worked.
+    # 0.2.0 sends both namings and honors both replies
+    # (tadasant/pi-extensions#4). `pi_hooks_and_plugins_live_test.rb` pins it
+    # with a hook that speaks only the Claude dialect.
     Extension.new(
       package: "@tadasant/pi-hooks",
-      version: "0.1.0",
+      version: "0.2.0",
       entrypoint: File.join("@tadasant", "pi-hooks", "extensions", "hooks.ts"),
       purpose: "Lifecycle hooks (Pi exposes lifecycle only through its TypeScript " \
                "extension API and has no hooks concept of its own).",
@@ -96,7 +106,7 @@ module PiExtensions
     ),
     Extension.new(
       package: "@tadasant/pi-plugins",
-      version: "0.1.0",
+      version: "0.2.0",
       entrypoint: File.join("@tadasant", "pi-plugins", "extensions", "plugins.ts"),
       purpose: "AIR Plugins — resolving a plugin manifest and activating the " \
                "skills, hooks and MCP servers it bundles. Requires pi-hooks and " \
@@ -113,7 +123,7 @@ module PiExtensions
   end
 
   # The extensions the base image installs today — everything already published.
-  # All three, as of `@tadasant/pi-hooks@0.1.0` and `@tadasant/pi-plugins@0.1.0`
+  # All three, as of `@tadasant/pi-hooks@0.2.0` and `@tadasant/pi-plugins@0.2.0`
   # reaching npm.
   #
   # Read by the Dockerfile parity test so the image's `npm install` list and this

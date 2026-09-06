@@ -38,9 +38,18 @@ class PiHooksAndPluginsLiveTest < ActiveSupport::TestCase
   # transcript is the proof: the model saw something only the hook could put there.
   REMINDER_MARKER = "Pushing is not the same as finishing"
 
+  # Text the Claude-dialect hook below injects. Nothing else can produce it.
+  PORTABLE_MARKER = "PORTABLE-AIR-HOOK-REACHED-THE-MODEL"
+
   # The bash command the simulated LLM asks Pi to run. It reads as a `git push` to
   # the hook's matcher without pushing anything.
-  SIMULATED_COMMAND = "echo git push origin main"
+  #
+  # Quoted deliberately: this is byte-for-byte the probe zimmer#1073 ran against a
+  # live Pi session, saw come back unmodified, and read as "AIR hooks do not fire on
+  # Pi". They fired; the hook's own pattern declined the quote. Driving the probe
+  # that produced the wrong verdict is what keeps that verdict from being reachable
+  # again.
+  SIMULATED_COMMAND = %q(echo "git push origin main")
 
   setup do
     skip "set PI_E2E=1 to run the live Pi tests" unless ENV["PI_E2E"] == "1"
@@ -97,6 +106,38 @@ class PiHooksAndPluginsLiveTest < ActiveSupport::TestCase
       "the hook discarded the command's own output"
   end
 
+  # The reason `PiExtensions::REGISTRY` pins 0.2.0 rather than 0.1.0.
+  #
+  # AIR specifies no stdin schema for a hook body and no schema for what it writes
+  # back, so what a *portable* AIR hook is written against is whatever AIR's
+  # reference adapter registers it with — Claude Code. Such a hook reads
+  # `tool_name` / `tool_input` and answers with `hookSpecificOutput.additionalContext`,
+  # and it never mentions Pi. Below 0.2.0 `@tadasant/pi-hooks` sent only its own
+  # Pi-native naming and honored only its own `{"content": ...}` reply, so that hook
+  # loaded, matched, spawned, exited 0 — and everything it wrote was discarded. This
+  # test fails against 0.1.0 and passes against 0.2.0, which is the whole content of
+  # the version floor.
+  #
+  # The catalog's own hook cannot show this: it branches on `PI_HOOK=1` and speaks
+  # the Pi dialect, which worked all along. So the body here is written fresh, and
+  # the generated index is repointed at it — the bridge's own output is already
+  # covered by the test above.
+  test "a portable AIR hook that speaks only Claude Code's dialect still reaches the model" do
+    # No catalog selection: the generated index is replaced wholesale below, so the
+    # only hook in this run is the portable one and the marker has one possible source.
+    run_pi! { install_claude_dialect_hook! }
+
+    assert_includes stderr_log, "[pi-hooks] loaded 1 hook(s)",
+      "pi-hooks did not load the repointed index:\n#{stderr_log}"
+    assert_includes tool_result_text, PORTABLE_MARKER,
+      "the portable hook's additionalContext never reached the model — this is the " \
+      "silent no-op @tadasant/pi-hooks 0.2.0 fixes:\n#{tool_result_text}"
+    # `additionalContext` ADDS; it must not eat the command's own output the way a
+    # substituting `content` would.
+    assert_includes tool_result_text, "git push origin main",
+      "appending the hook's context discarded the command's own output"
+  end
+
   test "an AIR plugin's bundled hook activates during a real Pi run" do
     @session.update!(catalog_plugins: [ "ci-workflow" ])
 
@@ -150,10 +191,14 @@ class PiHooksAndPluginsLiveTest < ActiveSupport::TestCase
 
   # Spawn Pi exactly as a session would: PiAirBridge generates the config,
   # PiRuntimeAdapter builds the command line and the environment.
+  #
+  # The optional block runs after the bridge has written and before Pi starts, for
+  # the one test that needs an index naming a hook body the catalog does not hold.
   def run_pi!
     AirPrepareService.new(
       session: @session, working_directory: @clone, file_system: RealFileSystemAdapter.new
     ).send(:artifact_bridge).write!
+    yield if block_given?
 
     adapter = PiRuntimeAdapter.new
     result = adapter.execute(
@@ -164,6 +209,39 @@ class PiHooksAndPluginsLiveTest < ActiveSupport::TestCase
     )
     Process.waitpid(result.fetch(:pid))
     @stderr_log_path = result.fetch(:stderr_log_path)
+  end
+
+  # Repoint the generated hooks index at a hook body that knows only Claude Code's
+  # half of the contract. Same index shape PiAirBridge writes — `{ "<short id>":
+  # { title, description, path } }` — so pi-hooks cannot tell it was not generated.
+  def install_claude_dialect_hook!
+    dir = File.join(@root, "portable-hook")
+    FileUtils.mkdir_p(dir)
+    File.write(File.join(dir, "HOOK.json"), JSON.generate(
+      "event" => "post_tool_call", "matcher" => "Bash",
+      "command" => "node", "args" => [ "./portable.mjs" ], "timeout_seconds" => 10
+    ))
+    # Deliberately no PI_HOOK branch and no `content` reply: this is what an AIR
+    # hook written for the ecosystem at large looks like.
+    File.write(File.join(dir, "portable.mjs"), <<~JS)
+      const chunks = [];
+      for await (const chunk of process.stdin) chunks.push(chunk);
+      let payload;
+      try { payload = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { process.exit(0); }
+      if (String(payload?.tool_name ?? "").toLowerCase() !== "bash") process.exit(0);
+      if (!String(payload?.tool_input?.command ?? "").includes("git push")) process.exit(0);
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: #{PORTABLE_MARKER.inspect} },
+      }));
+    JS
+
+    index = File.join(@clone, PiAirBridge::CONFIG_DIR, PiAirBridge::HOOKS_INDEX_FILENAME)
+    File.write(index, JSON.generate(
+      "portable-air-hook" => {
+        "title" => "Portable AIR hook", "description" => "Speaks Claude Code's dialect only.",
+        "path" => dir
+      }
+    ))
   end
 
   def stderr_log

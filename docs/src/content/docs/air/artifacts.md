@@ -134,23 +134,26 @@ Everything else is a no-op, and it always exits 0 — a hook must never fail the
 
 #### Writing a body that runs on more than one runtime
 
-`HOOK.json` is portable. The body it names is not, unless you write it that way — the two runtimes
-that execute AIR hooks today disagree about both halves of the contract:
+`HOOK.json` is portable, and AIR specifies no schema for the body it names — so what a portable
+body is written against is whatever AIR's reference adapter registers it with, Claude Code. The
+two runtimes that execute AIR hooks today name the same things differently:
 
 | | stdin payload | how context reaches the model |
 | --- | --- | --- |
 | Claude Code (`PostToolUse`) | `{tool_name, tool_input, tool_response}` | `hookSpecificOutput.additionalContext` |
-| Pi (`@tadasant/pi-hooks`) | `{event, toolName, input, content}` | `{"content": …}`, which **replaces** the tool result |
+| Pi-native (`@tadasant/pi-hooks`) | `{event, toolName, input, content}` | `{"content": …}`, which **replaces** the tool result |
 
-A body that reads `tool_name` gets `undefined` on Pi and returns early; one that writes
-`hookSpecificOutput` has its output ignored. Both are silent — the hook loads, matches, spawns and
-exits 0, having done nothing.
+**From `@tadasant/pi-hooks@0.2.0` you do not have to choose**: the extension sends both namings on
+every event and honors both replies, so a Claude-dialect body runs unmodified on Pi. Zimmer pins
+0.2.0 as a floor for exactly that reason. Below it, only the second column existed, and a
+Claude-dialect body loaded, matched, spawned and exited 0 having silently done nothing.
 
+One asymmetry survives, in the right-hand column: Pi's `content` **replaces** the tool result
+rather than appending to it, so a Pi-dialect body has to echo the command's own output back before
+its own text or the model never sees what the command actually did.
 `@tadasant/pi-hooks` sets `PI_HOOK=1` on every hook process, which is the signal to answer in its
-dialect. `git-push-ci-reminder.mjs` normalizes either payload and renders either response, and it is
-worth copying that shape. Note the asymmetry in the right-hand column: Pi's `content` **replaces**
-the tool result rather than appending to it, so the Pi branch has to echo the command's own output
-back before its own text or the model never sees what the command actually did.
+dialect; `git-push-ci-reminder.mjs` normalizes either payload and renders either response, and it
+is worth copying that shape even though a single-dialect body now works.
 
 `plugins/ci-workflow/.plugin/plugin.json` bundles this hook alongside `zimmer-run-tests`, and
 `ci-workflow` is `default_in_roots: ["agent-orchestrator"]`, so sessions on that root get it

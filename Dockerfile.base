@@ -186,7 +186,7 @@ RUN set -eo pipefail; \
 # compiled entrypoint. pi_extensions_test asserts these paths and versions match
 # PiExtensions::REGISTRY.
 RUN set -eo pipefail; \
-    for i in 1 2 3; do npm install --prefix /opt/pi-extensions pi-mcp-adapter@2.32.1 @tadasant/pi-hooks@0.1.0 @tadasant/pi-plugins@0.1.0 && break || { echo "pi-extensions install attempt $i failed, retrying in 5s..."; sleep 5; }; done; \
+    for i in 1 2 3; do npm install --prefix /opt/pi-extensions pi-mcp-adapter@2.32.1 @tadasant/pi-hooks@0.2.0 @tadasant/pi-plugins@0.2.0 && break || { echo "pi-extensions install attempt $i failed, retrying in 5s..."; sleep 5; }; done; \
     test -f /opt/pi-extensions/node_modules/pi-mcp-adapter/index.ts; \
     test -f /opt/pi-extensions/node_modules/@tadasant/pi-hooks/extensions/hooks.ts; \
     test -f /opt/pi-extensions/node_modules/@tadasant/pi-plugins/extensions/plugins.ts
