@@ -390,7 +390,9 @@ class TriggerSchedulingClassTest < ActiveSupport::TestCase
     job = held_by_the_gate(session)
     assert SpotSessionHold.held?(session.reload)
 
-    @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+    perform_enqueued_jobs(only: TriggerPromotionReleaseJob) do
+      @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+    end
 
     session.reload
     assert session.priority?
@@ -410,8 +412,17 @@ class TriggerSchedulingClassTest < ActiveSupport::TestCase
 
     # `stub_agent_root_for` stubs the spawn enqueue, so anything landing in
     # `enqueued_jobs` here is the release's doing and nothing else's.
+    # `stub_agent_root_for` no-ops `AgentSessionJob.enqueue_new_session` so the
+    # SPAWN does not really enqueue — which is exactly the method StartNow's one
+    # duplicate-producing branch calls. So the queue assertions below cannot see
+    # a second job created that way, and this expectation is what actually pins
+    # it. Without it the test passes against an implementation that enqueues.
+    AgentSessionJob.expects(:enqueue_new_session).never
+
     assert_no_enqueued_jobs(only: AgentSessionJob) do
-      @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+      perform_enqueued_jobs(only: TriggerPromotionReleaseJob) do
+        @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+      end
     end
 
     assert_equal 1, agent_session_jobs_for(session).count,
@@ -424,7 +435,9 @@ class TriggerSchedulingClassTest < ActiveSupport::TestCase
     backlog = 3.times.map { |i| @schedule.create_session!(prompt: "Test #{i}") }
     jobs = backlog.map { |session| held_by_the_gate(session) }
 
-    @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+    perform_enqueued_jobs(only: TriggerPromotionReleaseJob) do
+      @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+    end
 
     backlog.each_with_index do |session, i|
       refute SpotSessionHold.held?(session.reload), "session #{session.id} is still held"
@@ -439,7 +452,9 @@ class TriggerSchedulingClassTest < ActiveSupport::TestCase
     session = @schedule.create_session!(prompt: "Test")
     job = held_by_the_gate(session)
 
-    @schedule.update!(scheduling_class: SessionGenesis::SPOT)
+    perform_enqueued_jobs(only: TriggerPromotionReleaseJob) do
+      @schedule.update!(scheduling_class: SessionGenesis::SPOT)
+    end
 
     assert session.reload.spot?
     assert SpotSessionHold.held?(session), "a demotion must not start anything"
@@ -452,7 +467,9 @@ class TriggerSchedulingClassTest < ActiveSupport::TestCase
     held_by_the_gate(session)
     assert session.priority?, "a slack session derives priority"
 
-    @slack.update!(scheduling_class: SessionGenesis::PRIORITY)
+    perform_enqueued_jobs(only: TriggerPromotionReleaseJob) do
+      @slack.update!(scheduling_class: SessionGenesis::PRIORITY)
+    end
 
     assert SpotSessionHold.held?(session.reload),
       "nothing moved, so nothing was released — the stale record is the gate's to clear on its next pass"
@@ -464,15 +481,60 @@ class TriggerSchedulingClassTest < ActiveSupport::TestCase
     session = @schedule.create_session!(prompt: "Test")
     job = held_by_the_gate(session)
 
-    # StartNow refuses anything that is not `waiting`, and the release re-reads
-    # the row rather than trusting the ids the reclassification collected.
-    Session.where(id: session.id).update_all(status: Session.statuses[:running])
-
-    assert_nothing_raised { @schedule.update!(scheduling_class: SessionGenesis::PRIORITY) }
+    # The flip has to land BETWEEN the reclassification and the release, which is
+    # the window the job's re-read exists for. Flipping it before the save would
+    # prove nothing: `spawned_waiting_sessions` filters on `waiting` and would
+    # never collect the id in the first place.
+    assert_nothing_raised do
+      @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+      Session.where(id: session.id).update_all(status: Session.statuses[:running])
+      perform_enqueued_jobs(only: TriggerPromotionReleaseJob)
+    end
 
     assert_operator job.reload.scheduled_at, :>, Time.current,
       "a running session's queued turn is not a turn to pull forward"
     assert_equal 1, agent_session_jobs_for(session).count
+  end
+
+  # A trigger-wide promotion is a less specific statement than a per-session
+  # park, and the file's own rule is that the specific one wins. StartNow's
+  # `resume_from_the_queue` branch would otherwise un-park a session somebody
+  # deliberately put in the spot queue with `pause_into_spot_queue`.
+  test "a session parked in the spot queue on purpose is not un-parked by a trigger-wide promotion" do
+    @schedule.update!(scheduling_class: SessionGenesis::SPOT)
+    stub_agent_root_for(@schedule)
+    session = @schedule.create_session!(prompt: "Test")
+    session.update!(metadata: (session.metadata || {}).merge(
+      SpotSessionPause::PAUSED_REASON => "queued_by_user",
+      SpotSessionPause::PAUSED_DETAIL => "Parked in the spot queue by a user.",
+      SpotSessionPause::PAUSED_AT => 10.minutes.ago.utc.iso8601
+    ))
+
+    perform_enqueued_jobs(only: TriggerPromotionReleaseJob) do
+      @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+    end
+
+    assert session.reload.priority?, "the class still moves"
+    assert SpotSessionPause.paused?(session),
+      "the park has its own resume owner and a trigger-wide change must not consume it"
+  end
+
+  # `not_in_frozen_category` is the scope every bulk start/recover flow honours,
+  # and releasing a promoted backlog is one.
+  test "a session in a frozen category is not started by a trigger-wide promotion" do
+    @schedule.update!(scheduling_class: SessionGenesis::SPOT)
+    stub_agent_root_for(@schedule)
+    session = @schedule.create_session!(prompt: "Test")
+    job = held_by_the_gate(session)
+    session.update!(category: Category.create!(name: "Parked #{SecureRandom.hex(4)}", is_frozen: true))
+
+    perform_enqueued_jobs(only: TriggerPromotionReleaseJob) do
+      @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+    end
+
+    assert session.reload.priority?, "the class still moves"
+    assert_operator job.reload.scheduled_at, :>, Time.current,
+      "a frozen category is opted out of bulk starts"
   end
 
   # Two saves inside one transaction share ONE after_commit. The promoted ids
@@ -485,9 +547,11 @@ class TriggerSchedulingClassTest < ActiveSupport::TestCase
     session = @schedule.create_session!(prompt: "Test")
     job = held_by_the_gate(session)
 
-    ActiveRecord::Base.transaction do
-      @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
-      @schedule.update!(name: "Renamed after the promotion")
+    perform_enqueued_jobs(only: TriggerPromotionReleaseJob) do
+      ActiveRecord::Base.transaction do
+        @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+        @schedule.update!(name: "Renamed after the promotion")
+      end
     end
 
     refute SpotSessionHold.held?(session.reload),
@@ -509,7 +573,11 @@ class TriggerSchedulingClassTest < ActiveSupport::TestCase
 
       real.call(session, **kw)
     }) do
-      assert_nothing_raised { @schedule.update!(scheduling_class: SessionGenesis::PRIORITY) }
+      assert_nothing_raised do
+        perform_enqueued_jobs(only: TriggerPromotionReleaseJob) do
+          @schedule.update!(scheduling_class: SessionGenesis::PRIORITY)
+        end
+      end
     end
 
     assert SpotSessionHold.held?(first.reload), "the one that raised keeps its hold"

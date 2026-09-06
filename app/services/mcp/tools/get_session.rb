@@ -346,8 +346,8 @@ module Mcp
           # to promote a session that IS priority is the advertised-remedy defect
           # this issue is about, restated one line lower down (#423).
           ("- **The prompt that woke it is not lost:** it is recorded with the hold and " \
-           "delivered when the gate lets the turn through." \
-           "#{' Promote this session to priority to run it now.' unless promoted}" if hold.resuming?)
+           "#{promoted ? 'delivered when its queued turn runs.' : 'delivered when the gate lets the turn ' \
+             'through. Promote this session to priority to run it now.'}" if hold.resuming?)
         ].compact
       end
 
