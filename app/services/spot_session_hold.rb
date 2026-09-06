@@ -376,6 +376,18 @@ class SpotSessionHold
       # record would otherwise outlive the session's whole run.
       unless session.spot?
         clear(session)
+        # The other half of "priority work crowds spot work out". A priority
+        # session is never HELD by the fleet cap, but it does count toward it —
+        # so a priority start over the cap used to leave the fleet one wider than
+        # the operator's number, indefinitely. SpotPreemption makes one running
+        # spot session yield the slot instead.
+        #
+        # Here rather than anywhere else because this is already the choke point
+        # every quota-spending turn passes through, so it is the one place that
+        # knows a priority session is about to take a slot. It never raises and
+        # never holds anything: the priority session starts either way, and a
+        # preemption that cannot be worked out simply does not happen.
+        SpotPreemption.make_room_for(session)
         return false
       end
 

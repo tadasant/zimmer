@@ -355,6 +355,7 @@ module Mcp
         return [] if detail.blank?
 
         return user_queued_lines(session, detail) if SpotSessionPause.queued_by_user?(session)
+        return preempted_lines(session, detail) if SpotSessionPause.preempted?(session)
 
         [
           "- **Paused mid-run by the spot ceiling:** #{detail}",
@@ -376,6 +377,25 @@ module Mcp
           "- **Resumes when:** a Claude Code account is under both quota targets and a session slot " \
           "is free. No wake-up time is set and nothing is cancelled; making the session priority " \
           "resumes it on the next sweep."
+        ]
+      end
+
+      # The same dormancy reached a third way: a priority session needed this
+      # session's slot. An agent reading its own session has to be able to tell
+      # this apart from the quota case above, because the resume condition is a
+      # different one — a free slot, not a window falling — and because the remedy
+      # the quota branch implies (wait for utilization) says nothing here.
+      def preempted_lines(session, detail)
+        [
+          "- **Preempted by a priority session:** #{detail}",
+          "- **Preempted at:** #{session.metadata&.dig(SpotSessionPause::PREEMPT_MARKED_AT).presence ||
+            session.metadata&.dig(SpotSessionPause::PAUSED_AT).presence || 'unknown'}",
+          "- **Slot went to:** session ##{session.metadata&.dig(SpotSessionPause::PREEMPT_FOR_SESSION) || 'unknown'}",
+          "- **Times preempted:** #{session.metadata&.dig(SpotPreemption::COUNT).to_i}",
+          "- **Queue position:** precedence #{session.precedence} (higher is handled sooner)",
+          "- **Resumes when:** the fleet is back under its concurrency limit and the spot queue " \
+          "reaches this session, highest precedence first. No quota window is involved, nothing is " \
+          "cancelled, and no action is needed."
         ]
       end
 

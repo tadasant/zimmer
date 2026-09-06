@@ -23,6 +23,17 @@
 # ~a minute of mostly-waiting work in one run — bounded by "Max sessions at
 # once", inside a five-minute cadence, on a queue that is not the agents' one.
 #
+# == It also resolves preemption marks
+#
+# The concurrency ceiling has the same shape as the budget one since
+# SpotPreemption: a priority session that finds the fleet full marks a running
+# spot session to yield its slot at the end of its turn. That mark is the one
+# state in the spot policy that is neither running-as-usual nor dormant, so it
+# needs a pass to resolve it — released when the fleet fell back under its cap on
+# its own, halted when the turn outlasted SpotPreemption::GRACE with the fleet
+# still full. This job is that pass, and it takes it before the pause/resume half
+# so both halves decide on the same fleet.
+#
 # == Why a cron rather than something per session
 #
 # A held session at the starting line re-checks itself, so the load a held
@@ -35,7 +46,18 @@ class SpotCeilingSweepJob < ApplicationJob
 
   def perform
     logger = StructuredLogger.new({ service: "SpotCeilingSweepJob" })
+
+    # Preemption marks FIRST, and the order is load-bearing. A mark is a session
+    # on its way out of the fleet that has not left yet; resolving it here means
+    # a session this pass sends to sleep is already in the queue by the time the
+    # resume half below counts free slots, and a mark this pass RELEASES stops
+    # looking like a slot that is about to free. Running the two the other way
+    # round would have each pass decide on the previous pass's fleet.
+    preemption = SpotPreemption.sweep!(logger: logger)
     result = SpotSessionPause.sweep!(logger: logger)
+
+    logger.info("Spot preemption marks resolved", **preemption.to_h) if
+      preemption.released.positive? || preemption.halted.positive?
 
     return if result.paused.zero? && result.resumed.zero?
 

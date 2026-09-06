@@ -72,6 +72,21 @@
 # that explains a dormant session can say which of the two happened to it, and
 # so the ceiling's own cost is not overstated by counting it.
 #
+# == A priority session can take a slot away
+#
+# The other writer of this record is SpotPreemption. When a priority session
+# needs a slot and the fleet is at its concurrency cap, one running spot session
+# is picked to yield it — and it yields into exactly this queue, carrying
+# PREEMPTED_REASON. Nothing about the dormancy or the way back differs: the same
+# sweep resumes it, on the same decision, in the same precedence order, and the
+# free slot the preemption created is what the resume is waiting for.
+#
+# It is one queue with three reasons rather than three queues because a dormant
+# spot session must have exactly ONE resume owner. Giving preemption its own
+# park would have given it its own sweep, and two sweeps that can each resume the
+# same session is the racing-resume-owner bug (tadasant/zimmer#617) rather than a
+# separate feature.
+#
 # == Priority sessions are never touched
 #
 # Only sessions that resolve to `spot` are eligible, and only on the Claude Code
@@ -90,7 +105,27 @@ class SpotSessionPause
   # and the spot queue arms nothing.
   QUEUED_PROMPT = "spot_queue_prompt"
 
-  METADATA_KEYS = [ PAUSED_AT, PAUSED_REASON, PAUSED_DETAIL, PAUSED_COUNT, QUEUED_PROMPT ].freeze
+  # `spot_pause_reason` when a PRIORITY session needed the slot this one was
+  # occupying. SpotPreemption writes it; the resume below owns it exactly as it
+  # owns a ceiling pause, which is the whole reason it is spelled as one of these
+  # rather than as a park of its own — a dormant spot session with one resume
+  # owner is the invariant this file exists to keep.
+  PREEMPTED_REASON = "preempted_by_priority"
+
+  # Written at the moment a preemption is DECIDED, which on the graceful path is
+  # some minutes before the session actually goes dormant. Two things read them:
+  # SpotPreemption's own sweep, which finalises or releases a mark that has been
+  # standing too long, and every surface that has to say which priority session
+  # this slot went to.
+  #
+  # In METADATA_KEYS, so a resume clears them with the rest of the pause record.
+  # The durable half of the preemption ledger — how often this session has been
+  # preempted, and when it last was — deliberately is NOT: see SpotPreemption.
+  PREEMPT_MARKED_AT = "spot_preempt_marked_at"
+  PREEMPT_FOR_SESSION = "spot_preempt_for_session"
+
+  METADATA_KEYS = [ PAUSED_AT, PAUSED_REASON, PAUSED_DETAIL, PAUSED_COUNT, QUEUED_PROMPT,
+                    PREEMPT_MARKED_AT, PREEMPT_FOR_SESSION ].freeze
 
   # `spot_pause_reason` when the session was put here deliberately
   # (Sessions::PauseIntoSpotQueue) rather than the ceiling interrupting it. The dormancy and the resume path are identical — the same
@@ -220,6 +255,23 @@ class SpotSessionPause
       session.metadata&.dig(PAUSED_REASON) == QUEUED_REASON
     end
 
+    # Whether a priority session took this one's slot. True from the moment the
+    # preemption is DECIDED, which on the graceful path is while the session is
+    # still running out its turn — so this is deliberately not conjoined with
+    # `waiting?` the way #paused? is. #paused? answers "is it dormant in the
+    # queue"; this one answers "whose record is this".
+    def preempted?(session)
+      session.metadata&.dig(PAUSED_REASON) == PREEMPTED_REASON
+    end
+
+    # Whether this session already carries a pause record of ANY kind — the
+    # ceiling's, a deliberate park, or a preemption mark. Whatever wrote it owns
+    # the session's way back, and a second writer would overwrite that story with
+    # its own.
+    def pause_record?(session)
+      session.metadata&.dig(PAUSED_REASON).present?
+    end
+
     # Resume one dormant session on demand, rather than on the sweep's next pass.
     #
     # This is the door Sessions::StartNow comes through when a human presses
@@ -279,7 +331,25 @@ class SpotSessionPause
     # parked there had its turn taken away by that human, not by the ceiling, and
     # counting it would attribute their decision to the quota gate.
     def paused_count
-      paused_sessions.where.not("metadata->>? = ?", PAUSED_REASON, QUEUED_REASON).count
+      paused_sessions
+        .where.not("metadata->>? = ?", PAUSED_REASON, QUEUED_REASON)
+        .where.not("metadata->>? = ?", PAUSED_REASON, PREEMPTED_REASON)
+        .count
+    rescue ActiveRecord::ActiveRecordError
+      0
+    end
+
+    # The standing population of spot sessions a PRIORITY session took the slot
+    # of, dormant in the queue and waiting for the fleet to have room again.
+    #
+    # Its own figure rather than a share of #paused_count, for the same reason
+    # the deliberate parks got theirs: these sessions did not stop because a
+    # quota window ran out of money, and folding them in would overstate what the
+    # budget ceiling cost and understate what priority work did. The two resume
+    # on exactly the same condition — a free slot inside the budget — which is
+    # why they are one queue and two numbers rather than two queues.
+    def preempted_count
+      paused_sessions.where("metadata->>? = ?", PAUSED_REASON, PREEMPTED_REASON).count
     rescue ActiveRecord::ActiveRecordError
       0
     end
@@ -311,7 +381,12 @@ class SpotSessionPause
       # and the count below would charge a turn to the ceiling that the ceiling
       # never took. (A running session reaching here still carrying the queue
       # record is one parked without `halt`, so its own turn end will sleep it.)
-      return false if queued_by_user?(session)
+      #
+      # A session a PRIORITY session has already claimed the slot of is skipped
+      # for the same reason: SpotPreemption owns its record and its escalation,
+      # and the ceiling rewriting the reason underneath would send the reader to
+      # the wrong story about why a slot went away.
+      return false if pause_record?(session)
 
       terminate_process(session, logger)
 
@@ -454,8 +529,10 @@ class SpotSessionPause
     def resume!(session, message, logger)
       resumed = false
       # Read before the transaction clears it: a human who parked this session
-      # into the queue may have left the prompt it should come back on.
-      queued = queued_by_user?(session)
+      # into the queue may have left the prompt it should come back on, and the
+      # reason decides what the resumed agent is told happened to it.
+      reason = session.metadata&.dig(PAUSED_REASON)
+      queued = reason == QUEUED_REASON
       requested_prompt = session.metadata&.dig(QUEUED_PROMPT).presence
 
       ActiveRecord::Base.transaction do
@@ -481,7 +558,7 @@ class SpotSessionPause
       # reason that fits how it stopped.
       AgentSessionJob.enqueue_with_prompt(
         session.id,
-        requested_prompt || AutomatedPrompts.system_recovery(reason: resume_prompt_reason(queued))
+        requested_prompt || AutomatedPrompts.system_recovery(reason: resume_prompt_reason(reason))
       )
       logger.info("Resumed a spot session from the queue", session_id: session.id, queued_by_user: queued)
       true
@@ -509,6 +586,9 @@ class SpotSessionPause
       if queued_by_user?(session)
         "The spot queue reached this session (#{decision.reason}) — resuming it. " \
           "It was parked here deliberately, not paused by the ceiling."
+      elsif preempted?(session)
+        "The fleet has a free slot again (#{decision.reason}) — resuming this spot session. " \
+          "It was paused to make room for a priority session, not by a quota window."
       elsif decision.reason == "within_limits"
         "The window has room again past the resume margin — resuming this spot session automatically."
       else
@@ -527,10 +607,14 @@ class SpotSessionPause
     # that was never lost. It does not name the gate reading either: the promoted
     # branch resumes a session whatever the windows say, and this sentence is
     # shared with it.
-    def resume_prompt_reason(queued)
-      if queued
+    def resume_prompt_reason(reason)
+      case reason
+      when QUEUED_REASON
         "this session was parked in Zimmer's spot queue with no wake-up time, " \
           "and Zimmer has now resumed it from that queue"
+      when PREEMPTED_REASON
+        "Zimmer paused this spot session to give its session slot to a priority session, " \
+          "and the fleet has room for it again"
       else
         "Zimmer paused this spot session mid-run because a Claude Code quota window had spent the " \
           "part of itself that spot work may use, and it has room again"

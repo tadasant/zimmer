@@ -330,6 +330,38 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/proof-promoted-spot-hold-375.png")
   end
 
+  # The banner's fifth headline: a priority session took this one's slot. Its
+  # geometry differs from both cases above — it carries the longest `spot_pause_detail`
+  # Zimmer writes, and unlike the promotion case it keeps the button, so the row's
+  # widest child is back.
+  test "a preemption banner does not overflow horizontally on a phone" do
+    beneficiary = create_session(status: :running, scheduling_class: SessionGenesis::PRIORITY)
+    session = create_session(status: :waiting, scheduling_class: SessionGenesis::SPOT)
+    session.update!(metadata: (session.metadata || {}).merge(
+      SpotSessionPause::PAUSED_AT => 12.minutes.ago.utc.iso8601,
+      SpotSessionPause::PAUSED_REASON => SpotSessionPause::PREEMPTED_REASON,
+      SpotSessionPause::PAUSED_DETAIL =>
+        "Preempted by a priority session. Session ##{beneficiary.id} is priority, and priority work " \
+        "is never held by the concurrency limit — but it does count toward it, and the fleet was at " \
+        "10 of 10 session slots. This spot session was the lowest-ranked one running " \
+        "(precedence-first, the spot queue's own order), so it yields the slot. Nothing is cancelled: " \
+        "it sleeps in the spot queue and the ceiling sweep resumes it, highest precedence first, as " \
+        "soon as the fleet is back under its limit.",
+      SpotSessionPause::PAUSED_COUNT => 1,
+      SpotSessionPause::PREEMPT_MARKED_AT => 12.minutes.ago.utc.iso8601,
+      SpotSessionPause::PREEMPT_FOR_SESSION => beneficiary.id,
+      SpotPreemption::COUNT => 1,
+      "paused_by" => SpotSessionPause::PAUSED_BY
+    ))
+
+    visit session_path(session)
+    assert_text "Preempted by a priority session"
+    assert_text "it gave its session slot to a priority session"
+
+    assert_no_horizontal_overflow("session detail with a preemption banner")
+    page.save_screenshot("tmp/screenshots/proof-preemption-banner-375.png")
+  end
+
   # An injected SKILL.md reaches the transcript as an `isMeta` line, and the
   # timeline draws it collapsed: a muted digest row carrying the skill's name, an
   # approximate token count and a disclosure. The name is a long hyphenated token
@@ -886,6 +918,12 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # The two notes, on screen while the geometry is measured.
     assert_selector "#spot-cap-above-worker-pool"
     assert_selector "#fleet-top-up-ceiling-above-worker-pool"
+    # The preemption switch and its count line. The switch is the one control on
+    # this card that is a full-width sentence rather than a grid cell — it was a
+    # third of a column first, and the sentence it has to say does not fit there —
+    # so its geometry is not the geometry the knob row above measures.
+    assert_selector "#app_setting_spot_preemption_enabled", visible: :all
+    assert_selector "#spot-gate-preempted-decision"
 
     assert_no_horizontal_overflow("inference")
 

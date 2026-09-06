@@ -474,6 +474,38 @@ class SpotGateService
       new(candidate: candidate).evaluate
     end
 
+    # Just the fleet cap's arithmetic, with no quota reading behind it.
+    #
+    # #evaluate answers "may a spot session start", and answering it prices two
+    # windows across the whole account pool. SpotPreemption asks a much smaller
+    # question on a much hotter path — every priority turn goes through it — and
+    # the only thing it needs is whether the fleet is full. Pricing the pool to
+    # learn that would put a ClaudeAccountPool.measure on every priority start.
+    #
+    # It lives HERE rather than in the caller so that the comparison itself —
+    # which population counts, and against which setting — is still made in one
+    # place. #evaluate reads the same two numbers through the same methods, so
+    # the cap cannot come to mean one thing at the door and another under
+    # preemption.
+    #
+    # Fail-open like everything else on this class: an unreadable setting or
+    # fleet reports a fleet that is NOT at its cap, so a monitoring gap declines
+    # to interrupt work rather than interrupting it on a guess.
+    Occupancy = Data.define(:on_a_worker, :awaiting_a_worker, :cap) do
+      def at_cap? = cap.present? && on_a_worker >= cap
+      def over_cap_by = cap.present? ? [ on_a_worker - cap, 0 ].max : 0
+      def to_h = { on_a_worker: on_a_worker, awaiting_a_worker: awaiting_a_worker, cap: cap }
+    end
+
+    def fleet_occupancy
+      turns = Session.running_claude_code_turns
+      Occupancy.new(on_a_worker: turns.on_a_worker, awaiting_a_worker: turns.awaiting_a_worker,
+                    cap: AppSetting.current.spot_max_concurrent_sessions)
+    rescue StandardError => e
+      Rails.logger.warn("[SpotGateService] Could not read fleet occupancy (#{e.class}: #{e.message})")
+      Occupancy.new(on_a_worker: 0, awaiting_a_worker: 0, cap: nil)
+    end
+
     # The decision for a session that is already RUNNING and paused: the same
     # evaluation, with RESUME_MARGIN_PCT held back on top of the reserve.
     #

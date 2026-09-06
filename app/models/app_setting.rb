@@ -51,6 +51,16 @@ class AppSetting < ApplicationRecord
   # only spot ones are held by it.
   DEFAULT_SPOT_MAX_CONCURRENT_SESSIONS = 10
 
+  # Whether a priority session that finds the fleet at that limit may take a slot
+  # off a running spot session (SpotPreemption). On by default: the limit has
+  # always been documented as priority work crowding spot work out, and the
+  # preemption path is what makes that true of work already underway rather than
+  # only of the next start. The switch exists so that half can be turned off
+  # without turning the gate off — the fail-safe answer everywhere in this area
+  # is "leave the running fleet alone", so `false` is the direction a worried
+  # operator moves in.
+  DEFAULT_SPOT_PREEMPTION_ENABLED = true
+
   # How few sessions the fleet has to be running before `no_sessions_in_progress`
   # counts it as idle enough to take more work. The count is sessions actually
   # `running` and nothing else, and the test is strictly BELOW this number — so 1
@@ -115,6 +125,14 @@ class AppSetting < ApplicationRecord
     def spot_max_concurrent_sessions
       DEFAULT_SPOT_MAX_CONCURRENT_SESSIONS
     end
+
+    # Moot with no persisted row — `spot_gating_enabled` is false above, and
+    # SpotPreemption requires both — but it has to answer rather than raise, the
+    # same as every other reader here.
+    def spot_preemption_enabled
+      DEFAULT_SPOT_PREEMPTION_ENABLED
+    end
+    alias_method :spot_preemption_enabled?, :spot_preemption_enabled
 
     # No persisted row exists, so the fleet top-up policy resolves to its shipped
     # numbers. A DB-less boot fires nothing anyway — FleetIdleMonitor bails on an
@@ -295,6 +313,17 @@ class AppSetting < ApplicationRecord
   # default when the column isn't present — the window where new code boots
   # against a schema that predates the migration — so the spawn path degrades to
   # the shared-file behaviour instead of raising.
+  # Whether priority preemption is on for this row. Returns the shipped default
+  # when the column isn't present — the window in which new code boots against a
+  # schema that predates the migration — so the spot gate's hot path degrades to
+  # the default instead of raising on every priority turn.
+  def spot_preemption_enabled
+    return DEFAULT_SPOT_PREEMPTION_ENABLED unless has_attribute?(:spot_preemption_enabled)
+
+    !!self[:spot_preemption_enabled]
+  end
+  alias_method :spot_preemption_enabled?, :spot_preemption_enabled
+
   def session_scoped_credentials_enabled?
     return DEFAULT_SESSION_SCOPED_CREDENTIALS_ENABLED unless has_attribute?(:session_scoped_credentials_enabled)
 

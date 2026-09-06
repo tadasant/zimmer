@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_06_160000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_06_170000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -85,6 +85,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_06_160000) do
     t.boolean "session_scoped_credentials_enabled", default: false, null: false
     t.boolean "spot_gating_enabled", default: false, null: false
     t.integer "spot_max_concurrent_sessions", default: 10, null: false
+    t.boolean "spot_preemption_enabled", default: true, null: false
     t.integer "spot_reserve_five_hour_pct", default: 20, null: false
     t.integer "spot_reserve_weekly_pct", default: 20, null: false
     t.integer "uncategorized_position", default: 0, null: false
