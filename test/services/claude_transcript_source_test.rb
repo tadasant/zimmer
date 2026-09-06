@@ -171,6 +171,26 @@ class ClaudeTranscriptSourceTest < ActiveSupport::TestCase
     refute @source.rotates_transcript_files?
   end
 
+  # === rekeyed_branch_id (#1047) ===
+
+  test "rekeyed_branch_id names a transcript the runtime re-keyed to a new uuid" do
+    @session.update!(session_id: "recorded-uuid")
+    branch = File.join(@transcript_dir, "branch-uuid.jsonl")
+    @file_system.mkdir_p(@transcript_dir)
+    @file_system.write(branch, %({"type":"user","sessionId":"recorded-uuid"}\n{"type":"user","sessionId":"branch-uuid"}\n))
+
+    assert_equal "branch-uuid", @source.rekeyed_branch_id(session: @session, transcript_path: branch)
+  end
+
+  test "rekeyed_branch_id is nil for the recorded transcript" do
+    @session.update!(session_id: "recorded-uuid")
+    recorded = File.join(@transcript_dir, "recorded-uuid.jsonl")
+    @file_system.mkdir_p(@transcript_dir)
+    @file_system.write(recorded, %({"type":"user","sessionId":"recorded-uuid"}\n))
+
+    assert_nil @source.rekeyed_branch_id(session: @session, transcript_path: recorded)
+  end
+
   private
 
   # Capture everything written to Rails.logger during the block as a String so

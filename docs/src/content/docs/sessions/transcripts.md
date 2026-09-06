@@ -342,6 +342,83 @@ A restored Codex session resumes from whatever rollout is on disk. That is the w
 tracked in #54, not something the restore path can fix on its own.
 :::
 
+## A re-keyed transcript, and why the name is only a preference
+
+`sessions.session_id` is the id Zimmer supplies at spawn, and Claude Code honors it — so
+`<session_id>.jsonl` is normally the file, for the life of the session. Normally. A transcript can
+also be **re-keyed**: a file opens with a byte-identical copy of this session's conversation and
+then carries on under a *different* uuid. Preferring the recorded name when the copy is the file
+being written means polling a conversation that stopped
+([#1047](https://github.com/tadasant/zimmer/issues/1047)).
+
+**Zimmer produces that shape itself, and knowing so is half the rule.** `ForkSessionService` writes
+the source session's stored transcript to the *fork's* `<session_id>.jsonl`, so every fork's file
+opens under the source's id and then re-keys to the fork's own. That is a different conversation
+owned by a different `Session` row — following it would show a session its child's work. What is
+left after excluding it is the same shape with no `Session` row behind it: a runtime that re-keys
+its own transcript in place, against which selection by name has no defence at all, and whose
+failure is total and silent.
+
+So the recorded name is a preference. `TranscriptFileLocator` lets it compete with any sibling in
+the same directory **proved to be this same conversation**, and the most recently written of them
+wins:
+
+```mermaid
+flowchart LR
+  A["&lt;session_id&gt;.jsonl<br/>(recorded)"] --> C{newest write}
+  B["&lt;other-uuid&gt;.jsonl<br/>head declares OUR sessionId<br/>and no Session row owns that uuid"} --> C
+  C --> D["the conversation the agent is having"]
+```
+
+Both halves of that middle box matter:
+
+- **The head, not the mtime.** A candidate qualifies only if the first `sessionId` in its opening
+  lines is this session's. That is the evidence #1047 used to tie a branch to its session, and
+  requiring it keeps this from decaying into "newest `.jsonl` wins" — the rule the pre-`session_id`
+  fallback is deliberately narrow to avoid, because a working directory can hold a previous
+  occupant's transcript. It costs one line of one file: the read stops at the first answer.
+- **Not a fork.** A **fork's** transcript is copied verbatim from its source, so its early lines
+  carry the *source* session's id — the same shape a re-key has. A uuid another `Session` row
+  already holds is excluded outright, so a fork that ran in this working directory can never be
+  mistaken for its source's continuation. This is the same hazard that keeps
+  `capture_runtime_session_id!` switched off for Claude, and it is why nothing here rewrites
+  `sessions.session_id`: that column stays the durable, uniquely-indexed identity, and the live
+  branch is represented separately.
+
+Following the branch is only half the repair, because the branch is **not** a superset of what
+Zimmer stored. The copy was taken at a point in the conversation; whatever the abandoned file
+recorded after that point exists nowhere else. So the poller keeps the stored transcript as an
+immutable prefix and takes only what lies past the copy point from the branch, recording two counts
+the first time it follows a given branch:
+
+| Key | Meaning |
+| --- | --- |
+| `metadata["transcript_branch_session_id"]` | which branch the counts describe |
+| `metadata["transcript_branch_base_event_count"]` | N — stored lines kept as the prefix |
+| `metadata["transcript_branch_shared_event_count"]` | K — branch lines that prefix already holds |
+
+Every later poll rebuilds `stored.first(N) + branch.drop(K)`. Re-deriving K each time would
+re-append the tail contributed last time, because after the first splice the stored transcript and
+the branch diverge at the copy point rather than at the branch's tip — the same reason rotation
+records `transcript_carryover_event_count` instead of recomputing it.
+
+In the ordinary re-key the branch was seeded with the *whole* recorded file, N and K are equal, and
+the result is the branch verbatim. The bookkeeping is retired the moment `<session_id>.jsonl` is the
+file being written again, which is what a resume produces:
+`AgentSessionJob#restore_regressed_transcript_if_needed` re-materializes the stored transcript
+there — now including everything the branch contributed — before the runtime reads it.
+
+:::caution
+This reaches a re-key inside the session's **own** transcript directory, which is where a runtime
+re-keying in place would put one. It does not reach a copy written from another cwd — a transcript
+directory is a pure function of the working directory Zimmer recorded, and enumerating every
+directory under `~/.claude/projects` on every poll is not a trade worth making. That is the shape
+[#1047](https://github.com/tadasant/zimmer/issues/1047)'s own sighting had, and there it was a
+[status-summary fork](/sessions/status-summary/) taking a recovery nudge and continuing the
+conversation it had copied — a separate session, in its own clone, whose cause was removed by
+[#695](https://github.com/tadasant/zimmer/issues/695). See [limitations](/limitations/).
+:::
+
 ## The regression guard
 
 If the clone is recreated, the agent starts a *fresh* transcript file. Naively overwriting

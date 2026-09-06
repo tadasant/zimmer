@@ -74,14 +74,27 @@ class ClaudeTranscriptSource < TranscriptSource
   # Find the main (non-subagent) transcript file within a directory.
   #
   # Delegates to TranscriptFileLocator, which prefers the <session_id>.jsonl
-  # file and falls back to the most-recent non-agent .jsonl file. We avoid a
-  # plain mtime selection because subagent files (agent-*.jsonl) can be newer.
+  # file — or a sibling proved to be this conversation re-keyed to a new uuid,
+  # when that sibling is the one being written — and falls back to the
+  # most-recent non-agent .jsonl file. We avoid a plain mtime selection because
+  # subagent files (agent-*.jsonl) can be newer.
   #
   # @param transcript_directory [String] the session's transcript directory
   # @param session [Session] the session whose transcript we want
   # @return [String, nil] the main transcript file path, or nil if not found
   def find_main_transcript(transcript_directory:, session:)
     TranscriptFileLocator.find_main_transcript(session, transcript_directory, file_system: file_system)
+  end
+
+  # @see TranscriptSource#rekeyed_branch_id
+  #
+  # Claude names the main transcript by the runtime's session uuid, so a located
+  # file named by anything else is a candidate branch — and TranscriptFileLocator
+  # re-checks that its head really is this session's conversation before saying
+  # so, since the pre-session_id fallback can return a file whose identity was
+  # never established.
+  def rekeyed_branch_id(session:, transcript_path:)
+    TranscriptFileLocator.rekeyed_branch_id(session, transcript_path, file_system: file_system)
   end
 
   # @see TranscriptSource#read_raw

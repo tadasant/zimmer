@@ -423,6 +423,18 @@ class CodexTranscriptSourceTest < ActiveSupport::TestCase
     assert @source.rotates_transcript_files?
   end
 
+  # === rekeyed_branch_id (#1047) ===
+
+  test "rekeyed_branch_id is nil because a rollout filename is not a session uuid" do
+    # Rotation is Codex's mechanism for "the conversation moved to another file",
+    # and it already carries history forward. Reading a rollout's name as a re-key
+    # would splice on top of that.
+    assert_nil @source.rekeyed_branch_id(
+      session: @session,
+      transcript_path: "#{CodexHome.sessions_path}/2026/08/03/rollout-2026-08-03T10-39-42-abc.jsonl"
+    )
+  end
+
   private
 
   # Capture everything written to Rails.logger during the block as a String so
