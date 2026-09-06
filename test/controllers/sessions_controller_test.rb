@@ -970,7 +970,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       metadata: (session.metadata || {}).merge("agent_root_key" => "general-agent")
     )
     mock_root = OpenStruct.new(
-      name: "agent-orchestrator",
+      name: "general-agent",
       default_mcp_servers: [ "inherited-server" ],
       default_skills: [ "inherited-skill" ],
       default_hooks: [ "inherited-hook" ],
@@ -1010,7 +1010,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       metadata: (session.metadata || {}).merge("agent_root_key" => "general-agent")
     )
     mock_root = OpenStruct.new(
-      name: "agent-orchestrator",
+      name: "general-agent",
       default_mcp_servers: [],
       default_skills: [ "inherited-skill" ],
       default_hooks: [],

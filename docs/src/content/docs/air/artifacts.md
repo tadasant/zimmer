@@ -77,8 +77,8 @@ directory; the directory holds `.plugin/plugin.json`.
 
 | Plugin | Default in | Bundles |
 | --- | --- | --- |
-| `ci-workflow` | `agent-orchestrator` | `zimmer-run-tests` + `git-push-ci-reminder` |
-| `screenshots-videos` | `agent-orchestrator` | screenshot/video capture tooling |
+| `ci-workflow` | `zimmer` | `zimmer-run-tests` + `git-push-ci-reminder` |
+| `screenshots-videos` | `zimmer` | `playwright-custom` + `remote-fs-screenshots` |
 | `figma-design-workflow` | — | Figma design tooling |
 | `meeting-wrangling` | — | meeting tooling |
 
@@ -157,7 +157,7 @@ dialect; `git-push-ci-reminder.mjs` normalizes either payload and renders either
 is worth copying that shape even though a single-dialect body now works.
 
 `plugins/ci-workflow/.plugin/plugin.json` bundles this hook alongside `zimmer-run-tests`, and
-`ci-workflow` is `default_in_roots: ["agent-orchestrator"]`, so sessions on that root get it
+`ci-workflow` is `default_in_roots: ["zimmer"]`, so sessions on that root get it
 automatically.
 
 :::caution[A missing body is not a dangling reference]

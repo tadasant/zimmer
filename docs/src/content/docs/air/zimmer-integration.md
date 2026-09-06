@@ -55,7 +55,10 @@ workflow skills (`category: workflow`: `open-pr`, `wait-for-ci`,
 `recover-from-compaction-thrashing`) — 18 MCP servers, 10 roots, 4 plugins, 1 hook, 5 references.
 The `zimmer` root turns 9 of those skills on by default and exactly one MCP server,
 `playwright-custom`; `awaken-waiting-sessions` and `zimmer-fleet` default on `fleet-maintenance`
-instead.
+instead. It also defaults to both `ci-workflow` and `screenshots-videos`, and a plugin's own
+bundle rides along with it — so a `zimmer` session additionally receives the
+`git-push-ci-reminder` hook and the `remote-fs-screenshots` server, neither of which is named in
+any `default_in_roots`.
 
 Those counts are asserted against a live resolve by
 `test/docs/zimmer_integration_catalog_counts_test.rb`, so adding a catalog entry without updating

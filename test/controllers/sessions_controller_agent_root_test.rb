@@ -10,18 +10,32 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
   # have to be resurrected to keep them passing.
   MONOREPO_URL = "https://github.com/tadasant/monorepo.git"
 
-  def stub_scoped_root(name, subdirectory)
-    root = AgentRootsConfig::AgentRoot.new(
-      name, { "url" => MONOREPO_URL, "default_branch" => "main", "subdirectory" => subdirectory }
+  def scoped_root(name, subdirectory, default_branch: "main")
+    AgentRootsConfig::AgentRoot.new(
+      name, { "url" => MONOREPO_URL, "default_branch" => default_branch, "subdirectory" => subdirectory }
     )
-    AgentRootsConfig.stubs(:find).returns(nil)
-    AgentRootsConfig.stubs(:find).with(name).returns(root)
-    root
+  end
+
+  # `all` is the seam deliberately, not `find`. `find`, `find!`, `exists?`,
+  # `default`, `user_invocable` and `find_for_session` all derive from it, and so
+  # does the branch under test in half these cases -- the controller's URL
+  # fallback is `AgentRootsConfig.all.find { |ar| ar.url == git_root }`. Stubbing
+  # `find` alone would leave that fallback reading the real catalog, where
+  # nothing sits at MONOREPO_URL, so the tests that exercise it would pass
+  # whether or not the branch existed.
+  #
+  # The real catalog is captured first and kept, so a root this file does not
+  # name still resolves. `AgentRootsConfig.all` must be read BEFORE `stubs(:all)`
+  # installs the stub, or it returns nil into its own replacement.
+  def stub_catalog_with(*extra_roots)
+    catalog = AgentRootsConfig.all.to_a + extra_roots
+    AgentRootsConfig.stubs(:all).returns(catalog)
+    catalog
   end
 
   # Test that subdirectory is correctly set based on agent root name selection
   test "should set subdirectory when selecting a root scoped to one" do
-    stub_scoped_root("scoped-app", "apps/scoped-app")
+    stub_catalog_with(scoped_root("scoped-app", "apps/scoped-app"))
 
     post sessions_url, params: {
       session: {
@@ -57,22 +71,32 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
   end
 
   test "should fallback to URL-based lookup when agent_root_name not provided" do
-    # This tests backward compatibility
+    # This tests backward compatibility. The stubbed root declares a subdirectory
+    # AND a non-default branch, so both assertions below fail if the URL-fallback
+    # branch stops copying them.
+    #
+    # `branch: ""` is what the new-session form actually posts when the user
+    # leaves the field empty, and it matters: the controller only fills the branch
+    # in `if @session.branch.blank?`, and `sessions.branch` carries a column
+    # default of "main", so omitting the key entirely would make the session
+    # arrive already non-blank and the assertion would read the default rather
+    # than the root's.
+    stub_catalog_with(scoped_root("scoped-app", "apps/scoped-app", default_branch: "develop"))
+
     post sessions_url, params: {
       session: {
         prompt: "Test prompt",
-        git_root: "https://github.com/tadasant/zimmer.git",
+        git_root: MONOREPO_URL,
+        branch: "",
         mcp_servers: []
       }
       # Note: no agent_root_name parameter
     }
 
     session = Session.last
-    assert_equal "https://github.com/tadasant/zimmer.git", session.git_root
-    # The URL lookup takes the first root at that URL. Every shipped root is at
-    # this one, and none declares a subdirectory, so none is copied over.
-    assert_nil session.subdirectory
-    assert_equal "main", session.branch
+    assert_equal MONOREPO_URL, session.git_root
+    assert_equal "apps/scoped-app", session.subdirectory
+    assert_equal "develop", session.branch
   end
 
   test "should handle custom URL without agent_root_name" do
@@ -95,7 +119,7 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
   test "should preserve explicitly set subdirectory even with agent_root_name" do
     # If user explicitly sets a subdirectory, it should be preserved -- even when
     # the selected root declares one of its own.
-    stub_scoped_root("scoped-app", "apps/scoped-app")
+    stub_catalog_with(scoped_root("scoped-app", "apps/scoped-app"))
 
     post sessions_url, params: {
       session: {
@@ -149,9 +173,10 @@ class SessionsControllerAgentRootTest < ActionDispatch::IntegrationTest
 
   # Test the scenario described in issue pulsemcp/agents#283: when two roots share
   # a repo and one is scoped inside the other, the selected root's subdirectory is
-  # the one that lands -- not its sibling's.
+  # the one that lands -- not its sibling's. Both roots are in the stubbed catalog,
+  # so the refute below can actually fail.
   test "issue 283 - the selected root's subdirectory is used, not a sibling root's" do
-    stub_scoped_root("outer", "packages")
+    stub_catalog_with(scoped_root("outer", "packages"), scoped_root("inner", "packages/inner"))
 
     post sessions_url, params: {
       session: {
