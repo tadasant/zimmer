@@ -88,6 +88,7 @@ export default defineConfig({
             { label: "Spot and priority", slug: "sessions/spot-and-priority" },
             { label: "Board visibility", slug: "sessions/board-visibility" },
             { label: "Booting the app inside a session", slug: "sessions/dev-server" },
+            { label: "Running tests inside a session", slug: "sessions/running-tests" },
           ],
         },
         {

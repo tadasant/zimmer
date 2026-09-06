@@ -365,6 +365,93 @@ class BundleInstallJobTest < ActiveJob::TestCase
     assert_equal %w[install check], @bundler.subcommands
   end
 
+  # --- the fast path taken inline, off the queue (#592) -------------------------------
+  #
+  # `perform_later` is what made #592 a bug rather than a latency note. A clone waiting its
+  # turn on `:maintenance` has no `.bundle/config`, and since `CliSpawnEnv` strips every
+  # `BUNDLE_*` and `GEM_*` from the agent's environment, that file is the only thing telling
+  # the clone where its gems are — so for the whole of the wait `bin/rails` in it dies with
+  # `Bundler::GemNotFound` naming gems that are sitting in the image. Session spawn takes
+  # the fast path inline instead, which is only safe while it stays *only* the fast path:
+  # these pin that it writes the pin when it can, does nothing at all when it cannot, and
+  # never runs an install or raises either way.
+
+  test "the inline fast path pins a matching clone and reports the bundle it pinned" do
+    share_image_bundle
+    stub_bundler
+
+    assert_equal @image_bundle, BundleInstallJob.adopt_image_bundle_now(@working_directory)
+
+    assert_equal %w[check], @bundler.subcommands, "the inline path must never install"
+    assert_equal({ "BUNDLE_PATH" => @image_bundle, "BUNDLE_DEPLOYMENT" => "false" }, written_config)
+  end
+
+  test "the inline fast path installs nothing and writes nothing when the clone does not match" do
+    share_image_bundle
+    File.write(File.join(@working_directory, "Gemfile.lock"), "DIFFERENT\n")
+    stub_bundler
+
+    assert_nil BundleInstallJob.adopt_image_bundle_now(@working_directory),
+      "a clone needing gems of its own belongs on the queue, so the caller must be told so"
+
+    assert_empty @bundler.subcommands, "an install is unbounded; it must not run in the spawn path"
+    assert_not File.exist?(bundle_config_path), "a clone is never pinned to a bundle that is not there"
+  end
+
+  test "the inline fast path does not probe a clone that has no Gemfile" do
+    share_image_bundle
+    FileUtils.rm_f(File.join(@working_directory, "Gemfile"))
+    stub_bundler
+
+    assert_nil BundleInstallJob.adopt_image_bundle_now(@working_directory)
+    assert_empty @bundler.subcommands
+  end
+
+  test "the inline fast path clears a stale pin naming a bundle the clone cannot use" do
+    share_image_bundle
+    write_config({ "BUNDLE_PATH" => "vendor/bundle" }.to_yaml)
+    # The stale pin fails its probe; the image bundle then passes its own.
+    stub_bundler(checks: [ false, true ])
+
+    assert_equal @image_bundle, BundleInstallJob.adopt_image_bundle_now(@working_directory)
+    assert_equal({ "BUNDLE_PATH" => @image_bundle, "BUNDLE_DEPLOYMENT" => "false" }, written_config)
+  end
+
+  test "the inline fast path does not spawn anything for a clone of another repo" do
+    # `discard_unusable_bundle_config` shells out to `bundle check`, which against a foreign
+    # Gemfile resolves over the network with no timeout — 22s, measured, for a clone
+    # declaring `rails` and `pg`. On the maintenance queue that is slow; on the spawn thread
+    # it is a session not starting. So the byte comparison has to come first, and a config
+    # that would otherwise be probed (and deleted) is what proves the ordering holds.
+    share_image_bundle
+    File.write(File.join(@working_directory, "Gemfile"), "source 'https://rubygems.org'\n")
+    write_config({ "BUNDLE_PATH" => "vendor/bundle" }.to_yaml)
+    stub_bundler(checks: [ false ])
+
+    assert_nil BundleInstallJob.adopt_image_bundle_now(@working_directory)
+
+    assert_empty @bundler.subcommands,
+      "a clone that cannot possibly share this app's bundle must be decided from the bytes alone"
+    assert File.exist?(bundle_config_path),
+      "and its own .bundle/config must be left exactly where the repository put it"
+  end
+
+  test "the inline fast path swallows its own failures rather than failing the spawn" do
+    # Raised from inside the decision, past every `rescue` the private methods do themselves,
+    # so the only thing that can be keeping the spawn alive is the class method's own.
+    BundleInstallJob.any_instance.stubs(:adopt_image_bundle_for).raises(Errno::ENOENT, "bundle")
+
+    records = capture_log_records do
+      assert_nothing_raised do
+        assert_nil BundleInstallJob.adopt_image_bundle_now(@working_directory)
+      end
+    end
+
+    warning = records.find { |severity, message| severity == "WARN" && message.include?("inline fast path") }
+    assert_not_nil warning, "a swallowed failure that says nothing anywhere is indistinguishable from a clone that matched"
+    assert_match(/Errno::ENOENT/, warning.last, "name what went wrong")
+  end
+
   # --- against the real bundler ------------------------------------------------------
   #
   # Everything above replaces `Open3.capture3`, which is right for asserting *ordering* but
