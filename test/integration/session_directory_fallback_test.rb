@@ -35,6 +35,37 @@ class SessionDirectoryFallbackTest < ActiveSupport::TestCase
     assert_equal @clone_root, @session.clone_root
   end
 
+  # The premise every converted call site now rests on — "for a session that has
+  # a clone but was never spawned in, the clone root is where its agent will run"
+  # — is only true when the session declares no agent-root subdirectory. For one
+  # that does, the bare clone root names the PARENT of where its agent runs, and
+  # a caller that stats it finds a directory that exists and concludes the
+  # session is ready to resume in it. So the fallback derives the answer the same
+  # way GitCloneService does at spawn time.
+  test "the fallback joins the session's subdirectory when it declares one" do
+    @session.update!(subdirectory: "agents/agent-orchestrator")
+
+    assert_equal File.join(@clone_root, "agents/agent-orchestrator"), @session.working_directory
+    assert_equal @clone_root, @session.clone_root
+  end
+
+  # The join is not a claim that the path is on disk, and callers that stat it
+  # must get "no" rather than a directory that happens to exist one level up.
+  test "a subdirectory that is not in the tree yields a path that is not on disk" do
+    @session.update!(subdirectory: "not-in-this-tree")
+
+    assert_not File.directory?(@session.working_directory)
+  end
+
+  # `metadata` is a JSON column, so a non-String clone_path is representable, and
+  # this accessor is called from render paths that must not raise over one.
+  test "a malformed clone_path is handed back rather than joined" do
+    @session.update!(subdirectory: "sub", metadata: { "clone_path" => { "clone_path" => "/tmp/x" } })
+
+    assert_nothing_raised { @session.working_directory }
+    assert_equal({ "clone_path" => "/tmp/x" }, @session.working_directory)
+  end
+
   test "the two accessors diverge once a spawn records a working directory" do
     agent_dir = File.join(@clone_root, "agent-root")
     @session.update!(metadata: @session.metadata.merge("working_directory" => agent_dir))

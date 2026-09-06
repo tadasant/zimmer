@@ -528,6 +528,7 @@ class Session < ApplicationRecord
   # what makes a metadata write worth broadcasting.
   METADATA_DISPLAY_FIELDS = %w[
     clone_path
+    working_directory
     failure_reason
     exit_status
     exception_class
@@ -982,12 +983,36 @@ class Session < ApplicationRecord
 
   # The directory the runtime CLI is (or was) spawned in: the recorded working
   # directory, which is the clone root for a session without an agent root and a
-  # subdirectory of it for one with. A session that has a clone but has not been
-  # spawned in yet records only the clone root, which is the correct answer for it.
+  # subdirectory of it for one with.
+  #
+  # A session that has a clone but has not been spawned in yet records only the
+  # clone root, and the answer is then derived the same way GitCloneService
+  # derives it at spawn time — the clone root, joined with this session's
+  # subdirectory when it declares one. Answering the bare clone root for an
+  # agent-root session would name the PARENT of where its agent runs, which is
+  # #clone_root's job and not this one's: a caller that stats it would find a
+  # directory that exists and conclude the session is ready to resume in it.
+  #
+  # The join is not an existence claim. A subdirectory that is not in the tree
+  # yields a path that is not on disk, which is the honest answer and the one
+  # every caller that stats the result already handles.
   #
   # @return [String, nil] nil until the session establishes a clone
   def working_directory
-    metadata&.dig("working_directory").presence || metadata&.dig("clone_path").presence
+    recorded = metadata&.dig("working_directory").presence
+    return recorded if recorded
+
+    root = metadata&.dig("clone_path").presence
+    # `metadata` is a JSON column, so a non-String clone_path is representable —
+    # some rows held a nested Hash, which
+    # db/post_deploy/20260830100500_fix_clone_path_metadata.rb repaired. File.join
+    # raises TypeError on one, and this is called from render paths that must not
+    # raise over a malformed row, so hand it back untouched instead. The same
+    # reason SessionClonePath guards on `is_a?(String)`.
+    return root unless root.is_a?(String)
+    return root if subdirectory.blank?
+
+    File.join(root, subdirectory)
   end
 
   # The root of this session's git clone — the directory `git clone` landed on,

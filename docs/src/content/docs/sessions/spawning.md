@@ -274,14 +274,22 @@ a session's tree, and they have different answers for a session with an agent ro
 
 | Question | Accessor | Answer |
 | --- | --- | --- |
-| Where does this session's agent run? | `Session#working_directory` | the recorded working directory, falling back to the clone root |
+| Where does this session's agent run? | `Session#working_directory` | the recorded working directory, or — for a session that has not been spawned in yet — the clone root joined with the session's subdirectory |
 | Where is this session's clone? | `Session#clone_root` | `metadata["clone_path"]` — the parent of the above for an agent-root session |
 
 The fallback in the first one is the whole point. A session can hold a clone it has never been
-spawned in — created, cloned, and not yet started — and for that session the clone root *is* where
-its agent will run. A call site that reads `metadata["working_directory"]` directly gets `nil`
-there, and every such read sits behind a guard spelled like `return unless
-working_directory.present?`, which reads as "this session has no clone yet" and skips the work.
+spawned in — created, cloned, and not yet started — and it records only the clone root. A call site
+that reads `metadata["working_directory"]` directly gets `nil` there, and every such read sits
+behind a guard spelled like `return unless working_directory.present?`, which reads as "this
+session has no clone yet" and skips the work.
+
+The fallback derives the answer the way `GitCloneService` derives it at spawn time: the clone root
+for a session with no agent root, and the clone root joined with the session's `subdirectory` for
+one with. Answering the bare clone root for an agent-root session would name the *parent* of where
+its agent runs — a directory that exists, so a caller that stats it concludes the session is ready
+to resume in it and resumes with the wrong cwd. The join is not an existence claim: a subdirectory
+that is not in the tree yields a path that is not on disk, which is the honest answer and the one
+every caller that stats the result already handles.
 [#183](https://github.com/tadasant/zimmer/issues/183) and
 [#187](https://github.com/tadasant/zimmer/issues/187) were both that defect, found separately and
 fixed separately, while the other ~48 sites reading the keys the same way stayed as they were
