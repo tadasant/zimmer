@@ -241,6 +241,84 @@ class ClaudeUsageSamplerJobTest < ActiveSupport::TestCase
     assert_equal 1, sampled(spare)
   end
 
+  # --- The attempt budget ----------------------------------------------------
+
+  # The starvation a success-only budget would restore: a probe that fails writes
+  # no snapshot, so the account stays exactly as stale and is back at the head of
+  # the ordering next tick, and every tick after that.
+  test "a spare that refuses does not hold a slot the readable spares need" do
+    serving = account("serving@example.com", current: true)
+    refusing = account("refusing@example.com")
+    first = account("first@example.com")
+    second = account("second@example.com")
+    third = account("third@example.com")
+    seed(serving, read_at: 1.minute.ago)
+    seed(refusing, read_at: 6.hours.ago)
+    seed(first, read_at: 5.hours.ago)
+    seed(second, read_at: 4.hours.ago)
+    seed(third, read_at: 3.hours.ago)
+    stub_probe
+    QuotaCheckService.stubs(:check_with_token).with(token_for(refusing)).returns(
+      QuotaCheckService::Result.new(success: false, error_message: "401 Unauthorized")
+    )
+
+    ClaudeUsageSamplerJob.perform_now
+
+    assert_equal 0, sampled(refusing)
+    assert_equal 1, sampled(first), "the sweep walked past the refusal in the same tick"
+    assert_equal 1, sampled(second), "and still landed a full success budget"
+    assert_equal 0, sampled(third), "the success budget, not the attempt budget, is what stops it"
+  end
+
+  test "the attempt budget stops a tick that is only finding refusals" do
+    serving = account("serving@example.com", current: true)
+    seed(serving, read_at: 1.minute.ago)
+    refusing = 5.times.map { |i| account("refusing#{i}@example.com").tap { |a| seed(a, read_at: (10 - i).hours.ago) } }
+    healthy = account("healthy@example.com")
+    seed(healthy, read_at: 2.hours.ago)
+    stub_probe
+    refusing.each do |a|
+      QuotaCheckService.stubs(:check_with_token).with(token_for(a)).returns(
+        QuotaCheckService::Result.new(success: false, error_message: "401 Unauthorized")
+      )
+    end
+
+    ClaudeUsageSamplerJob.perform_now
+
+    assert_equal 5, @probed_tokens.size, "one serving probe plus the attempt budget of four"
+    assert_equal 0, sampled(healthy), "a tick spending its whole budget on refusals reaches no further"
+    assert_equal 0, refusing.sum { |a| sampled(a) }
+  end
+
+  # --- Token refresh ---------------------------------------------------------
+
+  test "a spare whose token is expiring soon is refreshed before it is probed" do
+    serving = account("serving@example.com", current: true)
+    spare = account("spare@example.com", expires_at: 5.minutes.from_now)
+    seed(serving, read_at: 1.minute.ago)
+    seed(spare, read_at: 3.hours.ago)
+    stub_probe
+    ClaudeAccount.any_instance.expects(:refresh_token!).once.returns(true)
+
+    ClaudeUsageSamplerJob.perform_now
+
+    assert_equal 1, sampled(spare)
+  end
+
+  test "a spare whose token refresh fails is skipped without a probe" do
+    serving = account("serving@example.com", current: true)
+    spare = account("spare@example.com", expires_at: 5.minutes.from_now)
+    seed(serving, read_at: 1.minute.ago)
+    seed(spare, read_at: 3.hours.ago)
+    stub_probe
+    ClaudeAccount.any_instance.stubs(:refresh_token!).returns(false)
+
+    ClaudeUsageSamplerJob.perform_now
+
+    assert_equal 0, sampled(spare)
+    assert_equal [ token_for(serving) ], @probed_tokens, "a failed refresh costs no Anthropic probe"
+  end
+
   # --- Helpers ---------------------------------------------------------------
 
   private
@@ -277,6 +355,11 @@ class ClaudeUsageSamplerJobTest < ActiveSupport::TestCase
   # Readings this tick wrote, per account.
   def sampled(account) = account.quota_snapshots.where(trigger: "usage_sample").count
 
+  # The generic probe stub, doubling as a spy. Mocha collects matching
+  # expectations rather than short-circuiting, so this block runs on EVERY call —
+  # including calls a more specific `.with(token)` stub defined afterwards goes
+  # on to answer. `@probed_tokens` is therefore every probe attempted, failures
+  # included, which is what the attempt-budget assertions want.
   def stub_probe
     QuotaCheckService.stubs(:check_with_token).with do |token|
       @probed_tokens << token
@@ -290,13 +373,19 @@ class ClaudeUsageSamplerJobTest < ActiveSupport::TestCase
     )
   end
 
-  def with_spare_cap(cap)
-    original = ClaudeUsageSamplerJob::MAX_SPARE_PROBES_PER_TICK
-    ClaudeUsageSamplerJob.send(:remove_const, :MAX_SPARE_PROBES_PER_TICK)
-    ClaudeUsageSamplerJob.const_set(:MAX_SPARE_PROBES_PER_TICK, cap)
+  # Both budgets move together, the way the job derives them, so a test that
+  # narrows the success budget does not silently leave a wide attempt budget.
+  def with_spare_cap(cap, attempts: cap * 2)
+    originals = { MAX_SPARE_PROBES_PER_TICK: cap, MAX_SPARE_ATTEMPTS_PER_TICK: attempts }
+      .to_h { |name, value| [ name, [ ClaudeUsageSamplerJob.const_get(name), value ] ] }
+    originals.each { |name, (_was, now)| reset_const(name, now) }
     yield
   ensure
-    ClaudeUsageSamplerJob.send(:remove_const, :MAX_SPARE_PROBES_PER_TICK)
-    ClaudeUsageSamplerJob.const_set(:MAX_SPARE_PROBES_PER_TICK, original)
+    originals.each { |name, (was, _now)| reset_const(name, was) }
+  end
+
+  def reset_const(name, value)
+    ClaudeUsageSamplerJob.send(:remove_const, name)
+    ClaudeUsageSamplerJob.const_set(name, value)
   end
 end
