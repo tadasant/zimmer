@@ -17,6 +17,11 @@
 # session every fifteen minutes forever. So the last observed level is persisted
 # (AppSetting#quota_pool_available) and the event fires only on false → true.
 #
+# And it only works if the false → true is CLAIMED rather than observed. Two
+# passes reading the same unspent level in the same instant are two observations
+# of one recovery, and both would fire. #claim_announcement! makes the transition
+# itself the claim, so exactly one of them spends it — see the reasoning there.
+#
 # == What "available" means
 #
 # One question: can the pool serve a request at all — is there an account that is
@@ -128,12 +133,24 @@ class QuotaAvailabilityMonitor
       # its re-arm would no-op and the edge would be lost silently. Inside a
       # transaction the job row is invisible until the level is committed, and a
       # raising enqueue rolls the level back.
-      logger.info("Account pool has capacity again — firing #{EVENT_NAME}")
-      ActiveRecord::Base.transaction do
-        record_level!(setting, true)
+      #
+      # #claim_announcement! is what makes the edge one edge. Everything above
+      # this line is a READ of a level another pass may be reading at the same
+      # instant, so two passes can both arrive here holding the same recovery;
+      # only the one that moves the column false→true is allowed to spend it.
+      fired = ActiveRecord::Base.transaction do
+        next false unless claim_announcement!(setting)
+
+        logger.info("Account pool has capacity again — firing #{EVENT_NAME}")
         SystemEventTriggerJob.perform_later(EVENT_NAME)
+        true
       end
-      true
+
+      unless fired
+        logger.info("Account pool has capacity again, but this recovery was already announced — firing nothing")
+      end
+
+      fired
     rescue => e
       logger.warn("Could not evaluate quota availability", error: "#{e.class}: #{e.message}")
       false
@@ -232,12 +249,25 @@ class QuotaAvailabilityMonitor
         return false
       end
 
-      Rails.logger.info "[QuotaAvailabilityMonitor] Firing #{EVENT_NAME}#{" (#{reason})" if reason}"
-      ActiveRecord::Base.transaction do
-        record_level!(setting, true)
+      # Same claim as `check!`, for the same reason and against the same column:
+      # this call and a `check!` on another worker can both read an unspent level
+      # in the same instant, and only one of them may announce the recovery.
+      fired = ActiveRecord::Base.transaction do
+        next false unless claim_announcement!(setting)
+
+        Rails.logger.info "[QuotaAvailabilityMonitor] Firing #{EVENT_NAME}#{" (#{reason})" if reason}"
         SystemEventTriggerJob.perform_later(EVENT_NAME)
+        true
       end
-      true
+
+      unless fired
+        Rails.logger.info(
+          "[QuotaAvailabilityMonitor] #{EVENT_NAME} was announced by a concurrent pass" \
+          "#{" (#{reason})" if reason} — firing nothing"
+        )
+      end
+
+      fired
     rescue => e
       Rails.logger.info "[QuotaAvailabilityMonitor] Could not request a wake: #{e.message}"
       false
@@ -278,6 +308,68 @@ class QuotaAvailabilityMonitor
     rescue => e
       Rails.logger.info "[QuotaAvailabilityMonitor] Could not read the spot gate: #{e.message}"
       nil
+    end
+
+    # Claim the right to announce THIS recovery, atomically. True for the one
+    # caller that moved the level to `true`; false for every caller racing it.
+    #
+    # == Why a claim and not a write
+    #
+    # `quota_pool_available` records whether the recovery has been ANNOUNCED, not
+    # merely whether the pool is up — every comment in this file leans on that.
+    # But both callers reached the fire by READING that column and then acting on
+    # what they read, with the whole gate evaluation in between, and a read
+    # followed by a write is not an edge: two passes observing the same false→true
+    # transition in the same instant both see an unspent level, both pass the gate,
+    # and both enqueue. That doubles the wake budget for one recovery, which is
+    # #606 — two fleet sessions created in the same second from one trigger, each
+    # applying its own caps to the same waiting queue.
+    #
+    # A conditional UPDATE collapses the read and the write into one statement, so
+    # the transition itself is the claim. The second caller's UPDATE blocks on the
+    # first's row lock, re-evaluates its predicate after that commits, matches
+    # nothing, and reports the recovery as already announced.
+    #
+    # == What it does NOT collapse
+    #
+    # Only concurrent observations of ONE transition. The predicate is the
+    # unspent level, not a time window or a cooldown, so a pool that genuinely
+    # re-exhausts and recovers again fires again: the re-exhaustion writes `false`
+    # (a park through #record_unavailable!, or a sweep seeing the pool empty), and
+    # the next rising edge finds an unspent level and claims it cleanly. Same for
+    # a fire that delivered nothing, which #rearm! puts back the same way.
+    #
+    # `nil` counts as unspent alongside `false`, because #request_wake! fires from
+    # a `nil` level too — a deployment that has never recorded one still has to be
+    # able to wake a parked spot session.
+    def claim_announcement!(setting)
+      # No settings row exists yet, so there is nothing to claim against and this
+      # one arm is a read-then-insert rather than a claim. Only #request_wake!
+      # reaches it — `check!` returns at the `previous.nil?` baseline first — and
+      # only on a deployment that has never written the row, so the residual is
+      # two `request_wake!` calls in that one instant. Left as it is rather than
+      # given a unique index: `only_one_row` already validates the singleton, and
+      # the window closes for good the moment the row exists.
+      unless setting.persisted?
+        record_level!(setting, true)
+        return true
+      end
+
+      claimed = AppSetting
+        .where(id: setting.id)
+        .where(quota_pool_available: [ false, nil ])
+        .update_all(
+          quota_pool_available: true,
+          quota_pool_available_changed_at: Time.current,
+          updated_at: Time.current
+        )
+
+      return false if claimed.zero?
+
+      # `update_all` skips the in-memory record, and a stale `setting` handed back
+      # to a caller that reads it would misreport the level it just spent.
+      setting.reload
+      true
     end
 
     def record_level!(setting, available)
