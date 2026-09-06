@@ -5,11 +5,14 @@ import { csrfToken } from "lib/csrf"
 // Sibling to image_attachment_controller — supports drag-and-drop and the
 // file picker for arbitrary files (text, source code, logs, JSON, CSV, PDFs, etc.).
 //
+// Drag-and-drop is not bound here. composer-drop owns the drag surface for the whole
+// composer and dispatches `composer-drop:files`, which #handleComposerDrop reads.
+//
 // Works for both:
 // - Follow-up prompts (existing session, uses sessionId)
 // - New session creation (uses tempSessionId)
 export default class extends Controller {
-  static targets = ["input", "folderInput", "preview", "filesField", "dropZone", "attachButton", "attachFolderButton", "progress"]
+  static targets = ["input", "folderInput", "preview", "filesField", "attachButton", "attachFolderButton", "progress"]
   static values = {
     sessionId: Number,
     tempSessionId: String,
@@ -20,35 +23,6 @@ export default class extends Controller {
 
   connect() {
     this.files = []
-    this.setupDropZone()
-  }
-
-  disconnect() {}
-
-  // Setup drag and drop on the drop zone
-  setupDropZone() {
-    if (!this.hasDropZoneTarget) return
-
-    const dropZone = this.dropZoneTarget
-
-    dropZone.addEventListener("dragover", (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      dropZone.classList.add("border-indigo-500", "bg-indigo-50")
-    })
-
-    dropZone.addEventListener("dragleave", (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      dropZone.classList.remove("border-indigo-500", "bg-indigo-50")
-    })
-
-    dropZone.addEventListener("drop", async (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      dropZone.classList.remove("border-indigo-500", "bg-indigo-50")
-      await this.handleDrop(e)
-    })
   }
 
   openFileDialog() {
@@ -71,26 +45,45 @@ export default class extends Controller {
     event.target.value = ""
   }
 
-  // Drop handler that supports both files and folders. When `dataTransfer.items`
-  // is available we walk each entry with `webkitGetAsEntry()` so that dropped
-  // folders are recursively expanded into their constituent files. Falls back
-  // to `dataTransfer.files` for browsers/cases where items aren't usable.
+  // Files dropped on the composer, routed here by composer-drop.
+  //
+  // Supports both files and folders. When `dataTransfer.items` is available we walk
+  // each entry with `webkitGetAsEntry()` so that dropped folders are recursively
+  // expanded into their constituent files. Falls back to `dataTransfer.files` for
+  // browsers/cases where items aren't usable.
   //
   // Top-level files are passed through an image filter so that image_attachment
-  // can claim them (the two controllers share the drop zone). Files harvested
+  // can claim them (both controllers receive the same drop event). Files harvested
   // from inside a dropped folder are NOT filtered — image_attachment doesn't
   // walk folders, so filtering them here would silently lose them.
-  async handleDrop(e) {
-    const dt = e.dataTransfer
-    const collected = []
+  //
+  // The synchronous first pass over `dt.items` matters: a DataTransfer's items are
+  // only readable for the duration of the drop handler, so the entries have to be
+  // taken before the first await.
+  async handleComposerDrop(event) {
+    const dt = event.detail?.dataTransfer
+    if (!dt) return
 
+    const collected = []
+    // Snapshot the flat list now, for the same reason: by the time the walk below
+    // falls back to it, the DataTransfer may no longer be readable.
+    const flatFiles = Array.from(dt.files || []).filter(f => !f.type.startsWith("image/"))
+
+    const entries = []
     if (dt.items && dt.items.length > 0 && typeof dt.items[0].webkitGetAsEntry === "function") {
-      const entries = []
       for (const item of dt.items) {
         if (item.kind !== "file") continue
         const entry = item.webkitGetAsEntry()
         if (entry) entries.push(entry)
       }
+    }
+
+    // `webkitGetAsEntry()` is entitled to return null even for a file item — it does
+    // for a DataTransfer that was constructed rather than produced by the OS. Taking
+    // the flat list when the walk yields no entries is what stops that from silently
+    // discarding every dropped file; the only thing lost is folder expansion, which
+    // a source without entries could not have offered anyway.
+    if (entries.length > 0) {
       try {
         for (const entry of entries) {
           // Cap traversal at maxFiles + a little headroom so a hostile drop
@@ -112,13 +105,11 @@ export default class extends Controller {
         }
       } catch (err) {
         console.error("Failed to walk dropped entries, falling back to flat files:", err)
-        const flat = Array.from(dt.files || []).filter(f => !f.type.startsWith("image/"))
-        collected.push(...flat)
+        collected.push(...flatFiles)
       }
     } else {
       // Browser/source without items[]; treat as flat file list (no folders).
-      const flat = Array.from(dt.files || []).filter(f => !f.type.startsWith("image/"))
-      collected.push(...flat)
+      collected.push(...flatFiles)
     }
 
     if (collected.length > 0) {
