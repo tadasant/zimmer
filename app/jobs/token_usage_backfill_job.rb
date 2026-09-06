@@ -18,9 +18,9 @@
 # EVERY RUNTIME, not just Claude Code. The sliced, cursored machinery below is
 # Claude-shaped — it walks a filesystem corpus by directory — but "re-scan
 # history" is a request about the LEDGER, and a ledger with two runtimes in it
-# has to answer it for both or the button quietly means less than it says. Pi's
-# whole corpus is a table, so it is swept in one pass on a run's first slice; see
-# #sweep_other_runtimes.
+# has to answer it for all of them or the button quietly means less than it says.
+# Pi's whole corpus is a table and Codex's is a few thousand rollout files, so
+# each is swept in one pass on a run's first slice; see #sweep_other_runtimes.
 #
 # QUEUE PLACEMENT — `default`, deliberately not `pollers`. This is bulk work that
 # holds its thread for minutes, and `pollers` has three threads shared by every
@@ -66,8 +66,8 @@ class TokenUsageBackfillJob < ApplicationJob
   # next tick, which costs time and nothing else.
   #
   # This is what makes the ledger's history RE-ENTRANT for those runtimes. The
-  # post-deploy task that shipped Pi's ingestor covers history once and is
-  # terminal by design, and the recurring job only ever looks two hours back — so
+  # post-deploy tasks that shipped Pi's and Codex's ingestors cover history once
+  # and are terminal by design, and the recurring job only ever looks two hours back — so
   # without this, any gap longer than that window (a worker outage, an ingestor
   # bug found a day later) would lose that spend permanently, with no surface to
   # ask for it back. Now the Costs page button, `POST /api/v1/costs/backfill` and

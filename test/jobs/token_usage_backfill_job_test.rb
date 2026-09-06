@@ -13,6 +13,11 @@ class TokenUsageBackfillJobTest < ActiveJob::TestCase
     # complete — covered in TokenUsageBackfillServiceTest.
     FileUtils.mkdir_p(File.join(@root, "-home-rails--zimmer-clones-repo-main-1786989710-abcdef12"))
     TokenUsageIngestionService.stubs(:default_root).returns(@root)
+    # `sweep_other_runtimes` drives EVERY registered ingestor, and Codex's reads a
+    # host-global tree (`~/.codex/sessions`) rather than a corpus a test controls.
+    # Left unstubbed, this suite's assertions would depend on whether the machine
+    # running it happens to have used Codex.
+    CodexTokenUsageIngestionService.stubs(:default_root).returns(File.join(@root, "codex-sessions"))
   end
 
   def teardown
@@ -53,6 +58,8 @@ class TokenUsageBackfillJobTest < ActiveJob::TestCase
 
     # Written despite being far outside TokenUsageIngestionJob's two-hour lookback.
     assert_equal [ "pi:#{uuid}:feedface" ], SessionTokenUsage.pluck(:request_id)
+    # And Codex's corpus was asked for too, not skipped — it is simply empty here.
+    assert_equal [], CodexTokenUsageIngestionService.rollout_paths
   end
 
   test "does nothing at all once a sweep has completed — every deploy after the first" do

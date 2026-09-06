@@ -333,8 +333,7 @@ class PiTokenUsageIngestionServiceTest < ActiveSupport::TestCase
     assert_equal PiTokenUsageIngestionService, RuntimeRegistry.for("pi").usage_ingestor_class
     assert_equal TokenUsageIngestionService, RuntimeRegistry.for("claude_code").usage_ingestor_class
     assert_includes RuntimeRegistry.usage_ingestor_classes, PiTokenUsageIngestionService
-    # Codex has no ingestor yet, and the registry is where that is said.
-    assert_nil RuntimeRegistry.for("codex").usage_ingestor_class
+    assert_equal CodexTokenUsageIngestionService, RuntimeRegistry.for("codex").usage_ingestor_class
   end
 
   # ApplicationJob registers `discard_interrupt_quietly` and `retry_on
@@ -354,11 +353,17 @@ class PiTokenUsageIngestionServiceTest < ActiveSupport::TestCase
     pi_session(session_uuid: uuid,
                transcript: transcript(header(uuid), assistant(id: "aaaaaaaa")))
 
-    TokenUsageIngestionService.stub(:new, ->(**) { raise "claude corpus unreadable" }) do
-      results = TokenUsageIngestionJob.new.perform
+    # Codex's ingestor reads a host-global tree (`~/.codex/sessions`), so it is
+    # pointed at an empty one — otherwise this assertion would depend on whether
+    # the machine running the suite happens to have used Codex.
+    CodexTokenUsageIngestionService.stub(:default_root, Dir.mktmpdir("codex-empty")) do
+      TokenUsageIngestionService.stub(:new, ->(**) { raise "claude corpus unreadable" }) do
+        results = TokenUsageIngestionJob.new.perform
 
-      assert_equal 1, results.length
-      assert_equal 1, results.first.session_rows
+        # Two of the three ran: Pi wrote a row, Codex found an empty corpus.
+        assert_equal 2, results.length
+        assert_equal [ 1, 0 ], results.map(&:session_rows).sort.reverse
+      end
     end
 
     assert_equal 1, SessionTokenUsage.count

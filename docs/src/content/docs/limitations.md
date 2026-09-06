@@ -1215,12 +1215,34 @@ numbers. The deployment's default Pi model is `openrouter/anthropic/claude-opus-
 is the tail rather than the common case, and an unpriced model is *visibly* unpriced rather
 than silently under-counted.
 
-Codex is in the same position Pi was, and worse: `RuntimeRegistry` gives it no ingestor at
-all. Its rollouts live in `~/.codex/sessions/YYYY/MM/DD/`, which the Claude scanner never
-reaches, and a rollout records tokens as a `token_count` event carrying cumulative totals with
-no per-call identifier and no model on the event — so the dedup key and the model attribution
-both have to be built rather than read. Tracked in
-[#1077](https://github.com/tadasant/zimmer/issues/1077).
+### A Codex session records its tokens and no cost at all
+
+🟡 Codex spend **is** in the ledger — `CodexTokenUsageIngestionService`
+([costs](/operate/costs/#codexs-token-usage)) reads the rollout tree under
+`~/.codex/sessions/YYYY/MM/DD/`, decompressing the `.jsonl.zst` files a finished rollout becomes,
+and writes one row per `token_count` event. Volumes, model, session, agent root and timestamps all
+land. It closed [#1077](https://github.com/tadasant/zimmer/issues/1077), where the runtime was
+absent from the ledger altogether.
+
+What does not land is money. `TokenPricing` carries **Anthropic rates only**, so every Codex model
+— `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` — prices at **$0** and appears in the Costs page's
+unpriced-models list. A Codex session therefore contributes tokens to every volume figure on the
+page and nothing to any dollar figure. This is the same gap Pi's non-Anthropic models sit in, with
+the same fix: `Rate` derives its three cache rates from the input rate by a multiplier relationship
+that is uniform across Anthropic's line and false for OpenAI, which charges nothing for a cache
+write, so pricing these means teaching `Rate` to carry explicit cache rates rather than adding two
+numbers per model. Until it does, an unpriced model is *visibly* unpriced rather than silently
+under-counted — which is the point of surfacing the list at all.
+
+Two smaller edges of the same ingestion path, both counted rather than silent:
+
+- A `token_count` event that arrives before any `turn_context` or `thread_settings_applied` has
+  named a model is **skipped**, and shows in the run's `skipped` figure. `model` is `NOT NULL` and
+  guessing one would put a wrong rate on real volume. Codex emits a `turn_context` at the head of
+  every turn, so this has not been observed.
+- Codex reports no server-tool request counters on the token event, so a `web_search` shows up as
+  its own rollout event with no billing figure attached and the row's `web_search_requests` stays
+  zero. On a runtime whose models are unpriced anyway, that costs nothing today.
 
 ### A Pi session's status summary always takes the cheap path
 

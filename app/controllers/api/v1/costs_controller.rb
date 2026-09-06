@@ -112,9 +112,10 @@ class Api::V1::CostsController < Api::BaseController
       scope = scope.where(agent_root: params[:agent_root]) if params[:agent_root].present?
       # The ledger holds more than one billing relationship: a `claude_code` row
       # is subscription spend against an Anthropic quota window, a `pi` row is a
-      # metered OpenRouter invoice. Without this filter a consumer reconciling
-      # against one provider's bill has the other's dollars mixed in with no way
-      # to subtract them.
+      # metered OpenRouter invoice, a `codex` row is a ChatGPT-plan draw carrying
+      # tokens and (for now) no dollars. Without this filter a consumer
+      # reconciling against one provider's bill has the others' rows mixed in
+      # with no way to subtract them.
       scope = scope.where(agent_runtime: params[:agent_runtime]) if params[:agent_runtime].present?
       scope = scope.where(subagent: ActiveModel::Type::Boolean.new.cast(params[:subagent])) unless params[:subagent].nil?
     end

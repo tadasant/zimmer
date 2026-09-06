@@ -36,9 +36,9 @@ class QuotaCapacityCalibrator
   # Ledger tables that can hold spend against a Claude quota window.
   #
   # Naming the tables is no longer enough on its own — `session_token_usages`
-  # holds Pi rows too, billed by OpenRouter and counted by Anthropic not at all —
-  # so every read below goes through each table's `quota_bearing` scope. Codex
-  # spend still has no table here at all (zimmer#1077).
+  # holds Pi rows (billed by OpenRouter) and Codex rows (billed against a ChatGPT
+  # plan), and Anthropic counts neither — so every read below goes through each
+  # table's `quota_bearing` scope.
   QUOTA_BEARING_TABLES = [ SessionTokenUsage, AdhocTokenUsage ].freeze
 
   Observation = Data.define(:window_key, :cost_usd, :utilization, :capacity_usd, :usable, :reason) do
