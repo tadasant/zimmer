@@ -2340,7 +2340,7 @@ class AgentSessionJob < ApplicationJob
         # 4b. Check if MCP connection failure was detected by transcript hook
         # The McpConnectionFailureHook sets should_fail_session in custom_metadata
         # when configured MCP servers fail to connect
-        if check_and_handle_mcp_failure(session, process_pid, clone_path, log_buffer)
+        if check_and_handle_mcp_failure(session, process_pid, log_buffer)
           # MCP failure detected and handled - exit the monitoring loop
           break
         end
@@ -4090,10 +4090,9 @@ class AgentSessionJob < ApplicationJob
   #
   # @param session [Session] The current session
   # @param process_pid [Integer] The Claude CLI process PID
-  # @param clone_path [String] Path to the clone directory
   # @param log_buffer [LogBuffer] Buffer for logging
   # @return [Boolean] true if MCP failure was detected and handled, false otherwise
-  def check_and_handle_mcp_failure(session, process_pid, clone_path, log_buffer)
+  def check_and_handle_mcp_failure(session, process_pid, log_buffer)
     session.reload
     custom_metadata = session.custom_metadata || {}
 

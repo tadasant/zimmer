@@ -46,9 +46,12 @@ class SessionDirectoryAccessorContractTest < ActiveSupport::TestCase
   RETIRED_KEY = /full_clone_path/
 
   ALLOWED = {
-    # The accessors themselves. This is the one place the raw keys are read.
+    # The accessors themselves. This is the one place the raw keys are read, and
+    # the snippets are the full assignment rather than the bare `dig` so that a
+    # new read added to Session is still flagged.
     "models/session.rb" => [
-      'metadata&.dig("working_directory").presence || metadata&.dig("clone_path").presence',
+      'recorded = metadata&.dig("working_directory").presence',
+      'root = metadata&.dig("clone_path").presence',
       'metadata&.dig("clone_path").presence'
     ]
   }.freeze

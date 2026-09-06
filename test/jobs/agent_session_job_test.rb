@@ -8509,7 +8509,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     log_buffer = LogBuffer.new(@session)
 
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     assert_equal false, result
     assert_equal "running", @session.reload.status
@@ -8522,7 +8522,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     log_buffer = LogBuffer.new(@session)
 
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     assert_equal false, result
     assert_equal "running", @session.reload.status
@@ -8550,7 +8550,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     log_buffer = LogBuffer.new(@session)
 
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     assert_equal true, result
 
@@ -8593,7 +8593,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.broadcast_service = BroadcastService.new
     log_buffer = LogBuffer.new(@session)
 
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
     assert_equal true, result
 
     @session.reload
@@ -8635,7 +8635,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     log_buffer = LogBuffer.new(@session)
 
     assert_no_enqueued_jobs(only: AgentSessionJob) do
-      job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+      job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
     end
 
     @session.reload
@@ -8684,7 +8684,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.broadcast_service = BroadcastService.new
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     assert_equal "oauth_required", @session.metadata["failure_reason"]
@@ -8716,7 +8716,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.broadcast_service = BroadcastService.new
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     assert_not_equal "oauth_required", @session.metadata["failure_reason"],
@@ -8750,7 +8750,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     rails_errors = []
     Rails.logger.stub(:error, ->(msg) { rails_errors << msg }) do
-      job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+      job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
     end
 
     @session.reload
@@ -8781,7 +8781,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.broadcast_service = BroadcastService.new
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     assert_equal "oauth_required", @session.metadata["failure_reason"]
@@ -8819,7 +8819,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     assert File.exist?(corrupt_dir), "precondition: corrupt cache tree exists"
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     refute File.exist?(corrupt_dir), "corrupt _npx hash tree should be removed before retry"
 
@@ -8866,7 +8866,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     assert File.exist?(corrupt_dir), "precondition: poisoned extraction-race cache tree exists"
 
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     assert result, "MCP failure should be handled"
     refute File.exist?(corrupt_dir), "poisoned _npx hash tree should be removed before retry"
@@ -8907,7 +8907,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     # Termination may or may not be attempted depending on process state
     # The important thing is the session transitions (retry on first attempt)
@@ -8938,7 +8938,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     log_buffer = LogBuffer.new(@session)
 
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     assert_equal true, result
 
@@ -8967,7 +8967,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     log_buffer = LogBuffer.new(@session)
 
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     assert_equal false, result
     assert_equal "running", @session.reload.status
@@ -8991,7 +8991,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     log_buffer = LogBuffer.new(@session)
 
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     assert_equal true, result
     @session.reload
@@ -9026,7 +9026,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     log_buffer = LogBuffer.new(@session)
 
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     assert_equal true, result
     @session.reload
@@ -9055,7 +9055,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     log_buffer = LogBuffer.new(@session)
 
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     assert_equal true, result
     @session.reload
@@ -9088,7 +9088,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     log_buffer = LogBuffer.new(@session)
 
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     assert_equal true, result
     @session.reload
@@ -9120,7 +9120,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     log_buffer = LogBuffer.new(@session)
 
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     assert_equal true, result
     @session.reload
@@ -9166,7 +9166,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     result = nil
     Rails.logger.stub(:error, ->(msg) { rails_errors << msg }) do
       Rails.logger.stub(:warn, ->(msg) { rails_warns << msg }) do
-        result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+        result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
       end
     end
 
@@ -9229,7 +9229,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     log_buffer = LogBuffer.new(@session)
     agent_jobs_before = enqueued_jobs.count { |j| j["job_class"] == "AgentSessionJob" }
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     assert_equal false, result, "an already-degraded server is not a new event; the turn keeps running"
     assert_empty killed, "the live agent process must not be terminated over a failure already reported"
@@ -9266,7 +9266,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.broadcast_service = BroadcastService.new
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     assert_equal "failed", @session.status
@@ -9294,7 +9294,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     assert_equal "needs_input", @session.status
@@ -9324,7 +9324,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     # OAuth failures should fail immediately, not retry
@@ -9352,7 +9352,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     log_buffer = LogBuffer.new(@session)
 
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     assert_equal true, result
     @session.reload
@@ -9397,7 +9397,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     log_buffer = LogBuffer.new(@session)
 
-    result = job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    result = job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     assert_equal true, result
     @session.reload
@@ -9436,7 +9436,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.broadcast_service = BroadcastService.new
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     assert_not_equal "failed", @session.status
@@ -9483,7 +9483,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.broadcast_service = BroadcastService.new
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     assert_nil @session.metadata["mcp_retry_count"],
@@ -9529,7 +9529,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.broadcast_service = BroadcastService.new
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     assert_equal 1, @session.metadata["mcp_retry_count"]
@@ -9564,7 +9564,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       job.broadcast_service = BroadcastService.new
       log_buffer = LogBuffer.new(@session)
 
-      job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+      job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
       assert_equal 1, @session.reload.metadata["mcp_retry_count"],
         "#{transport_error.inspect} must stay on the retry ladder"
@@ -9593,7 +9593,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.broadcast_service = BroadcastService.new
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     assert_nil @session.metadata["failure_reason"]
@@ -9647,7 +9647,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     assert File.exist?(corrupt_dir), "precondition: corrupt cache tree exists"
 
-    assert_equal true, job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    assert_equal true, job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
 
@@ -9703,7 +9703,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.broadcast_service = BroadcastService.new
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     assert_equal [ "slack-workspace" ], @session.metadata["mcp_degraded_servers"].map { |s| s["name"] },
@@ -9790,7 +9790,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.broadcast_service = BroadcastService.new
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     reasons = @session.metadata["mcp_degraded_servers"].to_h { |s| [ s["name"], s["reason"] ] }
@@ -9835,7 +9835,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
       job.process_manager = MockProcessManager.new
       job.broadcast_service = BroadcastService.new
       log_buffer = LogBuffer.new(@session)
-      job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+      job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
       log_buffer.flush
       @session.reload
     end
@@ -9963,7 +9963,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     assert File.exist?(corrupt_dir), "precondition: corrupt cache tree exists"
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     assert_nil @session.metadata["mcp_retry_count"], "precondition: this is the no-retry route"
@@ -10049,7 +10049,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     assert_equal "oauth_required", @session.metadata["failure_reason"]
@@ -10080,7 +10080,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.process_manager = MockProcessManager.new
     log_buffer = LogBuffer.new(@session)
 
-    job.send(:check_and_handle_mcp_failure, @session, 12345, "/tmp/clone", log_buffer)
+    job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
 
     @session.reload
     assert_equal "oauth_required", @session.metadata["failure_reason"]
