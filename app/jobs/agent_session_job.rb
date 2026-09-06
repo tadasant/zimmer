@@ -1379,7 +1379,7 @@ class AgentSessionJob < ApplicationJob
           # are (zimmer#592).
           #
           # Anything that needs an actual install is unbounded, so it stays in the
-          # background exactly as before.
+          # background.
           if @file_system.exists?(File.join(working_directory, "Gemfile"))
             if (bundle_path = BundleInstallJob.adopt_image_bundle_now(working_directory))
               log_buffer.add(

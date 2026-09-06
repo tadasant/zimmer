@@ -417,17 +417,39 @@ class BundleInstallJobTest < ActiveJob::TestCase
     assert_equal({ "BUNDLE_PATH" => @image_bundle, "BUNDLE_DEPLOYMENT" => "false" }, written_config)
   end
 
-  test "the inline fast path swallows its own failures rather than failing the spawn" do
+  test "the inline fast path does not spawn anything for a clone of another repo" do
+    # `discard_unusable_bundle_config` shells out to `bundle check`, which against a foreign
+    # Gemfile resolves over the network with no timeout — 22s, measured, for a clone
+    # declaring `rails` and `pg`. On the maintenance queue that is slow; on the spawn thread
+    # it is a session not starting. So the byte comparison has to come first, and a config
+    # that would otherwise be probed (and deleted) is what proves the ordering holds.
     share_image_bundle
-    Bundler.stubs(:settings).raises(RuntimeError, "bundler is having a day")
+    File.write(File.join(@working_directory, "Gemfile"), "source 'https://rubygems.org'\n")
+    write_config({ "BUNDLE_PATH" => "vendor/bundle" }.to_yaml)
+    stub_bundler(checks: [ false ])
 
-    # `image_bundle_path` rescues this one itself, so reach past it for something that does
-    # not: a probe that blows up mid-decision must still leave session spawn standing.
-    Open3.stubs(:capture3).raises(Errno::ENOENT, "bundle")
+    assert_nil BundleInstallJob.adopt_image_bundle_now(@working_directory)
 
-    assert_nothing_raised do
-      assert_nil BundleInstallJob.adopt_image_bundle_now(@working_directory)
+    assert_empty @bundler.subcommands,
+      "a clone that cannot possibly share this app's bundle must be decided from the bytes alone"
+    assert File.exist?(bundle_config_path),
+      "and its own .bundle/config must be left exactly where the repository put it"
+  end
+
+  test "the inline fast path swallows its own failures rather than failing the spawn" do
+    # Raised from inside the decision, past every `rescue` the private methods do themselves,
+    # so the only thing that can be keeping the spawn alive is the class method's own.
+    BundleInstallJob.any_instance.stubs(:adopt_image_bundle_for).raises(Errno::ENOENT, "bundle")
+
+    records = capture_log_records do
+      assert_nothing_raised do
+        assert_nil BundleInstallJob.adopt_image_bundle_now(@working_directory)
+      end
     end
+
+    warning = records.find { |severity, message| severity == "WARN" && message.include?("inline fast path") }
+    assert_not_nil warning, "a swallowed failure that says nothing anywhere is indistinguishable from a clone that matched"
+    assert_match(/Errno::ENOENT/, warning.last, "name what went wrong")
   end
 
   # --- against the real bundler ------------------------------------------------------

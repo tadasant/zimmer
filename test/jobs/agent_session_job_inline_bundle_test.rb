@@ -8,19 +8,17 @@ require_relative "../support/mock_claude_cli_adapter"
 
 # A clone must have its gems decided BEFORE the agent is spawned, not after (#592).
 #
-# Clone setup used to do one thing here: `BundleInstallJob.perform_later`. For a clone of
-# this repo at a commit that has not touched the Gemfile that job does no work at all — it
-# writes a `.bundle/config` naming the image's bundle and stops — but it did that work on
-# the `:maintenance` queue, whenever the queue got to it.
+# For a clone of this repo at a commit that has not touched the Gemfile, `BundleInstallJob`
+# does no work at all — it writes a `.bundle/config` naming the image's bundle and stops.
+# Doing that on the `:maintenance` queue is what made #592 a bug rather than a latency note:
+# `CliSpawnEnv` strips every `BUNDLE_*` and `GEM_*` from the agent's environment,
+# deliberately, so `.bundle/config` is the ONLY thing telling a clone where its gems live.
+# Until the job runs there is no such file, and every `bin/rails` in the clone dies with
+# `Bundler::GemNotFound` listing gems that are sitting in the image — over the agent's
+# opening turns, which are exactly when it would run a test.
 #
-# The queue was the bug. `CliSpawnEnv` strips every `BUNDLE_*` and `GEM_*` from the agent's
-# environment, deliberately, so `.bundle/config` is the ONLY thing telling a clone where
-# its gems live. Until the job ran there was no such file, and every `bin/rails` in the
-# clone died with `Bundler::GemNotFound` listing gems that were sitting in the image — over
-# the agent's opening turns, which are exactly when it would run a test.
-#
-# So spawn takes the fast path inline. These pin the two halves of that: it is taken when
-# it is available, and the background job still gets its clone when it is not.
+# So spawn takes the fast path inline. These pin the two halves of that: it is taken when it
+# is available, and the background job still gets its clone when it is not.
 class AgentSessionJobInlineBundleTest < ActiveJob::TestCase
   CLONE_PATH = "/tmp/inline-bundle-test-clone"
 
@@ -63,13 +61,18 @@ class AgentSessionJobInlineBundleTest < ActiveJob::TestCase
   end
 
   # The inline call happens inside session spawn, so its failure mode is the session's.
-  # `.adopt_image_bundle_now` swallows its own errors (pinned in BundleInstallJobTest);
-  # this is the other end of that contract — a clone that could not be decided inline is
-  # still handed to the job rather than lost.
-  test "a fast path that declines leaves the clone with a job, not with nothing" do
-    BundleInstallJob.stubs(:adopt_image_bundle_now).returns(nil)
+  # `.adopt_image_bundle_now` swallows its own errors (pinned in BundleInstallJobTest); this
+  # is the other end of that contract, driven through the REAL class method with the raise
+  # underneath it — a decision that blows up must leave the clone with a job rather than
+  # with nothing, and must not take the spawn down with it.
+  test "a fast path that raises leaves the clone with a job, not with nothing" do
+    BundleInstallJob.any_instance.stubs(:adopt_image_bundle_for).raises(Errno::ENOENT, "bundle")
 
-    assert_enqueued_with(job: BundleInstallJob, args: [ @session.id, CLONE_PATH ]) { run_clone_setup }
+    assert_nothing_raised do
+      assert_enqueued_with(job: BundleInstallJob, args: [ @session.id, CLONE_PATH ]) { run_clone_setup }
+    end
+
+    assert_includes all_log_content, "Preparing gems in the background"
     assert_equal "needs_input", @session.reload.status, "the spawn itself must still have succeeded"
   end
 
