@@ -57,6 +57,56 @@ builder:
   arch: amd64
   driver: docker
 
+# Both destinations run the same two roles off the same image, with the same PID 1
+# and the same durable mounts. Only the host list, the memory cap, the nested-Docker
+# switch and the env blocks genuinely differ, so those stay in
+# config/deploy.<dest>.yml and everything else is here, once.
+#
+# Kamal merges the destination file over this one with ActiveSupport's `deep_merge!`
+# (kamal/configuration.rb#load_config_files), which recurses into HASHES and REPLACES
+# ARRAYS. A destination that redeclares `volume:` therefore overrides this list rather
+# than adding to it -- so a destination needing an extra mount adds it through the
+# top-level `volumes:` key, which Kamal appends to every app role's `docker run`
+# (production does exactly that for /opt/zimmer). That is the property that makes a
+# new entry below reach BOTH destinations instead of only the one it was added to.
+servers:
+  web:
+    options:
+      # tini-style PID 1 so agent-spawned grandchildren (gh, git, node, chrome,
+      # claude) are reaped instead of piling up as zombies.
+      init: true
+      # Durable named volumes shared by web + worker so both see the same clones,
+      # runtime credentials, and gh auth. They survive Kamal container swaps (the
+      # whole point of a persistent host) -- state is no longer lost on every deploy.
+      #
+      # Every runtime home is here: ~/.claude for Claude Code, CODEX_HOME (~/.codex)
+      # for Codex rollouts, auth.json, and the thread store. A runtime home left on
+      # the container layer is destroyed by each deploy, and the next `resume` then
+      # fails with "no rollout found" and restarts the conversation from zero -- which
+      # is what 678f768 had to fix for Codex.
+      #
+      # Pi is the exception that still gets a mount: its TRANSCRIPT lives inside the
+      # session's own clone (PiRuntimeAdapter passes --session-dir), so it is durable
+      # via zimmer_data. PI_CODING_AGENT_DIR holds its credential and provider state
+      # instead -- auth.json, models.json, settings.json -- which is milder to lose but
+      # just as invisible, so it is mounted on the same terms.
+      volume: &durable_volumes
+        - zimmer_data:/home/rails/.zimmer
+        - claude_home:/home/rails/.claude
+        - codex_home:/home/rails/.codex
+        - pi_home:/home/rails/.pi/agent
+        - gh_config:/home/rails/.config/gh
+        - claude_local:/home/rails/.local
+  worker:
+    # production.rb sets good_job.execution_mode = :external, so jobs only run if a
+    # dedicated worker process is up. Same image, env and volumes as web; what differs
+    # per destination is the memory cap and the nested-Docker runtime/user pair.
+    cmd: bundle exec good_job start
+    proxy: false
+    options:
+      init: true
+      volume: *durable_volumes
+
 env:
   clear:
     # RAILS_ENV is set PER DESTINATION (config/deploy.<dest>.yml), not here.

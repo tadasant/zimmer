@@ -68,33 +68,36 @@ class StagingCredentialsTest < ActiveSupport::TestCase
     end
   end
 
-  # The AGENT_ORCHESTRATOR_* -> ZIMMER_* rename is a cross-repo lockstep: Zimmer's own
-  # readers (SelfSessionInjector#self_target) now use the ZIMMER_ name, but the legacy
-  # AGENT_ORCHESTRATOR_ name stays set to the SAME value as a safety net until it is
-  # retired in a later step. Dropping either now resolves the key to empty, and an empty
-  # X-API-Key is a 401 -- every session's MCP server silently fails to connect.
-  test "both the old and new self-session name are set, to the same value" do
-    kamal = KAMAL_SECRETS.read
+  # SelfSessionInjector#api_key_var resolves exactly one name -- ZIMMER_STAGING_API_KEY.
+  # If it is unmapped or unlisted the key resolves to empty, and an empty X-API-Key is a
+  # 401: every session's own MCP server silently fails to connect.
+  #
+  # The AGENT_ORCHESTRATOR_* -> ZIMMER_* rename finished on 2026-07-12 (#134 flipped the
+  # readers), and the dual-set safety net that carried it was retired in #526. Re-adding
+  # the legacy name would inject a live API key into every container for no reader, so
+  # the second half of this test asserts it stays gone.
+  test "the self-session API key is mapped and injected under the ZIMMER_ name only" do
+    assert_match(/^ZIMMER_STAGING_API_KEY=\$STAGING_SELF_API_KEY$/, KAMAL_SECRETS.read,
+      "ZIMMER_STAGING_API_KEY must be derived from the same STAGING_SELF_API_KEY the " \
+      "deploy workflow exports from STAGING_API_KEYS.")
+    assert_includes staging_env_secrets, "ZIMMER_STAGING_API_KEY"
 
-    assert_match(/^AGENT_ORCHESTRATOR_STAGING_API_KEY=\$STAGING_SELF_API_KEY$/, kamal)
-    assert_match(/^ZIMMER_STAGING_API_KEY=\$STAGING_SELF_API_KEY$/, kamal,
-      "ZIMMER_STAGING_API_KEY must carry the same derived value as the AGENT_ORCHESTRATOR_ name.")
-
-    %w[AGENT_ORCHESTRATOR_STAGING_API_KEY ZIMMER_STAGING_API_KEY].each do |name|
-      assert_includes staging_env_secrets, name
-    end
+    assert_no_match(/AGENT_ORCHESTRATOR_/, KAMAL_SECRETS.read,
+      "The legacy AGENT_ORCHESTRATOR_* names have no reader; mapping one injects a live " \
+      "secret into every container for nothing.")
+    assert_empty staging_env_secrets.grep(/\AAGENT_ORCHESTRATOR_/)
   end
 
   # Zimmer prod shipped for a while with PulseMCP's base URL in its ported credentials,
   # pointing Zimmer's own sessions at someone else's orchestrator. Staging must target
-  # itself, under both names.
+  # itself.
   test "the self-session base URL is Zimmer staging, never PulseMCP" do
     clear = YAML.safe_load(ERB.new(DEPLOY_CONFIG.read).result, aliases: true).dig("env", "clear")
 
-    %w[AGENT_ORCHESTRATOR_STAGING_BASE_URL ZIMMER_STAGING_BASE_URL].each do |name|
-      assert_equal "https://staging.zimmer.tadasant.com", clear[name],
-        "#{name} must point at Zimmer's own staging host."
-    end
+    assert_equal "https://staging.zimmer.tadasant.com", clear["ZIMMER_STAGING_BASE_URL"],
+      "ZIMMER_STAGING_BASE_URL must point at Zimmer's own staging host."
+    assert_empty clear.keys.grep(/\AAGENT_ORCHESTRATOR_/),
+      "The legacy AGENT_ORCHESTRATOR_* names have no reader (AppUrl reads ZIMMER_*)."
 
     # Values only -- the prose above these keys names ao.pulsemcp.com as the thing NOT
     # to do, and that explanation should not be what trips the guard.

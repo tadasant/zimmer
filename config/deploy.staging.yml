@@ -18,39 +18,17 @@
 # deploy environment still disarms all three, which is the rollback if a sysbox
 # deploy misbehaves.
 <% nested_docker = ENV.fetch("ZIMMER_NESTED_DOCKER", "1") == "1" %>
+# init: true, the durable volume list, and the worker's cmd/proxy live in
+# config/deploy.yml -- they are identical in both destinations, and a list written
+# once is a list that cannot drift. Only what genuinely differs is below.
 servers:
   web:
     hosts:
       - <%= ENV["STAGING_HOST"] %>
-    options:
-      # tini-style PID 1 so agent-spawned grandchildren (gh, git, node, chrome,
-      # claude) are reaped instead of piling up as zombies.
-      init: true
-      # Durable named volumes shared by web + worker so both see the same clones,
-      # runtime credentials, and gh auth. They survive Kamal container swaps (the
-      # whole point of a persistent host) -- state is no longer lost on every deploy.
-      # Every runtime home is here: ~/.claude for Claude Code, CODEX_HOME
-      # (~/.codex) for Codex rollouts, auth.json, and the thread store. A runtime
-      # home left on the container layer is destroyed by each deploy, and the next
-      # `resume` then fails with "no rollout found" and restarts from zero.
-      # PI_CODING_AGENT_DIR (~/.pi/agent) holds Pi's credential and provider state;
-      # its transcripts live in the session clone under zimmer_data instead.
-      volume:
-        - zimmer_data:/home/rails/.zimmer
-        - claude_home:/home/rails/.claude
-        - codex_home:/home/rails/.codex
-        - pi_home:/home/rails/.pi/agent
-        - gh_config:/home/rails/.config/gh
-        - claude_local:/home/rails/.local
   worker:
     hosts:
       - <%= ENV["STAGING_HOST"] %>
-    # production.rb sets good_job.execution_mode = :external, so jobs only run if a
-    # dedicated worker process is up. Same image/env/volumes as web.
-    cmd: bundle exec good_job start
-    proxy: false
     options:
-      init: true
       # Nested Docker (on by default here -- see the header). Sysbox gives this role
       # its own user namespace, and container-root lets the entrypoint bring up an
       # inner dockerd before dropping back to uid 1000. Agent sessions run in this
@@ -82,13 +60,6 @@ servers:
       # 500 MB of headroom. Raising it trades that headroom away, and the headroom is
       # what keeps SSH answering -- which is the property being bought here.
       memory: 2g
-      volume:
-        - zimmer_data:/home/rails/.zimmer
-        - claude_home:/home/rails/.claude
-        - codex_home:/home/rails/.codex
-        - pi_home:/home/rails/.pi/agent
-        - gh_config:/home/rails/.config/gh
-        - claude_local:/home/rails/.local
 
 ssh:
   user: root
@@ -100,9 +71,8 @@ env:
     # and database.yml has a `staging:` section. Running staging as "production"
     # -- which the pre-Kamal cloud-init did -- makes SelfSessionInjector inject the
     # `agent-orchestrator-prod-self-session` MCP server, whose
-    # ${AGENT_ORCHESTRATOR_PROD_API_KEY} lives only in production's encrypted
-    # credentials. Every staging session then died in SecretsInterpolator before the
-    # agent ever started.
+    # ${ZIMMER_PROD_API_KEY} lives only in production's encrypted credentials. Every
+    # staging session then died in SecretsInterpolator before the agent ever started.
     RAILS_ENV: staging
     # Armed only when the worker is running under sysbox (see the role's options
     # above). The entrypoint reads it to decide whether to start an inner dockerd,
@@ -147,9 +117,6 @@ env:
     # session orchestrates staging -- never production, and never some other
     # instance whose host might get carried in through ported credentials, which
     # would point Zimmer's own sessions at someone else's box.
-    # Both names carry the same value through the AGENT_ORCHESTRATOR_* -> ZIMMER_*
-    # rename; see .kamal/secrets.staging.
-    AGENT_ORCHESTRATOR_STAGING_BASE_URL: https://staging.zimmer.tadasant.com
     ZIMMER_STAGING_BASE_URL: https://staging.zimmer.tadasant.com
     DATABASE_HOST: zimmer-db
     DATABASE_PORT: "5432"
@@ -193,8 +160,6 @@ env:
     # own REST API. It lives in process ENV rather than mcp_secrets (SecretsInterpolator
     # falls back to ENV), because the deploy workflow derives it from API_KEYS -- which
     # is the same list /mcp authenticates against, so it cannot drift out of sync.
-    # Both names, one value, for the in-flight ZIMMER_* rename.
-    - AGENT_ORCHESTRATOR_STAGING_API_KEY
     - ZIMMER_STAGING_API_KEY
     # Observability. The app's initializers are hard no-ops when these are empty,
     # so an unset secret simply disables shipping -- but they must be PRESENT here,

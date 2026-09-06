@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "kamal"
 require "erb"
 require "yaml"
 
@@ -24,15 +25,17 @@ require "yaml"
 # the table so a newly registered runtime fails here until its home is declared, rather
 # than shipping with a home that silently evaporates on the next deploy.
 class RuntimeHomeVolumesTest < ActiveSupport::TestCase
-  # Discovered rather than listed, for the same reason the runtime axis is: a new
-  # deploy destination must be covered the moment it exists. `config/deploy.yml` is
-  # the merged base and declares no `volume:` key of its own, so the glob's exclusion
-  # of it (it has no `.<env>.` segment) is correct rather than incidental. Roles come
-  # from each file's own `servers`, so a third role is covered too.
-  DEPLOY_FILES = Rails.root.glob("config/deploy.*.yml").to_h do |path|
-    file = path.relative_path_from(Rails.root).to_s
-    [ file, YAML.safe_load(ERB.new(path.read).result, aliases: true).fetch("servers").keys ]
-  end.freeze
+  include KamalConfigHelpers
+
+  # Asserted against the MERGED config, never against a destination file on its own.
+  # The durable volume list lives in `config/deploy.yml` and the destination files add
+  # only what differs, so a destination file read alone shows no runtime home at all --
+  # and, worse, a destination that restated `volume:` would REPLACE the shared list
+  # rather than extend it, which is precisely the drift these assertions exist to catch.
+  #
+  # `DEPLOY_DESTINATIONS` is discovered from the deploy files (KamalConfigHelpers), for
+  # the same reason the runtime axis is: a new destination must be covered the moment it
+  # exists.
 
   # The container path each runtime keeps its conversation state in. Codex's is read
   # out of the image rather than hardcoded, because `CodexHome.path` resolves it from
@@ -76,46 +79,64 @@ class RuntimeHomeVolumesTest < ActiveSupport::TestCase
       "~/.codex by its own default and the mount below would target the wrong path."
   end
 
-  DEPLOY_FILES.each do |deploy_file, roles|
-    roles.each do |role|
+  DEPLOY_DESTINATIONS.each do |destination|
+    %w[web worker].each do |role|
       RUNTIME_HOMES.each_key do |runtime|
-        test "#{deploy_file} mounts the #{runtime} runtime home durably for the #{role} role" do
+        test "#{destination} mounts the #{runtime} runtime home durably for the #{role} role" do
           home = runtime_home(runtime)
-          mounted = container_paths(deploy_file, role)
+          mounted = container_paths(destination, role)
 
           assert_includes mounted, home,
-            "#{deploy_file}'s #{role} role must mount #{home} (the #{runtime} runtime home) " \
+            "#{destination}'s #{role} role must mount #{home} (the #{runtime} runtime home) " \
             "as a durable volume. Without it the directory lives on the container layer, " \
             "every deploy destroys it, and the next turn resumes into a conversation that " \
             "no longer exists — the agent restarts from zero with no visible error."
         end
 
-        test "#{deploy_file} backs the #{runtime} runtime home with a named volume for the #{role} role" do
+        test "#{destination} backs the #{runtime} runtime home with a named volume for the #{role} role" do
           home = runtime_home(runtime)
-          source = volume_source(deploy_file, role, home)
+          source = volume_source(destination, role, home)
 
-          assert source.present?, "#{deploy_file}'s #{role} role must mount #{home}"
+          assert source.present?, "#{destination}'s #{role} role must mount #{home}"
           refute source.start_with?("/"),
-            "#{deploy_file} mounts #{home} from host path #{source}. A runtime home must be a " \
+            "#{destination} mounts #{home} from host path #{source}. A runtime home must be a " \
             "NAMED volume: Docker seeds a named volume with the image directory's ownership " \
             "(uid 1000), while a bind mount of a missing host path comes up root-owned and the " \
             "runtime cannot write its rollouts at all."
         end
       end
     end
-  end
 
-  # Both roles run agent processes (the worker runs sessions; the web role spawns them
-  # too), so a home mounted for only one of them still loses state depending on which
-  # container served the turn.
-  DEPLOY_FILES.each_key do |deploy_file|
-    test "#{deploy_file} mounts the same runtime homes for web and worker" do
-      web = container_paths(deploy_file, "web") & runtime_homes
-      worker = container_paths(deploy_file, "worker") & runtime_homes
+    # Both roles run agent processes (the worker runs sessions; the web role spawns them
+    # too), so a home mounted for only one of them still loses state depending on which
+    # container served the turn.
+    test "#{destination} mounts the same runtime homes for web and worker" do
+      web = container_paths(destination, "web") & runtime_homes
+      worker = container_paths(destination, "worker") & runtime_homes
 
       assert_equal web.sort, worker.sort,
-        "#{deploy_file} must mount every runtime home for BOTH roles. A home visible to only " \
+        "#{destination} must mount every runtime home for BOTH roles. A home visible to only " \
         "one container makes resume work or fail depending on which role handled the turn."
+    end
+  end
+
+  # The list the assertions above walk is one list, in config/deploy.yml, and the reason
+  # it can be is Kamal's merge: a destination that redeclares `volume:` REPLACES it. That
+  # is invisible from either file, so pin it -- both destinations must inherit the shared
+  # list rather than carry a copy that can drift out from under this test.
+  test "no destination file declares its own volume list" do
+    DEPLOY_DESTINATIONS.each do |destination|
+      overlay = YAML.safe_load(
+        ERB.new(Rails.root.join("config/deploy.#{destination}.yml").read).result, aliases: true
+      )
+
+      Array(overlay["servers"]).each do |role, spec|
+        assert_nil spec&.dig("options", "volume"),
+          "config/deploy.#{destination}.yml declares `volume:` for the #{role} role. Kamal's " \
+          "destination merge REPLACES arrays, so that overrides the durable list in " \
+          "config/deploy.yml and the next runtime home added there reaches other destinations " \
+          "only. Add a destination-only mount through the top-level `volumes:` key instead."
+      end
     end
   end
 
@@ -142,23 +163,15 @@ class RuntimeHomeVolumesTest < ActiveSupport::TestCase
     Rails.root.join("Dockerfile.base").read[/^ENV\s+PI_CODING_AGENT_DIR="?([^"\s]+)"?/, 1]
   end
 
-  # Kamal volume entries are `source:container_path[:opts]` strings.
-  def volumes(deploy_file, role)
-    Array(render(deploy_file).dig("servers", role, "options", "volume"))
+  # Kamal volume entries are `source:container_path[:opts]` strings, read off the role's
+  # rendered `docker run` so the top-level `volumes:` key is included alongside the
+  # role's own options.
+  def container_paths(destination, role)
+    kamal_volumes(destination, role).map { |entry| entry.split(":")[1] }
   end
 
-  def container_paths(deploy_file, role)
-    volumes(deploy_file, role).map { |entry| entry.split(":")[1] }
-  end
-
-  def volume_source(deploy_file, role, container_path)
-    entry = volumes(deploy_file, role).find { |v| v.split(":")[1] == container_path }
+  def volume_source(destination, role, container_path)
+    entry = kamal_volumes(destination, role).find { |v| v.split(":")[1] == container_path }
     entry&.split(":")&.first
-  end
-
-  # The deploy files are ERB (hosts come from ENV at deploy time). Rendering with the
-  # vars unset yields nils, which is fine -- nothing read here is interpolated.
-  def render(deploy_file)
-    YAML.safe_load(ERB.new(Rails.root.join(deploy_file).read).result, aliases: true)
   end
 end

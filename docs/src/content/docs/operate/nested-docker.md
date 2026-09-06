@@ -70,12 +70,13 @@ Three pieces that only work together, which is why one variable arms all of them
 the single image Kamal ships to *both* roles — `web` carries a daemon it never starts.
 
 **The role** (`config/deploy.*.yml`) runs the worker under the runtime and starts it as
-container-root. The switch is resolved once per destination — that is the only thing that
-differs between staging and production — and all three settings read the resolved value,
-so they cannot drift apart:
+container-root. Both destination files are written the same way: the switch is resolved
+once, at the top, into an ERB local, and all three settings read that local — so they
+cannot drift apart. The **default** is the only thing that differs, and it is the one
+value in the line below:
 
 ```erb
-<%# top of the file; production's default is "0" %>
+<%# top of the file; staging's default is "1", production's is "0" %>
 <% nested_docker = ENV.fetch("ZIMMER_NESTED_DOCKER", "1") == "1" %>
 
 <%# under servers.worker.options %>
@@ -90,9 +91,16 @@ The three are not adjacent in the file; they are grouped here because they are o
 decision. `web` receives the env var (`env.clear` is destination-wide) and ignores it —
 the entrypoint's dockerd block sits inside its `id -u = 0` branch, and `web` runs as 1000.
 
+Only `"1"` arms it. Every other value — `"0"`, `""`, a typo — leaves all three disarmed,
+and the env var the container receives is normalized to `"0"` rather than passed through,
+so it cannot describe a state the runtime is not in.
+
 `test/config/nested_docker_switch_test.rb` renders both destinations at all three switch
 states (unset, `0`, `1`) and asserts the three settings are armed together or not at all —
-the interesting failure being a config that arms two of them.
+the interesting failure being a config that arms two of them. It reads the **merged**
+config (`config/deploy.yml` folded together with the destination file), because that is
+what the container actually gets; see
+[Where a mount is declared](/operate/deploying/#where-a-mount-is-declared-and-why-that-matters).
 
 `dockerd` needs root *inside* the container, and the image normally runs as uid 1000. So
 `bin/docker-entrypoint` starts as container-root, brings up `dockerd --group 1000` (the
