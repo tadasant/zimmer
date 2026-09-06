@@ -1,0 +1,71 @@
+<%#
+  The edit half of the catalog multi-select widget — the search box, the
+  dropdown, the chips and the save/cancel row. One partial for what used to be
+  eight near-identical blocks (zimmer#456).
+
+  Renders INSIDE an element carrying `data-controller="catalog-multiselect"`;
+  the caller owns that wrapper and the display half, because the display half is
+  the part that genuinely differs per artifact type (a skill shows plugin-derived
+  chips, an MCP server shows a connection indicator).
+
+  Locals:
+    variant     - "inline" for the desktop meta row, "stacked" for the mobile card
+    label       - "Skills", "MCP", …
+    accent      - accent token; see CatalogMultiselectHelper::ACCENT_CLASSES
+    placeholder - search box placeholder
+    aria_label  - search box accessible name
+    note        - the "applies on the next turn" caveat, worded per artifact type
+%>
+<% classes = catalog_multiselect_accent(accent) %>
+<% inline = variant.to_s == "inline" %>
+
+<div data-catalog-multiselect-target="editor" class="hidden <%= "flex-1" if inline %>">
+  <% if inline %>
+    <div class="flex flex-wrap items-center gap-1 mb-1">
+      <strong class="text-gray-700 mr-1"><%= label %>:</strong>
+      <div data-catalog-multiselect-target="selectedContainer" class="flex flex-wrap gap-1"></div>
+    </div>
+  <% else %>
+    <label class="block text-xs font-medium text-gray-500 mb-2"><%= label %></label>
+    <div data-catalog-multiselect-target="selectedContainer" class="flex flex-wrap gap-1.5 mb-2 min-h-[28px]"></div>
+  <% end %>
+
+  <div class="relative <%= "mt-1" if inline %>">
+    <input type="text"
+           data-catalog-multiselect-target="input"
+           <%# `click` as well as `focus`, so a click on an already-focused input reopens
+               the list. A second `focus` never fires, so `focus` alone leaves no way back
+               after Escape but to type. %>
+           data-action="focus->catalog-multiselect#showDropdown click->catalog-multiselect#showDropdown input->catalog-multiselect#filter keydown->catalog-multiselect#handleKeydown"
+           placeholder="<%= placeholder %>"
+           aria-label="<%= aria_label %>"
+           autocomplete="off"
+           class="<%= inline ? "shadow-sm block w-full sm:text-sm border-gray-300 rounded-md py-1 px-2" : "w-full rounded-md border-gray-300 text-sm py-2 px-3" %> <%= classes[:input] %>">
+
+    <div data-catalog-multiselect-target="dropdown"
+         class="hidden bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"></div>
+  </div>
+
+  <div class="flex <%= inline ? "flex-wrap gap-2 mt-2" : "gap-2 mt-3" %>">
+    <button type="button"
+            data-action="click->catalog-multiselect#save"
+            data-catalog-multiselect-target="saveButton"
+            class="<%= inline ? "inline-flex items-center px-2 py-1 text-xs font-medium rounded focus:ring-offset-1" : "flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md focus:ring-offset-2" %> focus:outline-none focus:ring-2 disabled:opacity-50 disabled:cursor-not-allowed <%= classes[:save_button] %>">
+      Save
+    </button>
+    <button type="button"
+            data-action="click->catalog-multiselect#cancel"
+            class="<%= inline ? "inline-flex items-center px-2 py-1 text-xs font-medium rounded focus:ring-offset-1" : "flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md focus:ring-offset-2" %> border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 <%= classes[:cancel_button] %>">
+      Cancel
+    </button>
+    <% if inline %>
+      <span data-catalog-multiselect-target="status" class="text-xs text-gray-500 ml-2 self-center"></span>
+      <span class="basis-full text-xs text-gray-400 italic"><%= note %></span>
+    <% end %>
+  </div>
+
+  <% unless inline %>
+    <div data-catalog-multiselect-target="status" class="text-xs text-gray-500 mt-2 text-center"></div>
+    <p class="text-xs text-gray-400 italic mt-2 text-center"><%= note %></p>
+  <% end %>
+</div>

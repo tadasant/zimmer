@@ -3,7 +3,7 @@ import { csrfHeaders } from "lib/csrf"
 
 // Connects to data-controller="editable-goal"
 // Inline editor for goal on the session detail page.
-// Mirrors the editable-mcp-servers pattern but for a single text value
+// Mirrors the catalog-multiselect inline-edit pattern but for a single text value
 // with predefined suggestions dropdown.
 export default class extends Controller {
   static targets = ["display", "editor", "input", "dropdown", "clearButton", "status", "saveButton", "displayText"]

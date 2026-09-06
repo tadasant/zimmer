@@ -6,11 +6,15 @@
 <% show_mcp_section = servers_for_select || all_servers.present? || plugin_derived_mcp.any? %>
 <div id="session_<%= agent_session.id %>_mobile_mcp_servers">
 <% if show_mcp_section %>
-  <div data-controller="editable-mcp-servers"
-       data-editable-mcp-servers-session-id-value="<%= agent_session.id %>"
-       data-editable-mcp-servers-servers-value="<%= (agent_session.mcp_servers || []).to_json %>"
-       data-editable-mcp-servers-injected-servers-value="<%= agent_session.injected_mcp_servers.to_json %>"
-       data-editable-mcp-servers-available-servers-value="<%= (servers_for_select || []).to_json %>">
+  <div <%= tag.attributes(data: catalog_multiselect_attributes(
+             items: catalog_multiselect_items(servers_for_select, key: :name),
+             selected: agent_session.mcp_servers || [],
+             injected: agent_session.injected_mcp_servers,
+             accent: "indigo",
+             variant: :stacked,
+             turbo_stream: true,
+             persist_url: update_mcp_servers_session_path(agent_session),
+             payload_key: "mcp_servers")) %>>
     <% if agent_session.failed? && agent_session.metadata&.dig("failure_reason") == "oauth_required" && (agent_session.metadata&.dig("oauth_required_servers") || []).any? %>
       <div class="mb-3">
         <%= render "sessions/mcp_oauth_required_banner", agent_session: agent_session %>
@@ -18,12 +22,12 @@
     <% end %>
 
     <!-- Display Mode -->
-    <div data-editable-mcp-servers-target="display">
+    <div data-catalog-multiselect-target="display">
       <div class="flex items-center justify-between mb-2">
         <label class="text-xs font-medium text-gray-500">MCP Servers</label>
         <% if servers_for_select %>
           <button type="button"
-                  data-action="click->editable-mcp-servers#edit"
+                  data-action="click->catalog-multiselect#edit"
                   class="text-indigo-600 hover:text-indigo-800 text-xs font-medium px-2 py-1.5 -mr-2 -my-1"
                   title="<%= all_servers.present? ? 'Edit MCP servers' : 'Add MCP servers' %>"
                   aria-label="<%= all_servers.present? ? 'Edit MCP servers' : 'Add MCP servers' %>">
@@ -110,45 +114,10 @@
     </div>
 
     <% if servers_for_select %>
-      <!-- Edit Mode -->
-      <div data-editable-mcp-servers-target="editor" class="hidden">
-        <label class="block text-xs font-medium text-gray-500 mb-2">MCP Servers</label>
-
-        <!-- Selected servers container -->
-        <div data-editable-mcp-servers-target="selectedContainer" class="flex flex-wrap gap-1.5 mb-2 min-h-[28px]"></div>
-
-        <!-- Search input -->
-        <div class="relative">
-          <input type="text"
-                 data-editable-mcp-servers-target="input"
-                 data-action="focus->editable-mcp-servers#showDropdown input->editable-mcp-servers#filterServers keydown->editable-mcp-servers#handleKeydown"
-                 placeholder="Search MCP servers..."
-                 aria-label="Search MCP servers"
-                 autocomplete="off"
-                 class="w-full rounded-md border-gray-300 text-sm py-2 px-3 focus:ring-indigo-500 focus:border-indigo-500">
-
-          <!-- Dropdown -->
-          <div data-editable-mcp-servers-target="dropdown"
-               class="hidden bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto z-50"></div>
-        </div>
-
-        <!-- Action buttons -->
-        <div class="flex gap-2 mt-3">
-          <button type="button"
-                  data-action="click->editable-mcp-servers#save"
-                  data-editable-mcp-servers-target="saveButton"
-                  class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md bg-indigo-600 text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">
-            Save
-          </button>
-          <button type="button"
-                  data-action="click->editable-mcp-servers#cancel"
-                  class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-            Cancel
-          </button>
-        </div>
-        <div data-editable-mcp-servers-target="status" class="text-xs text-gray-500 mt-2 text-center"></div>
-        <p class="text-xs text-gray-400 italic mt-2 text-center">Applies on the next turn or restart — the running process keeps its current servers.</p>
-      </div>
+      <%= render "sessions/catalog_multiselect_editor",
+                 variant: :stacked, label: "MCP Servers", accent: "indigo",
+                 placeholder: "Search MCP servers...", aria_label: "Search MCP servers",
+                 note: "Applies on the next turn or restart — the running process keeps its current servers." %>
     <% end %>
   </div>
 <% end %>
