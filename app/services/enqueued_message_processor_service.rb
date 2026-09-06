@@ -129,14 +129,15 @@ class EnqueuedMessageProcessorService
         # carries one. A message with no goal is not a "clear" signal —
         # preserving the session's existing goal avoids surprise clearing when
         # a follow-up enqueued without a goal is processed. To explicitly clear,
-        # update the session goal via PATCH /api/v1/sessions/:id.
-        if message.goal.present? && message.goal != session.goal
-          session.update!(goal: message.goal)
-          add_log(
-            "Goal updated from enqueued message",
-            level: "info"
-          )
-        end
+        # update the session goal via PATCH /api/v1/sessions/:id. That rule lives
+        # in Sessions::FollowUpGoal, shared with the three surfaces that apply a
+        # goal directly instead of carrying it on a message.
+        Sessions::FollowUpGoal.apply!(
+          session: session,
+          goal: message.goal,
+          source: :enqueued_message,
+          log_with: ->(content) { add_log(content, level: "info") }
+        )
 
         # Reset SIGTERM retry state for fresh execution
         if session.metadata&.dig("sigterm_retry_count").present?
