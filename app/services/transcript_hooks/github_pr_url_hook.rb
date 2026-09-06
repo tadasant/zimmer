@@ -304,6 +304,15 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
   # ("no PR URL yet") and is never retracted if the session is revived and does
   # open one.
   #
+  # Reaching those two states from `waiting` is the one shape that is not a miss.
+  # `fail` and `archive` both transition directly from it, so a session created
+  # and trashed before it started — or swept up by
+  # `HealthMonitorService#archive_old_sessions`, which bulk-archives every
+  # non-archived session untouched for seven days — would otherwise be told its
+  # PR-flavored goal produced no PR when it never ran a turn to produce one
+  # with. True and useless, in exactly the place the warning is meant to be a
+  # signal. `Session#before_first_agent_turn?` is the carve-out (#356).
+  #
   # Repeats are the dedup guard's job; *which* rest state spends the budget is
   # the call site's. The guard below looks for an existing
   # MISSING_PR_URL_WARNING_MARKER log on the session, so every call site shares
@@ -331,6 +340,18 @@ class TranscriptHooks::GithubPrUrlHook < TranscriptHooks::BaseHook
     return unless PR_GOAL_PATTERNS.any? { |pattern| pattern.match?(session.goal) }
 
     return if session.custom_metadata&.dig("github_pull_request_urls").present?
+    # A session that never got an agent turn had no chance to open anything, so
+    # there is no miss to report — see the `waiting` paragraph above (#356).
+    #
+    # `before_first_agent_turn?` rather than "is the transcript empty", for two
+    # reasons. It reads `metadata["runtime_started"]` first, so a session that
+    # ran short-circuits before `transcript` is touched at all — no query, no
+    # large-column read, on either branch. And it is the conservative half of
+    # the pair: `runtime_started` merely being *present* (`false` included, as
+    # every fresh-start path writes) means a runtime was spawned here once, and
+    # the warning still fires. Suppressing more than never-ran sessions would
+    # re-open #313, whose failure is a diagnostic that stays silent.
+    return if session.before_first_agent_turn?
     return if session.logs.where(level: "warning").where("content LIKE ?", "#{MISSING_PR_URL_WARNING_MARKER}%").exists?
 
     Rails.logger.warn(

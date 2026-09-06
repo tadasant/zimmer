@@ -2001,7 +2001,17 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
 
   # === The missing-PR warning (#89) ===========================================
 
+  # The warning only speaks for a session that got an agent turn (#356), so
+  # every "it warns" case below has to be a session that ran one. `runtime_started`
+  # is what AgentSessionJob stamps the instant it records a spawned pid, and it is
+  # the signal `Session#before_first_agent_turn?` reads first.
+  def mark_ran(session = @session)
+    session.update!(metadata: session.metadata.to_h.merge("runtime_started" => true))
+    session
+  end
+
   test "warns once when a session with a PR goal pauses having recorded nothing" do
+    mark_ran
     @session.update!(goal: "Open a PR and leave it unmerged for review.")
 
     assert_difference -> { @session.logs.count }, 1 do
@@ -2021,6 +2031,7 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     # The read-only goal mentions PRs precisely to forbid them ("do not create
     # files, PRs, or branches"), so a bare "does the goal say PR" would warn on
     # every codebase-question session. Assert against the real descriptions.
+    mark_ran
     GoalsConfig.all.each do |goal|
       @session.update!(goal: goal.description, custom_metadata: {})
       @session.logs.destroy_all
@@ -2037,6 +2048,7 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
   end
 
   test "recognizes pull-request goals written without the abbreviation" do
+    mark_ran
     @session.update!(goal: "Open a reviewed, green pull request and stop.")
 
     assert_difference -> { @session.logs.count }, 1 do
@@ -2086,7 +2098,91 @@ class TranscriptHooks::GithubPrUrlHookTest < ActiveSupport::TestCase
     end
   end
 
+  # === Never-ran sessions (#356) ==============================================
+  #
+  # `fail` and `archive` both transition straight out of `waiting`, so a session
+  # created and trashed before it started — or bulk-archived by
+  # HealthMonitorService's stale-session sweep — reaches the warning without ever
+  # having had a turn in which to open a PR. Telling it so is true and useless.
+
+  test "does not warn about a session that never got an agent turn" do
+    @session.update!(goal: "Open a PR and leave it unmerged for review.", metadata: {}, transcript: nil)
+
+    assert @session.before_first_agent_turn?, "fixture precondition: the session must read as never-run"
+
+    assert_no_difference -> { @session.logs.count } do
+      TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url(@session)
+    end
+  end
+
+  # The other half of the #356 guard, and the one #313 is about: a diagnostic
+  # that fails to fire is far harder to notice than one that fires too often, so
+  # a session that ran and genuinely recorded nothing must still be warned about.
+  test "still warns about a session that ran turns and recorded no PR URL" do
+    mark_ran
+    @session.update!(goal: "Open a PR and leave it unmerged for review.")
+
+    assert_not @session.before_first_agent_turn?
+
+    assert_difference -> { @session.logs.count }, 1 do
+      TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url(@session)
+    end
+  end
+
+  # A transcript alone is enough: TranscriptPollerService can fill it for a
+  # session whose `runtime_started` was cleared by a fresh-start path, and an
+  # agent that spoke could have opened a PR.
+  test "still warns about a session with a transcript but no runtime_started" do
+    @session.update!(
+      goal: "Open a PR and leave it unmerged for review.",
+      metadata: {},
+      transcript: claude_assistant_text("Working on it.")
+    )
+
+    assert_difference -> { @session.logs.count }, 1 do
+      TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url(@session)
+    end
+  end
+
+  # `runtime_started => false` is not `nil`, and the difference is the whole
+  # point. ProcessLifecycleManager#fresh_start!, Sessions::RestartUnstartedTurn
+  # and ForkSessionService all write it deliberately, on sessions that HAVE been
+  # through a spawn — so the guard must not read them as never-run.
+  test "still warns about a session whose runtime_started was reset to false" do
+    @session.update!(
+      goal: "Open a PR and leave it unmerged for review.",
+      metadata: { "runtime_started" => false },
+      transcript: nil
+    )
+
+    assert_difference -> { @session.logs.count }, 1 do
+      TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url(@session)
+    end
+  end
+
+  # The guard must not cost the query it is there to avoid. A never-ran session
+  # short-circuits on metadata alone for the transcript half, and returns before
+  # the dedup lookup — so answering it touches the database not at all.
+  test "the never-ran guard answers without a query" do
+    @session.update!(goal: "Open a PR and leave it unmerged for review.", metadata: {}, transcript: nil)
+    @session.reload
+
+    queries = []
+    subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+      queries << payload[:sql] unless payload[:name].in?([ "SCHEMA", "TRANSACTION" ])
+    end
+
+    begin
+      TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url(@session)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
+    assert_empty queries, "the never-ran guard must return before any query"
+  end
+
   test "swallows errors raised while warning" do
+    mark_ran
     @session.update!(goal: "Open a PR.")
     @session.stub(:logs, ->(*) { raise ActiveRecord::StatementInvalid, "boom" }) do
       assert_nothing_raised { TranscriptHooks::GithubPrUrlHook.warn_if_pr_goal_captured_no_url(@session) }

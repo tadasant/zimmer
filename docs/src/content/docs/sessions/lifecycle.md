@@ -1575,6 +1575,15 @@ Status-summary forks are carved out inside the hook rather than at the call site
 strips the goal a fork inherits, but only in `prepare_fork` — a fork abandoned before that point
 still carries the source's "open a PR", so the goal check alone would not have covered it.
 
+So are sessions that **never got an agent turn**, and this is the carve-out `archive` and `fail`
+need most: both transition directly from `waiting`. A session created with a PR-flavored goal and
+trashed before it started, or bulk-archived by `HealthMonitorService`'s seven-day sweep, never had a
+turn in which to open a PR — so there is no miss to report, and saying it anyway is noise in exactly
+the place the warning is meant to be a signal ([#356](https://github.com/tadasant/zimmer/issues/356)).
+`Session#before_first_agent_turn?` decides it, and it errs toward speaking: a session carrying
+`runtime_started` in any form, or a transcript in any form, is one where an agent could have opened
+something, and it is still warned about.
+
 #### The archive line names who did it
 
 Every other transition has one obvious cause. `archive` has six unrelated callers — the web UI,
