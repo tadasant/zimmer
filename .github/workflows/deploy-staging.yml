@@ -503,12 +503,19 @@ jobs:
           # above this step for why that is not enough on its own.
           kamal accessory boot all -d staging
           # ...which is why `devdb` -- and ONLY `devdb` -- is rebooted rather than booted.
-          # `reboot` is stop + `docker container prune` + boot, so it is destructive by
+          # `reboot` is registry login + `docker image pull` + stop + `docker container
+          # prune --filter label=service=zimmer-devdb` + boot, so it is destructive by
           # design: on a data-bearing accessory it would be a bug. `devdb` is the one
           # accessory declared with no `volumes:` key at all (config/deploy.staging.yml);
           # it holds nothing but scratch `zimmer_dev_<clone>` databases, so throwing the
           # container away costs nothing and makes a deploy the recovery path for a
           # session that finds no Postgres at zimmer-devdb:5432 (#419).
+          #
+          # Two accepted costs. The pull is unconditional and raises, so a Docker Hub
+          # outage or rate-limit now fails the deploy here rather than being skipped over
+          # -- deliberate, same fail-loudly bargain as the rest of this step. And staging's
+          # scratch Postgres follows the moving `postgres:16` tag, which is what a
+          # throwaway database should do.
           #
           # Widening this line to `db`, `redis` or `all` would destroy staging's own data.
           # `test/config/devdb_accessory_test.rb` fails the build if the name rebooted here
