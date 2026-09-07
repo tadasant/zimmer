@@ -412,7 +412,7 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
   end
 
   # Hooks carry no privilege, so a restricted connection constrains mcp_servers
-  # only and leaves the hook list to the caller.
+  # and plugins and leaves the hook list to the caller.
   test "a restricted connection may narrow the hooks it spawns with" do
     stub_root_with_defaults
     tool = Mcp::Tools::StartSession.new(
@@ -428,6 +428,119 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
 
     assert_includes result, "## Session Started Successfully"
     assert_equal [], Session.order(:id).last.catalog_hooks
+  end
+
+  # --- the plugins bypass of the agent-root MCP lock (#334) ---
+  #
+  # A plugin bundles MCP servers, so naming one at launch reaches the servers
+  # `mcp_servers` is locked out of. These pin the whole guard: the bypass itself,
+  # that it is the servers that make it one, both halves of the omitted-vs-[]
+  # distinction the same call site draws for every artifact list, and that skills
+  # — which bundle nothing — stay narrowable.
+
+  test "a restricted connection cannot name plugins at launch" do
+    stub_root_with_defaults
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    error = assert_raises(Mcp::ToolError) do
+      tool.call("agent_root" => "test-root", "title" => "x", "plugins" => [ "screenshots-videos" ])
+    end
+
+    assert_match(/"plugins" parameter is not allowed/, error.message)
+    assert_match(/Plugins can add MCP servers/, error.message)
+    assert_match(/default plugins: \[screenshots-videos\]/, error.message)
+  end
+
+  # The gate is `key?`, not a shape test, so an explicit null is refused with the
+  # rest — the same reading the mcp_servers gate beside it already takes.
+  test "a restricted connection cannot pass an explicit null plugins either" do
+    stub_root_with_defaults
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    error = assert_raises(Mcp::ToolError) do
+      tool.call("agent_root" => "test-root", "title" => "x", "plugins" => nil)
+    end
+
+    assert_match(/"plugins" parameter is not allowed/, error.message)
+  end
+
+  # The bypass in full: the same connection, the same server, reached the direct
+  # way and then the indirect one. The plugin here is deliberately NOT one of the
+  # root's defaults — figma-design-workflow bundles figma, image-diff, svg-tracer
+  # and playwright-custom, none of which this root grants — so what the second
+  # call asks for is a genuine escalation and not a restatement of the omitted
+  # case. Before this guard it succeeded.
+  test "the plugin route cannot reach a server the mcp_servers route is refused" do
+    stub_root_with_defaults
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    escalation = PluginsConfig.find("figma-design-workflow").mcp_servers
+    assert_includes escalation, "playwright-custom"
+    assert_empty escalation & (@root_with_defaults.default_mcp_servers + @root_with_defaults.default_plugins)
+
+    direct = assert_raises(Mcp::ToolError) do
+      tool.call("agent_root" => "test-root", "title" => "direct",
+                "mcp_servers" => [ "context7", "playwright-custom" ])
+    end
+    assert_match(/must use its exact default MCP servers/, direct.message)
+
+    assert_no_difference "Session.count" do
+      assert_raises(Mcp::ToolError) do
+        tool.call("agent_root" => "test-root", "title" => "indirect", "plugins" => [ "figma-design-workflow" ])
+      end
+    end
+  end
+
+  # `[]` adds no servers, so this rejection is a deliberate choice and not a
+  # consequence: a restricted connection takes its root's catalog exactly as
+  # configured, in either direction, the way mcp_servers already reads — and it
+  # is the answer action_session's change_plugins gives for the same request
+  # after the session exists.
+  test "a restricted connection cannot pass an explicit empty plugins array either" do
+    stub_root_with_defaults
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    error = assert_raises(Mcp::ToolError) do
+      tool.call("agent_root" => "test-root", "title" => "x", "plugins" => [])
+    end
+
+    assert_match(/"plugins" parameter is not allowed/, error.message)
+  end
+
+  # Omitted is the request the guard leaves open, and it is not "no plugins" —
+  # it is the root's defaults, which is the whole point of leaving it open.
+  test "a restricted connection may omit plugins and take the root's defaults" do
+    stub_root_with_defaults
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    result = tool.call("agent_root" => "test-root", "title" => "Restricted, default plugins")
+
+    assert_includes result, "## Session Started Successfully"
+    assert_equal [ "screenshots-videos" ], Session.order(:id).last.catalog_plugins
+  end
+
+  # Skills carry no MCP servers of their own, so they stay narrowable — the same
+  # reasoning that leaves hooks alone above.
+  test "a restricted connection may still narrow the skills it spawns with" do
+    stub_root_with_defaults
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    result = tool.call("agent_root" => "test-root", "title" => "Restricted, no skills", "skills" => [])
+
+    assert_includes result, "## Session Started Successfully"
+    assert_equal [], Session.order(:id).last.catalog_skills
   end
 
   # The restricted path already rejected [] before this fix, and must keep doing
@@ -472,7 +585,7 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     SkillsConfig.stubs(:exists?).returns(true)
     HooksConfig.stubs(:exists?).returns(true)
     PluginsConfig.stubs(:exists?).returns(true)
-    root
+    @root_with_defaults = root
   end
 
   def restricted_tool
