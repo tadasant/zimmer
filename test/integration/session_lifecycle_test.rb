@@ -89,7 +89,7 @@ class SessionLifecycleTest < IntegrationTestCase
   end
 
   test "session with MCP servers configuration" do
-    mcp_servers = [ "playwright-custom", "twist-wolfbot" ]
+    mcp_servers = [ "playwright-custom", "image-diff" ]
 
     post sessions_path, params: {
       session: {

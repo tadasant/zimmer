@@ -126,7 +126,7 @@ class SessionsTest < ApplicationSystemTestCase
     [
       "linear",
       "notion",
-      "tally"
+      "figma"
     ].each do |name|
       input.click
       input.fill_in with: name

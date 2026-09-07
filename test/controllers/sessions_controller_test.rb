@@ -491,7 +491,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
         session: {
           git_root: "https://github.com/test/repo.git",
           prompt: "Test prompt",
-          mcp_servers: [ "playwright-custom", "twist-wolfbot" ]
+          mcp_servers: [ "playwright-custom", "image-diff" ]
         }
       }
     end
@@ -614,7 +614,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "should accept multiple mcp_servers" do
-    servers = [ "playwright-custom", "twist-wolfbot", "context7" ]
+    servers = [ "playwright-custom", "image-diff", "context7" ]
 
     post sessions_url, params: {
       session: {
@@ -1147,7 +1147,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "should permit mcp_servers parameter" do
-    servers = [ "playwright-custom", "twist-wolfbot" ]
+    servers = [ "playwright-custom", "image-diff" ]
 
     post sessions_url, params: {
       session: {
@@ -4892,16 +4892,16 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", mcp_servers: [ "playwright-custom" ])
 
     patch update_mcp_servers_session_url(session),
-          params: { mcp_servers: [ "playwright-custom", "twist-wolfbot" ] },
+          params: { mcp_servers: [ "playwright-custom", "image-diff" ] },
           as: :json
 
     assert_response :success
     session.reload
-    assert_equal [ "playwright-custom", "twist-wolfbot" ], session.mcp_servers
+    assert_equal [ "playwright-custom", "image-diff" ], session.mcp_servers
 
     json_response = JSON.parse(response.body)
     assert_equal true, json_response["success"]
-    assert_equal [ "playwright-custom", "twist-wolfbot" ], json_response["mcp_servers"]
+    assert_equal [ "playwright-custom", "image-diff" ], json_response["mcp_servers"]
   end
 
   # The form emits a blank hidden input when nothing is selected, so an empty
@@ -4935,7 +4935,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_difference "session.logs.count", 1 do
       patch update_mcp_servers_session_url(session),
-            params: { mcp_servers: [ "playwright-custom", "twist-wolfbot" ] },
+            params: { mcp_servers: [ "playwright-custom", "image-diff" ] },
             as: :json
     end
 
@@ -4943,11 +4943,11 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     log = session.logs.last
     assert_equal "info", log.level
     assert_includes log.content, "MCP servers updated"
-    assert_includes log.content, "added: twist-wolfbot"
+    assert_includes log.content, "added: image-diff"
   end
 
   test "should log added and removed mcp_servers" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", mcp_servers: [ "playwright-custom", "twist-wolfbot" ])
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", mcp_servers: [ "playwright-custom", "image-diff" ])
 
     patch update_mcp_servers_session_url(session),
           params: { mcp_servers: [ "context7" ] },
@@ -4957,7 +4957,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     session.reload
     log = session.logs.last
     assert_includes log.content, "added: context7"
-    assert_includes log.content, "removed: playwright-custom, twist-wolfbot"
+    assert_includes log.content, "removed: playwright-custom, image-diff"
   end
 
   test "should not create log when mcp_servers unchanged" do
@@ -5064,7 +5064,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", mcp_servers: [ "playwright-custom" ])
 
     patch update_mcp_servers_session_url(session),
-          params: { mcp_servers: [ "playwright-custom", "twist-wolfbot" ] },
+          params: { mcp_servers: [ "playwright-custom", "image-diff" ] },
           headers: { "Accept" => "text/vnd.turbo-stream.html" }
 
     assert_response :success
@@ -5074,7 +5074,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match /<turbo-stream action="replace" target="session_#{session.id}_mobile_mcp_servers">/, response.body
     # Persisted change must be reflected
     session.reload
-    assert_equal [ "playwright-custom", "twist-wolfbot" ], session.mcp_servers
+    assert_equal [ "playwright-custom", "image-diff" ], session.mcp_servers
   end
 
   test "show page should include servers_for_select data" do
