@@ -188,6 +188,56 @@ class McpOauthRuntimeReconcilerTest < ActiveSupport::TestCase
     assert_equal "db-refresh-token", @credential.refresh_token
   end
 
+  test "does not adopt over a DB row with no expiry" do
+    # A nil expires_at means the provider issued no `expires_in`, so the access
+    # token does not expire — and a non-expiring token is one no runtime ever
+    # refreshes. The runtime's copy therefore cannot legitimately be ahead, and
+    # reading "the runtime recorded an expiry and we did not" as newer would let a
+    # stale on-disk pair overwrite a freshly authorized one.
+    @credential.update!(expires_at: nil)
+    entry = snapshot(
+      access_token: "pre-reauth-access",
+      refresh_token: "pre-reauth-revoked-refresh",
+      expires_at: 2.hours.from_now
+    )
+
+    assert_not reconciler_for(entry).reconcile!(@credential)
+
+    @credential.reload
+    assert_equal "db-refresh-token", @credential.refresh_token
+  end
+
+  test "does not adopt an entry recorded against a different server URL" do
+    # Pi keys its store by the bare server name, and server_name is not unique
+    # across rows — a server whose URL changed leaves the old row behind, and both
+    # rows probe the same keyring account.
+    entry = RuntimeMcpTokenSnapshot.new(
+      access_token: "other-row-access",
+      refresh_token: "other-row-refresh",
+      expires_at: 2.hours.from_now,
+      server_url: "https://mcp.notion.com/some-other-endpoint"
+    )
+
+    assert_not reconciler_for(entry).reconcile!(@credential)
+
+    @credential.reload
+    assert_equal "db-refresh-token", @credential.refresh_token
+  end
+
+  test "adopts an entry whose recorded server URL matches" do
+    entry = RuntimeMcpTokenSnapshot.new(
+      access_token: "runtime-access-token",
+      refresh_token: "runtime-rotated-refresh-token",
+      expires_at: 2.hours.from_now,
+      server_url: @credential.server_url
+    )
+
+    assert reconciler_for(entry).reconcile!(@credential)
+
+    @credential.reload
+    assert_equal "runtime-rotated-refresh-token", @credential.refresh_token
+  end
+
   test "a listable store is read once and reused across credentials" do
     entry = snapshot(
       access_token: "runtime-access-token",

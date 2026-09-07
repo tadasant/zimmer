@@ -336,7 +336,8 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
     account = "sha256-#{Digest::SHA256.hexdigest(credential.server_name)}"
     PiMcpCredentialWriter.any_instance.stubs(:keyring_call).returns({ "ok" => true, "found" => false })
     PiMcpCredentialWriter.any_instance.stubs(:keyring_call)
-      .with("read", account).returns({ "ok" => true, "found" => true, "value" => entry })
+      .with("read", account, timeout: PiMcpCredentialWriter::READ_TIMEOUT_SECONDS)
+      .returns({ "ok" => true, "found" => true, "value" => entry })
 
     McpOauthService.any_instance.expects(:post_form).never
 

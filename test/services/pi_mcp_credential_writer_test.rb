@@ -189,10 +189,13 @@ class PiMcpCredentialWriterTest < ActiveSupport::TestCase
     )
   end
 
+  # Reads carry the tighter adoption budget (see READ_TIMEOUT_SECONDS), so a stub
+  # that omitted the keyword would silently stop matching.
   def stub_keyring_read(account, value)
     @writer.unstub(:keyring_call)
     @writer.stubs(:keyring_call).returns({ "ok" => true, "found" => false })
-    @writer.stubs(:keyring_call).with("read", account).returns({ "ok" => true, "found" => true, "value" => value })
+    @writer.stubs(:keyring_call).with("read", account, timeout: PiMcpCredentialWriter::READ_TIMEOUT_SECONDS)
+      .returns({ "ok" => true, "found" => true, "value" => value })
   end
 
   test "the store is probe-only, so the reconciler must ask by key" do
@@ -233,10 +236,11 @@ class PiMcpCredentialWriterTest < ActiveSupport::TestCase
 
     @writer.unstub(:keyring_call)
     @writer.stubs(:keyring_call).returns({ "ok" => true, "found" => false })
-    @writer.stubs(:keyring_call).with("read", account).returns({ "ok" => true, "found" => true, "value" => manifest })
-    @writer.stubs(:keyring_call).with("read", "#{account}.chunk.#{digest}.0")
+    read_timeout = { timeout: PiMcpCredentialWriter::READ_TIMEOUT_SECONDS }
+    @writer.stubs(:keyring_call).with("read", account, **read_timeout).returns({ "ok" => true, "found" => true, "value" => manifest })
+    @writer.stubs(:keyring_call).with("read", "#{account}.chunk.#{digest}.0", **read_timeout)
       .returns({ "ok" => true, "found" => true, "value" => payload[0, half] })
-    @writer.stubs(:keyring_call).with("read", "#{account}.chunk.#{digest}.1")
+    @writer.stubs(:keyring_call).with("read", "#{account}.chunk.#{digest}.1", **read_timeout)
       .returns({ "ok" => true, "found" => true, "value" => payload[half..] })
 
     assert_equal "pi-rotated-refresh", @writer.read_runtime_credentials([ "notion" ])["notion"].refresh_token
@@ -253,9 +257,52 @@ class PiMcpCredentialWriterTest < ActiveSupport::TestCase
     )
     @writer.unstub(:keyring_call)
     @writer.stubs(:keyring_call).returns({ "ok" => true, "found" => false })
-    @writer.stubs(:keyring_call).with("read", account).returns({ "ok" => true, "found" => true, "value" => manifest })
-    @writer.stubs(:keyring_call).with("read", "#{account}.chunk.#{'a' * 16}.0")
+    read_timeout = { timeout: PiMcpCredentialWriter::READ_TIMEOUT_SECONDS }
+    @writer.stubs(:keyring_call).with("read", account, **read_timeout).returns({ "ok" => true, "found" => true, "value" => manifest })
+    @writer.stubs(:keyring_call).with("read", "#{account}.chunk.#{'a' * 16}.0", **read_timeout)
       .returns({ "ok" => true, "found" => true, "value" => "{\"serverUrl\":" })
+
+    assert_empty @writer.read_runtime_credentials([ "notion" ])
+  end
+
+  test "read_runtime_credentials carries the serverUrl the entry was recorded against" do
+    stub_keyring_read(account_for("notion"), stored_entry)
+
+    assert_equal "https://mcp.notion.com/mcp", @writer.read_runtime_credentials([ "notion" ])["notion"].server_url
+  end
+
+  test "read_runtime_credentials rejects a token that is not a string" do
+    # A numeric or object accessToken is `present?`, so without this it would be
+    # adopted into the DB as if it were a token.
+    stub_keyring_read(account_for("notion"), JSON.generate(
+      "serverUrl" => "https://mcp.notion.com/mcp",
+      "tokens" => { "accessToken" => 12_345, "refreshToken" => "r" }
+    ))
+    assert_empty @writer.read_runtime_credentials([ "notion" ])
+
+    stub_keyring_read(account_for("notion"), JSON.generate(
+      "serverUrl" => "https://mcp.notion.com/mcp",
+      "tokens" => { "accessToken" => "a", "refreshToken" => { "nested" => true } }
+    ))
+    assert_empty @writer.read_runtime_credentials([ "notion" ])
+  end
+
+  test "read_runtime_credentials rejects chunks that do not reassemble to the recorded digest" do
+    # The adapter records sha256(payload)[0,16] over what it split. A reassembly
+    # that parses as JSON but does not match it is corruption, not a token.
+    account = account_for("notion")
+    payload = stored_entry
+    manifest = JSON.generate(
+      PiMcpCredentialWriter::CHUNK_MANIFEST_KEY => 1,
+      "chunkCount" => 1,
+      "chunkDigest" => "0" * 16
+    )
+    @writer.unstub(:keyring_call)
+    @writer.stubs(:keyring_call).returns({ "ok" => true, "found" => false })
+    @writer.stubs(:keyring_call).with("read", account, timeout: PiMcpCredentialWriter::READ_TIMEOUT_SECONDS)
+      .returns({ "ok" => true, "found" => true, "value" => manifest })
+    @writer.stubs(:keyring_call).with("read", "#{account}.chunk.#{'0' * 16}.0", timeout: PiMcpCredentialWriter::READ_TIMEOUT_SECONDS)
+      .returns({ "ok" => true, "found" => true, "value" => payload })
 
     assert_empty @writer.read_runtime_credentials([ "notion" ])
   end

@@ -17,8 +17,21 @@
 # @!attribute refresh_token [String, nil] the refresh token currently on disk
 # @!attribute expires_at [Time, nil] when the on-disk access token expires
 #   (nil = the runtime stored no expiry)
+# @!attribute server_url [String, nil] the server URL the runtime recorded the
+#   entry against, when it records one. Pi does (its AuthEntry carries
+#   `serverUrl`, and the adapter's own `getAuthForUrl` refuses an entry whose URL
+#   has moved); the file-store runtimes do not, because the URL is already inside
+#   the hash their key is made of. McpOauthRuntimeReconciler mirrors the
+#   adapter's check when it is present, which is what keeps a store keyed by bare
+#   server NAME from handing one server's token to a different credential row for
+#   the same name. nil means "the store does not say", never "any URL".
 RuntimeMcpTokenSnapshot = Data.define(
   :access_token,
   :refresh_token,
-  :expires_at
-)
+  :expires_at,
+  :server_url
+) do
+  def initialize(access_token:, refresh_token:, expires_at:, server_url: nil)
+    super
+  end
+end
