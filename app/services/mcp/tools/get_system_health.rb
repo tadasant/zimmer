@@ -12,13 +12,17 @@ module Mcp
       description <<~DESC
         Get the system health report for the Zimmer.
 
-        Returns system health information including session counts, job queue status, and system metrics.
-        Optionally include CLI tool installation status.
+        Returns system health information including session counts, job queue status, system metrics,
+        and which store `${VAR}` secrets resolve from. Optionally include CLI tool installation status.
 
         **Use cases:**
         - Monitor system health and performance
         - Check for stuck sessions or failed jobs
         - Verify CLI tools are properly installed
+        - Check whether the Parameter Store namespace migration has finished before dropping the
+          pre-rename read path. The "Secret Store" section names the canonical namespace, any
+          pre-rename namespaces still being read, and the variable NAMES still answering from them.
+          Names only — no secret value is ever returned.
       DESC
 
       input_schema({
@@ -48,7 +52,8 @@ module Mcp
           "### Health Details",
           "```json",
           JSON.pretty_generate(report.as_json),
-          "```"
+          "```",
+          *secret_store_lines
         ]
 
         lines.concat(cli_status_lines) if args["include_cli_status"]
@@ -173,6 +178,92 @@ module Mcp
           "Auto-exit at #{status.expires_at&.iso8601}." +
             (status.reason.present? ? " Reason: #{status.reason}" : "")
         ]
+      end
+
+      # Where secrets resolve from, and — the reason this is here — whether the
+      # Parameter Store namespace rename has actually finished.
+      #
+      # The rename from `/zimmer/{env}/mcp/static/` to
+      # `/zimmer/{env}/secrets/static/` cannot happen in place, so the resolver
+      # reads BOTH namespaces across the move and the pre-rename read path is
+      # dropped in a later PR. Nothing raises either way: the resolution chain's
+      # contract is that a miss is not an error, so dropping that read path while
+      # data still sits at the old path turns every affected `${VAR}` into
+      # "Missing configuration" in silence. The precondition for that PR is
+      # therefore "nothing remains in the pre-rename namespace", and until this
+      # section existed the only surface that answered it was the Connectors page
+      # store banner — a web page, which an agent session assigned the follow-up
+      # cannot read. It had two options and both were bad: park in `needs_input`
+      # asking a human to read a banner back to it, or proceed blind.
+      #
+      # NAMES, NEVER VALUES. This response is read by other agent sessions, so a
+      # value folded in here would be secret material handed to every caller.
+      # `legacy_variables` is name-only for exactly that reason; nothing below
+      # calls `get`, `has?` or anything else that can return a value.
+      #
+      # Free, like the in-flight lines: the provider's snapshot already covers
+      # every namespace it reads, so this costs no extra call to Google.
+      #
+      # Always present, in both directions — an explicit "none" rather than an
+      # absent section, so a caller asking "is the migration done?" can tell "yes"
+      # from "this report doesn't say". A store that cannot be read says so rather
+      # than reading as finished.
+      def secret_store_lines
+        store = SecretProviders.chain.providers.find { |p| p.is_a?(SecretProviders::ParameterStoreProvider) }
+        return [ "", "### Secret Store", "", *no_store_lines ] if store.nil?
+
+        [
+          "",
+          "### Secret Store",
+          "",
+          "- **Store:** #{SecretsLocation.parameter_store_name} — project " \
+            "`#{store.project_id}` (#{store.location})",
+          "- **Canonical namespace:** `#{store.namespace}`",
+          *namespace_migration_lines(store)
+        ]
+      rescue StandardError => e
+        Rails.logger.warn("[GetSystemHealth] Could not read the secret store: #{e.message}")
+        [ "", "### Secret Store", "", "- **Secret store:** unavailable (#{e.class})" ]
+      end
+
+      def no_store_lines
+        reason = SecretProviders.parameter_store_configuration.reason
+
+        [
+          "- **Store:** #{SecretsLocation.credentials_store_name} — the Google Parameter Store is not " \
+            "configured (#{reason}), so there is no namespace migration to report."
+        ]
+      end
+
+      # @param store [SecretProviders::ParameterStoreProvider]
+      def namespace_migration_lines(store)
+        if store.legacy_namespaces.empty?
+          return [ "- **Pre-rename namespaces still read:** none — the namespace migration is complete." ]
+        end
+
+        [
+          "- **Pre-rename namespaces still read:** #{store.legacy_namespaces.map { |ns| "`#{ns}`" }.join(", ")}",
+          *legacy_variable_lines(store)
+        ]
+      end
+
+      # A store failure degrades this one line rather than the section: the lines
+      # above it are configuration, true whether or not Google answered, and
+      # reporting an unreadable namespace as an empty one is the one wrong answer
+      # here — it would tell the follow-up PR to go ahead.
+      def legacy_variable_lines(store)
+        remaining = store.legacy_variables
+
+        if remaining.empty?
+          [ "- **Names still answering from a pre-rename namespace:** none — that read path can be dropped." ]
+        else
+          [ "- **Names still answering from a pre-rename namespace (#{remaining.size}):** " \
+            "#{remaining.join(", ")} (names only; run `bin/rails parameter_store:migrate_namespace` " \
+            "with the writer credential to plan the move)" ]
+        end
+      rescue ParameterStore::StoreError, ParameterStore::AuthError => e
+        [ "- **Names still answering from a pre-rename namespace:** unknown — the store could not be " \
+          "read (#{e.class})." ]
       end
 
       # CLI status is a secondary section: a failure reading it degrades this
