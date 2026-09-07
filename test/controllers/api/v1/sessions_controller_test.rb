@@ -2475,44 +2475,54 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
   # created session, never a rejection.
 
   test "creating a session with a server Zimmer cannot start returns the session and a warning" do
-    stub_unavailable_servers("playwright-custom" => "PLAYWRIGHT_API_KEY unresolved")
-
-    assert_difference("Session.count") do
-      post api_v1_sessions_path, params: {
-        prompt: "Test",
-        git_root: "https://github.com/test/repo.git",
-        mcp_servers: [ "playwright-custom" ]
-      }, headers: @headers
+    with_mixed_mcp_catalog_only do
+      assert_difference("Session.count") do
+        post api_v1_sessions_path, params: {
+          prompt: "Test",
+          git_root: "https://github.com/test/repo.git",
+          mcp_servers: [ "strad-secrets-staging-rw" ]
+        }, headers: @headers
+      end
     end
 
     assert_response :created
     json = JSON.parse(response.body)
     assert json["session"]["id"].present?
     assert_equal 1, json["warnings"].size
-    assert_match(/Zimmer cannot start MCP server playwright-custom \(PLAYWRIGHT_API_KEY unresolved\)/,
+    assert_match(/Zimmer cannot start MCP server strad-secrets-staging-rw \(STRAD_STAGING_API_KEY unresolved\)/,
       json["warnings"].first)
   end
 
   test "a create whose servers all start carries no warnings key at all" do
-    stub_unavailable_servers({})
-
-    post api_v1_sessions_path, params: {
-      prompt: "Test",
-      git_root: "https://github.com/test/repo.git",
-      mcp_servers: [ "playwright-custom" ]
-    }, headers: @headers
+    with_mixed_mcp_catalog_only do
+      post api_v1_sessions_path, params: {
+        prompt: "Test",
+        git_root: "https://github.com/test/repo.git",
+        mcp_servers: [ "context7" ]
+      }, headers: @headers
+    end
 
     assert_response :created
     assert_not JSON.parse(response.body).key?("warnings")
   end
 
-  # Flags the given catalog servers unavailable, leaving everything else startable.
-  def stub_unavailable_servers(reasons)
-    options = ServersConfig.all.map do |server|
-      reason = reasons[server.name]
-      { name: server.name, title: server.title, description: server.description,
-        unavailable: reason.present?, unavailable_reason: reason }
+  # The docs say warnings ride on the 201. A replay is a 200 handing back a
+  # session the caller already made, and nothing about it changed here.
+  test "an idempotent replay carries no warnings" do
+    with_mixed_mcp_catalog_only do
+      2.times do
+        post api_v1_sessions_path, params: {
+          prompt: "Test",
+          git_root: "https://github.com/test/repo.git",
+          mcp_servers: [ "strad-secrets-staging-rw" ],
+          idempotency_key: "readiness-replay-key"
+        }, headers: @headers
+      end
     end
-    McpServerOptions.stubs(:all).returns(options)
+
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert json["idempotent_replay"]
+    assert_not json.key?("warnings")
   end
 end

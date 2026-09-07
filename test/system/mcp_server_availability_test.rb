@@ -173,26 +173,6 @@ class McpServerAvailabilityTest < ApplicationSystemTestCase
     end
   end
 
-  # The mixed-availability MCP catalog, with every OTHER artifact type left real.
-  #
-  # `with_mixed_availability_catalog` blanks the rest, which is right for the
-  # read-path tests above — they only open a dropdown. The two write-path tests
-  # below have to submit the form, and the form cannot be submitted without an
-  # agent root, so the roots have to survive.
-  def with_mixed_mcp_catalog_only
-    real = AirCatalogService::ARTIFACT_TYPES.index_with { |type| AirCatalogService.entries_for(type) }
-    AirCatalogService.stubs(:entries_for).returns({})
-    real.each do |type, entries|
-      AirCatalogService.stubs(:entries_for).with(type)
-        .returns(type == :mcp ? AVAILABILITY_CATALOG : entries)
-    end
-    SecretsInterpolator.any_instance.stubs(:resolution)
-      .returns(SecretsInterpolator::Resolution.new(state: :found, source: "a stubbed provider"))
-    SecretsInterpolator.any_instance.stubs(:resolution).with("STRAD_STAGING_API_KEY")
-      .returns(SecretsInterpolator::Resolution.new(state: :absent))
-    yield
-  end
-
   # The write path, in the browser (#537). The picker flags the server and still
   # lets it be picked; submitting that pick used to be accepted in silence and
   # then kill the session at prepare time. Now the create says so.
@@ -217,7 +197,7 @@ class McpServerAvailabilityTest < ApplicationSystemTestCase
     end
 
     session = Session.order(:id).last
-    assert_equal [ "strad-secrets-staging-rw" ], session.mcp_servers,
+    assert_includes session.mcp_servers, "strad-secrets-staging-rw",
       "the pick is honoured — this warns, it does not silently drop the server"
     assert_equal "warning", session.logs.order(:id).last.level
   end

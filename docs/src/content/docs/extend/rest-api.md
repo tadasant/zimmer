@@ -413,7 +413,10 @@ The `AgentSessionJob` is enqueued only if `prompt` is present.
 A `201` can carry a `warnings` array beside `session`. Today it holds exactly one kind of entry: one
 or more of the session's MCP servers cannot start right now — a required `${VAR}` does not resolve,
 an OAuth flow was never completed, or the catalog declares the entry dead. The session is created and
-the job is queued regardless; the warning names the servers and points at `/connectors`.
+the job is queued regardless; the warning names the servers, says what it costs this session (the
+three cases differ — an unresolved variable fails preparation outright, a missing OAuth credential
+parks the session for authorization, a catalog-declared entry only loses its tools) and points at
+`/connectors`.
 
 ```json
 {
@@ -424,9 +427,10 @@ the job is queued regardless; the warning names the servers and points at `/conn
 }
 ```
 
-The key is **absent** when there is nothing to say, so a client can test for its presence. The same
-sentence is written to the session's log at `warning` level, and `GET /api/v1/mcp_servers` carries
-the per-server `unavailable` / `unavailable_reason` this is derived from. Why this warns rather than
+The key is **absent** when there is nothing to say, and it rides only on the `201` — an
+`idempotent_replay` hands back a session an earlier call made, and nothing about it changed here. The
+same sentence is written to the session's log at `warning` level, and `GET /api/v1/mcp_servers`
+carries the per-server `unavailable` / `unavailable_reason` this is derived from. Why this warns rather than
 rejecting — including what it means for a connection restricted by `allowed_agent_roots` — is in
 [Creating a session with a server that cannot start](/air/mcp-servers/#creating-a-session-with-a-server-that-cannot-start-it-warns-it-does-not-refuse).
 

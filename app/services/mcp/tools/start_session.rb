@@ -425,7 +425,7 @@ On a connection restricted to specific agent roots this parameter is rejected ou
 
         if warning.present?
           lines << ""
-          lines << "**\u26a0\ufe0f #{warning}**"
+          lines << "**⚠️ #{warning}**"
         end
 
         lines.join("\n")

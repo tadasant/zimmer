@@ -534,71 +534,90 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   # The picker flags a server it cannot start but does not refuse the pick, and
   # the form can be submitted from a page rendered before a connector broke. The
   # create says so rather than letting the session die at prepare time with no
-  # explanation — a flash alert, not a rejection.
+  # explanation — a flash alert, not a rejection. These drive the real
+  # ConnectorStatusProbe against the shared mixed-availability catalog.
 
   test "creating a session with a server Zimmer cannot start warns and still creates it" do
-    stub_unavailable_servers("playwright-custom" => "PLAYWRIGHT_API_KEY unresolved")
-
-    assert_difference("Session.count") do
-      post sessions_url, params: {
-        session: {
-          git_root: "https://github.com/test/repo.git",
-          prompt: "Test prompt",
-          mcp_servers: [ "playwright-custom" ]
+    with_mixed_mcp_catalog_only do
+      assert_difference("Session.count") do
+        post sessions_url, params: {
+          session: {
+            git_root: "https://github.com/test/repo.git",
+            prompt: "Test prompt",
+            mcp_servers: [ "strad-secrets-staging-rw" ]
+          }
         }
-      }
+      end
     end
 
     assert_redirected_to session_path(Session.last)
-    assert_match(/Zimmer cannot start MCP server playwright-custom \(PLAYWRIGHT_API_KEY unresolved\)/, flash[:alert])
+    assert_match(/Zimmer cannot start MCP server strad-secrets-staging-rw \(STRAD_STAGING_API_KEY unresolved\)/,
+      flash[:alert])
+    assert_match(%r{/connectors}, flash[:alert])
     assert_equal "Session created successfully. Starting agent...", flash[:notice],
       "the session was created, and the notice still says so"
   end
 
   test "the create warning is recorded on the session's own log too" do
-    stub_unavailable_servers("playwright-custom" => "PLAYWRIGHT_API_KEY unresolved")
-
-    post sessions_url, params: {
-      session: {
-        git_root: "https://github.com/test/repo.git",
-        prompt: "Test prompt",
-        mcp_servers: [ "playwright-custom" ]
-      }
-    }
-
-    log = Session.last.logs.order(:id).last
-    assert_equal "warning", log.level
-    assert_match(/playwright-custom \(PLAYWRIGHT_API_KEY unresolved\)/, log.content)
-  end
-
-  test "creating a session whose servers all start raises no alert" do
-    stub_unavailable_servers({})
-
-    post sessions_url, params: {
-      session: {
-        git_root: "https://github.com/test/repo.git",
-        prompt: "Test prompt",
-        mcp_servers: [ "playwright-custom" ]
-      }
-    }
-
-    assert_nil flash[:alert]
-  end
-
-  # Advice must not be able to block a create. McpServerOptions already degrades a
-  # broken probe to a flagless list, so this asserts the whole chain: probe down,
-  # no warning, session created.
-  test "a readiness check that blows up does not stop the create" do
-    ConnectorStatusProbe.stubs(:all).raises(StandardError, "probe exploded")
-
-    assert_difference("Session.count") do
+    with_mixed_mcp_catalog_only do
       post sessions_url, params: {
         session: {
           git_root: "https://github.com/test/repo.git",
           prompt: "Test prompt",
-          mcp_servers: [ "playwright-custom" ]
+          mcp_servers: [ "strad-secrets-staging-rw" ]
         }
       }
+    end
+
+    log = Session.last.logs.order(:id).last
+    assert_equal "warning", log.level
+    assert_match(/strad-secrets-staging-rw \(STRAD_STAGING_API_KEY unresolved\)/, log.content)
+  end
+
+  # A clone-only create (no prompt) redirects on its own branch, and it attaches
+  # the same servers, so it gets the same warning.
+  test "a clone-only session with an unstartable server is warned about too" do
+    with_mixed_mcp_catalog_only do
+      post sessions_url, params: {
+        session: {
+          git_root: "https://github.com/test/repo.git",
+          mcp_servers: [ "strad-secrets-staging-rw" ]
+        }
+      }
+    end
+
+    assert_match(/Zimmer cannot start MCP server strad-secrets-staging-rw/, flash[:alert])
+    assert_match(/Clone-only session created successfully/, flash[:notice])
+  end
+
+  test "creating a session whose servers all start raises no alert" do
+    with_mixed_mcp_catalog_only do
+      post sessions_url, params: {
+        session: {
+          git_root: "https://github.com/test/repo.git",
+          prompt: "Test prompt",
+          mcp_servers: [ "context7" ]
+        }
+      }
+    end
+
+    assert_nil flash[:alert]
+  end
+
+  # Advice must not be able to block a create.
+  test "a readiness check that blows up does not stop the create" do
+    with_mixed_mcp_catalog_only do
+      ConnectorStatusProbe.any_instance.stubs(:call).raises(StandardError, "probe exploded")
+
+      assert_difference("Session.count") do
+        post sessions_url, params: {
+          session: {
+            git_root: "https://github.com/test/repo.git",
+            prompt: "Test prompt",
+            mcp_servers: [ "strad-secrets-staging-rw" ]
+          }
+        }
+      end
     end
 
     assert_redirected_to session_path(Session.last)
@@ -7019,15 +7038,5 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       )
     )
     AgentSessionJob.stubs(:enqueue_new_session)
-  end
-
-  # Flags the given catalog servers unavailable, leaving everything else startable.
-  def stub_unavailable_servers(reasons)
-    options = ServersConfig.all.map do |server|
-      reason = reasons[server.name]
-      { name: server.name, title: server.title, description: server.description,
-        unavailable: reason.present?, unavailable_reason: reason }
-    end
-    McpServerOptions.stubs(:all).returns(options)
   end
 end
