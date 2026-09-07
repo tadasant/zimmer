@@ -186,6 +186,24 @@ module ApiSessionSerialization
     end
   end
 
+  # The input channels this hierarchy came in through that capture cannot write
+  # for. Empty is the normal answer, and an empty `human_messages` alongside an
+  # empty array here is an affirmative "no human spoke" — the same distinction
+  # `get_session` renders in prose. A consumer that reads `human_messages` and
+  # ignores this cannot tell that apart from a channel nothing was listening on.
+  def human_message_capture_gaps_json(record)
+    record.capture_gaps.map do |gap|
+      {
+        channel: gap.channel,
+        channel_label: gap.channel_label,
+        genesis: gap.genesis,
+        session_ids: gap.session_ids,
+        reason: gap.reason,
+        remedy: gap.remedy
+      }
+    end
+  end
+
   # Compact representation of the session's category (nil when Uncategorized).
   def category_summary(category)
     return nil unless category

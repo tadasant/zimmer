@@ -883,7 +883,7 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
   test "an empty record still says it is empty and claims no summary" do
     output = @tool.call("id" => sessions(:running).id)
 
-    assert_includes output, "_No message anywhere in this hierarchy was authored by a named human._"
+    assert_includes output, "_No message anywhere in this hierarchy was authored by a named human. Every input channel this hierarchy came in through was instrumented, so this is an affirmative absence"
     assert_not_includes output, "summary of the record"
   end
 

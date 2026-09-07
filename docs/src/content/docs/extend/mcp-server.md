@@ -253,7 +253,10 @@ this?" must be able to tell "no human turns" from "I forgot the flag." Entries a
 human spoke to this session) or `elsewhere` (a human spoke to another session in the hierarchy). On
 this tool the message record is rendered as a **summary** — see
 [Payload budgets](#payload-budgets-what-a-tool-result-may-cost) — while `get_session_provenance`
-returns it whole. See [Hierarchy and human messages](/sessions/hierarchy-and-human-messages/).
+returns it whole. An empty record is only an affirmative "no human spoke" when capture was configured
+for the channel the work arrived over; when it was not, the section says so in its own
+`**Capture is NOT configured for …**` bullet and reads "the check could not be established" instead.
+See [Hierarchy and human messages](/sessions/hierarchy-and-human-messages/).
 
 `get_session` also always includes a `### Queued Messages` section: how many messages are `pending`
 for that session, and a one-line, hard-truncated preview of the first few by position. It is there

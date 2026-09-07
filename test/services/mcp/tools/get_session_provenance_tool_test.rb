@@ -110,8 +110,96 @@ class Mcp::Tools::GetSessionProvenanceToolTest < ActiveSupport::TestCase
   test "a session with no human-authored record says so explicitly" do
     output = @tool.call("session_id" => create_session.id)
 
-    assert_includes output, "_No message anywhere in this hierarchy was authored by a named human._"
+    assert_includes output, "_No message anywhere in this hierarchy was authored by a named human. Every input channel this hierarchy came in through was instrumented, so this is an affirmative absence"
     assert_includes output, "_This session was not spawned by another session, has spawned none, and no other session has queued or interrupted it._"
+  end
+
+  # #658: a Slack-origin hierarchy rendered byte-identically to one where a human
+  # demonstrably never spoke, because `slack_user_ids` ships empty and nothing
+  # said so. The two readings must never be confusable.
+  test "an uninstrumented channel is not rendered as an affirmative absence" do
+    User.update_all(slack_user_ids: [])
+    session = create_session
+    session.update_column(:genesis, SessionGenesis::SLACK)
+
+    output = @tool.call("session_id" => session.id)
+
+    assert_includes output, "- **Capture is NOT configured for Slack, which 1 session in this hierarchy came in through**"
+    assert_includes output, "Read this as **the check could not be established**, NOT as \"no human spoke\""
+    # The affirmative sentence is the string agent policy keys on. It must be
+    # absent here, or the gap reads as the answer it is not.
+    refute_includes output, "No message anywhere in this hierarchy was authored by a named human"
+  end
+
+  test "mapping the human's Slack user ID restores the affirmative absence" do
+    users(:tadasant).update!(slack_user_ids: [ "U123HUMAN" ])
+    session = create_session
+    session.update_column(:genesis, SessionGenesis::SLACK)
+
+    output = @tool.call("session_id" => session.id)
+
+    refute_includes output, "Capture is NOT configured"
+    assert_includes output, "_No message anywhere in this hierarchy was authored by a named human."
+  end
+
+  # A record can hold web-UI entries while being blind to the Slack half of the
+  # same hierarchy — the counts are then a floor, and saying so only on the empty
+  # branch would leave that reader with a total they cannot trust.
+  test "the gap is stated even when the record is not empty" do
+    User.update_all(slack_user_ids: [])
+    router = create_session(title: "Route it")
+    router.update_column(:genesis, SessionGenesis::SLACK)
+    worker = create_session(parent: router, title: "Do it")
+    add_message(worker, content: "typed in the browser", at: Time.utc(2026, 8, 2, 5, 6, 7))
+
+    output = @tool.call("session_id" => worker.id)
+
+    assert_includes output, "- **Authored in this session:** 1"
+    assert_includes output, "Capture is NOT configured for Slack"
+    assert_includes output, "the counts above are a FLOOR for that channel"
+    assert_includes output, "typed in the browser"
+  end
+
+  # Both channels can be unanswerable at once — a hierarchy that arrived over the
+  # web UI and over Slack, on a deployment whose roster names nobody. The prose
+  # switches to plural there, and a rendering that said "one of the channels" over
+  # two bullets would be describing a record it is not looking at.
+  test "two uninstrumented channels are both named, in plural prose" do
+    User.destroy_all
+    router = create_session(title: "Route it")
+    router.update_column(:genesis, SessionGenesis::SLACK)
+    worker = create_session(parent: router, title: "Do it")
+    worker.update_column(:genesis, SessionGenesis::WEB_UI)
+
+    output = @tool.call("session_id" => worker.id)
+
+    assert_includes output, "Capture is NOT configured for Slack"
+    assert_includes output, "Capture is NOT configured for the Zimmer web UI"
+    assert_includes output, "capture is not configured for Slack and the Zimmer web UI — channels this hierarchy's work arrived over"
+    assert_includes output, "See the bullets above for what to fix."
+    refute_includes output, "one of the channels"
+    refute_includes output, "No message anywhere in this hierarchy was authored by a named human"
+  end
+
+  # The bullet names the sessions the gap covers, and a hierarchy runs to
+  # SessionHierarchy::MAX_NODES — so past a handful the ids give way to a count.
+  # The session COUNT in the sentence stays exact either way.
+  test "a gap covering more sessions than it lists counts the rest" do
+    User.update_all(slack_user_ids: [])
+    listed = Mcp::ProvenanceSections::GAP_SESSION_IDS_LISTED
+    sessions = []
+    (listed + 2).times do |i|
+      session = create_session(parent: sessions.last, title: "Slack #{i}")
+      session.update_column(:genesis, SessionGenesis::SLACK)
+      sessions << session
+    end
+
+    output = @tool.call("session_id" => sessions.last.id)
+
+    assert_includes output, "which #{listed + 2} sessions in this hierarchy came in through"
+    assert_includes output, "and 2 more)."
+    # Exactly the first `listed` ids, and none of the two it counted instead.
+    sessions.first(listed).each { |session| assert_includes output, "##{session.id}" }
   end
 
   test "it accepts a slug as well as a numeric id" do
@@ -190,6 +278,14 @@ class Mcp::Tools::GetSessionProvenanceToolTest < ActiveSupport::TestCase
     assert_match(/router-written spawn prompt/, description)
     assert_match(/heartbeat nudge/, description)
     assert_match(/never evidence of human authorization/, description)
+
+    # And that absence is only an ANSWER when capture could have fired — the
+    # caveat #658 added. Without it a reader takes an uninstrumented channel for
+    # an affirmative "no human spoke", which is the confusion this record exists
+    # to remove.
+    assert_match(/only an answer when capture could have fired/i, description)
+    assert_match(/no roster mapping behind it/, description)
+    assert_match(/the check could not be established/, description)
   end
 
   test "get_session's description carries the same caveats for the same record" do

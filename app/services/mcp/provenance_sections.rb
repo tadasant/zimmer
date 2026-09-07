@@ -57,6 +57,10 @@ module Mcp
     SUMMARY_ENTRIES_PER_ORIGIN = 5
     SUMMARY_CONTENT_LIMIT = 300
 
+    # How many session ids a capture-gap bullet names before it counts the rest.
+    # The gap's own session COUNT is always exact; only the id list is capped.
+    GAP_SESSION_IDS_LISTED = 5
+
     module_function
 
     # The lineage graph this session belongs to.
@@ -142,10 +146,11 @@ module Mcp
       # Same over-claim guard the web panel carries: a count that names the
       # whole hierarchy when the walk was cut is a floor, not a total.
       lines << "- **Note:** the hierarchy walk was truncated, so not every session in the tree was searched — the elsewhere count is a floor." if record.hierarchy.truncated?
+      lines.concat(capture_gap_lines(record))
 
       if entries.empty?
         lines << ""
-        lines << "_No message anywhere in this hierarchy was authored by a named human._"
+        lines << empty_record_sentence(record)
         return lines
       end
 
@@ -210,6 +215,67 @@ module Mcp
       lines.concat(omission_footer(omitted, unretrievable))
 
       lines.concat(people_lines(record, shown))
+    end
+
+    # The channels this hierarchy came in through that capture cannot write for.
+    #
+    # Rendered above the entries and on BOTH the empty and non-empty branch: a
+    # record can hold web-UI entries while being blind to the Slack half of the
+    # same hierarchy, and a reader who stops at the counts has to have been told.
+    # Every count in this section is a floor for a channel named here.
+    def capture_gap_lines(record)
+      record.capture_gaps.map do |gap|
+        # `reason` carries the configured admin KEY, which is deployment config
+        # rather than a constant. Nothing else in this bullet is caller-supplied,
+        # but the section's rule is that every interpolated value is neutralized
+        # before it can open a bullet — a forged `here` entry is the one failure
+        # this record exists to make impossible, and an extra call costs nothing.
+        reason = Sanitize.sanitize_for_markdown_line(gap.reason)
+        remedy = Sanitize.sanitize_for_markdown_line(gap.remedy)
+        "- **Capture is NOT configured for #{gap.channel_label}, which #{gap.session_count} " \
+        "#{'session'.pluralize(gap.session_count)} in this hierarchy came in through** " \
+        "(genesis `#{gap.genesis}`: #{gap_session_ids(gap)}). " \
+        "#{reason} So the counts above are a FLOOR for that channel: a human may have spoken there and " \
+        "Zimmer could not see it. Absence of a #{gap.channel_label} entry is not evidence that nobody " \
+        "spoke — it is the check failing to run. #{remedy}"
+      end
+    end
+
+    # The sessions the gap covers, capped. A hierarchy runs to MAX_NODES, and a
+    # bullet in a budgeted section must not become a 150-id list; the count in
+    # the sentence above is the exact figure either way.
+    def gap_session_ids(gap)
+      listed = gap.session_ids.first(GAP_SESSION_IDS_LISTED).map { |id| "##{id}" }.join(", ")
+      return listed if gap.session_count <= GAP_SESSION_IDS_LISTED
+
+      "#{listed} and #{gap.session_count - GAP_SESSION_IDS_LISTED} more"
+    end
+
+    # The empty record, which is the reading this whole section exists for — and
+    # which means two opposite things depending on whether capture could have
+    # fired at all.
+    #
+    # The affirmative branch keeps its original sentence verbatim, and the gap
+    # branch deliberately does NOT contain it. Agent policy artifacts key on
+    # those exact words to tell "no message anywhere was authored by a named
+    # human" (an answer) from "the mechanism is absent" (no answer), and the one
+    # thing that must never happen is the second case matching the first.
+    def empty_record_sentence(record)
+      if record.capture_complete?
+        return "_No message anywhere in this hierarchy was authored by a named human. Every input channel this " \
+               "hierarchy came in through was instrumented, so this is an affirmative absence — Zimmer looked, and " \
+               "nothing a named human said reached this hierarchy._"
+      end
+
+      gaps = record.capture_gaps
+      channels = gaps.map(&:channel_label).to_sentence
+      # Singular and plural both occur: a hierarchy that arrived over the web UI
+      # AND Slack can have both channels unanswerable at once.
+      which = gaps.one? ? "one of the channels" : "channels"
+      "_Zimmer captured no human message anywhere in this hierarchy, AND capture is not configured for #{channels} " \
+      "— #{which} this hierarchy's work arrived over. Read this as **the check could not be " \
+      "established**, NOT as \"no human spoke\": a human speaking on #{channels} would have left exactly the " \
+      "record you are reading. See the #{'bullet'.pluralize(gaps.size)} above for what to fix._"
     end
 
     # Which entries a rendering lists, in the record's own chronological order.
