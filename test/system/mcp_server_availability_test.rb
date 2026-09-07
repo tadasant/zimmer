@@ -15,7 +15,8 @@ require "mocha/minitest"
 # them — "OAuth authorization not completed" is one click away at /connectors —
 # so an entry that is present and says why is worth more to them than a silent
 # absence, which reads as a broken catalog. Flagged, sorted last, still
-# selectable: refusing the pick is the write path and belongs to #537.
+# selectable — the write path does not refuse the pick either, it warns on the
+# way out (#537, and the last test in this file).
 class McpServerAvailabilityTest < ApplicationSystemTestCase
   include MobileOverflowAssertions
 
@@ -170,5 +171,34 @@ class McpServerAvailabilityTest < ApplicationSystemTestCase
       refute_includes find(".server-item", text: "Strad Secrets Staging").text, "Unavailable"
       assert_selector ".server-item", text: "Unavailable", count: 1, exact_text: false
     end
+  end
+
+  # The write path, in the browser (#537). The picker flags the server and still
+  # lets it be picked; submitting that pick used to be accepted in silence and
+  # then kill the session at prepare time. Now the create says so.
+  #
+  # The flash is asserted first and alone, because a bare flash dismisses itself
+  # after five seconds (ApplicationHelper#flash_duration_ms) — an assertion queued
+  # behind another one is racing that timer. Everything durable is asserted after,
+  # off the record rather than off the toast; the flash's exact wording is pinned
+  # without any timing at all in SessionsControllerTest.
+  test "submitting a pick the picker flagged is accepted, and warned about" do
+    with_mixed_mcp_catalog_only do
+      visit new_session_path
+      fill_in "session[prompt]", with: "Work on the thing"
+
+      find("[data-mcp-server-select-target='input']").click
+      find(".server-item[data-name='strad-secrets-staging-rw']").click
+      find("label", text: "Initial Prompt").click
+
+      js_click(find_button("Create Session", match: :first))
+
+      assert_selector "#flash", text: "Zimmer cannot start MCP server strad-secrets-staging-rw"
+    end
+
+    session = Session.order(:id).last
+    assert_includes session.mcp_servers, "strad-secrets-staging-rw",
+      "the pick is honoured — this warns, it does not silently drop the server"
+    assert_equal "warning", session.logs.order(:id).last.level
   end
 end

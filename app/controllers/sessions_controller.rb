@@ -478,7 +478,13 @@ class SessionsController < ApplicationController
       notice_message = is_clone_only ?
         "Clone-only session created successfully. Ready for your first prompt." :
         "Session created successfully. Starting agent..."
-      redirect_to @session, notice: notice_message
+      # The picker flags an unavailable server but does not refuse the pick, and
+      # the form can be submitted from a page that was rendered before a
+      # connector broke. Say so here rather than letting the session fail at
+      # prepare time with no explanation. A warning, not a rejection — see
+      # McpServerReadiness for why readiness never gates a spawn. nil when every
+      # server can start, and redirect_to ignores a nil flash value.
+      redirect_to @session, notice: notice_message, alert: McpServerReadiness.warn_for_session(@session)
     elsif success != false
       # success is nil or some other truthy value - should not happen
       raise "Unexpected return value from with_db_retry: #{success.inspect}"

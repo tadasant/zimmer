@@ -2467,4 +2467,62 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
       "a healthy session's injected_mcp_servers omits selected servers — a narrow " \
       "value here is not evidence that a server was lost"
   end
+
+  # --- MCP-server readiness at create (#537) ---
+  #
+  # This endpoint is what Mcp::Tools::StartSession mirrors, so it says the same
+  # thing the tool does about a server Zimmer cannot start: a warning beside the
+  # created session, never a rejection.
+
+  test "creating a session with a server Zimmer cannot start returns the session and a warning" do
+    with_mixed_mcp_catalog_only do
+      assert_difference("Session.count") do
+        post api_v1_sessions_path, params: {
+          prompt: "Test",
+          git_root: "https://github.com/test/repo.git",
+          mcp_servers: [ "strad-secrets-staging-rw" ]
+        }, headers: @headers
+      end
+    end
+
+    assert_response :created
+    json = JSON.parse(response.body)
+    assert json["session"]["id"].present?
+    assert_equal 1, json["warnings"].size
+    assert_match(/Zimmer cannot start MCP server strad-secrets-staging-rw \(STRAD_STAGING_API_KEY unresolved\)/,
+      json["warnings"].first)
+  end
+
+  test "a create whose servers all start carries no warnings key at all" do
+    with_mixed_mcp_catalog_only do
+      post api_v1_sessions_path, params: {
+        prompt: "Test",
+        git_root: "https://github.com/test/repo.git",
+        mcp_servers: [ "context7" ]
+      }, headers: @headers
+    end
+
+    assert_response :created
+    assert_not JSON.parse(response.body).key?("warnings")
+  end
+
+  # The docs say warnings ride on the 201. A replay is a 200 handing back a
+  # session the caller already made, and nothing about it changed here.
+  test "an idempotent replay carries no warnings" do
+    with_mixed_mcp_catalog_only do
+      2.times do
+        post api_v1_sessions_path, params: {
+          prompt: "Test",
+          git_root: "https://github.com/test/repo.git",
+          mcp_servers: [ "strad-secrets-staging-rw" ],
+          idempotency_key: "readiness-replay-key"
+        }, headers: @headers
+      end
+    end
+
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert json["idempotent_replay"]
+    assert_not json.key?("warnings")
+  end
 end

@@ -53,6 +53,41 @@ module McpAvailabilityHelpers
     yield
   end
 
+  # The mixed-availability MCP catalog above, with every OTHER artifact type
+  # left real.
+  #
+  # `with_mixed_availability_catalog` blanks the rest, which is right for a test
+  # that only reads a picker. A test of a WRITE path cannot use it: creating a
+  # session needs an agent root, and the web form cannot even be submitted
+  # without one. So this stubs the `mcp` slice only and passes every other type
+  # through to whatever the real catalog resolved.
+  #
+  # After this, exactly two catalog servers are unstartable — `strad-secrets-staging-rw`
+  # for an unresolved `${VAR}` (`:missing_configuration`) and `strad-secrets-oauth`
+  # by catalog declaration (`:declared_unavailable`) — and `context7` and
+  # `zimmer-self-session` both start. Every write-path test drives the real
+  # `ConnectorStatusProbe` against that, rather than stubbing the readiness
+  # answer, so the wiring under test is the wiring that ships.
+  #
+  # Stubs, so a file calling it needs `require "mocha/minitest"` — see the note
+  # on the helper above.
+  def with_mixed_mcp_catalog_only
+    real = AirCatalogService::ARTIFACT_TYPES.index_with { |type| AirCatalogService.entries_for(type) }
+    AirCatalogService.stubs(:entries_for).returns({})
+    real.each do |type, entries|
+      AirCatalogService.stubs(:entries_for).with(type)
+        .returns(type == :mcp ? AVAILABILITY_CATALOG : entries)
+    end
+    SecretsInterpolator.any_instance.stubs(:resolution)
+      .returns(SecretsInterpolator::Resolution.new(state: :found, source: "a stubbed provider"))
+    SecretsInterpolator.any_instance.stubs(:resolution).with("STRAD_STAGING_API_KEY")
+      .returns(SecretsInterpolator::Resolution.new(state: :absent))
+    McpServerOptions::Cache.reset
+    yield
+  ensure
+    McpServerOptions::Cache.reset
+  end
+
   # The option `McpServerOptions` built for one server name.
   def option_for(options, name)
     options.find { |option| option[:name] == name || option["name"] == name }
