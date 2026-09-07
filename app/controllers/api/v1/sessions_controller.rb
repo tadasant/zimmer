@@ -101,7 +101,8 @@ class Api::V1::SessionsController < Api::BaseController
       session: session_json(@session, include_transcript: params[:include_transcript] == "true"),
       status_summary: session_status_summary_json(@session),
       session_hierarchy: session_hierarchy_json(record.hierarchy),
-      human_messages: human_messages_json(record)
+      human_messages: human_messages_json(record),
+      human_message_capture_gaps: human_message_capture_gaps_json(record)
     }
   end
 

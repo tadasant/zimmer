@@ -52,6 +52,37 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     assert_match "No message anywhere in this hierarchy was authored by a named human.", response.body
   end
 
+  # #658 on the web surface. The panel's empty state read "No message anywhere in
+  # this hierarchy was authored by a named human" for a Slack-origin session that
+  # nothing could ever have captured a message for.
+  test "an uninstrumented channel is called out instead of reading as an absence" do
+    User.update_all(slack_user_ids: [])
+    session = spawn_session(title: "From Slack")
+    session.update_column(:genesis, SessionGenesis::SLACK)
+
+    get provenance_panel_session_url(session)
+
+    assert_response :success
+    assert_select "[data-capture-gap=?]", HumanMessage::SLACK
+    assert_match "Capture is not configured for Slack", response.body
+    assert_match "the check could not be established", response.body
+    assert_select "[data-capture-gap] a", text: "Open the roster"
+    assert_match "none captured — and capture is not configured for this hierarchy&#39;s channel", response.body
+    assert_no_match(/No message anywhere in this hierarchy was authored by a named human/, response.body)
+  end
+
+  test "a mapped Slack user ID restores the panel's affirmative empty state" do
+    users(:tadasant).update!(slack_user_ids: [ "U123HUMAN" ])
+    session = spawn_session(title: "From Slack")
+    session.update_column(:genesis, SessionGenesis::SLACK)
+
+    get provenance_panel_session_url(session)
+
+    assert_response :success
+    assert_select "[data-capture-gap]", count: 0
+    assert_match "No message anywhere in this hierarchy was authored by a named human.", response.body
+  end
+
   # The hierarchy view is an explicit requirement: nodes with title + agent root,
   # each clickable, the current session marked.
   test "the hierarchy renders clickable nodes with title and agent root" do

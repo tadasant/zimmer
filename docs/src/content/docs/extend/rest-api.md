@@ -135,7 +135,7 @@ and the model refuses to write one, answering `422`.
 | --- | --- | --- |
 | `GET` | `/sessions` | filters: `status`, `agent_runtime`, `priority_class`, `genesis`, `show_archived`, `visibility`, `page`, `per_page`. `visibility` (`on_board` / `off_board`) is **unset by default** — see [Board visibility](#board-visibility). Zimmer's own status-summary forks are never listed |
 | `GET` | `/sessions/search` | `q` (or `query`) required (≤1000 chars), `search_contents` (`true` or `1`), `scan_cursor`, plus the same `status` / `agent_runtime` / `priority_class` / `genesis` / `show_archived` / `visibility` filters as `/sessions`. Missing/oversized query → 400 (the only 400 in the API). Status-summary forks are never listed. See [Searching transcript contents](#searching-transcript-contents) for what `search_contents` changes about the response |
-| `GET` | `/sessions/:id` | always returns top-level `status_summary`, `session_hierarchy` and `human_messages` beside `session`; `include_transcript=true` adds the raw transcript |
+| `GET` | `/sessions/:id` | always returns top-level `status_summary`, `session_hierarchy`, `human_messages` and `human_message_capture_gaps` beside `session`; `include_transcript=true` adds the raw transcript |
 | `POST` | `/sessions` | → 201, or **200 with `idempotent_replay: true`** when `idempotency_key` matches an earlier create. See below. |
 | `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `scheduling_class`, `precedence`, `place`, `custom_metadata`. Promoting a **waiting** session to `priority` also [starts it now](/sessions/spot-and-priority/#starting-a-queued-session-now), which is what makes "moved to priority and started" true rather than aspirational — the deferred re-check it was carrying can be an hour out. Only the transition into `priority` does it, so a PATCH that touches the title cannot restart a session. When it acts, the response carries a `start` object (`outcome`: `started` / `refused`, plus a `message`); it is absent when the promotion started nothing |
 | `DELETE` | `/sessions/:id` | → 204. Hard delete, not archive: the row and its associations go, and so do the session's [scratch directory and prompt attachments](/operate/background-jobs/#a-deleted-session-takes-its-directories-with-it) |
@@ -639,10 +639,18 @@ per card:
   with `origin` (`here` — a human spoke to this session — or `elsewhere` — a human spoke to another
   session in the hierarchy), `author`, `author_display_name`, `channel`, `channel_label`,
   `authored_in_session_id`, `authored_in`, `entry_point`, `content` and `occurred_at`.
+- `human_message_capture_gaps` — the input channels this hierarchy came in through that capture
+  cannot write for, each with `channel`, `channel_label`, `genesis`, `session_ids`, `reason` and
+  `remedy`. Normally empty.
 
-All three are unconditional on the show action — an empty `human_messages` means no human authored
-anything in this hierarchy, which is a real answer; see
-[Hierarchy and human messages](/sessions/hierarchy-and-human-messages/) for why absence is the point.
+All four are unconditional on the show action. An empty `human_messages` means no human authored
+anything in this hierarchy — but **only when `human_message_capture_gaps` is also empty**. A
+non-empty gap array means a channel this hierarchy arrived over had nothing listening on it (chiefly
+Slack, whose user IDs are a per-deployment row edit at `/supervisor/users`), so the empty
+`human_messages` is "the check could not be established" rather than "no human spoke". Read them
+together; see [Hierarchy and human
+messages](/sessions/hierarchy-and-human-messages/#absence-is-only-an-answer-when-capture-could-have-fired)
+for why absence is the point and when it is not an answer.
 
 Five of those fields are easy to misread:
 
