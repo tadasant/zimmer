@@ -135,8 +135,14 @@ With `allowed_agent_roots` set, the connection is locked to those [agent roots](
   `[]`: on an unrestricted connection an explicit empty array is a valid request for no servers
   ([omitted vs `[]`](/air/agent-roots/#a-list-you-pass-replaces-the-roots-defaults)),
   but here it is a removal and is rejected unless the root has no defaults to begin with.
+- `start_session`'s `plugins` is rejected outright, `[]` included, because a plugin bundles MCP
+  servers of its own and those are added on top of `mcp_servers` — so naming one at launch reaches
+  the servers the rule above locks out. Omit the parameter and the session takes the root's
+  `default_plugins`. `skills` and `hooks` carry no such server expansion and stay narrowable.
 - `action_trigger` may only create, update, delete, toggle, or invoke triggers on an allowed root,
-  and `search_triggers` only shows those.
+  and `search_triggers` only shows those. Its `catalog_plugins` is refused for the reason above, but
+  its `mcp_servers` is **not** held to the root's defaults the way `start_session`'s is — see
+  [Limitations](/limitations/#a-restricted-connection-is-locked-out-of-mcp-servers-at-spawn-but-not-through-a-trigger).
 - `action_session`'s `change_mcp_servers` — and `change_plugins`, since plugins can bundle MCP
   servers — are refused outright.
 - `wake_me_up_when_session_changes_state` refuses to watch a session outside the allowed roots. (A

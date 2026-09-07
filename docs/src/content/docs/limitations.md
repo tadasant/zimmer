@@ -2012,6 +2012,27 @@ answer.
 
 ## MCP
 
+### A restricted connection is locked out of MCP servers at spawn, but not through a trigger
+
+`allowed_agent_roots` locks a connection to its roots' exact default MCP servers, and
+`Mcp::Tools::StartSession#enforce_root_constraints!` enforces that for both routes into the
+server set — the `mcp_servers` parameter and the `plugins` parameter, since a plugin bundles
+servers of its own. `Mcp::Tools::ActionSession` refuses `change_mcp_servers` and `change_plugins`
+on the same connection.
+
+`Mcp::Tools::ActionTrigger` is the gap. It refuses `catalog_plugins` on a restricted connection
+(`reject_restricted_plugin_list!`) but has never carried the `mcp_servers` equivalent: a restricted
+connection may create or update a trigger on an allowed root naming any servers it likes, and
+`Trigger#sync_mcp_servers!` stamps them onto every session that trigger spawns. So the lock holds
+at spawn and through the mid-life change actions, and not through a trigger.
+
+Nothing reaches this today — no shipped agent root declares `default_subagent_roots`, which is the
+only thing that makes Zimmer inject a restricted connection, and that injection is the only
+restricted connection the deployment creates for itself. It becomes live the moment a root declares
+one, because the injected URL passes no `tool_groups` and therefore carries the full surface,
+`action_trigger` included. The gap is noted in `ActionTrigger`'s own comment as a deliberate
+non-closure and is not tracked by an issue.
+
 ### Codex MCP credentials are a reverse-engineered format, written on every spawn
 
 `CodexMcpCredentialWriter` exists entirely to work around two open upstream Codex bugs
