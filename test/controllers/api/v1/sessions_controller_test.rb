@@ -2467,4 +2467,52 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
       "a healthy session's injected_mcp_servers omits selected servers — a narrow " \
       "value here is not evidence that a server was lost"
   end
+
+  # --- MCP-server readiness at create (#537) ---
+  #
+  # This endpoint is what Mcp::Tools::StartSession mirrors, so it says the same
+  # thing the tool does about a server Zimmer cannot start: a warning beside the
+  # created session, never a rejection.
+
+  test "creating a session with a server Zimmer cannot start returns the session and a warning" do
+    stub_unavailable_servers("playwright-custom" => "PLAYWRIGHT_API_KEY unresolved")
+
+    assert_difference("Session.count") do
+      post api_v1_sessions_path, params: {
+        prompt: "Test",
+        git_root: "https://github.com/test/repo.git",
+        mcp_servers: [ "playwright-custom" ]
+      }, headers: @headers
+    end
+
+    assert_response :created
+    json = JSON.parse(response.body)
+    assert json["session"]["id"].present?
+    assert_equal 1, json["warnings"].size
+    assert_match(/Zimmer cannot start MCP server playwright-custom \(PLAYWRIGHT_API_KEY unresolved\)/,
+      json["warnings"].first)
+  end
+
+  test "a create whose servers all start carries no warnings key at all" do
+    stub_unavailable_servers({})
+
+    post api_v1_sessions_path, params: {
+      prompt: "Test",
+      git_root: "https://github.com/test/repo.git",
+      mcp_servers: [ "playwright-custom" ]
+    }, headers: @headers
+
+    assert_response :created
+    assert_not JSON.parse(response.body).key?("warnings")
+  end
+
+  # Flags the given catalog servers unavailable, leaving everything else startable.
+  def stub_unavailable_servers(reasons)
+    options = ServersConfig.all.map do |server|
+      reason = reasons[server.name]
+      { name: server.name, title: server.title, description: server.description,
+        unavailable: reason.present?, unavailable_reason: reason }
+    end
+    McpServerOptions.stubs(:all).returns(options)
+  end
 end

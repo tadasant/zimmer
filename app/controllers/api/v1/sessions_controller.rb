@@ -184,7 +184,14 @@ class Api::V1::SessionsController < Api::BaseController
         @session.update(job_id: job.job_id)
       end
 
-      render json: { session: session_json(@session) }, status: :created
+      # This endpoint is what Mcp::Tools::StartSession mirrors, so it says the
+      # same thing the tool does about a server Zimmer cannot start: a warning
+      # beside the created session, never a rejection. `warnings` is present only
+      # when there is one. See McpServerReadiness.
+      body = { session: session_json(@session) }
+      warning = McpServerReadiness.warn_for_session(@session)
+      body[:warnings] = [ warning ] if warning
+      render json: body, status: :created
     end
   rescue AgentRootsConfig::AgentRootNotFoundError => e
     render_api_error("Invalid agent_root", e.message, status: :unprocessable_entity)

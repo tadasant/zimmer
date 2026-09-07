@@ -136,7 +136,7 @@ and the model refuses to write one, answering `422`.
 | `GET` | `/sessions` | filters: `status`, `agent_runtime`, `priority_class`, `genesis`, `show_archived`, `visibility`, `page`, `per_page`. `visibility` (`on_board` / `off_board`) is **unset by default** — see [Board visibility](#board-visibility). Zimmer's own status-summary forks are never listed |
 | `GET` | `/sessions/search` | `q` (or `query`) required (≤1000 chars), `search_contents` (`true` or `1`), `scan_cursor`, plus the same `status` / `agent_runtime` / `priority_class` / `genesis` / `show_archived` / `visibility` filters as `/sessions`. Missing/oversized query → 400 (the only 400 in the API). Status-summary forks are never listed. See [Searching transcript contents](#searching-transcript-contents) for what `search_contents` changes about the response |
 | `GET` | `/sessions/:id` | always returns top-level `status_summary`, `session_hierarchy`, `human_messages` and `human_message_capture_gaps` beside `session`; `include_transcript=true` adds the raw transcript |
-| `POST` | `/sessions` | → 201, or **200 with `idempotent_replay: true`** when `idempotency_key` matches an earlier create. See below. |
+| `POST` | `/sessions` | → 201, or **200 with `idempotent_replay: true`** when `idempotency_key` matches an earlier create. A 201 can carry a `warnings` array when one of the session's MCP servers cannot start. See below. |
 | `PATCH` | `/sessions/:id` | permits only `title`, `slug`, `goal`, `is_autonomous`, `scheduling_class`, `precedence`, `place`, `custom_metadata`. Promoting a **waiting** session to `priority` also [starts it now](/sessions/spot-and-priority/#starting-a-queued-session-now), which is what makes "moved to priority and started" true rather than aspirational — the deferred re-check it was carrying can be an hour out. Only the transition into `priority` does it, so a PATCH that touches the title cannot restart a session. When it acts, the response carries a `start` object (`outcome`: `started` / `refused`, plus a `message`); it is absent when the promotion started nothing |
 | `DELETE` | `/sessions/:id` | → 204. Hard delete, not archive: the row and its associations go, and so do the session's [scratch directory and prompt attachments](/operate/background-jobs/#a-deleted-session-takes-its-directories-with-it) |
 | `POST` | `/sessions/:id/archive` | from `waiting`, `running`, `needs_input`, or `failed` → `{session, message, trash_after}`. **422** while any message is still queued for the session, since archiving discards it; `force: true` overrides deliberately and the discarded messages are retired to `undelivered` — see [lifecycle](/sessions/lifecycle/) |
@@ -407,6 +407,28 @@ unsandboxed — see
 [Agents run unsandboxed on the app host](/limitations/#agents-run-unsandboxed-on-the-app-host).
 
 The `AgentSessionJob` is enqueued only if `prompt` is present.
+
+#### `warnings` — an MCP server the session cannot start
+
+A `201` can carry a `warnings` array beside `session`. Today it holds exactly one kind of entry: one
+or more of the session's MCP servers cannot start right now — a required `${VAR}` does not resolve,
+an OAuth flow was never completed, or the catalog declares the entry dead. The session is created and
+the job is queued regardless; the warning names the servers and points at `/connectors`.
+
+```json
+{
+  "session": { "id": 4821, "status": "waiting" },
+  "warnings": [
+    "Zimmer cannot start MCP server strad-secrets-staging-rw (STRAD_STAGING_API_KEY unresolved) right now. …"
+  ]
+}
+```
+
+The key is **absent** when there is nothing to say, so a client can test for its presence. The same
+sentence is written to the session's log at `warning` level, and `GET /api/v1/mcp_servers` carries
+the per-server `unavailable` / `unavailable_reason` this is derived from. Why this warns rather than
+rejecting — including what it means for a connection restricted by `allowed_agent_roots` — is in
+[Creating a session with a server that cannot start](/air/mcp-servers/#creating-a-session-with-a-server-that-cannot-start-it-warns-it-does-not-refuse).
 
 #### `idempotency_key` — making the create safe to retry
 

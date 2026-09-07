@@ -529,6 +529,82 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     refute Session.last.mcp_servers_explicitly_empty?
   end
 
+  # --- MCP-server readiness at create (#537) ---
+  #
+  # The picker flags a server it cannot start but does not refuse the pick, and
+  # the form can be submitted from a page rendered before a connector broke. The
+  # create says so rather than letting the session die at prepare time with no
+  # explanation — a flash alert, not a rejection.
+
+  test "creating a session with a server Zimmer cannot start warns and still creates it" do
+    stub_unavailable_servers("playwright-custom" => "PLAYWRIGHT_API_KEY unresolved")
+
+    assert_difference("Session.count") do
+      post sessions_url, params: {
+        session: {
+          git_root: "https://github.com/test/repo.git",
+          prompt: "Test prompt",
+          mcp_servers: [ "playwright-custom" ]
+        }
+      }
+    end
+
+    assert_redirected_to session_path(Session.last)
+    assert_match(/Zimmer cannot start MCP server playwright-custom \(PLAYWRIGHT_API_KEY unresolved\)/, flash[:alert])
+    assert_equal "Session created successfully. Starting agent...", flash[:notice],
+      "the session was created, and the notice still says so"
+  end
+
+  test "the create warning is recorded on the session's own log too" do
+    stub_unavailable_servers("playwright-custom" => "PLAYWRIGHT_API_KEY unresolved")
+
+    post sessions_url, params: {
+      session: {
+        git_root: "https://github.com/test/repo.git",
+        prompt: "Test prompt",
+        mcp_servers: [ "playwright-custom" ]
+      }
+    }
+
+    log = Session.last.logs.order(:id).last
+    assert_equal "warning", log.level
+    assert_match(/playwright-custom \(PLAYWRIGHT_API_KEY unresolved\)/, log.content)
+  end
+
+  test "creating a session whose servers all start raises no alert" do
+    stub_unavailable_servers({})
+
+    post sessions_url, params: {
+      session: {
+        git_root: "https://github.com/test/repo.git",
+        prompt: "Test prompt",
+        mcp_servers: [ "playwright-custom" ]
+      }
+    }
+
+    assert_nil flash[:alert]
+  end
+
+  # Advice must not be able to block a create. McpServerOptions already degrades a
+  # broken probe to a flagless list, so this asserts the whole chain: probe down,
+  # no warning, session created.
+  test "a readiness check that blows up does not stop the create" do
+    ConnectorStatusProbe.stubs(:all).raises(StandardError, "probe exploded")
+
+    assert_difference("Session.count") do
+      post sessions_url, params: {
+        session: {
+          git_root: "https://github.com/test/repo.git",
+          prompt: "Test prompt",
+          mcp_servers: [ "playwright-custom" ]
+        }
+      }
+    end
+
+    assert_redirected_to session_path(Session.last)
+    assert_nil flash[:alert]
+  end
+
   test "should set default values on create" do
     post sessions_url, params: {
       session: {
@@ -6943,5 +7019,15 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       )
     )
     AgentSessionJob.stubs(:enqueue_new_session)
+  end
+
+  # Flags the given catalog servers unavailable, leaving everything else startable.
+  def stub_unavailable_servers(reasons)
+    options = ServersConfig.all.map do |server|
+      reason = reasons[server.name]
+      { name: server.name, title: server.title, description: server.description,
+        unavailable: reason.present?, unavailable_reason: reason }
+    end
+    McpServerOptions.stubs(:all).returns(options)
   end
 end
