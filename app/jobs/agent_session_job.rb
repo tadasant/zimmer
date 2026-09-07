@@ -5053,8 +5053,8 @@ class AgentSessionJob < ApplicationJob
   end
 
   # Error-text patterns that indicate an MCP server rejected our credentials:
-  # "Unauthorized"/"401" (standard auth errors), "Supported scopes" (servers like Tally
-  # that report OAuth scopes in the error), "oauth"/"invalid_token" (explicit auth errors),
+  # "Unauthorized"/"401" (standard auth errors), "Supported scopes" (servers that
+  # report OAuth scopes in the error), "oauth"/"invalid_token" (explicit auth errors),
   # and the OAuth grant errors a failed token refresh reports
   # (McpOauthServerAuthorization::REFRESH_TOKEN_REJECTED_PATTERN) — a runtime that could
   # not refresh its token has authenticated with nothing, whether or not it went on to

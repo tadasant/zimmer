@@ -320,9 +320,9 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
   a stdio server that never answers delays the first model request by 29.9s over the
   no-server baseline, and `startup_timeout_sec = 5` moves the same measurement to 5.1s. That is
   the whole exposure — the cold clone below is guaranteed by the cache pinning, and installing all
-  nine npx servers at once into one fresh clone cache takes 18s for the slowest on an idle
-  production droplet. Under 2x margin, on the runtime where running out means the server is
-  dropped rather than merely slow ([#702](https://github.com/tadasant/zimmer/issues/702)).
+  npx servers at once into one fresh clone cache — nine of them when this was measured — takes
+  18s for the slowest on an idle production droplet. Under 2x margin, on the runtime where
+  running out means the server is dropped rather than merely slow ([#702](https://github.com/tadasant/zimmer/issues/702)).
 - The wider budget has a cost, and it is the one Claude already pays: a server that hangs holds
   the handshake for three minutes instead of thirty seconds, on every launch, since Zimmer
   respawns stdio servers per run. A slow start is recoverable and a dropped server is not, so
@@ -400,7 +400,7 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
   budget above is the headroom that absorbs it — see
   [Limitations](/limitations/#a-cold-clone-pays-the-npm-download-for-every-npx-mcp-server).
 
-## The fourteen that ship
+## The sixteen that ship
 
 `playwright-custom` (the only one default-on, for the `zimmer` root), `context7`, `linear`, and
-eleven others. Read `mcp.json` for the current list — it changes more often than this page will.
+thirteen others. Read `mcp.json` for the current list — it changes more often than this page will.
