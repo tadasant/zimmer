@@ -178,8 +178,8 @@ absence is worse than a flagged entry — a server that vanishes from the picker
 catalog, not as a credential to go and seed. So the picker keeps the entry, says why, and sorts it
 last.
 
-The picker does not *refuse* the pick. This is the read path: the list's job is to say. Rejecting or
-warning on a selection that names an unavailable server is a separate question about the write path.
+The picker does not *refuse* the pick. This is the read path: the list's job is to say. What the
+write paths do with a selection that names an unavailable server is the next section.
 
 Neither surface ever filters on `store_unavailable` or `probe_failed` — see below.
 
@@ -189,6 +189,49 @@ never claims the remote host answered. And a probe that could not determine an a
 `store_unavailable` when the Parameter Store did not respond, `probe_failed` for anything unexpected
 — leaves the server **listed**. Those are transient and hit every server at once; emptying the whole
 option list because Google was slow is a worse failure than offering a server that might not start.
+
+## Creating a session with a server that cannot start: it warns, it does not refuse
+
+Every path that creates a session — `Mcp::Tools::StartSession`, `POST /api/v1/sessions`, and the
+new-session form — checks the servers the session ends up with against the same readiness answer and
+**warns**. The session is created, the agent job is queued, and the caller is told which server
+cannot start and why. `McpServerReadiness` is the one implementation; the three surfaces differ only
+in where they put the sentence.
+
+| Surface | Where the warning lands |
+| --- | --- |
+| `start_session` | a `⚠️` line at the end of the tool result, under the session's id and job id |
+| `POST /api/v1/sessions` | a `warnings` array on the `201` body, beside `session`. Absent entirely when every server starts |
+| The new-session form | a flash alert next to the "Session created successfully" notice |
+
+All three also write the warning to **the session's own log**, at `warning` level. That is the copy
+that survives: a flash fades, a tool result scrolls out of an agent's context, and the log sits on
+the session page next to the prepare failure it predicted.
+
+The check reads the session's **resolved** server list, not the argument the caller passed. A spawn
+that names no servers at all inherits the agent root's `default_mcp_servers`, and one of those can
+be broken — that caller is the one with the least idea it is happening.
+
+### Why not reject
+
+Rejecting is the more satisfying answer and it is the wrong one, for two reasons.
+
+**Readiness is a local view of a moment.** `ConnectorStatusProbe` is deliberately generous about the
+states that mean "Zimmer could not find out" — `store_unavailable` and `probe_failed` report as
+usable, because a Parameter Store blip hits every server at once. That generosity is affordable on a
+badge. On a gate it is not the same bet: making the local view authoritative on the spawn path turns
+a slow answer from Google into an outage that blocks spawning.
+
+**A restricted connection has no legal way to comply.** A connection scoped by `allowed_agent_roots`
+must pass its root's `default_mcp_servers` *exactly* — it can neither add nor drop one. If one of
+those defaults is unavailable, that caller is compelled to name a server that cannot start.
+Rejecting there would make the root unspawnable until an operator fixed the secret, and would do it
+at the moment some other piece of work needed the root. So it warns, the spawn goes through, and the
+warning names the server and points at `/connectors`. This is a decision, not a side effect, and
+`a restricted connection compelled to pass an unavailable default is warned, not refused` pins it.
+
+The warning is advice, and advice must never be able to break a spawn: if the readiness computation
+raises, `McpServerReadiness` says nothing and the session is created exactly as it would have been.
 
 ## When a server cannot connect, the server is left out — not the session
 

@@ -216,7 +216,15 @@ On a connection restricted to specific agent roots this parameter is rejected ou
           session.update(job_id: job.job_id)
         end
 
-        format_session(session)
+        # Say, in the result, that one of this session's servers cannot start.
+        # A warning rather than a refusal: readiness is Zimmer's local view of a
+        # moment, and ConnectorStatusProbe deliberately reports "could not find
+        # out" as usable — making it authoritative here would let a Parameter
+        # Store blip block spawning. It matters most on a restricted connection,
+        # which is required to pass its root's defaults exactly and so has no
+        # legal way to drop an unavailable one; refusing there would make the
+        # root unspawnable, while a warning still names the server and the fix.
+        format_session(session, warning: McpServerReadiness.warn_for_session(session))
       rescue AgentRootsConfig::AgentRootNotFoundError => e
         raise ToolError, "Invalid agent_root: #{e.message}"
       end
@@ -375,7 +383,10 @@ On a connection restricted to specific agent roots this parameter is rejected ou
       #   back the session an earlier call with the same idempotency_key made. Said
       #   in the heading rather than a footnote: a caller retrying a timeout is
       #   deciding whether it now has one session or two, and that is the answer.
-      def format_session(session, reused: false)
+      # @param warning [String, nil] an MCP-server readiness warning to append
+      #   (McpServerReadiness). Never returned for a replay: the caller is being
+      #   handed a session it already made, and nothing about it changed here.
+      def format_session(session, reused: false, warning: nil)
         lines = [
           reused ? "## Existing Session Returned (idempotency_key matched)" : "## Session Started Successfully",
           "",
@@ -410,6 +421,11 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         else
           lines << ""
           lines << '*No prompt was provided. Use action_session with "follow_up" or "restart" action to start the agent.*'
+        end
+
+        if warning.present?
+          lines << ""
+          lines << "**\u26a0\ufe0f #{warning}**"
         end
 
         lines.join("\n")

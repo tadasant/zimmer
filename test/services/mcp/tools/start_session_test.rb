@@ -646,4 +646,127 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     session = Session.order(:created_at).last
     assert_equal (root.default_mcp_servers || []).sort, session.mcp_servers.sort
   end
+
+  # --- MCP-server readiness at spawn (#537) ---
+  #
+  # The write paths used to check only that a named server is in the catalog. A
+  # server whose `${VAR}` does not resolve is in the catalog and cannot start, and
+  # attaching one fails the whole session at prepare time — the slowest and least
+  # legible place to find out. These pin the remedy: the call is ACCEPTED and the
+  # caller is told, in the result it is already reading.
+
+  test "a spawn naming a server Zimmer cannot start is accepted, and says so" do
+    stub_root_with_defaults
+    stub_unavailable_servers("context7" => "CONTEXT7_API_KEY unresolved")
+
+    result = nil
+    assert_difference "Session.count", 1 do
+      result = @tool.call("agent_root" => "test-root", "prompt" => "go", "title" => "Broken server")
+    end
+
+    assert_includes result, "## Session Started Successfully",
+      "readiness warns; it must never turn a spawn into a refusal"
+    assert_includes result, "Zimmer cannot start MCP server context7 (CONTEXT7_API_KEY unresolved)"
+    assert_includes result, "/connectors"
+    assert Session.order(:id).last.job_id.present?, "the agent job is still queued"
+  end
+
+  test "the warning is on the session's own log, where the agent and the human both read it" do
+    stub_root_with_defaults
+    stub_unavailable_servers("context7" => "CONTEXT7_API_KEY unresolved")
+
+    @tool.call("agent_root" => "test-root", "prompt" => "go", "title" => "Broken server")
+
+    log = Session.order(:id).last.logs.order(:id).last
+    assert_equal "warning", log.level
+    assert_includes log.content, "context7 (CONTEXT7_API_KEY unresolved)"
+  end
+
+  test "a spawn whose servers all start says nothing about availability" do
+    stub_root_with_defaults
+    stub_unavailable_servers({})
+
+    result = @tool.call("agent_root" => "test-root", "prompt" => "go", "title" => "Healthy")
+
+    refute_includes result, "Zimmer cannot start"
+    assert_empty Session.order(:id).last.logs.where(level: "warning")
+  end
+
+  # The reason this reads the session rather than the arguments. A caller that
+  # named no servers at all still inherits the root's defaults, and one of those
+  # can be broken — that caller is the one with the least idea it is happening.
+  test "a root default that cannot start is warned about even though the caller named nothing" do
+    stub_root_with_defaults
+    stub_unavailable_servers("context7" => "CONTEXT7_API_KEY unresolved")
+
+    result = @tool.call("agent_root" => "test-root", "prompt" => "go", "title" => "Inherited")
+
+    assert_equal [ "context7" ], Session.order(:id).last.mcp_servers
+    assert_includes result, "Zimmer cannot start MCP server context7"
+  end
+
+  # The decision the issue asked to be made explicitly rather than fall out of the
+  # implementation. A restricted connection MUST pass its root's default_mcp_servers
+  # exactly, so it has no legal way to drop an unavailable one. Rejecting here would
+  # make the root unspawnable until an operator fixed the secret — so it warns, and
+  # the spawn goes through.
+  test "a restricted connection compelled to pass an unavailable default is warned, not refused" do
+    stub_root_with_defaults
+    stub_unavailable_servers("context7" => "CONTEXT7_API_KEY unresolved")
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    result = nil
+    assert_difference "Session.count", 1 do
+      result = tool.call(
+        "agent_root" => "test-root",
+        "prompt" => "go",
+        "title" => "Locked to a broken default",
+        "mcp_servers" => [ "context7" ]
+      )
+    end
+
+    assert_includes result, "## Session Started Successfully"
+    assert_includes result, "Zimmer cannot start MCP server context7 (CONTEXT7_API_KEY unresolved)"
+    assert_equal [ "context7" ], Session.order(:id).last.mcp_servers
+  end
+
+  # Advice must not be able to take a spawn down. McpServerReadiness rescues
+  # internally; this pins the property end to end through the real tool.
+  test "a readiness check that blows up does not stop the session being created" do
+    stub_root_with_defaults
+    McpServerOptions.stubs(:all).raises(StandardError, "catalog will not resolve")
+
+    result = nil
+    assert_difference "Session.count", 1 do
+      result = @tool.call("agent_root" => "test-root", "prompt" => "go", "title" => "Probe down")
+    end
+
+    assert_includes result, "## Session Started Successfully"
+    refute_includes result, "Zimmer cannot start"
+  end
+
+  # A replay is handed a session it already made. Nothing about that session
+  # changed here, so re-warning about it would be a fresh alarm about old news.
+  test "an idempotent replay carries no readiness warning" do
+    stub_root_with_defaults
+    stub_unavailable_servers("context7" => "CONTEXT7_API_KEY unresolved")
+
+    @tool.call("agent_root" => "test-root", "prompt" => "go", "title" => "First", "idempotency_key" => "readiness-key")
+    replay = @tool.call("agent_root" => "test-root", "prompt" => "go", "title" => "First", "idempotency_key" => "readiness-key")
+
+    assert_includes replay, "## Existing Session Returned"
+    refute_includes replay, "Zimmer cannot start"
+  end
+
+  # Flags the given servers unavailable and clears every other name the tests use,
+  # so the readiness answer is the fixture's rather than the real catalog's.
+  def stub_unavailable_servers(reasons)
+    options = %w[context7 zimmer-self-session some-server].map do |name|
+      reason = reasons[name]
+      { name: name, title: name, description: name, unavailable: reason.present?, unavailable_reason: reason }
+    end
+    McpServerOptions.stubs(:all).returns(options)
+  end
 end
