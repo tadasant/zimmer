@@ -1947,9 +1947,11 @@ read, so the sentence cannot name one row's age beside another row's lane.
 
 Every line of the body is folded out of the `queue_stats` the gate already computed, so **assembling
 the page costs no query at all** — which matters most at the moment the database may be the thing
-going wrong. `unavailable` and `none` stay deliberately different words wherever a breakdown is
-rendered: a query that never answered and a queue that read as empty are different facts about an
-incident.
+going wrong. That also removes the way these lines could previously fail on their own: there is no
+second read left to time out, so the body either goes out complete or the whole report has already
+failed upstream. `format_breakdown` and `format_ages` still answer `unavailable` for a breakdown that
+is absent and `none` for one that is empty, which is what a caller handed a partial report sees —
+a key that never arrived and a queue that read as empty are different facts about an incident.
 
 The same keys reach every other surface from the same object. `/health` renders them in its **Backlog
 Breakdown** panel, `GET /api/v1/health` and `/health/export_diagnostics` serialize them, and the

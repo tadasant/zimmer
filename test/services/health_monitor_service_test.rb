@@ -509,9 +509,9 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   #
   # A ready count alone cannot tell a starved queue from a busy one, and Zimmer
   # runs seven queues with very different thread counts and job durations. Every
-  # triage of a backlog page opens with "deep with WHAT", and the only answer used
-  # to be the GoodJob dashboard — which the agent sessions that actually read these
-  # pages have no route to (#450). Both splits ride on `queue_statistics`, so every
+  # triage of a backlog page opens with "deep with WHAT", and the GoodJob dashboard
+  # is no answer for the agent sessions that actually read these pages — they have
+  # no route to it (#450). Both splits ride on `queue_statistics`, so every
   # surface — /health, GET /api/v1/health, the `get_system_health` MCP tool and the
   # Slack page — reads them off one grouped query rather than re-scanning
   # `good_jobs` for itself.
@@ -686,7 +686,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   end
 
   # The three shapes the 2026-08-14 triage could not tell apart, each read off the
-  # keys this report now publishes. This is the test that says the data is USEFUL
+  # keys this report publishes. This is the test that says the data is USEFUL
   # and not merely present: the same aggregate numbers (`ready_count`,
   # `claimed_count`) are compatible with all three, and the breakdowns are not.
   test "the breakdowns separate one class flooding from one lane starving" do
@@ -796,13 +796,41 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_equal [ "auth", "triggers" ], ages.keys
   end
 
-  test "a head of line with no queue or job class is labelled instead of dropped" do
+  # The lane half of the label fold is the one the gate joins on: `starved_lane` and
+  # `wedged_lane` match `ready_count_by_queue` keys against
+  # `oldest_ready_age_seconds_by_queue` keys, so a lane labelled one way in the
+  # counts and another way in the ages would silently stop being evaluated. Both
+  # halves must spell an unnamed queue identically, and a blank and a nil must fold
+  # onto ONE key rather than one of them replacing the other.
+  test "a row with no queue or job class is labelled instead of dropped, in every half" do
     insert_good_jobs(1) { { queue_name: nil, job_class: nil, scheduled_at: 8.minutes.ago } }
+    insert_good_jobs(2) { { queue_name: "", job_class: "", scheduled_at: 4.minutes.ago } }
 
-    head = HealthMonitorService.new.system_health[:queue_stats][:head_of_line]
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+    unknown = HealthMonitorService::UNKNOWN_LABEL
 
-    assert_equal HealthMonitorService::UNKNOWN_LABEL, head[:queue]
-    assert_equal HealthMonitorService::UNKNOWN_LABEL, head[:job_class]
+    assert_equal({ unknown => 3 }, stats[:ready_count_by_queue],
+                 "nil and blank must sum onto one lane key, not replace each other")
+    assert_equal({ unknown => 3 }, stats[:ready_count_by_job_class])
+    assert_equal [ unknown ], stats[:oldest_ready_age_seconds_by_queue].keys,
+                 "the ages must use the same label as the counts, or the gate cannot join them"
+    assert_equal unknown, stats[:head_of_line][:queue]
+    assert_equal unknown, stats[:head_of_line][:job_class]
+  end
+
+  # The same join, on the claimed side.
+  test "a claimed row with no queue is labelled the same way in counts and ages" do
+    insert_good_jobs(2) do
+      { queue_name: nil, job_class: nil, locked_by_id: SecureRandom.uuid,
+        locked_at: 3.minutes.ago, performed_at: 3.minutes.ago }
+    end
+
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+    unknown = HealthMonitorService::UNKNOWN_LABEL
+
+    assert_equal({ unknown => 2 }, stats[:claimed_count_by_queue])
+    assert_equal({ unknown => 2 }, stats[:claimed_count_by_job_class])
+    assert_equal [ unknown ], stats[:oldest_claimed_age_seconds_by_queue].keys
   end
 
   # The class counts are capped and the ages deliberately are not. An

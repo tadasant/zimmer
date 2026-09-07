@@ -1127,11 +1127,13 @@ class HealthMonitorService
     # has to the composition — its absence is what left the 2026-08-02 and
     # 2026-08-14 triages guessing at it (#450).
     #
-    # Free, in queries. Each of these is folded out of the SAME grouped read that
-    # produces the per-lane counts beside it, so the probe issues two aggregations
-    # in total rather than four. That matters more than it sounds: `good_jobs` is
-    # largest precisely during the backlog this data exists to explain, and a probe
-    # that grows a scan under load degrades exactly when it is being read.
+    # Free in SCANS, which is the resource that matters here — not free in time.
+    # Each of these is folded out of the SAME grouped read that produces the
+    # per-lane counts beside it, so the probe issues two aggregations rather than
+    # four and passes over the rows twice rather than four times. That matters more
+    # than it sounds: `good_jobs` is largest precisely during the backlog this data
+    # exists to explain, and a probe that grows a scan under load degrades exactly
+    # when it is being read.
     ready_by_queue, ready_by_job_class = queue_and_class_counts(ready_jobs)
     claimed_by_queue, claimed_by_job_class = queue_and_class_counts(running_jobs)
 
@@ -1213,8 +1215,11 @@ class HealthMonitorService
   # largest, and — being separate queries against a moving table — free to disagree,
   # so the by-class split would not add up against the by-lane split printed on the
   # line above it. Postgres groups on the composite once and Ruby folds the result
-  # two ways, which makes both halves a description of the same instant and makes
-  # the second breakdown cost nothing.
+  # two ways, which makes both halves a description of the same instant and buys the
+  # second breakdown without a second pass over the rows. Not for nothing, though:
+  # grouping on the composite is modestly wider than grouping on `queue_name` alone
+  # — ~180ms against ~146ms over 200k ready rows — where a separate by-class
+  # aggregation would have cost a second full scan and ~151ms on top of that.
   #
   # The intermediate is bounded by the (lane, class) pairs actually present, not by
   # the backlog: seven lanes against ~45 job classes is a few hundred rows in the
