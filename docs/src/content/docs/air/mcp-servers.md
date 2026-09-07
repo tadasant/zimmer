@@ -171,12 +171,22 @@ session orchestrates the instance running it rather than whichever one the catal
 
 Retargeting is gated on this instance knowing its own address, not on which environment it is.
 `AppUrl` falls back to a `zimmer.example.com` placeholder when `ZIMMER_PROD_BASE_URL` /
-`ZIMMER_STAGING_BASE_URL` is unset, and rewriting a URL onto a host that does not resolve would be
-worse than leaving it: an MCP client dials it until `RetryBudget::MCP_CONNECTION` is spent and then
-the session fails. So an instance that has not been told its address skips the rewrite, and any
-catalog `zimmer*` entry still sitting on the placeholder afterwards is **dropped** from the config
-with a warning in the session log. Such a session has no session-orchestration server — which is
-what it had before the root default existed — instead of a dead one.
+`ZIMMER_STAGING_BASE_URL` is unset, and an instance in that state cannot point anything at itself.
+So it does not try: it skips the rewrite and **drops every catalog `zimmer*` entry** from the
+config, with a warning naming the variable to set.
+
+Dropping rather than passing through is the point, and it is about the *other* case as much as the
+placeholder. A custom `AIR_CONFIG` catalog's `zimmer-sessions` may name a real, live Zimmer that is
+simply not this one — leaving it would have the session orchestrate somebody else's instance. The
+dead-host case is milder: a server that cannot connect [is left out rather than fatal](#when-a-server-cannot-connect-the-server-is-left-out-not-the-session),
+so the cost is `RetryBudget::MCP_CONNECTION`'s 30s/60s/120s of backoff and a pause/resume cycle to
+arrive at "no session orchestration" — which is where the drop arrives immediately.
+
+The drop runs **before** the injections, which is what keeps it from taking a session's lifecycle
+tools with it: a full-surface catalog `zimmer` entry suppresses both injections, so dropping it
+afterwards would leave the session with no way to archive itself. Dropping first lets the injections
+refill the gap from `ZIMMER_*_BASE_URL` — still unreachable on a mis-provisioned instance, but
+failing at call time rather than silently absent.
 
 The catalog also carries `zimmer*` entries you attach deliberately, each scoped to a tool group:
 `zimmer-sessions`, `zimmer-fleet`, and `zimmer-gate-decisions` (the [gate decision

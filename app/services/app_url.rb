@@ -48,9 +48,9 @@ module AppUrl
   #
   # Callers use this to tell "I know where I am" from "I am guessing": anything
   # that would hand a session an address to dial has to distinguish the two,
-  # because a placeholder is worse than no address at all (an MCP client retries
-  # a dead host until RetryBudget::MCP_CONNECTION is spent, then the session
-  # fails).
+  # because a placeholder is not an address it can do anything useful with. See
+  # RuntimeConfigPostProcessor#drop_untargetable_zimmer_servers!, which is what
+  # acts on the answer.
   #
   # @param url [String, nil] a resolved base URL
   # @return [Boolean]
