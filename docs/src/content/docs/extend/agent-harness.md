@@ -46,8 +46,8 @@ makes it the interesting third column — see
 [Pi is the runtime that supplies nothing](#pi-is-the-runtime-that-supplies-nothing).
 
 :::note[Three slots are dead weight]
-`auth_provider_class` is `nil` for both runtimes even though both classes exist — auth resolves
-through `RuntimeAuthProvider.for` instead. `prompt_contribution_class` is `nil` for Codex even though
+`auth_provider_class` is `nil` for all three runtimes even though all three classes exist — auth
+resolves through `RuntimeAuthProvider.for` instead. `prompt_contribution_class` is `nil` for Codex even though
 `CodexRuntimePromptContribution` exists; it resolves through `RuntimePromptContribution.for`.
 `config_preparer_class` is `nil` everywhere and nothing reads it. Pi fills its
 `prompt_contribution_class` slot anyway — leaving it `nil` while the class exists
@@ -355,9 +355,9 @@ backwards and a session's real history is thrown away; leave it unimplemented an
 
 ## Pi is the runtime that supplies nothing
 
-Claude Code and Codex both arrive with MCP, hooks and plugins built in, so
-Zimmer's job for them is to write config files into a shape the runtime already
-understands. Pi ships a skills mechanism and nothing else. Three consequences are
+Claude Code and Codex both arrive with an MCP client built in (Claude Code with
+hooks and plugins too), so Zimmer's job for them is to write config files into a
+shape the runtime already understands. Pi ships a skills mechanism and nothing else. Three consequences are
 worth knowing before you read `PiRuntimeAdapter`.
 
 **`air prepare pi` writes no MCP config.** `@pulsemcp/air-adapter-pi` is

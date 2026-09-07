@@ -33,12 +33,12 @@ flowchart TB
     end
 
     subgraph host["Host filesystem"]
-        CLONE["~/.zimmer/clones/&lt;session&gt;/<br/>git clone · .mcp.json · .claude/skills/"]
-        CRED["~/.claude/.credentials.json<br/>~/.codex/auth.json"]
+        CLONE["~/.zimmer/clones/&lt;session&gt;/<br/>git clone · .mcp.json · .claude/skills/ · .pi/skills/"]
+        CRED["~/.claude/.credentials.json<br/>~/.codex/auth.json<br/>(Pi: a provider key in the env)"]
     end
 
     subgraph proc["Agent subprocess"]
-        CLI["claude / codex (headless)"]
+        CLI["claude / codex / pi (headless)"]
         MCP["MCP servers (child processes)"]
     end
 
@@ -79,18 +79,19 @@ good_job start` process is required.
 The Kamal deploy runs that as a dedicated `worker` role (`config/deploy.staging.yml`), so cron
 and pollers run on the deployed droplet.
 
-**Agent subprocess.** A real headless `claude` or `codex` process, spawned with
+**Agent subprocess.** A real headless `claude`, `codex` or `pi` process, spawned with
 `pgroup: true` so the whole process group can be killed as a unit. Its stdin goes to
 `/dev/null`; stderr goes to a log file inside the clone. The transcript file on disk carries
-the conversation.
+the conversation. See [Runtimes](/sessions/runtimes/).
 
 Codex is always launched with `--json`, and its stdout event stream is captured into
 `codex_events.jsonl` in the clone and read by `CodexEventStream`: its first line names the
 thread UUID, which is how Zimmer identifies this session's rollout in a tree shared by every
 session on the host, and what `codex exec resume` targets. Claude's stdout is still discarded —
 `--output-format stream-json` is only passed on the image / large-prompt path, and Zimmer
-already knows a Claude session's id because it supplies it. See
-[Spawning](/sessions/spawning/).
+already knows a Claude session's id because it supplies it. Pi's stdout is discarded too: it is
+launched with `--mode json`, but Zimmer reads the session JSONL Pi writes into the clone rather
+than the stream. See [Spawning](/sessions/spawning/).
 
 ## Data
 
@@ -109,7 +110,10 @@ must exist before boot.
 **The filesystem** is load-bearing. Clones live in
 `~/.zimmer/clones/`. Agent credentials live in `~/.claude/.credentials.json` and
 `~/.codex/auth.json`, and are read by the CLI, written by Zimmer, and *also* rewritten by the
-CLI behind Zimmer's back. See [Agent harness credentials](/auth/harness/).
+CLI behind Zimmer's back. See [Agent harness credentials](/auth/harness/). Pi holds no
+Zimmer-written *harness* credential — it reads a provider key out of its process environment — so
+`~/.pi/agent` (a named volume) carries its own settings plus the MCP OAuth tokens Zimmer stages
+there for it.
 
 ## From prompt to running agent
 
@@ -135,7 +139,7 @@ sequenceDiagram
     J->>A: air prepare {adapter} --target WD --without-defaults<br/>--skill … --mcp-server … --hook … --plugin …
     Note over A: writes .mcp.json, .claude/skills/,<br/>.claude/hooks/, substitutes ${SECRETS}
     A-->>J: {configFiles, skillPaths}
-    J->>J: post-process MCP config (Claude JSON / Codex TOML)
+    J->>J: post-process MCP config (Claude/Pi JSON / Codex TOML)
     J->>J: check MCP OAuth credentials
     alt an MCP server needs OAuth
         J->>S: fail! (failure_reason = oauth_required)
@@ -166,14 +170,15 @@ The steps that most often surprise people:
 
 ## Runtimes are a bundle of seams
 
-Zimmer supports two agent harnesses today, `claude_code` and `codex`, and a third would be
-additive. A "runtime" is a `RuntimeRegistry::Bundle` struct rather than a class, with twelve
-slots, one per place where driving a vendor CLI differs: the CLI adapter, the retry strategy,
-the transcript source and normalizer, the MCP status detector, the prompt contribution, the
-config post-processor, the auth provider, the credential writer.
+Zimmer supports three agent harnesses today — `claude_code`, `codex` and `pi` — and a fourth
+would be additive. A "runtime" is a `RuntimeRegistry::Bundle` struct rather than a class, with
+fourteen slots, one per place where driving a vendor CLI differs: the CLI adapter, the retry
+strategy, the transcript source and normalizer, the MCP status detector, the prompt
+contribution, the config preparer and post-processor, the artifact bridge, the auth provider,
+the credential writer, the usage ingestor.
 
-Core code never says "Claude." It asks the registry. See
-[Adding an agent harness](/extend/agent-harness/).
+Core code never says "Claude." It asks the registry. See [Runtimes](/sessions/runtimes/) for
+what the three are, and [Adding an agent harness](/extend/agent-harness/) for the contract.
 
 ## Extensions
 

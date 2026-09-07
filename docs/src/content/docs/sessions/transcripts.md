@@ -12,7 +12,7 @@ browser. That's the whole loop. Each step has a wrinkle.
 
 ```mermaid
 flowchart LR
-    CLI["Agent CLI<br/>writes JSONL to disk"] --> F["~/.claude/projects/…/*.jsonl<br/>or ~/.codex/…/*.jsonl.zst"]
+    CLI["Agent CLI<br/>writes JSONL to disk"] --> F["~/.claude/projects/…/*.jsonl<br/>~/.codex/…/*.jsonl.zst<br/>&lt;clone&gt;/.pi/sessions/*.jsonl"]
     F --> TS["TranscriptSource<br/>locate → read → redact (cached prefix) → parse<br/>(Codex: zstd-decompress)"]
     TS --> TP["TranscriptPollerService"]
     TP --> RG{"transcript<br/>regression?"}
@@ -80,7 +80,7 @@ green.
 
 ## OpenTranscripts — the normalization layer
 
-Claude and Codex write completely different JSONL. Rather than teaching the UI both dialects,
+Claude, Codex and Pi write completely different JSONL. Rather than teaching the UI three dialects,
 Zimmer normalizes into **OpenTranscripts v0.1** (`app/services/open_transcript.rb`), a
 vendor-neutral schema vendored from `pulsemcp/ai-artifacts`. Nine event types:
 
@@ -372,6 +372,12 @@ TranscriptRuntime.source_for(session, file_system: file_system)
 For Claude Code that is `~/.claude/projects/<sanitized-cwd>/<session_id>.jsonl` — the same file
 `locate` prefers, so the runtime resumes from exactly what the poller reads.
 
+**Pi has one too, and gets it for a different reason.** Pi resolves `--session-id` against the id
+recorded *inside* a session file rather than against the filename, so Zimmer writes the stored
+bytes to one fixed name — `<clone>/.pi/sessions/zimmer_session.jsonl` — and Pi picks the session
+up and continues appending to its leaf. That is why `PiTranscriptSource` can support single-file
+restore while `CodexTranscriptSource` cannot.
+
 The same rule holds for *reading*: the manual-refresh paths (both controllers, the `action_session`
 MCP tool) and the four process-recovery services take the directory **and** the file inside it from
 the source — `transcript_directory` then `find_main_transcript`. Pairing one runtime's directory
@@ -379,9 +385,9 @@ with another's file-picker is how a Codex session ends up searched with Claude's
 `<session_id>.jsonl` rule: it finds nothing at best, and at worst adopts an unrelated rollout that
 happens to sit at the top of `~/.codex/sessions`.
 
-**`nil` means "this runtime has no single-file restore", and it is not an error.** Codex rollouts are
-date-partitioned, UUID-named and possibly Zstandard-compressed, so there is no one deterministic path
-to write stored bytes to. Every caller skips the write on `nil` and carries on; a Codex fork and a
+**`nil` means "this runtime has no single-file restore", and it is not an error.** Codex is the
+only runtime that returns it: its rollouts are date-partitioned, UUID-named and possibly
+Zstandard-compressed, so there is no one deterministic path to write stored bytes to. Every caller skips the write on `nil` and carries on; a Codex fork and a
 Codex unarchive both succeed, having written nothing. Writing a Claude-shaped file the runtime will
 never read would not have helped, and gating the operation on that write turned a no-op into a
 failure.
@@ -526,13 +532,15 @@ session row instead of loading the conversation to count newlines in it.
 ## Rotation: when a shorter file is *new*, not lost
 
 The guard above assumes one canonical transcript file per session, which is true for Claude Code
-and false for Codex. Codex rollouts are append-only and immutable, and `codex exec` mints a **new**
-rollout UUID for every run that is not a resume — so when a resume fails and Zimmer fresh-starts
-the turn, the conversation continues in a brand-new, initially tiny file.
+and for Pi, and false for Codex. Codex rollouts are append-only and immutable, and `codex exec`
+mints a **new** rollout UUID for every run that is not a resume — so when a resume fails and Zimmer
+fresh-starts the turn, the conversation continues in a brand-new, initially tiny file.
 
-`TranscriptSource#rotates_transcript_files?` is what tells the two apart: `false` for Claude
+`TranscriptSource#rotates_transcript_files?` is what tells them apart: `false` for Claude and Pi
 (shorter means *lost*, refuse and repair), `true` for Codex (shorter means *next file*, carry
-history forward).
+history forward). Pi never rotates because `--session-id` continues an existing session tree
+rather than starting a new file, and a Pi resume whose transcript vanished is repaired from
+Zimmer's stored bytes before the spawn.
 
 On a rotation the poller folds the whole stored transcript into an immutable prefix and records
 its length in `metadata["transcript_carryover_event_count"]`, alongside
@@ -614,8 +622,12 @@ That makes the durability of the runtime home a correctness property, not an ops
 `resume` resolves a conversation by its file on disk — `~/.claude` for Claude Code, `CODEX_HOME`
 for Codex — so a runtime home on the container's writable layer is destroyed by every deploy, and
 the following turn cannot resume. Both homes are mounted as durable named volumes (see
-[Deploying](/operate/deploying/)); `test/config/runtime_home_volumes_test.rb` pins that for every
-registered runtime and every role, because the symptom of getting it wrong is not an error — it is
+[Deploying](/operate/deploying/)). Pi is the exception that proves the rule: its conversation is
+not in its home at all, because `--session-dir` points inside the clone, so what
+`PI_CODING_AGENT_DIR` holds is credential and provider state rather than a transcript. Its home is
+mounted on the same terms anyway — losing `auth.json` every deploy is milder than losing a
+conversation, and just as invisible until a session cannot authenticate.
+`test/config/runtime_home_volumes_test.rb` pins all three for every role, because the symptom of getting it wrong is not an error — it is
 an agent with amnesia and a timeline that still looks fine.
 
 ## Opening the transcript is what loads it
@@ -719,6 +731,8 @@ They render as a nested, collapsible accordion inside the parent's timeline row.
 :::caution[Subagent transcripts assume Claude]
 `SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`. Codex
 subagents, if they produced discoverable transcripts, would be normalized with the wrong parser.
+Pi is unaffected for a blunter reason: it has no subagent primitive at all, so
+`PiTranscriptNormalizer`'s subagent extractors always return `[]`.
 :::
 
 ## Transcript hooks

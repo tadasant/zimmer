@@ -431,6 +431,24 @@ on every session spawn:
 So Zimmer refreshes the tokens itself every 30 minutes and re-writes them at spawn, so Codex never has
 to. It's a workaround for someone else's bugs, and it will need to be removed when they're fixed.
 
+### Pi takes a token by handoff, and cannot give one back
+
+`PiMcpCredentialWriter` is the third writer, and it exists because an OAuth-credentialed MCP server
+was otherwise unusable on Pi. `pi-mcp-adapter` answers a connect to one with an instruction to run
+`mcp({ action: "auth-start" })` or `/mcp-auth <server>` — and neither route exists in an unattended
+session, where there is no browser and nobody to click.
+
+The adapter has a documented ingest path, so Zimmer writes into it: a plaintext entry at
+`$MCP_OAUTH_DIR/sha256-<server-hash>/tokens.json`, or under `<Pi agent dir>/mcp-oauth/` when that
+variable is unset, where `<server-hash>` is SHA-256 of the `.mcp.json` server key. On the next read
+the adapter imports it into the OS credential store and deletes the file, which is the intended
+lifecycle rather than a leftover. Every field comes from `ResolvedMcpCredential`; nothing is
+synthesized.
+
+The handoff is one-way. Zimmer can give Pi a token it already holds, and cannot adopt one Pi
+refreshed for itself — see [Zimmer cannot adopt an MCP OAuth token that Pi
+refreshed](/limitations/#zimmer-cannot-adopt-an-mcp-oauth-token-that-pi-refreshed).
+
 ## Refresh
 
 `RefreshMcpOauthTokensJob`, every 30 minutes. It refreshes credentials expiring within an hour — but
@@ -497,7 +515,9 @@ host-global file: they have no session to scope to, so a revoked credential is n
 session that is already running (it gets a fresh directory next time).
 
 Only Claude Code refreshes MCP tokens mid-session; Codex is written-not-trusted (Zimmer rewrites its
-store every spawn), so reconciling against Codex is a harmless no-op.
+store every spawn), so reconciling against Codex is a harmless no-op. Pi refreshes its own copy and
+Zimmer cannot read it back, so there is nothing to reconcile there either — for a different reason,
+and a worse one.
 
 This is also what makes an OAuth MCP connection **survive a worker/clone recreation**. When a session
 is recovered after a deploy or restart, the relaunch goes through the follow-up spawn path, which

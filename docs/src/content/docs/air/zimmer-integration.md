@@ -26,7 +26,7 @@ flowchart TB
 
     subgraph write["WRITE PATH — AirPrepareService (per session)"]
         W["air prepare &lt;adapter&gt; --target &lt;clone&gt;<br/>--without-defaults --no-subagent-merge<br/>--root … --skill … --mcp-server … --hook … --plugin …<br/>env: SecretsLoader.all + AIR_CONFIG"]
-        W2["ClaudeMcpConfigPostProcessor /<br/>CodexConfigTomlPostProcessor"]
+        W2["ClaudeMcpConfigPostProcessor /<br/>CodexConfigTomlPostProcessor /<br/>PiMcpConfigPostProcessor"]
         W3["write system prompt file (AgentsMdWriter)"]
         W --> W2 --> W3
     end
