@@ -370,16 +370,19 @@ already old is wedged; ready work with no claim at all is a lane the worker has 
 old oldest beside a fresh youngest is one slow job on an otherwise healthy lane. See
 [When a lane is wedged](/operate/background-jobs/#when-a-lane-is-wedged).
 
-Last, a **Secret Store** section: which store `${VAR}`s resolve from, the canonical Parameter Store
-namespace, any pre-rename namespaces still being read, and the sorted **names** still answering from
-them. Names only, never values — this response is read by other agent sessions, so a value here would
-be secret material handed to every caller. It exists because the namespace rename reads both
-namespaces across the move, which makes a half-done migration and a finished one identical from every
-other angle: nothing raises, nothing is missing. The session assigned "drop the pre-rename read path"
-has to check that precondition, and before this section the only surface that answered it was a web
-page. It is stated in both directions, so "the migration is finished" is distinguishable from "this
-report doesn't say", and a store that could not be read says *unknown* rather than reading as
-finished. See
+The tool also renders a **Secret Store** section: which store `${VAR}`s resolve from, the canonical
+Parameter Store namespace, any pre-rename namespaces still being read, and the sorted **names** still
+answering from them. Names only, never values — this response is read by other agent sessions, so a
+value here would be secret material handed to every caller. It exists because the namespace rename
+reads both namespaces across the move, which makes a half-done migration and a finished one identical
+from every other angle: nothing raises, nothing is missing. The session assigned "drop the pre-rename
+read path" has to check that precondition, and the only other surface that answers it is a web page.
+
+It is reporting, not resolving, so it reads what the process already holds and never provokes a round
+trip to Google — a health report is the wrong place to inherit a store's latency, and the caller most
+likely to ask is the one triaging a store that is not answering. It is stated in both directions, so
+"the migration is finished" is distinguishable from "this report doesn't say", and a namespace the
+process holds no snapshot of says *unknown* rather than reading as finished. See
 [Telling a half-done migration from a finished one](/operate/secrets-parameter-store/#telling-a-half-done-migration-from-a-finished-one).
 
 `action_health` also carries `backfill_token_usage`: queue a sweep of every transcript on disk into

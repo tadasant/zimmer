@@ -146,15 +146,18 @@ Because nothing raises either way, the state has to be *reported*. Three surface
   session, which cannot read a web page. It names the canonical namespace, the
   pre-rename namespaces still being read, and the sorted list of variable names
   still answering from them — **names only, never values**, because that response
-  is read by other agent sessions. Off the same snapshot, so it is free too.
+  is read by other agent sessions. It reports off the snapshot the process already
+  holds and never refreshes it, so it costs the store nothing even during an
+  outage.
 
 That third one is the precondition check for dropping the pre-rename read path, and
 it answers in both directions: `none — that read path can be dropped` once the data
 has moved, and `none — the namespace migration is complete` once
-`Namespace.read_namespaces` returns one namespace. A store that could not be read
-says `unknown` rather than reading as finished, because reporting an unreadable
-namespace as an empty one is the single wrong answer here — it would tell the
-follow-up PR to go ahead.
+`Namespace.read_namespaces` returns one namespace. A namespace the process holds no
+snapshot of says `unknown` rather than reading as finished, because reporting an
+unread namespace as an empty one is the single wrong answer here — it would tell the
+follow-up PR to go ahead. `SnapshotCache#get` cannot tell those two apart, which is
+why `legacy_variables` reads through `peek` and answers `nil`.
 
 ### Running the migration
 

@@ -84,13 +84,28 @@ module SecretProviders
     # canonical namespace also holds them. This is the migration's progress
     # readout, and it is free: the snapshot already covers both.
     #
-    # @return [Array<String>] sorted; names, never values.
     # A refused name counts as still sitting there: it is a parameter at the old
     # path, and the question this answers is whether the pre-rename read path can
-    # be dropped. Leaving it out would let the banner say the namespace is empty
+    # be dropped. Leaving it out would let a reader say the namespace is empty
     # while it still holds a parameter.
-    def legacy_variables
-      snapshot = @cache.get(@namespaces)
+    #
+    # **An unread namespace and an empty one mean opposite things here**, and
+    # {SnapshotCache#get} answers `{}` to both — a refresh discarded by a
+    # concurrent {#invalidate} lands there with nothing held. Reporting "nothing
+    # remains" for a namespace nobody read is the single wrong answer this can
+    # give: it says the pre-rename read path is safe to drop. So the read goes
+    # through `peek`, which distinguishes them.
+    #
+    # @param refresh [Boolean] false reads only what is already held, so a caller
+    #   that is reporting rather than resolving cannot provoke a store round trip
+    #   — or inherit its latency when the store is unreachable.
+    # @return [Array<String>, nil] sorted; names, never values. nil when no
+    #   snapshot is held.
+    def legacy_variables(refresh: true)
+      @cache.get(@namespaces) if refresh
+      snapshot = @cache.peek(@namespaces)
+      return nil unless snapshot.is_a?(ParameterStore::GcpClient::Snapshot)
+
       legacy_namespaces
         .flat_map { |ns| (snapshot[ns]&.keys || []) + undecodable_in(snapshot, ns) }
         .uniq.sort

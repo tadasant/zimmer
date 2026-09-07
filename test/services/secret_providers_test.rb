@@ -316,6 +316,31 @@ class SecretProvidersTest < ActiveSupport::TestCase
     assert_empty @fake.provider.legacy_variables
   end
 
+  # An unread namespace and an empty one mean opposite things, and SnapshotCache
+  # answers `{}` to both. Reporting a namespace nobody read as empty is the one
+  # wrong answer this can give: it says the pre-rename read path is safe to drop.
+  test "legacy_variables answers nil, not empty, when no snapshot is held" do
+    @fake.seed_secret("STAYING", "1", path: legacy_path("STAYING"))
+    provider = @fake.provider
+
+    assert_nil provider.legacy_variables(refresh: false),
+      "refresh: false reports what is held; nothing is held yet"
+    assert_equal [ "STAYING" ], provider.legacy_variables
+    assert_equal [ "STAYING" ], provider.legacy_variables(refresh: false),
+      "and once a snapshot is held it answers off that, with no round trip"
+  end
+
+  test "legacy_variables with refresh: false costs the store nothing" do
+    @fake.seed_secret("STAYING", "1", path: legacy_path("STAYING"))
+    provider = @fake.provider
+    provider.legacy_variables
+    before = @fake.requests.size
+
+    3.times { provider.legacy_variables(refresh: false) }
+
+    assert_equal before, @fake.requests.size
+  end
+
   test "the badge title names the namespace that actually answered" do
     @fake.seed_secret("MOVED", "1")
     @fake.seed_secret("NOT_YET", "2", path: legacy_path("NOT_YET"))
