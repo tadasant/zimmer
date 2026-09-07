@@ -4128,7 +4128,7 @@ Also:
   Snoozing a card is **not** a substitute: it hides the card and never touches the session. Waking
   one is narrower than it looks, too: **Start now** resumes a spot-queue park but *refuses* a session
   asleep on a wall-clock wake (`Sessions::StartNow` treats an armed wake as outranking the queue),
-  and **Restart** refuses anything that is not `failed`. The two routes that do work are a
+  and **Restart** is offered only for a `failed` or `needs_input` session, which a sleeping (`waiting`) one is not. The two routes that do work are a
   **follow-up** sent from the session page and cancelling the wake at **/triggers** — both consume
   the pause, because both mean "I am taking this session over".
 - **Live card updates ignore the status filter.** The dashboard broadcasts on one global stream and

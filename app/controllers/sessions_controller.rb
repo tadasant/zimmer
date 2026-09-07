@@ -1819,10 +1819,17 @@ class SessionsController < ApplicationController
     # session's GitHub-poll cadence returns to the fast end.
     reset_poll_backoff(@session)
 
-    # Only allow restarting sessions that are failed
-    unless @session.failed?
+    # The state the person clicked Restart from, read before the restart resumes
+    # the session to `waiting`: it is what the answer they get should name.
+    restarted_from = @session.status
+
+    # `failed` and `needs_input` — the two states a session is stranded in, and
+    # the ones the button is rendered under. The predicate is the model's, and is
+    # derived from the `may_resume?` that MCP and the REST API gate on, so this
+    # door cannot drift wider than those two (zimmer#830).
+    unless @session.restartable_by_hand?
       respond_to do |format|
-        format.html { redirect_to @session, alert: "Cannot restart session that is not failed (status: #{@session.status})" }
+        format.html { redirect_to @session, alert: "Cannot restart a session that is #{@session.status} — Restart applies to failed sessions and ones paused awaiting input" }
         format.turbo_stream { render_restart_turbo_stream }
       end
       return
@@ -1845,7 +1852,7 @@ class SessionsController < ApplicationController
         result = with_db_retry do
           ActiveRecord::Base.transaction do
             @session.logs.create!(
-              content: "Restarting failed session: reconnecting to running process #{process_pid}",
+              content: "Restarting #{@session.status} session: reconnecting to running process #{process_pid}",
               level: "info"
             )
 
@@ -1888,7 +1895,7 @@ class SessionsController < ApplicationController
     success, error_message = restart_with_continue_prompt(@session)
     if success
       respond_to do |format|
-        format.html { redirect_to session_path(@session), notice: "Attempting to restart failed session..." }
+        format.html { redirect_to session_path(@session), notice: restart_initiated_notice(restarted_from) }
         format.turbo_stream do
           @session.reload
           render_restart_turbo_stream
@@ -3771,6 +3778,16 @@ class SessionsController < ApplicationController
     result = Sessions::RestartFromScratch.call(session, actor: :web)
 
     result.ok? ? [ true, nil ] : [ false, result.error ]
+  end
+
+  # What the flash says once a restart is under way, named for the state it was
+  # asked from rather than for the `waiting` the session is in by now. The two
+  # states the Restart control is offered from mean different things — a failed
+  # session is being recovered, a `needs_input` one is being taken over — and
+  # telling someone who clicked Restart on a paused session that Zimmer is
+  # "restarting a failed session" is simply untrue.
+  def restart_initiated_notice(restarted_from)
+    restarted_from.to_s == "failed" ? "Attempting to restart failed session..." : "Restarting paused session..."
   end
 
   # Resume a failed session by attempting to send an automated recovery prompt

@@ -537,4 +537,40 @@ module SessionsHelper
       action: "click->session-drawer#open",
       session_drawer_url: drawer_session_path(session_or_id) }.merge(extra)
   end
+
+  # What clicking Restart is about to do to this session, as a sentence to
+  # confirm before it happens — or nil where the button should just fire.
+  #
+  # A `failed` session has stopped, and restarting one is the operation the
+  # button has always named: no dialog. A `needs_input` session is the state
+  # zimmer#830 opened the control up to, and there the same button means
+  # something a person should be told before it happens, because Restart is a
+  # takeover — it resumes the session, consuming any pause on the way past, and
+  # enqueues a turn the session did not ask for. Which turn depends on whether
+  # there is a conversation to land in, so the two cases get their own sentence
+  # rather than one hedged one.
+  def restart_confirmation(session)
+    return nil if session.failed?
+
+    if session.needs_restart_from_scratch?
+      "There is no conversation to continue here — this session's setup never finished. " \
+        "Restarting throws away whatever was set up for it and re-runs the whole pipeline — a " \
+        "fresh clone, a fresh process — with its original prompt. Restart it?"
+    else
+      "This session is paused, not failed. Restarting takes it over and sends an automated " \
+        "\"continue\" prompt into its existing conversation. Restart it?"
+    end
+  end
+
+  # The Restart control's tooltip, which says which of the two states the button
+  # is being offered from. Same three cases as #restart_confirmation.
+  def restart_button_title(session)
+    if session.failed?
+      "Restart failed session"
+    elsif session.needs_restart_from_scratch?
+      "Restart from scratch — this session has no conversation to resume"
+    else
+      "Restart this paused session — sends an automated continue prompt"
+    end
+  end
 end

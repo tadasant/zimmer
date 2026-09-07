@@ -323,9 +323,18 @@ export default class extends Controller {
       case "pause":
         this._submitForm(this.element.dataset.pauseUrl, "post")
         break
-      case "restart":
+      case "restart": {
+        // The sheet's Restart button is offered for `needs_input` as well as
+        // `failed`, and from `needs_input` a restart is a takeover: it resumes
+        // the session and enqueues a turn nobody asked for. The other two render
+        // sites hand that sentence to Turbo as `data-turbo-confirm`; this one
+        // synthesizes its own form, so it asks here. Absent (a failed session)
+        // means fire straight away, as it always did.
+        const restartConfirm = this.element.dataset.restartConfirm
+        if (restartConfirm && !window.confirm(restartConfirm)) break
         this._submitForm(this.element.dataset.restartUrl, "post")
         break
+      }
       case "favorite":
         this._submitForm(this.element.dataset.favoriteUrl, "patch")
         break

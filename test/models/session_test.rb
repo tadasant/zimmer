@@ -4181,6 +4181,48 @@ class SessionTest < ActiveSupport::TestCase
     assert session.continue_nudge_on_refresh?
   end
 
+  # ---------------------------------------------------------------------------
+  # #restartable_by_hand? — the web Restart control's entry condition (zimmer#830)
+  # ---------------------------------------------------------------------------
+
+  test "restartable_by_hand? admits exactly the stranded states" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "p", status: :waiting)
+
+    admitted = {
+      "failed" => true,
+      "needs_input" => true,
+      "waiting" => false,
+      "running" => false,
+      "archived" => false
+    }
+
+    admitted.each do |status, expected|
+      session.update_columns(status: status)
+      assert_equal expected, session.restartable_by_hand?,
+        "a #{status} session should#{expected ? '' : ' not'} be restartable by hand"
+    end
+  end
+
+  # The invariant that keeps the three doors from drifting apart again: whatever
+  # the web offers, MCP `action_session` and `POST /api/v1/sessions/:id/restart`
+  # already accept, because the predicate is derived from the `may_resume?` those
+  # two gate on rather than re-listing statuses.
+  test "restartable_by_hand? is a strict subset of may_resume?" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "p", status: :waiting)
+
+    Session.statuses.each_key do |status|
+      session.update_columns(status: status)
+      next unless session.restartable_by_hand?
+
+      assert session.may_resume?,
+        "the web door must never accept a #{status} session that MCP and REST refuse"
+    end
+
+    session.update_columns(status: "waiting")
+    assert session.may_resume?, "waiting is the one may_resume? state the web door drops"
+    assert_not session.restartable_by_hand?
+  end
+
   test "awaiting_scheduled_wake? ignores an already-fired wake trigger" do
     session = waiting_session_with_conversation
     trigger = wake_trigger_for(session, scheduled_at: 3.hours.from_now.utc.iso8601)
