@@ -4,6 +4,11 @@ require "test_helper"
 require "mocha/minitest"
 
 class HealthControllerTest < ActionDispatch::IntegrationTest
+  # The maintenance actions are behind the operator credential (#312, #371); these tests
+  # are about what they do once past it. The gate itself is
+  # test/controllers/health_controller_operator_auth_test.rb.
+  include OperatorBasicAuthHelpers
+
   def setup
     # Stub Turbo Stream broadcasting to avoid missing partial errors in tests
     Log.any_instance.stubs(:broadcast_append_to_timeline)

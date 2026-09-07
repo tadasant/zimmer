@@ -7,6 +7,10 @@ require "mocha/minitest"
 # and the global banner that makes a halted instance impossible to mistake for a
 # healthy one.
 class HealthControllerQueueRecoveryModeTest < ActionDispatch::IntegrationTest
+  # Entering is behind the operator credential; exiting deliberately is not. See
+  # HealthController::OPERATOR_GATED_ACTIONS, and the gate's own test file.
+  include OperatorBasicAuthHelpers
+
   setup do
     Log.any_instance.stubs(:broadcast_append_to_timeline)
     Session.any_instance.stubs(:broadcast_status_change)

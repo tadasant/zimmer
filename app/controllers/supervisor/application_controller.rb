@@ -7,46 +7,28 @@
 module Supervisor
   class ApplicationController < Administrate::ApplicationController
     include SpeculativeRequest
+    include OperatorHttpBasicAuth
 
-    # One shared HTTP Basic credential gates the whole Administrate surface. There
-    # is no user model behind it — Zimmer is a single circle of trust, so this is
-    # not "who are you" but "are you inside the perimeter at all". The panel
-    # renders `claude_accounts`, `mcp_oauth_credentials`, and `x_oauth_credentials`
-    # as *editable* resources, and those hold plaintext OAuth access and refresh
-    # tokens, so it is the one surface that gets a second wall behind the tailnet.
+    # One shared HTTP Basic credential gates the whole Administrate surface. The realm
+    # itself — the variables, the constant-time comparison, and the fail-closed posture
+    # when SUPERVISOR_PASSWORD is unset — lives in OperatorHttpBasicAuth, which the
+    # mutating /health actions share (#312, #371). What is specific to this surface is
+    # *why* it gets a second wall: the panel renders `claude_accounts`,
+    # `mcp_oauth_credentials`, and `x_oauth_credentials` as *editable* resources, and
+    # those hold plaintext OAuth access and refresh tokens.
     #
-    # The realm fails closed: with SUPERVISOR_PASSWORD unset or blank, every
-    # request is rejected. An unconfigured deployment gets no admin panel, not an anonymous
-    # one — the opposite of the stub this replaced.
-    USERNAME_ENV = "SUPERVISOR_USERNAME"
-    PASSWORD_ENV = "SUPERVISOR_PASSWORD"
-    DEFAULT_USERNAME = "supervisor"
-    REALM = "Zimmer supervisor"
+    # Kept as constants on this class because tests and docs name them here.
+    USERNAME_ENV = OperatorHttpBasicAuth::USERNAME_ENV
+    PASSWORD_ENV = OperatorHttpBasicAuth::PASSWORD_ENV
+    DEFAULT_USERNAME = OperatorHttpBasicAuth::DEFAULT_USERNAME
+    REALM = OperatorHttpBasicAuth::REALM
 
-    before_action :authenticate_supervisor
+    before_action :authenticate_operator
 
     private
 
-    def authenticate_supervisor
-      # `blank?`, not `empty?`: a password of "   " is a misconfiguration (a
-      # trailing space in an env file, a secret that resolved to whitespace), and
-      # treating it as a usable credential would open the panel to one space.
-      expected_password = ENV[PASSWORD_ENV].to_s
-      return refuse_unconfigured if expected_password.blank?
-
-      expected_username = ENV[USERNAME_ENV].presence || DEFAULT_USERNAME
-
-      authenticated = authenticate_with_http_basic do |username, password|
-        # `&`, not `&&`: compare both halves every time, so a wrong username costs
-        # the same as a wrong password and neither leaks which one was wrong.
-        secure_compare(username, expected_username) & secure_compare(password, expected_password)
-      end
-
-      refuse unless authenticated
-    end
-
-    # Refusing and *challenging* are two different things, and separating them is
-    # the whole point of this method.
+    # The concern's default refusal always challenges. This surface must not, for one
+    # case, and separating refusing from challenging is the whole point of the override.
     #
     # The 401 is the gate saying no. The `WWW-Authenticate: Basic` header on it is
     # a separate instruction — "ask the human for a credential" — and the browser
@@ -62,7 +44,7 @@ module Supervisor
     # render nothing, and every real navigation still gets the challenge and
     # still logs in. It only stops the browser recruiting the human into a
     # request they never made.
-    def refuse(realm_configured: true)
+    def refuse_operator(realm_configured: true)
       return request_http_basic_authentication(REALM) unless prefetch_request?
 
       # Turbo hands a prefetched response to a subsequent click on the same link,
@@ -74,21 +56,6 @@ module Supervisor
         layout: false,
         status: :unauthorized,
         locals: { realm_configured: realm_configured }
-    end
-
-    # Without the log line an operator sees a browser prompt that never accepts
-    # anything and nothing at all in the log, which is a miserable thing to
-    # debug — the whole point of failing closed is lost if nobody can tell why.
-    def refuse_unconfigured
-      Rails.logger.warn("[supervisor] refusing #{request.path}: #{PASSWORD_ENV} is unset or blank, so the admin panel is closed")
-      refuse(realm_configured: false)
-    end
-
-    # Constant-time comparison, mirroring Api::BaseController#authenticate_api_key.
-    # `secure_compare` (as opposed to `fixed_length_secure_compare`) digests both
-    # sides first, so it tolerates unequal lengths without leaking them.
-    def secure_compare(given, expected)
-      ActiveSupport::SecurityUtils.secure_compare(given.to_s, expected.to_s)
     end
 
     # Override this value to specify the number of elements to display at a time

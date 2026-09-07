@@ -32,9 +32,15 @@ require "test_helper"
 # exist today, because the defect returns the moment someone adds a fifth.
 class BasicAuthPrefetchTest < ActiveSupport::TestCase
   # Every path under this prefix inherits Supervisor::ApplicationController's
-  # Basic realm. It is the only surface in the app that issues a challenge —
-  # /jobs (GoodJob) is not gated, and Api::BaseController answers with JSON and
-  # no WWW-Authenticate header.
+  # Basic realm. It is the only surface in the app that can issue a challenge to
+  # a *prefetch* — /jobs (GoodJob) is not gated, and Api::BaseController answers
+  # with JSON and no WWW-Authenticate header.
+  #
+  # The mutating POST /health/* actions share the same realm (OperatorHttpBasicAuth,
+  # #312/#371) and do challenge, but they are out of this sweep's reach by
+  # construction: Turbo prefetches `<a href>` on hover, and those routes are
+  # POST-only, so they can only ever be a form action. A `link_to` pointing at one
+  # would be a routing error long before it was a sign-in dialog.
   GATED_ROUTE_HELPER = /\bsupervisor_\w*_(?:path|url)\b/
 
   OPT_OUT = /turbo_prefetch:\s*false|["']data-turbo-prefetch["']\s*=>\s*["']false["']|data-turbo-prefetch=["']false["']/
