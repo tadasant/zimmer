@@ -30,13 +30,36 @@
 #   shape stays owned by the runtime, while the protocol-level DB identity
 #   (McpOauthCredential.compute_credential_key) stays runtime-agnostic.
 #
-# read_runtime_credentials -> Hash{String => RuntimeMcpTokenSnapshot}
+# read_runtime_credentials(credential_keys = nil) -> Hash{String => RuntimeMcpTokenSnapshot}
 #   The read-side mirror of #write!: parse the runtime's on-disk credential store
 #   and return whatever token pairs it currently holds, keyed by the same
 #   credential key #write! stored them under. This is how Zimmer captures a token
 #   the runtime refreshed and rotated mid-session back into its DB
 #   (McpOauthRuntimeReconciler). Returns {} when the store is absent or
 #   unreadable — a missing store means "nothing to adopt", never an error.
+#
+#   `credential_keys` is the set of keys the caller actually wants, or nil for
+#   "everything you have". A store that can be listed ignores it and returns the
+#   whole store either way; a store that can only be *probed* by key — Pi's, whose
+#   OS credential store is addressed by `sha256(server_name)` and offers no
+#   listing — answers only the named keys, and answers {} for nil. See
+#   #enumerable_store?, which is how the reconciler knows which kind it holds.
+#
+# enumerable_store? -> Boolean
+#   Whether #read_runtime_credentials with no keys returns the whole store.
+#   True for a runtime that keeps one readable file (Claude Code, Codex), so the
+#   reconciler reads once and serves every server from that snapshot. False for a
+#   runtime whose store is addressable but not listable (Pi), so the reconciler
+#   probes it one key at a time. Defaults to true — a runtime that keeps a file
+#   does not have to say so.
+#
+# runtime_key_for(credential) -> String
+#   The key this runtime stores a persisted McpOauthCredential under. The
+#   file-store runtimes key by the protocol-level `credential_key`, which is the
+#   default; Pi keys by the bare `.mcp.json` server name. Callers that hold a
+#   server_config use #credential_key_for instead — this is the overload for
+#   callers that hold only a DB row, chiefly RefreshMcpOauthTokensJob's cron
+#   sweep, which reconciles one credential against *every* runtime's store.
 #
 # delete_credentials(credential_keys) -> Array<String>
 #   The destructive mirror of #write!: drop the named entries from the runtime's
@@ -78,6 +101,22 @@
 module RuntimeMcpCredentialWriter
   def self.included(base)
     base.extend(ClassMethods)
+  end
+
+  # Whether #read_runtime_credentials can list the whole store. See the contract
+  # notes above.
+  #
+  # @return [Boolean]
+  def enumerable_store?
+    true
+  end
+
+  # The key this runtime's store holds `credential` under.
+  #
+  # @param credential [McpOauthCredential]
+  # @return [String]
+  def runtime_key_for(credential)
+    credential.credential_key
   end
 
   module ClassMethods

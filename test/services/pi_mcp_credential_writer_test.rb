@@ -175,8 +175,165 @@ class PiMcpCredentialWriterTest < ActiveSupport::TestCase
     assert_path_exists entry_path("notion")
   end
 
-  test "read_runtime_credentials adopts nothing, because Zimmer is authoritative" do
+  # The AuthEntry shape pi-mcp-adapter stores (`toAuthEntry` in mcp-auth.ts).
+  def stored_entry(access_token: "pi-rotated-access", refresh_token: "pi-rotated-refresh", expires_at: 1_900_000_000)
+    JSON.generate(
+      "serverUrl" => "https://mcp.notion.com/mcp",
+      "tokens" => {
+        "accessToken" => access_token,
+        "refreshToken" => refresh_token,
+        "expiresAt" => expires_at,
+        "scope" => "read write"
+      },
+      "clientInfo" => { "clientId" => "client-abc" }
+    )
+  end
+
+  # Reads carry the tighter adoption budget (see READ_TIMEOUT_SECONDS), so a stub
+  # that omitted the keyword would silently stop matching.
+  def stub_keyring_read(account, value)
+    @writer.unstub(:keyring_call)
+    @writer.stubs(:keyring_call).returns({ "ok" => true, "found" => false })
+    @writer.stubs(:keyring_call).with("read", account, timeout: PiMcpCredentialWriter::READ_TIMEOUT_SECONDS)
+      .returns({ "ok" => true, "found" => true, "value" => value })
+  end
+
+  test "the store is probe-only, so the reconciler must ask by key" do
+    assert_not @writer.enumerable_store?
+  end
+
+  test "runtime_key_for is the bare server name, not the protocol credential key" do
+    # Pi hashes the .mcp.json server key; Claude Code and Codex key by
+    # "server_name|hash". The cron reconciles one DB row against every runtime's
+    # store, so each writer has to name its own entry.
+    credential = mcp_oauth_credentials(:notion)
+
+    assert_equal "notion", @writer.runtime_key_for(credential)
+    assert_not_equal credential.credential_key, @writer.runtime_key_for(credential)
+  end
+
+  test "read_runtime_credentials reads back the pair Pi rotated to" do
+    stub_keyring_read(account_for("notion"), stored_entry)
+
+    snapshots = @writer.read_runtime_credentials([ "notion" ])
+
+    assert_equal [ "notion" ], snapshots.keys
+    assert_equal "pi-rotated-access", snapshots["notion"].access_token
+    assert_equal "pi-rotated-refresh", snapshots["notion"].refresh_token
+    assert_equal Time.zone.at(1_900_000_000), snapshots["notion"].expires_at
+  end
+
+  test "read_runtime_credentials reassembles a chunked entry" do
+    account = account_for("notion")
+    payload = stored_entry
+    digest = Digest::SHA256.hexdigest(payload)[0, 16]
+    manifest = JSON.generate(
+      PiMcpCredentialWriter::CHUNK_MANIFEST_KEY => 1,
+      "chunkCount" => 2,
+      "chunkDigest" => digest
+    )
+    half = (payload.length / 2.0).ceil
+
+    @writer.unstub(:keyring_call)
+    @writer.stubs(:keyring_call).returns({ "ok" => true, "found" => false })
+    read_timeout = { timeout: PiMcpCredentialWriter::READ_TIMEOUT_SECONDS }
+    @writer.stubs(:keyring_call).with("read", account, **read_timeout).returns({ "ok" => true, "found" => true, "value" => manifest })
+    @writer.stubs(:keyring_call).with("read", "#{account}.chunk.#{digest}.0", **read_timeout)
+      .returns({ "ok" => true, "found" => true, "value" => payload[0, half] })
+    @writer.stubs(:keyring_call).with("read", "#{account}.chunk.#{digest}.1", **read_timeout)
+      .returns({ "ok" => true, "found" => true, "value" => payload[half..] })
+
+    assert_equal "pi-rotated-refresh", @writer.read_runtime_credentials([ "notion" ])["notion"].refresh_token
+  end
+
+  test "read_runtime_credentials abandons an entry whose chunks have gone missing" do
+    # Joining the surviving chunks would reassemble into garbage; a half-read
+    # entry must look like "nothing to adopt", never like a token.
+    account = account_for("notion")
+    manifest = JSON.generate(
+      PiMcpCredentialWriter::CHUNK_MANIFEST_KEY => 1,
+      "chunkCount" => 2,
+      "chunkDigest" => "a" * 16
+    )
+    @writer.unstub(:keyring_call)
+    @writer.stubs(:keyring_call).returns({ "ok" => true, "found" => false })
+    read_timeout = { timeout: PiMcpCredentialWriter::READ_TIMEOUT_SECONDS }
+    @writer.stubs(:keyring_call).with("read", account, **read_timeout).returns({ "ok" => true, "found" => true, "value" => manifest })
+    @writer.stubs(:keyring_call).with("read", "#{account}.chunk.#{'a' * 16}.0", **read_timeout)
+      .returns({ "ok" => true, "found" => true, "value" => "{\"serverUrl\":" })
+
+    assert_empty @writer.read_runtime_credentials([ "notion" ])
+  end
+
+  test "read_runtime_credentials carries the serverUrl the entry was recorded against" do
+    stub_keyring_read(account_for("notion"), stored_entry)
+
+    assert_equal "https://mcp.notion.com/mcp", @writer.read_runtime_credentials([ "notion" ])["notion"].server_url
+  end
+
+  test "read_runtime_credentials rejects a token that is not a string" do
+    # A numeric or object accessToken is `present?`, so without this it would be
+    # adopted into the DB as if it were a token.
+    stub_keyring_read(account_for("notion"), JSON.generate(
+      "serverUrl" => "https://mcp.notion.com/mcp",
+      "tokens" => { "accessToken" => 12_345, "refreshToken" => "r" }
+    ))
+    assert_empty @writer.read_runtime_credentials([ "notion" ])
+
+    stub_keyring_read(account_for("notion"), JSON.generate(
+      "serverUrl" => "https://mcp.notion.com/mcp",
+      "tokens" => { "accessToken" => "a", "refreshToken" => { "nested" => true } }
+    ))
+    assert_empty @writer.read_runtime_credentials([ "notion" ])
+  end
+
+  test "read_runtime_credentials rejects chunks that do not reassemble to the recorded digest" do
+    # The adapter records sha256(payload)[0,16] over what it split. A reassembly
+    # that parses as JSON but does not match it is corruption, not a token.
+    account = account_for("notion")
+    payload = stored_entry
+    manifest = JSON.generate(
+      PiMcpCredentialWriter::CHUNK_MANIFEST_KEY => 1,
+      "chunkCount" => 1,
+      "chunkDigest" => "0" * 16
+    )
+    @writer.unstub(:keyring_call)
+    @writer.stubs(:keyring_call).returns({ "ok" => true, "found" => false })
+    @writer.stubs(:keyring_call).with("read", account, timeout: PiMcpCredentialWriter::READ_TIMEOUT_SECONDS)
+      .returns({ "ok" => true, "found" => true, "value" => manifest })
+    @writer.stubs(:keyring_call).with("read", "#{account}.chunk.#{'0' * 16}.0", timeout: PiMcpCredentialWriter::READ_TIMEOUT_SECONDS)
+      .returns({ "ok" => true, "found" => true, "value" => payload })
+
+    assert_empty @writer.read_runtime_credentials([ "notion" ])
+  end
+
+  test "read_runtime_credentials answers {} for a key with no entry, a corrupt entry, or no keys" do
+    assert_empty @writer.read_runtime_credentials([ "notion" ])
     assert_empty @writer.read_runtime_credentials
+    assert_empty @writer.read_runtime_credentials([ nil, "" ])
+
+    stub_keyring_read(account_for("notion"), "not json")
+    assert_empty @writer.read_runtime_credentials([ "notion" ])
+
+    stub_keyring_read(account_for("notion"), JSON.generate("serverUrl" => "https://x/mcp"))
+    assert_empty @writer.read_runtime_credentials([ "notion" ]), "an entry with no tokens is nothing to adopt"
+  end
+
+  test "a credential store that will not answer is nothing to adopt, not a raise" do
+    @writer.unstub(:keyring_call)
+    @writer.stubs(:keyring_call).raises("keyring helper timed out after 5s")
+
+    assert_empty @writer.read_runtime_credentials([ "notion" ])
+  end
+
+  test "read_runtime_credentials only reads the store, never the pending file" do
+    # The pending file only ever holds what Zimmer staged, so reading it back
+    # could only echo the DB. Reading it as an adoption candidate would let a
+    # spawn re-adopt its own write.
+    @writer.write!(working_directory: "/clone", credentials: [ credential ])
+    assert_path_exists entry_path("notion")
+
+    assert_empty @writer.read_runtime_credentials([ "notion" ])
   end
 
   test "clear_needs_auth_cache is a no-op — Pi keeps no needs-auth memo" do
