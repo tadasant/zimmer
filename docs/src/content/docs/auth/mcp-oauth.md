@@ -445,9 +445,12 @@ the adapter imports it into the OS credential store and deletes the file, which 
 lifecycle rather than a leftover. Every field comes from `ResolvedMcpCredential`; nothing is
 synthesized.
 
-The handoff is one-way. Zimmer can give Pi a token it already holds, and cannot adopt one Pi
-refreshed for itself — see [Zimmer cannot adopt an MCP OAuth token that Pi
-refreshed](/limitations/#zimmer-cannot-adopt-an-mcp-oauth-token-that-pi-refreshed).
+The handoff goes both ways. Zimmer gives Pi a token it already holds, and reads one Pi refreshed for
+itself back out of the credential store — Pi ships its own MCP OAuth client and rotates like Claude
+Code does, so the write half alone would leave a rotating provider's credential stale. See
+[capturing the token the runtime rotates](#capturing-the-token-the-runtime-rotates-write-back), and
+[the limitation that does remain](/limitations/#a-refreshed-mcp-oauth-token-does-not-reach-a-session-that-is-already-running)
+— nothing pushes a refreshed token into a session that is already running.
 
 ## Refresh
 
