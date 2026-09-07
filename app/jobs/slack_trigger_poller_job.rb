@@ -337,8 +337,17 @@ class SlackTriggerPollerJob < ApplicationJob
       process_dm_message_condition(condition)
     when *TriggerCondition::PASSIVE_EVENT_TYPES
       process_passive_listen_condition(condition)
-    else
+    when "new_message"
       process_new_message_condition(condition)
+    else
+      # An event type the validation does not accept can only reach here as a row
+      # written before the type was retired, so it is a stale row and not a poll
+      # to guess at. Falling through to new_message would fire a session on every
+      # top-level message in the channel, with none of the allow-list or bot
+      # filtering the retired type implied — maximally noisy, and silently so.
+      Rails.logger.error "[SlackTriggerPollerJob] Condition #{condition.id} has unknown " \
+                         "event_type #{condition.event_type.inspect}; skipping. Valid types: " \
+                         "#{TriggerCondition::EVENT_TYPES.join(', ')}"
     end
   end
 
@@ -600,7 +609,6 @@ class SlackTriggerPollerJob < ApplicationJob
   #   within CHANNEL_ENGAGEMENT_WINDOW. Posted at the top level, specifically: a
   #   reply Zimmer left inside a thread makes it party to that thread, not to
   #   everything else said in the channel.
-  # - passive_listen — deprecated, both at once.
   #
   # Bookkeeping is bot_mention's: per-channel cursors in channel_timestamps, and —
   # for the conditions that walk threads — per-thread cursors in thread_timestamps.
@@ -823,7 +831,7 @@ class SlackTriggerPollerJob < ApplicationJob
     end
   end
 
-  # Whether a message may fire a passive_listen condition, given that the
+  # Whether a message may fire a passive-listening condition, given that the
   # conversation it belongs to already qualifies.
   #
   # No bot fires passively — not Zimmer, not anyone else's app. bot_mention accepts

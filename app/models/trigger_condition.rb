@@ -29,17 +29,11 @@
 class TriggerCondition < ApplicationRecord
   CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue system_event].freeze
 
-  # The passive-listening event types, in the order the UI offers them.
-  #
-  # "passive_listen" is the deprecated original, which fires on BOTH signals at
-  # once. It is kept working so a deploy of the split can't strand a trigger that
-  # still names it; new conditions should carry the two halves separately, which is
-  # what lets a Trigger enable one without the other.
-  PASSIVE_EVENT_TYPES = %w[passive_listen_thread passive_listen_channel passive_listen].freeze
-
-  # Delete once no condition names a deprecated type — the check and the removal
-  # steps are in https://github.com/tadasant/zimmer/issues/253.
-  DEPRECATED_EVENT_TYPES = %w[passive_listen].freeze
+  # The passive-listening event types, in the order the UI offers them. They are
+  # two separate conditions on purpose: a Trigger ORs its conditions, so carrying
+  # both is how you get "either", and carrying one is how you enable one half
+  # without the other.
+  PASSIVE_EVENT_TYPES = %w[passive_listen_thread passive_listen_channel].freeze
 
   EVENT_TYPES = (%w[new_message bot_mention dm_message] + PASSIVE_EVENT_TYPES).freeze
 
@@ -187,18 +181,13 @@ class TriggerCondition < ApplicationRecord
   # limit applies: a reply to a thread you are in is addressed to that conversation
   # whenever it lands.
   def passive_threads?
-    passive_listen? && event_type != "passive_listen_channel"
+    passive_listen? && event_type == "passive_listen_thread"
   end
 
   # True when this condition follows top-level messages in channels Zimmer posted
   # in recently — "recently" being SlackTriggerPollerJob::CHANNEL_ENGAGEMENT_WINDOW.
   def passive_channel?
-    passive_listen? && event_type != "passive_listen_thread"
-  end
-
-  # True when this condition names an event type kept only for compatibility.
-  def deprecated_event_type?
-    condition_type == "slack" && DEPRECATED_EVENT_TYPES.include?(event_type)
+    passive_listen? && event_type == "passive_listen_channel"
   end
 
   # The deployment-wide allow-list for bot_mention and passive-listening conditions: a comma-separated
@@ -217,7 +206,7 @@ class TriggerCondition < ApplicationRecord
     raw.to_s.split(",").filter_map { |id| id.strip.presence }
   end
 
-  # Allowed user IDs for bot_mention and passive_listen conditions: this condition's own explicit
+  # Allowed user IDs for bot_mention and passive-listening conditions: this condition's own explicit
   # list if it has one (set from the UI/API), else the deployment-wide default.
   # Empty means unrestricted -- ask allow_all_users? rather than reading this as
   # "nobody", and see the DM caveat there.
@@ -262,7 +251,7 @@ class TriggerCondition < ApplicationRecord
     update!(configuration: new_config)
   end
 
-  # Get the per-channel timestamps for bot_mention / passive_listen conditions
+  # Get the per-channel timestamps for bot_mention / passive-listening conditions
   # (all-channel monitoring).
   # Returns a hash of channel_id => last_message_ts
   def channel_timestamps
@@ -275,8 +264,8 @@ class TriggerCondition < ApplicationRecord
     update!(configuration: new_config)
   end
 
-  # Get per-thread "last reply checked" timestamps for bot_mention / passive_listen
-  # conditions.
+  # Get per-thread "last reply checked" timestamps for bot_mention /
+  # passive-listening conditions.
   # Returns a hash of "channel_id:thread_ts" => last_reply_ts
   def thread_timestamps
     configuration["thread_timestamps"] || {}
@@ -293,8 +282,8 @@ class TriggerCondition < ApplicationRecord
     configuration["thread_recheck_cursors"] || {}
   end
 
-  # Get per-channel "when did Zimmer last speak here" timestamps for passive_listen
-  # conditions. Returns a hash of channel_id => ts.
+  # Get per-channel "when did Zimmer last speak here" timestamps for
+  # passive-listening conditions. Returns a hash of channel_id => ts.
   #
   # This is the channel-engagement signal, and it is a cursor like the two above
   # rather than a second source of truth: the poller learns Zimmer's activity from
@@ -307,7 +296,7 @@ class TriggerCondition < ApplicationRecord
   end
 
   # Thread keys ("channel_id:thread_ts") Zimmer has been seen speaking in, for
-  # passive_listen conditions.
+  # passive-listening conditions.
   #
   # Participation is permanent — a thread you have joined stays yours — so it is
   # remembered rather than re-derived. Without this the poller would have to re-read
@@ -631,9 +620,6 @@ class TriggerCondition < ApplicationRecord
       when "passive_listen_channel"
         scope = channel_name.present? ? "##{channel_name}" : "all channels"
         "Slack: messages in #{scope} Zimmer posted in recently"
-      when "passive_listen"
-        scope = channel_name.present? ? "##{channel_name}" : "all channels"
-        "Slack: passive listening (deprecated: threads + channels) in #{scope}"
       else
         channel_name.present? ? "Slack: ##{channel_name}" : "Slack trigger"
       end
@@ -1135,7 +1121,7 @@ class TriggerCondition < ApplicationRecord
 
   def validate_slack_configuration
     # channel_id is required for new_message, optional for the all-channel event
-    # types (bot_mention also monitors DMs; passive_listen sweeps every channel
+    # types (bot_mention also monitors DMs; the passive types sweep every channel
     # the bot is in).
     if configuration["channel_id"].blank? && !ALL_CHANNEL_EVENT_TYPES.include?(event_type)
       errors.add(:configuration, "must include channel_id for Slack conditions")
@@ -1148,7 +1134,7 @@ class TriggerCondition < ApplicationRecord
     # thread_ts scopes a new_message condition to a single thread's replies. It
     # requires a channel_id (which thread to read), and is meaningless for the
     # all-channel event types — those walk threads themselves, filtering by
-    # @mention (bot_mention) or by prior participation (passive_listen).
+    # @mention (bot_mention) or by prior participation (the passive types).
     if configuration["thread_ts"].present?
       if configuration["channel_id"].blank?
         errors.add(:configuration, "thread_ts requires a channel_id")

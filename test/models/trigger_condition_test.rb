@@ -70,7 +70,7 @@ class TriggerConditionTest < ActiveSupport::TestCase
   test "slack condition validates event_type if present" do
     @slack_condition.configuration["event_type"] = "invalid_event"
     assert_not @slack_condition.valid?
-    assert_includes @slack_condition.errors[:configuration], "event_type must be one of: new_message, bot_mention, dm_message, passive_listen_thread, passive_listen_channel, passive_listen"
+    assert_includes @slack_condition.errors[:configuration], "event_type must be one of: new_message, bot_mention, dm_message, passive_listen_thread, passive_listen_channel"
   end
 
   # thread_ts (thread-scoped new_message) tests
@@ -100,7 +100,7 @@ class TriggerConditionTest < ActiveSupport::TestCase
   end
 
   test "thread_ts is rejected for every passive-listening condition" do
-    %w[passive_listen_thread passive_listen_channel passive_listen].each do |event_type|
+    %w[passive_listen_thread passive_listen_channel].each do |event_type|
       @slack_condition.configuration["event_type"] = event_type
       @slack_condition.configuration["thread_ts"] = "1704000000.000000"
       assert_not @slack_condition.valid?
@@ -1074,7 +1074,7 @@ class TriggerConditionTest < ActiveSupport::TestCase
   test "every passive-listening event type is valid with or without a channel_id" do
     condition = trigger_conditions(:passive_listen_all_channels_condition)
 
-    %w[passive_listen_thread passive_listen_channel passive_listen].each do |event_type|
+    %w[passive_listen_thread passive_listen_channel].each do |event_type|
       condition.configuration["event_type"] = event_type
       condition.configuration.delete("channel_id")
       assert condition.valid?, "#{event_type} should be valid without a channel_id"
@@ -1084,26 +1084,30 @@ class TriggerConditionTest < ActiveSupport::TestCase
     end
   end
 
-  test "the two passive halves select their own signal, and the deprecated type selects both" do
+  test "each passive half selects its own signal and not the other" do
     condition = trigger_conditions(:passive_listen_all_channels_condition)
 
     condition.configuration["event_type"] = "passive_listen_thread"
     assert condition.passive_listen?
     assert condition.passive_threads?
     assert_not condition.passive_channel?
-    assert_not condition.deprecated_event_type?
 
     condition.configuration["event_type"] = "passive_listen_channel"
     assert condition.passive_listen?
     assert_not condition.passive_threads?
     assert condition.passive_channel?
-    assert_not condition.deprecated_event_type?
+  end
 
+  test "the removed passive_listen alias is rejected" do
+    condition = trigger_conditions(:passive_listen_all_channels_condition)
     condition.configuration["event_type"] = "passive_listen"
-    assert condition.passive_listen?
-    assert condition.passive_threads?
-    assert condition.passive_channel?
-    assert condition.deprecated_event_type?
+
+    assert_not condition.valid?
+    assert_includes condition.errors[:configuration],
+                    "event_type must be one of: new_message, bot_mention, dm_message, passive_listen_thread, passive_listen_channel"
+    assert_not condition.passive_listen?
+    assert_not condition.passive_threads?
+    assert_not condition.passive_channel?
   end
 
   test "passive_listen? is false for other event types" do
@@ -1121,9 +1125,6 @@ class TriggerConditionTest < ActiveSupport::TestCase
 
     condition.configuration["event_type"] = "passive_listen_channel"
     assert_equal "Slack: messages in all channels Zimmer posted in recently", condition.description
-
-    condition.configuration["event_type"] = "passive_listen"
-    assert_equal "Slack: passive listening (deprecated: threads + channels) in all channels", condition.description
 
     condition.configuration["event_type"] = "passive_listen_thread"
     condition.configuration["channel_name"] = "general"
