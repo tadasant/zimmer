@@ -6216,6 +6216,30 @@ closes the gap where a cap could go back down with no trace at all, but only hal
   stale values back over anything changed in between. The audit line makes that visible after the
   fact; it does not prevent it.
 
+## A partly-mapped roster, or an `unknown` genesis, still reads as an affirmative absence
+
+The Human Messages record now distinguishes "no named human spoke" from "capture is not configured
+for the channel this work arrived over" — see
+[Hierarchy and human messages](/sessions/hierarchy-and-human-messages/#absence-is-only-an-answer-when-capture-could-have-fired).
+The check behind that distinction is **deployment-wide**, and it has to be: the message Zimmer did
+not record is the one that cannot be consulted, so the question must be answerable without it. It
+asks *"could any Slack message have resolved to anybody?"*, not *"was this actor mapped?"*.
+
+Two cases therefore still render as an affirmative absence when they are not one:
+
+- **A partly-mapped roster.** Fill in one human's Slack user ID at `/supervisor/users` and leave the
+  other's blank, and Slack counts as instrumented. The unmapped human can then speak on Slack, spawn
+  a session, and have the record say *"No message anywhere in this hierarchy was authored by a named
+  human"*. Every `reason` string is careful to claim only *"no row maps **any** Slack user ID"*, so
+  nothing over-claims in prose — but the empty record is still the affirmative sentence. Map every
+  human who can trigger Zimmer, not just the first one.
+- **A session whose genesis is `unknown`.** `unknown` means the origin could not be established
+  (chiefly rows predating the genesis column), so it maps to no channel and reports no gap. A
+  Slack-origin session sitting on `unknown` is invisible to the check.
+
+Both would need a per-actor signal that does not exist: a Slack message from an unmapped user leaves
+no trace anywhere in Zimmer, which is exactly the property being worked around.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

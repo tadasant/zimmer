@@ -160,6 +160,48 @@ class Mcp::Tools::GetSessionProvenanceToolTest < ActiveSupport::TestCase
     assert_includes output, "typed in the browser"
   end
 
+  # Both channels can be unanswerable at once — a hierarchy that arrived over the
+  # web UI and over Slack, on a deployment whose roster names nobody. The prose
+  # switches to plural there, and a rendering that said "one of the channels" over
+  # two bullets would be describing a record it is not looking at.
+  test "two uninstrumented channels are both named, in plural prose" do
+    User.destroy_all
+    router = create_session(title: "Route it")
+    router.update_column(:genesis, SessionGenesis::SLACK)
+    worker = create_session(parent: router, title: "Do it")
+    worker.update_column(:genesis, SessionGenesis::WEB_UI)
+
+    output = @tool.call("session_id" => worker.id)
+
+    assert_includes output, "Capture is NOT configured for Slack"
+    assert_includes output, "Capture is NOT configured for the Zimmer web UI"
+    assert_includes output, "capture is not configured for Slack and the Zimmer web UI — channels this hierarchy's work arrived over"
+    assert_includes output, "See the bullets above for what to fix."
+    refute_includes output, "one of the channels"
+    refute_includes output, "No message anywhere in this hierarchy was authored by a named human"
+  end
+
+  # The bullet names the sessions the gap covers, and a hierarchy runs to
+  # SessionHierarchy::MAX_NODES — so past a handful the ids give way to a count.
+  # The session COUNT in the sentence stays exact either way.
+  test "a gap covering more sessions than it lists counts the rest" do
+    User.update_all(slack_user_ids: [])
+    listed = Mcp::ProvenanceSections::GAP_SESSION_IDS_LISTED
+    sessions = []
+    (listed + 2).times do |i|
+      session = create_session(parent: sessions.last, title: "Slack #{i}")
+      session.update_column(:genesis, SessionGenesis::SLACK)
+      sessions << session
+    end
+
+    output = @tool.call("session_id" => sessions.last.id)
+
+    assert_includes output, "which #{listed + 2} sessions in this hierarchy came in through"
+    assert_includes output, "and 2 more)."
+    # Exactly the first `listed` ids, and none of the two it counted instead.
+    sessions.first(listed).each { |session| assert_includes output, "##{session.id}" }
+  end
+
   test "it accepts a slug as well as a numeric id" do
     session = create_session
     session.update!(slug: "provenance-tool-slug")
@@ -236,6 +278,14 @@ class Mcp::Tools::GetSessionProvenanceToolTest < ActiveSupport::TestCase
     assert_match(/router-written spawn prompt/, description)
     assert_match(/heartbeat nudge/, description)
     assert_match(/never evidence of human authorization/, description)
+
+    # And that absence is only an ANSWER when capture could have fired — the
+    # caveat #658 added. Without it a reader takes an uninstrumented channel for
+    # an affirmative "no human spoke", which is the confusion this record exists
+    # to remove.
+    assert_match(/only an answer when capture could have fired/i, description)
+    assert_match(/no roster mapping behind it/, description)
+    assert_match(/the check could not be established/, description)
   end
 
   test "get_session's description carries the same caveats for the same record" do

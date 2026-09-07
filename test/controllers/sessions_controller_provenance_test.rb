@@ -67,7 +67,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     assert_match "Capture is not configured for Slack", response.body
     assert_match "the check could not be established", response.body
     assert_select "[data-capture-gap] a", text: "Open the roster"
-    assert_match "none captured — and capture is not configured for this hierarchy&#39;s channel", response.body
+    assert_match "none recorded anywhere in this hierarchy — and capture is not configured for this hierarchy&#39;s channel", response.body
     assert_no_match(/No message anywhere in this hierarchy was authored by a named human/, response.body)
   end
 
