@@ -291,7 +291,7 @@ provider would have rotated the single-use refresh token, and only then would th
 | Var | Used for |
 | --- | --- |
 | `API_KEYS` | REST API auth (comma-separated) |
-| `SUPERVISOR_PASSWORD` | The `/supervisor` HTTP Basic realm. **Unset or blank means the panel is closed**, not open. |
+| `SUPERVISOR_PASSWORD` | The operator HTTP Basic realm: `/supervisor` and the mutating `POST /health/*` actions. Unset or blank means **both are closed**, not open. |
 | `SUPERVISOR_USERNAME` | Optional; defaults to `supervisor`. |
 | `APP_HOST` | The MCP OAuth **redirect URI**. Defaults to `localhost:3000`, and picks `http` iff the host string contains "localhost". |
 | `RAILS_MASTER_KEY` | Unlocks Rails credentials (`mcp_oauth_clients`, `mcp_secrets`) |

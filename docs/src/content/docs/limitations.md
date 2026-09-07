@@ -3981,7 +3981,7 @@ messages](/sessions/hierarchy-and-human-messages/)). A caller that passes no key
 the original ambiguity, which is why the tool description tells it to search by title rather than
 retry. Tracked in [#577](https://github.com/tadasant/zimmer/issues/577).
 
-### Queue recovery mode is deliberately outside the health cooldown, and the web control is anonymous
+### Queue recovery mode is deliberately outside the health cooldown, and only the way out is anonymous
 
 `QueueRecoveryMode` (see [Queue recovery mode](/operate/background-jobs/#queue-recovery-mode)) is
 Zimmer's escape hatch for a runaway job queue: it halts execution on `pollers`, `triggers`,
@@ -3994,14 +3994,21 @@ instance whose Redis is least trustworthy — so the throttle would have locked 
 above all the way back out of it, precisely when it was needed. A halt is two row-writes and is
 reversible; being unable to resume is not.
 
-And the web control inherits the dashboard's anonymity. `/health` has no authentication at all (see
-[The /health dashboard runs destructive actions
-anonymously](https://github.com/tadasant/zimmer/issues/312) — the whole web UI relies on
-network-level access control), so anyone who can reach the page can halt instance-wide job
-processing, repeatedly and unthrottled. That is a bigger lever than its neighbours on that page, even
-though it is reversible, self-expiring and pages `#eng-alerts` on every transition. The REST and MCP
-equivalents require an API key as usual, and MCP additionally gates on the `health` tool group, which
-the `self_session` set injected into every agent session does not include.
+The two halves of the web control are gated differently, and the asymmetry is the point.
+`enter_queue_recovery_mode` sits behind the operator realm with the destructive maintenance actions
+([#371](https://github.com/tadasant/zimmer/issues/371),
+[#312](https://github.com/tadasant/zimmer/issues/312)), because halting instance-wide job processing
+is a bigger lever than its neighbours on that page even though it is reversible, self-expiring and
+pages `#eng-alerts` on every transition. `exit_queue_recovery_mode` is behind nothing, deliberately:
+the realm fails closed, so gating the exit would put a credential the deployment may never have set
+between an operator and the end of a halt. The REST and MCP equivalents of both require an API key as
+usual, and MCP additionally gates on the `health` tool group, which the `self_session` set injected
+into every agent session does not include.
+
+What the realm buys here is narrower than it looks. The caller it is aimed at is an agent session
+already inside the tailnet, and a session holds an `API_KEYS` entry even though `CliSpawnEnv` strips
+`SUPERVISOR_PASSWORD` from everything it spawns. The web door is shut; the REST and MCP doors still
+answer to a credential the caller already has.
 
 Two knock-on effects worth knowing while the mode is on. Halting `pollers` also halts
 `SystemHealthMonitorJob`, so the "Queue backlog critical" page stops firing — deliberate, since the
@@ -4036,10 +4043,14 @@ the dashboard's buttons refuse with a flash. All of them log it. `GET /api/v1/he
 dashboard page itself are unaffected — they have no cooldown to enforce.
 
 The consequence to know: an instance whose Redis is down cannot run `cleanup_processes`,
-`retry_sessions`, or `archive_old` on any surface. That is deliberate — these are destructive
-maintenance actions and the throttle is the only thing standing in front of them — but it is a hard
-stop, not a degradation, and it arrives during a Redis outage, which is exactly when someone may be
-reaching for those buttons.
+`retry_sessions`, or `archive_old` on any surface. That is deliberate — a destructive maintenance
+action that runs unthrottled is worse than one that does not run — but it is a hard stop, not a
+degradation, and it arrives during a Redis outage, which is exactly when someone may be reaching for
+those buttons.
+
+**Holding the credential does not exempt a caller from the throttle.** The operator realm and the
+cooldown are independent gates and a caller passes both or nothing runs, so the 503 above lands on an
+authenticated operator exactly as it lands on an API key. No credential buys a way past a dead Redis.
 
 Two things per-caller bucketing does *not* give you. It is not per-identity: `API_KEYS` entries are
 opaque strings with no owner, so the bucket separates keys, not people. And it raises the
