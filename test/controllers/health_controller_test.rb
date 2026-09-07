@@ -118,6 +118,47 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert_match /All systems operational|issues detected|warnings detected/, response.body
   end
 
+  # UI/MCP parity. The `get_system_health` MCP tool answers "which lane is deep"
+  # and "what is filling it", and this panel is where /health answers them too — on
+  # the page a human opens when the backlog alert fires. Without it the dashboard
+  # shows four bare totals and says strictly less than the agent surface (#450).
+  test "dashboard shows what the backlog is made of, not just how deep it is" do
+    now = Time.current
+    blank = { queue_name: nil, job_class: nil, scheduled_at: nil, locked_by_id: nil, locked_at: nil,
+              performed_at: nil, created_at: now, updated_at: now }
+    GoodJob::Job.insert_all(
+      Array.new(6) do
+        blank.merge(queue_name: "inference", job_class: "SessionStatusSummaryJob",
+                    scheduled_at: 20.minutes.ago)
+      end +
+      Array.new(2) do
+        blank.merge(queue_name: "default", job_class: "SessionTitleJob", scheduled_at: 1.minute.ago)
+      end +
+      [ blank.merge(queue_name: "agents", job_class: "AgentSessionJob", locked_by_id: SecureRandom.uuid,
+                    locked_at: 30.seconds.ago, performed_at: 30.seconds.ago) ]
+    )
+
+    get health_dashboard_url
+    assert_response :success
+
+    assert_select "h4", text: "Backlog Breakdown"
+    assert_select "dd", text: /inference 6, default 2/
+    assert_select "dd", text: /SessionStatusSummaryJob 6, SessionTitleJob 2/
+    assert_select "dd", text: /inference 20m, default 1m/
+    assert_select "dd", text: /inference \/ SessionStatusSummaryJob, waiting 20m/
+    assert_select "dd", text: /agents 1/
+    assert_select "dd", text: /AgentSessionJob 1/
+  end
+
+  # A breakdown of an empty queue is a block of noise on a healthy dashboard, and
+  # the section has nothing to say when nothing is waiting or running.
+  test "dashboard omits the backlog breakdown when the queues are empty" do
+    get health_dashboard_url
+    assert_response :success
+
+    assert_select "h4", text: "Backlog Breakdown", count: 0
+  end
+
   test "dashboard links back to sessions" do
     get health_dashboard_url
     assert_response :success
