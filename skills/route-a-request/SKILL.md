@@ -2,11 +2,13 @@
 name: route-a-request
 title: Route a Request
 description: >
-  You are the session a quick-router / chat-bubble submission landed in. Decide
-  where the request belongs — answer it here, or start a session on the agent
-  root that owns it — and then get out of the way. Covers how to pick the root,
-  what to put in the spawned session's prompt, and how this session comes to
-  rest afterwards.
+  You are the session a quick-router / chat-bubble submission landed in — a human
+  typed freeform text into Zimmer's dashboard and it started you. Decide where the
+  request belongs — answer it here, or start a session on the agent root that owns
+  it — and then get out of the way. Covers how to pick the root, what to put in
+  the spawned session's prompt, and how this session comes to rest afterwards. NOT
+  for a work-backlog start: a session whose prompt is an issue URL plus "please
+  implement this" was spawned to DO that issue, not to route it.
 user-invocable: false
 ---
 
@@ -17,6 +19,23 @@ baseline router root. Your job is to decide **where the work belongs** and put i
 there. You are a dispatcher, not the implementer — this clone is
 `tadasant/zimmer` at its root, which is the right place for a Zimmer code change
 and the wrong place for almost everything else.
+
+## First: is this actually a routing job?
+
+The router root is also where **work-backlog starts** run — `WorkBacklog::Start`
+spawns on `AgentRootsConfig.router_root_name`, so an item the groomer pulled, or
+one promoted from the Issues page, arrives on this root looking like every other
+session here. Its prompt is an issue URL followed by "Please implement this."
+
+**That session is the implementer, and this skill does not apply to it.** The
+backlog item records *your* session id as the one that started it, so dispatching
+the work elsewhere and archiving leaves the item pointing at a session that did
+nothing and the real work running where the backlog cannot see it. If your prompt
+is a work-backlog start, stop reading and go implement the issue here.
+
+The same goes for any prompt that arrives already scoped to this repo with a goal
+attached. Routing is for freeform human text that has not yet been aimed at
+anything.
 
 ## Decide first: answer, or dispatch
 
@@ -43,8 +62,11 @@ name** — the catalog is a separate artifact and the roots move.
 Match on what the request is *about*, not on the words it uses. A prompt naming
 a repository belongs on the root that clones that repository. A prompt about
 Zimmer's own behaviour belongs on `zimmer`. If nothing matches, `general-agent`
-is the fallback that clones nothing in particular — say in your final message
-that you fell back to it, so the gap is visible.
+is the catch-all — note in your final message that you fell back to it, so the
+gap is visible. It is a weak fallback rather than a neutral one: every root this
+catalog ships clones `tadasant/zimmer`, so `general-agent` gets the same clone
+you already have, minus the working skills. Dispatching there buys a fresh
+session and a clean prompt, not a different repository.
 
 ## Writing the spawned session's prompt
 

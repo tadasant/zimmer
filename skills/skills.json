@@ -130,7 +130,7 @@
   "route-a-request": {
     "id": "route-a-request",
     "title": "Route a Request",
-    "description": "You are the session a quick-router / chat-bubble submission landed in: decide whether to answer the request here or start a session on the agent root that owns it, then get out of the way. Covers picking the root from `get_configs`, what to carry into the spawned session's prompt, and how the router session comes to rest afterwards. Not for routine session management.",
+    "description": "You are the session a quick-router / chat-bubble submission landed in \u2014 a human typed freeform text into Zimmer's dashboard and it started you. Decide whether to answer the request here or start a session on the agent root that owns it, then get out of the way. Covers picking the root from `get_configs`, what to carry into the spawned session's prompt, and how the router session comes to rest afterwards. NOT for a work-backlog start, which runs on the same root: a session whose prompt is an issue URL plus \"please implement this\" was spawned to DO that issue, not to route it. Not for routine session management either.",
     "path": "route-a-request",
     "category": "zimmer",
     "user_invocable": false,

@@ -2847,8 +2847,7 @@ placeholder `https://zimmer.example.com/...` (only its `X-API-Key` header is a `
 `RuntimeConfigPostProcessor#retarget_zimmer_servers_to_current_env!` early-returned in production
 (`return if Rails.env.production?`). Dev and staging rewrote that placeholder to the instance's real
 `ZIMMER_*_BASE_URL`; a **production** instance running the in-image catalog did not, so its router
-sessions would dial a dead host and — after `RetryBudget::MCP_CONNECTION` was spent — be failed
-outright (`AgentSessionJob` → `session.fail!`).
+sessions would dial a host that does not resolve.
 
 That prod no-op was only sound under the assumption written into its own comment: that production
 "already point[s] at the instance serving the session" — true for an instance running its **own**
@@ -2860,16 +2859,36 @@ than by working around it. Retargeting now runs in production too, and its guard
 address"* rather than *"which environment is this"*: an instance retargets whenever `AppUrl` resolves
 to something other than a placeholder host, which covers both deployment shapes — a custom catalog's
 real URL rebases onto the origin it already named, and the in-image placeholder becomes the instance.
-An instance that was never told its address (no `ZIMMER_PROD_BASE_URL`) skips the rewrite, and any
-catalog `zimmer*` entry still sitting on the placeholder afterwards is **dropped** from the session's
-config with a warning in the log — no session-orchestration server, which is what such a deployment
-had before, rather than a dead one. With that settled, `zimmer-sessions` and the `route-a-request`
-skill default into `zimmer-orchestrator` and its `zimmer-router` alias.
+An instance that was never told its address (no `ZIMMER_PROD_BASE_URL`) cannot point anything at
+itself, so it drops every catalog `zimmer*` entry instead, with a warning naming the variable to set.
+That leaves such a deployment with no session-orchestration server — which is what it had before this
+default existed. With that settled, `zimmer-sessions` and the `route-a-request` skill default into
+`zimmer-orchestrator` and its `zimmer-router` alias.
 
-The auto-injected `zimmer-self-session` server was unaffected throughout, and is deliberately exempt
-from the drop: `SelfSessionInjector` builds its URL from `ZIMMER_*_BASE_URL` directly rather than from
-the catalog, and it is a session's only route to archiving itself, so a mis-provisioned instance keeps
-it and fails loudly at call time instead of silently losing its lifecycle tools.
+**This page previously said a dead entry would get the session "failed outright" once
+`RetryBudget::MCP_CONNECTION` was spent. That was wrong**, and it is worth correcting rather than
+repeating: `AgentSessionJob#check_and_handle_mcp_failure` only calls `session.fail!` for an
+OAuth-capable server needing authorization. Everything else spends the retry ladder (30s/60s/120s)
+and then `degrade_mcp_servers!` leaves the server out and resumes the session — as
+[the MCP servers page](/air/mcp-servers/#when-a-server-cannot-connect-the-server-is-left-out-not-the-session)
+describes. So the cost of shipping the placeholder was three and a half minutes of backoff plus a
+pause/resume cycle to reach the same "no session orchestration" the drop reaches immediately, not a
+dead session. The drop is still the right behaviour, and the stronger reason for it is the *other*
+shape: a custom catalog may name a real Zimmer that is not this one, and passing that through would
+have a session orchestrate somebody else's instance.
+
+The auto-injected `zimmer-self-session` server was unaffected throughout: `SelfSessionInjector` builds
+its URL from `ZIMMER_*_BASE_URL` directly rather than from the catalog. It also survives the drop
+structurally rather than by exemption — the drop runs *before* the injections, so a full-surface
+catalog `zimmer` entry (which suppresses both injections) can be removed without taking the session's
+only route to archiving itself with it; the injection then refills the gap.
+
+One rough edge remains. A dropped server is still on `sessions.mcp_servers`, because that column was
+materialised from the root's `default_mcp_servers` at creation time and the drop happens later, at
+config-write time. `McpStatusPersisting` therefore seeds it `pending` and it renders as
+perpetually-pending in the session's MCP panel and in `get_session` — a server the operator can see
+listed but which is not in the config the agent got. On a correctly-provisioned instance nothing is
+ever dropped, so this only shows up on one that never set its base URL.
 
 ### The router root's two names split its cost and filter history
 

@@ -781,16 +781,22 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
   # An instance running its own catalog via AIR_CONFIG already names a real URL.
   # Retargeting it must land on the same origin rather than moving it, which is
   # what makes lifting the production skip safe for both deployment shapes.
+  #
+  # The key is deliberately NOT the same as the catalog's, so this distinguishes
+  # pass-through from overwrite-with-an-identical-value. Overwrite is the intended
+  # behaviour: an entry aimed at THIS instance must carry THIS instance's key, and
+  # a catalog literal is a credential for whichever instance the catalog was
+  # written for.
   test "post_process! leaves a production entry that already names this instance where it is" do
     ENV["ZIMMER_PROD_BASE_URL"] = "https://zimmer.tadasant.example"
-    ENV["ZIMMER_PROD_API_KEY"] = "real-prod-key"
+    ENV["ZIMMER_PROD_API_KEY"] = "instance-own-key"
 
     Rails.stub(:env, ActiveSupport::StringInquirer.new("production")) do
       write_config(
         "zimmer-sessions" => {
           "type" => "http",
           "url" => "https://zimmer.tadasant.example/mcp?tool_groups=sessions",
-          "headers" => { "X-API-Key" => "real-prod-key" }
+          "headers" => { "X-API-Key" => "catalog-literal-key" }
         }
       )
 
@@ -798,8 +804,82 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
 
       entry = read_config.dig("mcpServers", "zimmer-sessions")
       assert_equal "https://zimmer.tadasant.example/mcp?tool_groups=sessions&session_id=#{@session.id}",
-        entry["url"]
-      assert_equal "real-prod-key", entry.dig("headers", "X-API-Key")
+        entry["url"],
+        "an entry that already names this instance must land on the same origin, not move"
+      assert_equal "instance-own-key", entry.dig("headers", "X-API-Key"),
+        "the key is normalized to this instance's own, not passed through from the catalog"
+    end
+  end
+
+  # The reason the drop is not scoped to the placeholder HOST. An instance that
+  # has not been told its own address cannot retarget anything, and a custom
+  # catalog's `zimmer*` entry may name a perfectly live Zimmer that is not this
+  # one -- leaving it would have a session orchestrate somebody else's instance.
+  test "post_process! drops a catalog zimmer entry naming a live but foreign instance" do
+    ENV["ZIMMER_STAGING_API_KEY"] = "staging-key"
+
+    Rails.stub(:env, ActiveSupport::StringInquirer.new("staging")) do
+      write_config(
+        "zimmer-sessions" => {
+          "type" => "http",
+          "url" => "https://zimmer.someone-elses-host.example/mcp?tool_groups=sessions",
+          "headers" => { "X-API-Key" => "their-key" }
+        }
+      )
+
+      build_processor.post_process!
+
+      assert_nil read_config.dig("mcpServers", "zimmer-sessions"),
+        "with no ZIMMER_STAGING_BASE_URL there is nothing to retarget onto, and a staging session " \
+        "must not be handed a server pointing at another Zimmer"
+    end
+  end
+
+  # The hole the drop had while it ran after injection: a full-surface catalog
+  # `zimmer` entry suppresses BOTH injections, so dropping it afterwards took the
+  # session's only route to archiving itself with it.
+  test "post_process! refills the self-session surface when it drops the entry that was covering it" do
+    ENV["ZIMMER_PROD_API_KEY"] = "prod-key"
+
+    Rails.stub(:env, ActiveSupport::StringInquirer.new("production")) do
+      write_config(
+        SUBAGENT_SERVER => {
+          "type" => "http",
+          "url" => "https://zimmer.example.com/mcp",
+          "headers" => { "X-API-Key" => "${ZIMMER_PROD_API_KEY}" }
+        }
+      )
+
+      processor = build_processor
+      processor.post_process!
+
+      servers = read_config["mcpServers"]
+      assert_nil servers[SUBAGENT_SERVER], "the untargetable catalog entry is dropped"
+      assert servers.key?(SELF_SESSION_SERVER),
+        "dropping the entry that was covering self_session must leave the injection to refill it -- " \
+        "otherwise the session has no way to archive itself"
+      assert_includes processor.injected_mcp_servers, SELF_SESSION_SERVER
+    end
+  end
+
+  # ensure_baseline! shares the ordering, so it shares the property.
+  test "ensure_baseline! drops an untargetable catalog entry and still leaves a self-session server" do
+    ENV["ZIMMER_PROD_API_KEY"] = "prod-key"
+
+    Rails.stub(:env, ActiveSupport::StringInquirer.new("production")) do
+      write_config(
+        SUBAGENT_SERVER => {
+          "type" => "http",
+          "url" => "https://zimmer.example.com/mcp",
+          "headers" => { "X-API-Key" => "${ZIMMER_PROD_API_KEY}" }
+        }
+      )
+
+      build_processor.ensure_baseline!
+
+      servers = read_config["mcpServers"]
+      assert_nil servers[SUBAGENT_SERVER]
+      assert servers.key?(SELF_SESSION_SERVER)
     end
   end
 

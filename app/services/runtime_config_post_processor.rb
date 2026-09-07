@@ -13,9 +13,9 @@
 #      already covers the self_session tool group.
 #   3. Retarget Zimmer MCP server entries at the current Zimmer instance so a
 #      session orchestrates itself rather than whichever instance the catalog
-#      names, drop any that still point at a placeholder host afterwards, and
-#      stamp each survivor with `session_id` so its tools know which session is
-#      calling them.
+#      names — dropping them outright when this instance has no address to be
+#      pointed at — and stamp each survivor with `session_id` so its tools know
+#      which session is calling them.
 #   4. Write the elicitation address (ELICITATION_REQUEST_URL / _SESSION_ID) into
 #      every stdio server's own `env` table.
 #   5. Resolve ${VAR} interpolations from SecretsLoader.
@@ -80,10 +80,10 @@ class RuntimeConfigPostProcessor
     config = read_or_synthesize_config
     servers = servers_map(config)
 
+    retarget_zimmer_servers_to_current_env!(servers)
+    drop_untargetable_zimmer_servers!(servers)
     inject_subagent_server!(servers)
     inject_self_session_server!(servers)
-    retarget_zimmer_servers_to_current_env!(servers)
-    drop_unreachable_zimmer_servers!(servers)
     stamp_session_id_on_zimmer_servers!(servers)
     inject_elicitation_env!(servers)
     resolve_secrets!(servers)
@@ -106,23 +106,28 @@ class RuntimeConfigPostProcessor
   # self-session server (a full-surface Zimmer server with ALLOWED_AGENT_ROOTS
   # already covers the self_session tool group), so the two injections never
   # write duplicate Zimmer servers.
+  #
+  # This used to bail out when nothing had been injected, on the reasoning that
+  # only injected entries can reach this path so there was nothing else to
+  # retarget. That is no longer quite true — #read_or_synthesize_config parses
+  # whatever config is already on the clone, so a session that HAD explicit MCP
+  # servers and no longer does (a follow-up, an unarchive, a fork) arrives with
+  # the previous run's entries still in the file — and the bail-out would have
+  # discarded a retarget or a drop that had already been applied to them in
+  # memory. Every step below is a documented no-op on an empty server table, so
+  # running them unconditionally costs nothing and cannot silently drop work.
   def ensure_baseline!
     config = read_or_synthesize_config
     servers = servers_map(config)
 
+    # Same order as #post_process!, and for the same reason: dropping a Zimmer
+    # entry this instance cannot point at itself has to happen BEFORE the
+    # injections, so they refill the surface it took with it.
+    retarget_zimmer_servers_to_current_env!(servers)
+    drop_untargetable_zimmer_servers!(servers)
     inject_subagent_server!(servers)
     inject_self_session_server!(servers)
 
-    # Nothing injected means no Zimmer entry needs retarget/secret resolution: this
-    # path runs only for a session with blank mcp_servers/skills/hooks/plugins, so
-    # no catalog `zimmer` entry (which arrives via default_mcp_servers → the
-    # post_process! branch) can be present for inject_subagent_server! to skip over.
-    # A catalog entry that DID reach here would be left un-retargeted by this early
-    # return — but by construction one cannot.
-    return if injected_mcp_servers.empty?
-
-    retarget_zimmer_servers_to_current_env!(servers)
-    drop_unreachable_zimmer_servers!(servers)
     stamp_session_id_on_zimmer_servers!(servers)
     # A no-op today — everything reachable on this path is an auto-injected HTTP
     # Zimmer entry, and only stdio servers have an environment. It runs anyway so
@@ -312,7 +317,7 @@ class RuntimeConfigPostProcessor
   # a regression rather than a fix. So the guard is "do we know our own address",
   # not "which environment is this". Dev and test always know (localhost);
   # production and staging know once the deploy has provisioned the secret.
-  # #drop_unreachable_zimmer_servers! handles what is left when it has not.
+  # #drop_untargetable_zimmer_servers! handles what is left when it has not.
   def retarget_zimmer_servers_to_current_env!(servers)
     target = self_session_injector.self_target
     return if AppUrl.placeholder?(target[:base_url])
@@ -348,59 +353,57 @@ class RuntimeConfigPostProcessor
     end
   end
 
-  # Remove any catalog-provided Zimmer MCP entry still pointing at a placeholder
-  # host after retargeting.
+  # Remove every catalog-provided Zimmer MCP entry when this instance does not
+  # know its own address.
   #
   # This is the other half of the guard in #retarget_zimmer_servers_to_current_env!.
-  # A stock deployment that never set ZIMMER_*_BASE_URL cannot be told where its
-  # own Zimmer is, so the in-image catalog's `https://zimmer.example.com` survives
-  # retargeting untouched. Handing that to a session is worse than handing it
-  # nothing: the MCP client dials a host that does not resolve, retries until
-  # RetryBudget::MCP_CONNECTION is spent, and AgentSessionJob fails the session
-  # outright. Dropping the entry instead degrades the session to "no session
-  # orchestration" — which is what such a deployment had before the root default
-  # existed — and says so in the log.
+  # A deployment that never set ZIMMER_*_BASE_URL cannot be pointed at itself, so
+  # retargeting leaves the catalog's URL exactly as written — which is the
+  # in-image `https://zimmer.example.com` on a stock install, and could just as
+  # easily be some other operator's real Zimmer on a custom AIR_CONFIG one. The
+  # first is dead and the second is worse than dead: a session would orchestrate
+  # an instance that is not the one running it.
   #
-  # Scoped to entries Zimmer did NOT inject. The injected self-session server is
-  # built from the same unresolved base URL and is just as unreachable, but it is
-  # the only route a session has to archive itself or wake up, so a
-  # mis-provisioned instance keeps it and fails loudly at call time rather than
-  # silently losing its lifecycle tools.
-  def drop_unreachable_zimmer_servers!(servers)
-    dropped = servers.keys.select do |name|
-      entry = servers[name]
-      next false unless entry.is_a?(Hash)
-      next false unless self_session_injector.zimmer_server_name?(name)
-      next false if injected_mcp_servers.include?(name)
-      next false if entry["url"].blank?
+  # Neither is worth handing over. A dead entry does not fail the session —
+  # AgentSessionJob#check_and_handle_mcp_failure spends RetryBudget::MCP_CONNECTION
+  # (30s/60s/120s) and then leaves the server out and resumes — but that is three
+  # and a half minutes of backoff plus a pause/resume cycle to arrive at "no
+  # session orchestration", which is what the deployment had before this default
+  # existed. Dropping the entry reaches the same place immediately, and says so.
+  #
+  # Runs BEFORE the two injections, which is what keeps it from ever leaving a
+  # session with no Zimmer server at all. A catalog `zimmer` entry suppresses
+  # both injections (SelfSessionInjector#self_session_capable_present? counts a
+  # full-surface entry as covering self_session), so dropping one after injection
+  # would take the session's only route to archiving itself with it. Dropping
+  # first means the injections see the gap and fill it — with entries built from
+  # ZIMMER_*_BASE_URL rather than from the catalog, which is the one address
+  # Zimmer is entitled to guess at, and which fails loudly at call time rather
+  # than silently.
+  def drop_untargetable_zimmer_servers!(servers)
+    return unless AppUrl.placeholder?(self_session_injector.self_target[:base_url])
 
-      AppUrl.placeholder?(origin_of(entry["url"]))
+    dropped = servers.keys.select do |name|
+      servers[name].is_a?(Hash) && self_session_injector.zimmer_server_name?(name)
     end
     return if dropped.empty?
 
     dropped.each { |name| servers.delete(name) }
 
-    env_var = Rails.env.production? ? "ZIMMER_PROD_BASE_URL" : "ZIMMER_STAGING_BASE_URL"
-    Rails.logger.warn "[#{self.class.name}] Dropped #{dropped.size} Zimmer MCP server(s) " \
-      "(#{dropped.join(', ')}) whose URL is still the placeholder host: this instance does not know " \
-      "its own address, so the entry would dial a host that does not resolve and fail the session. " \
-      "Set #{env_var} to give sessions on this instance a working Zimmer MCP server."
+    Rails.logger.warn "[#{self.class.name}] Dropped #{dropped.size} catalog Zimmer MCP server(s) " \
+      "(#{dropped.join(', ')}): this instance has not been told its own address, so their URLs cannot " \
+      "be pointed at it and would send the session somewhere else. " \
+      "Set #{base_url_var} to give sessions on this instance a working Zimmer MCP server."
   end
 
-  # The scheme+host+port of a URL, in the shape AppUrl.placeholder? compares
-  # against. Query-string scoping is irrelevant to whether the host resolves.
-  def origin_of(url)
-    uri = URI.parse(url.to_s)
-    return nil if uri.scheme.blank? || uri.host.blank?
-
-    uri.dup.tap do |origin|
-      origin.userinfo = nil
-      origin.path = ""
-      origin.query = nil
-      origin.fragment = nil
-    end.to_s
-  rescue URI::InvalidURIError
-    nil
+  # The base-URL secret this environment reads, for a message telling an operator
+  # which one to set. Mirrors AppUrl.base_url's own switch.
+  def base_url_var
+    case Rails.env.to_s
+    when "production" then "ZIMMER_PROD_BASE_URL"
+    when "staging" then "ZIMMER_STAGING_BASE_URL"
+    else "ZIMMER_LOCAL_BASE_URL"
+    end
   end
 
   # Write the approval endpoint's address into every stdio server's own `env`
