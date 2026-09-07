@@ -1120,7 +1120,7 @@ every server `pending` for that turn, correctly: nothing connected, because noth
 | MCP — `${VAR}` secret-injected stdio | ✅ works | 16 tools listed, `airtable_list_bases` returned 69 bases |
 | MCP — strad-proxied HTTP (bearer header) | ✅ works | `strad-fetch` scraped a page; `remote-fs-screenshots` listed 42 directories |
 | MCP — Zimmer's auto-injected `zimmer-self-session` | ✅ works | 7 tools listed, `get_session` returned the session |
-| MCP — OAuth-credentialed | ⚠️ works, with a caveat | Token verified on the wire as `Authorization: Bearer`; Zimmer cannot adopt one Pi refreshes (below) |
+| MCP — OAuth-credentialed | ✅ works | Token verified on the wire as `Authorization: Bearer`. Adopting back a token Pi refreshed is implemented and demonstrated end-to-end against a real OS credential store, driving the adapter's own keyring helper — not yet observed on a live Pi session, because it needs a provider to rotate. What does not work is pushing a refreshed token into an *already-running* session (below) |
 | Per-server MCP status (`mcp_servers_status`) | ✅ works, green-or-grey | `PiMcpStatusDetector` mines the transcript; was permanently `pending` before it. Never reports red (below) |
 | Skills | ✅ works | `air prepare pi` installs them into `.pi/skills/` — the one artifact `adapter-pi` handles natively |
 | AIR hooks | ✅ works | Live `pi 0.84.4` + `@tadasant/pi-hooks@0.2.0`: the reminder hook rewrote a `bash` tool result the model then read, and so did a hook speaking only Claude Code's dialect (below) |
@@ -1174,30 +1174,58 @@ debugging one: Zimmer logs
 deletes the staged file once it imports it, so an empty `<pi agent dir>/mcp-oauth/` after a spawn
 means the handover happened.
 
-### Zimmer cannot adopt an MCP OAuth token that Pi refreshed
+### A refreshed MCP OAuth token does not reach a session that is already running
 
-🟡 `PiMcpCredentialWriter` stages Zimmer's token where `pi-mcp-adapter` imports it, which is
-what makes an OAuth-credentialed MCP server usable on Pi at all. The flow is deliberately
-**one-way**: Zimmer is the source of truth and re-stamps the runtime's copy at every spawn, and
-`#read_runtime_credentials` returns `{}`.
+🟡 Zimmer is not the only party that refreshes these tokens, and it cannot become
+the only one. **Claude Code and Pi both ship their own MCP OAuth client**, and both refresh an
+access token that lapses mid-session — Claude Code writes the new pair to
+`~/.claude/.credentials.json`, Pi's `pi-mcp-adapter` hands the MCP SDK a provider whose
+`saveTokens` writes it into the OS credential store. Against a provider that rotates refresh
+tokens, either one leaves Zimmer's DB holding a token the provider has revoked.
 
-It has to. After import the entry lives in the OS credential store, which is keyed by
-`sha256(server_name)` and offers no listing, so the contract's zero-argument reader has nothing
-to enumerate. Claude Code and Codex both keep a single readable file and so can be read back;
-Pi cannot.
+The obvious-sounding fix — turn the runtime's refresh off and make Zimmer the sole
+authority — **has no switch to throw.** `pi-mcp-adapter`'s only relevant configuration is
+`oauth: false`, which disables OAuth for the server outright rather than pinning the token
+Zimmer staged, and no environment variable narrows it (`supportsOAuth` in `mcp-auth-flow.ts`).
+Claude Code exposes nothing either. So Zimmer **adopts back** instead:
+[`McpOauthRuntimeReconciler`](/auth/mcp-oauth/#capturing-the-token-the-runtime-rotates-write-back)
+reads each runtime's store before Zimmer refreshes or injects, and takes a strictly newer pair
+into the DB. That is a real ordering, not a coin-flip between two writers: only a *later
+access-token expiry* is adopted, so the chain advances in one direction and a re-stamp of an
+older pair can never win. Codex is the one runtime with no problem to solve — it does not
+refresh MCP tokens itself, so its store never holds anything newer.
 
-The consequence: **if a provider rotates the refresh token during a refresh Pi performed,
-Zimmer's stored refresh token goes stale**, and the credential has to be re-authorized through
-Zimmer rather than healing itself. A provider that leaves the refresh token alone — the common
-case — is unaffected, because Zimmer refreshes its own copy on its own schedule and overwrites
-Pi's at the next spawn.
+What remains is the **push**, and it is the half that is not achievable today rather than the
+half nobody wrote:
 
-A second, smaller edge falls out of the same import path. The adapter reads the credential
+- **A running session would not see it.** `pi-mcp-adapter` memoizes each server's auth entry in
+  a process-local `authEntryCache`, and only drops it when its own provider rejects an access
+  token. Writing a fresh token into the credential store under a live Pi process therefore
+  changes nothing until that process next hits a 401 — at which point it re-reads and picks the
+  new token up anyway. Shipping a push would look like it worked and mostly would not, which is
+  the precise failure shape this area keeps producing. (There is an undocumented
+  `PI_MCP_ADAPTER_DISABLE_AUTH_CACHE=1` that turns the memo off; relying on a private test knob
+  to make a feature correct is a worse trade than not having the feature.)
+- **Adoption is therefore periodic, not instantaneous.** A rotation is captured at the next
+  moment Zimmer looks: every spawn (`McpOauthCredentialInjector`) and every 30 minutes
+  (`RefreshMcpOauthTokensJob`, which reads *every* runtime's store because it has no session and
+  so no runtime). That is early enough that nothing goes stale, because the cron never presents a
+  rotated-away token — it is not early enough to call it a push.
+- **Pi's store is probed, not listed.** After import the entries live in the OS credential store,
+  addressed by `sha256(server_name)` with no enumeration, so
+  `PiMcpCredentialWriter#read_runtime_credentials` answers only for keys it is handed and `{}` for
+  a bare "list everything". Every caller wants a named credential, so this costs nothing — but a
+  future caller that genuinely wants an inventory of Pi's store cannot have one.
+- **A credential store that will not answer degrades to "nothing to adopt".** The read runs
+  `node mcp-keyring-helper.cjs` with a 5-second budget; an image without the extension, or a store
+  that hangs, is logged and skipped rather than failing the spawn or the cron. In that window
+  Zimmer keeps using its own copy, which is the pre-existing behavior, not a regression.
+
+A second, smaller edge falls out of the import path. The adapter reads the credential
 store **before** the plaintext file and deletes the file unread when it finds an entry there, so
 a stale store entry would shadow a freshly written token. `#write!` clears the entry first,
-through the adapter's own keyring helper. If that helper cannot run — an image without the
-extension, or a credential store that will not answer — the clear is skipped with a warning and
-the spawn continues, and in that window the runtime may keep using the older token.
+through the adapter's own keyring helper. If that helper cannot run, the clear is skipped with a
+warning and the spawn continues, and in that window the runtime may keep using the older token.
 
 ### A Pi session on a non-Anthropic model records its tokens and no cost
 

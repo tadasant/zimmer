@@ -445,9 +445,12 @@ the adapter imports it into the OS credential store and deletes the file, which 
 lifecycle rather than a leftover. Every field comes from `ResolvedMcpCredential`; nothing is
 synthesized.
 
-The handoff is one-way. Zimmer can give Pi a token it already holds, and cannot adopt one Pi
-refreshed for itself — see [Zimmer cannot adopt an MCP OAuth token that Pi
-refreshed](/limitations/#zimmer-cannot-adopt-an-mcp-oauth-token-that-pi-refreshed).
+The handoff goes both ways. Zimmer gives Pi a token it already holds, and reads one Pi refreshed for
+itself back out of the credential store — Pi ships its own MCP OAuth client and rotates like Claude
+Code does, so the write half alone would leave a rotating provider's credential stale. See
+[capturing the token the runtime rotates](#capturing-the-token-the-runtime-rotates-write-back), and
+[the limitation that does remain](/limitations/#a-refreshed-mcp-oauth-token-does-not-reach-a-session-that-is-already-running)
+— nothing pushes a refreshed token into a session that is already running.
 
 ## Refresh
 
@@ -476,11 +479,21 @@ permanent split matches `XOauthCredential`.
 
 ## Capturing the token the runtime rotates (write-back)
 
-Zimmer is not the only party that refreshes these tokens. Claude Code has its own MCP OAuth client:
-when an access token lapses mid-session it refreshes it and writes the new pair back to
-`~/.claude/.credentials.json`. Notion (and other OAuth 2.1 servers) **rotate** refresh tokens —
-every refresh mints a new refresh token and revokes the prior one — so once Claude Code refreshes,
-the refresh token in Zimmer's DB is already dead.
+Zimmer is not the only party that refreshes these tokens, and it cannot become the only one.
+**Claude Code and Pi both ship their own MCP OAuth client**: when an access token lapses
+mid-session they refresh it and write the new pair back — Claude Code to
+`~/.claude/.credentials.json`, Pi (`pi-mcp-adapter`) through an MCP-SDK OAuth provider whose
+`saveTokens` writes into the OS credential store. Notion (and other OAuth 2.1 servers) **rotate**
+refresh tokens — every refresh mints a new refresh token and revokes the prior one — so once
+either runtime refreshes, the refresh token in Zimmer's DB is already dead.
+
+Neither runtime can be told to *stop*. `pi-mcp-adapter`'s only relevant switch is `oauth: false`,
+which disables OAuth for the server outright rather than pinning the token Zimmer staged, and no
+environment variable narrows it; Claude Code exposes nothing either. So "Zimmer is the sole
+authority, runtime refresh disabled" is not a configuration that exists — **adopt-back is the
+design, not a workaround for one.** The ordering it needs is supplied by the adoption rule below
+rather than by a lock: only a strictly later access-token expiry is adopted, so the chain advances
+in one direction and a re-stamp of an older pair can never win.
 
 `ClaudeMcpCredentialWriter#merge_preserving_fresher!` protects that fresher on-disk entry only while
 its paired access token is still valid. Across an idle gap longer than the access token's TTL (~1h
@@ -501,9 +514,45 @@ tokens; MCP OAuth credentials had no equivalent, which is why they went stale.
 The reconciler runs in two places:
 
 - **`McpOauthCredentialInjector`**, on every spawn, before it decides whether to refresh or gate the
-  session — so a session never injects (or re-auth-prompts against) a rotated-away token.
+  session — so a session never injects (or re-auth-prompts against) a rotated-away token. It reads
+  the store of *that session's* runtime.
 - **`RefreshMcpOauthTokensJob`**, before the cron refreshes each credential — so the cron adopts a
   session's rotation instead of burning the stale DB token against the provider's reuse detection.
+  The cron has no session and therefore no runtime, so it reads **every** registered runtime's store
+  (`RuntimeRegistry.mcp_credential_writer_classes`). Reading only one is how a rotation performed on
+  another runtime got burned. Order does not matter: each store is compared against the row as it
+  stands after the previous one, so the newest pair wins whichever order they are read in.
+
+**Which key each store uses is the runtime's own**, and all three differ. Claude Code keys by the
+protocol-level `credential_key` (`server_name|hash`), because its `#credential_key_for` *is*
+`McpOauthCredential.compute_credential_key`. Codex uses the same shape over a different hash — it
+forces `type: "http"` and empty headers where the protocol key hashes the server's real type and
+headers, so the two coincide only for a headerless `streamable-http` server and diverge for an `sse`
+one or one carrying a header. Pi keys by the bare `.mcp.json` server name. A caller holding a server
+config asks `#credential_key_for`; the cron, which holds only a DB row, asks `#runtime_key_for`, and
+each writer answers in its own shape. The shared contract test asserts the two agree per writer,
+because a writer whose key shapes disagree probes its store for something it never wrote and misses
+in silence.
+
+**How the store gets read** differs too, and the contract says which kind a writer is.
+`#enumerable_store?` is true for a runtime that keeps one readable file (Claude Code, Codex): the
+reconciler reads it once and serves every credential from that snapshot. It is false for Pi, whose
+entries live in the OS credential store addressed by `sha256(server_name)` with no listing — so
+`#read_runtime_credentials` takes the keys the caller wants and probes exactly those accounts
+through the adapter's own `mcp-keyring-helper.cjs`, memoized so a repeated key costs one probe. A
+store that cannot be reached is "nothing to adopt", never an error: an adoption probe is bounded at
+two seconds (tighter than the write and delete paths, because it is the only one that can be skipped
+without consequence) and a failure leaves Zimmer's own copy in place.
+
+**Two things are refused rather than adopted**, both of which would otherwise overwrite a live token
+with a dead one. A DB row with **no expiry** is not adopted over: a nil `expires_at` means the
+provider issued no `expires_in`, the access token does not expire, and a non-expiring token is one no
+runtime ever refreshes — so reading "the runtime recorded an expiry and we did not" as newer would
+let a stale on-disk pair land on top of a freshly authorized one. And an entry recorded against a
+**different server URL** is not this credential's, however its key matched: `server_name` is not
+unique across `McpOauthCredential` rows, so on Pi's name-keyed store a server whose URL changed
+leaves an old row probing the same account. `pi-mcp-adapter` draws the same line from its own side
+(`getAuthForUrl` returns nothing once the URL has moved).
 
 **Which store it reads** depends on the
 [session-scoped credentials setting](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain).
@@ -514,10 +563,18 @@ file, so the read-modify-write stops racing. The cron and the revocation path st
 host-global file: they have no session to scope to, so a revoked credential is not removed from a
 session that is already running (it gets a fresh directory next time).
 
-Only Claude Code refreshes MCP tokens mid-session; Codex is written-not-trusted (Zimmer rewrites its
-store every spawn), so reconciling against Codex is a harmless no-op. Pi refreshes its own copy and
-Zimmer cannot read it back, so there is nothing to reconcile there either — for a different reason,
-and a worse one.
+Codex is the one runtime with nothing to adopt: it is written-not-trusted (Zimmer rewrites its store
+every spawn and Codex does not refresh MCP tokens itself), so reconciling against it is a harmless
+no-op rather than an exception to carve out.
+
+**What adoption is not is a push.** Credentials are injected at spawn, and nothing writes a
+refreshed token into a session that is already running — nor would it take effect if it did.
+`pi-mcp-adapter` memoizes each server's auth entry in a process-local cache and drops it only when
+its own provider rejects an access token, so a mid-session write is invisible to the live process
+until it next hits a 401 — at which point it re-reads and picks up the newer token anyway. Adoption
+is therefore periodic: every spawn, and every 30 minutes from cron. That is early enough that
+nothing goes stale, because the cron never presents a rotated-away token; it is not a push. See
+[limitations](/limitations/#a-refreshed-mcp-oauth-token-does-not-reach-a-session-that-is-already-running).
 
 This is also what makes an OAuth MCP connection **survive a worker/clone recreation**. When a session
 is recovered after a deploy or restart, the relaunch goes through the follow-up spawn path, which

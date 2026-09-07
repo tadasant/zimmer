@@ -311,6 +311,47 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
     assert credential.active?
   end
 
+  test "adopts a token Pi rotated, even though the cron has no session and no runtime" do
+    # The gap this closes: Pi refreshes MCP tokens mid-session exactly as Claude
+    # Code does, but the cron used to read only Claude Code's store. So a Pi
+    # rotation left the DB stale, and the next cron run burned the rotated-away
+    # refresh token against the provider's reuse detection — `invalid_grant`, and
+    # the credential dead until a human re-authorized it.
+    credential = mcp_oauth_credentials(:expiring_soon)
+    disable_other_refreshable_credentials!(credential)
+
+    rotated_expiry = (Time.current + 3.hours).to_i
+    entry = JSON.generate(
+      "serverUrl" => credential.server_url,
+      "tokens" => {
+        "accessToken" => "pi-fresh-access",
+        "refreshToken" => "pi-rotated-refresh",
+        "expiresAt" => rotated_expiry
+      },
+      "clientInfo" => { "clientId" => credential.client_id }
+    )
+
+    # Pi keys its store by the bare server name, not the credential key — the
+    # cron has to ask each writer what its own entry is called.
+    account = "sha256-#{Digest::SHA256.hexdigest(credential.server_name)}"
+    PiMcpCredentialWriter.any_instance.stubs(:keyring_call).returns({ "ok" => true, "found" => false })
+    PiMcpCredentialWriter.any_instance.stubs(:keyring_call)
+      .with("read", account, timeout: PiMcpCredentialWriter::READ_TIMEOUT_SECONDS)
+      .returns({ "ok" => true, "found" => true, "value" => entry })
+
+    McpOauthService.any_instance.expects(:post_form).never
+
+    # Claude Code's store is empty, so only Pi's copy can supply this.
+    with_claude_runtime_store({}) do
+      RefreshMcpOauthTokensJob.perform_now
+    end
+
+    credential.reload
+    assert_equal "pi-rotated-refresh", credential.refresh_token
+    assert_equal "pi-fresh-access", credential.access_token
+    assert credential.active?
+  end
+
   private
 
   def disable_other_refreshable_credentials!(credential)

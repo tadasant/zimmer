@@ -189,8 +189,11 @@ Either way each is worth knowing before you route real work to Pi.
   the transcript for proxy-tool signals, and an absent signal is indistinguishable from a server
   nothing called. See [Known
   limitations](/limitations/#a-pi-sessions-mcp-status-pills-go-green-or-stay-grey--never-red).
-- **Zimmer cannot adopt an MCP OAuth token Pi refreshed.** Zimmer hands Pi a token it already
-  holds; the reverse direction does not exist. See [MCP server OAuth](/auth/mcp-oauth/).
+- **A refreshed MCP OAuth token does not reach a Pi session that is already running.** Pi ships its
+  own MCP OAuth client and refreshes mid-session, and Zimmer adopts that rotation back — but at the
+  next spawn or the next cron run, not into the live process, which memoizes the entry until its own
+  provider rejects it. See [MCP server OAuth](/auth/mcp-oauth/#capturing-the-token-the-runtime-rotates-write-back)
+  and [Known limitations](/limitations/#a-refreshed-mcp-oauth-token-does-not-reach-a-session-that-is-already-running).
 - **Extension env contributions do not reach Pi.** `Zimmer::ExtensionRegistry.spawn_env_contributions`
   is called by `ClaudeSpawnEnv` and by nothing else, so the mount point is unreachable from a Pi
   session exactly as it is from a Codex one. See [Extensions](/extend/extensions/).

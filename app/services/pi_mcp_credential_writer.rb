@@ -47,9 +47,10 @@ require "open3"
 # publish it. For a confidential client on a `client_secret_post` provider that
 # means the adapter cannot perform its own refresh against the entry Zimmer
 # stages, and re-authorizing goes through Zimmer instead. Zimmer refreshing on
-# its own schedule and re-stamping at every spawn is what covers that; see
-# "Why #read_runtime_credentials returns {}" below, which is the same ownership
-# rule seen from the other side.
+# its own schedule and re-stamping at every spawn is what covers that. A PUBLIC
+# client — the DCR-registered default for MCP — has no secret to withhold, so
+# the adapter refreshes those perfectly well, which is what
+# "Why #read_runtime_credentials probes by key" below is about.
 #
 # == The ordering hazard, and why the keyring is cleared first ==
 #
@@ -69,29 +70,42 @@ require "open3"
 #
 # Clearing first also states the ownership rule plainly: **Zimmer is the source
 # of truth for these credentials, and it re-stamps the runtime's copy at every
-# spawn.** That is what makes #read_runtime_credentials's answer correct rather
-# than lazy — see below.
+# spawn** — with the read side below supplying the one thing a re-stamp alone
+# cannot, which is a way to notice when Pi got there first.
 #
-# == Why #read_runtime_credentials returns {} ==
+# == Why #read_runtime_credentials probes by key ==
 #
 # The read side exists so Zimmer can adopt a token the runtime refreshed and
-# rotated mid-session. For Pi it deliberately adopts nothing, for two reasons
-# that point the same way:
+# rotated mid-session. Pi needs it for the same reason Claude Code does: the
+# adapter hands the MCP SDK an OAuth provider whose `saveTokens` writes straight
+# back into the credential store, so when an access token lapses mid-session the
+# SDK runs `grant_type=refresh_token` and persists the new pair. Against a
+# provider that rotates refresh tokens that leaves Zimmer's DB holding a revoked
+# one, and the next cron refresh gets `invalid_grant`.
 #
-#   * **It cannot enumerate.** After import the entries live in the OS credential
-#     store, which is keyed by `sha256(server_name)` and offers no listing — the
-#     contract's zero-argument reader has nothing to iterate. Guessing from the
-#     session's servers would make a host-global reader depend on one session.
-#   * **It should not adopt.** Zimmer overwrites the runtime's copy at every
-#     spawn (above), so the DB is authoritative by construction. Adopting the
-#     runtime's copy back would make two writers of one value with no ordering
-#     between them.
+# It cannot be written as a listing. After import the entries live in the OS
+# credential store, which is addressed by `sha256(server_name)` and offers no
+# enumeration, so a zero-argument reader has nothing to iterate. The reconciler
+# does not want a listing — it reconciles one named credential at a time — so
+# the contract's read side takes the keys the caller wants
+# (RuntimeMcpCredentialWriter#read_runtime_credentials), this writer probes
+# exactly those accounts through the same helper #write! already drives, and
+# #enumerable_store? returns false so the reconciler asks per key rather than
+# once.
 #
-# The honest consequence, recorded in docs/limitations.md rather than left to be
-# discovered: if a provider rotates the REFRESH token on a refresh Pi performed,
-# Zimmer's stored refresh token goes stale and the credential needs
-# re-authorizing through Zimmer. `{}` is the contract's documented answer for
-# "nothing to adopt", not a stub.
+# Re-stamping the runtime's copy at every spawn is not on its own enough to make
+# Zimmer the sole authority, because that would need the runtime's own refresh
+# turned off and pi-mcp-adapter has no such switch: `oauth: false` disables OAuth
+# for the server outright rather than pinning the staged token, and no
+# environment variable narrows it. Two writers of one value therefore need an
+# ordering, and McpOauthRuntimeReconciler supplies a real one: it adopts only a
+# **strictly later access-token expiry**, so the chain moves in one direction and
+# a re-stamp of an older pair can never win.
+#
+# Reads are ordered against #write! by the caller, not by luck: the injector
+# reconciles inside #collect_credentials, before it writes, and #write! is what
+# clears the account. A read that ran after the clear would see nothing and
+# adopt nothing — never a wrong adoption.
 class PiMcpCredentialWriter
   include RuntimeMcpCredentialWriter
 
@@ -112,6 +126,15 @@ class PiMcpCredentialWriter
   # EVERY registered runtime's writer, not the session's, so this runs on Claude
   # and Codex sessions too and its worst case is charged to them.
   HELPER_TIMEOUT_SECONDS = 5
+
+  # Adoption probes get a tighter budget than the write and delete paths, because
+  # they are the only ones that can be skipped without consequence. A spawn whose
+  # keyring clear times out may hand the runtime a stale token; a spawn whose
+  # adoption probe times out just leaves Zimmer's own copy in place, and the next
+  # spawn or cron run reconciles. The pre-spawn OAuth gate builds several
+  # McpOauthCredentialInjectors and each holds its own reconciler, so a hanging
+  # store is charged once per (server × injector) — worth two seconds, not five.
+  READ_TIMEOUT_SECONDS = 2
 
   # The adapter validates a chunk manifest (`chunkCount` a safe integer,
   # `chunkDigest` 16 lowercase hex) before trusting it; so does this, because a
@@ -154,11 +177,38 @@ class PiMcpCredentialWriter
     oauth_dir
   end
 
-  # Nothing to adopt — see the class comment.
+  # Pi's store is addressable but not listable, so the reconciler probes it a
+  # key at a time. See the class comment.
   #
-  # @return [Hash{String => RuntimeMcpTokenSnapshot}] always empty
-  def read_runtime_credentials
-    {}
+  # @return [Boolean] always false
+  def enumerable_store?
+    false
+  end
+
+  # Pi keys its store by the bare `.mcp.json` server name, not the
+  # protocol-level credential key the file-store runtimes use.
+  #
+  # @param credential [McpOauthCredential]
+  # @return [String]
+  def runtime_key_for(credential)
+    credential.server_name.to_s
+  end
+
+  # Read back whatever pi-mcp-adapter currently holds for the named servers.
+  #
+  # @param credential_keys [Array<String>, nil] server names (see
+  #   #credential_key_for). nil means "enumerate", which this store cannot do,
+  #   so it answers {} — the contract's documented "nothing to adopt".
+  # @return [Hash{String => RuntimeMcpTokenSnapshot}] only the keys an entry was
+  #   found and parsed for
+  def read_runtime_credentials(credential_keys = nil)
+    Array(credential_keys).uniq.each_with_object({}) do |key, snapshots|
+      server_name = key.to_s
+      next if server_name.empty?
+
+      snapshot = read_one(server_name)
+      snapshots[server_name] = snapshot if snapshot
+    end
   end
 
   # Drop the named entries from both halves of the store: the pending plaintext
@@ -225,6 +275,79 @@ class PiMcpCredentialWriter
     @file_system.write(path, JSON.pretty_generate(auth_entry(credential)), perm: 0o600)
   end
 
+  # The credential-store half of #read_runtime_credentials, for one server.
+  #
+  # Only the OS credential store is read, never the pending plaintext file: the
+  # file only ever holds what Zimmer itself staged and the adapter has not yet
+  # imported, so reading it back could only echo the DB — never a rotation. The
+  # store is where a token Pi refreshed actually lands.
+  #
+  # @return [RuntimeMcpTokenSnapshot, nil] nil when there is no entry, the store
+  #   cannot be reached, or the payload does not parse
+  def read_one(server_name)
+    account = keyring_account(server_name)
+    payload = keyring_call("read", account, timeout: READ_TIMEOUT_SECONDS)
+    return nil unless payload.is_a?(Hash) && payload["found"]
+
+    entry = parse_auth_entry(account, payload["value"])
+    return nil unless entry.is_a?(Hash)
+
+    tokens = entry["tokens"]
+    return nil unless tokens.is_a?(Hash)
+    # The adapter type-checks these before trusting an entry (`toAuthEntry`); so
+    # does this, because a numeric or object accessToken is `present?` and would
+    # otherwise be adopted into the DB as a token.
+    return nil unless tokens["accessToken"].is_a?(String)
+    return nil unless tokens["refreshToken"].nil? || tokens["refreshToken"].is_a?(String)
+
+    RuntimeMcpTokenSnapshot.new(
+      access_token: tokens["accessToken"],
+      refresh_token: tokens["refreshToken"],
+      expires_at: seconds_to_time(tokens["expiresAt"]),
+      # Carried so the reconciler can refuse an entry that belongs to a different
+      # row with the same server name — see McpOauthRuntimeReconciler#adoptable?.
+      server_url: entry["serverUrl"].is_a?(String) ? entry["serverUrl"] : nil
+    )
+  rescue => e
+    # A store Zimmer cannot read means "nothing to adopt", never a failed spawn
+    # or a failed cron run — the same rule #clear_keyring_entry follows.
+    @logger.warn("Could not read Pi MCP OAuth credential-store entry", server: server_name, error: e.message)
+    nil
+  end
+
+  # A stored payload is either the AuthEntry JSON or a chunk manifest naming the
+  # accounts the real payload was split across (`readChunkedAuthEntry`).
+  def parse_auth_entry(account, payload)
+    manifest = chunk_manifest(account, payload)
+    if manifest
+      payload = manifest[:accounts].map do |chunk|
+        response = keyring_call("read", chunk, timeout: READ_TIMEOUT_SECONDS)
+        # A manifest whose chunks are gone reassembles into garbage rather than
+        # nothing, so a missing one has to abort the whole entry.
+        return nil unless response.is_a?(Hash) && response["found"]
+
+        response["value"].to_s
+      end.join
+      # The adapter computes this digest over the payload it split, so checking it
+      # is how a partial or reordered reassembly fails as "nothing to adopt"
+      # instead of as a JSON parse that happens to succeed.
+      return nil unless Digest::SHA256.hexdigest(payload)[0, 16] == manifest[:digest]
+    end
+
+    JSON.parse(payload.to_s)
+  rescue JSON::ParserError
+    nil
+  end
+
+  # `expiresAt` is seconds since the epoch — `toOAuthTokens` computes
+  # `expiresAt - Date.now() / 1000`. Mirrors #auth_entry's write side.
+  def seconds_to_time(value)
+    return nil unless value.is_a?(Numeric)
+    return nil unless value.positive?
+
+    Time.zone.at(value)
+  end
+
   # The adapter's AuthEntry shape (`toAuthEntry` in `mcp-auth.ts`). Only fields
   # it actually parses are emitted: an unknown key makes the whole entry
   # unparseable in some versions, and there is nothing to gain by sending one.
@@ -286,16 +409,24 @@ class PiMcpCredentialWriter
 
   # A manifest payload names how many chunks the real entry was split over.
   def chunk_accounts(account, payload)
+    chunk_manifest(account, payload)&.fetch(:accounts) || []
+  end
+
+  # The parsed form of the above: the chunk accounts plus the digest the adapter
+  # recorded over the payload it split, or nil when this payload is not a
+  # manifest. Split out because the read side verifies the digest and the delete
+  # side only needs the accounts.
+  def chunk_manifest(account, payload)
     manifest = JSON.parse(payload.to_s)
-    return [] unless manifest.is_a?(Hash) && manifest[CHUNK_MANIFEST_KEY] == 1
+    return nil unless manifest.is_a?(Hash) && manifest[CHUNK_MANIFEST_KEY] == 1
 
     count = manifest["chunkCount"].to_i
     digest = manifest["chunkDigest"].to_s
-    return [] if count <= 0 || count > MAX_CHUNKS || !digest.match?(CHUNK_DIGEST)
+    return nil if count <= 0 || count > MAX_CHUNKS || !digest.match?(CHUNK_DIGEST)
 
-    Array.new(count) { |index| "#{account}.chunk.#{digest}.#{index}" }
+    { digest: digest, accounts: Array.new(count) { |index| "#{account}.chunk.#{digest}.#{index}" } }
   rescue JSON::ParserError
-    []
+    nil
   end
 
   # Drive the adapter's helper. Returns the parsed response, or nil when the
@@ -307,7 +438,7 @@ class PiMcpCredentialWriter
   # otherwise hold up the spawn indefinitely. BoundedSubprocess is not reusable
   # here because it closes the child's stdin, and this helper's whole protocol is
   # a JSON request on stdin.
-  def keyring_call(operation, account)
+  def keyring_call(operation, account, timeout: HELPER_TIMEOUT_SECONDS)
     # The OS credential store is host-global and out of process: on a developer
     # box that is the login keychain, and on a Zimmer droplet it is the running
     # fleet's. The shared contract test constructs every writer and calls
@@ -321,7 +452,7 @@ class PiMcpCredentialWriter
     return nil unless helper && @file_system.exists?(helper)
 
     request = JSON.generate({ operation: operation, service: KEYRING_SERVICE, account: account })
-    stdout, stderr, status = run_helper(helper, request)
+    stdout, stderr, status = run_helper(helper, request, timeout)
 
     unless status&.success?
       raise "pi-mcp-adapter keyring helper failed (#{operation}): #{stderr.strip.presence || stdout.strip}"
@@ -331,12 +462,12 @@ class PiMcpCredentialWriter
   end
 
   # @return [Array(String, String, Process::Status)] stdout, stderr, status
-  def run_helper(helper, request)
+  def run_helper(helper, request, timeout = HELPER_TIMEOUT_SECONDS)
     Open3.popen3("node", helper) do |stdin, stdout, stderr, wait_thr|
       stdin.write(request)
       stdin.close
 
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + HELPER_TIMEOUT_SECONDS
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
       out = +""
       err = +""
       buffers = { stdout => out, stderr => err }
@@ -346,7 +477,7 @@ class PiMcpCredentialWriter
         if remaining <= 0
           Process.kill("KILL", wait_thr.pid)
           wait_thr.value # reap, so the killed child does not linger as a zombie
-          raise "pi-mcp-adapter keyring helper timed out after #{HELPER_TIMEOUT_SECONDS}s"
+          raise "pi-mcp-adapter keyring helper timed out after #{timeout}s"
         end
 
         ready, = IO.select(buffers.keys, nil, nil, remaining)
