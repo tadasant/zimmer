@@ -86,6 +86,21 @@ class SessionHumanMessages
     end
   end
 
+  # The input channels this hierarchy came in through that capture cannot write
+  # for. Travels with the entries on every surface, because an empty record
+  # means one thing when every channel is instrumented and the opposite thing
+  # when one is not — and a reader given only the entries cannot tell which.
+  def capture_coverage
+    @capture_coverage ||= HumanMessageCaptureCoverage.new(hierarchy)
+  end
+
+  def capture_gaps = capture_coverage.gaps
+
+  # True when Zimmer's silence about this hierarchy is an ANSWER — every channel
+  # it arrived over could have recorded a human. When false, an empty record is
+  # "the check could not be established", not "no human spoke".
+  def capture_complete? = capture_gaps.empty?
+
   def any? = entries.any?
   def here_entries = entries.select(&:here?)
   def elsewhere_entries = entries.select(&:elsewhere?)

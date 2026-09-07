@@ -47,6 +47,37 @@ class Api::V1::SessionsControllerProvenanceTest < ActionDispatch::IntegrationTes
     refute json["session"].key?("human_messages"), "`session` must keep one shape across the API"
   end
 
+  # An empty `human_messages` means the opposite thing depending on this array, so
+  # a consumer reading one without the other cannot tell an affirmative absence
+  # from a channel nothing was listening on (#658).
+  test "show names the input channels capture is not configured for" do
+    User.update_all(slack_user_ids: [])
+    session = spawn_session(title: "From Slack")
+    session.update_column(:genesis, SessionGenesis::SLACK)
+
+    get "/api/v1/sessions/#{session.id}", headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_empty json["human_messages"]
+    gaps = json["human_message_capture_gaps"]
+    assert_equal 1, gaps.size
+    assert_equal HumanMessage::SLACK, gaps.first["channel"]
+    assert_equal "Slack", gaps.first["channel_label"]
+    assert_equal SessionGenesis::SLACK, gaps.first["genesis"]
+    assert_equal [ session.id ], gaps.first["session_ids"]
+    assert_match "/supervisor/users", gaps.first["remedy"]
+  end
+
+  test "show carries an empty capture-gap array when every channel is instrumented" do
+    get "/api/v1/sessions/#{@session.id}", headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert json.key?("human_message_capture_gaps"), "the gap array must always be present on show"
+    assert_empty json["human_message_capture_gaps"]
+  end
+
   test "show carries the session hierarchy" do
     router = spawn_session(title: "Route it", agent_root: "zimmer-router")
     worker = spawn_session(parent: router, title: "Do it", agent_root: "zimmer")
