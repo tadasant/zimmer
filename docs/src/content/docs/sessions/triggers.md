@@ -245,18 +245,25 @@ respond, so the reaction is a commitment rather than an acknowledgement. See
 
 :::caution[Replacing a passive condition starts its bookkeeping from empty]
 A passive condition's cursors live in its own `configuration`, so a *fresh* condition — one created
-to replace an existing one, rather than edited in place — is worse than the one it replaces in both
-directions at once:
+to replace an existing one, rather than edited in place — starts from nothing. The two types pay for
+that differently.
 
-- **It over-fires.** A fresh condition baselines its *channel* cursor on the first poll, which is
-  the newest top-level message — in a thread-heavy channel that can be weeks old. On the second poll
-  every thread is a first-sight thread, so each replays back to `THREAD_BACKFILL_HORIZON` (24 hours).
+A fresh `passive_listen_thread` condition is worse than the one it replaces in both directions at
+once:
+
+- **It over-fires.** It baselines its *channel* cursor on the first poll, which is the newest
+  top-level message — in a thread-heavy channel that can be weeks old. On the second poll every
+  thread is a first-sight thread, so each replays back to `THREAD_BACKFILL_HORIZON` (24 hours).
   Every reply from the last day in every thread Zimmer is in fires at once, bounded only by the
   trigger's `max_sessions_per_minute` (above which the rest are dropped).
 - **It also under-fires, permanently.** A thread is only ever discovered through its parent
   appearing in the last 50 top-level messages, or through an existing `thread_timestamps` entry. A
   thread whose parent has already scrolled past that window and has no entry is invisible — and
   stays invisible, even after Zimmer next speaks in it.
+
+A fresh `passive_listen_channel` condition never reads threads, so neither of those applies to it.
+It fails the quiet way instead: its `bot_activity_timestamps` starts empty, so the channel counts as
+un-engaged and the condition fires on nothing at all until Zimmer next posts at the top level there.
 
 So edit a live condition rather than recreating it. When you genuinely must replace one, carry its
 cursors across: `thread_timestamps` and `participating_threads` onto a `passive_listen_thread`
