@@ -212,6 +212,92 @@
         </div>
       </div>
 
+      <%# The backlog's COMPOSITION, not just its depth — the same split the
+          `get_system_health` MCP tool and the Slack backlog page carry, so a human
+          reading this page and an agent reading the tool are looking at one
+          picture. Until this rendered, /health showed four totals and the two
+          questions a backlog triage opens with — which lane is deep, and what is
+          filling it — were answerable only through MCP.
+
+          Every number comes from `queue_stats`, which the report already computed.
+          The page issues no query of its own for this section. %>
+      <% queue_stats = health_report[:system_health][:queue_stats] %>
+      <% if queue_stats[:ready_count_by_queue].present? || queue_stats[:claimed_count_by_queue].present? %>
+        <div class="mb-4">
+          <h4 class="text-sm font-medium text-gray-700 mb-2">Backlog Breakdown</h4>
+          <%# A definition list rather than a grid: these are variable-length lines
+              of "name count, name count", and at a 375px viewport a two-column grid
+              puts them off the right edge. Stacked on a phone, label-beside-value
+              from `sm` up. %>
+          <dl class="space-y-2 text-sm">
+            <% if queue_stats[:ready_count_by_queue].present? %>
+              <div class="sm:flex sm:gap-2">
+                <dt class="text-gray-500 sm:w-52 sm:shrink-0">Ready by queue</dt>
+                <dd class="text-gray-900 break-words">
+                  <%= HealthMonitorService.format_breakdown(queue_stats[:ready_count_by_queue]) %>
+                </dd>
+              </div>
+              <div class="sm:flex sm:gap-2">
+                <dt class="text-gray-500 sm:w-52 sm:shrink-0">Ready by job class</dt>
+                <dd class="text-gray-900 break-words">
+                  <%= HealthMonitorService.format_breakdown(queue_stats[:ready_count_by_job_class]) %>
+                </dd>
+              </div>
+              <div class="sm:flex sm:gap-2">
+                <dt class="text-gray-500 sm:w-52 sm:shrink-0">Oldest ready by queue</dt>
+                <dd class="text-gray-900 break-words">
+                  <%= HealthMonitorService.format_ages(queue_stats[:oldest_ready_age_seconds_by_queue]) %>
+                </dd>
+              </div>
+              <% head = queue_stats[:head_of_line] %>
+              <% if head.present? %>
+                <div class="sm:flex sm:gap-2">
+                  <dt class="text-gray-500 sm:w-52 sm:shrink-0">Head of line</dt>
+                  <dd class="text-gray-900 break-words">
+                    <%= head[:queue] %> / <%= head[:job_class] %>,
+                    waiting <%= HealthMonitorService.format_wait(head[:age_seconds]) %>
+                  </dd>
+                </div>
+              <% end %>
+            <% end %>
+
+            <%# The claimed side. A lane whose in-flight count equals its thread
+                count and whose youngest execution is already old is wedged; ready
+                work with no claim at all is a lane the worker has stopped polling.
+                Neither is legible from the ready lines alone, which is why the
+                thread counts are printed beside the holds. %>
+            <% if queue_stats[:claimed_count_by_queue].present? %>
+              <div class="sm:flex sm:gap-2">
+                <dt class="text-gray-500 sm:w-52 sm:shrink-0">In flight by queue</dt>
+                <dd class="text-gray-900 break-words">
+                  <%= HealthMonitorService.format_breakdown(queue_stats[:claimed_count_by_queue]) %>
+                  <span class="text-gray-500">(threads:
+                    <%= HealthMonitorService.format_breakdown(HealthMonitorService.lane_thread_counts) %>)</span>
+                </dd>
+              </div>
+              <div class="sm:flex sm:gap-2">
+                <dt class="text-gray-500 sm:w-52 sm:shrink-0">In flight by job class</dt>
+                <dd class="text-gray-900 break-words">
+                  <%= HealthMonitorService.format_breakdown(queue_stats[:claimed_count_by_job_class]) %>
+                </dd>
+              </div>
+              <div class="sm:flex sm:gap-2">
+                <dt class="text-gray-500 sm:w-52 sm:shrink-0">Oldest execution by queue</dt>
+                <dd class="text-gray-900 break-words">
+                  <%= HealthMonitorService.format_ages(queue_stats[:oldest_claimed_age_seconds_by_queue]) %>
+                </dd>
+              </div>
+              <div class="sm:flex sm:gap-2">
+                <dt class="text-gray-500 sm:w-52 sm:shrink-0">Youngest execution by queue</dt>
+                <dd class="text-gray-900 break-words">
+                  <%= HealthMonitorService.format_ages(queue_stats[:youngest_claimed_age_seconds_by_queue]) %>
+                </dd>
+              </div>
+            <% end %>
+          </dl>
+        </div>
+      <% end %>
+
       <!-- Worker Stats -->
       <div class="mb-4">
         <h4 class="text-sm font-medium text-gray-700 mb-2">Workers</h4>
