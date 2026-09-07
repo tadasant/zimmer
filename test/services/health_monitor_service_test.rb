@@ -508,97 +508,216 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   # === Ready-backlog breakdown ===
   #
   # A ready count alone cannot tell a starved queue from a busy one, and Zimmer
-  # runs six queues with very different thread counts and job durations. Every
-  # triage of a backlog page opens with "deep with WHAT", and until this existed
-  # the only answer was the GoodJob dashboard — which the agent sessions that
-  # actually read these pages have no route to.
+  # runs seven queues with very different thread counts and job durations. Every
+  # triage of a backlog page opens with "deep with WHAT", and the GoodJob dashboard
+  # is no answer for the agent sessions that actually read these pages — they have
+  # no route to it (#450). Both splits ride on `queue_statistics`, so every
+  # surface — /health, GET /api/v1/health, the `get_system_health` MCP tool and the
+  # Slack page — reads them off one grouped query rather than re-scanning
+  # `good_jobs` for itself.
 
-  test "ready_backlog_breakdown splits the backlog by queue and by job class" do
+  test "queue_statistics splits the backlog by queue and by job class" do
     insert_good_jobs(7) { { queue_name: "agents", job_class: "AgentSessionJob", scheduled_at: 5.minutes.ago } }
     insert_good_jobs(2) { { queue_name: "default", job_class: "SessionTitleJob", scheduled_at: 5.minutes.ago } }
     insert_good_jobs(1) { { queue_name: "pollers", job_class: "SlackTriggerPollerJob", scheduled_at: 5.minutes.ago } }
 
-    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+    stats = HealthMonitorService.new.system_health[:queue_stats]
 
-    assert_equal({ "agents" => 7, "default" => 2, "pollers" => 1 }, breakdown[:by_queue])
+    assert_equal({ "agents" => 7, "default" => 2, "pollers" => 1 }, stats[:ready_count_by_queue])
     assert_equal({ "AgentSessionJob" => 7, "SessionTitleJob" => 2, "SlackTriggerPollerJob" => 1 },
-                 breakdown[:by_job_class])
+                 stats[:ready_count_by_job_class])
   end
 
-  test "ready_backlog_breakdown orders biggest first so the starved queue reads first" do
-    insert_good_jobs(2) { { queue_name: "default", scheduled_at: 5.minutes.ago } }
-    insert_good_jobs(9) { { queue_name: "agents", scheduled_at: 5.minutes.ago } }
+  # The two halves are folded out of one `GROUP BY (queue_name, job_class)` read,
+  # so they describe the same instant and must add up to the same total. Two
+  # separate aggregations against a moving table could not promise that — and would
+  # cost a second scan of `good_jobs` at the moment it is largest.
+  test "the by-queue and by-job-class splits add up to the same ready count" do
+    insert_good_jobs(4) { { queue_name: "agents", job_class: "AgentSessionJob", scheduled_at: 5.minutes.ago } }
+    insert_good_jobs(3) { { queue_name: "default", job_class: "AgentSessionJob", scheduled_at: 5.minutes.ago } }
+    insert_good_jobs(2) { { queue_name: "default", job_class: "SessionTitleJob", scheduled_at: 5.minutes.ago } }
 
-    assert_equal [ "agents", "default" ], HealthMonitorService.new.ready_backlog_breakdown[:by_queue].keys
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+
+    assert_equal({ "default" => 5, "agents" => 4 }, stats[:ready_count_by_queue])
+    assert_equal({ "AgentSessionJob" => 7, "SessionTitleJob" => 2 }, stats[:ready_count_by_job_class])
+    assert_equal 9, stats[:ready_count]
+    assert_equal stats[:ready_count], stats[:ready_count_by_queue].values.sum
+    assert_equal stats[:ready_count], stats[:ready_count_by_job_class].values.sum
+  end
+
+  test "the ready splits order biggest first so the dominant queue and class read first" do
+    insert_good_jobs(2) { { queue_name: "default", job_class: "SessionTitleJob", scheduled_at: 5.minutes.ago } }
+    insert_good_jobs(9) { { queue_name: "agents", job_class: "AgentSessionJob", scheduled_at: 5.minutes.ago } }
+
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+
+    assert_equal [ "agents", "default" ], stats[:ready_count_by_queue].keys
+    assert_equal [ "AgentSessionJob", "SessionTitleJob" ], stats[:ready_count_by_job_class].keys
   end
 
   # The breakdown must be taken over the same population as `ready_count`, or the
   # two halves of the alert would contradict each other — and a future-dated wake-up
   # counted as backlog is the exact arithmetic that paged four times in three days.
-  test "ready_backlog_breakdown ignores scheduled and claimed work" do
+  test "the ready splits ignore scheduled and claimed work" do
     enqueue_ready_jobs(3)
     insert_good_jobs(5) { { queue_name: "agents", scheduled_at: 1.hour.from_now } }
     insert_good_jobs(4) { { queue_name: "agents", locked_by_id: SecureRandom.uuid, locked_at: Time.current } }
 
-    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+    stats = HealthMonitorService.new.system_health[:queue_stats]
 
-    assert_equal({ "default" => 3 }, breakdown[:by_queue])
-    assert_equal({ "PlaceholderJob" => 3 }, breakdown[:by_job_class])
-    assert_equal 3, breakdown[:by_queue].values.sum,
+    assert_equal({ "default" => 3 }, stats[:ready_count_by_queue])
+    assert_equal({ "PlaceholderJob" => 3 }, stats[:ready_count_by_job_class])
+    assert_equal 3, stats[:ready_count_by_queue].values.sum,
                  "the breakdown must add up against ready_count, not against every unfinished row"
   end
 
-  # The cap keeps the alert readable; the remainder keeps it honest. The alert
-  # asks its reader to tell "concentrated in one queue" from "spread across every
-  # queue", and six names with no total look identical whether they are the whole
-  # backlog or a tenth of it.
-  test "ready_backlog_breakdown caps the entries but reports what it cut" do
-    %w[a b c d e f g].each_with_index do |queue, i|
-      insert_good_jobs(10 - i) { { queue_name: queue, scheduled_at: 5.minutes.ago } }
+  # The cap keeps the alert readable; the remainder keeps it honest. The reader is
+  # asked to tell "concentrated in one class" from "spread across forty", and five
+  # names with no total look identical whether they are the whole backlog or a
+  # tenth of it. There are ~45 job classes in the app against seven lanes, which is
+  # why the class split is the one that is capped.
+  test "the by-job-class split caps the entries but reports what it cut" do
+    %w[A B C D E F G].each_with_index do |job_class, i|
+      insert_good_jobs(10 - i) { { job_class: "#{job_class}Job", scheduled_at: 5.minutes.ago } }
     end
 
-    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+    by_class = HealthMonitorService.new.system_health[:queue_stats][:ready_count_by_job_class]
     limit = HealthMonitorService::READY_BREAKDOWN_LIMIT
 
-    assert_equal [ "a", "b", "c", "d", "e", "other (2 more)" ], breakdown[:by_queue].keys
-    assert_equal limit + 1, breakdown[:by_queue].size
-    assert_equal 5 + 4, breakdown[:by_queue]["other (2 more)"], "the remainder carries the counts it cut"
-    assert_equal (4..10).sum, breakdown[:by_queue].values.sum,
+    assert_equal [ "AJob", "BJob", "CJob", "DJob", "EJob", "other (2 more)" ], by_class.keys
+    assert_equal limit + 1, by_class.size
+    assert_equal 5 + 4, by_class["other (2 more)"], "the remainder carries the counts it cut"
+    assert_equal (4..10).sum, by_class.values.sum,
                  "a capped breakdown must still add up against ready_count"
   end
 
-  test "ready_backlog_breakdown adds no remainder when nothing was cut" do
-    insert_good_jobs(3) { { queue_name: "agents", scheduled_at: 5.minutes.ago } }
+  test "the by-job-class split adds no remainder when nothing was cut" do
+    insert_good_jobs(3) { { queue_name: "agents", job_class: "AgentSessionJob", scheduled_at: 5.minutes.ago } }
 
-    assert_equal({ "agents" => 3 }, HealthMonitorService.new.ready_backlog_breakdown[:by_queue])
+    assert_equal({ "AgentSessionJob" => 3 },
+                 HealthMonitorService.new.system_health[:queue_stats][:ready_count_by_job_class])
+  end
+
+  # The by-LANE split is NOT capped, and must not become capped: the `critical`
+  # gate thresholds each lane against its own depth and head age, so a lane the cap
+  # cut would read as having no depth at all and the gate would stop seeing the
+  # very queue that is starving. The obs collector scrapes it off
+  # /health/export_diagnostics (#778) and needs the same property.
+  test "the by-queue split is uncapped even when the class split is not" do
+    lanes = %w[agents pollers triggers auth inference maintenance default]
+    assert_operator lanes.size, :>, HealthMonitorService::READY_BREAKDOWN_LIMIT
+
+    lanes.each_with_index do |lane, i|
+      insert_good_jobs(10 - i) { { queue_name: lane, job_class: "#{lane.capitalize}Job", scheduled_at: 5.minutes.ago } }
+    end
+
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+
+    assert_equal lanes.sort, stats[:ready_count_by_queue].keys.sort
+    refute stats[:ready_count_by_queue].keys.any? { |key| key.start_with?("other") }
+    assert_equal HealthMonitorService::READY_BREAKDOWN_LIMIT + 1, stats[:ready_count_by_job_class].size
   end
 
   # Ties would otherwise come out in whatever order the adapter felt like,
   # so two readings of an unchanged queue could disagree.
-  test "ready_backlog_breakdown breaks ties by name so the order is stable" do
+  test "the ready splits break ties by name so the order is stable" do
     %w[zebra alpha middle].each do |queue|
-      insert_good_jobs(4) { { queue_name: queue, scheduled_at: 5.minutes.ago } }
+      insert_good_jobs(4) { { queue_name: queue, job_class: "#{queue}Job", scheduled_at: 5.minutes.ago } }
     end
 
-    assert_equal [ "alpha", "middle", "zebra" ],
-                 HealthMonitorService.new.ready_backlog_breakdown[:by_queue].keys
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+
+    assert_equal [ "alpha", "middle", "zebra" ], stats[:ready_count_by_queue].keys
+    assert_equal [ "alphaJob", "middleJob", "zebraJob" ], stats[:ready_count_by_job_class].keys
   end
 
   # A row with no job_class is labelled rather than dropped, and blank and nil
   # are SUMMED onto one label rather than one silently replacing the other.
-  test "ready_backlog_breakdown labels rows with no job class instead of losing them" do
+  test "the ready splits label rows with no job class instead of losing them" do
     insert_good_jobs(2) { { job_class: nil, queue_name: "agents", scheduled_at: 5.minutes.ago } }
     insert_good_jobs(3) { { job_class: "", queue_name: "agents", scheduled_at: 5.minutes.ago } }
 
-    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+    stats = HealthMonitorService.new.system_health[:queue_stats]
 
-    assert_equal({ HealthMonitorService::UNKNOWN_LABEL => 5 }, breakdown[:by_job_class])
-    assert_equal breakdown[:by_queue].values.sum, breakdown[:by_job_class].values.sum
+    assert_equal({ HealthMonitorService::UNKNOWN_LABEL => 5 }, stats[:ready_count_by_job_class])
+    assert_equal stats[:ready_count_by_queue].values.sum, stats[:ready_count_by_job_class].values.sum
   end
 
-  test "ready_backlog_breakdown is empty when nothing is waiting" do
-    assert_equal({ by_queue: {}, by_job_class: {}, oldest_by_queue: {}, head_of_line: nil },
-                 HealthMonitorService.new.ready_backlog_breakdown)
+  # A lane and a class holding nothing are ABSENT rather than zero — an idle lane
+  # and a draining one are different facts, and the scraper reading these off
+  # /health/export_diagnostics must not be handed the wrong one.
+  test "the ready splits are empty when nothing is waiting" do
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+
+    assert_equal({}, stats[:ready_count_by_queue])
+    assert_equal({}, stats[:ready_count_by_job_class])
+    assert_equal({}, stats[:oldest_ready_age_seconds_by_queue])
+    assert_nil stats[:head_of_line]
+  end
+
+  # === The claimed side, split by job class ===
+  #
+  # The ready split says which class is WAITING; this says which class is not
+  # FINISHING, and they are different answers. One class flooding a lane shows in
+  # the first; a lane wedged on work that never returns shows in the second. The
+  # 2026-08-14 triage could distinguish neither, because the only agent-reachable
+  # surface reported aggregates.
+
+  test "queue_statistics splits the claimed population by job class as well as by lane" do
+    claim_lane("agents", 3, running_for: 2.hours, job_class: "AgentSessionJob")
+    claim_lane("inference", 2, running_for: 70.minutes, job_class: "SessionStatusSummaryJob")
+    claim_lane("default", 1, running_for: 30.seconds, job_class: "AgentSessionJob")
+
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+
+    assert_equal({ "agents" => 3, "inference" => 2, "default" => 1 }, stats[:claimed_count_by_queue])
+    assert_equal({ "AgentSessionJob" => 4, "SessionStatusSummaryJob" => 2 }, stats[:claimed_count_by_job_class])
+    assert_equal stats[:claimed_count], stats[:claimed_count_by_job_class].values.sum
+  end
+
+  test "the claimed splits are empty when the worker is holding nothing" do
+    enqueue_ready_jobs(3)
+
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+
+    assert_equal({}, stats[:claimed_count_by_queue])
+    assert_equal({}, stats[:claimed_count_by_job_class])
+  end
+
+  # The three shapes the 2026-08-14 triage could not tell apart, each read off the
+  # keys this report publishes. This is the test that says the data is USEFUL
+  # and not merely present: the same aggregate numbers (`ready_count`,
+  # `claimed_count`) are compatible with all three, and the breakdowns are not.
+  test "the breakdowns separate one class flooding from one lane starving" do
+    # A flood: one class, one lane, everything else quiet.
+    insert_good_jobs(120) { { queue_name: "default", job_class: "SessionTitleJob", scheduled_at: 20.minutes.ago } }
+    insert_good_jobs(2) { { queue_name: "agents", job_class: "AgentSessionJob", scheduled_at: 10.seconds.ago } }
+    claim_lane("default", 2, running_for: 4.seconds, job_class: "SessionTitleJob")
+
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+
+    assert_equal "default", stats[:ready_count_by_queue].keys.first
+    assert_equal "SessionTitleJob", stats[:ready_count_by_job_class].keys.first,
+                 "a flood is one class dominating the ready split"
+    assert_equal 120, stats[:ready_count_by_job_class]["SessionTitleJob"]
+    assert_equal 2, stats[:claimed_count_by_queue]["default"],
+                 "the lane is claiming, so it is not the worker that has stopped"
+  end
+
+  test "the breakdowns separate a stalled worker from a starved lane" do
+    # A stall: every lane deep, nothing claimed anywhere.
+    %w[agents inference default].each do |lane|
+      insert_good_jobs(40) { { queue_name: lane, job_class: "#{lane.capitalize}Job", scheduled_at: 40.minutes.ago } }
+    end
+
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+
+    assert_equal 3, stats[:ready_count_by_queue].size, "every lane is deep, not one"
+    assert_equal({}, stats[:claimed_count_by_queue],
+                 "nothing is claimed in ANY lane — the worker, not a lane")
+    assert_equal 3, stats[:oldest_ready_age_seconds_by_queue].size
+    stats[:oldest_ready_age_seconds_by_queue].each_value { |age| assert_in_delta 2400, age, 5 }
   end
 
   # === Head-of-line age, per queue ===
@@ -611,13 +730,13 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   # like a wedge if the maximum is all you have. These tests pin the split that
   # tells them apart.
 
-  test "ready_backlog_breakdown reports each queue's own head-of-line age, oldest queue first" do
+  test "queue_statistics reports each queue's own head-of-line age, oldest queue first" do
     insert_good_jobs(1) { { queue_name: "inference", job_class: "SessionTitleJob", scheduled_at: 30.minutes.ago } }
     insert_good_jobs(1) { { queue_name: "inference", job_class: "SessionTitleJob", scheduled_at: 1.minute.ago } }
     insert_good_jobs(1) { { queue_name: "maintenance", job_class: "EmptyTrashJob", scheduled_at: 10.minutes.ago } }
     insert_good_jobs(1) { { queue_name: "pollers", job_class: "CanaryJob", scheduled_at: 5.seconds.ago } }
 
-    ages = HealthMonitorService.new.ready_backlog_breakdown[:oldest_by_queue]
+    ages = HealthMonitorService.new.system_health[:queue_stats][:oldest_ready_age_seconds_by_queue]
 
     assert_equal [ "inference", "maintenance", "pollers" ], ages.keys,
                  "the lane holding the backlog must read first"
@@ -628,41 +747,41 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
 
   # The whole point of the split: one old lane beside fresh ones is that lane
   # starving, and the global maximum alone cannot say which lane it was.
-  test "ready_backlog_breakdown names the queue and job class behind the global oldest age" do
+  test "head_of_line names the queue and job class behind the global oldest age" do
     insert_good_jobs(1) { { queue_name: "pollers", job_class: "CanaryJob", scheduled_at: 1.minute.ago } }
     insert_good_jobs(1) do
       { queue_name: "inference", job_class: "SessionStatusSummaryJob", scheduled_at: 25.minutes.ago }
     end
 
-    service = HealthMonitorService.new
-    head = service.ready_backlog_breakdown[:head_of_line]
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+    head = stats[:head_of_line]
 
     assert_equal "inference", head[:queue]
     assert_equal "SessionStatusSummaryJob", head[:job_class]
-    assert_in_delta service.system_health[:queue_stats][:oldest_ready_age_seconds], head[:age_seconds], 5,
-                    "the head of line must be the same row the alerts threshold on"
+    assert_equal stats[:oldest_ready_age_seconds], head[:age_seconds],
+                 "the head of line must be the same row the alerts threshold on, from the same read"
   end
 
   # Scheduled and claimed rows are not backlog, so they cannot own a head of line
   # either — the same population rule `ready_count` and the count breakdowns obey.
-  test "ready_backlog_breakdown takes head-of-line ages over ready work only" do
+  test "head-of-line ages are taken over ready work only" do
     insert_good_jobs(1) { { queue_name: "agents", scheduled_at: 2.hours.from_now } }
     insert_good_jobs(1) do
       { queue_name: "agents", locked_by_id: SecureRandom.uuid, locked_at: Time.current, scheduled_at: 3.hours.ago }
     end
     insert_good_jobs(1) { { queue_name: "default", scheduled_at: 4.minutes.ago } }
 
-    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+    stats = HealthMonitorService.new.system_health[:queue_stats]
 
-    assert_equal [ "default" ], breakdown[:oldest_by_queue].keys
-    assert_equal "default", breakdown[:head_of_line][:queue]
+    assert_equal [ "default" ], stats[:oldest_ready_age_seconds_by_queue].keys
+    assert_equal "default", stats[:head_of_line][:queue]
   end
 
   # A future-dated row only became backlog when its scheduled time arrived, so it
   # is charged from `scheduled_at` — charging it for the hours it spent correctly
   # parked would make every wake-up trigger read as a stall. A row with no
   # `scheduled_at` at all was ready when it was created.
-  test "ready_backlog_breakdown charges a head of line from scheduled_at, falling back to created_at" do
+  test "a head of line is charged from scheduled_at, falling back to created_at" do
     insert_good_jobs(1) do
       { queue_name: "triggers", created_at: 6.hours.ago, updated_at: 6.hours.ago, scheduled_at: 2.minutes.ago }
     end
@@ -670,36 +789,65 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       { queue_name: "auth", created_at: 20.minutes.ago, updated_at: 20.minutes.ago, scheduled_at: nil }
     end
 
-    ages = HealthMonitorService.new.ready_backlog_breakdown[:oldest_by_queue]
+    ages = HealthMonitorService.new.system_health[:queue_stats][:oldest_ready_age_seconds_by_queue]
 
     assert_in_delta 120, ages["triggers"], 5, "a woken trigger is not charged for the wait it was parked for"
     assert_in_delta 1200, ages["auth"], 5
     assert_equal [ "auth", "triggers" ], ages.keys
   end
 
-  test "ready_backlog_breakdown labels a head of line with no queue or job class instead of dropping it" do
+  # The lane half of the label fold is the one the gate joins on: `starved_lane` and
+  # `wedged_lane` match `ready_count_by_queue` keys against
+  # `oldest_ready_age_seconds_by_queue` keys, so a lane labelled one way in the
+  # counts and another way in the ages would silently stop being evaluated. Both
+  # halves must spell an unnamed queue identically, and a blank and a nil must fold
+  # onto ONE key rather than one of them replacing the other.
+  test "a row with no queue or job class is labelled instead of dropped, in every half" do
     insert_good_jobs(1) { { queue_name: nil, job_class: nil, scheduled_at: 8.minutes.ago } }
+    insert_good_jobs(2) { { queue_name: "", job_class: "", scheduled_at: 4.minutes.ago } }
 
-    head = HealthMonitorService.new.ready_backlog_breakdown[:head_of_line]
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+    unknown = HealthMonitorService::UNKNOWN_LABEL
 
-    assert_equal HealthMonitorService::UNKNOWN_LABEL, head[:queue]
-    assert_equal HealthMonitorService::UNKNOWN_LABEL, head[:job_class]
+    assert_equal({ unknown => 3 }, stats[:ready_count_by_queue],
+                 "nil and blank must sum onto one lane key, not replace each other")
+    assert_equal({ unknown => 3 }, stats[:ready_count_by_job_class])
+    assert_equal [ unknown ], stats[:oldest_ready_age_seconds_by_queue].keys,
+                 "the ages must use the same label as the counts, or the gate cannot join them"
+    assert_equal unknown, stats[:head_of_line][:queue]
+    assert_equal unknown, stats[:head_of_line][:job_class]
   end
 
-  # The counts are capped and the ages deliberately are not. An `other (N more)`
-  # remainder keeps a capped COUNT honest; there is no such thing for an age, so a
-  # cap would make a missing lane mean either "nothing waiting there" or "cut",
-  # and telling those apart is the entire comparison the line exists for.
-  test "ready_backlog_breakdown does not cap the head-of-line ages" do
-    %w[a b c d e f g].each_with_index do |queue, i|
-      insert_good_jobs(1) { { queue_name: queue, scheduled_at: (60 - i).minutes.ago } }
+  # The same join, on the claimed side.
+  test "a claimed row with no queue is labelled the same way in counts and ages" do
+    insert_good_jobs(2) do
+      { queue_name: nil, job_class: nil, locked_by_id: SecureRandom.uuid,
+        locked_at: 3.minutes.ago, performed_at: 3.minutes.ago }
     end
 
-    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+    unknown = HealthMonitorService::UNKNOWN_LABEL
 
-    assert_equal %w[a b c d e f g], breakdown[:oldest_by_queue].keys
-    assert_equal HealthMonitorService::READY_BREAKDOWN_LIMIT + 1, breakdown[:by_queue].size,
-                 "the COUNT breakdown is still capped, with its remainder entry"
+    assert_equal({ unknown => 2 }, stats[:claimed_count_by_queue])
+    assert_equal({ unknown => 2 }, stats[:claimed_count_by_job_class])
+    assert_equal [ unknown ], stats[:oldest_claimed_age_seconds_by_queue].keys
+  end
+
+  # The class counts are capped and the ages deliberately are not. An
+  # `other (N more)` remainder keeps a capped COUNT honest; there is no such thing
+  # for an age, so a cap would make a missing lane mean either "nothing waiting
+  # there" or "cut", and telling those apart is the entire comparison the line
+  # exists for.
+  test "the head-of-line ages are not capped" do
+    %w[a b c d e f g].each_with_index do |queue, i|
+      insert_good_jobs(1) { { queue_name: queue, job_class: "#{queue}Job", scheduled_at: (60 - i).minutes.ago } }
+    end
+
+    stats = HealthMonitorService.new.system_health[:queue_stats]
+
+    assert_equal %w[a b c d e f g], stats[:oldest_ready_age_seconds_by_queue].keys
+    assert_equal HealthMonitorService::READY_BREAKDOWN_LIMIT + 1, stats[:ready_count_by_job_class].size,
+                 "the by-class COUNT breakdown is still capped, with its remainder entry"
   end
 
   # The regression the per-queue scan exists to avoid. Reading the N oldest ready
@@ -712,7 +860,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     insert_good_jobs(1) { { queue_name: "pollers", scheduled_at: 30.seconds.ago } }
     insert_good_jobs(1) { { queue_name: "default", scheduled_at: 2.minutes.ago } }
 
-    ages = HealthMonitorService.new.ready_backlog_breakdown[:oldest_by_queue]
+    ages = HealthMonitorService.new.system_health[:queue_stats][:oldest_ready_age_seconds_by_queue]
 
     assert_equal [ "agents", "default", "pollers" ], ages.keys
     assert_in_delta 5400, ages["agents"], 5
@@ -730,11 +878,11 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     end
     insert_good_jobs(1) { { queue_name: "inference", job_class: "SessionTitleJob", scheduled_at: 4.minutes.ago } }
 
-    breakdown = HealthMonitorService.new.ready_backlog_breakdown
+    stats = HealthMonitorService.new.system_health[:queue_stats]
 
-    assert_equal 1, breakdown[:oldest_by_queue].size, "one entry per queue, not one per row"
-    assert_in_delta 720, breakdown[:oldest_by_queue]["inference"], 5
-    assert_equal "SessionStatusSummaryJob", breakdown[:head_of_line][:job_class]
+    assert_equal 1, stats[:oldest_ready_age_seconds_by_queue].size, "one entry per queue, not one per row"
+    assert_in_delta 720, stats[:oldest_ready_age_seconds_by_queue]["inference"], 5
+    assert_equal "SessionStatusSummaryJob", stats[:head_of_line][:job_class]
   end
 
   test "format_ages tells a failed read apart from an empty one" do

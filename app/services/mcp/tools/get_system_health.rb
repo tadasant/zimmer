@@ -42,7 +42,7 @@ module Mcp
           "- **Environment:** #{Rails.env}",
           "- **Ruby Version:** #{RUBY_VERSION}",
           *queue_recovery_mode_lines,
-          *ready_backlog_lines,
+          *ready_backlog_lines(report),
           *in_flight_lines(report),
           "",
           "### Health Details",
@@ -74,32 +74,33 @@ module Mcp
       # agent-facing surface answers a strictly weaker question than the
       # human-facing one.
       #
-      # Read from `ready_backlog_breakdown` directly rather than folded into
-      # `full_health_report`: that report also serves GET /api/v1/health and the
-      # /health page, which render far more often than anyone asks this question.
+      # Read off the report already in hand rather than re-queried. A second read of
+      # `good_jobs` for this section would be three more scans of a table that is
+      # largest precisely during the backlog this tool is being called to explain,
+      # and its answers could disagree with the ones in the JSON below, taken a
+      # moment earlier. Every number here comes from the single grouped read
+      # `queue_statistics` already makes for the `critical` gate, so the section
+      # costs nothing and the prose and the JSON describe the same instant.
       #
       # Silent when nothing is waiting — a breakdown of an empty queue is a line
-      # of noise on every healthy call. But NOT silent when the read fails: these
-      # are three scans of `good_jobs`, and the caller most likely to hit a
-      # database that cannot serve them is the one triaging a database that is
-      # struggling. Saying so beats raising and losing the whole health report.
-      def ready_backlog_lines
-        breakdown = HealthMonitorService.new.ready_backlog_breakdown
-        return [] if breakdown[:by_queue].blank?
+      # of noise on every healthy call.
+      def ready_backlog_lines(report)
+        stats = report.dig(:system_health, :queue_stats) || {}
+        by_queue = stats[:ready_count_by_queue]
+        return [] if by_queue.blank?
 
         [
-          "- **Ready backlog by queue:** #{HealthMonitorService.format_breakdown(breakdown[:by_queue])}",
-          "- **Ready backlog by job class:** #{HealthMonitorService.format_breakdown(breakdown[:by_job_class])}",
-          "- **Oldest ready by queue:** #{HealthMonitorService.format_ages(breakdown[:oldest_by_queue])}",
-          *head_of_line_line(breakdown[:head_of_line])
+          "- **Ready backlog by queue:** #{HealthMonitorService.format_breakdown(by_queue)}",
+          "- **Ready backlog by job class:** " \
+            "#{HealthMonitorService.format_breakdown(stats[:ready_count_by_job_class])}",
+          "- **Oldest ready by queue:** " \
+            "#{HealthMonitorService.format_ages(stats[:oldest_ready_age_seconds_by_queue])}",
+          *head_of_line_line(stats[:head_of_line])
         ]
-      rescue StandardError => e
-        Rails.logger.warn("[GetSystemHealth] Could not read the backlog breakdown: #{e.message}")
-        [ "- **Ready backlog breakdown:** unavailable (#{e.class})" ]
       end
 
-      # What the worker is HOLDING, per lane — the half of the picture the ready
-      # backlog cannot supply.
+      # What the worker is HOLDING, per lane and per job class — the half of the
+      # picture the ready backlog cannot supply.
       #
       # An agent triaging a stalled lane has exactly two questions after the lines
       # above: is that lane's pool full, and how long has its work been running.
@@ -112,9 +113,11 @@ module Mcp
       # and `maintenance` picked up nothing for over an hour behind a live worker
       # and no surface could say which shape it was.
       #
-      # Read off the report already in hand rather than re-querying: unlike the
-      # ready breakdown these are free, since `queue_statistics` computes them on
-      # every health read.
+      # The by-class line is the one that separates a flood from a wedge: the ready
+      # split says which class is WAITING, this says which class is not finishing.
+      #
+      # Read off the report already in hand rather than re-querying: `queue_stats`
+      # computes all of these on every health read.
       #
       # Silent when nothing is executing, matching `ready_backlog_lines` — an
       # in-flight breakdown of an idle worker is a line of noise on every healthy
@@ -127,6 +130,8 @@ module Mcp
         [
           "- **In flight by queue:** #{HealthMonitorService.format_breakdown(by_queue)} " \
             "(threads: #{HealthMonitorService.format_breakdown(HealthMonitorService.lane_thread_counts)})",
+          "- **In flight by job class:** " \
+            "#{HealthMonitorService.format_breakdown(stats[:claimed_count_by_job_class])}",
           "- **Oldest execution by queue:** " \
             "#{HealthMonitorService.format_ages(stats[:oldest_claimed_age_seconds_by_queue])}",
           "- **Youngest execution by queue:** " \

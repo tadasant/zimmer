@@ -195,10 +195,12 @@ class HealthMonitorService
   # matching on prose.
   WEDGED_LANE_CODE_PREFIX = "wedged_lane"
 
-  # How many entries `ready_backlog_breakdown` keeps from each breakdown. Enough
-  # to cover every Zimmer queue and still name the job classes that matter, short
-  # enough that the alert body stays readable in Slack. Whatever the limit cuts is
-  # reported as a remainder entry rather than dropped.
+  # How many entries `queue_and_class_counts` keeps from a by-job-class breakdown.
+  # Enough to name the classes that matter out of the app's ~45, short enough that
+  # the alert body stays readable in Slack. Whatever the limit cuts is reported as
+  # a remainder entry rather than dropped. The by-LANE breakdowns are uncapped —
+  # the `critical` gate thresholds per lane, and a lane the cap cut would read as
+  # having no depth at all.
   READY_BREAKDOWN_LIMIT = 5
 
   # What a row with no `job_class` (or no `queue_name`) is called in a breakdown.
@@ -929,60 +931,6 @@ class HealthMonitorService
     results
   end
 
-  # The backlog split by queue and by job class, and — the part the thresholds
-  # actually fire on — the age of each queue's own head of line.
-  #
-  # `queue_statistics` answers "how deep", which is what the thresholds need. It
-  # does not answer "deep with WHAT", and that is the question every triage of a
-  # backlog page actually opens with: a ready count alone cannot distinguish a
-  # starved queue from a busy one, and Zimmer runs seven queues with very
-  # different thread counts and job durations.
-  #
-  # `oldest_by_queue` exists because `queue_statistics[:oldest_ready_age_seconds]`
-  # is a single number over every queue at once. A global head-of-line age
-  # stopped being interpretable the moment the lanes were sized apart: two threads
-  # against jobs that block for a minute and a half hold their head of line for
-  # tens of minutes while the worker is healthy and the depth is flat, and that
-  # reads identically to a wedged worker if the only number you have is the
-  # maximum across all of them. Per-queue ages separate the two on sight — one old
-  # lane beside six fresh ones is that lane starving; every lane old at once is the
-  # worker. `system_health_status` now thresholds on that distinction rather than
-  # only printing it. The Grafana rule over `zimmer_good_job_oldest_ready_age_seconds`
-  # still reads the single global number, but no longer pages on it alone —
-  # tadasant-internal#2260 gated it on throughput as well, for the same reason.
-  #
-  # `oldest_by_queue` is the one breakdown here that is NOT capped. The counts can
-  # be, because `top_counts` hands back an `other (N more)` remainder and the
-  # reader can still see the total. An age has no such remainder — "other 12m"
-  # means nothing — so a cap would leave a lane's absence meaning three different
-  # things at once: no ready work there, or cut by the cap. That ambiguity lands
-  # squarely on the comparison the line exists for, and the entry count is bounded
-  # by the number of distinct queue names anyway.
-  #
-  # `queue_statistics` carries its own uncapped per-lane depths and head ages,
-  # because the `critical` gate cannot evaluate a per-lane conjunction without them.
-  # What stays here, and stays off the /health render, is the by-job-class breakdown
-  # and the capping: those answer "deep with what" for a human reading a page, not
-  # "is this an incident". Cardinality is small either way — seven queues, and job
-  # classes bounded by the app's job count.
-  #
-  # @param limit [Integer] how many entries to keep from each COUNT breakdown
-  # @return [Hash] :by_queue and :by_job_class, ordered Hashes of name => count;
-  #   :oldest_by_queue, an uncapped ordered Hash of queue => age in seconds,
-  #   oldest first; :head_of_line, the longest-waiting ready row, or nil when
-  #   nothing is waiting
-  def ready_backlog_breakdown(limit: READY_BREAKDOWN_LIMIT)
-    ready = ready_scope(GoodJob::Job.where(finished_at: nil, locked_by_id: nil))
-    heads = head_of_line_by_queue(ready)
-
-    {
-      by_queue: top_counts(ready.group(:queue_name).count, limit),
-      by_job_class: top_counts(ready.group(:job_class).count, limit),
-      oldest_by_queue: lane_head_ages(heads),
-      head_of_line: heads.first
-    }
-  end
-
   private
 
   # Find all active Claude CLI processes on the system
@@ -1140,12 +1088,10 @@ class HealthMonitorService
     #
     # This costs the /health render one query net: the `DISTINCT ON` head read and
     # the grouped count, less the single-row `pick` the global age no longer needs.
-    # That is a real reversal of `ready_backlog_breakdown`'s decision to keep these
-    # scans off the render path, and it is the price of a gate that can tell a
-    # starved lane from a stalled worker — the conjunction cannot be evaluated per
-    # lane without per-lane numbers. Both reads are bounded by the number of
-    # distinct queue names rather than by backlog depth, and both are served by the
-    # partial `(queue_name, scheduled_at)` index.
+    # It is the price of a gate that can tell a starved lane from a stalled worker —
+    # the conjunction cannot be evaluated per lane without per-lane numbers. Both
+    # reads are bounded by the number of distinct queue names rather than by backlog
+    # depth, and both are served by the partial `(queue_name, scheduled_at)` index.
     heads = head_of_line_by_queue(ready_jobs)
 
     # The same read taken over the claimed population. `claimed_count` is a single
@@ -1171,6 +1117,26 @@ class HealthMonitorService
     in_flight = in_flight_head_by_queue(running_jobs)
     youngest_in_flight = in_flight_head_by_queue(running_jobs, direction: :youngest)
 
+    # "Deep with WHAT", on the surface an agent triaging the backlog page actually
+    # has. The per-lane counts below answer "deep where", and that is only two
+    # thirds of the triage: a lane's depth cannot distinguish one job class
+    # flooding it from every class arriving at its normal rate behind a lane that
+    # has stopped draining, and those want opposite responses. The #alerts
+    # responder on this deployment is an agent session, with no shell on the box
+    # and no browser session for /jobs, so `get_system_health` is the only route it
+    # has to the composition — its absence is what left the 2026-08-02 and
+    # 2026-08-14 triages guessing at it (#450).
+    #
+    # Free in SCANS, which is the resource that matters here — not free in time.
+    # Each of these is folded out of the SAME grouped read that produces the
+    # per-lane counts beside it, so the probe issues two aggregations rather than
+    # four and passes over the rows twice rather than four times. That matters more
+    # than it sounds: `good_jobs` is largest precisely during the backlog this data
+    # exists to explain, and a probe that grows a scan under load degrades exactly
+    # when it is being read.
+    ready_by_queue, ready_by_job_class = queue_and_class_counts(ready_jobs)
+    claimed_by_queue, claimed_by_job_class = queue_and_class_counts(running_jobs)
+
     {
       pending_count: pending_jobs.count,
       ready_count: ready_jobs.count,
@@ -1183,12 +1149,27 @@ class HealthMonitorService
       # the `oldest_ready_age_seconds: nil` convention — an idle lane and a
       # draining one are different facts and a metric that flattens them to 0 says
       # the wrong one.
-      ready_count_by_queue: lane_counts(ready_jobs),
+      ready_count_by_queue: ready_by_queue,
+      # The same population split the other way: which job classes the ready work
+      # IS. Capped, unlike the by-lane split — there are ~45 job classes against
+      # seven lanes, and the gate thresholds per lane but never per class, so
+      # nothing here is load-bearing for a decision the way an uncapped lane depth
+      # is. `top_counts` keeps a labelled remainder, so the split still adds up
+      # against `ready_count` and "concentrated in one class" stays distinguishable
+      # from "spread across forty".
+      ready_count_by_job_class: ready_by_job_class,
       oldest_ready_age_seconds_by_queue: lane_head_ages(heads),
       # The claimed side of the same three facts, under the same conventions: a
       # lane holding nothing is absent rather than zero, and the totals above are
       # the sum of these.
-      claimed_count_by_queue: lane_counts(running_jobs),
+      claimed_count_by_queue: claimed_by_queue,
+      # What the worker is holding, by class rather than by lane. The ready-side
+      # split says what is WAITING; a class that dominates the in-flight population
+      # is what is not finishing, and the two are different answers — a flood shows
+      # in the first, a wedge in the second. Bounded by the claimed population
+      # (~25 rows at Zimmer's configured thread counts) rather than by the backlog,
+      # and capped the same way for the same reason.
+      claimed_count_by_job_class: claimed_by_job_class,
       oldest_claimed_age_seconds_by_queue: lane_head_ages(in_flight),
       # The other end: how long the most recently started execution in each lane
       # has been running. Reported rather than kept private to the gate, because a
@@ -1205,6 +1186,13 @@ class HealthMonitorService
       # the same read rather than a query of its own, and the two can no longer
       # disagree about a row that drained between them.
       oldest_ready_age_seconds: heads.first&.fetch(:age_seconds),
+      # The whole head row — lane, class and age — not just its age. Carried here
+      # so every surface can name WHAT has been waiting longest without a query of
+      # its own: the `get_system_health` tool printed this line off a second read of
+      # `good_jobs`, which cost it the scans and let it quote one row's age beside
+      # another row's lane. `nil` when nothing is ready, matching
+      # `oldest_ready_age_seconds`.
+      head_of_line: heads.first,
       # The longest-running execution anywhere, derived from the per-lane heads for
       # the same reason the ready-side global is: one read, so the two can never
       # disagree about a job that finished between them.
@@ -1219,25 +1207,55 @@ class HealthMonitorService
     }
   end
 
-  # Rows per lane, biggest first, uncapped, with the same UNKNOWN_LABEL treatment
-  # `head_of_line_by_queue` gives a row GoodJob wrote with no queue name — so a lane
-  # appears under one key in every half and the gate can join them.
+  # Rows per lane AND rows per job class, from one grouped read.
+  #
+  # One read rather than two, and that is the whole point of the shape. A
+  # `GROUP BY queue_name` and a `GROUP BY job_class` over the same scope are two
+  # scans of the same rows: twice the cost at exactly the moment `good_jobs` is
+  # largest, and — being separate queries against a moving table — free to disagree,
+  # so the by-class split would not add up against the by-lane split printed on the
+  # line above it. Postgres groups on the composite once and Ruby folds the result
+  # two ways, which makes both halves a description of the same instant and buys the
+  # second breakdown without a second pass over the rows. Not for nothing, though:
+  # grouping on the composite is modestly wider than grouping on `queue_name` alone
+  # — ~180ms against ~146ms over 200k ready rows — where a separate by-class
+  # aggregation would have cost a second full scan and ~151ms on top of that.
+  #
+  # The intermediate is bounded by the (lane, class) pairs actually present, not by
+  # the backlog: seven lanes against ~45 job classes is a few hundred rows in the
+  # worst case a deployment could construct, and a handful in practice, since a job
+  # class only ever runs on the lane it is assigned to.
+  #
+  # The by-lane half is UNCAPPED: `system_health_status` thresholds per lane, and a
+  # lane the cap cut would read as having no depth at all, so the gate would stop
+  # seeing the very queue that is starving. The by-class half is capped, with
+  # `top_counts` keeping a labelled remainder so it still adds up against the total.
+  #
+  # UNKNOWN_LABEL treatment matches `head_of_line_by_queue`, so a lane appears under
+  # one key in every half and the gate can join them.
   #
   # Takes whichever population the caller is counting: ready depth from the ready
   # scope, in-flight width from the claimed scope. The two are the same query over
   # different rows, and writing it twice is how they drift into two spellings of a
   # lane name.
   #
-  # Ordered rather than left in the adapter's grouping order, so two reads of an
-  # unchanged queue serialize identically; and a plain Hash rather than the
-  # accumulator's `Hash.new(0)`, so a lane holding nothing reads as absent to a
-  # Ruby caller too and not as a zero the default conjured.
-  def lane_counts(scope)
-    counts = scope.group(:queue_name).count.each_with_object(Hash.new(0)) do |(queue, count), acc|
-      acc[queue.presence || UNKNOWN_LABEL] += count
+  # Both halves are ordered rather than left in the adapter's grouping order, so two
+  # reads of an unchanged queue serialize identically; and both are plain Hashes
+  # rather than the accumulators' `Hash.new(0)`, so a lane holding nothing reads as
+  # absent to a Ruby caller too and not as a zero the default conjured.
+  #
+  # @return [Array(Hash, Hash)] counts by lane (uncapped, deepest first) and by job
+  #   class (at most `limit` entries plus a labelled remainder, biggest first)
+  def queue_and_class_counts(scope, limit: READY_BREAKDOWN_LIMIT)
+    by_queue = Hash.new(0)
+    by_job_class = Hash.new(0)
+
+    scope.group(:queue_name, :job_class).count.each do |(queue, job_class), count|
+      by_queue[queue.presence || UNKNOWN_LABEL] += count
+      by_job_class[job_class.presence || UNKNOWN_LABEL] += count
     end
 
-    counts.sort_by { |queue, count| [ -count, queue.to_s ] }.to_h
+    [ by_queue.sort_by { |queue, count| [ -count, queue.to_s ] }.to_h, top_counts(by_job_class, limit) ]
   end
 
   # Head age per lane, oldest lane first. `heads` arrives sorted oldest first and
@@ -2109,10 +2127,10 @@ class HealthMonitorService
     depths = queue_stats[:ready_count_by_queue] || {}
     ages = queue_stats[:oldest_ready_age_seconds_by_queue] || {}
 
-    # `lane_counts` already returns deepest-first with a name tiebreak. Re-sorting
-    # here would discard that stability — `sort_by` is not stable, so two lanes at
-    # equal depth could swap between two reads of an unchanged queue and the page
-    # would name a different lane each time.
+    # `queue_and_class_counts` already returns deepest-first with a name tiebreak.
+    # Re-sorting here would discard that stability — `sort_by` is not stable, so two
+    # lanes at equal depth could swap between two reads of an unchanged queue and
+    # the page would name a different lane each time.
     depths.each do |queue, count|
       # The depths and the ages are two queries against a moving table, so a lane
       # can appear in one and not the other. No age is no evidence of a stall.

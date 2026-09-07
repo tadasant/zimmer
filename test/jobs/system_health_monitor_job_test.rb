@@ -251,15 +251,38 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     assert_match(/Oldest ready by queue: agents 40m, default 11m/, details)
   end
 
-  # The breakdown is three extra scans of `good_jobs` at exactly the moment
-  # the database may be the thing going wrong. A depth number that reaches a human
-  # beats a richer one that raises on the way, so the detail degrades and the page
-  # still goes out.
-  test "a breakdown that cannot be read does not stop the page going out" do
+  # Every bullet is folded out of the `queue_stats` the gate already computed, so
+  # the page issues no read of its own at the moment the database may be the thing
+  # going wrong — and the age on the first bullet always belongs to the same row as
+  # the lane and class named beside it. A second query could not promise either.
+  test "the page is built from the statistics the gate already read" do
     make_queue_critical
-    HealthMonitorService.any_instance.stubs(:ready_backlog_breakdown)
-                        .raises(ActiveRecord::StatementInvalid, "canceling statement due to statement timeout")
 
+    # The first tick only builds the streak, so it computes the statistics and
+    # renders nothing. The second renders the whole page off the same statistics.
+    # Equal `good_jobs` read counts is the claim: assembling the body costs no
+    # query, at the moment the database may be the thing going wrong.
+    silent_reads = count_good_job_reads { SystemHealthMonitorJob.perform_now }
+
+    details = ""
+    AlertService.expects(:raise_alert).once.with do |_title, opts|
+      details = opts[:details].to_s
+      true
+    end
+    alerting_reads = count_good_job_reads { SystemHealthMonitorJob.perform_now }
+
+    assert_equal silent_reads, alerting_reads,
+                 "rendering the page must not re-read good_jobs after the gate already has"
+    assert_includes details, "Ready (waiting on a worker): 105"
+    refute_includes details, "unavailable"
+  end
+
+  # The alert routes its reader somewhere the reader can actually go. Agent
+  # sessions are the ordinary first responders to #alerts on this deployment and
+  # they have no browser session on the production host, so /jobs alone was a dead
+  # end (#450) — the MCP tool that returns these same breakdowns is the live route.
+  test "the page names the route its agent responder can take" do
+    make_queue_critical
     SystemHealthMonitorJob.perform_now # streak -> 1
 
     details = ""
@@ -269,12 +292,10 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     end
     SystemHealthMonitorJob.perform_now
 
-    assert_includes details, "Ready (waiting on a worker): 105"
-    assert_includes details, "Ready by queue: unavailable"
-    assert_includes details, "Ready by job class: unavailable"
-    assert_includes details, "Oldest ready by queue: unavailable"
-    refute_includes details, "( / )",
-                    "with no breakdown to read, the first bullet keeps the age and drops the lane"
+    assert_includes details, "get_system_health",
+                    "the responder most likely to read this page needs a route it has"
+    assert_includes details, "Ready by job class:"
+    assert_includes details, "In flight by job class:"
   end
 
   # === A wedged lane ===
@@ -424,5 +445,18 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
 
     AlertService.expects(:raise_alert).once
     SystemHealthMonitorJob.perform_now
+  end
+
+
+  # How many statements the block sends against `good_jobs`.
+  def count_good_job_reads
+    reads = 0
+    subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+      reads += 1 if payload[:sql].to_s.include?("good_jobs")
+    end
+    yield
+    reads
+  ensure
+    ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
   end
 end
