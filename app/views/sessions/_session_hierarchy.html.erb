@@ -233,7 +233,11 @@
               rendered once and the link is labelled rather than repeating it. %>
           <p class="mt-1 text-xs text-amber-800">
             <%= gap.remedy %>
-            <%= link_to "Open the roster", supervisor_users_path, data: { turbo_frame: "_top" }, class: "underline hover:text-amber-900" %>.
+            <%# `turbo_prefetch: false` is required on every link into the /supervisor
+                Basic realm: Turbo prefetches on hover, /supervisor answers 401 with
+                WWW-Authenticate, and the browser pops its native sign-in dialog over
+                the page. BasicAuthPrefetchTest sweeps for it. %>
+            <%= link_to "Open the roster", supervisor_users_path, data: { turbo_frame: "_top", turbo_prefetch: false }, class: "underline hover:text-amber-900" %>.
           </p>
         </div>
       <% end %>
