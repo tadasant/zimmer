@@ -535,7 +535,8 @@ The one solid piece of test architecture here. Runtimes are enforced structurall
 by convention:
 
 - **`test/contracts/runtime_cli_adapter_contract_test.rb`** asserts every registered adapter
-  (`ClaudeCliAdapter`, `CodexRuntimeAdapter`, and their mocks) has keyword-set-identical `execute`
+  (`ClaudeCliAdapter`, `CodexRuntimeAdapter`, `PiRuntimeAdapter`, and their mocks) has
+  keyword-set-identical `execute`
   and `resume` signatures — checked via `instance_method(:execute).parameters`, so a renamed kwarg fails
   the build rather than failing at spawn time.
 - **`test/contracts/runtime_mcp_credential_writer_contract_test.rb`** does the same for credential writers.

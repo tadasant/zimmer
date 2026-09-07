@@ -18,7 +18,7 @@ flowchart TB
         A["X-API-Key header<br/>vs ENV['API_KEYS'] (comma-separated)<br/>opaque, unscoped, no identity"]
     end
     subgraph harness["3 · Zimmer → Agent vendor"]
-        H["ClaudeAccount pool (both runtimes)<br/>OAuth refresh + rotation on quota<br/>tokens on disk AND in Postgres"]
+        H["ClaudeAccount pool (claude_code + codex)<br/>OAuth refresh + rotation on quota<br/>tokens on disk AND in Postgres<br/>(pi: a provider API key, no pool)"]
     end
     subgraph mcp["4 · Agent → MCP servers"]
         M["McpOauthCredential<br/>PKCE + DCR + RFC 8414 discovery<br/>injected into the CLI's credential file"]
@@ -130,10 +130,14 @@ Two endpoints skip it entirely:
 
 ## 3. Zimmer → the agent vendor
 
-A pool of accounts (`ClaudeAccount` — misleadingly named; it serves both runtimes, discriminated
-by a `runtime` column) with automatic OAuth refresh and automatic rotation when one hits its quota.
+A pool of accounts (`ClaudeAccount` — misleadingly named; it serves the two runtimes that have a
+pool, discriminated by a `runtime` column) with automatic OAuth refresh and automatic rotation when
+one hits its quota.
 
-→ [Agent harness credentials](/auth/harness/)
+Pi is outside all of it: it resolves a provider API key (`OPENROUTER_API_KEY`) per request from the
+session environment, so there is no account row, nothing to refresh and nothing to rotate.
+
+→ [Agent harness credentials](/auth/harness/) · [Runtimes](/sessions/runtimes/)
 
 ## 4. The agent → MCP servers
 

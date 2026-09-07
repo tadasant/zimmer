@@ -148,8 +148,9 @@ What this buys:
   review. Rolling it back is a revert.
 - **The orchestrator stays generic.** Zimmer's code never names a skill. It asks the catalog
   what exists and injects what the session selected.
-- **The same catalog can serve other agents.** AIR has adapters for Claude Code, Codex,
-  Cursor, and others. The catalog is agent-shaped, so any of them can use it.
+- **The same catalog can serve other agents.** AIR has adapters for Claude Code, Codex, Pi,
+  Cursor, and others. The catalog is agent-shaped, so any of them can use it — Zimmer already
+  runs [three of them](/sessions/runtimes/).
 - **Composable artifacts.** Each artifact declares which roots it's default-on in via
   `default_in_roots`, so adding a skill to a root is a one-line edit in the *skill's* own entry.
 

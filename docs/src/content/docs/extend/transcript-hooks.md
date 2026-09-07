@@ -263,9 +263,10 @@ is prefix. The outright guard is kept because it says the stronger thing: a sess
 write a blurb opens nothing ever, so not even the one turn it writes itself counts — and it holds
 without depending on the fork point having been recorded.
 
-Both runtimes are handled. Claude Code and Codex write different transcript shapes, so finding shell
-invocations, their results, whether a result failed, and the agent's own prose is dispatched on
-`session.agent_runtime` inside `TranscriptHooks::ToolCallParser`.
+All three runtimes are handled. Claude Code, Codex and Pi write different transcript shapes, so
+finding shell invocations, their results, whether a result failed, and the agent's own prose is
+dispatched on `session.agent_runtime` inside `TranscriptHooks::ToolCallParser` — which warns rather
+than silently defaulting when it meets a runtime it has no parser for.
 
 :::caution[The failure mode is silence, in both directions]
 Claiming too much misroutes another session's PR here; claiming too little leaves a session whose PR

@@ -7,7 +7,7 @@ sidebar:
 
 Zimmer is a Rails 8 application that runs AI coding agents for you. You give it a task
 and a repository; it clones the repo, wires up the agent's context, spawns a real headless
-Claude Code or Codex process, watches it work, and hands you back a pull request — or a
+Claude Code, Codex or Pi process, watches it work, and hands you back a pull request — or a
 specific question about why it couldn't finish.
 
 It is self-hostable and single-operator. There is no multi-tenancy, no user accounts,
@@ -22,7 +22,7 @@ flowchart LR
     Z -->|"git clone"| C["Isolated clone<br/>on disk"]
     Z -->|"resolve context"| A["AIR catalog<br/>skills · MCP · roots"]
     A -->|"inject"| C
-    Z -->|"spawn headless CLI"| P["Agent process<br/>claude / codex"]
+    Z -->|"spawn headless CLI"| P["Agent process<br/>claude / codex / pi"]
     P <-->|"reads &amp; writes"| C
     P -->|"JSONL transcript"| Z
     P -->|"git push + gh pr create"| G["GitHub PR"]
@@ -66,9 +66,9 @@ kind. The security model is "put it behind Tailscale," and Zimmer's own Terrafor
 exactly that — port 80 is closed at the DigitalOcean firewall and the app is reachable only
 over the tailnet.
 
-It is not an agent. Zimmer doesn't write code. Claude Code and Codex write the code.
-Zimmer decides what context they get, when they run, when they stop, and what happens to
-their output.
+It is not an agent. Zimmer doesn't write code. [Claude Code, Codex and
+Pi](/sessions/runtimes/) write the code. Zimmer decides what context they get, when they run,
+when they stop, and what happens to their output.
 
 It is not AIR. [AIR](/air/overview/) is a separate open-source project
 ([`github.com/pulsemcp/air`](https://github.com/pulsemcp/air)) that Zimmer depends on to

@@ -236,7 +236,7 @@ With no `agent_root` param, `Api::V1::SessionsController#create` returns early f
 The Settings-page default is never consulted. Same for the model: it goes straight to
 `ModelCatalog.default_for(runtime)`, skipping `AppSetting.resolved_default_model_for` entirely.
 
-So if you set a global default runtime of `codex` in Settings and then create a session via the API
+So if you set a global default runtime of `codex` in Settings and then create a session over MCP
 without an `agent_root`, you get Claude Code.
 :::
 

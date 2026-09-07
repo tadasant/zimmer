@@ -313,10 +313,34 @@ codex exec --json --dangerously-bypass-approvals-and-sandbox \
   <prompt>
 ```
 
-Both are spawned with `pgroup: true` (so the whole process group can be killed as a unit),
-stdin and stdout to `/dev/null`, and stderr to `claude_stderr.log` / `codex_stderr.log` inside
-the **working directory** — which is the clone root for a session without an agent root, and the
-agent root's subdirectory for one with.
+**Pi:**
+
+```bash
+pi -p --mode json --approve \
+  --session-dir <wd>/.pi/sessions --session-id UUID [--model provider/id] \
+  [--append-system-prompt <wd>/pi_system_prompt.md] \
+  -e /opt/pi-extensions/node_modules/... (once per extension) \
+  -- [@image]... <prompt>
+```
+
+Two of those flags have no counterpart on the other two runtimes. `--approve` trusts
+project-local files for the run: without it Pi treats the `.pi/skills/` and `.mcp.json` Zimmer
+just wrote as untrusted third-party content and, with no TTY in `-p` mode to ask about them,
+silently ignores everything that was prepared. `-e` loads a [Pi
+extension](/sessions/runtimes/#pi-brings-no-mcp-hooks-or-plugins-of-its-own), and is passed once
+per extension because Pi has no MCP, hooks or plugins of its own. `--` ends option parsing so a
+prompt starting with a dash is not read as a flag, and an image is attached as `@<path>` rather
+than through a flag.
+
+The system prompt is staged to a file rather than passed inline because the orchestrator prompt
+runs to many kilobytes and Linux caps one argv entry at 128 KiB — inline, a long prompt fails the
+spawn with `E2BIG` instead of running. It is rewritten on every spawn, so a resumed turn never
+appends a stale prompt.
+
+All three are spawned with `pgroup: true` (so the whole process group can be killed as a unit),
+stdin and stdout to `/dev/null`, and stderr to `claude_stderr.log` / `codex_stderr.log` /
+`pi_stderr.log` inside the **working directory** — which is the clone root for a session without
+an agent root, and the agent root's subdirectory for one with.
 
 That subdirectory is frozen onto the session row when the session is created, so every clone the
 job makes — the first one, and the recreation after a reaper took it — also offers
@@ -382,6 +406,9 @@ the key; nothing consults it.
 
 ### Why those tools are disallowed
 
+`disallowed_tools` is empty for Codex and for Pi: both run with their full built-in tool set
+inside an already-isolated container, and the tools named below are Claude Code's.
+
 `Monitor`, `ScheduleWakeup`, `Bash(sleep *)`, and `Skill(schedule)` are all blocked because they
 are *Claude Code's own* ways of waiting, and they don't survive Zimmer. A background sleep loop
 dies when the container is recreated on deploy; a `ScheduleWakeup` doesn't create a Zimmer trigger
@@ -391,17 +418,22 @@ forever.
 
 ### Runtime differences that leak
 
-| | Claude Code | Codex |
-| --- | --- | --- |
-| Session ID | Zimmer generates it, passes `--session-id` | Codex mints its own; Zimmer captures it from the transcript |
-| MCP config | `--mcp-config <path>` | `~/.codex/config.toml` (no flag) |
-| System prompt | `--append-system-prompt` | Written into `AGENTS.md` below a marker |
-| Resume | `--resume UUID` | `codex exec resume UUID` — and no `--cd` (the subcommand rejects it) |
-| Transcript | plain `.jsonl` | zstd-compressed `.jsonl.zst` rollouts |
+| | Claude Code | Codex | Pi |
+| --- | --- | --- | --- |
+| Session ID | Zimmer generates it, passes `--session-id` | Codex mints its own; Zimmer captures it from the transcript | Zimmer generates it, passes `--session-id` — Pi creates the session with that exact id when none carries it |
+| MCP config | `--mcp-config <path>` | `~/.codex/config.toml` (no flag) | `.mcp.json` in the working directory (no flag — `pi-mcp-adapter` finds it by convention) |
+| System prompt | `--append-system-prompt` | Written into `AGENTS.md` below a marker | `--append-system-prompt <file>` |
+| Resume | `--resume UUID` | `codex exec resume UUID` — and no `--cd` (the subcommand rejects it) | no resume subcommand — re-run with the same `--session-id` |
+| Transcript | plain `.jsonl` | zstd-compressed `.jsonl.zst` rollouts | plain `.jsonl`, in `<clone>/.pi/sessions/` rather than a host-global tree |
 
 The `mints_own_session_id?` flag on the transcript normalizer is what keeps these straight.
 Getting it wrong corrupts forked sessions — Claude's session id must *not* be rewritten from the
-transcript, or a fork collides on the unique index.
+transcript, or a fork collides on the unique index. It is `false` for Pi for the same reason it is
+for Claude.
+
+Pi reads `AGENTS.md` and `CLAUDE.md` from the working directory on its own, so the orchestrator
+prompt goes through the flag and is deliberately *not* also written into a project file — doing
+both would put it in the model's context twice. See [Runtimes](/sessions/runtimes/).
 
 ### What Zimmer appends to every prompt
 
@@ -682,9 +714,10 @@ Shared scrubbing (`CliSpawnEnv`):
 - Sets `ELICITATION_REQUEST_URL` and `ELICITATION_SESSION_ID` — where an MCP
   server sends an [approval request](/sessions/elicitation/#where-the-request-goes-and-what-happens-when-it-cant-get-there),
   and who is asking. A value in the clone's `.env` wins. This reaches the CLI, and on
-  Claude Code the stdio MCP servers that inherit its environment; on **both** runtimes the
+  Claude Code the stdio MCP servers that inherit its environment; on **all three** runtimes the
   stdio servers also get the two values from their own `env` table in the generated config,
-  written by `RuntimeConfigPostProcessor#inject_elicitation_env!`. That second channel exists
+  written by `RuntimeConfigPostProcessor#inject_elicitation_env!` — which Pi's post-processor
+  inherits along with the rest of the shared pipeline. That second channel exists
   for the same reason as the `SSH_PRIVATE_KEY_PATH` forwarding below — Codex inherits neither —
   though the mechanism differs: a literal `env` table rather than Codex's `env_vars` forwarding,
   so it also overrides a stale copy in a catalog entry's own `env`.
@@ -693,7 +726,9 @@ Shared scrubbing (`CliSpawnEnv`):
   `OperatorSshKeyProvisioner`; this exports its path, because an `ssh-*` MCP server looks for
   `SSH_AUTH_SOCK` and `SSH_PRIVATE_KEY_PATH` and nowhere else. A value in the clone's `.env` wins.
   (Claude's stdio MCP servers inherit the variable from the CLI; Codex's do not, so the Codex
-  post-processor forwards it explicitly through `env_vars`.)
+  post-processor forwards it explicitly through `env_vars`. Pi's CLI process gets the variable
+  the same way Claude's does — `CliSpawnEnv#apply_operator_ssh_key` is shared — and no Pi-side
+  equivalent of the Codex `env_vars` forwarding exists.)
 
 Claude adds (`ClaudeSpawnEnv`): `ENABLE_TOOL_SEARCH` (see below),
 `CLAUDE_CODE_DISABLE_CRON=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
@@ -714,6 +749,16 @@ session reads the shared `~/.claude/.credentials.json` as before.
 
 Codex adds `RUST_LOG=warn,rmcp=info` and `CODEX_HOME`.
 
+Pi adds `PI_CODING_AGENT_DIR` (so the child resolves its credentials and provider declarations
+from the same directory `PiHome` reports, rather than a home on the ephemeral overlay), the
+`PI_HOOKS_AIR` / `PI_PLUGINS_CONFIG` pair naming the mini-catalog `PiAirBridge` generated for this
+session, and `OPENROUTER_API_KEY`. That last one is scoped to Pi deliberately: an inference key
+authorizes spend and the other two runtimes have no use for it. It is resolved from the ordinary
+`${VAR}` chain at spawn, because the session `.env` writer reads Rails-encrypted `mcp_secrets`
+only and would never carry a Parameter Store value. A store Zimmer cannot reach is logged and the
+session still spawns — Pi's own `not_ready` is a better failure than one that never starts. A
+value already in the clone's `.env` wins in every case. See [Runtimes](/sessions/runtimes/).
+
 ### MCP tool search
 
 `ENABLE_TOOL_SEARCH` is the one variable here an operator sets: it tracks the **MCP tool search**
@@ -722,8 +767,10 @@ default**. On, Claude Code searches an attached MCP server's tools on demand; of
 attached server's full tool schemas up front, which with several servers attached is a large,
 unavoidable context cost at the start of every session.
 
-It is a Claude Code flag and nothing else reads it — `CodexRuntimeAdapter` never runs
-`ClaudeSpawnEnv`, so a Codex child never sees the variable at all, whatever the setting says.
+It is a Claude Code flag and nothing else reads it — neither `CodexRuntimeAdapter` nor
+`PiRuntimeAdapter` runs `ClaudeSpawnEnv`, so a Codex or Pi child never sees the variable at all,
+whatever the setting says. Pi keeps its own MCP context cost down a different way: `pi-mcp-adapter`
+exposes one `mcp` proxy tool instead of registering every server's tools individually.
 
 Every session is tagged with what this setting was when it started and when it last ran, and the
 Costs page compares the two cohorts. See
@@ -739,12 +786,13 @@ runtime. An enabled extension can still override the variable through the spawn-
 extension contributions are merged last.
 
 :::caution[A spawn-env asymmetry]
-`Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` —
-`CodexRuntimeAdapter#spawn_process` never consults it, so extension env contributions are
-unreachable for Codex, despite the hook receiving a `runtime` context that implies otherwise.
+`Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` — neither
+`CodexRuntimeAdapter#spawn_process` nor `PiRuntimeAdapter#spawn_process` consults it, so extension
+env contributions are unreachable for both, despite the hook receiving a `runtime` context that
+implies otherwise.
 
 The elicitation variables used to be the other half of this pair. They now come from `CliSpawnEnv`,
-which both runtimes include.
+which all three runtimes include.
 :::
 
 ## The boot-tasks readiness gate
