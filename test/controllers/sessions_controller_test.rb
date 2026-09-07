@@ -529,6 +529,101 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     refute Session.last.mcp_servers_explicitly_empty?
   end
 
+  # --- MCP-server readiness at create (#537) ---
+  #
+  # The picker flags a server it cannot start but does not refuse the pick, and
+  # the form can be submitted from a page rendered before a connector broke. The
+  # create says so rather than letting the session die at prepare time with no
+  # explanation — a flash alert, not a rejection. These drive the real
+  # ConnectorStatusProbe against the shared mixed-availability catalog.
+
+  test "creating a session with a server Zimmer cannot start warns and still creates it" do
+    with_mixed_mcp_catalog_only do
+      assert_difference("Session.count") do
+        post sessions_url, params: {
+          session: {
+            git_root: "https://github.com/test/repo.git",
+            prompt: "Test prompt",
+            mcp_servers: [ "strad-secrets-staging-rw" ]
+          }
+        }
+      end
+    end
+
+    assert_redirected_to session_path(Session.last)
+    assert_match(/Zimmer cannot start MCP server strad-secrets-staging-rw \(STRAD_STAGING_API_KEY unresolved\)/,
+      flash[:alert])
+    assert_match(%r{/connectors}, flash[:alert])
+    assert_equal "Session created successfully. Starting agent...", flash[:notice],
+      "the session was created, and the notice still says so"
+  end
+
+  test "the create warning is recorded on the session's own log too" do
+    with_mixed_mcp_catalog_only do
+      post sessions_url, params: {
+        session: {
+          git_root: "https://github.com/test/repo.git",
+          prompt: "Test prompt",
+          mcp_servers: [ "strad-secrets-staging-rw" ]
+        }
+      }
+    end
+
+    log = Session.last.logs.order(:id).last
+    assert_equal "warning", log.level
+    assert_match(/strad-secrets-staging-rw \(STRAD_STAGING_API_KEY unresolved\)/, log.content)
+  end
+
+  # A clone-only create (no prompt) redirects on its own branch, and it attaches
+  # the same servers, so it gets the same warning.
+  test "a clone-only session with an unstartable server is warned about too" do
+    with_mixed_mcp_catalog_only do
+      post sessions_url, params: {
+        session: {
+          git_root: "https://github.com/test/repo.git",
+          mcp_servers: [ "strad-secrets-staging-rw" ]
+        }
+      }
+    end
+
+    assert_match(/Zimmer cannot start MCP server strad-secrets-staging-rw/, flash[:alert])
+    assert_match(/Clone-only session created successfully/, flash[:notice])
+  end
+
+  test "creating a session whose servers all start raises no alert" do
+    with_mixed_mcp_catalog_only do
+      post sessions_url, params: {
+        session: {
+          git_root: "https://github.com/test/repo.git",
+          prompt: "Test prompt",
+          mcp_servers: [ "context7" ]
+        }
+      }
+    end
+
+    assert_nil flash[:alert]
+  end
+
+  # Advice must not be able to block a create.
+  test "a readiness check that blows up does not stop the create" do
+    with_mixed_mcp_catalog_only do
+      ConnectorStatusProbe.any_instance.stubs(:call).raises(StandardError, "probe exploded")
+
+      assert_difference("Session.count") do
+        post sessions_url, params: {
+          session: {
+            git_root: "https://github.com/test/repo.git",
+            prompt: "Test prompt",
+            mcp_servers: [ "strad-secrets-staging-rw" ]
+          }
+        }
+      end
+    end
+
+    assert_redirected_to session_path(Session.last)
+    assert_nil flash[:alert]
+  end
+
   test "should set default values on create" do
     post sessions_url, params: {
       session: {
