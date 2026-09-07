@@ -235,12 +235,12 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
   #
   # The rename reads BOTH namespaces across the move, so a half-done migration
   # and a finished one are indistinguishable from every other angle: nothing
-  # raises, nothing is missing. Until this section existed the only surface that
-  # told them apart was the Connectors page banner, which an agent session cannot
-  # read — so the session assigned "drop the pre-rename read path" either parked
-  # in `needs_input` asking a human to read a banner back to it, or proceeded
-  # blind. Dropping that read path early turns every affected `${VAR}` into
-  # "Missing configuration" in silence, because a miss is not an error.
+  # raises, nothing is missing. The Connectors page banner tells them apart for a
+  # human; an agent session cannot read a web page, so the session assigned "drop
+  # the pre-rename read path" either parks in `needs_input` asking a human to read
+  # a banner back to it, or proceeds blind. Dropping that read path early turns
+  # every affected `${VAR}` into "Missing configuration" in silence, because a
+  # miss is not an error.
 
   test "names the variables still answering from a pre-rename namespace" do
     fake = FakeParameterStore.new
@@ -261,6 +261,36 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
       "- **Names still answering from a pre-rename namespace (2):** ALSO_AT_OLD_PATH, STILL_AT_OLD_PATH",
       "sorted, counted, and only the names the old namespace actually holds"
     refute_includes result, "MOVED_ALREADY"
+  end
+
+  # A parameter the resolver REFUSES to serve is still a parameter at the old
+  # path, so it counts as remaining — otherwise the section would say the
+  # namespace is empty while it still holds one.
+  test "counts a pre-rename name the resolver holds back as still remaining" do
+    fake = FakeParameterStore.new
+    fake.seed_secret("STUCK", "whatever", encoding: "rot13",
+      path: ParameterStore::Namespace.legacy_parameter_path("STUCK"))
+    stub_chain_with(fake)
+
+    result = @tool.call({})
+
+    assert_includes result, "- **Names still answering from a pre-rename namespace (1):** STUCK"
+  end
+
+  test "folds every pre-rename namespace the resolver reads into one list" do
+    fake = FakeParameterStore.new
+    other = "/zimmer/#{Rails.env}/legacy/static/"
+    fake.seed_secret("FROM_MCP", "1", path: ParameterStore::Namespace.legacy_parameter_path("FROM_MCP"))
+    fake.seed_secret("FROM_OTHER", "2", path: "#{other}FROM_OTHER")
+    namespaces = ParameterStore::Namespace.read_namespaces + [ other ]
+    stub_chain_with(fake, namespaces: namespaces)
+
+    result = @tool.call({})
+
+    assert_includes result, "- **Pre-rename namespaces still read:** " \
+                            "`#{ParameterStore::Namespace.legacy_static_namespace}`, `#{other}`"
+    assert_includes result,
+      "- **Names still answering from a pre-rename namespace (2):** FROM_MCP, FROM_OTHER"
   end
 
   test "says the pre-rename read path can be dropped once nothing answers from it" do
@@ -300,21 +330,36 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     end
   end
 
-  # Reporting an unreadable namespace as an empty one is the single wrong answer
+  # Reporting a namespace nobody read as an empty one is the single wrong answer
   # here: it tells the follow-up PR to go ahead. The configuration lines above it
-  # are true whether or not Google answered, so only that one line degrades.
-  test "a store that cannot be read says so rather than reading as finished" do
+  # are true whether or not Google ever answered, so only that one line degrades.
+  test "a namespace with no snapshot says unknown rather than reading as finished" do
     fake = FakeParameterStore.new
     fake.fail_with!(503)
-    stub_chain_with(fake)
+    stub_chain_with(fake, warm: false)
 
     result = @tool.call({})
 
     assert_includes result, "- **Canonical namespace:** `#{ParameterStore::Namespace.static_namespace}`"
-    assert_includes result,
-      "- **Names still answering from a pre-rename namespace:** unknown — the store could not be read"
+    assert_includes result, "- **Names still answering from a pre-rename namespace:** unknown — this " \
+                            "process holds no snapshot of the store yet."
     refute_includes result, "that read path can be dropped"
     assert_includes result, '"overall_status": "healthy"', "and the health report survives"
+  end
+
+  # Reporting, not resolving: an agent asking for a health report must not be the
+  # thing that provokes a round trip to Google, least of all while triaging a
+  # store that is not answering.
+  test "reads what the process already holds rather than calling the store" do
+    fake = FakeParameterStore.new
+    fake.seed_secret("STILL_AT_OLD_PATH", "1",
+      path: ParameterStore::Namespace.legacy_parameter_path("STILL_AT_OLD_PATH"))
+    stub_chain_with(fake)
+    before = fake.requests.size
+
+    3.times { @tool.call({}) }
+
+    assert_equal before, fake.requests.size
   end
 
   test "reports the migration as complete once the pre-rename read path is gone" do
@@ -354,9 +399,15 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     )
   end
 
-  def stub_chain_with(fake, namespaces: ParameterStore::Namespace.read_namespaces)
-    SecretProviders.stubs(:chain).returns(
-      SecretProviders::Chain.new([ fake.provider(namespaces: namespaces), SecretProviders::RailsCredentials.new ])
+  # `warm:` reproduces what every real MCP request already did before this tool
+  # runs: Mcp::Context resolves ${VAR}s for the self-session injector, which is a
+  # read through this same chain, so the snapshot is held by the time the health
+  # report is rendered. The section deliberately does not refresh it itself.
+  def stub_chain_with(fake, namespaces: ParameterStore::Namespace.read_namespaces, warm: true)
+    chain = SecretProviders::Chain.new(
+      [ fake.provider(namespaces: namespaces), SecretProviders::RailsCredentials.new ]
     )
+    chain.get("ZIMMER_APP_URL") if warm
+    SecretProviders.stubs(:chain).returns(chain)
   end
 end
