@@ -245,6 +245,24 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_includes JSON.parse(response.body)["messages"].join, "Max sessions per minute must be greater than 0"
   end
 
+  test "should reject the removed passive_listen event type" do
+    assert_no_difference("Trigger.count") do
+      post api_v1_triggers_path, params: {
+        name: "Deprecated Passive Listener",
+        agent_root_name: "zimmer",
+        prompt_template: "Check this: {{link}}",
+        trigger_conditions_attributes: [
+          { condition_type: "slack", configuration: { event_type: "passive_listen" } }
+        ]
+      }, headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    assert_includes JSON.parse(response.body)["messages"].join,
+                    "event_type must be one of: new_message, bot_mention, dm_message, " \
+                    "passive_listen_thread, passive_listen_channel"
+  end
+
   # --- agent_root_name against the catalog (zimmer#448) ---------------------
 
   def daily_schedule_attributes

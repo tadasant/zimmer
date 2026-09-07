@@ -337,8 +337,17 @@ class SlackTriggerPollerJob < ApplicationJob
       process_dm_message_condition(condition)
     when *TriggerCondition::PASSIVE_EVENT_TYPES
       process_passive_listen_condition(condition)
-    else
+    when "new_message"
       process_new_message_condition(condition)
+    else
+      # An event type the validation does not accept can only reach here as a row
+      # written before the type was retired, so it is a stale row and not a poll
+      # to guess at. Falling through to new_message would fire a session on every
+      # top-level message in the channel, with none of the allow-list or bot
+      # filtering the retired type implied — maximally noisy, and silently so.
+      Rails.logger.error "[SlackTriggerPollerJob] Condition #{condition.id} has unknown " \
+                         "event_type #{condition.event_type.inspect}; skipping. Valid types: " \
+                         "#{TriggerCondition::EVENT_TYPES.join(', ')}"
     end
   end
 

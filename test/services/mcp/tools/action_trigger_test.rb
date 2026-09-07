@@ -535,8 +535,8 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
       )
     end
 
-    assert_match(/event_type must be one of/, error.message)
-    assert_not_includes error.message, "passive_listen,"
+    assert_match(/event_type must be one of: new_message, bot_mention, dm_message, passive_listen_thread, passive_listen_channel\z/,
+                 error.message)
     assert_nil Trigger.find_by(name: "MCP Deprecated Listener")
   end
 
