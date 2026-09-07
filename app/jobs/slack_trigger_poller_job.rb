@@ -600,7 +600,6 @@ class SlackTriggerPollerJob < ApplicationJob
   #   within CHANNEL_ENGAGEMENT_WINDOW. Posted at the top level, specifically: a
   #   reply Zimmer left inside a thread makes it party to that thread, not to
   #   everything else said in the channel.
-  # - passive_listen — deprecated, both at once.
   #
   # Bookkeeping is bot_mention's: per-channel cursors in channel_timestamps, and —
   # for the conditions that walk threads — per-thread cursors in thread_timestamps.
@@ -823,7 +822,7 @@ class SlackTriggerPollerJob < ApplicationJob
     end
   end
 
-  # Whether a message may fire a passive_listen condition, given that the
+  # Whether a message may fire a passive-listening condition, given that the
   # conversation it belongs to already qualifies.
   #
   # No bot fires passively — not Zimmer, not anyone else's app. bot_mention accepts
