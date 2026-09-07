@@ -47,16 +47,6 @@
       "remote-filesystem-mcp-server@latest"
     ]
   },
-  "twist-wolfbot": {
-    "title": "Twist",
-    "description": "Twist messaging MCP server.",
-    "type": "stdio",
-    "command": "npx",
-    "args": [
-      "-y",
-      "twist-mcp@latest"
-    ]
-  },
   "zimmer": {
     "title": "Zimmer",
     "description": "Zimmer's native MCP server — the full tool surface (sessions, notifications, triggers, health) of the Zimmer instance running the session.",
@@ -152,16 +142,6 @@
     "env": {
       "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}"
     }
-  },
-  "tally": {
-    "title": "Tally",
-    "description": "Tally forms MCP server.",
-    "type": "stdio",
-    "command": "npx",
-    "args": [
-      "-y",
-      "tally-mcp@latest"
-    ]
   },
   "notion": {
     "title": "Notion",
