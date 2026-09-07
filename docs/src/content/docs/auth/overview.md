@@ -10,9 +10,9 @@ which is most of the battle.
 
 ```mermaid
 flowchart TB
-    subgraph none["1 · Human → Zimmer: NOTHING (except /supervisor)"]
+    subgraph none["1 · Human → Zimmer: NOTHING (except the operator realm)"]
         W["Web UI · /inference · /settings · /jobs<br/>NO AUTH OF ANY KIND"]
-        SUP["/supervisor admin panel<br/>HTTP Basic vs ENV['SUPERVISOR_PASSWORD']<br/>fails closed when unset"]
+        SUP["/supervisor admin panel<br/>+ the mutating POST /health/* actions<br/>HTTP Basic vs ENV['SUPERVISOR_PASSWORD']<br/>fails closed when unset"]
     end
     subgraph api["2 · Client → REST API"]
         A["X-API-Key header<br/>vs ENV['API_KEYS'] (comma-separated)<br/>opaque, unscoped, no identity"]
@@ -33,7 +33,7 @@ flowchart TB
     M --> S["Linear · Slack · Google · …"]
 ```
 
-## 1. Human → Zimmer: there is no authentication (except `/supervisor`)
+## 1. Human → Zimmer: there is no authentication (except the operator realm)
 
 This is not a simplification. `ApplicationController` has no `before_action` for auth, no session
 auth, no Devise, no OmniAuth. There are no login routes. There is no `User` model in the auth path.
@@ -44,23 +44,45 @@ Everything is open to anyone who can reach the host:
 - `/settings`, `/inference` (including the OAuth login flow),
 - the GoodJob dashboard at `/jobs`.
 
-### The one exception: `/supervisor` is behind HTTP Basic
+### The exception: the operator realm, in front of two surfaces
 
-The Administrate admin panel renders `claude_accounts` (whose `oauth_config` JSONB holds plaintext
-access and refresh tokens), `mcp_oauth_credentials`, `x_oauth_credentials`, and
-`runtime_login_attempts` as *editable* resources. That is the one surface where "anyone who reaches
-the host" is too generous, so it gets a second wall —
-`app/controllers/supervisor/application_controller.rb`:
+Two surfaces are where "anyone who reaches the host" is too generous, and they share one HTTP Basic
+realm — `OperatorHttpBasicAuth` (`app/controllers/concerns/operator_http_basic_auth.rb`):
 
 ```ruby
-before_action :authenticate_supervisor
+before_action :authenticate_operator
 
-def authenticate_supervisor
+def authenticate_operator
   expected_password = ENV[PASSWORD_ENV].to_s
-  return refuse_unconfigured if expected_password.blank?
-  # ...constant-time compare of username and password, then `refuse` on failure
+  return refuse_operator_unconfigured if expected_password.blank?
+  # ...constant-time compare of username and password, then `refuse_operator` on failure
 end
 ```
+
+**`/supervisor`**, because the Administrate admin panel renders `claude_accounts` (whose
+`oauth_config` JSONB holds plaintext access and refresh tokens), `mcp_oauth_credentials`,
+`x_oauth_credentials`, and `runtime_login_attempts` as *editable* resources.
+
+**The mutating `POST /health/*` actions** — `cleanup_processes`, `retry_sessions`, `archive_old`,
+`enter_queue_recovery_mode` and `run_post_deploy_tasks` — because they terminate processes, rewrite
+session rows in bulk, and halt the fleet's demand-side job queues. Every `GET` on `/health` stays
+anonymous: a read-only dashboard behind the perimeter is the design, and `/up` and `/up/deep` are
+what kamal-proxy gates the deploy cutover on. So does `POST /health/exit_queue_recovery_mode` — the
+way *out* of a halt must always work, including on a deployment that never set the variable.
+
+:::note[Why not the API key?]
+The `/health` gate exists for a caller that is already inside the perimeter: agent sessions run on
+the production host, and the Rails app answers from inside a session's shell. A session holds a
+valid `API_KEYS` entry in its own environment and in its `.mcp.json`, so a gate keyed on that
+credential would not exclude it. `SUPERVISOR_PASSWORD` is the one credential sessions do not hold,
+because `CliSpawnEnv` clears it from every spawned process. Moving this realm onto a different
+variable means adding that variable to `CliSpawnEnv`'s blocklist, or the gate quietly stops being
+one. See [the note in limitations](/limitations/#the-operator-realm-closes-the-web-door-and-not-the-other-two).
+:::
+
+Sharing one realm string across both is deliberate on the human side too: browsers cache Basic
+credentials per origin *and realm*, so an operator who has opened `/supervisor` is already carrying
+what the `/health` buttons ask for.
 
 One shared credential, no user model — this is not "who are you", it is "are you inside the
 perimeter at all". Set `SUPERVISOR_PASSWORD`; `SUPERVISOR_USERNAME` is optional and defaults to
@@ -79,7 +101,7 @@ distinction load-bearing: hovering the dashboard's **Supervisor** button fired a
 the realm, and the browser opened its native sign-in dialog on top of a page nobody was leaving. It
 looked random because it tracked the mouse rather than any click.
 
-So `Supervisor::ApplicationController#refuse` withholds the challenge — and only the challenge —
+So `Supervisor::ApplicationController#refuse_operator` withholds the challenge — and only the challenge —
 from a request the browser made speculatively (`SpeculativeRequest#prefetch_request?`, which reads
 `X-Sec-Purpose`, `Sec-Purpose` and `Purpose`). The request is still refused with a 401; a real
 navigation still gets the challenge and still signs in. Belt and braces, every link to the realm
@@ -90,6 +112,12 @@ also carries `data-turbo-prefetch="false"`, so the request is not made at all �
 an env file gets you — every request to every dashboard gets a 401, and the refusal is logged.
 An unconfigured deployment gets no admin panel rather than an anonymous one — so on a fresh deploy
 you must set the variable before `/supervisor` will open for you either.
+
+The same is true of `/health`'s maintenance buttons, and there the closed state has a route around
+it rather than being a dead end: the identical actions are on `POST /api/v1/health/*` behind
+`API_KEYS`, and `exit_queue_recovery_mode` is ungated on purpose, so an instance that never set the
+variable can still be got out of a halt. The 401 body names `SUPERVISOR_PASSWORD`, so the refusal is
+diagnosable from the response and not only from the log.
 
 :::danger[The security model is still "put it on a tailnet"]
 The perimeter remains the authentication boundary for everything else, and Zimmer's own Terraform

@@ -12,6 +12,8 @@ require "mocha/minitest"
 # the basic-auth helper).
 class PostDeployTaskSurfacesTest < ActionDispatch::IntegrationTest
   include ActiveJob::TestHelper
+  # `run_post_deploy_tasks` is one of the gated /health actions (#312, #371).
+  include OperatorBasicAuthHelpers
 
   setup do
     @api_key = "test_api_key_post_deploy"
