@@ -5,10 +5,49 @@
 # Provides system health monitoring, diagnostics, and cleanup actions.
 # All actions require user interaction for safety (no automated cleanup).
 class HealthController < ApplicationController
+  include OperatorHttpBasicAuth
+
   # Maximum days for archive operation (security bound)
   MAX_ARCHIVE_DAYS = 365
   # Minimum days for archive operation
   MIN_ARCHIVE_DAYS = 1
+
+  # The mutating actions, behind the operator credential (#312, #371).
+  #
+  # Until this gate, `/health` was the one surface reaching HealthMonitorService that asked
+  # for nothing at all: `Api::V1::HealthController` requires an `API_KEYS` entry and the MCP
+  # `action_health` tool requires the `health` tool group, while these POSTs were anonymous.
+  # The perimeter argument that covers the rest of the web UI does not reach them, because
+  # **the caller they most need to exclude is already inside the perimeter**: agent sessions
+  # run on the production host, and a session's shell can reach this app (measured — a GET
+  # of `/health` from inside a session answers 200). So an ordinary session could halt the
+  # fleet's demand-side queues with a `curl`, which is exactly what the `health` tool group
+  # exists to prevent.
+  #
+  # What is gated is every action that *changes* something, and nothing else. Three things
+  # stay deliberately open, and each would be a worse outcome to close than to leave:
+  #
+  # - **Every GET.** `#dashboard`, `#refresh` and `#export_diagnostics` are read-only, and a
+  #   read-only dashboard behind the network perimeter is the documented design
+  #   (limitations.md, "The web UI has no login, by design"). `#deep` and Rails' `/up` are
+  #   the health checks kamal-proxy gates the deploy cutover on; a 401 there would fail
+  #   every deploy.
+  # - **`#exit_queue_recovery_mode`.** The way out of a halt must always be available — the
+  #   action's own note already says so, which is why it is not rate-limited either. Its
+  #   blast radius is resuming normal processing, and this realm fails closed: on a
+  #   deployment that has not set SUPERVISOR_PASSWORD, gating it would mean an operator who
+  #   entered recovery mode could not leave it from the UI.
+  # - **`SystemHealthMonitorJob`** and the other in-process callers, which reach
+  #   HealthMonitorService directly and never traverse a route.
+  OPERATOR_GATED_ACTIONS = %i[
+    cleanup_processes
+    retry_sessions
+    archive_old
+    enter_queue_recovery_mode
+    run_post_deploy_tasks
+  ].freeze
+
+  before_action :authenticate_operator, only: OPERATOR_GATED_ACTIONS
 
   def dashboard
     @health_service = HealthMonitorService.new
@@ -248,13 +287,59 @@ class HealthController < ApplicationController
     minutes.to_i.minutes
   end
 
+  # Refusing and *challenging* are two different things, and on this surface the difference
+  # decides whether the operator gets a usable answer or a dead button. Three cases.
+  #
+  # **HTML, realm configured** — challenge. The dashboard's maintenance controls are
+  # `button_to` and `form_with` submissions, and a 401 carrying `WWW-Authenticate: Basic`
+  # makes the browser prompt and re-send the POST with the credential.
+  #
+  # **HTML, realm NOT configured** — still a 401, but refused *without* the challenge and
+  # with a body the operator can actually read. A challenge here would open a native
+  # sign-in dialog that *no* credential can satisfy, because there is nothing to compare
+  # against; the operator would type passwords at it until they gave up. And the
+  # explanation would never reach them either: `request_http_basic_authentication` renders
+  # `text/plain`, while Turbo renders a form submission's non-redirect body only when it is
+  # `text/html` — so a cancelled dialog leaves a button that does nothing at all. Rendering
+  # HTML keeps the status honest and puts the reason on screen. Same reasoning as
+  # `Supervisor::ApplicationController`'s unconfigured branch, which renders a page instead
+  # of a prompt.
+  #
+  # **JSON** — a body and no challenge either way. It is a script, so a challenge buys it
+  # nothing, and omitting it keeps a same-origin `fetch` from opening a native sign-in
+  # dialog on a page nobody was leaving.
+  #
+  # Every branch names the variable, so an unconfigured deployment is diagnosable from the
+  # response and not only from the log.
+  def refuse_operator(realm_configured: true)
+    message = if realm_configured
+      "This maintenance action needs the operator credential (HTTP Basic, the same one " \
+      "#{OperatorHttpBasicAuth::PASSWORD_ENV} sets for /supervisor)."
+    else
+      "#{OperatorHttpBasicAuth::PASSWORD_ENV} is unset or blank, so the maintenance actions " \
+      "on this page are closed. Set it in the deployment's secrets to use them. The " \
+      "read-only dashboard, and POST /api/v1/health/* with an API key, are unaffected."
+    end
+
+    respond_to do |format|
+      format.html do
+        if realm_configured
+          request_http_basic_authentication(OperatorHttpBasicAuth::REALM, message)
+        else
+          render html: message, status: :unauthorized
+        end
+      end
+      format.json { render json: { error: "Unauthorized", message: message }, status: :unauthorized }
+    end
+  end
+
   # The same cooldown Api::V1::HealthController and the MCP action_health tool
   # enforce — the same object, so a caller cannot get a second run out of one
   # cooldown by switching surfaces.
   #
-  # This surface has no key to fingerprint: the web UI has no authentication at
-  # all, so every visitor lands in the one anonymous bucket. That is the global
-  # cooldown this controller has always had. What is new is that it fails closed
+  # This surface has no key to fingerprint: the operator realm is one shared credential
+  # rather than an identity, so every visitor lands in the one anonymous bucket. That is
+  # the global cooldown this controller has always had. What is new is that it fails closed
   # when the cache cannot enforce it, instead of silently waving every action
   # through.
   def cooldown

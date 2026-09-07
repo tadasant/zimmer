@@ -1464,6 +1464,12 @@ on — deliberate, since that backlog is now the operator's own doing.
 fails closed when the cache is unavailable, and an overloaded instance is exactly when the cache is
 least trustworthy — a lock on the escape hatch is worse than an unthrottled two-row write.
 
+On `/health`, **entering and extending are behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-two-surfaces) and resuming deliberately is not.** That asymmetry is the load-bearing part: halting the
+demand-side queues is the destructive direction and the one an agent session must not be able to
+take on its own, while the way *out* of a halt has to work on the first try — including on a
+deployment that never set `SUPERVISOR_PASSWORD`, where the realm refuses everything else. Same
+reasoning as the cooldown exemption above, one layer up.
+
 ## Trigger-poll liveness
 
 Both trigger pollers alert `#eng-alerts` (via `AlertService`) from a per-condition `rescue` when a
