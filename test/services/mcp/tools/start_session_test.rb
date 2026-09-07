@@ -430,6 +430,96 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     assert_equal [], Session.order(:id).last.catalog_hooks
   end
 
+  # --- the plugins bypass of the agent-root MCP lock (#334) ---
+  #
+  # A plugin bundles MCP servers, so naming one at launch reaches the servers
+  # `mcp_servers` is locked out of. These four pin the whole guard: the bypass
+  # itself, that it is the servers that make it one, and both halves of the
+  # omitted-vs-[] distinction the same call site draws for every artifact list.
+
+  test "a restricted connection cannot name plugins at launch" do
+    stub_root_with_defaults
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    error = assert_raises(Mcp::ToolError) do
+      tool.call("agent_root" => "test-root", "title" => "x", "plugins" => [ "screenshots-videos" ])
+    end
+
+    assert_match(/"plugins" parameter is not allowed/, error.message)
+    assert_match(/Plugins can add MCP servers/, error.message)
+  end
+
+  # The bypass in full: the same connection, the same server, reached the direct
+  # way and then the indirect one. `screenshots-videos` bundles
+  # playwright-custom and remote-fs-screenshots, and before this guard the
+  # spawned session held both.
+  test "the plugin route cannot reach a server the mcp_servers route is refused" do
+    stub_root_with_defaults
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    direct = assert_raises(Mcp::ToolError) do
+      tool.call("agent_root" => "test-root", "title" => "direct",
+                "mcp_servers" => [ "context7", "playwright-custom" ])
+    end
+    assert_match(/must use its exact default MCP servers/, direct.message)
+
+    assert_no_difference "Session.count" do
+      assert_raises(Mcp::ToolError) do
+        tool.call("agent_root" => "test-root", "title" => "indirect", "plugins" => [ "screenshots-videos" ])
+      end
+    end
+  end
+
+  # `[]` adds no servers, so this rejection is a deliberate choice and not a
+  # consequence: a restricted connection takes its root's catalog exactly as
+  # configured, in either direction, the way mcp_servers already reads — and it
+  # is the answer action_session's change_plugins gives for the same request
+  # after the session exists.
+  test "a restricted connection cannot pass an explicit empty plugins array either" do
+    stub_root_with_defaults
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    error = assert_raises(Mcp::ToolError) do
+      tool.call("agent_root" => "test-root", "title" => "x", "plugins" => [])
+    end
+
+    assert_match(/"plugins" parameter is not allowed/, error.message)
+  end
+
+  # Omitted is the request the guard leaves open, and it is not "no plugins" —
+  # it is the root's defaults, which is the whole point of leaving it open.
+  test "a restricted connection may omit plugins and take the root's defaults" do
+    stub_root_with_defaults
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    result = tool.call("agent_root" => "test-root", "title" => "Restricted, default plugins")
+
+    assert_includes result, "## Session Started Successfully"
+    assert_equal [ "screenshots-videos" ], Session.order(:id).last.catalog_plugins
+  end
+
+  # Skills carry no MCP servers of their own, so they stay narrowable — the same
+  # reasoning that leaves hooks alone above.
+  test "a restricted connection may still narrow the skills it spawns with" do
+    stub_root_with_defaults
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    result = tool.call("agent_root" => "test-root", "title" => "Restricted, no skills", "skills" => [])
+
+    assert_includes result, "## Session Started Successfully"
+    assert_equal [], Session.order(:id).last.catalog_skills
+  end
+
   # The restricted path already rejected [] before this fix, and must keep doing
   # so: on a restricted connection the list has to match the root's defaults
   # exactly, in either direction.

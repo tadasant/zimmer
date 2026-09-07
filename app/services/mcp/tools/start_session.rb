@@ -59,6 +59,8 @@ On a connection restricted to specific agent roots you cannot narrow at all: pas
 
       PLUGINS_DESC = <<~TEXT.strip
         The session's plugins, by name. Plugins extend agent capabilities with additional integrations, and can bundle skills, hooks, and MCP servers of their own. A non-empty list #{format(REPLACES_DEFAULTS, "default_plugins", "default_plugins")} Omit the parameter to take the root's default_plugins unchanged; pass [] for no plugins. Example: ["my-plugin"]
+
+On a connection restricted to specific agent roots this parameter is rejected outright, [] included — because a plugin bundles MCP servers, and those are locked to the root's defaults. Omit it.
       TEXT
 
       HOOKS_DESC = <<~TEXT.strip
@@ -119,6 +121,7 @@ On a connection restricted to specific agent roots you cannot narrow at all: pas
         So a list you pass has to be the **complete final set**. Call get_configs, copy the root's `default_*` list, and subtract from it — never compose a fresh list from what the task seems to need, because a default you simply didn't think of goes missing.
 
         - **MCP servers:** This is where a dropped default bites hardest, because a root's skill can depend on a root's server and the skill still loads without it. Narrow for least privilege by passing `default_mcp_servers` minus what the task must not have, or `[]` when it needs none. When this connection is restricted to specific agent roots you cannot add or remove servers at all: the list you pass must match the root's defaults exactly, and `[]` is rejected unless the root has no defaults.
+        - **Plugins:** A plugin bundles MCP servers of its own, added on top of `mcp_servers`, so on a connection restricted to specific agent roots this parameter is rejected outright — `[]` included. Omit it and the session takes the root's `default_plugins`.
         - **Skills:** Add beyond `default_skills` freely. Removing a default skill should be rare and intentional — only when you have a specific reason, like replacing a skill with a more capable variant that covers the same ground. Skills are lightweight text files with no blast radius, so keeping all defaults costs nothing.
         - **Hooks:** Drop one from `default_hooks` when it fires on work this session won't do (a CI-reminder hook on a docs-only task, say) by passing the narrowed list, or `[]` to select none. Selecting no hooks is not the same as running with none: a plugin bundles hooks of its own, and those are added on top of the list you pass, so dropping a hook a selected plugin bundles means narrowing `plugins` as well.
 
@@ -171,13 +174,7 @@ On a connection restricted to specific agent roots you cannot narrow at all: pas
 
       def call(args)
         agent_root_name = args["agent_root"].presence
-        # An omitted mcp_servers means "take the root's defaults" (that is what
-        # apply_agent_root_defaults! does), so it is only a deviation to check when
-        # the caller actually named a list. This gate stays `key?` rather than the
-        # `is_a?(Array)` used elsewhere: a restricted connection that sends an
-        # explicit null already fails here, and loosening that would widen what a
-        # restricted connection may spawn.
-        enforce_root_constraints!(agent_root_name, args.key?("mcp_servers") ? string_array(args["mcp_servers"]) : nil)
+        enforce_root_constraints!(agent_root_name, args)
 
         # Answered before any of the create work — the retry this exists for is a
         # caller that already got its session and does not know it, so the cheap
@@ -225,12 +222,9 @@ On a connection restricted to specific agent roots you cannot narrow at all: pas
       private
 
       # A restricted connection must name an allowed root AND take that root's
-      # MCP servers exactly — no additions, no removals.
-      #
-      # @param requested_servers [Array<String>, nil] nil when the caller omitted
-      #   mcp_servers entirely, which resolves to the root's defaults and so can
-      #   never deviate from them.
-      def enforce_root_constraints!(agent_root_name, requested_servers)
+      # MCP servers exactly — no additions, no removals. Both the direct route to
+      # a server (`mcp_servers`) and the indirect one (`plugins`) are held to it.
+      def enforce_root_constraints!(agent_root_name, args)
         return unless context.restricted?
 
         enforce_allowed_root!(agent_root_name)
@@ -241,14 +235,51 @@ On a connection restricted to specific agent roots you cannot narrow at all: pas
                            "Available agent roots: #{AgentRootsConfig.names.join(', ')}"
         end
 
-        return if requested_servers.nil?
+        enforce_default_mcp_servers!(root, args)
+        enforce_default_plugins!(root, args)
+      end
 
+      # An omitted mcp_servers means "take the root's defaults" (that is what
+      # apply_agent_root_defaults! does), so it is only a deviation to check when
+      # the caller actually named a list. This gate stays `key?` rather than the
+      # `is_a?(Array)` used elsewhere: a restricted connection that sends an
+      # explicit null already fails here, and loosening that would widen what a
+      # restricted connection may spawn.
+      def enforce_default_mcp_servers!(root, args)
+        return unless args.key?("mcp_servers")
+
+        requested = string_array(args["mcp_servers"])
         defaults = root.default_mcp_servers || []
-        return if defaults.sort == requested_servers.sort
+        return if defaults.sort == requested.sort
 
         raise ToolError, "Agent root \"#{root.name}\" must use its exact default MCP servers. " \
-                         "Expected: [#{format_list(defaults)}], but got: [#{format_list(requested_servers)}]. " \
+                         "Expected: [#{format_list(defaults)}], but got: [#{format_list(requested)}]. " \
                          "You cannot add or remove MCP servers when this connection is restricted to specific agent roots."
+      end
+
+      # Plugins can bundle MCP servers (see Session#derive_mcp_servers_from_plugins),
+      # so on a restricted connection naming them at launch is a bypass of the
+      # same agent-root MCP lock enforce_default_mcp_servers! applies: the
+      # connection refused `mcp_servers: [..., "playwright-custom"]` gets that
+      # server anyway through `plugins: ["screenshots-videos"]`. Skills and hooks
+      # carry no such server expansion, so only plugins inherit the guard — the
+      # reasoning action_session already encodes for change_plugins and
+      # action_trigger for catalog_plugins.
+      #
+      # The gate is `key?`, so an explicit `[]` is refused too even though it
+      # adds no servers. That costs a restricted caller the ability to drop a
+      # root's default plugins, and is deliberate: a restricted connection takes
+      # its root's servers exactly as configured, in either direction, which is
+      # already how mcp_servers reads here and is the same answer the two
+      # change-time surfaces give. A root that should spawn without its plugins
+      # is a root to configure that way, not a per-call narrowing.
+      def enforce_default_plugins!(root, args)
+        return unless args.key?("plugins")
+
+        raise ToolError, "The \"plugins\" parameter is not allowed when this connection is restricted to " \
+                         "specific agent roots. Plugins can add MCP servers, which are locked to the defaults " \
+                         "configured for each allowed agent root. Omit it and the session takes agent root " \
+                         "\"#{root.name}\"'s default plugins: [#{format_list(root.default_plugins || [])}]."
       end
 
       def session_attributes(args)
