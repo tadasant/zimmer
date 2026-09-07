@@ -3616,10 +3616,10 @@ class SessionTest < ActiveSupport::TestCase
     session = Session.create!(
       git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed,
       metadata: { "failure_reason" => "mcp_connection_failed" },
-      custom_metadata: { "mcp_failed_servers" => [ { "name" => "good-eggs", "error" => "spawn ENOENT" }, { "name" => "notion", "error" => "401" } ] }
+      custom_metadata: { "mcp_failed_servers" => [ { "name" => "good-eggs", "error" => "spawn ENOENT" }, { "name" => "bad-eggs", "error" => "401" } ] }
     )
-    assert_equal "MCP server(s) failed to connect: good-eggs, notion", session.failure_summary
-    assert_equal "good-eggs: spawn ENOENT; notion: 401", session.failure_detail
+    assert_equal "MCP server(s) failed to connect: good-eggs, bad-eggs", session.failure_summary
+    assert_equal "good-eggs: spawn ENOENT; bad-eggs: 401", session.failure_detail
   end
 
   test "failure_summary falls back to generic text when no MCP servers recorded" do
@@ -3634,9 +3634,9 @@ class SessionTest < ActiveSupport::TestCase
   test "failure_summary names servers for oauth_required" do
     session = Session.create!(
       git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed,
-      metadata: { "failure_reason" => "oauth_required", "oauth_required_servers" => [ { "server_name" => "notion" } ] }
+      metadata: { "failure_reason" => "oauth_required", "oauth_required_servers" => [ { "server_name" => "bad-eggs" } ] }
     )
-    assert_equal "OAuth authorization required: notion", session.failure_summary
+    assert_equal "OAuth authorization required: bad-eggs", session.failure_summary
   end
 
   # #127: the variable names were already persisted by AgentSessionJob and had
