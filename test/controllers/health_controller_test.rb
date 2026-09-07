@@ -114,9 +114,9 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
   end
 
   # UI/MCP parity. The `get_system_health` MCP tool answers "which lane is deep"
-  # and "what is filling it"; until this rendered, /health showed four totals and a
-  # human at the dashboard could answer neither — strictly less than the agent
-  # surface, on the page a human opens when the backlog alert fires (#450).
+  # and "what is filling it", and this panel is where /health answers them too — on
+  # the page a human opens when the backlog alert fires. Without it the dashboard
+  # shows four bare totals and says strictly less than the agent surface (#450).
   test "dashboard shows what the backlog is made of, not just how deep it is" do
     now = Time.current
     blank = { queue_name: nil, job_class: nil, scheduled_at: nil, locked_by_id: nil, locked_at: nil,

@@ -132,8 +132,8 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
   end
 
   # The three shapes that look identical in the aggregate counts, told apart from
-  # the keys this tool now returns. This is the triage the 2026-08-14 episode could
-  # not complete: `ready` climbing while `claimed` sat flat is compatible with all
+  # the keys this tool returns. This is the triage the 2026-08-14 episode could not
+  # complete: `ready` climbing while `claimed` sat flat is compatible with all
   # three, and only the breakdown separates them.
   test "the response separates one class flooding from one lane starving" do
     stub_queue_stats(
@@ -177,14 +177,36 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     refute_includes result, "Head of line"
   end
 
-  # A report with no `system_health` section at all — the shape a caller gets from
-  # a degraded or partially-stubbed report — must not raise on the way to the JSON
-  # the caller actually asked for.
-  test "a report carrying no queue statistics still renders" do
+  # A report with no `system_health` section AT ALL — the shape a degraded or
+  # partially-built report has. This is what the `|| {}` guards in
+  # `ready_backlog_lines` and `in_flight_lines` are for, and the only test that
+  # reaches them: the empty-queue case below still hands them a fully populated
+  # `queue_stats` whose breakdowns happen to be empty, which is a different shape.
+  # Neither may raise on the way to the JSON the caller actually asked for.
+  test "a report carrying no system_health section still renders" do
+    HealthMonitorService.any_instance.stubs(:full_health_report).returns({ overall_status: "healthy" })
+
     result = @tool.call({})
 
     refute_includes result, "Ready backlog by queue"
+    refute_includes result, "In flight by queue"
     assert_includes result, '"overall_status": "healthy"'
+  end
+
+  # The other degraded shape: `queue_stats` is present but a single breakdown key
+  # is missing from it. `format_breakdown` answers `unavailable` rather than
+  # guessing — a key that never arrived and a queue that read as empty are
+  # different facts, and `none` is the word for the second one.
+  test "a breakdown key missing from the report reads as unavailable, not as empty" do
+    stub_queue_stats(
+      ready_count_by_queue: { "agents" => 12 },
+      oldest_ready_age_seconds_by_queue: { "agents" => 300 }
+    )
+
+    result = @tool.call({})
+
+    assert_includes result, "- **Ready backlog by queue:** agents 12"
+    assert_includes result, "- **Ready backlog by job class:** unavailable"
   end
 
   # A pending-job count means something completely different when the queues are
