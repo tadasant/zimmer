@@ -72,6 +72,43 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
       "the router root is dispatched by the quick router, not picked from the new-session form"
   end
 
+  # The router root exists to dispatch, and it cannot dispatch without a server
+  # that carries start_session. It shipped with no default artifacts at all for
+  # months, which made "quick router" a prompt-starter rather than a router
+  # ([#173](https://github.com/tadasant/zimmer/issues/173)).
+  #
+  # This asserts against the real shipped catalog, not a fixture: the wiring is
+  # `default_in_roots` on the artifact, inverted by AIR at resolve time, so the
+  # only thing that proves it is what AgentRootsConfig actually computes.
+  test "the router root ships a session-orchestration server and a routing skill" do
+    router = AgentRootsConfig.find!(AgentRootsConfig.router_root_name)
+
+    assert_includes router.default_mcp_servers, "zimmer-sessions",
+      "the router root must carry a Zimmer MCP server scoped to session orchestration, " \
+      "or a quick-router submission lands in a session that cannot spawn anything"
+    assert_includes router.default_skills, "route-a-request",
+      "the router root must carry the skill that tells the session how to route"
+  end
+
+  # The alias exists so a pre-rename session resolves; a session unarchived under
+  # `zimmer-router` that came up without the server the live name carries would
+  # be a router with no dispatch surface, failing in a way nothing announces.
+  # Both names denote one location (test above), so both must carry one set of
+  # defaults.
+  test "every ROUTER_ROOT_NAMES entry carries the same catalog defaults" do
+    roots = AgentRootsConfig::ROUTER_ROOT_NAMES.map { |name| AgentRootsConfig.find!(name) }
+
+    defaults = roots.map do |root|
+      [ root.default_mcp_servers.sort, root.default_skills.sort,
+        root.default_hooks.sort, root.default_plugins.sort ]
+    end
+
+    assert_equal 1, defaults.uniq.size,
+      "the router root's names must appear in the SAME default_in_roots lists, or a session " \
+      "created under one name comes up missing what the other name gets:\n  " +
+      roots.zip(defaults).map { |root, d| "#{root.name} -> mcp=#{d[0].inspect} skills=#{d[1].inspect}" }.join("\n  ")
+  end
+
   # Two roots carrying the same display_name are one row in the new-session
   # picker, twice: the form shows display_name, so the human picking one has no
   # way to tell which they got. `agent-orchestrator` shipped as a second root

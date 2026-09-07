@@ -12,8 +12,10 @@
 #   2. Inject the self-session Zimmer MCP server unless an existing Zimmer server
 #      already covers the self_session tool group.
 #   3. Retarget Zimmer MCP server entries at the current Zimmer instance so a
-#      local-dev or staging session orchestrates itself, not production, and stamp
-#      each with `session_id` so its tools know which session is calling them.
+#      session orchestrates itself rather than whichever instance the catalog
+#      names, drop any that still point at a placeholder host afterwards, and
+#      stamp each survivor with `session_id` so its tools know which session is
+#      calling them.
 #   4. Write the elicitation address (ELICITATION_REQUEST_URL / _SESSION_ID) into
 #      every stdio server's own `env` table.
 #   5. Resolve ${VAR} interpolations from SecretsLoader.
@@ -81,6 +83,7 @@ class RuntimeConfigPostProcessor
     inject_subagent_server!(servers)
     inject_self_session_server!(servers)
     retarget_zimmer_servers_to_current_env!(servers)
+    drop_unreachable_zimmer_servers!(servers)
     stamp_session_id_on_zimmer_servers!(servers)
     inject_elicitation_env!(servers)
     resolve_secrets!(servers)
@@ -119,6 +122,7 @@ class RuntimeConfigPostProcessor
     return if injected_mcp_servers.empty?
 
     retarget_zimmer_servers_to_current_env!(servers)
+    drop_unreachable_zimmer_servers!(servers)
     stamp_session_id_on_zimmer_servers!(servers)
     # A no-op today — everything reachable on this path is an auto-injected HTTP
     # Zimmer entry, and only stdio servers have an environment. It runs anyway so
@@ -285,19 +289,34 @@ class RuntimeConfigPostProcessor
   # Retarget every Zimmer MCP server entry at the current Zimmer instance.
   #
   # Why: a root's default_mcp_servers may reference a catalog entry whose URL
-  # points at production Zimmer. A local-dev or staging session inheriting that
-  # entry would orchestrate production instead of its own instance. Rewriting at
-  # config-write time lets the same root work against any Zimmer environment
-  # without per-env duplication in the catalog. Query-string scoping
-  # (tool_groups / allowed_agent_roots) is preserved — only the origin and the
-  # API key change.
+  # points at some other Zimmer. A session inheriting that entry would
+  # orchestrate that instance instead of its own. Rewriting at config-write time
+  # lets the same root work against any Zimmer environment without per-env
+  # duplication in the catalog. Query-string scoping (tool_groups /
+  # allowed_agent_roots) is preserved — only the origin and the API key change.
   #
-  # No-op in production, where the catalog's URLs already point at the instance
-  # serving the session.
+  # Production is retargeted too. It used to be skipped, on the reasoning that
+  # production's catalog "already points at the instance serving the session" —
+  # true of an instance running its own catalog via AIR_CONFIG, false of one
+  # running the in-image fallback, whose `zimmer-*` URLs are the placeholder
+  # `https://zimmer.example.com` and whose only ${VAR} is the API-key header.
+  # That asymmetry is what made a `zimmer-*` server unsafe to ship as a root
+  # default: the entry resolved to a dead host in exactly the deployment shape
+  # that most needed it (zimmer#173). Retargeting is right in both shapes — a
+  # custom catalog's real URL rebases onto the same origin it already named, and
+  # the in-image placeholder becomes this instance.
+  #
+  # The one thing that must not happen is retargeting onto a placeholder: when
+  # the deploy has not set ZIMMER_*_BASE_URL, `AppUrl` falls back to a host that
+  # does not resolve, and rewriting a URL that already worked into that would be
+  # a regression rather than a fix. So the guard is "do we know our own address",
+  # not "which environment is this". Dev and test always know (localhost);
+  # production and staging know once the deploy has provisioned the secret.
+  # #drop_unreachable_zimmer_servers! handles what is left when it has not.
   def retarget_zimmer_servers_to_current_env!(servers)
-    return if Rails.env.production?
-
     target = self_session_injector.self_target
+    return if AppUrl.placeholder?(target[:base_url])
+
     retargeted_any = false
 
     servers.each do |name, entry|
@@ -319,10 +338,69 @@ class RuntimeConfigPostProcessor
     # A blank API key means every MCP call 401s with a confusing auth error rather
     # than a clear configuration error. Warn at session-prep time instead.
     if retargeted_any && target[:api_key].blank?
-      env_var = Rails.env == "staging" ? "ZIMMER_STAGING_API_KEY" : "ZIMMER_LOCAL_API_KEY"
+      env_var = case Rails.env.to_s
+      when "production" then "ZIMMER_PROD_API_KEY"
+      when "staging" then "ZIMMER_STAGING_API_KEY"
+      else "ZIMMER_LOCAL_API_KEY"
+      end
       Rails.logger.warn "[#{self.class.name}] Retargeted Zimmer MCP servers in #{Rails.env} env with blank API key — " \
         "MCP calls will fail to authenticate. Set #{env_var} in your .env or credentials."
     end
+  end
+
+  # Remove any catalog-provided Zimmer MCP entry still pointing at a placeholder
+  # host after retargeting.
+  #
+  # This is the other half of the guard in #retarget_zimmer_servers_to_current_env!.
+  # A stock deployment that never set ZIMMER_*_BASE_URL cannot be told where its
+  # own Zimmer is, so the in-image catalog's `https://zimmer.example.com` survives
+  # retargeting untouched. Handing that to a session is worse than handing it
+  # nothing: the MCP client dials a host that does not resolve, retries until
+  # RetryBudget::MCP_CONNECTION is spent, and AgentSessionJob fails the session
+  # outright. Dropping the entry instead degrades the session to "no session
+  # orchestration" — which is what such a deployment had before the root default
+  # existed — and says so in the log.
+  #
+  # Scoped to entries Zimmer did NOT inject. The injected self-session server is
+  # built from the same unresolved base URL and is just as unreachable, but it is
+  # the only route a session has to archive itself or wake up, so a
+  # mis-provisioned instance keeps it and fails loudly at call time rather than
+  # silently losing its lifecycle tools.
+  def drop_unreachable_zimmer_servers!(servers)
+    dropped = servers.keys.select do |name|
+      entry = servers[name]
+      next false unless entry.is_a?(Hash)
+      next false unless self_session_injector.zimmer_server_name?(name)
+      next false if injected_mcp_servers.include?(name)
+      next false if entry["url"].blank?
+
+      AppUrl.placeholder?(origin_of(entry["url"]))
+    end
+    return if dropped.empty?
+
+    dropped.each { |name| servers.delete(name) }
+
+    env_var = Rails.env.production? ? "ZIMMER_PROD_BASE_URL" : "ZIMMER_STAGING_BASE_URL"
+    Rails.logger.warn "[#{self.class.name}] Dropped #{dropped.size} Zimmer MCP server(s) " \
+      "(#{dropped.join(', ')}) whose URL is still the placeholder host: this instance does not know " \
+      "its own address, so the entry would dial a host that does not resolve and fail the session. " \
+      "Set #{env_var} to give sessions on this instance a working Zimmer MCP server."
+  end
+
+  # The scheme+host+port of a URL, in the shape AppUrl.placeholder? compares
+  # against. Query-string scoping is irrelevant to whether the host resolves.
+  def origin_of(url)
+    uri = URI.parse(url.to_s)
+    return nil if uri.scheme.blank? || uri.host.blank?
+
+    uri.dup.tap do |origin|
+      origin.userinfo = nil
+      origin.path = ""
+      origin.query = nil
+      origin.fragment = nil
+    end.to_s
+  rescue URI::InvalidURIError
+    nil
   end
 
   # Write the approval endpoint's address into every stdio server's own `env`

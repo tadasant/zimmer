@@ -22,6 +22,8 @@ module AppUrl
   PLACEHOLDER_PROD_BASE_URL = "https://zimmer.example.com"
   PLACEHOLDER_STAGING_BASE_URL = "https://staging.zimmer.example.com"
 
+  PLACEHOLDER_BASE_URLS = [ PLACEHOLDER_PROD_BASE_URL, PLACEHOLDER_STAGING_BASE_URL ].freeze
+
   # The externally-reachable base URL of this Zimmer instance, no trailing slash.
   #
   # @param env [String] Rails environment name (injectable for testing)
@@ -38,6 +40,22 @@ module AppUrl
     end
 
     resolved.to_s.chomp("/")
+  end
+
+  # Whether a base URL is one of the placeholders above — i.e. the deploy never
+  # told this instance its own address, so `base_url` fell back to a host that
+  # does not resolve.
+  #
+  # Callers use this to tell "I know where I am" from "I am guessing": anything
+  # that would hand a session an address to dial has to distinguish the two,
+  # because a placeholder is worse than no address at all (an MCP client retries
+  # a dead host until RetryBudget::MCP_CONNECTION is spent, then the session
+  # fails).
+  #
+  # @param url [String, nil] a resolved base URL
+  # @return [Boolean]
+  def placeholder?(url)
+    PLACEHOLDER_BASE_URLS.include?(url.to_s.chomp("/"))
   end
 
   def default_local_base_url

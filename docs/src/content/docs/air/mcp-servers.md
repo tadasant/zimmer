@@ -166,7 +166,17 @@ title, or schedule its own wake-up. `session_json` exposes three fields for this
 The injected servers are Zimmer's own: streamable-HTTP entries pointing at this instance's native
 `/mcp` endpoint (`zimmer-self-session`, and `zimmer` for roots with `default_subagent_roots`).
 Zimmer synthesizes them rather than resolving them from the catalog, and retargets any `zimmer*`
-entry at the instance preparing the session so a staging session never orchestrates production.
+entry at the instance preparing the session — in **every** environment, production included — so a
+session orchestrates the instance running it rather than whichever one the catalog happened to name.
+
+Retargeting is gated on this instance knowing its own address, not on which environment it is.
+`AppUrl` falls back to a `zimmer.example.com` placeholder when `ZIMMER_PROD_BASE_URL` /
+`ZIMMER_STAGING_BASE_URL` is unset, and rewriting a URL onto a host that does not resolve would be
+worse than leaving it: an MCP client dials it until `RetryBudget::MCP_CONNECTION` is spent and then
+the session fails. So an instance that has not been told its address skips the rewrite, and any
+catalog `zimmer*` entry still sitting on the placeholder afterwards is **dropped** from the config
+with a warning in the session log. Such a session has no session-orchestration server — which is
+what it had before the root default existed — instead of a dead one.
 
 The catalog also carries `zimmer*` entries you attach deliberately, each scoped to a tool group:
 `zimmer-sessions`, `zimmer-fleet`, and `zimmer-gate-decisions` (the [gate decision

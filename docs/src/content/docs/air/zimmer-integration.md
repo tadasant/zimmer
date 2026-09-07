@@ -50,12 +50,12 @@ shortname collision when there's only one scope.
 The catalog's own description states the intent: *"resolves fully offline (no private GitHub
 catalogs, no network), so the app's config services always resolve non-empty data."*
 
-**What's in it:** 10 skills — 7 Zimmer-specific ones (`category: zimmer`) plus 3 vendored generic
+**What's in it:** 11 skills — 8 Zimmer-specific ones (`category: zimmer`) plus 3 vendored generic
 workflow skills (`category: workflow`: `open-pr`, `wait-for-ci`,
 `recover-from-compaction-thrashing`) — 16 MCP servers, 10 roots, 4 plugins, 1 hook, 5 references.
 The `zimmer` root turns 9 of those skills on by default and exactly one MCP server,
 `playwright-custom`; `awaken-waiting-sessions` and `zimmer-fleet` default on `fleet-maintenance`
-instead. It also defaults to both `ci-workflow` and `screenshots-videos`, and a plugin's own
+instead, and `route-a-request` and `zimmer-sessions` on the router root. It also defaults to both `ci-workflow` and `screenshots-videos`, and a plugin's own
 bundle rides along with it — so a `zimmer` session additionally receives the
 `git-push-ci-reminder` hook and the `remote-fs-screenshots` server, neither of which is named in
 any `default_in_roots`.

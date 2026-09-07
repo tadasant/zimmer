@@ -13,7 +13,8 @@ staging." It lives in `skills/<id>/SKILL.md` and is registered in `skills/skills
 At prepare time AIR copies it into `.claude/skills/<id>/` in the clone, along with any references it
 declares.
 
-**The five that ship**, all `default_in_roots: ["zimmer"]`:
+**The Zimmer-specific ones.** All are `default_in_roots: ["zimmer"]` except where the row says
+otherwise:
 
 | Skill | What it does |
 | --- | --- |
@@ -23,6 +24,7 @@ declares.
 | `zimmer-deploy-staging` | Drive the staging deploy workflow. |
 | `zimmer-change-ai-artifact` | The guide to changing the catalog itself. |
 | `awaken-waiting-sessions` | The wake policy for quota-parked spot work. Defaults into `fleet-maintenance` only, and is not user-invocable — the `quota_available` trigger is what runs it. |
+| `route-a-request` | How the session behind a quick-router / chat-bubble submission decides where the request belongs, and dispatches it there. Defaults into `zimmer-orchestrator` and its `zimmer-router` alias only, and is not user-invocable — the quick router is what runs it. |
 
 The generic workflow skills are vendored here too, under `category: workflow`:
 
