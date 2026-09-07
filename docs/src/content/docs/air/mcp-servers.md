@@ -206,11 +206,26 @@ in where they put the sentence.
 
 All three also write the warning to **the session's own log**, at `warning` level. That is the copy
 that survives: a flash fades, a tool result scrolls out of an agent's context, and the log sits on
-the session page next to the prepare failure it predicted.
+the session page next to the failure it predicted.
 
 The check reads the session's **resolved** server list, not the argument the caller passed. A spawn
 that names no servers at all inherits the agent root's `default_mcp_servers`, and one of those can
 be broken — that caller is the one with the least idea it is happening.
+
+### What it costs the session is not the same for all four states
+
+The warning names the consequence, and the four blocking states do not share one. Saying they did
+would contradict two flows this page describes elsewhere, so the sentence branches on the worst
+state present:
+
+| State | What it actually costs | What the warning says |
+| --- | --- | --- |
+| `missing_configuration` | The **whole session**. `air prepare` exits 1 on the unresolved `${VAR}`, before the agent runs | "preparing it is expected to fail outright until the missing value is set" |
+| `needs_authorization` / `needs_reauth` | Preparation succeeds; `AgentSessionJob`'s pre-spawn OAuth gate parks the session with Authorize buttons on its page | "it will park for OAuth authorization before the agent runs" |
+| `declared_unavailable` | Only the server's tools. Nothing local stops the session — see [the next section](#when-a-server-cannot-connect-the-server-is-left-out--not-the-session) | "the session will run without those tools" |
+
+Only the first is the expensive case the warning exists for. The worst state present is the one
+named, because it is the one the caller has to act on and three clauses do not fit a flash toast.
 
 ### Why not reject
 
