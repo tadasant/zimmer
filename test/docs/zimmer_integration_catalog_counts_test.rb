@@ -79,6 +79,7 @@ class ZimmerIntegrationCatalogCountsTest < ActiveSupport::TestCase
     roots = AirCatalogService.entries_for(:roots)
     zimmer = roots.fetch("zimmer")
     fleet = roots.fetch("fleet-maintenance")
+    router = roots.fetch("zimmer-orchestrator")
 
     assert_equal zimmer.fetch("default_skills").size,
                  stated(/turns (\d+) of those skills on by default/, "zimmer-root default skill count")
@@ -88,14 +89,20 @@ class ZimmerIntegrationCatalogCountsTest < ActiveSupport::TestCase
     # could move an id to the wrong root and leave this test green.
     { "playwright-custom" => zimmer.fetch("default_mcp_servers"),
       "awaken-waiting-sessions" => fleet.fetch("default_skills"),
-      "zimmer-fleet" => fleet.fetch("default_mcp_servers") }.each do |id, declared|
+      "zimmer-fleet" => fleet.fetch("default_mcp_servers"),
+      "route-a-request" => router.fetch("default_skills"),
+      "zimmer-sessions" => router.fetch("default_mcp_servers") }.each do |id, declared|
       assert_equal [ id ], declared, "the paragraph names #{id} as the sole entry here"
       assert_includes paragraph, "`#{id}`", "the paragraph no longer names #{id}"
     end
 
-    # "instead" claims these two roots are the only ones with defaults at all.
+    # "instead" claims these roots are the only ones with defaults at all. The
+    # router's deprecated alias is in the list because it appears in the same
+    # default_in_roots lists as the live name -- a session unarchived under the
+    # old name must not come up missing the server that makes it a router.
     with_defaults = roots.select { |_id, root| root.values_at("default_skills", "default_mcp_servers").any?(&:present?) }
-    assert_equal %w[fleet-maintenance zimmer], with_defaults.keys.sort,
-                 "another root declares defaults; the paragraph accounts only for zimmer and fleet-maintenance"
+    assert_equal %w[fleet-maintenance zimmer zimmer-orchestrator zimmer-router], with_defaults.keys.sort,
+                 "another root declares defaults; the paragraph accounts only for zimmer, fleet-maintenance " \
+                 "and the router root's two names"
   end
 end

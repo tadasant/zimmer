@@ -2832,37 +2832,44 @@ block and forge the human's message, and the block says its contents are data, n
 Visible text that argues with the agent is still visible text, and nothing sandboxes a router
 session that decides to act on it. Pin pages you would be comfortable having an agent read.
 
-### The baseline orchestrator root can't spawn downstream sessions out of the box
+### The baseline orchestrator root couldn't spawn downstream sessions out of the box
 
-🔴 `zimmer-orchestrator` — the root behind every quick-router / chat-bubble submission — ships with **no**
-default artifacts: no routing skill, and no session-orchestration MCP server. It resolves and starts,
-but it cannot *route*. A quick-router submission therefore lands as an ordinary agent session cloning
-`tadasant/zimmer` at its root, which is rarely what the prompt asked for. Treat the quick router as
-"start a session from a prompt", not "dispatch to the right root", until this is finished. The
-[browser extension](/extend/browser-extension/) lands on the same root, so it makes this gap more
-visible, not less: from any page it is "start a session with this page attached".
+`zimmer-orchestrator` — the root behind every quick-router / chat-bubble submission, and behind every
+[browser extension](/extend/browser-extension/) pin — shipped with **no** default artifacts: no
+routing skill, and no session-orchestration MCP server. It resolved and started, but it could not
+*route*. A submission landed as an ordinary agent session cloning `tadasant/zimmer` at its root,
+which is rarely what the prompt asked for.
 
-The obvious wiring — `default_in_roots: ["zimmer-orchestrator"]` on the `zimmer-sessions` catalog entry —
-is deliberately **not** done, because it is unsafe for a stock deployment. `zimmer-sessions`' URL in
-the **in-image** catalog is the placeholder `https://zimmer.example.com/...` (only its `X-API-Key`
-header is a `${VAR}`, so `SecretsInterpolator` never rewrites the host), and
-`RuntimeConfigPostProcessor#retarget_zimmer_servers_to_current_env!` early-returns in production
-(`return if Rails.env.production?`). Dev and staging rewrite that placeholder to the instance's real
-`ZIMMER_*_BASE_URL`; a **production** instance running the in-image catalog does not, so its router
-sessions would dial a dead host and — after `RetryBudget::MCP_CONNECTION` is spent — be failed outright
-(`AgentSessionJob` → `session.fail!`).
+The obvious wiring — `default_in_roots` on the `zimmer-sessions` catalog entry — was withheld because
+it was unsafe for a stock deployment. `zimmer-sessions`' URL in the **in-image** catalog is the
+placeholder `https://zimmer.example.com/...` (only its `X-API-Key` header is a `${VAR}`, so
+`SecretsInterpolator` never rewrites the host), and
+`RuntimeConfigPostProcessor#retarget_zimmer_servers_to_current_env!` early-returned in production
+(`return if Rails.env.production?`). Dev and staging rewrote that placeholder to the instance's real
+`ZIMMER_*_BASE_URL`; a **production** instance running the in-image catalog did not, so its router
+sessions would dial a dead host and — after `RetryBudget::MCP_CONNECTION` was spent — be failed
+outright (`AgentSessionJob` → `session.fail!`).
 
-That prod no-op is only sound under the assumption written into its own comment: that production
+That prod no-op was only sound under the assumption written into its own comment: that production
 "already point[s] at the instance serving the session" — true for an instance running its **own**
 catalog via `AIR_CONFIG` (see [Pointing an instance at your own catalog](/air/artifacts/#pointing-an-instance-at-your-own-catalog)),
-false for one running the in-image fallback. Both configurations exist, so the safe default is to ship
-no session server at all.
+false for one running the in-image fallback. Both configurations exist.
 
-The auto-injected `zimmer-self-session` server is unaffected either way: `SelfSessionInjector` builds
-its URL from `ZIMMER_*_BASE_URL` directly rather than from the catalog. To give the router real
-dispatch, an operator must wire a session-scoped Zimmer MCP server whose URL resolves in *their*
-environment — a custom `AIR_CONFIG` catalog with real URLs, or lifting the prod retarget no-op. See
-`app/services/runtime_config_post_processor.rb` and `app/services/self_session_injector.rb`.
+Fixed in [#173](https://github.com/tadasant/zimmer/issues/173), by making the assumption true rather
+than by working around it. Retargeting now runs in production too, and its guard is *"do I know my own
+address"* rather than *"which environment is this"*: an instance retargets whenever `AppUrl` resolves
+to something other than a placeholder host, which covers both deployment shapes — a custom catalog's
+real URL rebases onto the origin it already named, and the in-image placeholder becomes the instance.
+An instance that was never told its address (no `ZIMMER_PROD_BASE_URL`) skips the rewrite, and any
+catalog `zimmer*` entry still sitting on the placeholder afterwards is **dropped** from the session's
+config with a warning in the log — no session-orchestration server, which is what such a deployment
+had before, rather than a dead one. With that settled, `zimmer-sessions` and the `route-a-request`
+skill default into `zimmer-orchestrator` and its `zimmer-router` alias.
+
+The auto-injected `zimmer-self-session` server was unaffected throughout, and is deliberately exempt
+from the drop: `SelfSessionInjector` builds its URL from `ZIMMER_*_BASE_URL` directly rather than from
+the catalog, and it is a session's only route to archiving itself, so a mis-provisioned instance keeps
+it and fails loudly at call time instead of silently losing its lifecycle tools.
 
 ### The router root's two names split its cost and filter history
 

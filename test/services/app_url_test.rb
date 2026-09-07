@@ -69,4 +69,21 @@ class AppUrlTest < ActiveSupport::TestCase
       ENV["ZIMMER_LOCAL_BASE_URL"] = original
     end
   end
+
+  # `placeholder?` is how callers tell "I know my own address" from "I am
+  # guessing". RuntimeConfigPostProcessor gates retargeting on it: a placeholder
+  # host is worse than no address, because an MCP client dials it until
+  # RetryBudget::MCP_CONNECTION is spent and then fails the session.
+  test "placeholder? recognizes the fallback hosts, with or without a trailing slash" do
+    assert AppUrl.placeholder?(AppUrl::PLACEHOLDER_PROD_BASE_URL)
+    assert AppUrl.placeholder?(AppUrl::PLACEHOLDER_STAGING_BASE_URL)
+    assert AppUrl.placeholder?("#{AppUrl::PLACEHOLDER_PROD_BASE_URL}/")
+  end
+
+  test "placeholder? is false for a real host and for a missing one" do
+    refute AppUrl.placeholder?("https://zimmer.tadasant.com")
+    refute AppUrl.placeholder?("http://localhost:3000")
+    refute AppUrl.placeholder?(nil)
+    refute AppUrl.placeholder?("")
+  end
 end

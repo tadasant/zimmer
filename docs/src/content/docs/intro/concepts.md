@@ -88,9 +88,10 @@ A markdown procedure (`SKILL.md`) that the agent can invoke — "how to run the 
 "how to deploy staging." Resolved from the catalog and copied into `.claude/skills/<id>/` in
 the clone before the agent starts.
 
-Zimmer's catalog ships ten: seven Zimmer-specific ones plus three vendored generic workflow
+Zimmer's catalog ships eleven: eight Zimmer-specific ones plus three vendored generic workflow
 skills (`open-pr`, `wait-for-ci`, `recover-from-compaction-thrashing`). Nine are default-on for
-the `zimmer` root; `awaken-waiting-sessions` defaults on `fleet-maintenance` instead.
+the `zimmer` root; `awaken-waiting-sessions` defaults on `fleet-maintenance` instead, and
+`route-a-request` on the router root.
 
 → [Skills, plugins, hooks, references](/air/artifacts/)
 

@@ -611,7 +611,11 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     assert_nil figma["http_headers"]["X-API-Key"], "Zimmer's API key must not leak into a third-party server"
   end
 
-  test "post_process! does NOT retarget in production env" do
+  # Production is retargeted like every other environment: the in-image catalog's
+  # `zimmer-*` URLs are the placeholder host, and nothing else in the pipeline
+  # rewrites them (only the API-key header is a ${VAR}). See zimmer#173.
+  test "post_process! retargets a catalog zimmer entry to the prod instance in production env" do
+    ENV["ZIMMER_PROD_BASE_URL"] = "https://zimmer.tadasant.example"
     ENV["ZIMMER_PROD_API_KEY"] = "real-prod-key"
 
     Rails.stub(:env, ActiveSupport::StringInquirer.new("production")) do
@@ -625,10 +629,32 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
       build_processor.post_process!
 
       entry = read_config.dig("mcp_servers", SUBAGENT_SERVER)
-      assert_equal "https://zimmer.example.com/mcp?session_id=#{@session.id}", entry["url"],
-        "In production the catalog URL already points at the instance serving the session, so only " \
-        "the session stamp is added"
-      assert_equal "prod-key", entry.dig("http_headers", "X-API-Key")
+      assert_equal "https://zimmer.tadasant.example/mcp?session_id=#{@session.id}", entry["url"],
+        "In production a catalog zimmer entry must be retargeted at the instance serving the session"
+      assert_equal "real-prod-key", entry.dig("http_headers", "X-API-Key")
+    end
+  end
+
+  # The stock-deployment half of the same change: with no ZIMMER_PROD_BASE_URL
+  # there is nothing to retarget onto, and handing a session a host that does not
+  # resolve fails it outright once RetryBudget::MCP_CONNECTION is spent.
+  test "post_process! drops a catalog zimmer entry left on the placeholder host" do
+    ENV["ZIMMER_PROD_API_KEY"] = "real-prod-key"
+
+    Rails.stub(:env, ActiveSupport::StringInquirer.new("production")) do
+      write_config(
+        "zimmer-sessions" => {
+          "url" => "https://zimmer.example.com/mcp?tool_groups=sessions",
+          "http_headers" => { "X-API-Key" => "${ZIMMER_PROD_API_KEY}" }
+        }
+      )
+
+      build_processor.post_process!
+
+      assert_nil read_config.dig("mcp_servers", "zimmer-sessions"),
+        "An un-retargetable Zimmer entry must not reach the session"
+      assert read_config["mcp_servers"].key?(SELF_SESSION_SERVER),
+        "The injected self-session server stays — it is the session's only route to archiving itself"
     end
   end
 

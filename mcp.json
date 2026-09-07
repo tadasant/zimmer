@@ -63,7 +63,11 @@
     "url": "https://zimmer.example.com/mcp?tool_groups=sessions",
     "headers": {
       "X-API-Key": "${ZIMMER_PROD_API_KEY}"
-    }
+    },
+    "default_in_roots": [
+      "zimmer-orchestrator",
+      "zimmer-router"
+    ]
   },
   "zimmer-fleet": {
     "title": "Zimmer Fleet",

@@ -126,5 +126,17 @@
     "default_in_roots": [
       "fleet-maintenance"
     ]
+  },
+  "route-a-request": {
+    "id": "route-a-request",
+    "title": "Route a Request",
+    "description": "You are the session a quick-router / chat-bubble submission landed in: decide whether to answer the request here or start a session on the agent root that owns it, then get out of the way. Covers picking the root from `get_configs`, what to carry into the spawned session's prompt, and how the router session comes to rest afterwards. Not for routine session management.",
+    "path": "route-a-request",
+    "category": "zimmer",
+    "user_invocable": false,
+    "default_in_roots": [
+      "zimmer-orchestrator",
+      "zimmer-router"
+    ]
   }
 }

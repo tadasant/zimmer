@@ -745,32 +745,148 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     assert_equal({ "Authorization" => "do-not-touch" }, figma["headers"])
   end
 
-  test "post_process! does NOT retarget in production env" do
+  # Production used to be skipped outright, which is what made a `zimmer-*` server
+  # unsafe to ship as a root default: the in-image catalog's URL is the
+  # placeholder `https://zimmer.example.com`, its only ${VAR} is the API-key
+  # header, so nothing else in the pipeline would ever rewrite the host and the
+  # router root's session would dial a dead one (zimmer#173).
+  test "post_process! retargets a catalog zimmer entry to the prod instance in production env" do
+    ENV["ZIMMER_PROD_BASE_URL"] = "https://zimmer.tadasant.example"
+    ENV["ZIMMER_PROD_API_KEY"] = "real-prod-key"
+
     # Rails.env is a framework primitive (not internal application code), and there
     # is no clean dependency-injection seam for it on a class method. Stubbing it
     # here is the simplest way to exercise the env-conditional branch.
     Rails.stub(:env, ActiveSupport::StringInquirer.new("production")) do
       write_config(
-        SUBAGENT_SERVER => {
+        "zimmer-sessions" => {
           "type" => "http",
-          "url" => "https://zimmer.example.com/mcp",
+          "url" => "https://zimmer.example.com/mcp?tool_groups=sessions",
+          "headers" => { "X-API-Key" => "${ZIMMER_PROD_API_KEY}" }
+        }
+      )
+
+      build_processor.post_process!
+
+      entry = read_config.dig("mcpServers", "zimmer-sessions")
+      assert_equal "https://zimmer.tadasant.example/mcp?tool_groups=sessions&session_id=#{@session.id}",
+        entry["url"],
+        "In production env, a catalog zimmer entry must be retargeted at the instance serving " \
+        "the session — the in-image catalog's placeholder host resolves nowhere"
+      assert_equal "real-prod-key", entry.dig("headers", "X-API-Key"),
+        "In production env, a zimmer entry should carry the prod key"
+    end
+  end
+
+  # An instance running its own catalog via AIR_CONFIG already names a real URL.
+  # Retargeting it must land on the same origin rather than moving it, which is
+  # what makes lifting the production skip safe for both deployment shapes.
+  test "post_process! leaves a production entry that already names this instance where it is" do
+    ENV["ZIMMER_PROD_BASE_URL"] = "https://zimmer.tadasant.example"
+    ENV["ZIMMER_PROD_API_KEY"] = "real-prod-key"
+
+    Rails.stub(:env, ActiveSupport::StringInquirer.new("production")) do
+      write_config(
+        "zimmer-sessions" => {
+          "type" => "http",
+          "url" => "https://zimmer.tadasant.example/mcp?tool_groups=sessions",
           "headers" => { "X-API-Key" => "real-prod-key" }
         }
       )
 
       build_processor.post_process!
 
-      zimmer = read_config.dig("mcpServers", SUBAGENT_SERVER)
-      assert_equal "https://zimmer.example.com/mcp?session_id=#{@session.id}", zimmer["url"],
-        "In production env, a zimmer entry's origin and key must be pass-through " \
-        "(the catalog already points at the right place) — only the session stamp is added"
-      assert_equal "real-prod-key", zimmer.dig("headers", "X-API-Key"),
-        "In production env, a zimmer entry's API key must be pass-through"
+      entry = read_config.dig("mcpServers", "zimmer-sessions")
+      assert_equal "https://zimmer.tadasant.example/mcp?tool_groups=sessions&session_id=#{@session.id}",
+        entry["url"]
+      assert_equal "real-prod-key", entry.dig("headers", "X-API-Key")
     end
   end
 
+  # The whole chain, end to end, against the REAL shipped catalog: the router
+  # root's computed `default_mcp_servers` names `zimmer-sessions`, that catalog
+  # entry's URL is the in-image placeholder, and what the session's `.mcp.json`
+  # ends up carrying in production must be this instance's own address. Every
+  # link in that sentence was already true except the last one, which is why the
+  # wiring was withheld (zimmer#173).
+  test "the router root's catalog session server resolves to the prod instance end to end" do
+    ENV["ZIMMER_PROD_BASE_URL"] = "https://zimmer.tadasant.example"
+    ENV["ZIMMER_PROD_API_KEY"] = "real-prod-key"
+
+    router = AgentRootsConfig.find!(AgentRootsConfig.router_root_name)
+    server_name = router.default_mcp_servers.find { |n| n.start_with?("zimmer-") }
+    assert_equal "zimmer-sessions", server_name
+
+    catalog_entry = AirCatalogService.entries_for(:mcp).fetch(server_name)
+    assert_equal AppUrl::PLACEHOLDER_PROD_BASE_URL, URI.parse(catalog_entry["url"]).then { |u|
+      "#{u.scheme}://#{u.host}"
+    }, "the in-image catalog entry is the placeholder — that is the premise this test exists for"
+
+    @session.update!(metadata: { "agent_root_key" => router.name })
+
+    Rails.stub(:env, ActiveSupport::StringInquirer.new("production")) do
+      # What AIR writes for a root default: the catalog entry, verbatim, in
+      # Claude's native shape.
+      write_config(
+        server_name => {
+          "type" => "http",
+          "url" => catalog_entry["url"],
+          "headers" => catalog_entry["headers"]
+        }
+      )
+
+      build_processor.post_process!
+
+      entry = read_config.dig("mcpServers", server_name)
+      assert_not_nil entry, "the router's session server must survive into the written config"
+      url = URI.parse(entry["url"])
+      assert_equal "zimmer.tadasant.example", url.host,
+        "a production router session must dial the instance running it, not #{AppUrl::PLACEHOLDER_PROD_BASE_URL}"
+      assert_equal "sessions", Rack::Utils.parse_query(url.query)["tool_groups"],
+        "retargeting must preserve the entry's tool-group scoping"
+      assert_equal @session.id.to_s, Rack::Utils.parse_query(url.query)["session_id"]
+      assert_equal "real-prod-key", entry.dig("headers", "X-API-Key")
+    end
+  end
+
+  # The stock-deployment case the production skip was protecting. With no
+  # ZIMMER_PROD_BASE_URL there is no address to retarget onto, so the entry is
+  # dropped rather than handed over: a dead host burns RetryBudget::MCP_CONNECTION
+  # and then fails the session, where a missing server merely means no session
+  # orchestration.
+  test "post_process! drops a catalog zimmer entry left on the placeholder host" do
+    ENV["ZIMMER_PROD_API_KEY"] = "real-prod-key"
+
+    Rails.stub(:env, ActiveSupport::StringInquirer.new("production")) do
+      write_config(
+        "zimmer-sessions" => {
+          "type" => "http",
+          "url" => "https://zimmer.example.com/mcp?tool_groups=sessions",
+          "headers" => { "X-API-Key" => "${ZIMMER_PROD_API_KEY}" }
+        },
+        "playwright-custom" => { "command" => "npx", "args" => [ "-y", "@playwright/mcp" ], "env" => {} }
+      )
+
+      build_processor.post_process!
+
+      servers = read_config["mcpServers"]
+      assert_nil servers["zimmer-sessions"],
+        "An un-retargetable Zimmer entry must not reach the session: zimmer.example.com does not resolve"
+      assert servers.key?("playwright-custom"),
+        "Only Zimmer entries are dropped — a third-party server is untouched"
+      assert servers.key?(SELF_SESSION_SERVER),
+        "The injected self-session server stays: it is the session's only route to archiving itself, " \
+        "and it fails loudly at call time rather than silently"
+    end
+  end
+
+  # The base URL here is the real staging host rather than
+  # AppUrl::PLACEHOLDER_STAGING_BASE_URL, which is what config/deploy.staging.yml
+  # actually sets. An instance whose ZIMMER_*_BASE_URL is literally a placeholder
+  # is indistinguishable from one that never set it — neither host resolves — and
+  # retargeting deliberately treats both the same way.
   test "post_process! retargets a zimmer entry to the staging instance in staging env" do
-    ENV["ZIMMER_STAGING_BASE_URL"] = "https://staging.zimmer.example.com"
+    ENV["ZIMMER_STAGING_BASE_URL"] = "https://staging.zimmer.tadasant.com"
     ENV["ZIMMER_STAGING_API_KEY"] = "test-staging-api-key"
 
     Rails.stub(:env, ActiveSupport::StringInquirer.new("staging")) do
@@ -785,7 +901,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
       build_processor.post_process!
 
       entry = read_config.dig("mcpServers", "zimmer-sessions")
-      assert_equal "https://staging.zimmer.example.com/mcp?tool_groups=sessions&session_id=#{@session.id}", entry["url"],
+      assert_equal "https://staging.zimmer.tadasant.com/mcp?tool_groups=sessions&session_id=#{@session.id}", entry["url"],
         "In staging env, a zimmer entry should be retargeted to the staging instance"
       assert_equal "test-staging-api-key", entry.dig("headers", "X-API-Key"),
         "In staging env, a zimmer entry should carry the staging key"

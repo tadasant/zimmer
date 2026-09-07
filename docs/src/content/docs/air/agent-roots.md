@@ -85,9 +85,9 @@ Two things are deliberately outside that rule:
 
 | Root | Invocable | Repo | Notes |
 | --- | --- | --- | --- |
-| `zimmer` | ✅ | `tadasant/zimmer` | Work on Zimmer itself. Every skill but `awaken-waiting-sessions` defaults here. |
-| `zimmer-orchestrator` | ❌ | `tadasant/zimmer` | The baseline router. `AgentRootsConfig.router_root_name`; every quick-router / chat-bubble submission and every work-backlog start is created against it. Ships with no default artifacts — it cannot yet dispatch downstream sessions ([why](/limitations/#the-baseline-orchestrator-root-cant-spawn-downstream-sessions-out-of-the-box)). |
-| `zimmer-router` | ❌ | `tadasant/zimmer` | Deprecated alias of `zimmer-orchestrator`, kept so sessions created before the rename still resolve their root ([how](#the-router-roots-two-names)). Nothing new is created against it. |
+| `zimmer` | ✅ | `tadasant/zimmer` | Work on Zimmer itself. Every skill but `awaken-waiting-sessions` and `route-a-request` defaults here. |
+| `zimmer-orchestrator` | ❌ | `tadasant/zimmer` | The baseline router. `AgentRootsConfig.router_root_name`; every quick-router / chat-bubble submission and every work-backlog start is created against it. Defaults to the `zimmer-sessions` server (session orchestration — `start_session` and the rest) and the `route-a-request` skill, which together are what let it dispatch rather than just start. |
+| `zimmer-router` | ❌ | `tadasant/zimmer` | Deprecated alias of `zimmer-orchestrator`, kept so sessions created before the rename still resolve their root ([how](#the-router-roots-two-names)). Nothing new is created against it. It appears in the same `default_in_roots` lists as the live name, so a session unarchived under it comes up with the same artifacts. |
 | `general-agent` | ✅ | `tadasant/zimmer` | The catch-all. `AgentRootsConfig::DEFAULT_ROOT`. |
 | `fleet-maintenance` | ❌ | `tadasant/zimmer` | The deployment's own scheduler. The `quota_available` trigger dispatches it; it runs `awaken-waiting-sessions` and starts parked spot work in precedence order. Defaults to the `zimmer-fleet` server, which is the only thing that gives it the tools that skill calls. |
 | `catalog-management` | ❌ | `tadasant/zimmer` | Lead root; fans out to the four below. Maintains this repo's own AIR catalog, and is the catalog's worked example of `default_subagent_roots`. |
