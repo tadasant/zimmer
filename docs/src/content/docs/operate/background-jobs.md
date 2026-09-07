@@ -1807,18 +1807,35 @@ noise. It throttles under its own `wedged_lane:<queue>` code, and `SystemHealthM
 header over a body about held threads goes looking for the wrong thing, and on a phone the header is
 all they see before deciding whether to open the thread.
 
-`queue_statistics` therefore carries six more keys alongside the totals, and the first two are also what the
-`zimmer-host` obs collector scrapes off `/health/export_diagnostics` to label its `zimmer_good_job_*`
-series by queue:
+`queue_statistics` therefore carries nine more keys alongside the totals, and `ready_count_by_queue`
+and `oldest_ready_age_seconds_by_queue` are also what the `zimmer-host` obs collector scrapes off
+`/health/export_diagnostics` to label its `zimmer_good_job_*` series by queue:
 
 | Key | Meaning |
 | --- | --- |
 | `ready_count_by_queue` | `ready_count` per lane, deepest first |
+| `ready_count_by_job_class` | `ready_count` per job class, biggest first — what the backlog is MADE of |
 | `oldest_ready_age_seconds_by_queue` | `oldest_ready_age_seconds` per lane, oldest first |
+| `head_of_line` | the longest-waiting ready row anywhere: its `queue`, `job_class` and `age_seconds`, or `nil` when nothing is ready |
 | `claimed_count_by_queue` | `claimed_count` per lane, busiest first — what the worker is holding |
+| `claimed_count_by_job_class` | `claimed_count` per job class — which class is not FINISHING, as against which is waiting |
 | `oldest_claimed_age_seconds_by_queue` | how long each lane's longest-running execution has been running, oldest first |
 | `youngest_claimed_age_seconds_by_queue` | the same for each lane's most recently started execution — "even the newest job here is old" is what says no thread is free |
 | `oldest_claimed_job_class_by_queue` | the job class holding each lane's longest-running thread |
+
+The two by-lane counts are **uncapped**, because the `critical` gate thresholds each lane against its
+own depth and a lane the cap cut would read as having no depth at all. The two by-job-class counts
+are capped at `READY_BREAKDOWN_LIMIT` (5) with an `other (N more)` remainder: there are ~45 job
+classes against seven lanes, nothing thresholds per class, and the remainder keeps the split adding
+up against the total.
+
+Both halves of each pair come out of **one** `GROUP BY (queue_name, job_class)` read per population,
+folded two ways in Ruby. Two separate aggregations would be two scans of the same rows — twice the
+cost at exactly the moment `good_jobs` is largest — and, being separate queries against a moving
+table, free to disagree, so the by-class line would not add up against the by-lane line printed above
+it. Measured against 200,000 ready rows: the composite read is one sequential scan at ~180 ms, where
+`GROUP BY queue_name` alone was ~146 ms and adding a separate `GROUP BY job_class` would have cost a
+second scan and ~151 ms more.
 
 `oldest_claimed_age_seconds` is the global maximum of the third of those, derived from the same read
 for the same reason `oldest_ready_age_seconds` is: one query, so the global figure and the lane
@@ -1855,7 +1872,8 @@ over in milliseconds — so the same number is equally consistent with "one queu
 healthy in the starved case: the other queues keep draining, and `processing_rate_per_hour` is a
 *trailing* hour, so it lags a stall by many minutes.
 
-So the alert body carries three more lines, from `HealthMonitorService#ready_backlog_breakdown`:
+So the alert body carries three more lines, read straight off the `queue_stats` the gate has already
+computed:
 
 ```
 • Ready by queue: agents 231, default 18, pollers 2
@@ -1863,11 +1881,20 @@ So the alert body carries three more lines, from `HealthMonitorService#ready_bac
 • Oldest ready by queue: agents 41m, default 18s, pollers 4s
 ```
 
-The first two are taken over the same population as `ready_count` and both add up to it, biggest
-first with ties broken by name, capped at `READY_BREAKDOWN_LIMIT` (5) entries each. Whatever the cap
-cuts comes back as an `other (N more)` remainder rather than vanishing — five job classes with no
-total look the same whether they are the whole backlog or a tenth of it, and telling those apart is
-the entire question below. A row with no `job_class` is counted under `(unknown)`.
+Both counts are taken over the same population as `ready_count` and add up to it, biggest first with
+ties broken by name. The by-lane line is uncapped; the by-class line is capped at
+`READY_BREAKDOWN_LIMIT` (5), and whatever the cap cuts comes back as an `other (N more)` remainder
+rather than vanishing — five job classes with no total look the same whether they are the whole
+backlog or a tenth of it, and telling those apart is the entire question below. A row with no
+`job_class` is counted under `(unknown)`.
+
+The body closes by naming the route its actual responder can take. Agent sessions are the ordinary
+first responders to `#alerts` on this deployment, and they have no browser session on the production
+host, so a page that says "check the GoodJob dashboard" is a dead end for the reader most likely to
+be reading it — it blocked two triages before these keys existed
+([#450](https://github.com/tadasant/zimmer/issues/450)). Every number in the body is live in the
+`get_system_health` MCP tool, so the page can be re-read as the incident moves rather than only as it
+fired; `/jobs` is named alongside it as the place a human who can log in sees the individual rows.
 
 The ages line is deliberately **not** capped. A remainder entry is what keeps a capped count honest,
 and there is no equivalent for an age — `other 12m` means nothing — so a cap would leave a lane's
@@ -1915,19 +1942,19 @@ one old lane with nothing to compare it against — which reads as "one lane sta
 the truth may be "everything is old". Each age is dated the same way `oldest_ready_age_seconds` is,
 from `scheduled_at` when there was one and `created_at` otherwise.
 
-The first bullet's age and its `(lane / job class)` come from the same read, so the sentence cannot
-name one row's age beside another row's lane — `queue_statistics` and `ready_backlog_breakdown` are
-separate queries against a moving table, and whatever drains between them would otherwise show up
-there. `queue_statistics` stays the fallback when the breakdown cannot be read, and stays what the
-`critical` gate thresholds on.
+The first bullet's age and its `(lane / job class)` come from `head_of_line`, one row out of the same
+read, so the sentence cannot name one row's age beside another row's lane.
 
-This is all deliberately *not* folded into `queue_statistics`, which runs on every `/health` render;
-these are extra scans of `good_jobs` and are only worth paying for when something is about to page.
-And if they raise — plausible, since the database may be the thing going wrong — the lines read
-`unavailable`, the first bullet keeps its age and drops the lane, and the page still goes out. A
-depth number that reaches a human beats a richer one that raises on the way. `unavailable` and
-`none` are deliberately different words: a query that never answered and a queue that read as empty
-are different facts about an incident.
+Every line of the body is folded out of the `queue_stats` the gate already computed, so **assembling
+the page costs no query at all** — which matters most at the moment the database may be the thing
+going wrong. `unavailable` and `none` stay deliberately different words wherever a breakdown is
+rendered: a query that never answered and a queue that read as empty are different facts about an
+incident.
+
+The same keys reach every other surface from the same object. `/health` renders them in its **Backlog
+Breakdown** panel, `GET /api/v1/health` and `/health/export_diagnostics` serialize them, and the
+`get_system_health` MCP tool prints them as prose above the JSON — that last one being the only route
+an agent triaging the page actually has.
 
 The breakdown has to be *in* the page rather than a pointer to the GoodJob dashboard at `/jobs`,
 because the reader most likely to be reading it cannot open that dashboard: an agent triage session

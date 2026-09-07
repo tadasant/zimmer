@@ -160,27 +160,36 @@ class SystemHealthMonitorJob < ApplicationJob
   def build_details(system_health)
     stats = system_health[:queue_stats]
     workers = system_health[:worker_stats]
-    breakdown = ready_backlog_breakdown
+    head = stats[:head_of_line]
 
     [
       system_health[:status].message,
       "",
       "• Ready (waiting on a worker): #{stats[:ready_count]}, " \
-        "oldest waiting #{head_of_line_age(stats, breakdown[:head_of_line])}" \
-        "#{head_of_line_suffix(breakdown[:head_of_line])}",
-      "• Ready by queue: #{HealthMonitorService.format_breakdown(breakdown[:by_queue])}",
-      "• Ready by job class: #{HealthMonitorService.format_breakdown(breakdown[:by_job_class])}",
-      "• Oldest ready by queue: #{HealthMonitorService.format_ages(breakdown[:oldest_by_queue])}",
+        "oldest waiting #{HealthMonitorService.format_wait(stats[:oldest_ready_age_seconds])}" \
+        "#{head_of_line_suffix(head)}",
+      "• Ready by queue: #{HealthMonitorService.format_breakdown(stats[:ready_count_by_queue])}",
+      "• Ready by job class: #{HealthMonitorService.format_breakdown(stats[:ready_count_by_job_class])}",
+      "• Oldest ready by queue: " \
+        "#{HealthMonitorService.format_ages(stats[:oldest_ready_age_seconds_by_queue])}",
       "• Not backlog: #{stats[:claimed_count]} claimed (executing now), " \
         "#{stats[:scheduled_count]} scheduled (future-dated)",
       "• In flight by queue: #{HealthMonitorService.format_breakdown(stats[:claimed_count_by_queue])} " \
         "(threads: #{HealthMonitorService.format_breakdown(HealthMonitorService.lane_thread_counts)})",
+      "• In flight by job class: " \
+        "#{HealthMonitorService.format_breakdown(stats[:claimed_count_by_job_class])}",
       "• Oldest execution by queue: " \
         "#{HealthMonitorService.format_ages(stats[:oldest_claimed_age_seconds_by_queue])}",
       "• Youngest execution by queue: " \
         "#{HealthMonitorService.format_ages(stats[:youngest_claimed_age_seconds_by_queue])}",
       "• Processing rate: #{stats[:processing_rate_per_hour]}/hour",
       "• Workers: #{workers[:active_workers]} active / #{workers[:total_workers]} registered",
+      "",
+      "Every number above is live in the `get_system_health` MCP tool, which is the " \
+        "route a responder with no browser session on the production host has: it " \
+        "returns these same per-queue and per-job-class breakdowns, so the page can " \
+        "be re-read as it moves rather than only as it fired. The GoodJob dashboard " \
+        "at /jobs shows the individual rows behind them, for a human who can log in.",
       "",
       "The first line names one of three things: a WEDGED lane, one starved lane, or " \
         "a stall spread across several. Read the in-flight bullets together before " \
@@ -206,40 +215,17 @@ class SystemHealthMonitorJob < ApplicationJob
     ].join("\n")
   end
 
-  # Never let the diagnostic detail be the reason the page does not go out. The
-  # breakdown is three extra scans of `good_jobs` at exactly the moment the
-  # database may be the thing going wrong, and a depth number that reaches a human
-  # beats a richer one that raises on the way.
-  #
-  # Nil on failure, NOT an empty breakdown. The two render differently — a queue
-  # that read as empty and a query that never answered are different facts about
-  # the incident, and collapsing them would tell the responder the backlog is
-  # spread across nothing.
-  def ready_backlog_breakdown
-    HealthMonitorService.new.ready_backlog_breakdown
-  rescue StandardError => e
-    Rails.logger.warn("[SystemHealthMonitorJob] Could not read the backlog breakdown: #{e.message}")
-    { by_queue: nil, by_job_class: nil, oldest_by_queue: nil, head_of_line: nil }
-  end
-
-  # The age and the lane are quoted from the SAME read when there is one.
-  #
-  # `queue_statistics` and `ready_backlog_breakdown` are separate queries against a
-  # moving table, so their answers can differ by whatever drained between them: the
-  # row `queue_statistics` measured may already be claimed when the breakdown runs,
-  # leaving the bullet quoting one row's age next to another row's lane. Taking
-  # both from `head_of_line` keeps the sentence internally true. `queue_statistics`
-  # remains the fallback; its own per-lane numbers are what the `critical` gate
-  # thresholded on, which this does not touch.
-  def head_of_line_age(stats, head)
-    seconds = head.present? ? head[:age_seconds] : stats[:oldest_ready_age_seconds]
-    HealthMonitorService.format_wait(seconds)
-  end
-
   # Names the lane and the job class behind the age the line just quoted, so the
-  # first bullet answers "old where" and not only "old". Empty when the breakdown
-  # could not be read — the age still comes through from `queue_statistics` and is
-  # worth printing on its own.
+  # first bullet answers "old where" and not only "old". Empty when nothing is
+  # ready, which is when there is no head to name.
+  #
+  # The age and the lane come from the SAME read, which is why every number in this
+  # body is taken off the `queue_stats` the gate already computed rather than from a
+  # fresh query. Re-reading `good_jobs` here would cost three more scans of the
+  # table at exactly the moment the database may be the thing going wrong, and would
+  # let the first bullet quote one row's age beside another row's lane whenever the
+  # row the gate measured drains in between. `queue_statistics` publishes the whole
+  # head row, so the page is assembled entirely from facts the caller already holds.
   def head_of_line_suffix(head)
     return "" if head.blank?
 

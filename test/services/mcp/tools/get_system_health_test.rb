@@ -47,17 +47,43 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
   # actually has — the GoodJob dashboard needs a browser session on the production
   # host, which an agent session does not have.
   test "names the backlogged queues and job classes when work is waiting" do
-    HealthMonitorService.any_instance.stubs(:ready_backlog_breakdown).returns(
-      { by_queue: { "agents" => 231, "default" => 18 },
-        by_job_class: { "AgentSessionJob" => 231, "SessionTitleJob" => 18 },
-        oldest_by_queue: { "agents" => 1500, "default" => 4 },
-        head_of_line: { queue: "agents", job_class: "AgentSessionJob", age_seconds: 1500 } }
+    stub_queue_stats(
+      ready_count_by_queue: { "agents" => 231, "default" => 18 },
+      ready_count_by_job_class: { "AgentSessionJob" => 231, "SessionTitleJob" => 18 },
+      oldest_ready_age_seconds_by_queue: { "agents" => 1500, "default" => 4 },
+      head_of_line: { queue: "agents", job_class: "AgentSessionJob", age_seconds: 1500 }
     )
 
     result = @tool.call({})
 
     assert_includes result, "- **Ready backlog by queue:** agents 231, default 18"
     assert_includes result, "- **Ready backlog by job class:** AgentSessionJob 231, SessionTitleJob 18"
+  end
+
+  # Every line of this section is folded out of the report the tool has already
+  # built. A second read of `good_jobs` for the prose would be three more scans of
+  # a table that is largest during the backlog this tool is called to explain, and
+  # its answers could disagree with the JSON printed beneath them.
+  test "the backlog section costs no query of its own beyond the health report" do
+    stub_queue_stats(
+      ready_count_by_queue: { "agents" => 231 },
+      ready_count_by_job_class: { "AgentSessionJob" => 231 },
+      oldest_ready_age_seconds_by_queue: { "agents" => 1500 },
+      head_of_line: { queue: "agents", job_class: "AgentSessionJob", age_seconds: 1500 }
+    )
+    HealthMonitorService.any_instance.expects(:queue_statistics).never
+
+    good_job_queries = []
+    subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+      good_job_queries << payload[:sql] if payload[:sql].to_s.include?("good_jobs")
+    end
+    begin
+      @tool.call({})
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
+    assert_empty good_job_queries, "the breakdown must come off the report already in hand"
   end
 
   # `oldest_ready_age_seconds` in the JSON below is one number over every queue at
@@ -67,11 +93,11 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
   # two threads against jobs that block for a minute or more, so their head of line
   # is routinely tens of minutes old while everything else turns over in seconds.
   test "names each queue's own head-of-line age, oldest lane first" do
-    HealthMonitorService.any_instance.stubs(:ready_backlog_breakdown).returns(
-      { by_queue: { "inference" => 26, "maintenance" => 19 },
-        by_job_class: { "SessionStatusSummaryJob" => 17, "DeferredCloneCleanupJob" => 15 },
-        oldest_by_queue: { "inference" => 1640, "maintenance" => 1290, "pollers" => 4 },
-        head_of_line: { queue: "inference", job_class: "SessionStatusSummaryJob", age_seconds: 1640 } }
+    stub_queue_stats(
+      ready_count_by_queue: { "inference" => 26, "maintenance" => 19 },
+      ready_count_by_job_class: { "SessionStatusSummaryJob" => 17, "DeferredCloneCleanupJob" => 15 },
+      oldest_ready_age_seconds_by_queue: { "inference" => 1640, "maintenance" => 1290, "pollers" => 4 },
+      head_of_line: { queue: "inference", job_class: "SessionStatusSummaryJob", age_seconds: 1640 }
     )
 
     result = @tool.call({})
@@ -86,13 +112,11 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
   # old executions — from a lane the worker has stopped polling, and the two want
   # opposite responses. Neither could be read off any surface on 2026-09-04.
   test "names what the worker is holding per lane, against that lane's thread count" do
-    HealthMonitorService.any_instance.stubs(:full_health_report).returns(
-      { overall_status: "critical",
-        system_health: { queue_stats: {
-          claimed_count_by_queue: { "agents" => 8, "inference" => 2, "default" => 2 },
-          oldest_claimed_age_seconds_by_queue: { "inference" => 4620, "default" => 3660, "agents" => 90 },
-          youngest_claimed_age_seconds_by_queue: { "inference" => 4560, "default" => 3600, "agents" => 12 }
-        } } }
+    stub_queue_stats(
+      claimed_count_by_queue: { "agents" => 8, "inference" => 2, "default" => 2 },
+      claimed_count_by_job_class: { "AgentSessionJob" => 8, "SessionStatusSummaryJob" => 4 },
+      oldest_claimed_age_seconds_by_queue: { "inference" => 4620, "default" => 3660, "agents" => 90 },
+      youngest_claimed_age_seconds_by_queue: { "inference" => 4560, "default" => 3600, "agents" => 12 }
     )
 
     result = @tool.call({})
@@ -100,9 +124,37 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     assert_includes result, "- **In flight by queue:** agents 8, inference 2, default 2 " \
                             "(threads: agents 12, pollers 3, triggers 2, auth 2, inference 2, maintenance 2, default 2)",
                     "a hold is only readable beside the pool it is filling"
+    assert_includes result, "- **In flight by job class:** AgentSessionJob 8, SessionStatusSummaryJob 4",
+                    "which class is not FINISHING is a different answer from which class is waiting"
     assert_includes result, "- **Oldest execution by queue:** inference 1h 17m, default 1h 1m, agents 1m"
     assert_includes result, "- **Youngest execution by queue:** inference 1h 16m, default 1h 0m, agents 12s",
                     "an old oldest beside a fresh youngest is one slow job, not a wedge"
+  end
+
+  # The three shapes that look identical in the aggregate counts, told apart from
+  # the keys this tool now returns. This is the triage the 2026-08-14 episode could
+  # not complete: `ready` climbing while `claimed` sat flat is compatible with all
+  # three, and only the breakdown separates them.
+  test "the response separates one class flooding from one lane starving" do
+    stub_queue_stats(
+      ready_count: 139,
+      ready_count_by_queue: { "inference" => 131, "agents" => 8 },
+      ready_count_by_job_class: { "SessionStatusSummaryJob" => 130, "AgentSessionJob" => 9 },
+      oldest_ready_age_seconds_by_queue: { "inference" => 3600, "agents" => 12 },
+      claimed_count_by_queue: { "inference" => 2, "agents" => 11 },
+      claimed_count_by_job_class: { "AgentSessionJob" => 11, "SessionStatusSummaryJob" => 2 },
+      oldest_claimed_age_seconds_by_queue: { "inference" => 8 },
+      youngest_claimed_age_seconds_by_queue: { "inference" => 2 }
+    )
+
+    result = @tool.call({})
+
+    assert_includes result, "- **Ready backlog by queue:** inference 131, agents 8",
+                    "one lane holds the depth"
+    assert_includes result, "- **Ready backlog by job class:** SessionStatusSummaryJob 130, AgentSessionJob 9",
+                    "and one class is what it is made of — a flood, not a stalled worker"
+    assert_includes result, "- **Oldest execution by queue:** inference 8s",
+                    "that lane IS claiming work, so the worker has not stopped polling it"
   end
 
   test "says nothing about the in-flight population when the worker is holding nothing" do
@@ -125,13 +177,13 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     refute_includes result, "Head of line"
   end
 
-  test "a breakdown that cannot be read is reported, not raised, and keeps the report" do
-    HealthMonitorService.any_instance.stubs(:ready_backlog_breakdown)
-                        .raises(ActiveRecord::StatementInvalid, "canceling statement due to statement timeout")
-
+  # A report with no `system_health` section at all — the shape a caller gets from
+  # a degraded or partially-stubbed report — must not raise on the way to the JSON
+  # the caller actually asked for.
+  test "a report carrying no queue statistics still renders" do
     result = @tool.call({})
 
-    assert_includes result, "- **Ready backlog breakdown:** unavailable"
+    refute_includes result, "Ready backlog by queue"
     assert_includes result, '"overall_status": "healthy"'
   end
 
@@ -155,5 +207,17 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     assert_includes result, "trigger stampede"
   ensure
     GoodJob::Setting.delete_all
+  end
+
+  private
+
+  # A health report carrying the queue statistics under test. Every backlog line
+  # this tool renders is folded out of `queue_stats`, so a stub of that section is
+  # the whole input — there is no second query to intercept.
+  def stub_queue_stats(**queue_stats)
+    HealthMonitorService.any_instance.stubs(:full_health_report).returns(
+      { overall_status: "healthy", session_health: { total_sessions: 3 },
+        system_health: { queue_stats: queue_stats } }
+    )
   end
 end
