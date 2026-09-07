@@ -243,33 +243,34 @@ respond, so the reaction is a commitment rather than an acknowledgement. See
 [the draft template](#a-passive-listening-prompt-template).
 :::
 
-:::note[`passive_listen` is deprecated, not removed]
-The original single event type fired on both signals at once. It still works — a deploy of the split
-must not strand a trigger that names it — and behaves as though both new conditions were present,
-including the 6-hour window and the top-level-only engagement rule. The triggers form offers it only
-on a condition that already carries it; the REST API still accepts it, since it is a member of
-`EVENT_TYPES` like any other. Removal is tracked in
-[#253](https://github.com/tadasant/zimmer/issues/253).
+:::caution[Replacing a passive condition starts its bookkeeping from empty]
+A passive condition's cursors live in its own `configuration`, so a *fresh* condition — one created
+to replace an existing one, rather than edited in place — starts from nothing. The two types pay for
+that differently.
 
-**Replacing it means two fresh condition rows, and a fresh condition starts with empty
-bookkeeping.** Carry the old condition's cursors across, or the two new ones are worse than the one
-they replace in both directions at once:
+A fresh `passive_listen_thread` condition is worse than the one it replaces in both directions at
+once:
 
-- **They over-fire.** A fresh condition baselines its *channel* cursor on the first poll, which is
-  the newest top-level message — in a thread-heavy channel that can be weeks old. On the second poll
-  every thread is a first-sight thread, so each replays back to `THREAD_BACKFILL_HORIZON` (24 hours).
+- **It over-fires.** It baselines its *channel* cursor on the first poll, which is the newest
+  top-level message — in a thread-heavy channel that can be weeks old. On the second poll every
+  thread is a first-sight thread, so each replays back to `THREAD_BACKFILL_HORIZON` (24 hours).
   Every reply from the last day in every thread Zimmer is in fires at once, bounded only by the
   trigger's `max_sessions_per_minute` (above which the rest are dropped).
-- **They also under-fire, permanently.** A thread is only ever discovered through its parent
+- **It also under-fires, permanently.** A thread is only ever discovered through its parent
   appearing in the last 50 top-level messages, or through an existing `thread_timestamps` entry. A
   thread whose parent has already scrolled past that window and has no entry is invisible — and
   stays invisible, even after Zimmer next speaks in it.
 
-Copy `thread_timestamps` and `participating_threads` onto the thread condition,
-`bot_activity_timestamps` onto the channel condition, and `channel_timestamps` onto **both** (a
-first-sight thread falls back to that cursor). Editing `configuration` directly is the only way:
-the trigger form does not render these keys, and `TriggerCondition::SLACK_POLL_STATE_KEYS` exists
-precisely so that saving the form does not *destroy* them.
+A fresh `passive_listen_channel` condition never reads threads, so neither of those applies to it.
+It fails the quiet way instead: its `bot_activity_timestamps` starts empty, so the channel counts as
+un-engaged and the condition fires on nothing at all until Zimmer next posts at the top level there.
+
+So edit a live condition rather than recreating it. When you genuinely must replace one, carry its
+cursors across: `thread_timestamps` and `participating_threads` onto a `passive_listen_thread`
+condition, `bot_activity_timestamps` onto a `passive_listen_channel` one, and `channel_timestamps`
+onto both (a first-sight thread falls back to that cursor). Editing `configuration` directly is the
+only way: the trigger form does not render these keys, and `TriggerCondition::SLACK_POLL_STATE_KEYS`
+exists precisely so that saving the form does not *destroy* them.
 :::
 
 :::note[No stall detection]

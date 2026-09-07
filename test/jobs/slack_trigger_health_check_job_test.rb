@@ -111,7 +111,7 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
     SlackService.expects(:get_thread_replies).never
     AlertService.expects(:raise_alert).never
 
-    %w[passive_listen_thread passive_listen_channel passive_listen].each do |event_type|
+    %w[passive_listen_thread passive_listen_channel].each do |event_type|
       condition.configuration["event_type"] = event_type
       SlackTriggerHealthCheckJob.new.send(:check_condition, condition)
     end

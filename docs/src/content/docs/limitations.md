@@ -3811,10 +3811,9 @@ Three bounds worth knowing:
 - **`participating_threads` and `bot_activity_timestamps` grow monotonically** inside the
   condition's `configuration` JSONB, exactly like the `channel_timestamps` and `thread_timestamps`
   hashes they sit beside. Nothing prunes any of the four — and because all four live on the
-  *condition*, replacing a condition (for instance swapping the deprecated `passive_listen` for the
-  two split types) starts from empty bookkeeping unless they are copied across by hand. That is not
-  a clean slate: it both replays up to a day of thread replies and permanently loses threads whose
-  parent has aged out of recent history. See the migration note in
+  *condition*, replacing a condition rather than editing it in place starts from empty bookkeeping
+  unless they are copied across by hand. That is not a clean slate: it both replays up to a day of
+  thread replies and permanently loses threads whose parent has aged out of recent history. See
   [Triggers](/sessions/triggers/#passive-listening-passive_listen_thread-passive_listen_channel).
 
 ### An @mention can fall between `bot_mention` and passive listening
