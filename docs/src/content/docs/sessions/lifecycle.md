@@ -644,6 +644,42 @@ genuinely disagree: MCP and the REST API refuse (an agent working a ranked queue
 session that asked to be left alone), and the Restart button does not (a person clicking it on one
 session is taking that session over).
 
+##### Which sessions each door restarts
+
+The entry conditions are the other thing each surface keeps, and for a long time the web door was
+strictly the narrowest: it re-derived its own `failed?`, so a session stranded in `needs_input` was
+restartable by an agent and by a script and by a human not at all — no button on the session page,
+the card or the phone sheet, and a refusal behind it if there had been one
+([#830](https://github.com/tadasant/zimmer/issues/830)).
+
+| Door | Entry condition | Accepts |
+| --- | --- | --- |
+| MCP `action_session` | `may_resume?`, then `refuse_if_paused!` | `failed`, `needs_input`, `waiting` — minus one asleep on a wake |
+| `POST /api/v1/sessions/:id/restart` | `may_resume?`, then the same pause refusal | the same three, minus one asleep on a wake |
+| Web **Restart** | `Session#restartable_by_hand?` | `failed`, `needs_input` |
+
+`#restartable_by_hand?` is `may_resume? && !waiting?` — *derived* from the predicate the other two
+gate on rather than re-listing statuses, so the web door cannot drift wider than they are. It drops
+exactly one state, and every shape a `waiting` session takes is a reason to: its turn is already
+queued for a worker (a restart would enqueue a second), or it is asleep on a wake-up that `resume`
+would consume on the way past, or it is dormant in the spot queue and a restart puts it back on the
+window that parked it. A `waiting` session that is genuinely stalled has its own control —
+**Refresh**, which sends the continue nudge under `#continue_nudge_on_refresh?` and is rendered on
+every card.
+
+The button is not the same promise in both states it is offered from, so it does not read the same:
+
+- from `failed` it fires on the click, as it always has;
+- from `needs_input` it asks first, because Restart there is a **takeover** — it resumes a live
+  session and enqueues a turn nobody asked for. Which turn depends on whether there is a
+  conversation to land in, and the dialog says which: an automated `SYSTEM_RECOVERY` continue prompt
+  into the existing conversation, or — for a session that never got as far as running, the case that
+  produced the issue — the whole setup pipeline again, from scratch, with its original prompt.
+
+The three render sites (`_session_header_actions`, `_session_card`, the mobile joystick's sheet) all
+ask the same model predicate and take their dialog copy from the same helper, so what is rendered
+cannot drift from what the controller will accept.
+
 #### `mcp_servers_status` is reset on resume, not deleted
 
 `clear_stale_mcp_failure_metadata` drops four keys outright — `should_fail_session`,
@@ -1142,7 +1178,7 @@ Without the window, a wake scheduled for a round five-minute boundary raced
 announced to `#alerts` that it could never fire at 11:20:08, and it fired at 11:20:18 into a session
 the rescue had already resumed, losing the prompt it carried.
 
-A human's levers on a sleeping session are narrower than they look, and worth stating exactly. **Start now** (the Ranked view's ⋮) resumes a session parked in the **spot queue**, which arms nothing — but it *refuses* one asleep on a wall-clock wake, because `Sessions::StartNow` treats an armed wake as outranking the queue. For that session a human has two routes, both of which consume the pause because both mean *I am taking this session over*: send it a **follow-up** from its session page, or cancel the wake at **/triggers**, where it is listed as `Wake session #<id> at <time>`. The **Restart** button is not one of them — it refuses anything that is not `failed`.
+A human's levers on a sleeping session are narrower than they look, and worth stating exactly. **Start now** (the Ranked view's ⋮) resumes a session parked in the **spot queue**, which arms nothing — but it *refuses* one asleep on a wall-clock wake, because `Sessions::StartNow` treats an armed wake as outranking the queue. For that session a human has two routes, both of which consume the pause because both mean *I am taking this session over*: send it a **follow-up** from its session page, or cancel the wake at **/triggers**, where it is listed as `Wake session #<id> at <time>`. The **Restart** button is not one of them — it is offered only for a `failed` or `needs_input` session, and one asleep on a wake is `waiting`.
 
 **The spot queue — the same sleep with no wake-up.** `action_session`'s `pause_into_spot_queue`
 sleeps the session and hands it to the spot scheduler instead of arming anything:
@@ -2107,6 +2143,11 @@ A never-run session now takes a separate, much shorter path on both doors:
 | --- | --- |
 | **Restore** (web **Restore**, `POST /api/v1/sessions/:id/unarchive`, MCP `unarchive`) | No clone, no transcript write, no `air prepare`. `UnarchiveSessionService` drops the half-written setup artifacts of the aborted spawn and returns the row to `needs_input`. |
 | **Restart** (web **Restart**, `POST /api/v1/sessions/:id/restart`, MCP `restart`) | Takes the existing restart-from-scratch path — clear the setup artifacts and the spot-hold keys, null the `session_id`, and enqueue the full setup pipeline with the session's original prompt and its [first-turn attachments](/sessions/spawning/). |
+
+Restore lands the session in `needs_input`, which is a state the web **Restart** button is rendered
+for — so the fresh start is one click from the page a person is already looking at, rather than
+something only an agent or a script could ask for
+([#830](https://github.com/tadasant/zimmer/issues/830)).
 
 Restore does not clone, on purpose: the fresh start clones for itself, and a clone built here would
 be one the fresh start never uses and a reaper has to sweep. Whatever starts the session next lands

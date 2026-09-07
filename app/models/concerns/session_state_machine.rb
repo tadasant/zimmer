@@ -983,6 +983,39 @@ module SessionStateMachine
     !awaiting_scheduled_wake?
   end
 
+  # Whether a person can restart this session by hand — the entry condition
+  # behind `SessionsController#restart` and behind every site that renders (or
+  # withholds) the Restart control: the session header, the session card, and the
+  # mobile joystick's sheet.
+  #
+  # Derived from `may_resume?` — what MCP `action_session`'s `restart` and
+  # `POST /api/v1/sessions/:id/restart` gate on — rather than re-listing statuses,
+  # so the web door can never accept something the other two doors refuse. The
+  # drift this closes ran the other way: the controller re-derived the condition
+  # as `failed?`, which left a session stranded in `needs_input` restartable by an
+  # agent and not restartable by a human at all
+  # ([#830](https://github.com/tadasant/zimmer/issues/830)).
+  #
+  # It subtracts exactly one of the three states `resume` transitions from:
+  # `waiting`. A waiting session is not stranded, it is in flight, and each of the
+  # three shapes it takes is a reason not to offer a button:
+  #
+  # - its turn is already queued for a worker, so a restart enqueues a second one;
+  # - it is asleep on a wake-up it has not reached, and `resume`'s
+  #   `cancel_pending_one_time_wake_triggers` would consume that wake on the way
+  #   past — MCP and REST refuse this outright (`refuse_if_paused!`) and the web
+  #   door deliberately does not, so a rendered button would silently do the thing
+  #   the other two doors will not;
+  # - it is dormant in the spot queue, where restarting puts it straight back on
+  #   the window that parked it.
+  #
+  # A stalled `waiting` session already has its own control — `refresh`, which
+  # sends the continue nudge under `#continue_nudge_on_refresh?` and is rendered
+  # on every card.
+  def restartable_by_hand?
+    may_resume? && !waiting?
+  end
+
   # Reconcile the session's status with its active (pending, unexpired)
   # elicitations. Called from Elicitation lifecycle callbacks on every path that
   # creates, resolves, or expires an elicitation.

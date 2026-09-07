@@ -224,6 +224,55 @@ class RestartFromScratchParityTest < ActionDispatch::IntegrationTest
     assert_match(/high server activity/, flash[:alert])
   end
 
+  # --- the entry conditions ---------------------------------------------------
+  #
+  # The operation is shared; the authorization is not, and the doors are allowed
+  # to disagree. What they may NOT do is let an agent restart a session a human
+  # cannot — which is what the web door's own `failed?` guard did until
+  # [#830](https://github.com/tadasant/zimmer/issues/830). These two tests pin the
+  # agreement and the one remaining, deliberate difference.
+
+  # Any session the web UI offers Restart for, the other two doors accept.
+  test "the web door never accepts a session MCP and REST would refuse" do
+    %i[needs_input failed].each do |status|
+      SURFACES.each do |surface|
+        session = Session.create!(
+          git_root: "https://github.com/test/repo.git",
+          prompt: "Fix the auth bug",
+          status: status
+        )
+        assert session.restartable_by_hand?, "#{status} should be restartable by hand"
+
+        clear_enqueued_jobs
+        restart_through(surface, session)
+
+        assert_equal "waiting", session.reload.status,
+          "#{surface} refused a #{status} session the web UI offers a Restart button for"
+      end
+    end
+  end
+
+  # `waiting` is the difference, and it runs the safe way round: the two
+  # non-interactive doors still accept a stalled waiting session (that is what the
+  # awaken-waiting-sessions sweep is built on), and the web door does not offer a
+  # button for one, because a waiting session is in flight rather than stranded.
+  test "the web door alone refuses a waiting session" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Fix the auth bug",
+      status: :waiting
+    )
+
+    assert session.may_resume?, "waiting is a state MCP and REST accept"
+    assert_not session.restartable_by_hand?
+
+    post restart_session_url(session)
+
+    assert_redirected_to session_path(session)
+    assert_match(/Cannot restart a session that is waiting/, flash[:alert])
+    assert_equal "waiting", session.reload.status
+  end
+
   # The REST API answers 503 rather than the 500 it raised before the retry moved
   # into the service: a dropped connection is a transport failure the caller
   # should retry, not a rejected request.

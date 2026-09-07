@@ -3351,13 +3351,114 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     FileUtils.rm_rf(clone_path)
   end
 
-  test "should not restart non-failed session" do
+  test "should not restart a running session" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", status: :running)
 
     post restart_session_url(session)
 
     assert_redirected_to session_path(session)
-    assert_match /Cannot restart session that is not failed/, flash[:alert]
+    assert_match(/Cannot restart a session that is running/, flash[:alert])
+  end
+
+  # ===========================================================================
+  # The entry condition: `failed` and `needs_input`, and nothing else
+  # (zimmer#830).
+  #
+  # The web door used to re-derive its own `failed?`, so a session stranded in
+  # `needs_input` was restartable by an agent through MCP `action_session` and by
+  # a script through `POST /api/v1/sessions/:id/restart`, and by a human not at
+  # all. It now reads Session#restartable_by_hand?, which is `may_resume?` — what
+  # those two doors gate on — minus `waiting`.
+  # ===========================================================================
+
+  test "restart continues a needs_input session that has a conversation" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test prompt",
+      status: :needs_input,
+      session_id: SecureRandom.uuid
+    )
+
+    clone_path = Rails.root.join("tmp", "test_clone_needs_input_restart_#{session.id}")
+    FileUtils.mkdir_p(clone_path)
+    session.update!(metadata: { "clone_path" => clone_path.to_s, "working_directory" => clone_path.to_s })
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id, AutomatedPrompts::SYSTEM_RECOVERY ]) do
+      post restart_session_url(session)
+    end
+
+    assert_redirected_to session_path(session)
+    assert_match(/Restarting paused session/, flash[:notice])
+
+    session.reload
+    assert_equal "waiting", session.status
+    assert session.logs.where("content LIKE ?", "%Continuing paused session%").exists?
+
+    FileUtils.rm_rf(clone_path)
+  end
+
+  # The case that motivated the issue: a session paused into `needs_input` before
+  # it ever ran has no conversation to prompt into, so the same click re-runs the
+  # whole setup pipeline instead — the identical answer MCP and REST already gave.
+  test "restart of a never-run needs_input session re-runs the setup pipeline" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test prompt",
+      status: :needs_input
+    )
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
+      post restart_session_url(session)
+    end
+
+    assert_redirected_to session_path(session)
+    session.reload
+    assert_equal "waiting", session.status
+    assert_nil session.session_id
+    assert session.logs.where("content LIKE ?", "%Restarting session from scratch%").exists?
+  end
+
+  # `waiting` is the one state `may_resume?` allows that this door deliberately
+  # does not: the session is in flight, not stranded.
+  test "should not restart a waiting session" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test prompt",
+      status: :waiting,
+      session_id: SecureRandom.uuid
+    )
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      post restart_session_url(session)
+    end
+
+    assert_redirected_to session_path(session)
+    assert_match(/Cannot restart a session that is waiting/, flash[:alert])
+    assert_equal "waiting", session.reload.status
+  end
+
+  test "should not restart an archived session" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test prompt",
+      status: :archived
+    )
+
+    post restart_session_url(session)
+
+    assert_redirected_to session_path(session)
+    assert_match(/Cannot restart a session that is archived/, flash[:alert])
+    assert_equal "archived", session.reload.status
+  end
+
+  test "restart refusal on the turbo_stream path re-renders rather than redirecting" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", status: :running)
+
+    post restart_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_equal "text/vnd.turbo-stream.html; charset=utf-8", response.content_type
+    assert_equal "running", session.reload.status
   end
 
   test "should reconnect to running process on restart" do

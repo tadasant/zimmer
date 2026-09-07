@@ -78,6 +78,11 @@
      data-refresh-url="<%= refresh_session_path(@session) %>"
      data-pause-url="<%= pause_session_path(@session) %>"
      data-restart-url="<%= restart_session_path(@session) %>"
+     <%# Nil for a failed session, a sentence for a paused one. The sheet's
+         Restart button submits a synthetic form from JS rather than through a
+         link Turbo would read `data-turbo-confirm` off, so joystick-menu#_commit
+         reads this attribute and calls window.confirm itself. %>
+     data-restart-confirm="<%= restart_confirmation(@session) %>"
      data-favorite-url="<%= toggle_favorite_session_path(@session) %>"
      data-touch-url="<%= touch_activity_session_path(@session) %>">
 
@@ -276,7 +281,9 @@
           <span class="flex-1 font-medium">Pause Session</span>
         </button>
       <% end %>
-      <% if @session.failed? %>
+      <%# Same entry condition as the session header and the session card — see
+          Session#restartable_by_hand?. %>
+      <% if @session.restartable_by_hand? %>
         <button type="button" data-action="click->joystick-menu#fire" data-petal-key="restart" class="flex items-center w-full px-4 py-3 text-left text-sm text-green-700 hover:bg-green-50 active:bg-green-100">
           <span class="w-9 h-9 rounded-full bg-green-50 text-green-600 inline-flex items-center justify-center mr-3"><%= render "sessions/joystick_petal_icon", icon: "restart" %></span>
           <span class="flex-1 font-medium">Restart Session</span>
