@@ -25,7 +25,7 @@ require "test_helper"
 # The gate itself is not negotiable — /supervisor is the second wall in front of
 # claude_accounts, mcp_oauth_credentials and x_oauth_credentials, which hold
 # plaintext OAuth tokens. What changed is the *challenge on a speculative
-# request* (Supervisor::ApplicationController#refuse) and whether the request is
+# request* (Supervisor::ApplicationController#refuse_operator) and whether the request is
 # made at all (this file).
 #
 # This test is a source-level sweep rather than a check of the four links that

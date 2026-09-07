@@ -229,7 +229,7 @@ Security relies on database access controls."*
 Combined with an Administrate panel that renders those columns as *editable* resources, database
 access controls are close to the only control — and what stands between the panel and them is one
 shared HTTP Basic password, not a database grant. That realm [fails
-closed](#the-one-exception-supervisor-is-behind-http-basic), so an unconfigured deployment has no
+closed](#the-exception-the-operator-realm-in-front-of-two-surfaces), so an unconfigured deployment has no
 panel at all; a configured one has exactly one credential in front of the plaintext.
 :::
 

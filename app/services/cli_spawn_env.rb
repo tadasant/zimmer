@@ -104,6 +104,17 @@ module CliSpawnEnv
   #   avoid — the web tier holds it, and nothing spawned from the web tier needs
   #   it.
   #
+  # - SUPERVISOR_PASSWORD / SUPERVISOR_USERNAME: the operator HTTP Basic realm
+  #   (OperatorHttpBasicAuth) in front of /supervisor and the mutating POST /health/*
+  #   actions. This one is load-bearing in a way the others are not: the /health gate
+  #   exists specifically to stop an agent session halting the fleet's demand-side job
+  #   queues, and sessions run INSIDE this container. They already hold an API_KEYS entry
+  #   (it is in their environment and in their .mcp.json), which is why the realm is keyed
+  #   on a different variable — so a session inheriting this one would defeat the gate
+  #   entirely rather than merely widening its reach. Cleared here so that seeding the
+  #   secret into env.secret, which is what makes the realm usable at all, does not
+  #   silently hand it to every agent the web tier spawns.
+  #
   # Production telemetry cleared (issue #176):
   # - SENTRY_DSN_BACKEND: the write DSN of the *production* GlitchTip project, the
   #   one with the Slack #alerts hook on it. Agent sessions run inside the production
@@ -189,6 +200,8 @@ module CliSpawnEnv
       ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON
       SENTRY_DSN_BACKEND
       ALERTS_ENABLED
+      SUPERVISOR_PASSWORD
+      SUPERVISOR_USERNAME
     ]
 
     # Set each inherited env var to nil to unset it in the child process
