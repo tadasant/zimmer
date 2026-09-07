@@ -169,6 +169,21 @@ class CodexMcpCredentialWriter
     "#{server_name}|#{hash_val}"
   end
 
+  # Codex's key is NOT the protocol-level credential_key, so the contract's
+  # default would ask its store for something it never stored.
+  # #credential_key_for above forces `type: "http"` and empty headers, while
+  # McpOauthCredential.compute_credential_key hashes the server's real type and
+  # real headers — the two coincide only for a headerless streamable-http server,
+  # which is every OAuth server in the catalog today and is not a property to
+  # rely on. Reconstructing the config from the row keeps the read side reading
+  # the key the write side wrote.
+  #
+  # @param credential [McpOauthCredential]
+  # @return [String]
+  def runtime_key_for(credential)
+    credential_key_for(credential.server_name, { url: credential.server_url })
+  end
+
   # Reads the token entries Codex currently has in ~/.codex/.credentials.json,
   # keyed by the same "<server_name>|<hash>" key #write! stores them under.
   #

@@ -520,10 +520,16 @@ The reconciler runs in two places:
   another runtime got burned. Order does not matter: each store is compared against the row as it
   stands after the previous one, so the newest pair wins whichever order they are read in.
 
-**Which key each store uses is the runtime's own.** Claude Code and Codex key by the protocol-level
-`credential_key` (`server_name|hash`); Pi keys by the bare `.mcp.json` server name. A caller holding
-a server config asks `#credential_key_for`; the cron, which holds only a DB row, asks
-`#runtime_key_for`.
+**Which key each store uses is the runtime's own**, and all three differ. Claude Code keys by the
+protocol-level `credential_key` (`server_name|hash`), because its `#credential_key_for` *is*
+`McpOauthCredential.compute_credential_key`. Codex uses the same shape over a different hash — it
+forces `type: "http"` and empty headers where the protocol key hashes the server's real type and
+headers, so the two coincide only for a headerless `streamable-http` server and diverge for an `sse`
+one or one carrying a header. Pi keys by the bare `.mcp.json` server name. A caller holding a server
+config asks `#credential_key_for`; the cron, which holds only a DB row, asks `#runtime_key_for`, and
+each writer answers in its own shape. The shared contract test asserts the two agree per writer,
+because a writer whose key shapes disagree probes its store for something it never wrote and misses
+in silence.
 
 **How the store gets read** differs too, and the contract says which kind a writer is.
 `#enumerable_store?` is true for a runtime that keeps one readable file (Claude Code, Codex): the
@@ -531,8 +537,19 @@ reconciler reads it once and serves every credential from that snapshot. It is f
 entries live in the OS credential store addressed by `sha256(server_name)` with no listing — so
 `#read_runtime_credentials` takes the keys the caller wants and probes exactly those accounts
 through the adapter's own `mcp-keyring-helper.cjs`, memoized so a repeated key costs one probe. A
-store that cannot be reached is "nothing to adopt", never an error: the read is bounded at five
-seconds and a failure leaves Zimmer's own copy in place.
+store that cannot be reached is "nothing to adopt", never an error: an adoption probe is bounded at
+two seconds (tighter than the write and delete paths, because it is the only one that can be skipped
+without consequence) and a failure leaves Zimmer's own copy in place.
+
+**Two things are refused rather than adopted**, both of which would otherwise overwrite a live token
+with a dead one. A DB row with **no expiry** is not adopted over: a nil `expires_at` means the
+provider issued no `expires_in`, the access token does not expire, and a non-expiring token is one no
+runtime ever refreshes — so reading "the runtime recorded an expiry and we did not" as newer would
+let a stale on-disk pair land on top of a freshly authorized one. And an entry recorded against a
+**different server URL** is not this credential's, however its key matched: `server_name` is not
+unique across `McpOauthCredential` rows, so on Pi's name-keyed store a server whose URL changed
+leaves an old row probing the same account. `pi-mcp-adapter` draws the same line from its own side
+(`getAuthForUrl` returns nothing once the URL has moved).
 
 **Which store it reads** depends on the
 [session-scoped credentials setting](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain).

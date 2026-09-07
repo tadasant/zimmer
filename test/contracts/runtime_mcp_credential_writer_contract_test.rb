@@ -59,6 +59,29 @@ class RuntimeMcpCredentialWriterContractTest < ActiveSupport::TestCase
       assert_predicate key, :present?
     end
 
+    # #runtime_key_for is the read side of #credential_key_for for a caller that
+    # holds only a DB row (RefreshMcpOauthTokensJob). Asserting only that it
+    # returns a String lets a writer whose two key shapes disagree pass while its
+    # store is probed for a key it never wrote — a silent miss on exactly the
+    # cron path that keeps a rotating credential alive. Codex is the one that
+    # actually diverges: it forces `type: "http"` and empty headers, so the
+    # inherited default is wrong for it whenever a server is `sse` or carries a
+    # header, and the two agree only by coincidence for today's catalog.
+    test "#{klass}#runtime_key_for agrees with #credential_key_for for the same server" do
+      credential = mcp_oauth_credentials(:notion)
+      writer = klass.new
+      server_config = {
+        type: "sse",
+        url: credential.server_url,
+        headers: { "X-Zimmer-Test" => "1" }
+      }
+      credential.update!(credential_key: McpOauthCredential.compute_credential_key(credential.server_name, server_config))
+
+      assert_equal writer.credential_key_for(credential.server_name, server_config),
+        writer.runtime_key_for(credential),
+        "#{klass} would probe its store for a key it never wrote"
+    end
+
     test "#{klass}#delete_credentials returns an Array when nothing is stored" do
       # With no credential store present the delete must return an Array (the keys
       # removed), not raise — a missing store means "nothing to delete".

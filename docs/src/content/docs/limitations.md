@@ -1120,7 +1120,7 @@ every server `pending` for that turn, correctly: nothing connected, because noth
 | MCP — `${VAR}` secret-injected stdio | ✅ works | 16 tools listed, `airtable_list_bases` returned 69 bases |
 | MCP — strad-proxied HTTP (bearer header) | ✅ works | `strad-fetch` scraped a page; `remote-fs-screenshots` listed 42 directories |
 | MCP — Zimmer's auto-injected `zimmer-self-session` | ✅ works | 7 tools listed, `get_session` returned the session |
-| MCP — OAuth-credentialed | ✅ works | Token verified on the wire as `Authorization: Bearer`, and a token Pi refreshes is adopted back into Zimmer's DB like Claude Code's. What does not work is pushing a refreshed token into an *already-running* session (below) |
+| MCP — OAuth-credentialed | ✅ works | Token verified on the wire as `Authorization: Bearer`. Adopting back a token Pi refreshed is implemented and demonstrated end-to-end against a real OS credential store, driving the adapter's own keyring helper — not yet observed on a live Pi session, because it needs a provider to rotate. What does not work is pushing a refreshed token into an *already-running* session (below) |
 | Per-server MCP status (`mcp_servers_status`) | ✅ works, green-or-grey | `PiMcpStatusDetector` mines the transcript; was permanently `pending` before it. Never reports red (below) |
 | Skills | ✅ works | `air prepare pi` installs them into `.pi/skills/` — the one artifact `adapter-pi` handles natively |
 | AIR hooks | ✅ works | Live `pi 0.84.4` + `@tadasant/pi-hooks@0.2.0`: the reminder hook rewrote a `bash` tool result the model then read, and so did a hook speaking only Claude Code's dialect (below) |

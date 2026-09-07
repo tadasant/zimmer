@@ -199,15 +199,27 @@ class RefreshMcpOauthTokensJob < ApplicationJob
   # expiry than the DB row *currently* holds, so each store is compared against
   # the outcome of the previous one and the newest pair wins whichever order
   # they are read in.
+  # Reconciliation is best-effort, and the rescue is not decoration. #reconcile!
+  # swallows its own failures, but building a writer and asking it
+  # #runtime_key_for happen outside it — and the memoized list means a writer
+  # class that raises on construction raises again for every credential, landing
+  # in the caller's `rescue StandardError` that logs at .error. That pages
+  # #alerts for a condition the next run resolves, which is exactly what the
+  # transient-failure handling at the top of this file exists to avoid.
   def reconcile_from_runtimes!(credential)
     runtime_reconcilers.each do |writer, reconciler|
       reconciler.reconcile!(credential, runtime_key: writer.runtime_key_for(credential))
     end
+  rescue StandardError => e
+    Rails.logger.warn "[RefreshMcpOauthTokensJob] Skipped runtime reconciliation for #{credential.server_name}: #{e.class}: #{e.message}"
   end
 
   # One writer/reconciler pair per registered runtime that has a credential
   # store, built once per job run. Reading is lazy inside the reconciler, so a
-  # runtime whose store holds nothing costs one probe, not a read per credential.
+  # listable store (Claude Code, Codex) is read once for the whole run however
+  # many credentials ask. Pi's is probed per key, and its keys are server names,
+  # so it costs one `node` spawn per distinct server — bounded by the throttle on
+  # #credentials_needing_refresh rather than by the size of the table.
   def runtime_reconcilers
     @runtime_reconcilers ||= RuntimeRegistry.mcp_credential_writer_classes.map do |writer_class|
       writer = writer_class.new

@@ -164,13 +164,28 @@ class McpOauthRuntimeReconciler
   # merge_preserving_fresher! drops). A snapshot missing either token, or not newer
   # than the DB, or byte-identical to it, is skipped so we never null out a token
   # or churn updated_at (which the cron's rotation throttle keys on).
+  #
+  # A DB row with NO expiry is not comparable, so it is not adopted over. A nil
+  # expires_at means the provider issued no `expires_in`, which makes the access
+  # token non-expiring — and a non-expiring token is one no runtime ever refreshes,
+  # because the SDK only refreshes what it can see has lapsed. So the runtime's copy
+  # cannot legitimately be ahead, and treating "the runtime recorded an expiry and we
+  # did not" as newer would let a stale on-disk pair overwrite a freshly authorized
+  # one: re-authorize, spawn, and the revoked pre-reauth token comes straight back.
+  #
+  # A snapshot that names a DIFFERENT server URL is not this credential's, however
+  # its key matched. Pi's store is keyed by the bare `.mcp.json` server name, and
+  # `server_name` is not unique across McpOauthCredential rows — a server whose URL
+  # or headers changed leaves the old row behind — so two rows can probe one keyring
+  # account. The adapter draws the same line from its own side (`getAuthForUrl`
+  # returns nothing once the URL has moved).
   def adoptable?(snapshot, credential)
     return false if snapshot.nil?
     return false if snapshot.access_token.blank? || snapshot.refresh_token.blank?
     return false if snapshot.access_token == credential.access_token &&
       snapshot.refresh_token == credential.refresh_token
-    return false if snapshot.expires_at.nil?
-    return true if credential.expires_at.nil?
+    return false if snapshot.server_url.present? && snapshot.server_url != credential.server_url
+    return false if snapshot.expires_at.nil? || credential.expires_at.nil?
 
     snapshot.expires_at > credential.expires_at
   end
