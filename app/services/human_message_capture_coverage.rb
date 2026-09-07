@@ -18,21 +18,33 @@
 # nothing for every Slack message, and a Slack-originated hierarchy rendered
 # exactly like one where nobody ever spoke (#658).
 #
-# Which channels count as "instrumented" is not a judgement — it is the same
-# lookup capture itself performs, run ahead of time. Web-UI capture attributes to
-# `User.admin`; Slack capture attributes through `User.for_slack_user_id`. When
-# the roster cannot answer, capture writes nothing, and this class says so.
+# What "instrumented" means here is a DEPLOYMENT-WIDE question, deliberately, and
+# it is narrower than the per-message question capture asks. Capture asks "does
+# THIS Slack user ID resolve to a row?"; this asks "could ANY Slack message have
+# resolved to anybody?" — `User.admin` for the web UI, `User.with_slack_mapping`
+# for Slack. That is answerable without the message, which is the whole point: the
+# message Zimmer did not record is the one that cannot be consulted.
+#
+# The residual, stated plainly because the record's value is that it does not
+# overclaim: a roster with SOME Slack IDs mapped and not others reports no gap,
+# and an unmapped human speaking there still renders as an affirmative absence.
+# Every `reason` string below says "no row maps ANY Slack user ID" rather than
+# claiming the actor was checked. See docs/src/content/docs/limitations.md.
 #
 # == Why genesis, and why only two of the kinds
 #
-# `HumanMessage::CHANNELS` names the two boundaries Zimmer establishes a human
-# actor at, and `CHANNEL_BY_GENESIS` maps each to the genesis whose sessions
-# arrive through it. Every other genesis — a GitHub issue or label, a schedule, a
-# session-state or system event, an API spawn — has NO human actor at its
-# boundary by construction, and an empty record there is the correct, intended
-# answer rather than a gap. Widening this to those kinds would replace an
-# affirmative absence with "cannot say" on nearly every hierarchy in the fleet,
-# which destroys the signal the record exists to carry.
+# `CHANNEL_BY_GENESIS` maps each of the two channels in `HumanMessage::CHANNELS`
+# to the genesis whose sessions arrive over it. The other genesis kinds split two
+# ways. A GitHub issue or label, a schedule, a session-state or system event, an
+# API spawn: no human actor at the boundary by construction, so an empty record
+# there is the correct, intended answer rather than a gap. `unknown` is the
+# exception and is a blind spot rather than a construction — it means the origin
+# could not be established (chiefly rows predating the genesis column), so a
+# Slack-origin session sitting on `unknown` reports no gap.
+#
+# Widening this to every kind would replace an affirmative absence with "cannot
+# say" on nearly every hierarchy in the fleet, which destroys the signal the
+# record exists to carry.
 class HumanMessageCaptureCoverage
   # Session genesis => the HumanMessage channel its input boundary writes.
   CHANNEL_BY_GENESIS = {
@@ -58,14 +70,19 @@ class HumanMessageCaptureCoverage
   end
 
   class << self
-    # True when capture can establish an author on this channel at all. Exactly
-    # the lookup HumanMessageCapture performs, so the two cannot disagree about
-    # what "configured" means.
+    # True when capture could establish an author on this channel AT ALL — see the
+    # deployment-wide caveat at the top of this file.
+    #
+    # A channel with no arm here is reported as a GAP, not as instrumented. That
+    # is the safe direction on a surface whose entire value is that silence can be
+    # trusted: a channel added to CHANNEL_BY_GENESIS without an arm should be
+    # loudly unanswerable rather than quietly affirmative. `channels_are_covered`
+    # in the test suite makes it unreachable anyway.
     def configured?(channel)
       case channel
       when HumanMessage::WEB_UI then User.admin.present?
       when HumanMessage::SLACK then User.with_slack_mapping.exists?
-      else true
+      else false
       end
     end
 
@@ -78,7 +95,8 @@ class HumanMessageCaptureCoverage
         "No row in this deployment's roster maps any Slack user ID, so every Slack message resolved to nobody and " \
         "recorded nothing — whoever sent it."
       else
-        "Capture is not configured for this channel."
+        "Zimmer has no configuration check for this channel, so it cannot say whether a message on it would have " \
+        "been recorded."
       end
     end
 
@@ -89,7 +107,7 @@ class HumanMessageCaptureCoverage
       when HumanMessage::SLACK
         "Fill in the human's Slack user ID at /supervisor/users. It is a row edit, not a deploy."
       else
-        "Configure capture for this channel."
+        "Give this channel a check in HumanMessageCaptureCoverage.configured?."
       end
     end
   end

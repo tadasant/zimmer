@@ -273,9 +273,9 @@ sitting in a Slack thread three minutes before it was spawned.
 
 `HumanMessageCaptureCoverage` closes that. For each session in the hierarchy it maps the session's
 genesis to the input channel that genesis arrives over — `web_ui` → the web UI, `slack` → Slack — and
-runs the *same lookup capture itself performs* ahead of time: `User.admin` for the web UI,
-`User.with_slack_mapping` for Slack. A channel the roster cannot answer for is a **gap**, and every
-surface that renders the record renders the gap with it:
+asks the roster, ahead of time, whether an author could have been resolved on it at all: `User.admin`
+for the web UI, `User.with_slack_mapping` for Slack. A channel the roster cannot answer for is a
+**gap**, and every surface that renders the record renders the gap with it:
 
 | Case | What `get_session` / `get_session_provenance` says |
 | --- | --- |
@@ -291,11 +291,18 @@ The bullet is rendered on a non-empty record too: a hierarchy can hold web-UI me
 blind to the Slack half of itself, and the counts are then a floor for that channel rather than a
 total.
 
-Only the two genesis kinds in `HumanMessage::CHANNELS` can be a gap. A GitHub issue or label, a
-schedule, a session-state or system event, an API spawn — none has a human actor at its boundary by
-construction, so an empty record there is the correct answer and not a gap. Widening it to those
-kinds would replace an affirmative absence with "cannot say" on nearly every hierarchy in the fleet,
-which destroys the signal the record exists to carry.
+Only the two genesis kinds that map to a channel in `HumanMessage::CHANNELS` — `web_ui` and `slack` —
+can be a gap. A GitHub issue or label, a schedule, a session-state or system event, an API spawn:
+none has a human actor at its boundary by construction, so an empty record there is the correct
+answer and not a gap. Widening it to those kinds would replace an affirmative absence with "cannot
+say" on nearly every hierarchy in the fleet, which destroys the signal the record exists to carry.
+
+**The check is deployment-wide, not per-human**, and deliberately so — the message Zimmer did not
+record is the one that cannot be consulted, so the question has to be answerable without it. It asks
+"could *any* Slack message have resolved to *anybody*", not "was *this* actor mapped". Two residual
+blind spots follow, and both are on
+[Limitations](/limitations/#a-partly-mapped-roster-or-an-unknown-genesis-still-reads-as-an-affirmative-absence):
+a roster with some Slack IDs filled in and not others, and a session whose genesis is `unknown`.
 
 The web panel shows the same gap as an amber block above the messages, linking to
 `/supervisor/users`, and `GET /api/v1/sessions/:id` carries it as `human_message_capture_gaps`.
@@ -320,8 +327,8 @@ already authored.**
 Slack user IDs are **deployment configuration, never application source** — the same class of config
 as a Slack trigger's `allowed_user_ids`. This repository is public, so the seeded rows ship with an
 empty list and a deployment fills them in at `/supervisor/users`. Until then, no Slack message is
-attributed to anybody — and the record says which channel it is blind to rather than rendering the
-silence as an absence. An ID that belongs to no row resolves to nobody rather than inventing an
+attributed to anybody — and while that is true of the whole roster, the record says which channel it
+is blind to rather than rendering the silence as an absence. An ID that belongs to no row resolves to nobody rather than inventing an
 author, and one ID cannot belong to two humans (the model rejects the collision, which would
 otherwise make an author depend on row order).
 
@@ -376,7 +383,7 @@ be able to close the block, or open a bullet, and forge a `here` message.
 | A follow-up typed in the browser | ✅ `web_ui.follow_up` | same |
 | A message enqueued in the browser | ✅ `web_ui.enqueued_message` | recorded when typed, not when delivered |
 | A Slack message from a mapped human | ✅ `slack.channel_message` / `slack.dm` | resolved from the Slack user ID |
-| A Slack message from a human whose ID is **not** mapped | ❌ | nobody to attribute it to — but the record says so, rather than reading as an absence (see [Absence is only an answer when capture could have fired](#absence-is-only-an-answer-when-capture-could-have-fired)) |
+| A Slack message from a human whose ID is **not** mapped | ❌ | nobody to attribute it to — and when *no* row maps any Slack ID the record says so rather than reading as an absence (see [Absence is only an answer when capture could have fired](#absence-is-only-an-answer-when-capture-could-have-fired)) |
 | `follow_up` / `send_now` / enqueue issued by **another agent** over MCP or REST | ❌ | the API key is shared by the whole fleet — it establishes a caller, not a person |
 | A router-written spawn prompt | ❌ | a router holding a human's words is still a machine when it composes the prompt |
 | A scheduled or **self-scheduled** wake-up | ❌ | machine-authored by construction |

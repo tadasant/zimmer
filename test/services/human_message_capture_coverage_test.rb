@@ -90,6 +90,30 @@ class HumanMessageCaptureCoverageTest < ActiveSupport::TestCase
     assert_equal 2, gaps.first.session_count
   end
 
+  # `configured?` reports an unrecognised channel as a GAP rather than as
+  # instrumented, which is the safe direction — but a channel that lands there is
+  # still a bug, and this is what keeps it out of production. Every channel
+  # CHANNEL_BY_GENESIS maps to must be one HumanMessage itself recognises and must
+  # have its own arm, so the generic fallbacks stay unreachable.
+  test "every mapped channel is a real channel with its own configured? arm" do
+    channels = HumanMessageCaptureCoverage::CHANNEL_BY_GENESIS.values
+
+    assert_equal HumanMessage::CHANNELS.sort, channels.sort
+    HumanMessageCaptureCoverage::CHANNEL_BY_GENESIS.each_key do |genesis|
+      assert_includes SessionGenesis::KEYS, genesis
+    end
+
+    generic_reason = HumanMessageCaptureCoverage.reason("no-such-channel")
+    generic_remedy = HumanMessageCaptureCoverage.remedy("no-such-channel")
+    channels.each do |channel|
+      assert_not_equal generic_reason, HumanMessageCaptureCoverage.reason(channel)
+      assert_not_equal generic_remedy, HumanMessageCaptureCoverage.remedy(channel)
+    end
+
+    assert_not HumanMessageCaptureCoverage.configured?("no-such-channel"),
+      "an unrecognised channel must report a gap, never a clean bill of health"
+  end
+
   test "the record exposes the gaps and answers whether silence is an answer" do
     User.update_all(slack_user_ids: [])
     slack_session = spawn_session(genesis: SessionGenesis::SLACK)

@@ -200,7 +200,10 @@
         %>
         <span class="text-xs text-gray-500 truncate">
           <% if entries.empty? %>
-            <%= capture_gaps.any? ? "none captured — and capture is not configured for this hierarchy's channel" : "none recorded anywhere in this hierarchy#{" that was searched" if hierarchy.truncated?}" %>
+            <%# The gap clause is APPENDED rather than substituted: a hierarchy can
+                be both truncated and uninstrumented, and dropping "that was
+                searched" would trade one over-claim for another. %>
+            none recorded anywhere in this hierarchy<%= " that was searched" if hierarchy.truncated? %><%= " — and capture is not configured for #{"this hierarchy's channel".pluralize(capture_gaps.size)}" if capture_gaps.any? %>
           <% else %>
             <%= pluralize(record.here_count, "message") %> in this session · <%= record.elsewhere_count %> elsewhere in the hierarchy<%= " (truncated tree — not every session was searched)" if hierarchy.truncated? %>
           <% end %>
@@ -240,7 +243,8 @@
           <% if capture_gaps.any? %>
             <p>
               Zimmer captured no human message anywhere in this hierarchy — and capture is not configured for
-              <%= capture_gaps.map(&:channel_label).to_sentence %>, one of the channels this hierarchy's work arrived
+              <%= capture_gaps.map(&:channel_label).to_sentence %>,
+              <%= capture_gaps.one? ? "one of the channels" : "channels" %> this hierarchy's work arrived
               over. Read this as <span class="font-medium">the check could not be established</span>, not as "no human
               spoke".
             </p>
