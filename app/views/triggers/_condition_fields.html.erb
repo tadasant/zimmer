@@ -90,9 +90,6 @@
         <option value="dm_message" <%= "selected" if condition.event_type == "dm_message" %>>Direct message - Any DM to Zimmer (allow-list applies)</option>
         <option value="passive_listen_thread" <%= "selected" if condition.event_type == "passive_listen_thread" %>>Passive listen: threads - Replies in threads Zimmer has joined, no @mention needed</option>
         <option value="passive_listen_channel" <%= "selected" if condition.event_type == "passive_listen_channel" %>>Passive listen: channels - Messages in channels Zimmer posted in recently</option>
-        <% if condition.deprecated_event_type? %>
-          <option value="passive_listen" selected>Passive listen (deprecated) - Both of the above at once</option>
-        <% end %>
       </select>
       <p class="mt-1 text-xs text-gray-500">Choose how this Slack condition fires. "Bot mention" and the passive-listening types only process messages from authorized users, and never fire on Zimmer's own or another app's messages. The two passive types are separate so a trigger can carry either or both — its conditions are ORed. "Threads" has no time limit; "channels" applies while Zimmer has posted at the top level of that channel within the last 6 hours.</p>
     </div>

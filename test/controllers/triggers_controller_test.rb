@@ -219,7 +219,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "select[name=?]:not([disabled]) option[selected][value=?]", name, "no_sessions_in_progress", 1
   end
 
-  test "new form offers the DM and passive-listening event types, and not the deprecated one" do
+  test "new form offers the DM and passive-listening event types, and not the removed alias" do
     get new_trigger_path
     assert_response :success
 
@@ -227,18 +227,40 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
       assert_select "option[value=passive_listen_thread]", 1
       assert_select "option[value=passive_listen_channel]", 1
       assert_select "option[value=dm_message]", 1
-      # The combined type still works for triggers that already name it, but a new
-      # condition should never be created with it.
       assert_select "option[value=passive_listen]", 0
     end
   end
 
-  test "the edit form keeps the deprecated event type selectable for a condition that has it" do
+  test "the edit form offers only the two passive halves, never the removed alias" do
     trigger = triggers(:passive_listen_all_channels_trigger)
     get edit_trigger_path(trigger)
     assert_response :success
 
-    assert_select "option[value=passive_listen][selected]", 1
+    assert_select "option[value=passive_listen_thread]", 1
+    assert_select "option[value=passive_listen_channel]", 1
+    assert_select "option[value=passive_listen]", 0
+  end
+
+  test "submitting the removed passive_listen alias is rejected with a comprehensible error" do
+    trigger = triggers(:passive_listen_all_channels_trigger)
+    condition = trigger.trigger_conditions.first
+
+    patch trigger_path(trigger), params: {
+      trigger: {
+        name: trigger.name,
+        trigger_conditions_attributes: [
+          {
+            id: condition.id,
+            condition_type: "slack",
+            configuration: { channel_id: "", channel_name: "", event_type: "passive_listen" }
+          }
+        ]
+      }
+    }
+
+    assert_response :unprocessable_entity
+    assert_match "event_type must be one of", response.body
+    assert_equal "passive_listen_thread", condition.reload.event_type
   end
 
   # The form renders none of the poller's cursor keys, so without
@@ -262,14 +284,14 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
           {
             id: condition.id,
             condition_type: "slack",
-            configuration: { channel_id: "", channel_name: "", event_type: "passive_listen" }
+            configuration: { channel_id: "", channel_name: "", event_type: "passive_listen_thread" }
           }
         ]
       }
     }
 
     condition.reload
-    assert_equal "passive_listen", condition.event_type
+    assert_equal "passive_listen_thread", condition.event_type
     assert_equal({ "C_GENERAL" => "1704067200.000000" }, condition.channel_timestamps)
     assert_equal({ "C_GENERAL:1704060000.000000" => "1704067100.000000" }, condition.thread_timestamps)
     assert_equal({ "C_GENERAL" => "1704067000.000000" }, condition.bot_activity_timestamps)
