@@ -120,7 +120,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     # Regression test for bug where prompts starting with dashes (e.g., "---- forked")
     # would be interpreted as unknown CLI options
     command = @adapter.send(:build_command,
-      prompt: "How many twist channels do I have?",
+      prompt: "How many linear issues do I have?",
       session_id: "session-1",
       mcp_config_path: "/path/to/mcp.json",
       append_system_prompt: nil,
@@ -129,7 +129,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
 
     # Verify the prompt comes after "--" (end of options marker)
     double_dash_index = command.index("--")
-    prompt_index = command.index("How many twist channels do I have?")
+    prompt_index = command.index("How many linear issues do I have?")
 
     assert_not_nil double_dash_index, "-- should be in command"
     assert_not_nil prompt_index, "Prompt should be in command"
@@ -146,7 +146,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
       "--session-id",
       "session-1",
       "--",
-      "How many twist channels do I have?"
+      "How many linear issues do I have?"
     ]
 
     assert_equal expected, command

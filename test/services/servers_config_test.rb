@@ -17,9 +17,9 @@ class ServersConfigTest < ActiveSupport::TestCase
     assert_includes server_names, "playwright-custom"
     assert_includes server_names, "context7"
     assert_includes server_names, "linear"
-    assert_includes server_names, "twist-wolfbot"
+    assert_includes server_names, "slack-workspace"
     assert_includes server_names, "figma"
-    assert_includes server_names, "tally"
+    assert_includes server_names, "image-diff"
     assert_includes server_names, "notion"
     assert_includes server_names, "zimmer"
     assert_includes server_names, "zimmer-sessions"
@@ -56,8 +56,8 @@ class ServersConfigTest < ActiveSupport::TestCase
     assert ServersConfig.exists?("playwright-custom")
     assert ServersConfig.exists?("context7")
     assert ServersConfig.exists?("linear")
-    assert ServersConfig.exists?("tally")
-    assert ServersConfig.exists?("twist-wolfbot")
+    assert ServersConfig.exists?("image-diff")
+    assert ServersConfig.exists?("slack-workspace")
   end
 
   test "should return false for non-existent server" do
@@ -269,7 +269,7 @@ class ServersConfigTest < ActiveSupport::TestCase
     assert config.key?("playwright-custom")
     assert config.key?("context7")
     assert config.key?("linear")
-    assert config.key?("tally")
+    assert config.key?("slack-workspace")
   end
 
   # TTL/cache invalidation lives in AirCatalogService and is exercised in

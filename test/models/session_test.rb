@@ -276,7 +276,7 @@ class SessionTest < ActiveSupport::TestCase
   end
 
   test "should persist mcp_servers as JSON array" do
-    servers = [ "playwright-custom", "twist-wolfbot", "context7" ]
+    servers = [ "playwright-custom", "image-diff", "context7" ]
     # Using create_session helper from FixtureHelpers
     session = create_session(
       prompt: "Test",
@@ -435,7 +435,7 @@ class SessionTest < ActiveSupport::TestCase
 
   test "should accept array mcp_servers" do
     session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "claude_code", status: :waiting)
-    session.mcp_servers = [ "playwright-custom", "twist-wolfbot" ]
+    session.mcp_servers = [ "playwright-custom", "image-diff" ]
     assert session.valid?
   end
 
@@ -934,7 +934,7 @@ class SessionTest < ActiveSupport::TestCase
     session = sessions(:running)
     original_servers = session.mcp_servers.dup
     # Change to different servers
-    session.mcp_servers = [ "playwright-custom", "context7", "twist-wolfbot" ]
+    session.mcp_servers = [ "playwright-custom", "context7", "image-diff" ]
     session.save!
 
     # Verify mcp_servers changed
@@ -3616,10 +3616,10 @@ class SessionTest < ActiveSupport::TestCase
     session = Session.create!(
       git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed,
       metadata: { "failure_reason" => "mcp_connection_failed" },
-      custom_metadata: { "mcp_failed_servers" => [ { "name" => "good-eggs", "error" => "spawn ENOENT" }, { "name" => "tally", "error" => "401" } ] }
+      custom_metadata: { "mcp_failed_servers" => [ { "name" => "good-eggs", "error" => "spawn ENOENT" }, { "name" => "bad-eggs", "error" => "401" } ] }
     )
-    assert_equal "MCP server(s) failed to connect: good-eggs, tally", session.failure_summary
-    assert_equal "good-eggs: spawn ENOENT; tally: 401", session.failure_detail
+    assert_equal "MCP server(s) failed to connect: good-eggs, bad-eggs", session.failure_summary
+    assert_equal "good-eggs: spawn ENOENT; bad-eggs: 401", session.failure_detail
   end
 
   test "failure_summary falls back to generic text when no MCP servers recorded" do
@@ -3634,9 +3634,9 @@ class SessionTest < ActiveSupport::TestCase
   test "failure_summary names servers for oauth_required" do
     session = Session.create!(
       git_root: "https://github.com/test/repo.git", prompt: "Test", status: :failed,
-      metadata: { "failure_reason" => "oauth_required", "oauth_required_servers" => [ { "server_name" => "tally" } ] }
+      metadata: { "failure_reason" => "oauth_required", "oauth_required_servers" => [ { "server_name" => "bad-eggs" } ] }
     )
-    assert_equal "OAuth authorization required: tally", session.failure_summary
+    assert_equal "OAuth authorization required: bad-eggs", session.failure_summary
   end
 
   # #127: the variable names were already persisted by AgentSessionJob and had
