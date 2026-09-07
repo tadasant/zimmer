@@ -287,21 +287,30 @@ class HealthController < ApplicationController
     minutes.to_i.minutes
   end
 
-  # The concern challenges every refusal. This surface has two client populations and they
-  # want different answers.
+  # Refusing and *challenging* are two different things, and on this surface the difference
+  # decides whether the operator gets a usable answer or a dead button. Three cases.
   #
-  # A browser gets the challenge: the dashboard's maintenance controls are `button_to` and
-  # `form_with` submissions, and a 401 carrying `WWW-Authenticate: Basic` makes the browser
-  # prompt once and re-send the POST with the credential — after which it is cached for the
-  # origin and realm, so the operator types it once for `/health` and `/supervisor` both.
+  # **HTML, realm configured** — challenge. The dashboard's maintenance controls are
+  # `button_to` and `form_with` submissions, and a 401 carrying `WWW-Authenticate: Basic`
+  # makes the browser prompt and re-send the POST with the credential.
   #
-  # A JSON client gets a body and no challenge. It is a script, so a challenge header would
-  # buy it nothing, and omitting it keeps a same-origin `fetch` from opening a native
-  # sign-in dialog on a page nobody was leaving — the failure `SpeculativeRequest` exists
-  # for on the Administrate side.
+  # **HTML, realm NOT configured** — still a 401, but refused *without* the challenge and
+  # with a body the operator can actually read. A challenge here would open a native
+  # sign-in dialog that *no* credential can satisfy, because there is nothing to compare
+  # against; the operator would type passwords at it until they gave up. And the
+  # explanation would never reach them either: `request_http_basic_authentication` renders
+  # `text/plain`, while Turbo renders a form submission's non-redirect body only when it is
+  # `text/html` — so a cancelled dialog leaves a button that does nothing at all. Rendering
+  # HTML keeps the status honest and puts the reason on screen. Same reasoning as
+  # `Supervisor::ApplicationController`'s unconfigured branch, which renders a page instead
+  # of a prompt.
   #
-  # Either way the message names the variable, so a refusal on an unconfigured deployment is
-  # diagnosable from the response rather than only from the log.
+  # **JSON** — a body and no challenge either way. It is a script, so a challenge buys it
+  # nothing, and omitting it keeps a same-origin `fetch` from opening a native sign-in
+  # dialog on a page nobody was leaving.
+  #
+  # Every branch names the variable, so an unconfigured deployment is diagnosable from the
+  # response and not only from the log.
   def refuse_operator(realm_configured: true)
     message = if realm_configured
       "This maintenance action needs the operator credential (HTTP Basic, the same one " \
@@ -313,7 +322,13 @@ class HealthController < ApplicationController
     end
 
     respond_to do |format|
-      format.html { request_http_basic_authentication(OperatorHttpBasicAuth::REALM, message) }
+      format.html do
+        if realm_configured
+          request_http_basic_authentication(OperatorHttpBasicAuth::REALM, message)
+        else
+          render html: message, status: :unauthorized
+        end
+      end
       format.json { render json: { error: "Unauthorized", message: message }, status: :unauthorized }
     end
   end

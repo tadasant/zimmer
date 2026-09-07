@@ -119,13 +119,25 @@ class HealthControllerOperatorAuthTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
   end
 
-  test "the refusal on an unconfigured realm names the variable so it is diagnosable" do
+  # An unconfigured realm refuses WITHOUT challenging, and says why in HTML. A challenge
+  # there would open a browser dialog that no credential can satisfy, and its text/plain
+  # body is a body Turbo will not render — between them, a button that does nothing.
+  test "the refusal on an unconfigured realm explains itself instead of prompting" do
     ENV.delete(PASSWORD_ENV)
 
     post cleanup_processes_health_path
 
     assert_response :unauthorized
+    assert_nil response.headers["WWW-Authenticate"]
+    assert_equal "text/html", response.media_type
     assert_match PASSWORD_ENV, response.body
+  end
+
+  test "a configured realm does challenge, so the browser prompts and re-sends the POST" do
+    post cleanup_processes_health_path
+
+    assert_response :unauthorized
+    assert_match(/Basic realm=/, response.headers["WWW-Authenticate"].to_s)
   end
 
   test "SUPERVISOR_USERNAME overrides the default username" do
@@ -136,6 +148,31 @@ class HealthControllerOperatorAuthTest < ActionDispatch::IntegrationTest
 
     post cleanup_processes_health_path, headers: basic_auth_headers("supervisor", PASSWORD)
     assert_response :unauthorized
+  end
+
+  # === The Accept headers real callers send ===
+
+  # The dashboard's controls are `button_to` / `form_with`, so every genuine browser refusal
+  # arrives with Turbo's Accept list rather than the plain `text/html` the other tests send.
+  # `turbo_stream` is not a registered mime here, so `respond_to` must fall through to the
+  # html branch; if it ever stopped doing so the refusal would become a bodyless 406 via
+  # ApplicationController#unknown_format — a silent failure, hence the assertion.
+  TURBO_ACCEPT = "text/vnd.turbo-stream.html, text/html, application/xhtml+xml"
+
+  test "a Turbo form submission is challenged, not answered with a 406" do
+    post cleanup_processes_health_path, headers: { "Accept" => TURBO_ACCEPT }
+
+    assert_response :unauthorized
+    assert_match(/Basic realm=/, response.headers["WWW-Authenticate"].to_s)
+  end
+
+  test "a Turbo form submission against an unconfigured realm gets the explanation" do
+    ENV.delete(PASSWORD_ENV)
+
+    post cleanup_processes_health_path, headers: { "Accept" => TURBO_ACCEPT }
+
+    assert_response :unauthorized
+    assert_match PASSWORD_ENV, response.body
   end
 
   # === A JSON client gets a body, not a browser prompt ===

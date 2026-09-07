@@ -16,14 +16,19 @@
 # `/health` gate is aimed at is not an outsider — it is an agent session, which runs on the
 # production host, inside the tailnet, holding a valid `API_KEYS` entry in its own
 # environment and in its `.mcp.json`. So a gate keyed on `API_KEYS` (the REST and MCP
-# surfaces' credential) would gate nothing against it. `SUPERVISOR_PASSWORD` is the one
-# credential the fleet's own sessions do not hold, because `CliSpawnEnv` clears it out of
-# every spawned process's environment. Add it to that blocklist if you ever move this realm
-# onto a different variable, or the gate quietly stops being one.
+# surfaces' credential) would gate nothing against it.
 #
-# Sharing one realm string across both surfaces is also deliberate on the human side: a
-# browser caches Basic credentials per origin *and realm*, so an operator who has opened
-# `/supervisor` is already carrying what `/health`'s buttons ask for.
+# `SUPERVISOR_PASSWORD` is the one credential the fleet's own sessions do not hold — but only
+# because `CliSpawnEnv#clear_inherited_env_vars` names it, and that coupling is the whole
+# gate. Sessions run inside the web tier's own container, so anything in `env.secret` reaches
+# them unless it is cleared on spawn. **If you move this realm onto a different variable, add
+# that variable to `CliSpawnEnv`'s list in the same commit**, or the gate quietly stops being
+# one the moment the secret is provisioned.
+#
+# Sharing one realm string across both surfaces is deliberate on the human side too, though
+# the benefit is modest: browsers scope preemptive Basic credentials by origin *and path
+# prefix*, so opening `/supervisor` does not stop `/health` prompting. What it buys is one
+# credential to remember rather than two.
 #
 # **It fails closed.** With `SUPERVISOR_PASSWORD` unset or blank every gated request is
 # refused, and the refusal is logged with the variable's name in it. An unconfigured
@@ -59,8 +64,11 @@ module OperatorHttpBasicAuth
   # Refusing and *challenging* are two different things. The 401 is the gate saying no; the
   # `WWW-Authenticate: Basic` header on it is a separate instruction — "ask the human for a
   # credential". Hosts that have a reason not to challenge (a speculative request, a JSON
-  # client) override this.
-  def refuse_operator(realm_configured: true)
+  # client, a realm with no credential configured to satisfy it) override this.
+  #
+  # `realm_configured` is deliberately unused here: the base behaviour is to challenge either
+  # way, and it exists so an override can tell the two refusals apart. Both hosts override.
+  def refuse_operator(realm_configured: true) # rubocop:disable Lint/UnusedMethodArgument
     request_http_basic_authentication(REALM)
   end
 

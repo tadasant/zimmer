@@ -377,7 +377,7 @@ No model declares `encrypts`; there is no `active_record.encryption` config. Ant
 refresh tokens, MCP OAuth access and refresh tokens, client secrets, and PKCE verifiers are all
 plaintext columns — and the [`/supervisor` panel](/auth/overview/) renders them as editable resources
 behind nothing more than one shared HTTP Basic credential. That realm at least
-[fails closed](/auth/overview/#the-one-exception-supervisor-is-behind-http-basic): with
+[fails closed](/auth/overview/#the-exception-the-operator-realm-in-front-of-two-surfaces): with
 `SUPERVISOR_PASSWORD` unset or blank the panel is shut, not open. The columns themselves are still
 plaintext. ([#43](https://github.com/tadasant/zimmer/issues/43))
 :::
