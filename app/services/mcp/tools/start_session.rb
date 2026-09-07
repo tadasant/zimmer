@@ -7,7 +7,9 @@ module Mcp
     #
     # A restricted connection (allowed_agent_roots) may only spawn one of its
     # allowed roots, and must use that root's exact default MCP servers — the
-    # same lock the decoupled server enforced from ALLOWED_AGENT_ROOTS.
+    # same lock the decoupled server enforced from ALLOWED_AGENT_ROOTS. It may
+    # not name `plugins` at all, because a plugin bundles servers of its own and
+    # would otherwise reach around that lock.
     class StartSession < Tool
       include PrecedenceArgument
 
@@ -44,9 +46,9 @@ module Mcp
       MCP_SERVERS_DESC = <<~TEXT.strip
         The session's MCP servers, by name. A non-empty list #{format(REPLACES_DEFAULTS, "default_mcp_servers", "default_mcp_servers")} Omit the parameter to take the root's defaults unchanged — the right call unless you have a reason to narrow. Pass [] to attach none of the catalog's servers; Zimmer's own zimmer-self-session is injected either way.
 
-        Dropping a default silently is how sessions lose a capability they were built around: a root's skill can depend on a root's server (an upload skill on a filesystem server, say), and the skill still loads when the server is gone — the session then fails at the point of use, mid-task, with no workaround. If you are unsure whether a default is needed, keep it.
+Dropping a default silently is how sessions lose a capability they were built around: a root's skill can depend on a root's server (an upload skill on a filesystem server, say), and the skill still loads when the server is gone — the session then fails at the point of use, mid-task, with no workaround. If you are unsure whether a default is needed, keep it.
 
-        Example: an agent root defaulting to ["github-development", "slack"] and a task that needs no Slack takes mcp_servers: ["github-development"] — the full default list minus the one server, not a list written from the task's needs.
+Example: an agent root defaulting to ["github-development", "slack"] and a task that needs no Slack takes mcp_servers: ["github-development"] — the full default list minus the one server, not a list written from the task's needs.
 
 On a connection restricted to specific agent roots you cannot narrow at all: pass the root's defaults exactly, or omit the parameter.
       TEXT

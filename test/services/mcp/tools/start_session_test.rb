@@ -412,7 +412,7 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
   end
 
   # Hooks carry no privilege, so a restricted connection constrains mcp_servers
-  # only and leaves the hook list to the caller.
+  # and plugins and leaves the hook list to the caller.
   test "a restricted connection may narrow the hooks it spawns with" do
     stub_root_with_defaults
     tool = Mcp::Tools::StartSession.new(
@@ -433,9 +433,10 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
   # --- the plugins bypass of the agent-root MCP lock (#334) ---
   #
   # A plugin bundles MCP servers, so naming one at launch reaches the servers
-  # `mcp_servers` is locked out of. These four pin the whole guard: the bypass
-  # itself, that it is the servers that make it one, and both halves of the
-  # omitted-vs-[] distinction the same call site draws for every artifact list.
+  # `mcp_servers` is locked out of. These pin the whole guard: the bypass itself,
+  # that it is the servers that make it one, both halves of the omitted-vs-[]
+  # distinction the same call site draws for every artifact list, and that skills
+  # — which bundle nothing — stay narrowable.
 
   test "a restricted connection cannot name plugins at launch" do
     stub_root_with_defaults
@@ -449,17 +450,39 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
 
     assert_match(/"plugins" parameter is not allowed/, error.message)
     assert_match(/Plugins can add MCP servers/, error.message)
+    assert_match(/default plugins: \[screenshots-videos\]/, error.message)
+  end
+
+  # The gate is `key?`, not a shape test, so an explicit null is refused with the
+  # rest — the same reading the mcp_servers gate beside it already takes.
+  test "a restricted connection cannot pass an explicit null plugins either" do
+    stub_root_with_defaults
+    tool = Mcp::Tools::StartSession.new(
+      context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
+    )
+
+    error = assert_raises(Mcp::ToolError) do
+      tool.call("agent_root" => "test-root", "title" => "x", "plugins" => nil)
+    end
+
+    assert_match(/"plugins" parameter is not allowed/, error.message)
   end
 
   # The bypass in full: the same connection, the same server, reached the direct
-  # way and then the indirect one. `screenshots-videos` bundles
-  # playwright-custom and remote-fs-screenshots, and before this guard the
-  # spawned session held both.
+  # way and then the indirect one. The plugin here is deliberately NOT one of the
+  # root's defaults — figma-design-workflow bundles figma, image-diff, svg-tracer
+  # and playwright-custom, none of which this root grants — so what the second
+  # call asks for is a genuine escalation and not a restatement of the omitted
+  # case. Before this guard it succeeded.
   test "the plugin route cannot reach a server the mcp_servers route is refused" do
     stub_root_with_defaults
     tool = Mcp::Tools::StartSession.new(
       context: Mcp::Context.new(tool_groups: "sessions", allowed_agent_roots: "test-root")
     )
+
+    escalation = PluginsConfig.find("figma-design-workflow").mcp_servers
+    assert_includes escalation, "playwright-custom"
+    assert_empty escalation & (@root_with_defaults.default_mcp_servers + @root_with_defaults.default_plugins)
 
     direct = assert_raises(Mcp::ToolError) do
       tool.call("agent_root" => "test-root", "title" => "direct",
@@ -469,7 +492,7 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
 
     assert_no_difference "Session.count" do
       assert_raises(Mcp::ToolError) do
-        tool.call("agent_root" => "test-root", "title" => "indirect", "plugins" => [ "screenshots-videos" ])
+        tool.call("agent_root" => "test-root", "title" => "indirect", "plugins" => [ "figma-design-workflow" ])
       end
     end
   end
@@ -562,7 +585,7 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     SkillsConfig.stubs(:exists?).returns(true)
     HooksConfig.stubs(:exists?).returns(true)
     PluginsConfig.stubs(:exists?).returns(true)
-    root
+    @root_with_defaults = root
   end
 
   def restricted_tool
