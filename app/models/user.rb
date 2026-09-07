@@ -76,6 +76,12 @@ class User < ApplicationRecord
 
   scope :alphabetical, -> { order(:key) }
 
+  # Rows that can actually be resolved from a Slack user ID. Read by
+  # HumanMessageCaptureCoverage to answer "could a Slack message have been
+  # captured at all?" — with none of these, `for_slack_user_id` resolves nobody
+  # and the human-message record is blind to Slack rather than empty of it.
+  scope :with_slack_mapping, -> { where("cardinality(slack_user_ids) > 0") }
+
   class << self
     # The human behind a stable identity key, or nil when nobody holds it.
     def for_key(key)

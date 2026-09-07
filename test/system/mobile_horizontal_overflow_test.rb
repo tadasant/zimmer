@@ -542,6 +542,35 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert clipped <= 1, "#{label} is clipped by #{clipped}px instead of wrapping"
   end
 
+  # The capture-gap notice is a prose block with a link, rendered above the human
+  # messages when an input channel this hierarchy came in through has no roster
+  # mapping behind it (#658). It is the widest thing the Human messages panel can
+  # draw — several sentences, an inline link, and no truncation anywhere — so it
+  # gets the same geometry check the hierarchy nodes get.
+  test "the human-message capture gap notice fits a phone" do
+    User.update_all(slack_user_ids: [])
+    session = with_agent_root(create_session(status: :running), "zimmer")
+    session.update_column(:genesis, SessionGenesis::SLACK)
+
+    visit session_path(session)
+    assert_text "Human messages"
+    assert_text "Capture is not configured for Slack"
+
+    panel = "[data-capture-gap='#{HumanMessage::SLACK}']"
+    scroll_into_center(find(panel))
+    page.save_screenshot("tmp/screenshots/proof-capture-gap-375.png")
+
+    assert_no_horizontal_overflow("session detail with a human-message capture gap")
+
+    past_edge = elements_past_right_edge(panel)
+    assert_empty past_edge,
+      "the capture-gap notice ends past the #{MOBILE_WIDTH}px viewport:\n  #{past_edge.join("\n  ")}"
+
+    # The remedy link is the one control in the block, and a control the reader
+    # cannot reach is the failure this whole test file is about.
+    assert_selector "#{panel} a", text: "Open the roster"
+  end
+
   # The "drawn under" pill is a SIXTH control on a node row, and it only appears
   # on the rare node whose indentation is not a spawn edge — so the test above,
   # whose uncle is deliberately a sibling, never renders it. This builds the

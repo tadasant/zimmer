@@ -63,7 +63,36 @@ class Mcp::Tools::GetSessionProvenanceTest < ActiveSupport::TestCase
 
     assert_includes output, "### Human Messages"
     assert_includes output, "- **Authored in this session:** 0"
-    assert_includes output, "_No message anywhere in this hierarchy was authored by a named human._"
+    assert_includes output, "_No message anywhere in this hierarchy was authored by a named human. Every input channel this hierarchy came in through was instrumented, so this is an affirmative absence"
+  end
+
+  # #658, on the surface a merge gate most often reads. `get_session` renders the
+  # record as a SUMMARY, and the gap bullet has to survive that: a summary that
+  # dropped it would restore exactly the conflation this fixes.
+  test "a slack-origin hierarchy with no Slack mapping is not an affirmative absence" do
+    User.update_all(slack_user_ids: [])
+    session = create_session
+    session.update_column(:genesis, SessionGenesis::SLACK)
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "### Human Messages"
+    assert_includes output, "- **Authored in this session:** 0"
+    assert_includes output, "- **Capture is NOT configured for Slack, which 1 session in this hierarchy came in through** (genesis `slack`: ##{session.id})."
+    assert_includes output, "Fill in the human's Slack user ID at /supervisor/users."
+    assert_includes output, "Read this as **the check could not be established**, NOT as \"no human spoke\""
+    refute_includes output, "No message anywhere in this hierarchy was authored by a named human"
+  end
+
+  test "with a Slack user ID mapped the same hierarchy is an affirmative absence again" do
+    users(:tadasant).update!(slack_user_ids: [ "U123HUMAN" ])
+    session = create_session
+    session.update_column(:genesis, SessionGenesis::SLACK)
+
+    output = @tool.call("id" => session.id)
+
+    refute_includes output, "Capture is NOT configured"
+    assert_includes output, "_No message anywhere in this hierarchy was authored by a named human. Every input channel this hierarchy came in through was instrumented, so this is an affirmative absence"
   end
 
   test "a recorded message shows author, channel, timestamp and content" do

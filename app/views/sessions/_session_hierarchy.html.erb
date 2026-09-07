@@ -16,6 +16,11 @@
 <% record = agent_session.human_message_record %>
 <% hierarchy = record.hierarchy %>
 <% entries = record.entries %>
+<%# Channels this hierarchy came in through that capture cannot write for. An
+    empty record means the opposite thing depending on this, so it is rendered
+    in the summary line as well as in the body — a reader who never expands the
+    section still has to be told which of the two they are looking at (#658). %>
+<% capture_gaps = record.capture_gaps %>
 
 <%# Nested divide-y: the panel group divides its four sections, this divides the
     two provenance sections from each other. %>
@@ -174,7 +179,7 @@
   </details>
 
   <%# ---- Human messages across the hierarchy ---- %>
-  <details <%= "open" if entries.any? %>>
+  <details <%= "open" if entries.any? || capture_gaps.any? %>>
     <summary class="px-4 sm:px-6 py-3 cursor-pointer select-none flex items-center justify-between gap-3 hover:bg-gray-50">
       <span class="flex items-center gap-2 min-w-0">
         <svg class="h-4 w-4 flex-shrink-0 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
@@ -195,7 +200,10 @@
         %>
         <span class="text-xs text-gray-500 truncate">
           <% if entries.empty? %>
-            none recorded anywhere in this hierarchy<%= " that was searched" if hierarchy.truncated? %>
+            <%# The gap clause is APPENDED rather than substituted: a hierarchy can
+                be both truncated and uninstrumented, and dropping "that was
+                searched" would trade one over-claim for another. %>
+            none recorded anywhere in this hierarchy<%= " that was searched" if hierarchy.truncated? %><%= " — and capture is not configured for #{"this hierarchy's channel".pluralize(capture_gaps.size)}" if capture_gaps.any? %>
           <% else %>
             <%= pluralize(record.here_count, "message") %> in this session · <%= record.elsewhere_count %> elsewhere in the hierarchy<%= " (truncated tree — not every session was searched)" if hierarchy.truncated? %>
           <% end %>
@@ -205,9 +213,48 @@
     </summary>
 
     <div class="border-t border-gray-200">
+      <%# The gap notice sits above the entries, not only in the empty branch: a
+          hierarchy can hold web-UI messages while being blind to the Slack half
+          of itself, and then the counts are a floor rather than a total. %>
+      <% capture_gaps.each do |gap| %>
+        <div class="px-4 sm:px-6 py-3 bg-amber-50 border-b border-amber-200 text-sm text-amber-900" data-capture-gap="<%= gap.channel %>">
+          <p class="font-medium">
+            Capture is not configured for <%= gap.channel_label %> — which
+            <%= pluralize(gap.session_count, "session") %> in this hierarchy came in through.
+          </p>
+          <p class="mt-1 text-xs text-amber-800">
+            <%= gap.reason %>
+            So the counts here are a <span class="font-medium">floor</span> for that channel: a human may have spoken
+            there and Zimmer could not see it. An absent <%= gap.channel_label %> message below is the check failing to
+            run, not evidence that nobody spoke.
+          </p>
+          <%# The remedy names /supervisor/users in prose because MCP has no links
+              to offer; here the same path is also the control, so the sentence is
+              rendered once and the link is labelled rather than repeating it. %>
+          <p class="mt-1 text-xs text-amber-800">
+            <%= gap.remedy %>
+            <%# `turbo_prefetch: false` is required on every link into the /supervisor
+                Basic realm: Turbo prefetches on hover, /supervisor answers 401 with
+                WWW-Authenticate, and the browser pops its native sign-in dialog over
+                the page. BasicAuthPrefetchTest sweeps for it. %>
+            <%= link_to "Open the roster", supervisor_users_path, data: { turbo_frame: "_top", turbo_prefetch: false }, class: "underline hover:text-amber-900" %>.
+          </p>
+        </div>
+      <% end %>
+
       <% if entries.empty? %>
         <div class="px-4 sm:px-6 py-4 text-sm text-gray-500">
-          <p>No message anywhere in this hierarchy was authored by a named human.</p>
+          <% if capture_gaps.any? %>
+            <p>
+              Zimmer captured no human message anywhere in this hierarchy — and capture is not configured for
+              <%= capture_gaps.map(&:channel_label).to_sentence %>,
+              <%= capture_gaps.one? ? "one of the channels" : "channels" %> this hierarchy's work arrived
+              over. Read this as <span class="font-medium">the check could not be established</span>, not as "no human
+              spoke".
+            </p>
+          <% else %>
+            <p>No message anywhere in this hierarchy was authored by a named human.</p>
+          <% end %>
           <p class="mt-1 text-xs text-gray-400">
             Zimmer records a message only when it can establish the human at the input boundary — the web UI, or a Slack
             message from a mapped user. Everything else that arrives as a user turn (an agent's follow-up over the API, a
