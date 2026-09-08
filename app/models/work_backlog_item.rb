@@ -145,6 +145,67 @@ class WorkBacklogItem < ApplicationRecord
     started.where(started_session_id: Session.where(status: [ :running, :waiting ]).select(:id))
   }
 
+  # The SUBSET of `in_flight` whose sessions are dormant on a spot-gate hold:
+  # started, `waiting`, and refused at the door by SpotGateService rather than
+  # queued for a worker. Reported beside `in_flight`, and deliberately still
+  # counted INSIDE it.
+  #
+  # BOTH of the gate's refusal reasons land here, and a reader must not assume
+  # the quota one. `hold!` writes `decision.reason`, which is `at_utilization_limit`
+  # OR `fleet_at_cap`, and #held_sessions does not filter on it — so this counts a
+  # session waiting on a quota window and one waiting on a free slot alike, which
+  # is what `get_spot_policy` already means by "held before a turn". The two
+  # invert each other's reading and nothing here can tell them apart: a fleet-cap
+  # hold means every slot is taken, so the fleet is BUSY and a pull of zero is
+  # healthy; a utilization hold means the fleet is idle behind a budget window and
+  # it is not. Anything drawing a conclusion from this number has to ask
+  # `get_spot_policy` which ceiling is holding, which is why every surface that
+  # renders it says so instead of naming a cause.
+  #
+  # WHY THIS IS NOT SUBTRACTED FROM `in_flight`, WHICH IS THE WHOLE POINT
+  #
+  # A held item looks like the parked case — nothing is advancing it, it spends
+  # no compute — and the obvious move is to cut it out of the ceiling the way
+  # `parked` is cut out. That move is wrong, and the two differ on the property
+  # the ceiling is actually about.
+  #
+  # A parked item is waiting on a PERSON: it can sit for days, and nothing the
+  # fleet does brings it back, so counting it lets finished work hold the ceiling
+  # shut. A held item is waiting on QUOTA. It is assigned, unfinished work that
+  # WILL run: SpotSessionHold re-checks it on its own backoff ladder and starts it
+  # without any pull, which is why a sustained hold is a wait and not a deadlock.
+  # Dropping it from the ceiling would let the groomer pull fresh items into a
+  # fleet that cannot start them — growing the held pile so that everything
+  # resumes at once the moment the budget refills, straight back over the pacing
+  # curve the hold exists to enforce. The ceiling bounds ASSIGNED work, not
+  # running processes, and a held item is assigned.
+  #
+  # So the defect this fixes is not the arithmetic. It is that a pull of zero
+  # could not be read: "the ceiling is full of work being done" and "the ceiling
+  # is full of work the gate has never started" are the same number, and the
+  # second one is the fleet waiting on a budget window while the report says
+  # healthy. This count is what tells them apart.
+  #
+  # Named `spot_held`, not `held`, because the Issues page already says "held" of
+  # an issue carrying `Issues::Board::HOLD_LABEL` — refused by the ISSUE WORK
+  # gate, a different gate with a different meaning.
+  #
+  # SpotSessionHold.held_sessions is the predicate, rather than a second one
+  # spelled out here, so this count and the one `get_spot_policy` and /inference
+  # report cannot drift. Two consequences come with it and are deliberate: a
+  # session also carrying a ceiling pause or an auth-outage park belongs to those
+  # populations and is not counted here, and a session held before it was promoted
+  # to `priority` still carries the marker (SpotSessionHold#superseded_by_promotion?)
+  # and so is still counted. Both match what the operator already reads elsewhere.
+  #
+  # The first of those has a cost worth naming: a ceiling-paused or auth-parked
+  # session is also `waiting` and also being advanced by nobody, so it stays in
+  # `in_flight` and is not split out here. This count narrows what "in flight"
+  # overstates; it does not close it. See docs/limitations.md.
+  scope :spot_held, -> {
+    started.where(started_session_id: SpotSessionHold.held_sessions.reorder(nil).select(:id))
+  }
+
   # Started items parked in `needs_input`: nothing is advancing them, and a person
   # is what they are waiting on. Rendered as its own section on the Issues page,
   # because "these are waiting on you" is the answer to "why is the queue not

@@ -57,6 +57,42 @@ class IssuesControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # The sentence that made a stalled queue read as healthy. "N an agent is still
+  # advancing" is false of a session the spot gate has never started, and with
+  # enough of them the fleet is idle behind a quota window while the page and the
+  # groomer both report a full ceiling (#1103). The header splits so the two are
+  # distinguishable on sight.
+  test "the In flight header names the ones held at the spot gate rather than calling them advanced" do
+    working = backlog_item(key: "zimmer#1")
+    working.mark_started!(session: sessions(:running), by: nil)
+    held = backlog_item(key: "zimmer#2")
+    at_the_gate = sessions(:waiting)
+    at_the_gate.update!(metadata: (at_the_gate.metadata || {}).merge(
+      SpotSessionHold::HELD_REASON => SpotGateService::UTILIZATION_REASON,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    ))
+    held.mark_started!(session: at_the_gate, by: nil)
+
+    with_github_snapshot(github_snapshot) { get issues_path }
+
+    assert_response :success
+    assert_match(/1 an agent is still advancing, 1 held at the spot gate before a turn/, response.body)
+    # Both are still in flight and both are still listed — only the reading changed.
+    assert_select "div", text: "In flight" do |labels|
+      assert_equal "2", labels.first.parent.at_css("div.tabular-nums").text.strip
+    end
+  end
+
+  test "the In flight header says only what it used to when nothing is held" do
+    backlog_item(key: "zimmer#1").mark_started!(session: sessions(:running), by: nil)
+
+    with_github_snapshot(github_snapshot) { get issues_path }
+
+    assert_response :success
+    assert_match(/1 an agent is still advancing/, response.body)
+    assert_no_match(/held at the spot gate/, response.body)
+  end
+
   test "the filters narrow the queue and are round-tripped into the promote button" do
     backlog_item(key: "zimmer#1", title: "A bug", kind: "bug")
     backlog_item(key: "zimmer#2", title: "Some tech debt", kind: "tech-debt")

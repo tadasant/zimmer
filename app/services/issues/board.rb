@@ -9,7 +9,9 @@ module Issues
   #
   #   queued    an item the issue gate cleared, waiting its turn, in rank order
   #   in flight a started item an agent is still advancing — its session is
-  #             `running` or `waiting`
+  #             `running` or `waiting`. `counts[:spot_held]` says how many of
+  #             those are dormant at the spot gate rather than being worked:
+  #             still in flight, but waiting on quota rather than on a worker
   #   parked    a started item whose session has stopped in `needs_input`: a
   #             person is what it is waiting on, usually over an open PR
   #   ended     a started item whose session archived or failed recently
@@ -141,17 +143,28 @@ module Issues
     # The count strip. Backlog counts are the whole queue, not the filtered slice —
     # a filter narrows what you read, it does not change how much work there is.
     #
-    # Exactly what the strip renders and nothing else: every entry here is a
-    # COUNT(*) on every page load, so a count the page does not show is a query
-    # nobody asked for.
+    # What the strip renders, plus the one the "In flight" header splits on
+    # (`spot_held`). Every entry here is a COUNT(*) on every page load, so a count
+    # nothing on the page shows is a query nobody asked for.
     def counts
       @counts ||= {
         queued: WorkBacklogItem.queued.count,
         in_flight: WorkBacklogItem.in_flight.count,
+        spot_held: WorkBacklogItem.spot_held.count,
         parked: WorkBacklogItem.parked.count,
         github_open: snapshot.issues.count(&:open?)
       }
     end
+
+    # The in-flight items an agent is genuinely advancing, as opposed to the ones
+    # dormant at the spot gate. The "In flight" header splits on this, because
+    # "20 an agent is still advancing" is false when 14 of them have never taken
+    # a turn — and that sentence is what made a stalled queue read as healthy.
+    #
+    # Clamped at zero. `in_flight` and `spot_held` are separate COUNT(*)s, so
+    # although a held item is always in flight at any one instant, a session
+    # reaching the gate between the two queries could otherwise render a negative.
+    def advancing_count = [ counts[:in_flight] - counts[:spot_held], 0 ].max
 
     # Queued items by resolved direction — the "labeled convergent vs divergent"
     # reading of the queue, resolved through the same chain as everything else

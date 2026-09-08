@@ -39,7 +39,11 @@ class Api::V1::WorkBacklogItemsControllerTest < ActionDispatch::IntegrationTest
     assert_equal 3, body["pagination"]["total_count"]
     # `parked` is reported beside `in_flight` and is NOT part of it: the WIP
     # ceiling is computed against the number an agent is still advancing.
-    assert_equal({ "queued" => 3, "started" => 2, "removed" => 0, "in_flight" => 1, "parked" => 1, "pinned" => 0 },
+    # `spot_held` is reported beside both and IS part of `in_flight` — the subset
+    # of it the spot gate is holding before a turn, which is what tells a pull of
+    # zero against a busy fleet from one against a fleet idle behind quota.
+    assert_equal({ "queued" => 3, "started" => 2, "removed" => 0, "in_flight" => 1,
+                   "spot_held" => 0, "parked" => 1, "pinned" => 0 },
                  body["counts"])
     assert_equal 3, body.dig("ranking", "bands").size
   end
