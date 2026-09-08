@@ -150,6 +150,18 @@ class WorkBacklogItem < ApplicationRecord
   # queued for a worker. Reported beside `in_flight`, and deliberately still
   # counted INSIDE it.
   #
+  # BOTH of the gate's refusal reasons land here, and a reader must not assume
+  # the quota one. `hold!` writes `decision.reason`, which is `at_utilization_limit`
+  # OR `fleet_at_cap`, and #held_sessions does not filter on it — so this counts a
+  # session waiting on a quota window and one waiting on a free slot alike, which
+  # is what `get_spot_policy` already means by "held before a turn". The two
+  # invert each other's reading and nothing here can tell them apart: a fleet-cap
+  # hold means every slot is taken, so the fleet is BUSY and a pull of zero is
+  # healthy; a utilization hold means the fleet is idle behind a budget window and
+  # it is not. Anything drawing a conclusion from this number has to ask
+  # `get_spot_policy` which ceiling is holding, which is why every surface that
+  # renders it says so instead of naming a cause.
+  #
   # WHY THIS IS NOT SUBTRACTED FROM `in_flight`, WHICH IS THE WHOLE POINT
   #
   # A held item looks like the parked case — nothing is advancing it, it spends
@@ -185,6 +197,11 @@ class WorkBacklogItem < ApplicationRecord
   # populations and is not counted here, and a session held before it was promoted
   # to `priority` still carries the marker (SpotSessionHold#superseded_by_promotion?)
   # and so is still counted. Both match what the operator already reads elsewhere.
+  #
+  # The first of those has a cost worth naming: a ceiling-paused or auth-parked
+  # session is also `waiting` and also being advanced by nobody, so it stays in
+  # `in_flight` and is not split out here. This count narrows what "in flight"
+  # overstates; it does not close it. See docs/limitations.md.
   scope :spot_held, -> {
     started.where(started_session_id: SpotSessionHold.held_sessions.reorder(nil).select(:id))
   }

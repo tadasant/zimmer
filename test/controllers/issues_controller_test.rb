@@ -76,7 +76,7 @@ class IssuesControllerTest < ActionDispatch::IntegrationTest
     with_github_snapshot(github_snapshot) { get issues_path }
 
     assert_response :success
-    assert_match(/1 an agent is still advancing, 1 held at the spot gate waiting on quota/, response.body)
+    assert_match(/1 an agent is still advancing, 1 held at the spot gate before a turn/, response.body)
     # Both are still in flight and both are still listed — only the reading changed.
     assert_select "div", text: "In flight" do |labels|
       assert_equal "2", labels.first.parent.at_css("div.tabular-nums").text.strip

@@ -148,14 +148,34 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
                  "a held item still holds its WIP slot — it is waiting on quota, not on a person"
   end
 
+  # `waiting` is half the predicate and this is the half that bites: the hold
+  # marker OUTLIVES the hold until `clear` drops it, so a session that was held,
+  # got through, and has since parked or archived still carries it. Counting one
+  # would report finished work as a fleet stuck at the gate.
   test "spot_held is empty when nothing is held, and never counts a parked or ended session" do
     backlog_item.mark_started!(session: sessions(:waiting), by: nil)
     backlog_item.mark_started!(session: sessions(:running), by: nil)
-    backlog_item.mark_started!(session: sessions(:needs_input), by: nil)
-    backlog_item.mark_started!(session: sessions(:archived), by: nil)
+    backlog_item.mark_started!(session: marked_but_not_waiting(sessions(:needs_input)), by: nil)
+    backlog_item.mark_started!(session: marked_but_not_waiting(sessions(:archived)), by: nil)
 
     assert_empty WorkBacklogItem.spot_held,
-                 "a session merely queued for a worker is not held at the gate"
+                 "a session merely queued for a worker is not held, and neither is one carrying a stale marker"
+  end
+
+  # Both refusal reasons land in this population, deliberately: it is the same
+  # "held before a turn" figure `get_spot_policy` reports, and nothing here can
+  # tell a spent quota window from a full fleet. Every surface that renders the
+  # count says so rather than naming a cause.
+  test "spot_held counts a fleet-cap hold as well as a quota one" do
+    capped = backlog_item
+    at_the_cap = sessions(:waiting)
+    at_the_cap.update!(metadata: (at_the_cap.metadata || {}).merge(
+      SpotSessionHold::HELD_REASON => SpotGateService::FLEET_CAP_REASON,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    ))
+    capped.mark_started!(session: at_the_cap, by: nil)
+
+    assert_equal [ capped.id ], WorkBacklogItem.spot_held.pluck(:id)
   end
 
   # The marker alone is not the predicate: SpotSessionHold.held? also requires the
@@ -295,6 +315,15 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
 
   # A session dormant at the spot gate, in the shape SpotSessionHold.hold! leaves:
   # `waiting`, with the hold reason on its metadata.
+  # A session carrying a hold marker it has outlived, in some status other than
+  # `waiting` — the shape `clear` has not caught up with yet.
+  def marked_but_not_waiting(session)
+    session.update!(metadata: (session.metadata || {}).merge(
+      SpotSessionHold::HELD_REASON => SpotGateService::UTILIZATION_REASON
+    ))
+    session
+  end
+
   def spot_held_session(session)
     session.update!(metadata: (session.metadata || {}).merge(
       SpotSessionHold::HELD_REASON => SpotGateService::UTILIZATION_REASON,

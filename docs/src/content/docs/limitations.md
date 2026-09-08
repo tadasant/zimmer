@@ -6358,6 +6358,27 @@ Two cases therefore still render as an affirmative absence when they are not one
 Both would need a per-actor signal that does not exist: a Slack message from an unmapped user leaves
 no trace anywhere in Zimmer, which is exactly the property being worked around.
 
+## "In flight" still counts two dormant populations it does not name
+
+`counts.in_flight` on the work backlog is every `started` item whose session is `running` or
+`waiting`, and the WIP ceiling the groomer pulls against is computed from it. `waiting` covers more
+than "queued for a worker": it also covers sessions nothing is advancing at all.
+
+[`spot_held`](/operate/work-backlog/#spot_held-why-a-pull-of-zero-is-not-always-healthy) splits out
+the largest of those — sessions the spot gate refused before a turn — so a pull of zero can be read.
+Two others are left inside, and both are `waiting` with no agent advancing them:
+
+- a session the **spot ceiling paused mid-run**, resumed by `SpotCeilingSweepJob`
+- a session **parked on an auth outage**, resumed by `AuthOutageParkService`
+
+`SpotSessionHold.held_sessions` deliberately excludes both, because each belongs to its own
+population with its own resume owner and counting them there would double-count them. The
+consequence is that the Issues page's "an agent is still advancing" figure, and the ceiling
+arithmetic behind the pull, both overstate by however many of those exist. In practice they are
+small and short-lived where the held pile was neither — but the general form of
+[#1103](https://github.com/tadasant/zimmer/issues/1103), "a session that has never taken a turn
+should perhaps not hold a WIP slot at all, whatever the reason", is not closed.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
