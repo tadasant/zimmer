@@ -297,6 +297,9 @@ class Issues::BoardTest < ActiveSupport::TestCase
     assert_equal({ "convergent" => 1, "divergent" => 1, "unrated" => 1 }, summary.directions)
   end
 
+  # The "In flight" header splits on this: "20 an agent is still advancing" is
+  # false when most of them have never taken a turn, and that sentence is what let
+  # a fleet idle behind a quota window read as a fleet busy to its ceiling (#1103).
   test "advancing_count separates the in-flight items being worked from the ones held at the spot gate" do
     working = backlog_item(key: "zimmer#1")
     working.mark_started!(session: sessions(:running), by: nil)
@@ -331,9 +334,6 @@ class Issues::BoardTest < ActiveSupport::TestCase
 
   def url(number) = "https://github.com/tadasant/zimmer/issues/#{number}"
 
-  # The "In flight" header splits on this: "20 an agent is still advancing" is
-  # false when most of them have never taken a turn, and that sentence is what let
-  # a fleet idle behind a quota window read as a fleet busy to its ceiling (#1103).
   def board(snapshot: github_snapshot, filters: {}, page: 1)
     Issues::Board.new(filters: WorkBacklog::Filters.new(filters), snapshot: snapshot, github_page: page)
   end

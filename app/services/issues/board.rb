@@ -143,9 +143,9 @@ module Issues
     # The count strip. Backlog counts are the whole queue, not the filtered slice —
     # a filter narrows what you read, it does not change how much work there is.
     #
-    # Exactly what the strip renders and nothing else: every entry here is a
-    # COUNT(*) on every page load, so a count the page does not show is a query
-    # nobody asked for.
+    # What the strip renders, plus the one the "In flight" header splits on
+    # (`spot_held`). Every entry here is a COUNT(*) on every page load, so a count
+    # nothing on the page shows is a query nobody asked for.
     def counts
       @counts ||= {
         queued: WorkBacklogItem.queued.count,

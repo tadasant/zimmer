@@ -72,11 +72,17 @@
         holding, and they are counted here on purpose (WorkBacklogItem.spot_held
         says why). So the header splits when any are held: a fleet idle behind a
         quota window and a fleet busy to its ceiling are the same in_flight
-        number, and that is what made a stalled queue read as healthy. %>
+        number, and that is what made a stalled queue read as healthy.
+
+        It names the population and not a cause. The gate refuses for two
+        opposite reasons — a spent quota window, or every slot taken — and this
+        count cannot tell them apart, so /inference is where a reader finds out
+        which. Asserting "waiting on quota" here would read backwards under a
+        fleet-cap hold, where the fleet is busy rather than idle. %>
     <h2 class="text-sm font-semibold text-gray-900 mb-2">
       In flight
       <% if @board.counts[:spot_held].positive? %>
-        <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.advancing_count) %> an agent is still advancing, <%= number_with_delimiter(@board.counts[:spot_held]) %> held at the spot gate waiting on quota</span>
+        <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.advancing_count) %> an agent is still advancing, <%= number_with_delimiter(@board.counts[:spot_held]) %> held at the spot gate before a turn</span>
       <% else %>
         <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.counts[:in_flight]) %> an agent is still advancing</span>
       <% end %>

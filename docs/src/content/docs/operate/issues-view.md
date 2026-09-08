@@ -25,6 +25,15 @@ is on a worker) or `waiting` (queued for a worker, or asleep on a wake it armed 
 deliberately *not* narrowed by the filter bar: "what is the fleet working on" is a fixed question,
 and a repo filter that emptied the list would read as "nothing is running".
 
+The heading **splits when any of them are held at the spot gate** — *"6 an agent is still advancing,
+14 held at the spot gate before a turn"*. Those items are still in flight and still listed, because
+they are assigned work that will start itself; what the split fixes is the claim that an agent is
+advancing a session that has never taken a turn, which is how a fleet idle behind a quota window
+came to read as a fleet busy to its ceiling. The header names the population and not the cause —
+[`get_spot_policy`](/sessions/spot-and-priority/) is where you find out which ceiling is holding,
+and it decides whether the reading is healthy. See
+[`spot_held`](/operate/work-backlog/#spot_held-why-a-pull-of-zero-is-not-always-healthy).
+
 **Parked on a person** is every `started` item whose session has stopped in `needs_input`. Nothing
 is advancing these; a human is what they are waiting on, and the usual reason is a finished PR the
 [merge gate](/operate/gate-decisions/) has held. They are **not** in flight, and the distinction is
