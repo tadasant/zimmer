@@ -93,6 +93,7 @@ class WorkBacklogItemDashboard < Administrate::BaseDashboard
     removed: ->(resources) { resources.removed },
     pinned: ->(resources) { resources.pinned_items },
     in_flight: ->(resources) { resources.in_flight },
+    spot_held: ->(resources) { resources.spot_held },
     parked: ->(resources) { resources.parked }
   }.freeze
 end

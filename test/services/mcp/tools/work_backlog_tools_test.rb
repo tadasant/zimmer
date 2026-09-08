@@ -31,6 +31,7 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
     assert_equal 3, output[:total_matching]
     assert_equal 3, output.dig(:counts, :queued)
     assert_equal 0, output.dig(:counts, :in_flight)
+    assert_equal 0, output.dig(:counts, :spot_held)
     assert_equal 0, output.dig(:counts, :parked)
     assert_nil output[:next_offset]
     assert_equal 3, output.dig(:ranking, :bands).size
@@ -89,6 +90,30 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
     counts = @read.call("status" => "claimed")[:counts]
     assert_equal 1, counts[:in_flight]
     assert_equal 1, counts[:parked]
+  end
+
+  # The whole point of the count: a groomer reading `in_flight` alone cannot tell
+  # a fleet busy to its ceiling from one idle behind a quota window, and reported
+  # the second as the first for two days (#1103). `spot_held` is a SUBSET of
+  # `in_flight`, so the ceiling arithmetic is unchanged and only the reading is.
+  test "read reports spot_held beside in_flight, and lists the items behind it" do
+    held = backlog_item(key: "zimmer#1")
+    at_the_gate = sessions(:waiting)
+    at_the_gate.update!(metadata: (at_the_gate.metadata || {}).merge(
+      SpotSessionHold::HELD_REASON => SpotGateService::UTILIZATION_REASON,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    ))
+    held.mark_started!(session: at_the_gate, by: nil)
+    working = backlog_item(key: "zimmer#2")
+    working.mark_started!(session: sessions(:running), by: nil)
+
+    counts = @read.call({})[:counts]
+    assert_equal 2, counts[:in_flight], "a held item still holds its WIP slot"
+    assert_equal 1, counts[:spot_held]
+
+    assert_equal [ "zimmer#1" ], @read.call("status" => "spot_held")[:items].map { |i| i[:key] }
+    assert_equal [ "zimmer#1", "zimmer#2" ],
+                 @read.call("status" => "in_flight")[:items].map { |i| i[:key] }.sort
   end
 
   # --- append ---------------------------------------------------------------

@@ -136,7 +136,7 @@ So the line is drawn at **will this move without a person**:
 | Session status | In flight? | Why |
 | --- | --- | --- |
 | `running` | yes | a turn is on a worker |
-| `waiting` | yes | queued for a worker, or asleep on a wake it armed for itself — it resumes on its own |
+| `waiting` | yes | queued for a worker, asleep on a wake it armed for itself, or held at the spot gate — it resumes on its own |
 | `needs_input` | **no** | it has stopped and handed the work to a human |
 | `archived`, `failed` | no | the session has ended |
 
@@ -152,12 +152,49 @@ read surface — the REST index, `get_work_backlog`, `pull_work_backlog_items` �
 [the Issues view](/operate/issues-view/) renders them as their own section, because "these are
 waiting on you" is usually the answer to "why is the queue not draining".
 
-They are also **listable**, not only countable: `status` accepts `in_flight`, `parked` and
-`claimed` (both) alongside `queued` / `started` / `removed` / `all`, on the REST index and on
+They are also **listable**, not only countable: `status` accepts `in_flight`, `spot_held`, `parked`
+and `claimed` alongside `queued` / `started` / `removed` / `all`, on the REST index and on
 `get_work_backlog`. A count says how many; a caller told "parked is not part of your WIP
 arithmetic" needs to be able to go and look at which.
 
 Both counts are of sessions **this backlog produced**, not of the whole spot population.
+
+### `spot_held`: why a pull of zero is not always healthy
+
+A pull of zero is a documented healthy outcome — it means the fleet already has as much in flight
+as it can finish. That sentence is true when the ceiling is full of work being *done*. It is false,
+and was reported as true for two days in September 2026, when the ceiling is full of work the
+**spot gate has never started** ([#1103](https://github.com/tadasant/zimmer/issues/1103)).
+
+A session the gate holds before its first turn is `waiting`, so it is in flight by the table above.
+Nothing is advancing it and it burns no compute — it is dormant behind a quota window that is ahead
+of its [pacing curve](/sessions/spot-and-priority/). With enough of them, `in_flight` sits at the
+ceiling, the pull evaluates to zero every night, and the report says healthy while the fleet is
+idle.
+
+`counts.spot_held` is the number that tells the two apart. It is a **subset of `in_flight`**, not a
+fourth slice beside it, and held items deliberately **keep** their WIP slot:
+
+- A **parked** item waits on a *person*. Nothing the fleet does brings it back, so counting it lets
+  finished work hold the ceiling shut. It is excluded.
+- A **spot-held** item waits on *quota*. It is assigned work that will run: `SpotSessionHold`
+  re-checks it on its own backoff ladder (clamped to an hour) and starts it with no pull involved.
+
+That difference is why a sustained hold is a **wait, not a deadlock**. When the window rolls the
+held sessions start themselves, run, finish, and release the ceiling — the backlog resumes draining
+without anybody touching it. Excluding them from `in_flight` would make things worse, not better:
+the groomer would pull fresh items into a fleet that cannot start them, growing the held pile so
+that all of it resumes at once against a freshly refilled budget and blows the same pacing curve
+the hold exists to enforce.
+
+So the fix is to the **reporting**, not to the arithmetic. A pull of zero is still correct under a
+hold; what changed is that the run can now say which zero it is:
+
+> pulled 0 — 20 in flight against a ceiling of 20, but 14 of those are held at the spot gate
+
+The Issues view splits the same way: its "In flight" header reads *"6 an agent is still advancing,
+14 held at the spot gate waiting on quota"* whenever any are held. Call `get_spot_policy` for the
+gate's live reason and when it expects to clear.
 
 **Nothing bounds the parked pile, and that is a deliberate open edge.** Narrowing `in_flight` also
 removes the only thing that indirectly limited how many finished-but-unmerged sessions the backlog
