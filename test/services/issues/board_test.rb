@@ -297,6 +297,39 @@ class Issues::BoardTest < ActiveSupport::TestCase
     assert_equal({ "convergent" => 1, "divergent" => 1, "unrated" => 1 }, summary.directions)
   end
 
+  # The "In flight" header splits on this: "20 an agent is still advancing" is
+  # false when most of them have never taken a turn, and that sentence is what let
+  # a fleet idle behind a quota window read as a fleet busy to its ceiling (#1103).
+  test "advancing_count separates the in-flight items being worked from the ones held at the spot gate" do
+    working = backlog_item(key: "zimmer#1")
+    working.mark_started!(session: sessions(:running), by: nil)
+
+    held = backlog_item(key: "zimmer#2")
+    at_the_gate = sessions(:waiting)
+    at_the_gate.update!(metadata: (at_the_gate.metadata || {}).merge(
+      SpotSessionHold::HELD_REASON => SpotGateService::UTILIZATION_REASON,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    ))
+    held.mark_started!(session: at_the_gate, by: nil)
+
+    result = board
+
+    assert_equal 2, result.counts[:in_flight], "a held item keeps its WIP slot"
+    assert_equal 1, result.counts[:spot_held]
+    assert_equal 1, result.advancing_count
+    assert_equal %w[zimmer#1 zimmer#2], result.in_flight_rows.map(&:key).sort,
+                 "both are still rendered under In flight — the header says how they split"
+  end
+
+  test "advancing_count is the whole in-flight count when nothing is held" do
+    backlog_item(key: "zimmer#1").mark_started!(session: sessions(:running), by: nil)
+
+    result = board
+
+    assert_equal 0, result.counts[:spot_held]
+    assert_equal result.counts[:in_flight], result.advancing_count
+  end
+
   private
 
   def url(number) = "https://github.com/tadasant/zimmer/issues/#{number}"
