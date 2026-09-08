@@ -231,6 +231,7 @@ class Api::V1::WorkBacklogItemsController < Api::BaseController
       started: WorkBacklogItem.started.count,
       removed: WorkBacklogItem.removed.count,
       in_flight: WorkBacklogItem.in_flight.count,
+      spot_held: WorkBacklogItem.spot_held.count,
       parked: WorkBacklogItem.parked.count,
       pinned: WorkBacklogItem.queued.pinned_items.count
     }

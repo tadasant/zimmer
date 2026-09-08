@@ -131,6 +131,65 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
     assert_equal [ on_a_worker.id, asleep.id ].sort, WorkBacklogItem.in_flight.pluck(:id).sort
   end
 
+  # THE COUNT THAT MAKES A ZERO PULL READABLE. `spot_held` is a SUBSET of
+  # `in_flight`, not a slice taken out of it: a held item is assigned work that
+  # will run on its own re-check, so it keeps its WIP slot. What it buys is the
+  # ability to tell "the ceiling is full of work being done" from "the ceiling is
+  # full of work the gate has never started" — the same number, opposite meanings,
+  # and the second one is a fleet idle behind a quota window (#1103).
+  test "spot_held is the in_flight items whose sessions the spot gate is holding" do
+    held = backlog_item
+    held.mark_started!(session: spot_held_session(sessions(:waiting)), by: nil)
+    on_a_worker = backlog_item
+    on_a_worker.mark_started!(session: sessions(:running), by: nil)
+
+    assert_equal [ held.id ], WorkBacklogItem.spot_held.pluck(:id)
+    assert_equal [ held.id, on_a_worker.id ].sort, WorkBacklogItem.in_flight.pluck(:id).sort,
+                 "a held item still holds its WIP slot — it is waiting on quota, not on a person"
+  end
+
+  test "spot_held is empty when nothing is held, and never counts a parked or ended session" do
+    backlog_item.mark_started!(session: sessions(:waiting), by: nil)
+    backlog_item.mark_started!(session: sessions(:running), by: nil)
+    backlog_item.mark_started!(session: sessions(:needs_input), by: nil)
+    backlog_item.mark_started!(session: sessions(:archived), by: nil)
+
+    assert_empty WorkBacklogItem.spot_held,
+                 "a session merely queued for a worker is not held at the gate"
+  end
+
+  # The marker alone is not the predicate: SpotSessionHold.held? also requires the
+  # session to still be `waiting`. A held session that got through and is running
+  # keeps its hold record until `clear` drops it, and counting that as held would
+  # report a working fleet as a stalled one.
+  test "a session that carried a hold record and is now running is not spot_held" do
+    item = backlog_item
+    got_through = sessions(:running)
+    got_through.update!(metadata: (got_through.metadata || {}).merge(
+      SpotSessionHold::HELD_REASON => SpotGateService::UTILIZATION_REASON
+    ))
+    item.mark_started!(session: got_through, by: nil)
+
+    assert_empty WorkBacklogItem.spot_held
+    assert_equal [ item.id ], WorkBacklogItem.in_flight.pluck(:id)
+  end
+
+  # Deliberately deferred to SpotSessionHold.held_sessions rather than respelled,
+  # so this count and the one `get_spot_policy` reports cannot drift. A session
+  # also carrying a ceiling pause belongs to that population and its own resume
+  # owner, so it is not counted here.
+  test "a held session that is also ceiling-paused belongs to the paused population" do
+    item = backlog_item
+    both = sessions(:waiting)
+    both.update!(metadata: (both.metadata || {}).merge(
+      SpotSessionHold::HELD_REASON => SpotGateService::UTILIZATION_REASON,
+      SpotSessionPause::PAUSED_REASON => SpotGateService::UTILIZATION_REASON
+    ))
+    item.mark_started!(session: both, by: nil)
+
+    assert_empty WorkBacklogItem.spot_held
+  end
+
   test "an item whose session is parked in needs_input holding an open PR is not in flight" do
     item = backlog_item
     holding_a_pr = sessions(:needs_input)
@@ -230,5 +289,17 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
     assert_equal({ "a" => "b" }, json[:ratings])
     assert_equal 1, json.dig(:payload, "extra_from_the_gate")
     assert_equal "queued", json[:status]
+  end
+
+  private
+
+  # A session dormant at the spot gate, in the shape SpotSessionHold.hold! leaves:
+  # `waiting`, with the hold reason on its metadata.
+  def spot_held_session(session)
+    session.update!(metadata: (session.metadata || {}).merge(
+      SpotSessionHold::HELD_REASON => SpotGateService::UTILIZATION_REASON,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    ))
+    session
   end
 end
