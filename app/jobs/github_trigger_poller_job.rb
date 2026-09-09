@@ -170,6 +170,32 @@ class GithubTriggerPollerJob < ApplicationJob
     "#{INCOMPLETE_SEARCH_STREAK_KEY_PREFIX}#{condition_id}"
   end
 
+  # How many consecutive sweeps GitHub may rate-limit before the limit stops reading as a
+  # burst and pages.
+  #
+  # A secondary rate limit is GitHub asking for a pause measured in a minute or two, and
+  # this poller's one-minute cadence already IS that pause — the next tick is normally
+  # clean, which is why the first occurrence is noise rather than an incident. Production
+  # bore that out on 2026-09-09: one occurrence in seven days, self-cleared, one page.
+  # Five in a row is a different animal — the fleet is asking for more than GitHub will
+  # give it at this cadence, no amount of waiting fixes that, and the triggers have been
+  # dark for five minutes. Same shape and same threshold as the incomplete-search streak
+  # above, kept as its own constant because the two degradations are free to diverge.
+  CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT = 5
+
+  # Rails cache (Redis) key holding the run of consecutive rate-limited sweeps.
+  #
+  # Global, where the incomplete-search streak is per condition, because a rate limit is a
+  # property of the credential rather than of the query: the sweep stops at the first
+  # condition to meet one, so a per-condition streak would only ever count whichever
+  # condition sorts first and would never reach its threshold for the rest. Any sweep that
+  # finishes without a rate limit clears it, so a streak only survives while unbroken.
+  RATE_LIMITED_STREAK_KEY = "github_trigger_poller:rate_limited_streak"
+
+  # Comfortably beyond the tick interval so a missed tick can't silently reset a streak,
+  # short enough that a count from an old episode doesn't linger into a new one.
+  RATE_LIMITED_STREAK_TTL = 1.hour
+
   def perform
     conditions = TriggerCondition.github
       .joins(:trigger)
@@ -211,13 +237,37 @@ class GithubTriggerPollerJob < ApplicationJob
     end
 
     any_polled = false
+    # The rate limit that ended this sweep early, if one did, and how many conditions
+    # never got their turn because of it.
+    rate_limit = nil
+    rate_limited_skips = 0
+
     AlertBatcher.with_batch do
       conditions.find_each do |condition|
+        # A rate limit belongs to the credential, not to the condition that happened to
+        # meet it, so every condition left in this sweep would spend a `gh` call to be
+        # told the same thing — and spend it on the one class of failure that extra
+        # requests make worse and longer. Stop asking; the next tick is the retry, and
+        # under seen-set semantics a skipped tick costs nothing because the next one
+        # re-derives the whole set.
+        if rate_limit
+          rate_limited_skips += 1
+          next
+        end
+
         process_condition(condition)
         any_polled = true
         clear_incomplete_search_streak(condition)
       rescue GithubSearchService::IncompleteResultsError => e
         skip_incomplete_search(condition, e)
+      rescue GithubSearchService::RateLimitedError => e
+        # The incomplete-search streak is deliberately left alone, neither bumped nor
+        # cleared. A rate limit is refused at the edge, so the search never reached the
+        # index and this tick holds no verdict about it either way — and the conditions
+        # skipped below, spared the call for the same credential-level reason, keep their
+        # streaks too. Clearing here would single out whichever condition happened to meet
+        # the limit first and could reset a genuine index degradation forever.
+        rate_limit = e
       rescue => e
         # Clearing here too is what makes the streak's "consecutive" literal: a tick that
         # failed some other way is not an incomplete-index tick, and it pages on its own
@@ -233,10 +283,21 @@ class GithubTriggerPollerJob < ApplicationJob
           error: e
         )
       end
+
+      # Inside the batch so the escalation coalesces with anything else this sweep
+      # raised, exactly as skip_incomplete_search's does.
+      if rate_limit
+        defer_rate_limited_sweep(rate_limit, skipped: rate_limited_skips)
+      else
+        clear_rate_limited_streak
+      end
     end
 
     # Record the heartbeat only when the poller actually did work — see the constant's
-    # comment for why a total-outage sweep (every condition rescued) must NOT count.
+    # comment for why a total-outage sweep (every condition rescued) must NOT count. A
+    # rate limit met on the very first condition therefore stamps nothing, which is right:
+    # the sweep polled nobody, and GithubTriggerHealthCheckJob's stale-heartbeat page is
+    # the backstop if #defer_rate_limited_sweep's streak alarm somehow does not fire.
     record_successful_poll if any_polled
   end
 
@@ -354,6 +415,67 @@ class GithubTriggerPollerJob < ApplicationJob
   rescue => e
     Rails.logger.warn "[GithubTriggerPollerJob] Failed to clear incomplete-search streak " \
                       "for condition #{condition.id}: #{e.message}"
+  end
+
+  # GitHub rate-limited the search API and this sweep stopped where it stood.
+  #
+  # Not a page on its own. A secondary rate limit is a back-off-and-retry condition the
+  # fleet is expected to bump into and ride out, and the poller's own cadence is the
+  # back-off — so the first occurrences get a WARN and a skipped tick, the treatment the
+  # Slack poller has given its own 429s since #509. What still pages is a limit that is
+  # not clearing, on the streak the constant explains.
+  #
+  # A cache that cannot be read degrades to "always quiet" rather than "always page", for
+  # the same reason bump_incomplete_search_streak does: inventing a streak from a failed
+  # read would page for a Redis blip on the first rate limit, which is the noise this
+  # exists to remove. A dead cache is its own, separately monitored fault.
+  def defer_rate_limited_sweep(error, skipped:)
+    streak = bump_rate_limited_streak
+    remainder = skipped.zero? ? "" : "; #{skipped} further condition#{'s' unless skipped == 1} not polled this tick"
+
+    if streak.nil? || streak < CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT
+      run = streak ? "#{streak} consecutive" : "streak untracked"
+
+      # .warn, not .error: an ERROR line pages #alerts on its own (see the logging
+      # philosophy), which would leave this every bit as noisy as the alert it replaces.
+      Rails.logger.warn "[GithubTriggerPollerJob] GitHub rate-limited the search API " \
+                        "(#{run}); skipping the rest of this sweep — the next tick is " \
+                        "the retry#{remainder}. #{error.message}"
+      return
+    end
+
+    Rails.logger.warn "[GithubTriggerPollerJob] GitHub has rate-limited the search API on " \
+                      "#{streak} consecutive ticks; alerting #eng-alerts."
+    AlertService.raise_alert(
+      "GitHub search API rate limit not clearing",
+      details: "GitHub has rate-limited `gh api search/issues` on #{streak} consecutive ticks. Each " \
+               "of those sweeps stopped at the condition that met the limit, so GitHub triggers have " \
+               "been going unpolled for that long and are firing late or not at all. A single " \
+               "occurrence is a normal, self-clearing burst limit; this many in a row means " \
+               "the fleet is asking for more than GitHub will serve at this cadence. Check " \
+               "githubstatus.com, and what else is spending this credential's search quota.",
+      source: "GithubTriggerPollerJob",
+      dedup_key: "github_search_rate_limited",
+      error: error
+    )
+  end
+
+  # The new streak length, or nil when the cache could not be reached.
+  def bump_rate_limited_streak
+    streak = Rails.cache.read(RATE_LIMITED_STREAK_KEY).to_i + 1
+    Rails.cache.write(RATE_LIMITED_STREAK_KEY, streak, expires_in: RATE_LIMITED_STREAK_TTL)
+    streak
+  rescue => e
+    Rails.logger.warn "[GithubTriggerPollerJob] Failed to track rate-limited streak: #{e.message}"
+    nil
+  end
+
+  # Rescued for the same reason clear_incomplete_search_streak is: a cache hiccup must
+  # never convert a sweep that actually worked into an alert.
+  def clear_rate_limited_streak
+    Rails.cache.delete(RATE_LIMITED_STREAK_KEY)
+  rescue => e
+    Rails.logger.warn "[GithubTriggerPollerJob] Failed to clear rate-limited streak: #{e.message}"
   end
 
   def process_condition(condition)

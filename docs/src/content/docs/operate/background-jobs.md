@@ -1496,7 +1496,9 @@ merge gate) quietly stop firing. Two mechanisms close that:
   tick never reaches the alerting rescue at all. A hang and a rate limit are the exceptions: the
   first has already spent `REQUEST_TIMEOUT`, the second cannot clear inside the budget and would
   spend the quota that caused it, so both raise on the first attempt. What survives three attempts
-  raises and pages exactly as one failure used to, with the attempt count in the message.
+  raises and pages exactly as one failure used to, with the attempt count in the message. A rate
+  limit raises on the first attempt but does *not* page there — it raises `RateLimitedError`, which
+  the poller absorbs; see below.
 - **A liveness check.** `GithubTriggerPollerJob` stamps a Redis heartbeat
   (`HEARTBEAT_CACHE_KEY`) on every sweep that processes at least one condition successfully.
   `GithubTriggerHealthCheckJob` reads it every 5 minutes and pages `#eng-alerts` when it is older
@@ -1517,6 +1519,14 @@ re-derives the whole seen-set anyway. A skipped condition does not stamp the hea
 search-index degradation that hits *every* condition still ages the heartbeat out and pages here,
 with no separate alarm needed. A single condition stuck on it pages on its own consecutive-skip
 streak (`GithubTriggerPollerJob::CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT`, 5 ticks).
+
+A **GitHub rate limit** is refused-but-not-an-incident for the same reason and gets the same shape of
+treatment, one level up: it ends the whole sweep rather than one condition, because the limit belongs
+to the credential and every condition left would spend a `gh` call to be told the same thing. One
+WARN, no page, and no heartbeat unless a condition polled cleanly before the limit was met — so a
+limit that outlasts `CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT` (5 sweeps) pages under
+*GitHub search API rate limit not clearing*, and a stale heartbeat backstops it either way. See
+[Rate-limit budget](/sessions/triggers/#rate-limit-budget), whose closing note covers this in full.
 
 Two placement details are load-bearing, and both are easy to get backwards:
 

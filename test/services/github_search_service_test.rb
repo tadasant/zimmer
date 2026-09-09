@@ -507,6 +507,10 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
         GithubSearchService.search_issues("is:open is:pr repo:owner/a")
       end
       assert_not_kind_of GithubSearchService::TransientRequestError, error, "#{description} must not retry"
+      # And must not be mistaken for a rate limit either: the permission denial in this
+      # list wears the same 403 a secondary limit does, but it is permanent, so it has to
+      # keep paging on the first tick rather than being skipped quietly for five.
+      assert_not_kind_of GithubSearchService::RateLimitedError, error, "#{description} must still page"
     end
   end
 
@@ -515,17 +519,69 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     # allows 30 requests a minute and a secondary limit's Retry-After is usually 60s+, so
     # no retry inside this budget can succeed — and since a retry re-runs the whole search,
     # it would spend more of the very quota that produced the failure.
-    [ "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
-      "gh: You have exceeded a secondary rate limit (HTTP 403)",
+    [ GithubSearchStderrFixtures::PRIMARY_RATE_LIMIT,
+      GithubSearchStderrFixtures::SECONDARY_RATE_LIMIT,
       "gh: API rate limit exceeded (HTTP 429)" ].each do |stderr|
       BoundedSubprocess.expects(:run).once.returns([ "", stderr, status(false) ])
       GithubSearchService.expects(:sleep).never
 
-      error = assert_raises(GithubSearchService::SearchError) do
+      error = assert_raises(GithubSearchService::RateLimitedError) do
         GithubSearchService.search_issues("is:open is:pr repo:owner/a")
       end
       assert_not_kind_of GithubSearchService::TransientRequestError, error, "#{stderr} must not retry"
+      # Still a SearchError, so Issues::GithubSnapshot's rescue is unchanged by this.
+      assert_kind_of GithubSearchService::SearchError, error
     end
+  end
+
+  test "rate-limit prose echoed back from the query cannot talk a 422 into a quiet skip" do
+    # `gh` echoes the query into its error, and label names reach that query from the
+    # trigger's configuration — a label may contain spaces, so the phrase itself is
+    # forgeable. Requiring EVERY status printed to be a rate-limit status means an injected
+    # string can only make us page sooner, never later: the same unanimity
+    # retryable_failure? demands, for the same reason.
+    query = %(is:open is:issue label:"secondary rate limit" repo:owner/a)
+    BoundedSubprocess.expects(:run).once.returns([
+      "", "gh: Validation Failed (HTTP 422) (q=#{query})", status(false)
+    ])
+    GithubSearchService.expects(:sleep).never
+
+    error = assert_raises(GithubSearchService::SearchError) { GithubSearchService.search_issues(query) }
+    assert_not_kind_of GithubSearchService::RateLimitedError, error
+  end
+
+  test "rate-limit prose echoed back cannot turn a real permission denial into a quiet skip" do
+    # The case the status unanimity CANNOT catch, and the reason GH_RATE_LIMIT_PATTERN
+    # matches GitHub's whole sentences rather than a fragment: a permission denial is
+    # itself a 403, so on this failure the status half decides nothing and only the prose
+    # is left. A label named `secondary rate limit` must not be enough to forge one.
+    query = %(is:open is:issue label:"secondary rate limit" repo:owner/a)
+    BoundedSubprocess.expects(:run).once.returns([
+      "", "#{GithubSearchStderrFixtures::PERMISSION_DENIED} (q=#{query})", status(false)
+    ])
+    GithubSearchService.expects(:sleep).never
+
+    error = assert_raises(GithubSearchService::SearchError) { GithubSearchService.search_issues(query) }
+    assert_not_kind_of GithubSearchService::RateLimitedError, error,
+                       "a permanent 403 must keep paging on the first tick"
+  end
+
+  test "a rate limit met on a retry attempt propagates as itself, not as the earlier failure" do
+    # The mirror of "a 504 during a search that ends incomplete pages": there the hard
+    # failure wins, because the quiet incomplete skip promises a slow index was ALL that
+    # happened. Here the rate limit wins, because it promises only that GitHub has asked
+    # us to stop calling — which the 504 does not falsify, and which is the right response
+    # either way. Pinned so the asymmetry stays a decision rather than an accident.
+    BoundedSubprocess.expects(:run).twice.returns(
+      [ "", PRODUCTION_504, status(false) ],
+      [ "", GithubSearchStderrFixtures::SECONDARY_RATE_LIMIT, status(false) ]
+    )
+    GithubSearchService.stubs(:sleep)
+
+    error = assert_raises(GithubSearchService::RateLimitedError) do
+      GithubSearchService.search_issues("is:open is:pr repo:owner/a")
+    end
+    assert_includes error.message, "secondary rate limit"
   end
 
   test "a hard failure during a search that ends incomplete raises SearchError, so it still pages" do
