@@ -42,8 +42,9 @@ class GithubSearchService
   # degrades to "the poller alerts", not "an unfamiliar class crashes the tick".
   class TransientRequestError < SearchError; end
 
-  # GitHub answered with a rate limit rather than an error: 403 for a *secondary* limit
-  # (a burst or concurrency rule) or 429 for the hourly quota.
+  # GitHub answered with a rate limit rather than an error — a *secondary* limit (a burst
+  # or concurrency rule) or the primary hourly quota. See RATE_LIMIT_STATUSES for why the
+  # status code does not tell them apart, or tell either from a permission denial.
   #
   # Transient like the above, but on a clock measured in minutes rather than seconds, so
   # it is handled at a different layer: not retried in process (see
@@ -51,7 +52,7 @@ class GithubSearchService
   # first occurrence either — GithubTriggerPollerJob skips the sweep with a WARN and
   # escalates only once the limit stops clearing. It subclasses SearchError so that a
   # caller which knows nothing about rate limits (Issues::GithubSnapshot rescues
-  # SearchError) behaves exactly as it did before this class existed.
+  # SearchError) treats it as the ordinary read failure it is.
   #
   # It wins over an earlier transient failure in the same search, where
   # IncompleteResultsError deliberately loses to one. That is not an oversight: the quiet
@@ -127,21 +128,31 @@ class GithubSearchService
   # produced the failure, on the one class of failure where extra requests make things
   # worse. It fails fast, and the next tick is the retry.
   #
-  # Failing fast is not the same as paging, and it used to be: rate limiting left here as
-  # a plain SearchError, so the poller's per-condition rescue paged on the first
-  # occurrence of a condition the fleet is expected to meet and ride out. It now leaves as
-  # RateLimitedError, which fails just as fast and pages only if it does not clear.
+  # Failing fast is not the same as paging. A rate limit leaves as RateLimitedError rather
+  # than a plain SearchError precisely so that the poller can absorb the first occurrences
+  # of something the fleet is expected to meet and ride out, and page only if it does not
+  # clear — see GithubTriggerPollerJob#defer_rate_limited_sweep.
   RETRYABLE_CLIENT_STATUSES = [ 401, 408 ].freeze
 
-  # The statuses GitHub answers a rate limit with: 403 for a secondary limit, 429 for the
-  # primary hourly quota.
+  # The statuses GitHub answers a rate limit with. It uses both, and not along the line
+  # the names suggest: a *secondary* limit is 403, and so is the primary hourly quota
+  # (`API rate limit exceeded for user ID …`), while 429 turns up for the same conditions
+  # on other endpoints. Neither code identifies a rate limit on its own.
   RATE_LIMIT_STATUSES = [ 403, 429 ].freeze
 
-  # …and the prose that has to accompany one of those statuses. The status cannot carry
-  # the classification alone: `Resource not accessible by integration (HTTP 403)` is a
-  # permanent permission denial wearing the same code, and it must keep paging on the
-  # first attempt.
-  GH_RATE_LIMIT_PATTERN = /(secondary rate limit|rate limit exceeded)/i
+  # …so the prose decides, and it is matched as GitHub's whole sentences rather than as a
+  # fragment. 403 is also how GitHub reports a permanent permission denial
+  # (`Resource not accessible by integration`), which must keep paging on the first
+  # attempt — and `gh` echoes the query back in its error, where a label name reaches it
+  # from the trigger's configuration. Since a label may contain spaces, a fragment like
+  # `rate limit exceeded` would let a label of that name turn a real permission denial
+  # into a quiet skip. Whole sentences do not make that impossible, but they put the
+  # forgery out of reach of any label anyone would write by accident.
+  GH_RATE_LIMIT_PATTERN = /
+    You\ have\ exceeded\ a\ secondary\ rate\ limit
+    | API\ rate\ limit\ exceeded
+    | You\ have\ triggered\ an\ abuse\ detection\ mechanism
+  /xi
 
   # `gh` rejecting the command line before it ever calls GitHub — a flag the installed
   # `gh` does not know, say. That is a bug in this file, deterministic, and identical on
@@ -585,18 +596,22 @@ class GithubSearchService
 
     # Whether GitHub answered this failure with a rate limit rather than a refusal.
     #
-    # Both halves are required, and each covers the other's blind spot. The status alone
-    # is ambiguous — 403 is also how GitHub reports a permission denial, which is
-    # permanent and must keep paging immediately. The prose alone is forgeable: repo and
-    # label names reach `q=` from the trigger's configuration and `gh` echoes the query
-    # back in its error, so a repo named `secondary-rate-limit-exceeded` would otherwise
-    # let a permanent 422 read as a limit that clears itself.
+    # Both halves are required. Requiring EVERY status `gh` printed to be a rate-limit
+    # status is the unanimity #retryable_failure? demands, and it does the same job here:
+    # `gh` can print more than one status and part of what it prints is the query echoed
+    # back, so a label named `x (HTTP 403)` cannot drag a 422 into this branch.
     #
-    # Requiring EVERY status `gh` printed to be a rate-limit status is the same unanimity
-    # #retryable_failure? demands, in the same direction: an injected string can only ever
-    # make us page sooner, never later. A failure carrying no status at all is likewise
-    # not classified here — it falls through to the retry path, where a failure below HTTP
-    # belongs.
+    # Be precise about what that buys, because it is less than it is for the retry
+    # classifier. There, every status the deny-list rejects is a status a rate limit never
+    # carries, so an injected string can only make us fail faster. Here 403 is BOTH a rate
+    # limit and a permanent permission denial, so on a real 403 the status half decides
+    # nothing and GH_RATE_LIMIT_PATTERN carries the classification alone. That is why the
+    # pattern is GitHub's whole sentences: a label would have to be named
+    # `You have exceeded a secondary rate limit` for a permission denial to read as one.
+    # The residue is a five-minute delay before the streak pages, not a lost alert.
+    #
+    # A failure carrying no status at all is not classified here either — it falls through
+    # to the retry path, where a failure below HTTP belongs.
     def rate_limited_failure?(stderr)
       detail = stderr.to_s
       return false unless detail.match?(GH_RATE_LIMIT_PATTERN)

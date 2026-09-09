@@ -1526,7 +1526,7 @@ to the credential and every condition left would spend a `gh` call to be told th
 WARN, no page, and no heartbeat unless a condition polled cleanly before the limit was met — so a
 limit that outlasts `CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT` (5 sweeps) pages under
 *GitHub search API rate limit not clearing*, and a stale heartbeat backstops it either way. See
-[A rate limit stops the sweep, quietly](/sessions/triggers/#a-rate-limit-stops-the-sweep-quietly).
+[Rate-limit budget](/sessions/triggers/#rate-limit-budget), whose closing note covers this in full.
 
 Two placement details are load-bearing, and both are easy to get backwards:
 

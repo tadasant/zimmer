@@ -1224,7 +1224,7 @@ What is *not* retried is as deliberate:
   requests a minute and a secondary limit's `Retry-After` is usually 60s or more, so no retry inside
   this budget can succeed — and since a retry re-runs the whole search, it would spend more of the
   very quota that produced the failure. The next tick is the retry. It does not page either — see
-  [A rate limit stops the sweep, quietly](#a-rate-limit-stops-the-sweep-quietly) below.
+  *A rate limit stops the sweep, quietly*, the last note in this section.
 - **A hang.** A request killed at `REQUEST_TIMEOUT` has already spent 15s of a 60-second tick, and a
   repeat would spend another 15s before reaching its backoff. The next tick is a better time to ask.
 
@@ -1243,11 +1243,12 @@ return in well under a second — neither bound is ever reached.
 :::
 
 :::note[A rate limit stops the sweep, quietly]
-GitHub answers a rate limit `403` for a *secondary* limit — a burst or concurrency rule — and `429`
-for the hourly quota. Both are transient, and neither is retried in place, for the reason above: a
-retry re-runs the whole search and so spends more of the very quota that ran out.
+GitHub answers a rate limit `403` or `429`, and not along the line the names suggest: a *secondary*
+limit — a burst or concurrency rule — is `403`, and so is the primary hourly quota
+(`API rate limit exceeded for user ID …`). Both are transient, and neither is retried in place, for
+the reason above: a retry re-runs the whole search and so spends more of the very quota that ran out.
 
-Failing fast is not the same as paging, and it used to be. On 2026-09-09 at 14:01 UTC a single
+Failing fast is not the same as paging. On 2026-09-09 at 14:01 UTC a single
 `gh: You have exceeded a secondary rate limit … (HTTP 403)` reached the poller's per-condition rescue
 and paged `#alerts`. It was the only occurrence in seven days and it had cleared by the next tick —
 and in the same minutes `SlackTriggerPollerJob` was rate-limited too and merely logged
@@ -1261,18 +1262,23 @@ So `GithubSearchService` raises the narrower `RateLimitedError`, and `GithubTrig
   that happened to meet it, so every remaining condition would spend a `gh` call to be told the same
   thing — on the one class of failure that extra requests make worse and longer. Under seen-set
   semantics a skipped tick costs nothing: the next one re-derives the whole set.
-- **logs one WARN**, naming how many conditions went unpolled. Not ERROR, which pages by itself.
+- **logs one WARN**, naming how many conditions went unpolled when any did. Not ERROR, which pages
+  by itself.
 - **pages only if it does not clear** — `CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT` (5 sweeps ≈ 5
   minutes) raises *GitHub search API rate limit not clearing*. The streak is global rather than per
   condition, because the limit is a property of the credential and the sweep stops at whichever
   condition met it first; any sweep that finishes without one clears it.
 
-Classification demands both a rate-limit status and rate-limit prose. The status cannot carry it
-alone — `Resource not accessible by integration (HTTP 403)` is a permanent permission denial wearing
-the same code, and it still pages on the first tick. The prose cannot either: `gh` echoes the query
-back in its error and label names reach that query from the trigger's configuration, so *every*
-status printed must be a rate-limit status, the same unanimity the retry classifier demands and in
-the same direction — an injected string can only make Zimmer page sooner, never later.
+Classification demands both a rate-limit status and rate-limit prose, and it is worth being precise
+about what each half actually buys. Requiring *every* status `gh` printed to be a rate-limit status
+is the same unanimity the retry classifier demands, and it stops a label named `x (HTTP 403)` from
+dragging a `422` into the quiet path. But `403` is *both* a rate limit and a permanent permission
+denial (`Resource not accessible by integration`), so on a real `403` the status half decides
+nothing and the prose carries the classification alone — while `gh` echoes the query back in its
+error, and label names reach that query from the trigger's configuration. That is why the prose is
+matched as GitHub's whole sentences rather than as a fragment: a label would have to be named
+`You have exceeded a secondary rate limit` for a permission denial to read as one. The residue is a
+five-minute delay before the streak pages, not a lost alert.
 :::
 
 ## Stale catalog references

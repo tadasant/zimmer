@@ -261,10 +261,12 @@ class GithubTriggerPollerJob < ApplicationJob
       rescue GithubSearchService::IncompleteResultsError => e
         skip_incomplete_search(condition, e)
       rescue GithubSearchService::RateLimitedError => e
-        # Cleared for the reason the generic rescue below clears it: this condition made a
-        # real request that failed for a reason other than a slow index, so it breaks the
-        # run rather than being counted into it.
-        clear_incomplete_search_streak(condition)
+        # The incomplete-search streak is deliberately left alone, neither bumped nor
+        # cleared. A rate limit is refused at the edge, so the search never reached the
+        # index and this tick holds no verdict about it either way — and the conditions
+        # skipped below, spared the call for the same credential-level reason, keep their
+        # streaks too. Clearing here would single out whichever condition happened to meet
+        # the limit first and could reset a genuine index degradation forever.
         rate_limit = e
       rescue => e
         # Clearing here too is what makes the streak's "consecutive" literal: a tick that
@@ -295,7 +297,7 @@ class GithubTriggerPollerJob < ApplicationJob
     # comment for why a total-outage sweep (every condition rescued) must NOT count. A
     # rate limit met on the very first condition therefore stamps nothing, which is right:
     # the sweep polled nobody, and GithubTriggerHealthCheckJob's stale-heartbeat page is
-    # the backstop if the streak alarm below somehow does not fire.
+    # the backstop if #defer_rate_limited_sweep's streak alarm somehow does not fire.
     record_successful_poll if any_polled
   end
 
@@ -446,9 +448,10 @@ class GithubTriggerPollerJob < ApplicationJob
                       "#{streak} consecutive ticks; alerting #eng-alerts."
     AlertService.raise_alert(
       "GitHub search API rate limit not clearing",
-      details: "GitHub has rate-limited `gh api search/issues` on #{streak} consecutive ticks, so " \
-               "every GitHub trigger has been skipped for that long and none of them are firing. A " \
-               "single occurrence is a normal, self-clearing burst limit; this many in a row means " \
+      details: "GitHub has rate-limited `gh api search/issues` on #{streak} consecutive ticks. Each " \
+               "of those sweeps stopped at the condition that met the limit, so GitHub triggers have " \
+               "been going unpolled for that long and are firing late or not at all. A single " \
+               "occurrence is a normal, self-clearing burst limit; this many in a row means " \
                "the fleet is asking for more than GitHub will serve at this cadence. Check " \
                "githubstatus.com, and what else is spending this credential's search quota.",
       source: "GithubTriggerPollerJob",
