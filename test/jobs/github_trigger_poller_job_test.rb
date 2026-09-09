@@ -1891,3 +1891,148 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
     assert_nil Rails.cache.read(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
   end
 end
+
+# ── A GitHub rate limit ─────────────────────────────────────────────────────
+#
+# 2026-09-09T14:01:08Z: `gh: You have exceeded a secondary rate limit … (HTTP 403)` on
+# condition 353 reached perform's per-condition rescue and paged #alerts. It was the only
+# occurrence in seven days and it had cleared by the next tick — a back-off-and-retry
+# condition the fleet is expected to meet and ride out, arriving as a page. In the same
+# minutes SlackTriggerPollerJob was rate-limited too and said so at WARN, deferring
+# rather than failing, which is the treatment this suite pins for the GitHub side.
+#
+# Its own class for the same reason the incomplete-search suite is: the streak lives in
+# Rails.cache, which is null_store in test.
+class GithubTriggerPollerJobRateLimitTest < ActiveJob::TestCase
+  include GithubTriggerPollerPreflightStubs
+
+  # `gh`'s verbatim stderr from that page, request id and all.
+  SECONDARY_RATE_LIMIT =
+    "gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try " \
+    "again. For more on scraping GitHub and how it may affect your rights, please review our " \
+    "Terms of Service (https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) " \
+    "If you reach out to GitHub Support for help, please include the request ID " \
+    "BC20:B1444:DF87E:2D510A:6AA166A3. (HTTP 403)"
+
+  setup do
+    @label_condition = trigger_conditions(:github_label_condition)
+    stub_preflight(GithubSearchService::PREFLIGHT_AUTHENTICATED)
+
+    @original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+  end
+
+  teardown do
+    Rails.cache = @original_cache
+  end
+
+  # One tick in which every search GitHub is asked for answers with a rate limit.
+  def poll(rate_limited: true)
+    fake = lambda do |query, **_opts|
+      raise GithubSearchService::RateLimitedError, "gh api search/issues failed: #{SECONDARY_RATE_LIMIT}" if rate_limited
+
+      []
+    end
+
+    GithubSearchService.stub(:search_issues, fake) { GithubTriggerPollerJob.perform_now }
+  end
+
+  def capture_alerts
+    titles = []
+    AlertService.stubs(:raise_alert).with do |*args, **_kwargs|
+      titles << args.first
+      true
+    end
+    yield
+    titles
+  end
+
+  test "a secondary rate limit is skipped with a WARN instead of paging" do
+    # The defect, directly. Nothing in this tick should reach AlertService, and nothing
+    # should be written at ERROR — an ERROR line pages #alerts by itself.
+    AlertService.expects(:raise_alert).never
+
+    warns = capture_warns { poll }
+
+    assert_equal 1, warns.length, "one line per rate-limited sweep, not one per condition"
+    assert_match(/rate-limited the search API/, warns.first)
+    assert_includes warns.first, "the next tick is the retry"
+    # GitHub's own words survive into the log, so the WARN is diagnosable.
+    assert_includes warns.first, "secondary rate limit"
+  end
+
+  test "the rest of the sweep is not polled, so we stop spending the quota that ran out" do
+    # A rate limit belongs to the credential, not the condition that met it: every
+    # remaining condition would spend a `gh` call to be told the same thing, on the one
+    # failure extra requests make worse. Driven through the real service so the assertion
+    # is about actual subprocesses.
+    assert_operator TriggerCondition.github.joins(:trigger).where(triggers: { status: "enabled" }).count,
+                    :>, 1, "this test is only meaningful with more than one condition to skip"
+
+    BoundedSubprocess.expects(:run).once.returns([ "", SECONDARY_RATE_LIMIT, fake_process_status(exitstatus: 1) ])
+    AlertService.expects(:raise_alert).never
+
+    warns = capture_warns { GithubTriggerPollerJob.perform_now }
+
+    assert_match(/not polled this tick/, warns.first)
+  end
+
+  test "a run of rate limits below the threshold never pages" do
+    below = GithubTriggerPollerJob::CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT - 1
+
+    titles = capture_alerts { below.times { poll } }
+
+    assert_empty titles, "#{below} consecutive burst limits is still a transient, not a page"
+  end
+
+  test "a rate limit that will not clear pages once the streak is unbroken" do
+    # Nothing is suppressed: a limit the cadence cannot ride out is a real problem and
+    # stays loud, five minutes in rather than on the first tick.
+    threshold = GithubTriggerPollerJob::CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT
+
+    titles = capture_alerts { threshold.times { poll } }
+
+    assert_includes titles, "GitHub search API rate limit not clearing"
+    assert_equal threshold, Rails.cache.read(GithubTriggerPollerJob::RATE_LIMITED_STREAK_KEY)
+  end
+
+  test "a clean sweep resets the streak, so scattered bursts never accumulate into a page" do
+    # What makes the threshold mean "consecutive" rather than "total": one occurrence a
+    # week, which is the observed rate, must never add up to an alert.
+    below = GithubTriggerPollerJob::CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT - 1
+
+    titles = capture_alerts do
+      below.times { poll }
+      poll(rate_limited: false)
+      below.times { poll }
+    end
+
+    assert_empty titles, "a clean sweep in between must clear the run"
+  end
+
+  test "a rate-limited sweep records no heartbeat, so a sustained limit still has its backstop" do
+    Rails.cache.delete(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY)
+
+    poll
+
+    assert_nil Rails.cache.read(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY),
+               "a sweep in which no condition polled successfully is not liveness"
+  end
+
+  test "the production stderr rides through the real service without paging or firing" do
+    # End to end across the subprocess boundary, because the defect was never in one
+    # method: it was that a non-zero `gh` exit reached perform's per-condition rescue.
+    BoundedSubprocess.stubs(:run).returns([ "", SECONDARY_RATE_LIMIT, fake_process_status(exitstatus: 1) ])
+    GithubSearchService.stubs(:sleep)
+    AlertService.expects(:raise_alert).never
+
+    before = @label_condition.github_seen_items
+
+    assert_no_difference "Session.count" do
+      GithubTriggerPollerJob.perform_now
+    end
+
+    assert_equal before, @label_condition.reload.github_seen_items,
+                 "a skipped tick must leave the seen-set exactly as it found it"
+  end
+end

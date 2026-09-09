@@ -42,6 +42,26 @@ class GithubSearchService
   # degrades to "the poller alerts", not "an unfamiliar class crashes the tick".
   class TransientRequestError < SearchError; end
 
+  # GitHub answered with a rate limit rather than an error: 403 for a *secondary* limit
+  # (a burst or concurrency rule) or 429 for the hourly quota.
+  #
+  # Transient like the above, but on a clock measured in minutes rather than seconds, so
+  # it is handled at a different layer: not retried in process (see
+  # RETRYABLE_CLIENT_STATUSES for why a retry here actively hurts) and not paged on the
+  # first occurrence either — GithubTriggerPollerJob skips the sweep with a WARN and
+  # escalates only once the limit stops clearing. It subclasses SearchError so that a
+  # caller which knows nothing about rate limits (Issues::GithubSnapshot rescues
+  # SearchError) behaves exactly as it did before this class existed.
+  #
+  # It wins over an earlier transient failure in the same search, where
+  # IncompleteResultsError deliberately loses to one. That is not an oversight: the quiet
+  # incomplete skip is a promise that a slow index was ALL that happened, which a 504
+  # falsifies, whereas this class promises only that GitHub has asked us to stop calling —
+  # which the 504 does not falsify, and which is the correct response either way. Nothing
+  # is suppressed by it: if the 504s are real they page on the next tick, when the limit
+  # has cleared and the search runs again.
+  class RateLimitedError < SearchError; end
+
   PER_PAGE = 100
 
   # GitHub's search API tops out at 1000 results, which is these 10 pages. A query
@@ -105,9 +125,23 @@ class GithubSearchService
   # ships a Retry-After that is usually 60s or more. So a retry cannot succeed — and
   # because a retry re-runs the WHOLE search, it would spend more of the very quota that
   # produced the failure, on the one class of failure where extra requests make things
-  # worse. It fails fast and pages, exactly as it did before this retry existed, and the
-  # next tick is the retry.
+  # worse. It fails fast, and the next tick is the retry.
+  #
+  # Failing fast is not the same as paging, and it used to be: rate limiting left here as
+  # a plain SearchError, so the poller's per-condition rescue paged on the first
+  # occurrence of a condition the fleet is expected to meet and ride out. It now leaves as
+  # RateLimitedError, which fails just as fast and pages only if it does not clear.
   RETRYABLE_CLIENT_STATUSES = [ 401, 408 ].freeze
+
+  # The statuses GitHub answers a rate limit with: 403 for a secondary limit, 429 for the
+  # primary hourly quota.
+  RATE_LIMIT_STATUSES = [ 403, 429 ].freeze
+
+  # …and the prose that has to accompany one of those statuses. The status cannot carry
+  # the classification alone: `Resource not accessible by integration (HTTP 403)` is a
+  # permanent permission denial wearing the same code, and it must keep paging on the
+  # first attempt.
+  GH_RATE_LIMIT_PATTERN = /(secondary rate limit|rate limit exceeded)/i
 
   # `gh` rejecting the command line before it ever calls GitHub — a flag the installed
   # `gh` does not know, say. That is a bug in this file, deterministic, and identical on
@@ -530,6 +564,12 @@ class GithubSearchService
       # rescue already handles beats crashing the tick with `undefined method 'success?' for nil`.
       unless result.success?
         message = "gh api search/issues failed: #{result.failure_description}"
+
+        # Tested before the retry classifier rather than folded into it, because this is
+        # the one transient failure whose remedy is to stop asking rather than to ask
+        # again — and because the poller handles it at a different layer entirely.
+        raise RateLimitedError, message if rate_limited_failure?(result.stderr)
+
         raise TransientRequestError, message if retryable_failure?(result.status, result.stderr)
 
         raise SearchError, message
@@ -541,6 +581,28 @@ class GithubSearchService
       # (observed in production 2026-08-17T13:31:03Z): a body that arrived cut short parses
       # no better on this attempt than that one, and no worse on the next.
       raise TransientRequestError, "Could not parse GitHub search response: #{e.message}"
+    end
+
+    # Whether GitHub answered this failure with a rate limit rather than a refusal.
+    #
+    # Both halves are required, and each covers the other's blind spot. The status alone
+    # is ambiguous — 403 is also how GitHub reports a permission denial, which is
+    # permanent and must keep paging immediately. The prose alone is forgeable: repo and
+    # label names reach `q=` from the trigger's configuration and `gh` echoes the query
+    # back in its error, so a repo named `secondary-rate-limit-exceeded` would otherwise
+    # let a permanent 422 read as a limit that clears itself.
+    #
+    # Requiring EVERY status `gh` printed to be a rate-limit status is the same unanimity
+    # #retryable_failure? demands, in the same direction: an injected string can only ever
+    # make us page sooner, never later. A failure carrying no status at all is likewise
+    # not classified here — it falls through to the retry path, where a failure below HTTP
+    # belongs.
+    def rate_limited_failure?(stderr)
+      detail = stderr.to_s
+      return false unless detail.match?(GH_RATE_LIMIT_PATTERN)
+
+      statuses = detail.scan(HTTP_STATUS_PATTERN).flatten.map(&:to_i)
+      statuses.any? && statuses.all? { |http| RATE_LIMIT_STATUSES.include?(http) }
     end
 
     # Whether a failed `gh` invocation is worth trying again.
