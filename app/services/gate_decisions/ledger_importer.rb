@@ -29,6 +29,10 @@ module GateDecisions
     FileResult = Struct.new(:name, :gate, :surface, :entries, :imported, :skipped, :rejected,
                             :feedback_imported, keyword_init: true)
 
+    KeyedEntry = Struct.new(:raw, :parsed, :key, keyword_init: true)
+
+    EntryOutcome = Struct.new(:status, :feedback_imported, keyword_init: true)
+
     Result = Struct.new(:files, :remaining, keyword_init: true) do
       def entries = files.sum(&:entries)
       def imported = files.sum(&:imported)
@@ -70,57 +74,75 @@ module GateDecisions
       Result.new(files: results, remaining: [])
     end
 
+    # One file's entries, in file order, each with the idempotency key this
+    # importer gives it. Public because the key is the entry's identity in the
+    # table: a caller importing a chosen subset of a ledger has to key it exactly
+    # as a whole-file pass would, or the two would see the same decision twice.
+    #
+    # @return [Array<KeyedEntry>]
+    def keyed_entries(file, entries = source.entries(file))
+      ordinals = Hash.new(0)
+
+      entries.map do |raw|
+        parsed = Entry.new(gate: file.gate, surface: file.surface, raw: raw)
+        KeyedEntry.new(raw: raw, parsed: parsed, key: source_key(file, parsed, ordinals))
+      end
+    end
+
+    # Inserts one entry unless its key is already in the table, and transcribes
+    # its `human_feedback` onto whichever row, found or inserted, now holds it.
+    #
+    # @return [EntryOutcome] status :imported, :already_present or :rejected
+    def import_entry(file, keyed)
+      existing = GateDecision.find_by(source_key: keyed.key)
+      if existing
+        return EntryOutcome.new(status: :already_present, feedback_imported: import_feedback(existing, keyed.parsed))
+      end
+
+      begin
+        result = Record.call(
+          gate: file.gate, surface: file.surface, entry: keyed.raw,
+          recorded_via: GateDecision::IMPORT, source_key: keyed.key
+        )
+      rescue ActiveRecord::RecordInvalid, Record::InvalidEntry => e
+        # ONE unimportable entry must not cost the other 1,468. Without this
+        # the raise unwinds the batch, the file, the slice and the task, which
+        # then retries on a backoff, re-fetches the same megabytes and fails
+        # identically forever — on a path that by design has no shell to fix
+        # it from. Counted and named in the logs instead, and reported in the
+        # task's stats so a rejection is visible on /health rather than silent.
+        logger.warn("[GateDecisions::LedgerImporter] #{file.name}: rejected #{keyed.key}: #{e.message}")
+        return EntryOutcome.new(status: :rejected, feedback_imported: 0)
+      end
+
+      EntryOutcome.new(status: result.created? ? :imported : :already_present,
+                       feedback_imported: import_feedback(result.decision, keyed.parsed))
+    end
+
     private
 
     def import_file(file)
       entries = source.entries(file)
-      ordinals = Hash.new(0)
-      imported = 0
-      skipped = 0
-      rejected = 0
+      counts = Hash.new(0)
       feedback = 0
 
-      entries.each_slice(BATCH_SIZE) do |slice|
+      keyed_entries(file, entries).each_slice(BATCH_SIZE) do |slice|
         GateDecision.transaction do
-          slice.each do |raw|
-            parsed = Entry.new(gate: file.gate, surface: file.surface, raw: raw)
-            key = source_key(file, parsed, ordinals)
-
-            existing = GateDecision.find_by(source_key: key)
-            if existing
-              skipped += 1
-              feedback += import_feedback(existing, parsed)
-              next
-            end
-
-            begin
-              result = Record.call(
-                gate: file.gate, surface: file.surface, entry: raw,
-                recorded_via: GateDecision::IMPORT, source_key: key
-              )
-            rescue ActiveRecord::RecordInvalid, Record::InvalidEntry => e
-              # ONE unimportable entry must not cost the other 1,468. Without this
-              # the raise unwinds the batch, the file, the slice and the task, which
-              # then retries on a backoff, re-fetches the same megabytes and fails
-              # identically forever — on a path that by design has no shell to fix
-              # it from. Counted and named in the logs instead, and reported in the
-              # task's stats so a rejection is visible on /health rather than silent.
-              rejected += 1
-              logger.warn("[GateDecisions::LedgerImporter] #{file.name}: rejected #{key}: #{e.message}")
-              next
-            end
-
-            result.created? ? imported += 1 : skipped += 1
-            feedback += import_feedback(result.decision, parsed)
+          slice.each do |keyed|
+            outcome = import_entry(file, keyed)
+            counts[outcome.status] += 1
+            feedback += outcome.feedback_imported
           end
         end
       end
 
       logger.info("[GateDecisions::LedgerImporter] #{file.name}: #{entries.size} entries, " \
-                  "#{imported} imported, #{skipped} already present, #{rejected} rejected")
+                  "#{counts[:imported]} imported, #{counts[:already_present]} already present, " \
+                  "#{counts[:rejected]} rejected")
 
       FileResult.new(name: file.name, gate: file.gate, surface: file.surface, entries: entries.size,
-                     imported: imported, skipped: skipped, rejected: rejected, feedback_imported: feedback)
+                     imported: counts[:imported], skipped: counts[:already_present],
+                     rejected: counts[:rejected], feedback_imported: feedback)
     end
 
     # `#<ordinal>` disambiguates re-rates sharing a natural key; see the class

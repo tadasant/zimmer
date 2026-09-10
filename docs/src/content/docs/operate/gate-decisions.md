@@ -191,3 +191,35 @@ The source is resolved in order: an explicit directory, then `GATE_DECISION_LEDG
 GitHub via the `gh` credential every Zimmer container already carries. Outside production, a source
 it cannot reach is recorded on the task's ledger row and the task completes; in production it fails
 loudly rather than claiming to have imported a history it never read.
+
+### The appends the first import missed
+
+`ImportGateDecisionLedgers` read the archive once, between 15:02 and 15:26 UTC on 2026-09-02. The
+gates kept appending to the JSON files for eight more hours, until the cutover to
+`record_gate_decision`, and for about an hour after it as a fallback while that tool was
+unreachable. None of those 52 entries, across 13 files, was imported
+([tadasant/tadasant-internal#2432](https://github.com/tadasant/tadasant-internal/issues/2432)).
+50 of them were in no row at all.
+
+`ImportGateDecisionsAppendedAfterTheLedgerImport` imports 50 of them. It is not a re-run of the
+importer, because the other two were recorded live as well. Those two are tadasant-internal#2399's
+rating and its re-rate, and the re-rate was recorded as decided a day later and under a different
+verdict (`correction`). Their live rows carry no source key, so a re-run would have inserted both a
+second time, into a table that cannot delete a row. So the task pins the 50 it imports: each one by
+the key the importer would give it and the verdict it carries, all checked against the table
+before the task was written. Its keys are the importer's own, so a whole-file import over the
+archive would find all 50 already present. Two things guard the insert:
+
+- **A pinned entry that has since been recorded live is skipped.** That means a row a gate wrote over
+  MCP or the API for the same gate and artifact, decided within a day of the entry. Surface is not
+  matched, because live rows have been recorded under the wrong one. Skipping errs toward a missed
+  insert, which another task can add. A wrong insert cannot be removed.
+- **A pinned entry it cannot find fails the run.** If the entry is absent from the archive, carries
+  a different verdict, or is refused by the model, nothing is written for it. Every other file
+  still finishes first, and then the run parks `failed` on /health, naming the unresolved entries.
+  The files holding them go back off the cursor, so a retry, or a re-arm after the cause is fixed,
+  re-reads only those files.
+
+Its `stats` give the outcome of each of the 50 under `entries`, keyed by source key, with totals
+beside them. The backfill is complete when `unresolved` is 0 and `imported`, `already_present` and
+`recorded_live` sum to 50. A clean first run reads `imported: 50`.

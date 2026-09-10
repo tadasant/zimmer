@@ -663,6 +663,14 @@ everything?" a question the health panel answers rather than one somebody has to
 on each item's `id` so a second pass writes nothing, with the counts on its `stats`. See
 [the work backlog](/operate/work-backlog/).
 
+`ImportGateDecisionsAppendedAfterTheLedgerImport` is the same importer run over a **pinned** set,
+which is the shape a task takes when the source has changed since the first import and the table
+cannot be corrected. The archive grew by 52 entries after the first import read it. Two of them
+were also recorded live under a different key, and `gate_decisions` is append-only. So the task
+names the 50 it imports by key and verdict and inserts nothing else. A pinned entry that has since
+been recorded live is skipped, and one it cannot find fails the run rather than letting it report
+`succeeded`. See [the appends the first import missed](/operate/gate-decisions/#the-appends-the-first-import-missed).
+
 `RearmWakesBrickedByUnresolvableAgentRoot` is the other shape a one-time task takes: not an import
 but a **repair of live rows**, where selecting one row too many is as bad as selecting one too few.
 Two things follow from that. Its idempotency is structural rather than keyed — re-enabling a trigger
