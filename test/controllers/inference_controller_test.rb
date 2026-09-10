@@ -154,12 +154,15 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert_match(/#{pool_size} Total #{pool_size} Active 0 Quota Exceeded/, aggregate_stats_text)
   end
 
-  # ── aggregate 5-hour figure reflects availability, not the raw counter ──
+  # ── the aggregate 5-hour figure is over the accounts a turn could land on ──
 
-  test "show counts a 7d-blocked account as fully utilized in the 5-hour aggregate" do
+  test "show leaves a 7d-blocked account out of the 5-hour aggregate" do
     # The shape that motivated this: plenty of 5-hour headroom on paper, but the
-    # 7-day window turns every request away. Averaging the raw 29% would report
-    # pool headroom that cannot be served.
+    # 7-day window turns every request away. Neither number that account carries
+    # belongs in the 5-hour average — not its raw 29%, which is headroom nothing
+    # can reach, and not a substituted 100%, which the pacing curve would read as
+    # 5-hour capacity consumed (#693). It is left out, and the 7-day figure is
+    # where it says it cannot serve.
     seed_aggregate_snapshots(
       { utilization_5h: 0.29, status_5h: "allowed", reset_5h: 72.minutes.from_now,
         utilization_7d: 1.0, status_7d: "rejected", reset_7d: 1.day.from_now },
@@ -171,9 +174,9 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     stats = aggregate_stats_text
-    # (100% + 20%) / 2, not the raw (29% + 20%) / 2 = 24.5%.
-    assert_match(/Avg 5-Hour Utilization \(effective\) 60\.0% Worst: 100\.0%/, stats)
-    assert_match(/1 account counted that way now/, stats)
+    # The servable account's 20% alone, not (100% + 20%) / 2 and not (29% + 20%) / 2.
+    assert_match(/Avg 5-Hour Utilization \(servable accounts\) 20\.0% Worst: 20\.0%/, stats)
+    assert_match(/1 account left out now/, stats)
     assert_match(/Avg 7-Day Utilization 65\.0%/, stats)
   end
 
@@ -274,30 +277,60 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     stats = aggregate_stats_text
-    assert_match(/Avg 5-Hour Utilization \(effective\) 35\.0%/, stats)
-    assert_match(/None right now/, stats)
+    assert_match(/Avg 5-Hour Utilization \(servable accounts\) 35\.0%/, stats)
+    assert_match(/None left out right now/, stats)
   end
 
   test "show counts every weekly-spent account in the explanatory line" do
-    # The line claims to count accounts whose 7-day window is spent, so it must
-    # include one that is also at its 5-hour cap — where the correction changes
-    # nothing, but the claim still holds.
+    # The line claims to count the accounts left out, so it must include one that
+    # is also at its 5-hour cap — a spent week is what excludes it either way.
+    # A third account with weekly room keeps a servable set to be excluded FROM;
+    # with every week spent there is nothing to exclude and the line says
+    # something else entirely, which the next test covers.
     seed_aggregate_snapshots(
       { utilization_5h: 0.29, status_5h: "allowed", reset_5h: 72.minutes.from_now,
         utilization_7d: 1.0, status_7d: "rejected", reset_7d: 1.day.from_now },
       { utilization_5h: 1.0, status_5h: "rejected", reset_5h: 1.hour.from_now,
+        utilization_7d: 1.0, status_7d: "rejected", reset_7d: 2.days.from_now },
+      { utilization_5h: 0.10, status_5h: "allowed", reset_5h: 2.hours.from_now,
+        utilization_7d: 0.30, status_7d: "allowed", reset_7d: 5.days.from_now }
+    )
+
+    get inference_url
+
+    assert_response :success
+    stats = aggregate_stats_text
+    assert_match(/2 accounts left out now/, stats)
+    assert_match(/Avg 5-Hour Utilization \(servable accounts\) 10\.0%/, stats,
+      "the one servable account is the whole of the figure")
+  end
+
+  # The one state where the copy must NOT claim an exclusion: there is no
+  # servable set to exclude anything from, so the figure falls back to the whole
+  # pool and IS those accounts. Saying "2 accounts left out" beside a 100% built
+  # entirely from those 2 would describe a subtraction that did not happen.
+  test "show says the figure is the whole pool when every account's week is spent" do
+    seed_aggregate_snapshots(
+      { utilization_5h: 0.29, status_5h: "allowed", reset_5h: 72.minutes.from_now,
+        utilization_7d: 1.0, status_7d: "rejected", reset_7d: 1.day.from_now },
+      { utilization_5h: 0.01, status_5h: "allowed", reset_5h: 1.hour.from_now,
         utilization_7d: 1.0, status_7d: "rejected", reset_7d: 2.days.from_now }
     )
 
     get inference_url
 
     assert_response :success
-    assert_match(/2 accounts counted that way now/, aggregate_stats_text)
+    stats = aggregate_stats_text
+    assert_match(/Every account's 7-day window is spent/, stats)
+    assert_match(/this figure is the whole pool at 100%/, stats)
+    assert_no_match(/left out now/, stats)
+    assert_match(/Avg 5-Hour Utilization \(servable accounts\) 100\.0%/, stats)
   end
 
   test "show leaves the 7-day aggregate untouched when the 5-hour window is spent" do
-    # The correction is one-directional: a spent 5-hour window says nothing
-    # about the week, so the 7-day average must not inherit it.
+    # The exclusion is one-directional: a spent 5-hour window says nothing about
+    # the week, so the account stays in the 7-day average and reads its own
+    # number there. Its 5-hour 100% is its own counter, honestly averaged.
     seed_aggregate_snapshots(
       { utilization_5h: 1.0, status_5h: "rejected", reset_5h: 1.hour.from_now,
         utilization_7d: 0.30, status_7d: "allowed", reset_7d: 5.days.from_now },
@@ -309,7 +342,7 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     stats = aggregate_stats_text
-    assert_match(/Avg 5-Hour Utilization \(effective\) 100\.0%/, stats)
+    assert_match(/Avg 5-Hour Utilization \(servable accounts\) 100\.0%/, stats)
     assert_match(/Avg 7-Day Utilization 20\.0%/, stats)
   end
 
@@ -324,12 +357,15 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     get inference_url
 
     assert_response :success
+    # The card and the aggregate line above it have to say the same thing about
+    # the same account — the drift this assertion exists to catch.
     assert_select "#account_card_#{accounts.first.id}" do
-      assert_select "p", text: /Counted as 100% in the pool figure — the 7-day window is spent/
+      assert_select "p", text: /Left out of the pool's 5-hour figure — the 7-day window is spent/
     end
     assert_select "#account_card_#{accounts.second.id}" do
-      assert_select "p", text: /Counted as 100% in the pool figure/, count: 0
+      assert_select "p", text: /Left out of the pool's 5-hour figure/, count: 0
     end
+    assert_match(/is left out here/, aggregate_stats_text)
   end
 
   test "show has back link to sessions index" do
@@ -467,9 +503,10 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     GoodJob::Job.where(job_class: "AgentSessionJob").delete_all
     running.times do |i|
       record = Session.create!(git_root: "https://github.com/t/r.git", prompt: "running #{i}",
-                      genesis: SessionGenesis::WEB_UI, status: :running, agent_runtime: "claude_code")
-      # With a worker on the turn: the gate counts nothing else, and it waives the
-      # pace test entirely on a fleet with nothing running.
+                      genesis: SessionGenesis::SCHEDULE, status: :running, agent_runtime: "claude_code")
+      # With a worker on the turn: the gate counts nothing else. SPOT, because the
+      # pace test is waived entirely while no spot work is in flight, and these
+      # fixtures exist to reach the pacing hold.
       GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
         job_class: "AgentSessionJob", serialized_params: { "arguments" => [ record.id ] },
         scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
@@ -1589,13 +1626,22 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
   # Give the pool exactly two accounts with quota data, so the aggregate
   # averages are arithmetic the test can state exactly. Returns the accounts in
   # the order their snapshots were given.
+  # One snapshot per attribute set, on the two fixture accounts and then on as
+  # many fresh ones as the caller asked for. Built to the length of the argument
+  # list rather than zipped against a fixed pair: `zip` would silently drop a
+  # third snapshot, so a test seeding three accounts would assert against two.
   def seed_aggregate_snapshots(*snapshot_attributes)
     ClaudeAccountQuotaSnapshot.delete_all
 
     accounts = [ claude_accounts(:primary), claude_accounts(:secondary) ]
-    accounts.zip(snapshot_attributes).each do |account, attributes|
+    (snapshot_attributes.size - accounts.size).times do |i|
+      accounts << ClaudeAccount.create!(email: "aggregate-extra-#{i}@example.com",
+                                        runtime: "claude_code", oauth_config: { "x" => 1 })
+    end
+
+    snapshot_attributes.each_with_index do |attributes, i|
       ClaudeAccountQuotaSnapshot.create!(
-        claude_account: account, trigger: "page_view", **attributes
+        claude_account: accounts[i], trigger: "page_view", **attributes
       )
     end
     accounts

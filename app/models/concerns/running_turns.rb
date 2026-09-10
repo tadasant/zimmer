@@ -57,10 +57,11 @@
 # **A ceiling is not the only thing that reasons about this column**, and the two
 # that do not are deliberate. SpotGateService prices its projected burn off every
 # `running` row, since a session spends from the moment it is handed a turn, and
-# waives its pacing curve on that same population; SpotSessionPause's resume
-# budget counts the queue too, since a session it resumes joins the queue rather
-# than a worker. Both read the split rather than the occupancy, and say why where
-# they do it.
+# waives its pacing curve on the same split narrowed to SPOT sessions other than
+# the one being admitted (see Session.running_claude_code_spot_turns);
+# SpotSessionPause's resume budget counts the queue too, since a session it
+# resumes joins the queue rather than a worker. Both read the split rather than
+# the occupancy, and say why where they do it.
 #
 # == The two populations that are not in flight at all
 #

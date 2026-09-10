@@ -51,15 +51,25 @@
 # There is one exception to condition 2, and it exists because a session is not
 # infinitely divisible. If the sustainable rate is below what a single session
 # burns, condition 2 alone would admit nothing, ever, and leave the whole spot
-# budget unspent — the opposite of what this model is for. So when NOTHING is
-# running, the pace condition is waived and only the cap applies. One session
-# runs, gets ahead of the curve, and the next admission is held until the curve
-# catches up: a duty cycle rather than an outage. Work happens at every hour of
-# the day, and the reserve is still never touched.
+# budget unspent — the opposite of what this model is for. So when NO SPOT WORK
+# IS IN FLIGHT, the pace condition is waived and only the cap applies. One
+# session runs, gets ahead of the curve, and the next admission is held until the
+# curve catches up: a duty cycle rather than an outage. Work happens at every
+# hour of the day, and the reserve is still never touched.
 #
-# It keys on the whole fleet being idle, not on spot sessions being idle:
-# priority work running IS work happening, and it spends against the same
-# window.
+# It keys on spot work being idle rather than on the whole fleet being idle, and
+# that is a correction rather than a preference (tadasant/zimmer#693). Priority
+# work running IS work happening and it does spend against the same window — but
+# it is not the work this waiver exists to let through, and the spot budget goes
+# unspent whether or not a router is running. A live deployment always has some
+# priority session on a worker, so keying on the fleet turned the escape hatch
+# off permanently: production ran four days at 0-1 sessions with 33 spot sessions
+# held and the waiver never fired once.
+#
+# Priority spend is not thereby ignored. Every running session's burn is in the
+# rate both conditions are tested against, and condition 1 is never waived — so a
+# fleet of priority work that has actually eaten the spot budget still holds the
+# session, on the cap, which is the condition that owns that question.
 #
 # == Degrading honestly
 #

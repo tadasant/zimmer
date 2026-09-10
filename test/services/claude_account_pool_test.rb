@@ -53,16 +53,98 @@ class ClaudeAccountPoolTest < ActiveSupport::TestCase
     assert_in_delta 0.50, ClaudeAccountPool.measure.five_hour
   end
 
-  # An account whose week is gone cannot serve a request, so its empty 5-hour
-  # counter is not headroom the pool can spend.
-  test "an account whose 7-day window is spent counts as 100% in the 5-hour figure" do
+  # An account whose week is gone cannot serve a request, so its 5-hour counter
+  # says nothing about the capacity the pool can reach — in EITHER direction. It
+  # is left out of the 5-hour average rather than counted at 100% in it, because
+  # the pacing curve reads that average as capacity consumed and a substituted
+  # 100% is a floor no idleness can lower (#693). The account still says it is
+  # unservable, on the weekly figure, where it is true.
+  test "an account whose 7-day window is spent is left out of the 5-hour figure" do
     seed(account("healthy@example.com"), five_hour: 0.20, weekly: 0.10)
     seed(account("weekly-spent@example.com"), five_hour: 0.01, weekly: 1.0)
 
     measure = ClaudeAccountPool.measure
 
-    assert_in_delta 0.60, measure.five_hour, 0.0001
+    assert_in_delta 0.20, measure.five_hour, 0.0001,
+      "the servable account's 20% is the whole of the 5-hour figure"
+    assert_in_delta 0.20, measure.worst_five_hour, 0.0001,
+      "the worst is the worst of what was averaged, not of what was left out"
+    assert_in_delta 0.55, measure.weekly, 0.0001, "the weekly figure carries the spent week honestly"
     assert_equal 1, measure.weekly_spent_count
+    assert_equal 2, measure.read_count, "it is still an account with a reading"
+  end
+
+  # The observed production shape on 2026-09-10: two accounts spent on their WEEK
+  # and five idle ones, all seven reading 0.0% on their 5-hour counters. The old
+  # substitution made that 2/7 = 28.57%, which is what held 33 spot sessions
+  # against a 5-hour pacing curve on a fleet that had been idle for four days.
+  test "idle accounts read as idle however many weeks are spent beside them" do
+    2.times { |i| seed(account("spent-#{i}@example.com"), five_hour: 0.0, weekly: 1.0) }
+    5.times { |i| seed(account("idle-#{i}@example.com"), five_hour: 0.0, weekly: 0.20) }
+
+    measure = ClaudeAccountPool.measure
+
+    assert_in_delta 0.0, measure.five_hour, 0.0001
+    assert_equal 2, measure.weekly_spent_count
+    assert_equal 7, measure.read_count
+  end
+
+  # The one state the substitution described correctly, and the figure still
+  # reaches it — by having nothing servable to average rather than by
+  # substituting. A pool with no reachable account has no 5-hour headroom.
+  test "the 5-hour figure falls back to the whole pool when every week is spent" do
+    seed(account("spent-a@example.com"), five_hour: 0.01, weekly: 1.0)
+    seed(account("spent-b@example.com"), five_hour: 0.02, weekly: 1.0)
+
+    measure = ClaudeAccountPool.measure
+
+    assert_in_delta 1.0, measure.five_hour, 0.0001
+    assert_equal 0, measure.servable_count
+  end
+
+  # The narrower case the exclusion opens, and the one the whole-pool fallback
+  # must NOT cover: an account whose week has room but whose 5-hour counter could
+  # not be read, beside one whose week is spent. Falling back to the whole pool
+  # here would report the spent account's substituted 1.0 as the servable set's
+  # utilization — #693's shape again, on a pool that is actually serving.
+  test "a servable account with an unreadable 5-hour counter does not fall back to the whole pool" do
+    seed(account("weekly-spent@example.com"), five_hour: 0.01, weekly: 1.0)
+    seed(account("unreadable-5h@example.com"), five_hour: nil, weekly: 0.20)
+
+    measure = ClaudeAccountPool.measure
+
+    assert_nil measure.five_hour,
+      "we cannot read the servable set — which is not the same claim as the servable set being full"
+    assert_nil measure.worst_five_hour
+    assert_equal 2, measure.read_count, "both accounts still have a reading"
+    assert measure.capacity_now?, "and the pool is serving, which a 100% here would contradict"
+    assert_in_delta 0.60, measure.weekly, 0.0001, "the weekly figure is unaffected"
+  end
+
+  # The time axis follows the utilization onto the same population, because the
+  # pacing curve multiplies the spot budget by an elapsed fraction derived from
+  # it. A weekly-spent account's far-out 5-hour reset would otherwise lower the
+  # curve the servable accounts are paced against.
+  test "the 5-hour seconds remaining are averaged over the servable accounts too" do
+    seed(account("weekly-spent@example.com"), five_hour: 0.0, weekly: 1.0,
+         reset_5h: 5.hours.from_now)
+    seed(account("servable@example.com"), five_hour: 0.20, weekly: 0.20,
+         reset_5h: 1.hour.from_now)
+
+    measure = ClaudeAccountPool.measure
+
+    assert_in_delta 1.hour.to_i, measure.five_hour_seconds_remaining, 5,
+      "the servable account's rollover alone, not the average of both"
+  end
+
+  # The calibrator's twin is untouched by any of this: it divides fleet-wide
+  # spend by utilization to price a window, so its denominator has to stay the
+  # whole pool that produced the spend.
+  test "the uncorrected figure still averages every account with a reading" do
+    seed(account("healthy@example.com"), five_hour: 0.20, weekly: 0.10)
+    seed(account("weekly-spent@example.com"), five_hour: 0.01, weekly: 1.0)
+
+    assert_in_delta 0.105, ClaudeAccountPool.measure.five_hour_uncorrected, 0.0001
   end
 
   test "an account with no reading is not averaged, and the pool says so" do

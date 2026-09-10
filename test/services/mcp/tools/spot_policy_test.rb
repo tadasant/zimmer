@@ -108,10 +108,10 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
       sample_cost_usd: 500.0, sample_utilization: 0.5, observation_count: 5, computed_at: Time.current)
     HarnessModelBurnRate.create!(harness: "zimmer", model: "claude-opus-5", usd_per_minute: 4.0,
       sample_cost_usd: 400.0, sample_minutes: 100.0, sample_session_count: 25, computed_at: Time.current)
-    # On a worker, because that is the only population the gate counts — and the
-    # pace test is waived on a fleet with nothing running at all.
+    # On a worker, because that is the only population the gate counts — and SPOT,
+    # because the pace test is waived while no spot work is in flight.
     running = Session.create!(git_root: "https://github.com/t/r.git", prompt: "running", status: :running,
-                    genesis: SessionGenesis::WEB_UI, agent_runtime: "claude_code")
+                    genesis: SessionGenesis::SCHEDULE, agent_runtime: "claude_code")
     GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
       job_class: "AgentSessionJob", serialized_params: { "arguments" => [ running.id ] },
       scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)

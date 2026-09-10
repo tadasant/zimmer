@@ -64,7 +64,7 @@
           <div class="space-y-4">
             <div>
               <div class="flex items-center justify-between mb-1">
-                <span class="text-sm font-medium text-gray-700">Avg 5-Hour Utilization (effective)</span>
+                <span class="text-sm font-medium text-gray-700">Avg 5-Hour Utilization (servable accounts)</span>
                 <span class="text-sm font-semibold text-gray-900"><%= avg_5h ? utilization_percentage_text(avg_5h) : "N/A" %></span>
               </div>
               <div class="w-full bg-gray-200 rounded-full h-2.5">
@@ -77,8 +77,14 @@
               <%= render "inference/capacity_line", window: window_5h, dom_id: "capacity-5h" %>
               <% if avg_5h %>
                 <p class="mt-1 text-xs text-gray-500">
-                  Accounts whose 7-day window is spent count as 100% here: their 5-hour headroom can't be served.
-                  <%= weekly_spent_count > 0 ? "#{pluralize(weekly_spent_count, 'account')} counted that way now." : "None right now." %>
+                  <% if weekly_spent_count > 0 && weekly_spent_count >= pool.read_count %>
+                    Every account's 7-day window is spent, so there is no servable account to average
+                    and this figure is the whole pool at 100% — no 5-hour headroom Zimmer can reach.
+                  <% else %>
+                    Averaged over the accounts a turn could land on — an account whose 7-day window is
+                    spent is left out here, and says so on the 7-day figure below instead.
+                    <%= weekly_spent_count > 0 ? "#{pluralize(weekly_spent_count, 'account')} left out now." : "None left out right now." %>
+                  <% end %>
                 </p>
               <% end %>
             </div>

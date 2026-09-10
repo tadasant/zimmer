@@ -261,8 +261,9 @@ class SpotHoldExplanation
   #
   # When that headroom is zero or negative, one session on its own is priced
   # above what the window can sustain, so no amount of fleet burn admits it while
-  # anything is running. What runs then is the duty cycle the idle-fleet waiver
-  # produces, and the copy says that rather than printing a negative threshold.
+  # other spot work is running. What runs then is the duty cycle the idle-fleet
+  # waiver produces, and the copy says that rather than printing a negative
+  # threshold.
   def burn_threshold_clause
     sustainable = @decision.sustainable_usd_per_minute
     candidate = @decision.candidate_burn_usd_per_minute
@@ -278,9 +279,9 @@ class SpotHoldExplanation
   end
 
   def above_sustainable_clause(sustainable)
-    "Not while anything is running: one session on its own is priced above the #{rate(sustainable)} " \
-      "this window can sustain, so nothing fits beside the work already in flight. With nothing running " \
-      "at all the pace test is waived and a single session goes again."
+    "Not while other spot work is running: one session on its own is priced above the " \
+      "#{rate(sustainable)} this window can sustain, so nothing fits beside the work already in " \
+      "flight. Once no spot work is in flight the pace test is waived and a single session goes again."
   end
 
   # Always named as an estimate: this is a pool AVERAGE of when each account's
