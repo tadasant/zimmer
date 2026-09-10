@@ -34,11 +34,11 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
   # a window early in its cycle would be refused by the pacing curve instead, so
   # every case would read "held" for a reason these tests are not asking about.
   # QuotaCapacityModel and SpotGateServiceTest cover the curve itself.
-  def seed(current_5h:, current_7d: 0.10)
+  def seed(current_5h:, current_7d: 0.10, reset_5h: 5.minutes.from_now)
     ClaudeAccountQuotaSnapshot.create!(
       claude_account: @account,
       utilization_5h: current_5h, utilization_7d: current_7d,
-      reset_5h: 5.minutes.from_now, reset_7d: 1.hour.from_now,
+      reset_5h: reset_5h, reset_7d: 1.hour.from_now,
       active_session_count: 1, trigger: "usage_sample"
     )
   end
@@ -267,6 +267,29 @@ class SpotSessionPauseTest < ActiveSupport::TestCase
 
     assert_equal SpotSessionPause::MAX_RESUMES_PER_SWEEP, result.resumed
     assert_equal 2, result.held
+  end
+
+  # …but a batch of ONE when the pace was WAIVED rather than passed. A fleet with
+  # every spot session paused and only priority work running is exactly the state
+  # the idle-fleet waiver fires in, and the waiver's contract is a duty cycle
+  # rather than a burst: one goes back, which puts spot work in flight, so the
+  # next sweep is paced normally. See SpotSessionPause#pace_waived? and #693.
+  test "a sweep on a waived pacing curve resumes one session, not a batch" do
+    # 20% into the window, so the curve allows 15% of it against a reading of
+    # 40%: ahead of the curve, budget intact.
+    seed(current_5h: 0.40, reset_5h: 4.hours.from_now)
+    @setting.update!(spot_max_concurrent_sessions: 50)
+    (SpotSessionPause::MAX_RESUMES_PER_SWEEP + 2).times { |i| paused_session(paused_at: (30 - i).hours.ago) }
+
+    decision = SpotGateService.resume_decision
+    assert decision.five_hour.pace_waived, "no spot work is in flight"
+    refute decision.five_hour.within_pace, "…and the window is genuinely ahead of its curve"
+    assert decision.five_hour.within_cap, "the budget itself still has room, margin included"
+
+    result = SpotSessionPause.sweep!
+
+    assert_equal 1, result.resumed, "the waiver releases a session, not a batch"
+    assert_equal SpotSessionPause::MAX_RESUMES_PER_SWEEP + 1, result.held
   end
 
   # --- the queue a human can join on purpose ------------------------------------

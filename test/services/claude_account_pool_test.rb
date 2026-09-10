@@ -102,6 +102,41 @@ class ClaudeAccountPoolTest < ActiveSupport::TestCase
     assert_equal 0, measure.servable_count
   end
 
+  # The narrower case the exclusion opens, and the one the whole-pool fallback
+  # must NOT cover: an account whose week has room but whose 5-hour counter could
+  # not be read, beside one whose week is spent. Falling back to the whole pool
+  # here would report the spent account's substituted 1.0 as the servable set's
+  # utilization — #693's shape again, on a pool that is actually serving.
+  test "a servable account with an unreadable 5-hour counter does not fall back to the whole pool" do
+    seed(account("weekly-spent@example.com"), five_hour: 0.01, weekly: 1.0)
+    seed(account("unreadable-5h@example.com"), five_hour: nil, weekly: 0.20)
+
+    measure = ClaudeAccountPool.measure
+
+    assert_nil measure.five_hour,
+      "we cannot read the servable set — which is not the same claim as the servable set being full"
+    assert_nil measure.worst_five_hour
+    assert_equal 2, measure.read_count, "both accounts still have a reading"
+    assert measure.capacity_now?, "and the pool is serving, which a 100% here would contradict"
+    assert_in_delta 0.60, measure.weekly, 0.0001, "the weekly figure is unaffected"
+  end
+
+  # The time axis follows the utilization onto the same population, because the
+  # pacing curve multiplies the spot budget by an elapsed fraction derived from
+  # it. A weekly-spent account's far-out 5-hour reset would otherwise lower the
+  # curve the servable accounts are paced against.
+  test "the 5-hour seconds remaining are averaged over the servable accounts too" do
+    seed(account("weekly-spent@example.com"), five_hour: 0.0, weekly: 1.0,
+         reset_5h: 5.hours.from_now)
+    seed(account("servable@example.com"), five_hour: 0.20, weekly: 0.20,
+         reset_5h: 1.hour.from_now)
+
+    measure = ClaudeAccountPool.measure
+
+    assert_in_delta 1.hour.to_i, measure.five_hour_seconds_remaining, 5,
+      "the servable account's rollover alone, not the average of both"
+  end
+
   # The calibrator's twin is untouched by any of this: it divides fleet-wide
   # spend by utilization to price a window, so its denominator has to stay the
   # whole pool that produced the spend.

@@ -172,8 +172,8 @@ class SpotGateService
     def label = window.label
     def dollars? = window.dollars?
 
-    # True when this window refuses to ADMIT a session. A waived pace (nothing is
-    # running, see QuotaCapacityModel) leaves only the cap.
+    # True when this window refuses to ADMIT a session. A waived pace (no spot
+    # work is in flight, see QuotaCapacityModel) leaves only the cap.
     def at_limit? = !within_cap || (!pace_waived && !within_pace)
 
     # True when this window refuses to let work that is ALREADY RUNNING continue.
@@ -310,6 +310,10 @@ class SpotGateService
       # both would misstate the number a reader is looking at.
       spent = capacity&.weekly_spent_count.to_i
       return phrase if spent.zero?
+      # …except when EVERY week is spent, where there is no servable set to
+      # exclude anything from and the 5-hour figure falls back to the whole pool.
+      # Saying "left out" there would describe a subtraction that did not happen.
+      return "#{phrase} (every week spent, so the 5-hour figure is the whole pool at 100%)" if spent >= read_count
 
       "#{phrase} (#{spent} with a spent week, left out of the 5-hour figure)"
     end
@@ -600,14 +604,9 @@ class SpotGateService
 
   def awaiting_sessions = turns.awaiting_a_worker
 
-  # Every turn this fleet has been handed, on a worker or waiting for one. NOT
-  # what the cap compares against — that is #active_sessions — but the population
-  # that is spending, and therefore the one SpotSessionPause's resume budget has
-  # to reason about. See the class comment.
-  def fleet_in_flight = active_sessions + awaiting_sessions
-
-  # The same population narrowed to SPOT sessions, with the session being
-  # admitted left out of it. What the pacing waiver keys on, and both narrowings
+  # Every turn this fleet has been handed, on a worker or waiting for one,
+  # narrowed to SPOT sessions and with the session being admitted left out of
+  # it. What the pacing waiver keys on, and both narrowings
   # are load-bearing — see Session.running_claude_code_spot_turns.
   #
   # A second RunningTurns reading per decision, and deliberately eager. The
@@ -630,6 +629,13 @@ class SpotGateService
   # for. A session whose harness+model combination has never been sampled is
   # priced at the fleet default rather than at nothing, so an unknown combination
   # cannot look free.
+  #
+  # The candidate is in this population as well as in #candidate_burn_usd_per_minute
+  # below, so its burn is counted twice at admission — the same "the asker is
+  # already inside AgentSessionJob#perform" fact that #spot_in_flight has to
+  # exclude for. Left alone deliberately: double-counting makes the projection
+  # one session's burn HIGH, which errs toward protecting the reserve, and this
+  # change is scoped to the pacing behaviour that was erring the other way.
   def fleet_burn_usd_per_minute
     return @fleet_burn if defined?(@fleet_burn)
 

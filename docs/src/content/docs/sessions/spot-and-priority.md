@@ -481,7 +481,8 @@ console session reaching for either would move the policy without a record.
 ### Read across the whole pool, not one account
 
 Utilization is the **pool average** — every Claude Code account's latest reading, averaged. It is the
-same number `/inference` prints as **Avg 5-Hour Utilization (effective)** and **Avg 7-Day Utilization**
+same number `/inference` prints as **Avg 5-Hour Utilization (servable accounts)** and **Avg 7-Day
+Utilization**
 in its Account Pool section, computed once in `ClaudeAccountPool` and read by both, so the page's
 headline figure and the gate's decision cannot disagree.
 
@@ -1023,6 +1024,12 @@ the agent to pick up where it left off. Two things shape which and how many:
   window that has just come back down is at its most fragile — every session resumed starts spending
   again immediately — so the fleet walks back up over successive sweeps rather than restoring all at
   once. Sessions past the batch keep their place at the front of the next one.
+- **A batch of one when the pacing curve was waived** rather than passed. A fleet with every spot
+  session paused and only priority work running is exactly the state the
+  [idle-fleet waiver](#there-is-always-room-for-one-session) fires in, and the waiver's contract is a
+  duty cycle rather than a burst: one session goes back, which puts spot work in flight, so the next
+  sweep five minutes later is paced normally. Only the pace is narrowed — the cap still holds the
+  money back with the resume margin on top of the reserve, and the fleet cap still holds the slots.
 
 A session someone promotes to **priority** while it sleeps is resumed by the next sweep whatever the
 windows say, because priority work is never gated on quota.
