@@ -187,6 +187,25 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
 
   # === Cleanup Processes Tests ===
 
+  # This action really terminates processes, and the orphan test it uses — a live
+  # `claude` process this uid owns that no running session in the database records
+  # — matches every live agent on the host when the database is the test one. It
+  # killed the session running this file three times before the host scan was
+  # made unreachable from the test environment (#1095). This case is the tripwire:
+  # if a change lets the action reach the host again, this fails before anything
+  # is signalled, because the expectations replace the methods.
+  test "cleanup_processes never scans the host or terminates a process from a test" do
+    HostProcessDiscovery.expects(:new).never
+    ProcessTerminationService.any_instance.expects(:terminate).never
+
+    post cleanup_processes_health_url, headers: { "Accept" => "application/json" }
+    assert_response :success
+
+    json = JSON.parse(response.body)
+    assert_equal [], json["terminated"]
+    assert_equal [], json["failed"]
+  end
+
   test "cleanup_processes redirects with notice" do
     post cleanup_processes_health_url
     assert_redirected_to health_dashboard_path

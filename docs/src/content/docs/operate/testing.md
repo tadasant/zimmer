@@ -247,6 +247,38 @@ The rule that prevents the next one: **do not stub, mock, or set expectations on
 (`File`, `Dir`, `Kernel`, `Rails.logger`) in this suite.** Inject a seam, point at a real temp file, or
 capture output — anything scoped to the object and lifetime under test.
 
+### The host is not a fixture: a test must not see the machine's processes
+
+The rule above has a sharper edge than flakiness. `HealthMonitorService#cleanup_orphaned_processes`
+defines an orphan as *a live `claude` process this uid owns whose pid no `running` or `waiting` session
+in the database records*, and it terminates every one it finds. Run from a test, the database half of
+that is the test database, whose fixtures record no real pid — so every live agent process on the
+machine is an orphan. On the production droplet, where agent sessions run their own targeted tests
+beside a fleet of live agents, `bin/rails test test/controllers/health_controller_test.rb` killed the
+session running it, three times over ([#1095](https://github.com/tadasant/zimmer/issues/1095)). CI
+never noticed because a CI container has no other agent to kill.
+
+The seam is `HostProcessDiscovery`, the one object that runs the `pgrep`. `HealthMonitorService` takes
+one as `process_discovery:`, and when none is given it builds whichever `config.x.host_process_discovery`
+names: the real scanner everywhere but `config/environments/test.rb`, which sets `:none` and gets
+`HostProcessDiscovery::None`, which sees nothing. That covers every caller that constructs the service
+the way production does — the two controllers, the `action_health` and `get_system_health` MCP tools,
+`SystemHealthMonitorJob` — including tests that have not been written yet. It also means an unstubbed
+`process_health` in a test reports zero active processes, which the section already reports as "not
+observable from here" whenever a session records an agent process it cannot probe, rather than as
+"none exist".
+
+The setting is one line in one file, and anything other than exactly `:none` builds the real scanner,
+so `test/test_helper.rb` checks it once in the parent process, before `parallelize` forks: a service
+built without an explicit discovery must come back with `HostProcessDiscovery::None`, or the suite
+aborts before any test body runs. Two per-case tripwires sit behind that: `HealthControllerTest` posts
+to the action with `HostProcessDiscovery.expects(:new).never` and
+`ProcessTerminationService.any_instance.expects(:terminate).never`, which fail on the constructor
+before anything is signalled, and `HealthMonitorServiceTest` asserts the same service is blind here
+and that `cleanup_orphaned_processes` reaches no termination even when every pid it could see would
+count as an orphan. A test *of* the scanner constructs a `HostProcessDiscovery` and stubs its own
+`pgrep_output` — the instance, never `Open3`.
+
 ### Process-global caches leak between tests in the same worker
 
 The other in-process shape is not a stub at all — it is a cache. `AirCatalogService` holds its resolved artifact
