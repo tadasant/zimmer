@@ -6,10 +6,11 @@ import Sortable from "sortablejs"
 //
 // Every category section — including "Uncategorized" — exposes its card grid as a
 // "list" target. All lists share a single Sortable group, so a card can be dragged
-// from any section into any other (empty sections included). When a card lands in a
-// different section we PATCH the session's category_id so the assignment survives a
-// reload. Sortable's touch support (with a long-press delay) makes this work on
-// mobile while still allowing the page to scroll.
+// from any section into any other (empty sections included). Every drop POSTs the
+// destination section's new top-to-bottom order to reorderCardsUrl — plus, when the
+// drag crossed sections, the id of the card that moved, so one request persists both
+// the new category and the new position. Sortable's touch support (with a long-press
+// delay) makes this work on mobile while still allowing the page to scroll.
 //
 // listTargetConnected fires for sections present at load AND for sections appended
 // later by the "+" button, so dynamically created categories become drop targets
@@ -24,7 +25,7 @@ import Sortable from "sortablejs"
 export default class extends Controller {
   static targets = ["list", "sections", "menu"]
   static values = {
-    setCategoryUrlTemplate: String,
+    reorderCardsUrl: String,
     createUrl: String,
     reorderUrl: String
   }
@@ -241,26 +242,22 @@ export default class extends Controller {
     this.showMenu(event, items)
   }
 
-  // Move a card into a category via the menu: persist the assignment, then relocate
-  // its <turbo-frame> into the destination grid so the UI matches without a reload.
+  // Move a card into a category via the menu: append its <turbo-frame> to the bottom
+  // of the destination grid, then persist that grid's order — the same write the drag
+  // path makes, so the card's landing spot survives a reload rather than only its
+  // category. Rejected writes put the frame back exactly where it was.
   moveCardTo(sessionId, categoryId) {
-    const url = this.setCategoryUrlTemplateValue.replace("__SESSION_ID__", sessionId)
+    const frame = document.getElementById(`session_${sessionId}`)
+    const destination = this.listTargets.find((list) => (list.dataset.categoryId || "") === categoryId)
+    if (!frame || !destination) return
 
-    fetch(url, {
-      method: "PATCH",
-      headers: csrfHeaders({ Accept: "application/json" }),
-      body: JSON.stringify({ category_id: categoryId })
+    const origin = frame.parentElement
+    const reference = frame.nextElementSibling
+    destination.appendChild(frame)
+
+    this.persistCardOrder(destination, sessionId, () => {
+      if (origin) origin.insertBefore(frame, reference)
     })
-      .then((response) => {
-        if (!response.ok) {
-          console.error("Failed to move card", response.status)
-          return
-        }
-        const frame = document.getElementById(`session_${sessionId}`)
-        const destination = this.listTargets.find((list) => (list.dataset.categoryId || "") === categoryId)
-        if (frame && destination) destination.appendChild(frame)
-      })
-      .catch((error) => console.error("Failed to move card", error))
   }
 
   // Reposition a category in the stack via the menu, then persist the new order.
@@ -368,40 +365,60 @@ export default class extends Controller {
     document.removeEventListener("keydown", this.menuKeydownBound)
   }
 
-  // Persist a card that moved into a different category section.
+  // Persist a card drop — within a section as well as across one. Both are the same
+  // write: the destination section's new order, with the moved card's id attached so
+  // the server can reassign its category in the same request when it crossed.
   persist(event) {
-    // Reordering within the same section is not meaningful — only cross-section
-    // moves change a session's category.
-    if (event.from === event.to) return
-
     const sessionId = this.sessionIdFor(event.item)
     if (!sessionId) return
+    // A drop that landed the card exactly where it started saves nothing.
+    if (event.from === event.to && event.oldIndex === event.newIndex) return
 
-    const categoryId = event.to.dataset.categoryId || ""
-    const url = this.setCategoryUrlTemplateValue.replace("__SESSION_ID__", sessionId)
+    this.persistCardOrder(event.to, sessionId, () => this.revert(event))
+  }
 
-    fetch(url, {
-      method: "PATCH",
+  // POST one section's live top-to-bottom card order. The ids are the section's
+  // CURRENT PAGE, not its whole bucket — the server deals them back into the slots
+  // they already hold in the bucket's global order rather than reading the index in
+  // this list as the position, so a drag on page 2 cannot renumber page 1. See
+  // SessionCardOrder.
+  persistCardOrder(list, movedSessionId, onFailure = null) {
+    if (!this.hasReorderCardsUrlValue) return
+
+    const ids = Array.from(list.children)
+      .map((child) => this.sessionIdFor(child))
+      .filter((id) => id !== null)
+    if (ids.length === 0) return
+
+    fetch(this.reorderCardsUrlValue, {
+      method: "POST",
       headers: csrfHeaders({ Accept: "application/json" }),
-      body: JSON.stringify({ category_id: categoryId })
+      body: JSON.stringify({
+        ids,
+        category_id: list.dataset.categoryId || "",
+        session_id: movedSessionId
+      })
     })
       .then((response) => {
         if (!response.ok) {
-          console.error("Failed to persist category assignment", response.status)
-          this.revert(event)
+          console.error("Failed to persist card order", response.status)
+          if (onFailure) onFailure()
         }
       })
       .catch((error) => {
-        console.error("Failed to persist category assignment", error)
-        this.revert(event)
+        console.error("Failed to persist card order", error)
+        if (onFailure) onFailure()
       })
   }
 
-  // Put a card back in the section it came from when the server rejects the move,
-  // so the UI never shows an assignment that wasn't actually saved.
+  // Put a card back where it started when the server rejects the move, so the UI
+  // never shows an order that wasn't actually saved. The item is excluded from the
+  // sibling list first: for a same-section reorder it is still a child of `from`, so
+  // indexing `from.children` directly would count the card against its own old
+  // position and land it one slot out.
   revert(event) {
-    const reference = event.from.children[event.oldIndex] || null
-    event.from.insertBefore(event.item, reference)
+    const siblings = Array.from(event.from.children).filter((child) => child !== event.item)
+    event.from.insertBefore(event.item, siblings[event.oldIndex] || null)
   }
 
   // Prompt for a name and create a new category. The server responds with a Turbo

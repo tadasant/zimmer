@@ -3,7 +3,8 @@
 require "test_helper"
 
 # Covers the session <-> category surface of the sessions API: the set_category
-# member action and the category fields embedded in session JSON.
+# member action, the reorder collection action, and the category fields embedded
+# in session JSON.
 class Api::V1::SessionsControllerSetCategoryTest < ActionDispatch::IntegrationTest
   setup do
     @valid_api_key = "test_api_key_12345"
@@ -80,5 +81,56 @@ class Api::V1::SessionsControllerSetCategoryTest < ActionDispatch::IntegrationTe
     session_json = json["sessions"].find { |s| s["id"] == @session.id }
     assert_equal @category.id, session_json["category_id"]
     assert_equal "Work", session_json["category"]["name"]
+  end
+
+  # reorder ---------------------------------------------------------------
+
+  def build_card(created_at:, **attrs)
+    Session.create!({
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test",
+      created_at: created_at
+    }.merge(attrs))
+  end
+
+  test "reorder returns 401 without API key" do
+    post reorder_api_v1_sessions_path, params: { ids: [ @session.id ] }
+    assert_response :unauthorized
+  end
+
+  test "reorder persists a within-section order and returns the bucket" do
+    a = build_card(created_at: 3.hours.ago)
+    b = build_card(created_at: 2.hours.ago)
+
+    post reorder_api_v1_sessions_path, params: { ids: [ a.id, b.id ] }, headers: @headers
+    assert_response :success
+
+    json = JSON.parse(response.body)
+    assert_nil json["category_id"]
+    # @session from setup is also uncategorized, so assert on the two cards' relative order.
+    assert_operator json["session_ids"].index(a.id), :<, json["session_ids"].index(b.id)
+    assert_operator Session.where(category_id: nil).card_ordered.pluck(:id).index(a.id), :<,
+      Session.where(category_id: nil).card_ordered.pluck(:id).index(b.id)
+  end
+
+  test "reorder moves a session between sections and places it" do
+    a = build_card(created_at: 3.hours.ago, category: @category)
+    b = build_card(created_at: 2.hours.ago, category: @category)
+    moved = build_card(created_at: 1.hour.ago)
+
+    post reorder_api_v1_sessions_path,
+      params: { ids: [ a.id, moved.id, b.id ], category_id: @category.id, session_id: moved.id },
+      headers: @headers
+    assert_response :success
+
+    assert_equal @category.id, moved.reload.category_id
+    assert_equal [ a.id, moved.id, b.id ], JSON.parse(response.body)["session_ids"]
+  end
+
+  test "reorder returns 404 for an unknown category" do
+    post reorder_api_v1_sessions_path,
+      params: { ids: [ @session.id ], category_id: 999_999 },
+      headers: @headers
+    assert_response :not_found
   end
 end

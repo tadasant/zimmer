@@ -1095,6 +1095,40 @@ class Api::V1::SessionsController < Api::BaseController
     }
   end
 
+  # POST /api/v1/sessions/reorder
+  # Persist the top-to-bottom order of one dashboard section's cards.
+  #
+  # Request body:
+  #   - ids: Ordered array of session ids (top to bottom), as the section shows
+  #     them. This is one PAGE of a section, not the whole bucket — the cards are
+  #     dealt back into the slots they already hold in the bucket's global order,
+  #     so cards on other pages keep their positions.
+  #   - category_id: The destination section. Omit, send null, or send
+  #     "uncategorized" for the Uncategorized bucket.
+  #   - session_id: Optional. The card that moved between sections; its category
+  #     is reassigned before positions are written, so one request persists both.
+  #
+  # Returns the destination bucket's full order.
+  def reorder
+    category_id = params[:category_id].to_s.strip
+
+    if category_id.present? && category_id != Category::UNCATEGORIZED_SENTINEL
+      category = Category.find_by(id: category_id.to_i)
+      unless category
+        render_api_error("Not Found", "Category ##{category_id} not found", status: :not_found)
+        return
+      end
+    end
+
+    order = Session.reorder_cards!(
+      params[:ids],
+      category_id: category&.id,
+      moved_session_id: params[:session_id]
+    )
+
+    render json: { category_id: category&.id, session_ids: order }
+  end
+
   # POST /api/v1/sessions/bulk_archive
   # Archive multiple sessions at once.
   #

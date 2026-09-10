@@ -154,4 +154,65 @@ class Mcp::Tools::ManageCategoriesTest < ActiveSupport::TestCase
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "explode") }
     assert_includes error.message, 'Unknown action "explode"'
   end
+
+  # reorder_sessions ---------------------------------------------------------
+
+  def build_card(created_at:, **attrs)
+    Session.create!({
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test",
+      created_at: created_at
+    }.merge(attrs))
+  end
+
+  test "reorder_sessions rewrites card positions inside a section" do
+    category = Category.create!(name: "Infra")
+    a = build_card(created_at: 3.hours.ago, category: category)
+    b = build_card(created_at: 2.hours.ago, category: category)
+
+    output = @tool.call("action" => "reorder_sessions", "category_id" => category.id, "session_ids" => [ a.id, b.id ])
+
+    assert_includes output, "## Session Cards Reordered"
+    assert_includes output, "- **Section:** Infra"
+    assert_equal [ a.id, b.id ], Session.where(category_id: category.id).card_ordered.pluck(:id)
+  end
+
+  test "reorder_sessions targets Uncategorized when no category is named" do
+    a = build_card(created_at: 3.hours.ago)
+    b = build_card(created_at: 2.hours.ago)
+
+    output = @tool.call("action" => "reorder_sessions", "session_ids" => [ a.id, b.id ])
+
+    assert_includes output, "- **Section:** Uncategorized"
+    ids = Session.where(category_id: nil).card_ordered.pluck(:id)
+    assert_operator ids.index(a.id), :<, ids.index(b.id)
+  end
+
+  test "reorder_sessions moves a card in from another section when session_id is given" do
+    category = Category.create!(name: "Infra")
+    a = build_card(created_at: 3.hours.ago, category: category)
+    moved = build_card(created_at: 1.hour.ago)
+
+    @tool.call(
+      "action" => "reorder_sessions",
+      "category_id" => category.id,
+      "session_ids" => [ moved.id, a.id ],
+      "session_id" => moved.id
+    )
+
+    assert_equal category.id, moved.reload.category_id
+    assert_equal [ moved.id, a.id ], Session.where(category_id: category.id).card_ordered.pluck(:id)
+  end
+
+  test "reorder_sessions without session_ids raises" do
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "reorder_sessions", "session_ids" => []) }
+    assert_includes error.message, '"session_ids" (a non-empty array) is required'
+  end
+
+  test "reorder_sessions with an unknown category raises" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "reorder_sessions", "category_id" => 999_999, "session_ids" => [ 1 ])
+    end
+    assert_includes error.message, "Category #999999 not found"
+  end
 end

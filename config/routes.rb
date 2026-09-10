@@ -156,6 +156,8 @@ Rails.application.routes.draw do
           get :search
           post :refresh_all
           post :bulk_archive
+          # Persist the top-to-bottom order of one dashboard section's cards.
+          post :reorder
         end
 
         member do
@@ -529,6 +531,9 @@ Rails.application.routes.draw do
     end
     collection do
       post :bulk_archive
+      # Persist a drag-and-drop reordering of one dashboard section's cards.
+      # Accepts the section's new top-to-bottom order of session ids.
+      post :reorder
       post :refresh_all
       post :refresh_category
       post :refresh_starred
