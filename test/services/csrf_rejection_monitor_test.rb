@@ -11,8 +11,18 @@ require "test_helper"
 class CsrfRejectionMonitorTest < ActiveSupport::TestCase
   EXCEPTION_MESSAGE = "Can't verify CSRF token authenticity.".freeze
 
+  # Buckets are wall-clock, so every case runs on a frozen clock parked mid-bucket.
+  # Unfrozen, a burst that happened to straddle a five-minute boundary would split
+  # across two buckets and the counts below would flake.
+  MID_BUCKET = Time.utc(2026, 9, 10, 12, 2, 30)
+
   setup do
     @reports = []
+    travel_to MID_BUCKET
+  end
+
+  teardown do
+    travel_back
   end
 
   # A stand-in for ActionDispatch::Request carrying only what the monitor reads.
@@ -30,8 +40,8 @@ class CsrfRejectionMonitorTest < ActiveSupport::TestCase
   # ErrorReporter is the seam the monitor reports through; test/initializers/
   # sentry_test.rb covers the other side of it against the real configuration.
   def capturing_reports(&block)
-    ErrorReporter.stub(:report_exception, ->(exc, context: {}, level: :error) {
-      @reports << { exception: exc, context: context, level: level }
+    ErrorReporter.stub(:report_exception, ->(exc, context: {}, level: :error, fingerprint: nil) {
+      @reports << { exception: exc, context: context, level: level, fingerprint: fingerprint }
     }, &block)
   end
 
@@ -96,14 +106,11 @@ class CsrfRejectionMonitorTest < ActiveSupport::TestCase
   test "a later window reports again — the storm is still happening" do
     with_memory_cache do
       capturing_reports do
-        travel_to Time.zone.parse("2026-09-10 12:00:00") do
-          CsrfRejectionMonitor::THRESHOLD.times { record }
-        end
+        CsrfRejectionMonitor::THRESHOLD.times { record }
 
-        travel_to Time.zone.parse("2026-09-10 12:00:00") + CsrfRejectionMonitor::WINDOW do
-          results = CsrfRejectionMonitor::THRESHOLD.times.map { record }
-          assert_equal 1, results.count(:reported)
-        end
+        travel CsrfRejectionMonitor::WINDOW
+        results = CsrfRejectionMonitor::THRESHOLD.times.map { record }
+        assert_equal 1, results.count(:reported)
       end
     end
 
@@ -125,6 +132,8 @@ class CsrfRejectionMonitorTest < ActiveSupport::TestCase
 
     report = @reports.sole
     assert_kind_of ActionController::InvalidAuthenticityToken, report[:exception]
+    assert_equal [ "csrf-rejection-rate" ], report[:fingerprint],
+      "the rate signal gets its own GlitchTip issue, apart from per-request CSRF events"
     context = report[:context]
     assert_equal CsrfRejectionMonitor::THRESHOLD, context[:csrf_rejections_in_window]
     assert_equal CsrfRejectionMonitor::WINDOW.to_i, context[:window_seconds]

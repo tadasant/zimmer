@@ -6,11 +6,13 @@
 # The distinction is the whole point, and it is issue #23's own framing: "One is
 # noise; a hundred an hour means the app is broken." A single
 # ActionController::InvalidAuthenticityToken is a stale form, a tab left open
-# across a deploy, or a probe POSTing at a real route. A sustained stream of them
-# is #19 — a proxy that stopped forwarding X-Forwarded-Proto or Host, so *every
-# write in the UI* fails for *every* real user. Production served exactly that,
-# for hours, and nothing paged: sentry-rails excludes the class by default, so the
-# one pipeline carrying the URL, verb and user agent dropped it client-side.
+# across a deploy, or a client POSTing at a real route without a token. A sustained
+# stream of them is #19 — the app computing a scheme or host that differs from the
+# one the browser sends (there, `assume_ssl` on a plain-HTTP tailnet deploy), so
+# the Origin check fails *every write in the UI* for *every* real user. Production
+# served exactly that, for hours, and nothing paged: sentry-rails excludes the
+# class by default, so the one pipeline carrying the URL, verb and user agent
+# dropped it client-side.
 #
 # ApplicationController#invalid_authenticity_token already re-logs each rejection
 # at INFO with those fields (#295). That line does not leave the container — the
@@ -19,8 +21,9 @@
 #
 #   * every rejection increments a counter in a tumbling WINDOW-length bucket;
 #   * the first rejection to push a bucket to THRESHOLD reports ONE exception to
-#     GlitchTip, carrying the count and the triage fields, and emits ONE WARN so
-#     the same conclusion is reachable from VictoriaLogs;
+#     GlitchTip, carrying the count and the triage fields under a fixed
+#     fingerprint, and emits ONE WARN so the same conclusion is reachable from
+#     VictoriaLogs;
 #   * every later rejection in that bucket is silent.
 #
 # So a storm costs at most one event and one WARN per WINDOW no matter how loud it
@@ -33,13 +36,14 @@
 # a sorted set of timestamps per client — buys precision at a threshold that does
 # not need it.
 #
-# **It fails silent, never open and never loud.** `Rails.cache` is Redis in
-# production, configured with an `error_handler` that swallows, so a dead Redis
-# makes `increment` return nil rather than raise; the test env's `:null_store`
-# does the same. Both mean "no counter", and no counter means no report — because
-# the alternative, reporting every rejection when the counter is unavailable, is
-# an unbounded flood into the alert path, which is the failure mode this whole
-# issue is about. A Redis outage has its own alerting, and the per-record INFO
+# **It fails closed on reporting, never open.** `Rails.cache` is Redis in
+# production, and RedisCacheStore's `failsafe` rescues a connection error, hands it
+# to the configured `error_handler` (which logs it at ERROR — so a dead Redis is
+# loud on its own, here and on every other cache call) and returns nil rather than
+# raising. The test env's `:null_store` also returns nil. Both mean "no counter",
+# and no counter means no report — because the alternative, reporting every
+# rejection when the counter is unavailable, is an unbounded flood into the alert
+# path, which is the failure mode this whole issue is about. The per-record INFO
 # line survives regardless.
 #
 # **It never breaks the response.** Everything here is wrapped: the caller is a
@@ -55,13 +59,21 @@ class CsrfRejectionMonitor
   # the record that paged #alerts was the *first* InvalidAuthenticityToken in
   # production across the full 14-day VictoriaLogs retention window.
   #
-  # Bot noise is a smaller risk here than it looks. The catch-all route sends
+  # Probe noise is a smaller risk than it looks. The catch-all route sends
   # unmatched paths to ErrorsController, which declares `skip_forgery_protection`,
-  # so a scanner spraying POSTs at invented paths raises nothing. To reach this
-  # counter a client has to be POSTing at *real* Zimmer routes, repeatedly.
+  # so POSTs at invented paths raise nothing; to reach this counter a client has to
+  # POST at *real* Zimmer routes, repeatedly. And on this deployment the host is
+  # tailnet-only, so the clients that can do that at all are tailnet members.
   THRESHOLD = 10
 
   KEY_PREFIX = "csrf_rejection"
+
+  # One GlitchTip issue for the rate signal, whatever the exception's stack. The
+  # two surfaces without ApplicationController's rescue_from (/supervisor, /jobs)
+  # report InvalidAuthenticityToken per request through the middleware, with the
+  # same type, message and all-gem stack; without this, a storm's report could
+  # land as one more event on an issue opened weeks earlier by a single stray POST.
+  FINGERPRINT = [ "csrf-rejection-rate" ].freeze
 
   # @return [Symbol] what happened, for tests and for callers that want to log it:
   #   :reported, :already_reported, :below_threshold, or :not_counted.
@@ -106,9 +118,8 @@ class CsrfRejectionMonitor
   def report(count)
     # WARN, not ERROR: this record is meant to be *readable* in VictoriaLogs (the
     # exporter ships WARN and above), and the production Grafana rule counts ERROR
-    # and FATAL. Paging is GlitchTip's job here, and it now has the event to do it
-    # with. Deliberately one line per window, so a storm cannot flood the log path
-    # either.
+    # and FATAL. Paging is GlitchTip's job, on the event below. Deliberately one
+    # line per window, so a storm cannot flood the log path either.
     Rails.logger.warn(
       "CSRF rejection rate exceeded: #{count} in #{WINDOW.to_i}s " \
       "(threshold #{THRESHOLD}) — latest #{@request.request_method} #{@request.path} " \
@@ -125,11 +136,15 @@ class CsrfRejectionMonitor
     # real exception to group on, so a storm is one issue with N occurrences.
     #
     # No IP: `send_default_pii = false` is a deliberate decision in
-    # config/initializers/sentry.rb, and the fields that actually separate a probe
-    # from a broken proxy are `session_cookie` and `reason`, not the address. The
-    # per-record INFO line still carries the IP for whoever needs it.
+    # config/initializers/sentry.rb (the SDK strips REMOTE_ADDR and X-Forwarded-For
+    # from the request interface under it), and the fields that separate a stale
+    # client from a misconfigured app are `session_cookie` and `reason`, not the
+    # address. The per-record INFO line carries the IP for whoever needs it. Like
+    # any request-scoped event, this one also carries the request's breadcrumbs,
+    # including the rejected write's params after `filter_parameters`.
     ErrorReporter.report_exception(
       @exception,
+      fingerprint: FINGERPRINT,
       context: {
         csrf_rejections_in_window: count,
         window_seconds: WINDOW.to_i,
@@ -151,7 +166,10 @@ class CsrfRejectionMonitor
     "#{KEY_PREFIX}:reported:#{bucket}"
   end
 
+  # Memoized so the counter and the claim always name the same bucket: computed
+  # twice, a boundary falling between the two would claim the NEXT bucket's report
+  # slot early and suppress that bucket's report.
   def bucket
-    Time.current.to_i / WINDOW.to_i
+    @bucket ||= Time.current.to_i / WINDOW.to_i
   end
 end

@@ -58,89 +58,92 @@ if ENV["SENTRY_DSN_BACKEND"].present?
     # ---- and what this initializer takes back OUT of the inherited list -------
     #
     # `excluded_exceptions` does not start empty. sentry-ruby seeds it with its own
-    # IGNORE_DEFAULT + PUMA_IGNORE_DEFAULT, and sentry-rails' `after(:initialize)`
-    # hook concatenates a further fourteen classes (Sentry::Rails::IGNORE_DEFAULT,
-    # plus ActionController::TooManyRequests on Rails >= 8.1.1) *before* this block
-    # ever runs. Every line above only ever appends, so nothing here ever audited
-    # what it inherited — and issue #23 is the bill for that: production served a
-    # storm of CSRF 422s (#19) in which **every write in the UI failed**, and
-    # GlitchTip received nothing at all, because
-    # ActionController::InvalidAuthenticityToken is item 4 of that inherited list.
-    # A human found the outage by clicking a button.
+    # IGNORE_DEFAULT + PUMA_IGNORE_DEFAULT (seven names), and sentry-rails'
+    # `after(:initialize)` hook concatenates fifteen more (Sentry::Rails::IGNORE_DEFAULT's
+    # fourteen, plus ActionController::TooManyRequests on Rails >= 8.1.1) *before* this
+    # block runs. The block above only appends, and nothing audited what it inherited —
+    # which is how issue #23 happened: production served a storm of CSRF 422s (#19,
+    # `assume_ssl` on a plain-HTTP tailnet deploy) in which **every write in the UI
+    # failed**, and GlitchTip received nothing at all, because
+    # ActionController::InvalidAuthenticityToken is in that inherited list. A human
+    # found the outage by clicking a button.
     #
-    # Subtraction, not a rewrite of the list: `-=` removes the name if it is there
-    # and is a harmless no-op if a future sentry-rails stops shipping it, so this
-    # line cannot break on an SDK that changes its own defaults. What it cannot
-    # catch is the SDK excluding the class under some *other* name or via a
-    # superclass, so test/initializers/sentry_test.rb asserts the behaviour rather
-    # than the array — that the real, fully-resolved configuration will actually
-    # build an event for this exception.
+    # Exclusion matches with `===`, so an entry also silences every SUBCLASS of the
+    # class it names. The audit below was run over every loaded exception class, not
+    # only over the names in the list, and that is how it found the second removal.
     #
-    # The trade, stated plainly: a *rate* of CSRF rejections now reaches GlitchTip,
-    # not each one. CsrfRejectionMonitor (called from
-    # ApplicationController#invalid_authenticity_token) counts rejections in
-    # five-minute buckets and captures a single exception once a bucket clears its
-    # threshold, so the loudest possible storm costs one event per five minutes.
-    # That explicit capture is the reason this removal matters at all:
-    # Sentry::Client#event_from_exception checks excluded_exceptions on an explicit
-    # `Sentry.capture_exception` exactly as it does on a middleware capture, so
-    # while the name is in the resolved list the monitor's report is silently
-    # dropped too. There is also one path with no rescue_from in front of it —
-    # Supervisor::ApplicationController descends from
-    # Administrate::ApplicationController, so a tokenless non-GET to /supervisor/*
-    # raises through the middleware — and this removal is what puts that event, with
-    # its URL and user agent, in GlitchTip instead of only in an unattributable
-    # stack trace.
+    # Subtraction, not a rewrite of the list: `-=` removes a name if the SDK ships it
+    # and is a harmless no-op if a future sentry-rails stops, so this line cannot break
+    # on an SDK that changes its own defaults. What it cannot catch is the SDK
+    # excluding a class under some other name or via a new ancestor, so
+    # test/initializers/sentry_test.rb pins the whole resolved list and asserts the
+    # behaviour — that the fully-resolved configuration builds an event for each class
+    # removed here — rather than trusting this array.
     #
-    # **The rest of the inherited list was audited at the same time, and is
-    # deliberately left alone.** For each class, why:
+    # Removed:
     #
-    #   Already handled and re-logged at INFO, so un-excluding them would change
-    #   nothing (nothing reaches the capture middleware) while adding bot noise to
-    #   any path that later stopped being rescued:
-    #     ActionController::RoutingError    — ErrorsController#not_found (the
-    #                                         catch-all route); the class #23 named
-    #                                         as "and friends", and the reason it is
-    #                                         not the same case as CSRF is that a
-    #                                         404 rate is normal for a public host.
-    #     ActionController::UnknownFormat   — ApplicationController#unknown_format
-    #                                         (#453). Its subclass
-    #                                         MissingExactTemplate is deliberately
-    #                                         re-raised and stays a loud ERROR.
-    #     ActiveRecord::RecordNotFound      — ApplicationController#record_not_found
-    #                                         renders 404; a stale link, not a fault.
+    #   ActionController::InvalidAuthenticityToken — one is noise, a hundred an hour is
+    #     the app broken for every writer, and the two are the same exception. Most of
+    #     the app handles it in ApplicationController's `rescue_from` (INFO, #295), so
+    #     nothing reaches the capture middleware there; CsrfRejectionMonitor turns a
+    #     *rate* of those into one GlitchTip event per five-minute bucket, with a fixed
+    #     fingerprint so a storm is its own issue. The monitor reports the exception
+    #     object, and Sentry::Client#event_from_exception consults this list on an
+    #     explicit capture exactly as on a middleware one, so the monitor depends on
+    #     this removal. Two surfaces have no such rescue and report per request:
+    #     /supervisor (Administrate::ApplicationController) and /jobs (the GoodJob
+    #     engine, `protect_from_forgery with: :exception`). Both already log the
+    #     failure at ERROR, which pages; GlitchTip gets the twin of that page with the
+    #     URL and user agent the log record lacks. On this deployment the host is
+    #     tailnet-only, so the only clients that can reach either are tailnet members.
+    #     A monitor-only `hint: { ignore_exclusions: true }` would have kept those two
+    #     surfaces out of GlitchTip — silently swallowed, the shape #23 is about.
     #
-    #   Client-supplied garbage at the protocol edge. Zimmer is a public host and
-    #   these are what a scanner produces; a rate of them says something about the
-    #   internet, not about the app:
-    #     ActionController::MethodNotAllowed, ActionController::NotImplemented,
-    #     ActionController::UnknownHttpMethod, ActionController::InvalidCrossOriginRequest,
-    #     ActionDispatch::Http::MimeNegotiation::InvalidType,
-    #     Rack::QueryParser::ParameterTypeError, Sinatra::NotFound,
-    #     Puma::MiniSSL::SSLError, Puma::HttpParserError, Puma::HttpParserError501
+    #   ActionController::UnknownFormat — not for itself, for its subclass.
+    #     ActionController::MissingExactTemplate (an action with no template in ANY
+    #     format, on an ordinary browser page load: a forgotten view) is a server
+    #     defect, and ApplicationController deliberately re-raises it so it stays loud.
+    #     It reached the capture middleware and was dropped there by this parent's
+    #     entry. Plain UnknownFormat is rescued at INFO by
+    #     ApplicationController#unknown_format (#453), so on that path nothing reaches
+    #     the middleware; on the API, Administrate and GoodJob surfaces it reports per
+    #     request, and those already log it at ERROR.
     #
-    #   Re-added by the block above on purpose, so they are excluded twice over and
-    #   removing them from the inherited list would be meaningless:
-    #     ActionController::BadRequest, ActionDispatch::Http::Parameters::ParseError,
-    #     Rack::QueryParser::InvalidParameterError
+    # Kept, with the reason for each:
     #
-    #   Genuinely arguable, and left excluded for now with the reason recorded
-    #   rather than silently inherited:
-    #     ActionController::ParameterMissing  — a *Zimmer* form omitting a required
-    #       param would be a real bug, but the same exception is what a probe
-    #       posting junk to a real route raises, and the two are indistinguishable
-    #       from inside the exception. Zimmer's forms are covered by controller tests;
-    #       this would trade a tested failure mode for untested noise.
-    #     AbstractController::ActionNotFound / ActionController::UnknownAction — a
-    #       route pointing at a missing action IS a server defect, but it is one
-    #       `bin/rails routes` and the controller tests catch at CI time, and it cannot
-    #       reach production without every request to that route failing loudly.
-    #     ActionController::TooManyRequests — Rails 8.1's rate-limiter raising is
-    #       the limiter *working*. Zimmer declares no `rate_limit` today, so this is
-    #       inert either way.
-    #     Mongoid::Errors::DocumentNotFound — no Mongoid in this app; the string
-    #       never resolves to a class and the entry is inert.
-    config.excluded_exceptions -= [ "ActionController::InvalidAuthenticityToken" ]
+    #   ActionController::RoutingError — ErrorsController#not_found (the catch-all
+    #     route) handles every miss and re-logs it at INFO, so un-excluding it reaches
+    #     nothing; and a 404 rate describes clients, not the app. This is the class #23
+    #     named as "and friends", and it is not the CSRF case.
+    #   ActiveRecord::RecordNotFound — ApplicationController#record_not_found renders
+    #     the 404; a stale link, not a fault.
+    #   ActionController::ParameterMissing (and its subclass
+    #     ActionController::ExpectedParameterMissing, from `params.expect`) — a Zimmer
+    #     form omitting a required param would be a real bug, but the same exception is
+    #     what any client posting junk to a real route raises, and the exception cannot
+    #     tell the two apart. Zimmer's forms are covered by controller tests.
+    #   AbstractController::ActionNotFound — a route pointing at a missing action is a
+    #     server defect, but CI's routing and controller tests catch it, and it cannot
+    #     reach production without every request to that route failing loudly.
+    #   ActionController::TooManyRequests — Rails 8.1's rate limiter raising is the
+    #     limiter working. Zimmer declares no `rate_limit`, so the entry is inert.
+    #   ActionController::MethodNotAllowed, NotImplemented, UnknownHttpMethod,
+    #     InvalidCrossOriginRequest, ActionDispatch::Http::MimeNegotiation::InvalidType,
+    #     Rack::QueryParser::ParameterTypeError, Puma::MiniSSL::SSLError,
+    #     Puma::HttpParserError, Puma::HttpParserError501 — malformed input at the
+    #     protocol edge. Each is the client's mistake, none has a server-side cause a
+    #     rate would reveal, and a deployment with a public domain would see scanners
+    #     produce all of them.
+    #   ActionController::BadRequest, ActionDispatch::Http::Parameters::ParseError,
+    #     Rack::QueryParser::InvalidParameterError — re-added by the block above on
+    #     purpose, so they are excluded twice over.
+    #   Mongoid::Errors::DocumentNotFound, Sinatra::NotFound,
+    #     ActionController::UnknownAction — no class by these names is loaded in this
+    #     app (UnknownAction left Rails long ago), so the entries are inert.
+    config.excluded_exceptions -= [
+      "ActionController::InvalidAuthenticityToken",
+      "ActionController::UnknownFormat"
+    ]
 
     # An interactive `bin/rails runner` on the box is an operator, not the app.
     #

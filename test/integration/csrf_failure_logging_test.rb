@@ -219,7 +219,7 @@ class CsrfFailureLoggingTest < ActionDispatch::IntegrationTest
     reports = []
     burst = CsrfRejectionMonitor::THRESHOLD * 3
 
-    with_memory_cache do
+    with_memory_cache_mid_bucket do
       capturing_reports(reports) do
         burst.times do
           patch mark_read_notification_path(notifications(:default_notification))
@@ -240,7 +240,7 @@ class CsrfFailureLoggingTest < ActionDispatch::IntegrationTest
   test "a quiet trickle of rejections still reports nothing" do
     reports = []
 
-    with_memory_cache do
+    with_memory_cache_mid_bucket do
       capturing_reports(reports) do
         (CsrfRejectionMonitor::THRESHOLD - 1).times do
           post toggle_trigger_path(triggers(:enabled_slack_trigger))
@@ -255,7 +255,7 @@ class CsrfFailureLoggingTest < ActionDispatch::IntegrationTest
   test "the storm's WARN sits alongside the per-record INFO lines, once" do
     entries = nil
 
-    with_memory_cache do
+    with_memory_cache_mid_bucket do
       capturing_reports([]) do
         entries = capture_log_entries do
           CsrfRejectionMonitor::THRESHOLD.times do
@@ -298,16 +298,20 @@ class CsrfFailureLoggingTest < ActionDispatch::IntegrationTest
 
   private
 
-  def with_memory_cache(&block)
-    Rails.stub(:cache, ActiveSupport::Cache::MemoryStore.new, &block)
+  # The monitor's buckets are wall-clock five-minute windows, so a burst that
+  # happened to straddle a boundary would split across two buckets. Parking the clock
+  # mid-bucket makes the counts deterministic.
+  def with_memory_cache_mid_bucket(&block)
+    travel_to Time.utc(2026, 9, 10, 12, 2, 30) do
+      Rails.stub(:cache, ActiveSupport::Cache::MemoryStore.new, &block)
+    end
   end
 
   def capturing_reports(sink, &block)
-    ErrorReporter.stub(:report_exception, ->(exc, context: {}, level: :error) {
-      sink << { exception: exc, context: context, level: level }
+    ErrorReporter.stub(:report_exception, ->(exc, context: {}, level: :error, fingerprint: nil) {
+      sink << { exception: exc, context: context, level: level, fingerprint: fingerprint }
     }, &block)
   end
-
 
   # rescue_handlers is a class_attribute, so assigning here defines the value on
   # ApplicationController and every descendant reading through it, and restoring it

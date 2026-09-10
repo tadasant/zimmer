@@ -25,10 +25,15 @@ module ErrorReporter
   #     Rails.logger.error("...")
   #     ErrorReporter.report_exception(e, context: { session_id: id })
   #   end
-  def report_exception(exception, context: {}, level: :error)
+  #
+  # `fingerprint:` overrides GlitchTip's grouping. Leave it nil (the SDK then groups
+  # by exception and stack) unless one exception class carries two different
+  # signals that must not share an issue — CsrfRejectionMonitor's rate report is
+  # the worked case.
+  def report_exception(exception, context: {}, level: :error, fingerprint: nil)
     return unless reporting_enabled?
 
-    Sentry.capture_exception(exception, level: level, extra: context.compact)
+    Sentry.capture_exception(exception, level: level, extra: context.compact, fingerprint: fingerprint)
   rescue => reporting_error
     # Never let error reporting itself raise into a caller that was swallowing.
     Rails.logger.error("[ErrorReporter] Failed to report exception: #{reporting_error.message}")
