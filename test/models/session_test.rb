@@ -4181,6 +4181,65 @@ class SessionTest < ActiveSupport::TestCase
     assert session.continue_nudge_on_refresh?
   end
 
+  # ---------------------------------------------------------------------------
+  # #restartable_by_hand? — the web Restart control's entry condition (zimmer#830)
+  # ---------------------------------------------------------------------------
+
+  test "restartable_by_hand? admits exactly the stranded states" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "p", status: :waiting)
+
+    admitted = {
+      "failed" => true,
+      "needs_input" => true,
+      "waiting" => false,
+      "running" => false,
+      "archived" => false
+    }
+
+    admitted.each do |status, expected|
+      session.update_columns(status: status)
+      assert_equal expected, session.restartable_by_hand?,
+        "a #{status} session should#{expected ? '' : ' not'} be restartable by hand"
+    end
+  end
+
+  # The invariant that keeps the three doors from drifting apart again by STATUS:
+  # every status the web offers Restart for is one MCP `action_session` and
+  # `POST /api/v1/sessions/:id/restart` also admit, because the predicate is built
+  # from the `may_resume?` those two gate on rather than from a second list. (The
+  # pause refusal those two additionally apply is a surface-level difference the
+  # web door deliberately does not share — see the parity integration test.)
+  # The one shape of `needs_input` that is not stranded: the agent process is
+  # alive and blocked on a synchronous MCP round-trip whose answer form is on the
+  # same page as the button. Restarting would clear the marker with the
+  # elicitation still active and drop the session out of the action queue.
+  test "restartable_by_hand? refuses a needs_input session blocked on an elicitation" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "p", status: :needs_input)
+    assert session.restartable_by_hand?
+
+    session.merge_metadata!("blocked_on_elicitation" => true)
+
+    assert_not session.restartable_by_hand?,
+      "a session waiting on an elicitation answer is not stranded, it is blocked on the human"
+    assert session.may_resume?, "the state machine still permits the transition; the affordance does not"
+  end
+
+  test "restartable_by_hand? is a strict subset of may_resume?" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "p", status: :waiting)
+
+    Session.statuses.each_key do |status|
+      session.update_columns(status: status)
+      next unless session.restartable_by_hand?
+
+      assert session.may_resume?,
+        "the web door must never accept a #{status} session that MCP and REST refuse"
+    end
+
+    session.update_columns(status: "waiting")
+    assert session.may_resume?, "waiting is the one may_resume? state the web door drops"
+    assert_not session.restartable_by_hand?
+  end
+
   test "awaiting_scheduled_wake? ignores an already-fired wake trigger" do
     session = waiting_session_with_conversation
     trigger = wake_trigger_for(session, scheduled_at: 3.hours.from_now.utc.iso8601)
