@@ -5031,6 +5031,20 @@ but the historical counts on the Settings page are not a reliable census of what
 
 ---
 
+## A gate decision appended to the JSON ledger archive never reaches the table
+
+The gate ledgers' JSON files in `tadasant/tadasant-internal` are a frozen archive, and nothing in
+Zimmer reads them on a schedule. Each import from them is a
+[one-time post-deploy task](/operate/deploying/#one-time-post-deploy-tasks) that reads the archive
+once and never again. A gate that falls back to appending its decision there because
+`record_gate_decision` errored has written a decision that `search_gate_decisions` will not return
+until someone ships another task for it. This has happened once. 52 entries were appended after
+the first import, and the 50 that no gate had also recorded live were invisible for a week.
+[`ImportGateDecisionsAppendedAfterTheLedgerImport`](/operate/gate-decisions/#the-appends-the-first-import-missed)
+is the task written to import them. The archive has had no appends since 2026-09-03.
+
+---
+
 ## A zombie WebSocket is not detected on PWA reopen
 
 `stream_visibility_recovery_controller.js` decides whether a reopened page missed anything by
