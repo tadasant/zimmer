@@ -72,10 +72,14 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     seed(current_5h: 0.99, current_7d: 0.99)
 
     [ ActiveRecord::ConnectionNotEstablished, ActiveRecord::StatementInvalid, RuntimeError ].each do |klass|
-      Session.stub(:running_claude_code_turns, ->(*) { raise klass, "boom" }) do
-        decision = SpotGateService.evaluate
-        assert decision.allowed?, "#{klass} must not be able to hold a session"
-        assert_equal "unavailable", decision.reason
+      # Both fleet readings, since the pace waiver added a second one and a gate
+      # that fails open on one query and raises on the next fails open on neither.
+      %i[running_claude_code_turns running_claude_code_spot_turns].each do |method|
+        Session.stub(method, ->(*, **) { raise klass, "boom" }) do
+          decision = SpotGateService.evaluate
+          assert decision.allowed?, "#{klass} from #{method} must not be able to hold a session"
+          assert_equal "unavailable", decision.reason
+        end
       end
     end
   end
@@ -198,6 +202,87 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     refute decision.five_hour.pace_waived, "three turns in flight are spending"
     refute decision.allowed?, "so the pacing curve holds, as it did before the queue was dropped"
     assert_equal SpotGateService::UTILIZATION_REASON, decision.reason
+  end
+
+  # #693, first half: the waiver keys on SPOT work in flight, not on the fleet.
+  # Priority work running is work happening, but it is not the work this waiver
+  # exists to let through — and a live deployment always has a router, a poller
+  # or a merge gate on a worker, so keying on the fleet turned the escape hatch
+  # off permanently. Production ran four days at 0-1 sessions with 33 spot
+  # sessions held and it never fired once.
+  test "a fleet of priority work does not defeat the idle-fleet waiver" do
+    seed(current_5h: 0.40, current_7d: 0.05, reset_5h: 4.hours.from_now)
+    3.times { |i| running_session(i, genesis: SessionGenesis::WEB_UI) }
+
+    decision = SpotGateService.evaluate
+
+    assert_equal 3, decision.active_sessions, "the priority work is real and occupies slots"
+    assert decision.five_hour.pace_waived, "…but no SPOT work is in flight"
+    assert decision.allowed?
+  end
+
+  # …and one spot session in flight is what a duty cycle looks like: the waiver
+  # stops, and the next admission waits for the curve.
+  test "one spot session in flight ends the waiver" do
+    seed(current_5h: 0.40, current_7d: 0.05, reset_5h: 4.hours.from_now)
+    running_session(0)
+
+    decision = SpotGateService.evaluate
+
+    refute decision.five_hour.pace_waived, "spot work is already running"
+    refute decision.allowed?
+    assert_equal SpotGateService::UTILIZATION_REASON, decision.reason
+  end
+
+  # A spot turn merely QUEUED for a worker still ends the waiver, for the same
+  # reason the fleet-wide version did: it takes no slot, but it is already priced
+  # into the burn the pace is tested against.
+  test "a queued spot turn ends the waiver" do
+    seed(current_5h: 0.40, current_7d: 0.05, reset_5h: 4.hours.from_now)
+    queued_for_a_worker!(running_session(0, on_a_worker: false))
+
+    decision = SpotGateService.evaluate
+
+    assert_equal 0, decision.active_sessions
+    refute decision.five_hour.pace_waived
+    refute decision.allowed?
+  end
+
+  # #693, second half, and the one that made the waiver unreachable at the door
+  # whatever the fleet was doing. By the time the gate runs, the asking session is
+  # inside `AgentSessionJob#perform`: its `agents` job carries a `performed_at`
+  # while its own row still reads `waiting`, so RunningTurns reports it as a turn
+  # awaiting a worker. Counting it answered "is any spot work in flight?" with
+  # yes on a completely empty deployment, every single time.
+  test "the session being admitted does not count itself out of the waiver" do
+    seed(current_5h: 0.40, current_7d: 0.05, reset_5h: 4.hours.from_now)
+    candidate = Session.create!(git_root: "https://github.com/t/r.git", prompt: "s",
+                                genesis: SessionGenesis::GITHUB_ISSUE, status: :waiting,
+                                agent_runtime: "claude_code")
+    on_a_worker!(candidate)
+
+    decision = SpotGateService.start_decision(candidate)
+
+    assert decision.five_hour.pace_waived, "the asker is the only spot turn in flight"
+    assert decision.allowed?
+    refute SpotGateService.evaluate.five_hour.pace_waived,
+      "…and it is still in flight for anyone else asking"
+  end
+
+  # The reading is runtime-scoped like every other fleet figure the gate reads. A
+  # Codex session spends nothing against a Claude account, so it is not the spot
+  # work whose absence waives a CLAUDE window's pacing curve.
+  test "a codex spot session in flight does not end the waiver" do
+    seed(current_5h: 0.40, current_7d: 0.05, reset_5h: 4.hours.from_now)
+    codex = Session.create!(git_root: "https://github.com/t/r.git", prompt: "codex",
+                            genesis: SessionGenesis::SCHEDULE, status: :running,
+                            agent_runtime: "codex")
+    on_a_worker!(codex)
+
+    decision = SpotGateService.evaluate
+
+    assert decision.five_hour.pace_waived, "no CLAUDE spot work is in flight"
+    assert decision.allowed?
   end
 
   # The waiver is only ever of the PACE. The reserve is absolute: an idle fleet
@@ -517,16 +602,88 @@ class SpotGateServiceTest < ActiveSupport::TestCase
     assert_in_delta 64.5, decision.five_hour.current_pct, 0.001
   end
 
-  # The one correction the pool figure carries, and it is the page's rule, not a
-  # second one invented for the gate: an account whose week is gone cannot serve
-  # a request, so its empty 5-hour counter is not headroom.
-  test "an account whose weekly window is spent counts as 100% in the 5-hour figure" do
+  # The 5-hour figure is over the accounts a turn could land on. An account whose
+  # week is gone is left out of it rather than counted at 100% in it: the curve
+  # reads this number as capacity CONSUMED, and a substituted 100% is a floor no
+  # idleness can lower. See #693 and ClaudeAccountPool.
+  test "an account whose weekly window is spent is left out of the 5-hour figure" do
+    running_session(0)
     seed(current_5h: 0.60, current_7d: 0.10)
     seed_spare(email: "weekly-spent@example.com", current_5h: 0.01, current_7d: 1.0)
 
     decision = SpotGateService.evaluate
-    assert_in_delta 80.0, decision.five_hour.current_pct, 0.001
-    refute decision.allowed?, "the dead account's 1% is not room the pool can spend"
+    assert_in_delta 60.0, decision.five_hour.current_pct, 0.001
+    assert_match(/1 with a spent week, left out of the 5-hour figure/, decision.detail)
+  end
+
+  # The whole of #693, as a gate decision: five idle accounts and two whose WEEK
+  # is spent, an idle fleet, and budget left on both windows. Every one of those
+  # seven accounts reads 0.0% on its 5-hour counter, so there is nothing to pace
+  # against and the session runs.
+  #
+  # Before the fix this was 2/7 = 28.57% of 5-hour utilization against a curve
+  # that starts each window at zero — a hold for the opening ~1h35m of EVERY
+  # 5-hour window, on a deployment that had been idle for four days.
+  test "an idle fleet with spent weeks beside idle accounts admits spot work" do
+    2.times { |i| seed_spare(email: "week-spent-#{i}@example.com", current_5h: 0.0, current_7d: 1.0) }
+    5.times { |i| seed_spare(email: "idle-#{i}@example.com", current_5h: 0.0, current_7d: 0.20) }
+    # …and the router and poller a live deployment always has on a worker, which
+    # is the other half of what held this: they are priority, so they are not the
+    # spot work the pace waiver asks about.
+    2.times { |i| running_session(i, genesis: SessionGenesis::WEB_UI) }
+
+    decision = SpotGateService.evaluate
+
+    assert_in_delta 0.0, decision.five_hour.current_pct, 0.001,
+      "no account has spent any of its 5-hour window, whatever their weeks read"
+    assert_equal 2, decision.active_sessions
+    assert decision.allowed?, "an idle fleet with budget left on both windows does spot work"
+    assert_nil decision.ceiling
+    assert_equal 2, decision.pool_capacity.weekly_spent_count
+  end
+
+  # Each fix alone is enough to clear the production state, which is the point of
+  # having both: the substitution is the cause and the waiver is what should have
+  # rescued the fleet from it. Pinned separately so a regression in one is not
+  # masked by the other.
+  test "the waiver alone clears a fleet held only by a substituted 5-hour floor" do
+    2.times { |i| seed_spare(email: "week-spent-#{i}@example.com", current_5h: 0.0, current_7d: 1.0) }
+    5.times { |i| seed_spare(email: "idle-#{i}@example.com", current_5h: 0.0, current_7d: 0.20) }
+    2.times { |i| running_session(i, genesis: SessionGenesis::WEB_UI) }
+
+    # The pool figure the gate used to decide on: 2 of 7 counted at 100%.
+    ClaudeAccountPool.stub(:measure, poisoned_five_hour_measure) do
+      decision = SpotGateService.evaluate
+
+      assert_in_delta 28.571, decision.five_hour.current_pct, 0.01, "the old floor, restored"
+      refute decision.five_hour.within_pace, "and the window is still ahead of its curve"
+      assert decision.five_hour.pace_waived, "…but no spot work is in flight"
+      assert decision.allowed?
+    end
+  end
+
+  # …and the weekly axis still carries the spent weeks, which is where that fact
+  # is true. Two accounts at 100% and five at 20% average to 42.9%, and the gate
+  # decides the weekly window on that.
+  test "the weekly figure still counts a spent week at 100%" do
+    2.times { |i| seed_spare(email: "week-spent-#{i}@example.com", current_5h: 0.0, current_7d: 1.0) }
+    5.times { |i| seed_spare(email: "idle-#{i}@example.com", current_5h: 0.0, current_7d: 0.20) }
+
+    decision = SpotGateService.evaluate
+    assert_in_delta 42.857, decision.weekly.current_pct, 0.01
+  end
+
+  # A pool with nothing servable in it has no 5-hour headroom, and the figure
+  # says so — by having no servable account to average rather than by
+  # substituting a number onto one that is there.
+  test "every week spent leaves the 5-hour figure at 100% and the budget spent" do
+    seed(current_5h: 0.01, current_7d: 1.0)
+    seed_spare(email: "also-spent@example.com", current_5h: 0.02, current_7d: 1.0)
+
+    decision = SpotGateService.evaluate
+    assert_in_delta 100.0, decision.five_hour.current_pct, 0.001
+    refute decision.allowed?, "there is no account a turn could land on"
+    refute decision.five_hour.within_cap
   end
 
   test "an account with no reading is left out of the average and named as such" do
@@ -1080,9 +1237,24 @@ class SpotGateServiceTest < ActiveSupport::TestCase
 
   private
 
+  # The pool measure as it read in production on 2026-09-10, with the servability
+  # substitution back in the 5-hour figure: 2 of 7 accounts counted at 100% and
+  # the window 27.94% elapsed. Used to prove the pace waiver clears this on its
+  # own, so the two fixes are pinned independently.
+  def poisoned_five_hour_measure
+    real = ClaudeAccountPool.measure
+    real.with(five_hour: 2.0 / 7, worst_five_hour: 1.0,
+              five_hour_seconds_remaining: (5.hours * (1 - 0.2794)).to_i)
+  end
+
   # A session with a WORKER on its turn, since the cap counts nothing else. Pass
   # `on_a_worker: false` for the rows the cap deliberately skips.
-  def running_session(index, genesis: SessionGenesis::WEB_UI, on_a_worker: true)
+  #
+  # SPOT by default, because most callers are here to make the fleet busy enough
+  # that the pacing curve applies — and the pace waiver keys on spot work in
+  # flight, so a priority session does not do that. Pass `genesis:` explicitly for
+  # the cap tests, where the point is that every class occupies a slot.
+  def running_session(index, genesis: SessionGenesis::SCHEDULE, on_a_worker: true)
     record = Session.create!(git_root: "https://github.com/t/r.git", prompt: "running #{index}",
                     genesis: genesis, status: :running, agent_runtime: "claude_code")
     on_a_worker ? on_a_worker!(record) : record

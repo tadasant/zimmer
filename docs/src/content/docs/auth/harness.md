@@ -820,12 +820,21 @@ an account that has never been current.
 Anthropic meters two windows per account, 5-hour and 7-day, and the page shows both — per account,
 and averaged across the pool.
 
-The pool's 5-hour average is labelled **"Avg 5-Hour Utilization (effective)"** because it is not a
-plain average of the 5-hour counters. An account whose 7-day window is spent — status `rejected`, or
-the counter at its cap — cannot serve a request however much 5-hour headroom it reports, so it counts
-as 100% in that average, and its card says *"Counted as 100% in the pool figure"* under the 5-hour
-bar. An account at 29% on 5 hours and 100% on the week would otherwise pull the headline down and
-advertise pool headroom that nothing can spend.
+The pool's 5-hour average is labelled **"Avg 5-Hour Utilization (servable accounts)"** because it is
+not a plain average of the 5-hour counters. An account whose 7-day window is spent — status
+`rejected`, or the counter at its cap — cannot serve a request however much 5-hour headroom it
+reports, so it is **left out** of that average, and its card says *"Left out of the pool's 5-hour
+figure"* under the 5-hour bar. An account at 29% on 5 hours and 100% on the week would otherwise pull
+the headline down and advertise pool headroom that nothing can spend.
+
+It is left out rather than counted at 100%, and the difference is not cosmetic. The spot gate reads
+this average as 5-hour capacity *consumed* and paces against it, so substituting 100% put a floor on
+the pacing curve that measured nothing the fleet did and that no amount of idling could lower — see
+[Read across the whole pool](/sessions/spot-and-priority/#read-across-the-whole-pool) and
+[#693](https://github.com/tadasant/zimmer/issues/693). The account still says it cannot serve, on the
+7-day figure, where it reads 100% honestly. When *every* account's week is spent there is no servable
+account to average and the figure falls back to the whole pool, which then reads 100% — reaching the
+right answer without substituting onto anything.
 
 The correction runs one way. The 7-day average takes the 7-day counters as they are, because the
 weekly window subsumes the 5-hour one: an account at its 5-hour cap is idle for minutes and then

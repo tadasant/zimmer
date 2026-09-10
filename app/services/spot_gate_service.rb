@@ -46,9 +46,15 @@
 # Because the sustainable rate is "what is LEFT over the time left to spend it",
 # a quiet window releases work faster and a busy one throttles — no cliff at
 # either end. And because a session is not infinitely divisible, the pace
-# condition is waived when nothing at all is running, so a deployment whose
+# condition is waived when NO SPOT WORK IS IN FLIGHT, so a deployment whose
 # single-session burn rate exceeds its sustainable rate still does work in a duty
 # cycle instead of doing none. QuotaCapacityModel documents both.
+#
+# Spot work, not the fleet, and not counting the session being admitted. The
+# waiver protects the SPOT budget, so priority work does not stand in for it —
+# and the asking session is inside `AgentSessionJob#perform` when the gate reads
+# the fleet, so counting it made the waiver unreachable at the door on an
+# otherwise empty deployment. Both spellings are tadasant/zimmer#693.
 #
 # == The cap counts worker occupancy, and holds only spot
 #
@@ -75,11 +81,18 @@
 # average /inference renders — and so is the time left in each window. One account
 # at its cap does not stop the fleet while the rest has room.
 #
-# **Every account counts, whatever its status.** A needs_reauth account is one
-# Zimmer cannot serve from right now, not one whose quota is spent: its windows
-# keep draining while it waits for a human. The average carries one correction,
-# the page's: an account whose 7-day window is spent counts as 100% in the
-# 5-hour figure, because its 5-hour headroom cannot be served.
+# **Every account counts on the weekly axis, whatever its status.** A
+# needs_reauth account is one Zimmer cannot serve from right now, not one whose
+# quota is spent: its windows keep draining while it waits for a human.
+#
+# The 5-hour figure is narrower, and the narrowing is the fix for
+# tadasant/zimmer#693: it averages only the accounts whose WEEK still has room,
+# because those are the accounts a turn could land on. A weekly-spent account
+# used to be counted at 100% there instead of being left out, which reads to the
+# pacing curve as 5-hour capacity already CONSUMED — a floor no idleness could
+# lower, on a curve that restarts at zero every five hours. The account is still
+# unservable and still says so, on the weekly figure, where it is true.
+# ClaudeAccountPool has the arithmetic and the production numbers.
 #
 # == "Hold" means DEFER, not refuse
 #
@@ -159,8 +172,8 @@ class SpotGateService
     def label = window.label
     def dollars? = window.dollars?
 
-    # True when this window refuses to ADMIT a session. A waived pace (nothing is
-    # running, see QuotaCapacityModel) leaves only the cap.
+    # True when this window refuses to ADMIT a session. A waived pace (no spot
+    # work is in flight, see QuotaCapacityModel) leaves only the cap.
     def at_limit? = !within_cap || (!pace_waived && !within_pace)
 
     # True when this window refuses to let work that is ALREADY RUNNING continue.
@@ -291,7 +304,18 @@ class SpotGateService
     # case worth naming — the pool figure is quietly over a smaller set.
     def accounts_phrase
       counted = read_count == account_count ? "all #{account_count}" : "#{read_count} of #{account_count}"
-      "averaged across #{counted} #{'account'.pluralize(account_count)}"
+      phrase = "averaged across #{counted} #{'account'.pluralize(account_count)}"
+      # The 5-hour figure is over a smaller set than the weekly one whenever an
+      # account's week is spent, and a sentence that reported one denominator for
+      # both would misstate the number a reader is looking at.
+      spent = capacity&.weekly_spent_count.to_i
+      return phrase if spent.zero?
+      # …except when EVERY week is spent, where there is no servable set to
+      # exclude anything from and the 5-hour figure falls back to the whole pool.
+      # Saying "left out" there would describe a subtraction that did not happen.
+      return "#{phrase} (every week spent, so the 5-hour figure is the whole pool at 100%)" if spent >= read_count
+
+      "#{phrase} (#{spent} with a spent week, left out of the 5-hour figure)"
     end
   end
 
@@ -580,11 +604,23 @@ class SpotGateService
 
   def awaiting_sessions = turns.awaiting_a_worker
 
-  # Every turn this fleet has been handed, on a worker or waiting for one. NOT
-  # what the cap compares against — that is #active_sessions — but the population
-  # that is spending, and therefore the one the pacing waiver and
-  # SpotSessionPause's resume budget have to reason about. See the class comment.
-  def fleet_in_flight = active_sessions + awaiting_sessions
+  # Every turn this fleet has been handed, on a worker or waiting for one,
+  # narrowed to SPOT sessions and with the session being admitted left out of
+  # it. What the pacing waiver keys on, and both narrowings
+  # are load-bearing — see Session.running_claude_code_spot_turns.
+  #
+  # A second RunningTurns reading per decision, and deliberately eager. The
+  # cheaper shape is to ask for it only when a window is out of pace — on a
+  # deployment inside its curve, never — but then `pace_waived` would mean "the
+  # pace was waived" on one branch and "nobody asked" on the other, in a field
+  # that is serialized out of #to_h. This runs once per turn admission, not once
+  # per request, and the decision it feeds already prices the pool and the fleet.
+  def spot_in_flight
+    return @spot_in_flight if defined?(@spot_in_flight)
+
+    turns = Session.running_claude_code_spot_turns(excluding: @candidate.is_a?(Session) ? @candidate.id : nil)
+    @spot_in_flight = turns.on_a_worker + turns.awaiting_a_worker
+  end
 
   # What every Claude Code session running right now is burning, in $/min.
   #
@@ -593,6 +629,13 @@ class SpotGateService
   # for. A session whose harness+model combination has never been sampled is
   # priced at the fleet default rather than at nothing, so an unknown combination
   # cannot look free.
+  #
+  # The candidate is in this population as well as in #candidate_burn_usd_per_minute
+  # below, so its burn is counted twice at admission — the same "the asker is
+  # already inside AgentSessionJob#perform" fact that #spot_in_flight has to
+  # exclude for. Left alone deliberately: double-counting makes the projection
+  # one session's burn HIGH, which errs toward protecting the reserve, and this
+  # change is scoped to the pacing behaviour that was erring the other way.
   def fleet_burn_usd_per_minute
     return @fleet_burn if defined?(@fleet_burn)
 
@@ -769,17 +812,18 @@ class SpotGateService
     return nil if windows.empty?
 
     burn = projected_burn_usd_per_minute
-    # A session is not infinitely divisible: with nothing running at all, the
-    # pacing curve is waived so the deployment still does SOME work whatever its
-    # sustainable rate. The cap is not waived — the reserve is protected either
-    # way. See QuotaCapacityModel.
+    # A session is not infinitely divisible: with no spot work in flight at all,
+    # the pacing curve is waived so the deployment still does SOME spot work
+    # whatever its sustainable rate. The cap is not waived — the reserve is
+    # protected either way, and priority work that has genuinely eaten the budget
+    # still holds this session, because every running session's burn is in `burn`
+    # above. See QuotaCapacityModel.
     #
-    # Asked of #fleet_in_flight rather than of the cap's own count, because the
-    # waiver's question is whether anything is SPENDING. A turn queued for a
-    # worker takes no slot but is already priced into `burn` above, so waiving on
-    # the cap's number would skip the pace test against a burn rate the same
-    # sessions produced.
-    waived = fleet_in_flight.zero?
+    # Asked of turns rather than of the cap's own count, because the waiver's
+    # question is whether anything is SPENDING. A turn queued for a worker takes
+    # no slot but is already priced into `burn`, so waiving on the cap's number
+    # would skip the pace test against a burn rate the same sessions produced.
+    waived = spot_in_flight.zero?
 
     PoolReading.new(
       five_hour: reading(windows[QuotaCapacityEstimate::FIVE_HOUR], burn, waived),

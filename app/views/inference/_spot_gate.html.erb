@@ -302,8 +302,10 @@
           Windows averaged across
           <%= @spot_decision.accounts_read == @spot_decision.pool_size ? "all #{pluralize(@spot_decision.pool_size, 'account')}" : "#{@spot_decision.accounts_read} of #{pluralize(@spot_decision.pool_size, 'account')}" %>
           in the pool, every status included — the same figure the Account Pool section above shows.
-          One account at its cap does not hold the fleet while the rest still has room; an account
-          whose 7-day window is spent counts as 100% here, because its 5-hour headroom can't be served.
+          One account at its cap does not hold the fleet while the rest still has room. The 5-hour
+          figure averages only the accounts whose 7-day window still has room, since those are the
+          ones a turn could land on; an account whose week is spent says so on the weekly figure,
+          where it reads 100%.
         </p>
       <% end %>
     </div>
