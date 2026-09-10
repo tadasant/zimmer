@@ -541,14 +541,16 @@ module SessionsHelper
   # What clicking Restart is about to do to this session, as a sentence to
   # confirm before it happens — or nil where the button should just fire.
   #
-  # A `failed` session has stopped, and restarting one is the operation the
-  # button has always named: no dialog. A `needs_input` session is the state
-  # zimmer#830 opened the control up to, and there the same button means
-  # something a person should be told before it happens, because Restart is a
-  # takeover — it resumes the session, consuming any pause on the way past, and
-  # enqueues a turn the session did not ask for. Which turn depends on whether
-  # there is a conversation to land in, so the two cases get their own sentence
-  # rather than one hedged one.
+  # A `failed` session has stopped, and restarting one is the operation the button
+  # has always named: no dialog. A `needs_input` session is the state zimmer#830
+  # opened the control up to, and there the same button means something a person
+  # should be told before it happens, because Restart is a takeover — it resumes
+  # the session and enqueues a turn the session did not ask for.
+  #
+  # Which turn it enqueues is `SessionsController#restart_with_continue_prompt`'s
+  # decision, and the three branches say three different things, so they get three
+  # different sentences rather than one hedged one. The branch order here mirrors
+  # that method's: from scratch, then the original prompt, then the continue nudge.
   def restart_confirmation(session)
     return nil if session.failed?
 
@@ -556,21 +558,45 @@ module SessionsHelper
       "There is no conversation to continue here — this session's setup never finished. " \
         "Restarting throws away whatever was set up for it and re-runs the whole pipeline — a " \
         "fresh clone, a fresh process — with its original prompt. Restart it?"
+    elsif session.failed_before_initial_prompt? && session.prompt.present?
+      "This session's turn died before its prompt was ever delivered. Restarting takes it over " \
+        "and sends that original prompt again, into a freshly spawned runtime. Restart it?"
     else
       "This session is paused, not failed. Restarting takes it over and sends an automated " \
         "\"continue\" prompt into its existing conversation. Restart it?"
     end
   end
 
-  # The Restart control's tooltip, which says which of the two states the button
-  # is being offered from. Same three cases as #restart_confirmation.
+  # The Restart control's tooltip. Same three cases as #restart_confirmation.
   def restart_button_title(session)
     if session.failed?
       "Restart failed session"
     elsif session.needs_restart_from_scratch?
       "Restart from scratch — this session has no conversation to resume"
+    elsif session.failed_before_initial_prompt? && session.prompt.present?
+      "Restart this paused session — re-sends the prompt its turn never delivered"
     else
       "Restart this paused session — sends an automated continue prompt"
     end
+  end
+
+  # Where a session card puts its Restart control: `:footer` for the prominent
+  # button, `:menu` for a row in the overflow menu, nil for a session that may not
+  # be restarted by hand at all.
+  #
+  # Both placements post to the same action and are gated by the same
+  # `Session#restartable_by_hand?`; what differs is width. The card's footer row
+  # has a budget and [#607](https://github.com/tadasant/zimmer/issues/607) spent
+  # it — a multi-PR card already fits 84 + 277 into 311px at the 343px card a
+  # 375px phone lays out, and a fifth control wraps the row onto a second line.
+  # `failed` keeps the prominent button it has always had (and is the case
+  # `docs/limitations.md` already records as the row's tightest); `needs_input` —
+  # which on the default board is *every* card — goes in the overflow menu, which
+  # is exactly what that menu is for. Deciding it here rather than in the template
+  # keeps the two guards from drifting apart.
+  def restart_placement(session)
+    return nil unless session.restartable_by_hand?
+
+    session.failed? ? :footer : :menu
   end
 end

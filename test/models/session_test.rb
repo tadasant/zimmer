@@ -4203,10 +4203,27 @@ class SessionTest < ActiveSupport::TestCase
     end
   end
 
-  # The invariant that keeps the three doors from drifting apart again: whatever
-  # the web offers, MCP `action_session` and `POST /api/v1/sessions/:id/restart`
-  # already accept, because the predicate is derived from the `may_resume?` those
-  # two gate on rather than re-listing statuses.
+  # The invariant that keeps the three doors from drifting apart again by STATUS:
+  # every status the web offers Restart for is one MCP `action_session` and
+  # `POST /api/v1/sessions/:id/restart` also admit, because the predicate is built
+  # from the `may_resume?` those two gate on rather than from a second list. (The
+  # pause refusal those two additionally apply is a surface-level difference the
+  # web door deliberately does not share — see the parity integration test.)
+  # The one shape of `needs_input` that is not stranded: the agent process is
+  # alive and blocked on a synchronous MCP round-trip whose answer form is on the
+  # same page as the button. Restarting would clear the marker with the
+  # elicitation still active and drop the session out of the action queue.
+  test "restartable_by_hand? refuses a needs_input session blocked on an elicitation" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "p", status: :needs_input)
+    assert session.restartable_by_hand?
+
+    session.merge_metadata!("blocked_on_elicitation" => true)
+
+    assert_not session.restartable_by_hand?,
+      "a session waiting on an elicitation answer is not stranded, it is blocked on the human"
+    assert session.may_resume?, "the state machine still permits the transition; the affordance does not"
+  end
+
   test "restartable_by_hand? is a strict subset of may_resume?" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "p", status: :waiting)
 

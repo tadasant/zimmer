@@ -83,36 +83,55 @@ class SessionsRestartTest < ApplicationSystemTestCase
     assert_no_selector "button[data-petal-key='restart']", visible: :all
   end
 
-  # A dashboard card that gained a button gained it on a phone too, where the
-  # footer row is the one that runs out of width — a control that lands past the
-  # right edge is unreachable and nothing fails to say so. Both overflow probes,
-  # at the 375px reference width: the document must not be wider than the
-  # viewport, and nothing may stick out past its right edge.
-  test "the Restart button a needs_input card gained fits a 375px phone" do
+  # The joystick's Restart is the one control that does not go through Turbo — it
+  # synthesizes its own form — so joystick-menu#_commit raises the dialog itself
+  # off `data-restart-confirm`. This is the only coverage of that gate: declining
+  # it must post nothing and leave the session where it was.
+  test "declining the mobile sheet's confirm does not restart the session" do
+    session = session_in(:needs_input)
+    page.driver.browser.manage.window.resize_to(375, 812)
+    visit session_path(session)
+
+    find("[data-joystick-menu-target='trigger']").click
+    dismiss_confirm(/paused, not failed/) do
+      find("[data-joystick-menu-target='sheet'] button[data-petal-key='restart']").click
+    end
+
+    assert_equal "needs_input", session.reload.status, "a declined confirm must post nothing"
+    assert_empty session.logs.where("content LIKE ?", "%Continuing paused session%")
+  ensure
+    page.driver.browser.manage.window.resize_to(1400, 900)
+  end
+
+  # A dashboard card that gained a control gained it on a phone too, and the card
+  # footer is the row that runs out of width there — #607 already spent its budget,
+  # so the paused-session Restart is a row in the overflow menu rather than a fifth
+  # footer button. What this asserts is that it is genuinely reachable at the 375px
+  # reference width: the menu opens, the row is visible, and it is inside the
+  # viewport rather than off the right edge.
+  test "a paused card's Restart is reachable from the overflow menu on a 375px phone" do
     session = session_in(:needs_input)
     page.driver.browser.manage.window.resize_to(375, 812)
     visit root_path
 
     card = find("#session_#{session.id}")
-    assert card.has_button?("Restart"), "the card should offer Restart for a needs_input session"
+    card.find("button[data-overflow-menu-target='button']").click
+
+    restart = card.find("form[action$='/restart'] button")
+    assert restart.visible?, "the Restart row should be visible once the overflow menu is open"
 
     assert page.evaluate_script(
       "document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"
     ), "the dashboard is wider than a 375px viewport"
 
-    boxes = page.evaluate_script(<<~JS)
+    within_viewport = page.evaluate_script(<<~JS)
       (function () {
-        const limit = document.documentElement.clientWidth;
-        return Array.from(document.querySelectorAll("form[action$='/restart'] button"))
-          .map((el) => ({ right: el.getBoundingClientRect().right, limit: limit }));
+        const el = document.querySelector("form[action$='/restart'] button");
+        const r = el.getBoundingClientRect();
+        return r.right <= document.documentElement.clientWidth + 1 && r.left >= -1;
       })()
     JS
-
-    assert boxes.any?, "the probe found no Restart button to measure"
-    boxes.each do |box|
-      assert_operator box["right"], :<=, box["limit"] + 1,
-        "a Restart button ends past the right edge of a 375px viewport"
-    end
+    assert_equal true, within_viewport, "the Restart row sits outside a 375px viewport"
   ensure
     page.driver.browser.manage.window.resize_to(1400, 900)
   end
