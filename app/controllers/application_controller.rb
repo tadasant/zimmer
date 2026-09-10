@@ -137,6 +137,13 @@ class ApplicationController < ActionController::Base
       "reason=#{exception.message.to_s.inspect}"
     )
 
+    # The line above is per-record and stays on container stdout. This is the rate:
+    # CsrfRejectionMonitor counts rejections in five-minute buckets and reports one
+    # GlitchTip event (and one WARN) per bucket once the count says the app is
+    # broken rather than a client is. It returns a symbol and never raises — the
+    # 422 below is owed to the client regardless. See issue #23.
+    CsrfRejectionMonitor.record(exception, request: request, session_cookie_present: session_cookie_present?)
+
     if request.format.json?
       render json: {
         error: "Unprocessable Entity",

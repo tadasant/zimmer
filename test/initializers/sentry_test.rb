@@ -296,4 +296,146 @@ class SentryInitializerTest < ActiveSupport::TestCase
       assert_equal 1, captured_events.size
     end
   end
+
+  # --- issue #23: what this initializer takes back out of the inherited list ----------
+  #
+  # `excluded_exceptions` arrives pre-populated: sentry-ruby seeds it, then
+  # sentry-rails' after(:initialize) hook concatenates Sentry::Rails::IGNORE_DEFAULT
+  # (fourteen classes) plus ActionController::TooManyRequests on Rails >= 8.1.1 — all
+  # before the initializer's own block runs. Until #23 nothing here audited that, and
+  # ActionController::InvalidAuthenticityToken sat in it: a storm of CSRF 422s in which
+  # every write in the UI failed (#19) reached GlitchTip zero times.
+  #
+  # These cases run against the REAL resolved configuration, not against the literal in
+  # the file, which is what makes them survive the SDK changing its own defaults.
+
+  CSRF_EXCEPTION = "ActionController::InvalidAuthenticityToken"
+
+  # The `before` half of the before/after. Pinning the inherited list here means an SDK
+  # bump that adds, drops or renames a default shows up as a failure in this file rather
+  # than as a silently different alerting surface in production.
+  test "sentry-rails still ships the inherited defaults this initializer audits" do
+    assert_includes Sentry::Rails::IGNORE_DEFAULT, CSRF_EXCEPTION,
+      "the exclusion #23 is about comes from the gem, not from this repo — if the gem " \
+      "stopped shipping it, the `-=` in the initializer is now a no-op and the comment lies"
+    assert_equal 14, Sentry::Rails::IGNORE_DEFAULT.size,
+      "the initializer's audit enumerates every inherited default by name; a new one " \
+      "needs a line there saying why it is kept"
+  end
+
+  test "the CSRF exception is no longer in the resolved exclusion list" do
+    boot_sentry("production") do
+      refute_includes Sentry.configuration.excluded_exceptions, CSRF_EXCEPTION,
+        "sentry-rails excludes this by default and the initializer must remove it"
+    end
+  end
+
+  # The behavioural assertion, and the one that actually holds. A future SDK could
+  # exclude the class under another name or via a superclass, and the list check above
+  # would still pass while nothing reported.
+  test "a CSRF rejection now builds a real event in production" do
+    boot_sentry("production") do
+      assert Sentry.configuration.exception_class_allowed?(
+        ActionController::InvalidAuthenticityToken.new("Can't verify CSRF token authenticity.")
+      )
+
+      Sentry.capture_exception(
+        ActionController::InvalidAuthenticityToken.new("Can't verify CSRF token authenticity.")
+      )
+
+      assert_equal 1, captured_events.size,
+        "issue #19 was hours of universal write failure that GlitchTip never saw"
+      assert_equal "ActionController::InvalidAuthenticityToken",
+        captured_events.first.to_h[:exception][:values].first[:type]
+    end
+  end
+
+  # CsrfRejectionMonitor reports through ErrorReporter, so the seam the app actually
+  # uses is pinned too, extras and all.
+  test "the rate monitor's own reporting seam reaches GlitchTip with its context" do
+    boot_sentry("production") do
+      ErrorReporter.report_exception(
+        ActionController::InvalidAuthenticityToken.new("Can't verify CSRF token authenticity."),
+        context: { csrf_rejections_in_window: 42, window_seconds: 300 }
+      )
+
+      assert_equal 1, captured_events.size
+      extra = captured_events.first.to_h[:extra]
+      assert_equal 42, extra[:csrf_rejections_in_window]
+      assert_equal 300, extra[:window_seconds]
+    end
+  end
+
+  # The un-exclusion is exactly one class wide. Everything this initializer deliberately
+  # adds must still be dropped — otherwise the removal was written as a rewrite of the
+  # list rather than a subtraction from it.
+  test "the deliberate exclusions this initializer adds are untouched" do
+    boot_sentry("production") do
+      [
+        Errno::EIO.new("bot"),
+        Rack::QueryParser::InvalidParameterError.new("malformed query"),
+        ActionController::BadRequest.new("malformed request"),
+        ActionDispatch::Http::Parameters::ParseError.new("malformed body")
+      ].each do |exception|
+        Sentry.capture_exception(exception)
+      end
+
+      assert_empty captured_events,
+        "removing one inherited default must not disturb the exclusions added above it"
+    end
+  end
+
+  # The audited-and-kept half of #23. Each of these is handled and re-logged at INFO
+  # elsewhere in the app, or is protocol-edge garbage from a scanner; the initializer
+  # records why each stays. A future change that widens the `-=` into "un-exclude the
+  # 4xx family" fails here.
+  test "the inherited defaults the audit deliberately kept are still excluded" do
+    boot_sentry("production") do
+      [
+        ActionController::RoutingError.new("No route matches"),
+        ActionController::UnknownFormat.new("no template"),
+        ActiveRecord::RecordNotFound.new("Couldn't find Session"),
+        ActionController::ParameterMissing.new(:session),
+        ActionController::MethodNotAllowed.new("only POST"),
+        ActionController::InvalidCrossOriginRequest.new("cross-origin"),
+        ActionController::UnknownHttpMethod.new("PROPFIND"),
+        AbstractController::ActionNotFound.new("no action")
+      ].each do |exception|
+        Sentry.capture_exception(exception)
+      end
+
+      assert_empty captured_events,
+        "these stay excluded on purpose — see the audit in config/initializers/sentry.rb"
+    end
+  end
+
+  # The two filters are independent and must stay that way: a CSRF rejection is a web
+  # request, never `source: runner`, and the runner filter must not have grown a way to
+  # see it.
+  test "the runner filter still drops an interactive console typo after the un-exclusion" do
+    boot_sentry("production") do
+      with_ttys(stdin: true, stdout: true, stderr: true) do
+        capture_runner_exception("PG::UndefinedColumn: column sessions.initial_prompt does not exist")
+      end
+      assert_empty captured_events
+
+      with_ttys { capture_runner_exception("job drain canary never ran") }
+      assert_equal 1, captured_events.size,
+        "the drain gate must still page; the exclusion change is none of its business"
+    end
+  end
+
+  test "a CSRF rejection at an operator terminal is still reported" do
+    boot_sentry("production") do
+      # A Puma worker has no controlling terminal, but the suite may; the runner filter
+      # keys on the `source` tag as well as the TTY, and a CSRF event carries neither.
+      with_ttys(stdin: true, stdout: true, stderr: true) do
+        Sentry.capture_exception(
+          ActionController::InvalidAuthenticityToken.new("Can't verify CSRF token authenticity.")
+        )
+      end
+
+      assert_equal 1, captured_events.size
+    end
+  end
 end
