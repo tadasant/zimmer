@@ -279,8 +279,9 @@ class SessionsController < ApplicationController
       return
     end
 
-    # Shared ordering: favorites first, then newest. Used by both the flat search
-    # results and every per-category window.
+    # The flat search results list: favorites first, then newest. A search replaces
+    # the category grid with one list nobody can drag, so the dragged order below has
+    # no meaning here.
     ordered = sessions.order(favorited: :desc, created_at: :desc)
 
     # When a search is active, render a single flat results list and skip the
@@ -291,6 +292,11 @@ class SessionsController < ApplicationController
       @any_sessions = @search_results.any?
       return
     end
+
+    # The category grid's own ordering: where the operator dragged each card, with
+    # newest-first as the tiebreaker for every card nobody has ever dragged (they all
+    # hold sort_order 0). See SessionCardOrder.
+    carded = sessions.card_ordered
 
     # Per-category pagination. Each category section — including the "Uncategorized"
     # bucket — paginates its own sessions independently so paging one section never
@@ -313,11 +319,17 @@ class SessionsController < ApplicationController
     # current visibility scope is pinned (not just those on one global page — per-category
     # pagination has no single global page), and they are excluded from the per-category
     # windows below so each starred session appears exactly once, in the pinned group.
+    #
+    # The Starred group is NOT drag-orderable: it renders outside the drag-and-drop
+    # controller and its cards carry no handle, because a card's category placement is
+    # invisible while it is starred. So it keeps the newest-first ordering rather than
+    # the dragged one — a card dragged, then starred, is back where it was dragged to
+    # the moment it is unstarred, because starring does not disturb its sort_order.
     @pinned_sessions = ordered.where(favorited: true)
 
     # Everything else feeds the paginated category sections. Favorited sessions are
     # filtered out here because they render in the pinned group above.
-    unpinned = ordered.where(favorited: false)
+    unpinned = carded.where(favorited: false)
 
     # Uncategorized: every non-favorited session with a NULL category_id. Keeps its own
     # Kaminari window driven by the "uncategorized" sentinel key.
@@ -2122,6 +2134,37 @@ class SessionsController < ApplicationController
         format.json { render json: { success: true, session_id: @session.id, category_id: nil } }
       end
     end
+  end
+
+  # POST /sessions/reorder — persist the top-to-bottom order of one dashboard
+  # section's cards after a drag.
+  #
+  # The body is `{ ids: [...], category_id: "<id>"|"", session_id: "<id>" }`: the
+  # destination section's live DOM order, the section it is (empty or the
+  # "uncategorized" sentinel for the Uncategorized bucket), and — when the drag
+  # crossed sections — the card that moved, so one request persists both the
+  # category change and the new position. `ids` is one PAGE of the section, so
+  # Session.reorder_cards! deals the cards back into the slots they already hold in
+  # the bucket's global order rather than treating the index in this list as the
+  # position; see SessionCardOrder.
+  def reorder
+    category_id = params[:category_id].to_s.strip
+
+    if category_id.present? && category_id != Category::UNCATEGORIZED_SENTINEL
+      category = Category.find_by(id: category_id.to_i)
+      unless category
+        render json: { error: "Category ##{category_id} not found" }, status: :not_found
+        return
+      end
+    end
+
+    Session.reorder_cards!(
+      params[:ids],
+      category_id: category&.id,
+      moved_session_id: params[:session_id]
+    )
+
+    head :no_content
   end
 
   def toggle_push_notifications

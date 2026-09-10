@@ -8,6 +8,7 @@ class Session < ApplicationRecord
   include JsonbDualWrite
   include SessionGenesisClassification
   include SessionPrecedence
+  include SessionCardOrder
   include SessionVisibility
   include RunningTurns
   include CatalogArtifactReferences
