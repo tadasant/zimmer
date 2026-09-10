@@ -609,6 +609,13 @@ class SpotGateService
   # The same population narrowed to SPOT sessions, with the session being
   # admitted left out of it. What the pacing waiver keys on, and both narrowings
   # are load-bearing — see Session.running_claude_code_spot_turns.
+  #
+  # A second RunningTurns reading per decision, and deliberately eager. The
+  # cheaper shape is to ask for it only when a window is out of pace — on a
+  # deployment inside its curve, never — but then `pace_waived` would mean "the
+  # pace was waived" on one branch and "nobody asked" on the other, in a field
+  # that is serialized out of #to_h. This runs once per turn admission, not once
+  # per request, and the decision it feeds already prices the pool and the fleet.
   def spot_in_flight
     return @spot_in_flight if defined?(@spot_in_flight)
 
