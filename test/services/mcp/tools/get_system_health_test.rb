@@ -231,6 +231,162 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     GoodJob::Setting.delete_all
   end
 
+  # --- the Parameter Store namespace migration -------------------------------
+  #
+  # The rename reads BOTH namespaces across the move, so a half-done migration
+  # and a finished one are indistinguishable from every other angle: nothing
+  # raises, nothing is missing. The Connectors page banner tells them apart for a
+  # human; an agent session cannot read a web page, so the session assigned "drop
+  # the pre-rename read path" either parks in `needs_input` asking a human to read
+  # a banner back to it, or proceeds blind. Dropping that read path early turns
+  # every affected `${VAR}` into "Missing configuration" in silence, because a
+  # miss is not an error.
+
+  test "names the variables still answering from a pre-rename namespace" do
+    fake = FakeParameterStore.new
+    fake.seed_secret("MOVED_ALREADY", "1")
+    fake.seed_secret("STILL_AT_OLD_PATH", "2",
+      path: ParameterStore::Namespace.legacy_parameter_path("STILL_AT_OLD_PATH"))
+    fake.seed_secret("ALSO_AT_OLD_PATH", "3",
+      path: ParameterStore::Namespace.legacy_parameter_path("ALSO_AT_OLD_PATH"))
+    stub_chain_with(fake)
+
+    result = @tool.call({})
+
+    assert_includes result, "### Secret Store"
+    assert_includes result, "- **Canonical namespace:** `#{ParameterStore::Namespace.static_namespace}`"
+    assert_includes result,
+      "- **Pre-rename namespaces still read:** `#{ParameterStore::Namespace.legacy_static_namespace}`"
+    assert_includes result,
+      "- **Names still answering from a pre-rename namespace (2):** ALSO_AT_OLD_PATH, STILL_AT_OLD_PATH",
+      "sorted, counted, and only the names the old namespace actually holds"
+    refute_includes result, "MOVED_ALREADY"
+  end
+
+  # A parameter the resolver REFUSES to serve is still a parameter at the old
+  # path, so it counts as remaining — otherwise the section would say the
+  # namespace is empty while it still holds one.
+  test "counts a pre-rename name the resolver holds back as still remaining" do
+    fake = FakeParameterStore.new
+    fake.seed_secret("STUCK", "whatever", encoding: "rot13",
+      path: ParameterStore::Namespace.legacy_parameter_path("STUCK"))
+    stub_chain_with(fake)
+
+    result = @tool.call({})
+
+    assert_includes result, "- **Names still answering from a pre-rename namespace (1):** STUCK"
+  end
+
+  test "folds every pre-rename namespace the resolver reads into one list" do
+    fake = FakeParameterStore.new
+    other = "/zimmer/#{Rails.env}/legacy/static/"
+    fake.seed_secret("FROM_MCP", "1", path: ParameterStore::Namespace.legacy_parameter_path("FROM_MCP"))
+    fake.seed_secret("FROM_OTHER", "2", path: "#{other}FROM_OTHER")
+    namespaces = ParameterStore::Namespace.read_namespaces + [ other ]
+    stub_chain_with(fake, namespaces: namespaces)
+
+    result = @tool.call({})
+
+    assert_includes result, "- **Pre-rename namespaces still read:** " \
+                            "`#{ParameterStore::Namespace.legacy_static_namespace}`, `#{other}`"
+    assert_includes result,
+      "- **Names still answering from a pre-rename namespace (2):** FROM_MCP, FROM_OTHER"
+  end
+
+  test "says the pre-rename read path can be dropped once nothing answers from it" do
+    fake = FakeParameterStore.new
+    fake.seed_secret("MOVED_ALREADY", "1")
+    fake.seed_secret("ALSO_MOVED", "2")
+    stub_chain_with(fake)
+
+    result = @tool.call({})
+
+    assert_includes result,
+      "- **Pre-rename namespaces still read:** `#{ParameterStore::Namespace.legacy_static_namespace}`"
+    assert_includes result,
+      "- **Names still answering from a pre-rename namespace:** none — that read path can be dropped."
+  end
+
+  # The load-bearing safety property. This response is read by other agent
+  # sessions, so a secret VALUE folded in here would be secret material handed to
+  # every caller. Seeded on both sides of the move, in both envelope shapes, and
+  # under a name the report does print — so the assertion cannot pass merely
+  # because the name is absent.
+  test "reports names, never values" do
+    fake = FakeParameterStore.new
+    fake.seed_secret("CANONICAL_KEY", "sk-live-canonical-secret")
+    fake.seed_console_secret("ENCODED_KEY", "sk-live-encoded-secret")
+    fake.seed_secret("STILL_AT_OLD_PATH", "sk-live-legacy-secret",
+      path: ParameterStore::Namespace.legacy_parameter_path("STILL_AT_OLD_PATH"))
+    stub_chain_with(fake)
+
+    result = @tool.call({})
+
+    assert_includes result, "STILL_AT_OLD_PATH", "the name is reported"
+    [ "sk-live-canonical-secret", "sk-live-encoded-secret", "sk-live-legacy-secret" ].each do |value|
+      refute_includes result, value, "a secret value must never reach an MCP response"
+      refute_includes result, Base64.urlsafe_encode64(value, padding: false),
+        "nor an encoded form of one"
+    end
+  end
+
+  # Reporting a namespace nobody read as an empty one is the single wrong answer
+  # here: it tells the follow-up PR to go ahead. The configuration lines above it
+  # are true whether or not Google ever answered, so only that one line degrades.
+  test "a namespace with no snapshot says unknown rather than reading as finished" do
+    fake = FakeParameterStore.new
+    fake.fail_with!(503)
+    stub_chain_with(fake, warm: false)
+
+    result = @tool.call({})
+
+    assert_includes result, "- **Canonical namespace:** `#{ParameterStore::Namespace.static_namespace}`"
+    assert_includes result, "- **Names still answering from a pre-rename namespace:** unknown — this " \
+                            "process holds no snapshot of the store yet."
+    refute_includes result, "that read path can be dropped"
+    assert_includes result, '"overall_status": "healthy"', "and the health report survives"
+  end
+
+  # Reporting, not resolving: an agent asking for a health report must not be the
+  # thing that provokes a round trip to Google, least of all while triaging a
+  # store that is not answering.
+  test "reads what the process already holds rather than calling the store" do
+    fake = FakeParameterStore.new
+    fake.seed_secret("STILL_AT_OLD_PATH", "1",
+      path: ParameterStore::Namespace.legacy_parameter_path("STILL_AT_OLD_PATH"))
+    stub_chain_with(fake)
+    before = fake.requests.size
+
+    3.times { @tool.call({}) }
+
+    assert_equal before, fake.requests.size
+  end
+
+  test "reports the migration as complete once the pre-rename read path is gone" do
+    fake = FakeParameterStore.new
+    fake.seed_secret("MOVED_ALREADY", "1")
+    stub_chain_with(fake, namespaces: [ ParameterStore::Namespace.static_namespace ])
+
+    result = @tool.call({})
+
+    assert_includes result,
+      "- **Pre-rename namespaces still read:** none — the namespace migration is complete."
+  end
+
+  # An explicit line rather than an absent section, so a caller asking "is the
+  # migration done?" can tell "there is no store" from "this report doesn't say".
+  test "says which store is in use when no Parameter Store is configured" do
+    SecretProviders.stubs(:chain).returns(SecretProviders::Chain.new([ SecretProviders::RailsCredentials.new ]))
+    SecretProviders.stubs(:parameter_store_configuration)
+                   .returns(ParameterStore::Resolver::Configuration.new(client: nil, reason: "no key is set"))
+
+    result = @tool.call({})
+
+    assert_includes result, "### Secret Store"
+    assert_includes result, "the Google Parameter Store is not configured (no key is set)"
+    refute_includes result, "Pre-rename namespaces still read"
+  end
+
   private
 
   # A health report carrying the queue statistics under test. Every backlog line
@@ -241,5 +397,17 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
       { overall_status: "healthy", session_health: { total_sessions: 3 },
         system_health: { queue_stats: queue_stats } }
     )
+  end
+
+  # `warm:` reproduces what every real MCP request already did before this tool
+  # runs: Mcp::Context resolves ${VAR}s for the self-session injector, which is a
+  # read through this same chain, so the snapshot is held by the time the health
+  # report is rendered. The section deliberately does not refresh it itself.
+  def stub_chain_with(fake, namespaces: ParameterStore::Namespace.read_namespaces, warm: true)
+    chain = SecretProviders::Chain.new(
+      [ fake.provider(namespaces: namespaces), SecretProviders::RailsCredentials.new ]
+    )
+    chain.get("ZIMMER_APP_URL") if warm
+    SecretProviders.stubs(:chain).returns(chain)
   end
 end

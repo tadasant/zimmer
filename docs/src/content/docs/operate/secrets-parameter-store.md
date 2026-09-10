@@ -134,7 +134,7 @@ afterwards. Two namespaces are the same API traffic as one, and a test pins that
 
 ### Telling a half-done migration from a finished one
 
-Because nothing raises either way, the state has to be *reported*. Two surfaces:
+Because nothing raises either way, the state has to be *reported*. Three surfaces:
 
 - **The Connectors page store banner** names the variables still sitting in the
   pre-rename namespace, or says that nothing does and the old read path can be
@@ -142,6 +142,22 @@ Because nothing raises either way, the state has to be *reported*. Two surfaces:
   no extra call.
 - **Each variable's `GSM` badge** carries the namespace that actually answered for
   *that* variable, in its tooltip.
+- **`get_system_health`'s `Secret Store` section** says the same thing to an agent
+  session, which cannot read a web page. It names the canonical namespace, the
+  pre-rename namespaces still being read, and the sorted list of variable names
+  still answering from them — **names only, never values**, because that response
+  is read by other agent sessions. It reports off the snapshot the process already
+  holds and never refreshes it, so it costs the store nothing even during an
+  outage.
+
+That third one is the precondition check for dropping the pre-rename read path, and
+it answers in both directions: `none — that read path can be dropped` once the data
+has moved, and `none — the namespace migration is complete` once
+`Namespace.read_namespaces` returns one namespace. A namespace the process holds no
+snapshot of says `unknown` rather than reading as finished, because reporting an
+unread namespace as an empty one is the single wrong answer here — it would tell the
+follow-up PR to go ahead. `SnapshotCache#get` cannot tell those two apart, which is
+why `legacy_variables` reads through `peek` and answers `nil`.
 
 ### Running the migration
 

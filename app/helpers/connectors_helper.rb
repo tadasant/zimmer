@@ -137,7 +137,9 @@ module ConnectorsHelper
   # a poor trade.
   #
   # @param store [SecretProviders::ParameterStoreProvider]
-  # @return [Array<String>, nil] nil when the store could not be consulted.
+  # @return [Array<String>, nil] nil when the store could not be consulted, or
+  #   when the refresh was discarded and nothing is held — an unread namespace is
+  #   not an empty one, and this banner must not say the move is done for one.
   def connector_legacy_store_variables(store)
     store.legacy_variables
   rescue ParameterStore::StoreError, ParameterStore::AuthError
