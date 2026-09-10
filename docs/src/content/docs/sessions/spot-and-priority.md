@@ -239,13 +239,29 @@ catches up. No cliff at either end.
 
 A session is not infinitely divisible. If the sustainable rate were below what a single session
 burns, the pace check alone would admit nothing and leave the whole budget unspent — the opposite of
-what the model is for. So **when nothing at all is running, the pace check is waived** and only the
+what the model is for. So **when no spot work is in flight, the pace check is waived** and only the
 cap applies: one session runs, gets ahead of the curve, and the next admission waits for the curve to
 catch up. A duty cycle rather than an outage.
 
-The waiver keys on the whole fleet being idle, not on spot sessions being idle — priority work
-running *is* work happening, and it spends against the same window. And the **reserve is never
-waived**: an idle fleet facing a spent budget is still held.
+Two things do **not** count as spot work in flight, and both of them used to.
+
+**Priority sessions don't.** Priority work running *is* work happening and it does spend against the
+same window — but it is not the work this waiver lets through, and the spot budget goes unspent
+whether or not a router is running. A live deployment always has some priority session on a worker,
+so keying the waiver on the whole fleet turned it off permanently: production spent four days at 0–1
+sessions with 33 spot sessions held and the waiver never fired
+([#693](https://github.com/tadasant/zimmer/issues/693)).
+
+**The session being admitted doesn't.** By the time the gate reads the fleet, the asking session is
+already inside `AgentSessionJob#perform` — its `agents` job carries a `performed_at` while its own
+row still reads `waiting`, so it is reported as a turn awaiting a worker. Counting it made "is any
+spot work in flight?" answer *yes* on a completely empty deployment, every time, which put the waiver
+out of reach at the door regardless of the question above.
+
+Priority spend is not thereby ignored: every running session's burn is in the rate both checks are
+tested against, and the **reserve is never waived**. A fleet of priority work that has genuinely
+eaten the spot budget still holds the session — on the cap, which is the check that owns that
+question.
 
 ### Before the first calibration
 
@@ -480,10 +496,21 @@ spent: its windows keep draining while it waits for a human, and its headroom is
 moment they log back in. Leaving it out would shrink the denominator to the serving accounts and make
 the average jump every time an account fell out of the pool or came back.
 
-The average carries one correction, and it is the page's rule rather than a second one invented for
-the gate: an account whose **7-day window is spent counts as 100%** in the 5-hour figure, because its
-5-hour headroom cannot be served. Without it, a dead account's empty 5-hour counter would read as room
-to spend.
+**The 5-hour figure is narrower than the weekly one.** It averages only the accounts whose **7-day
+window still has room**, because those are the accounts a turn could actually land on. An account
+whose week is spent is left out of it — and says so on the weekly figure, where it reads 100%
+honestly and is what holds work while the week is spent.
+
+It used to be counted at **100% in the 5-hour figure** instead of being left out, on the reasoning
+that its 5-hour headroom cannot be served. That is true of the account and false of the number: the
+pacing curve reads this figure as 5-hour capacity *consumed*, so the substitution became a floor of
+`weekly-spent ÷ accounts-read` on a curve that restarts at zero every five hours — and nothing the
+fleet did could bring it down, because it was not about the 5-hour window at all. On 2026-09-10 that
+was 2 accounts of 7, all seven reading 0.0% on their 5-hour counters: a pooled **28.57% against a
+curve at 25.15%**, holding 33 spot sessions on a fleet that had been idle for four days
+([#693](https://github.com/tadasant/zimmer/issues/693)). When *every* account's week is spent there
+is nothing servable to average, and the figure falls back to the whole pool — which then reads 100%,
+correctly, without a substitution.
 
 An account with no reading at all contributes nothing and is left out of the denominator too — the
 decision says how many of the pool's accounts it averaged. When nothing has a readable window the
@@ -619,8 +646,8 @@ so. The window's rollover is offered after it, labelled as an **upper bound on t
 forecast of it** — the rollover refills the budget, so the hold cannot outlast it.
 
 When one session on its own is priced above the whole sustainable rate, there is no fleet burn low
-enough to admit it and the copy says so: nothing fits beside the work already in flight, and with
-nothing running at all the [idle-fleet waiver](#there-is-always-room-for-one-session) admits one
+enough to admit it and the copy says so: nothing fits beside the work already in flight, and once no
+spot work is in flight the [idle-fleet waiver](#there-is-always-room-for-one-session) admits one
 session so the deployment runs in a duty cycle.
 
 A hold can involve both window ceilings at once — one window's budget spent while the other is only
