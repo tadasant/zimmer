@@ -983,6 +983,52 @@ module SessionStateMachine
     !awaiting_scheduled_wake?
   end
 
+  # Whether a person can restart this session by hand — the entry condition
+  # behind `SessionsController#restart` and behind every site that renders (or
+  # withholds) the Restart control: the session header, the session card, and the
+  # mobile joystick's sheet.
+  #
+  # Built from `may_resume?` — the predicate MCP `action_session`'s `restart` and
+  # `POST /api/v1/sessions/:id/restart` gate on — rather than from a second list
+  # of statuses, so the *set of statuses* the web door admits is a subset of
+  # theirs by construction. The drift this closes ran the other way: the
+  # controller re-derived the condition as `failed?`, which left a session
+  # stranded in `needs_input` restartable by an agent and not restartable by a
+  # human at all ([#830](https://github.com/tadasant/zimmer/issues/830)).
+  #
+  # It subtracts two of the states `may_resume?` allows.
+  #
+  # **`waiting`** — that session is not stranded, it is in flight, and each of the
+  # three shapes it takes is a reason not to offer a button: its turn is already
+  # queued for a worker, so a restart enqueues a second one; it is asleep on a
+  # wake-up; or it is dormant in the spot queue, where restarting puts it straight
+  # back on the window that parked it. A stalled `waiting` session already has its
+  # own control — `refresh`, which sends the continue nudge under
+  # `#continue_nudge_on_refresh?` and is rendered on every card.
+  #
+  # **A `needs_input` session blocked on an elicitation** — the one shape of
+  # `needs_input` that is not stranded either. Its agent process is alive and
+  # blocked on a synchronous MCP round-trip whose answer form is rendered on the
+  # same page as this button, so the thing that unblocks it is the form, not a
+  # restart. Restarting would clear the `blocked_on_elicitation` marker with the
+  # elicitation still active, take the session out of the action queue while a
+  # human answer is still the only thing that will finish it, and disarm
+  # `#clear_stale_elicitation_block!`, which repairs from that very marker.
+  #
+  # **What it does NOT subtract, deliberately: a session asleep on an armed
+  # one-time wake.** `#paused_until_scheduled_time?` is status-agnostic, so a
+  # `needs_input` session can hold one — a follow-up preserves one-time schedules
+  # rather than consuming them — and MCP and the REST API refuse exactly that
+  # (`Mcp::Tools::ActionSession#refuse_if_paused!`). The web door does not, and
+  # that divergence is older than this predicate and deliberate: a person clicking
+  # Restart on one session is taking that session over, where an agent working a
+  # ranked queue must not start a session that asked to be left alone. See
+  # `Sessions::RestartFromScratch`'s header. So this is a subset of `may_resume?`
+  # by *status*, not a subset of what those two doors will actually accept.
+  def restartable_by_hand?
+    may_resume? && !waiting? && !blocked_on_elicitation?
+  end
+
   # Reconcile the session's status with its active (pending, unexpired)
   # elicitations. Called from Elicitation lifecycle callbacks on every path that
   # creates, resolves, or expires an elicitation.
