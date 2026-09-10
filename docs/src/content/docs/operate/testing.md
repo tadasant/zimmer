@@ -262,15 +262,22 @@ The seam is `HostProcessDiscovery`, the one object that runs the `pgrep`. `Healt
 one as `process_discovery:`, and when none is given it builds whichever `config.x.host_process_discovery`
 names: the real scanner everywhere but `config/environments/test.rb`, which sets `:none` and gets
 `HostProcessDiscovery::None`, which sees nothing. That covers every caller that constructs the service
-the way production does — the two controllers, the MCP tool, `SystemHealthMonitorJob` — including
-tests that have not been written yet. It also means an unstubbed `process_health` in a test reports
-zero active processes, which the section already classifies as "not observable from here" rather than
+the way production does — the two controllers, the `action_health` and `get_system_health` MCP tools,
+`SystemHealthMonitorJob` — including tests that have not been written yet. It also means an unstubbed
+`process_health` in a test reports zero active processes, which the section already reports as "not
+observable from here" whenever a session records an agent process it cannot probe, rather than as
 "none exist".
 
-Two tests keep it true: `HealthControllerTest` posts to the action with `HostProcessDiscovery.expects(:new).never`
-and `ProcessTerminationService.any_instance.expects(:terminate).never`, and `HealthMonitorServiceTest`
-asserts the service built with no arguments is blind in this environment. A test *of* the scanner
-constructs a `HostProcessDiscovery` and stubs its own `pgrep_output` — the instance, never `Open3`.
+The setting is one line in one file, and anything other than exactly `:none` builds the real scanner,
+so `test/test_helper.rb` checks it once in the parent process, before `parallelize` forks: a service
+built without an explicit discovery must come back with `HostProcessDiscovery::None`, or the suite
+aborts before any test body runs. Two per-case tripwires sit behind that: `HealthControllerTest` posts
+to the action with `HostProcessDiscovery.expects(:new).never` and
+`ProcessTerminationService.any_instance.expects(:terminate).never`, which fail on the constructor
+before anything is signalled, and `HealthMonitorServiceTest` asserts the same service is blind here
+and that `cleanup_orphaned_processes` reaches no termination even when every pid it could see would
+count as an orphan. A test *of* the scanner constructs a `HostProcessDiscovery` and stubs its own
+`pgrep_output` — the instance, never `Open3`.
 
 ### Process-global caches leak between tests in the same worker
 

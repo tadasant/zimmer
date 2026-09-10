@@ -298,10 +298,10 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_includes report[:overall_status].message, "1 could not be evaluated"
   end
 
-  # The container these tests run in has live `claude` processes of its own, which
-  # the `pgrep` scan finds — and finding one IS evidence that this process can see
-  # agent processes, so it flips `observable` true and hides the production shape.
-  # Pinning the scan to empty is what makes these cases about the recorded side.
+  # Finding a live `claude` process IS evidence that this process can see agent
+  # processes, which flips `observable` true and hides the production shape. The
+  # test environment's discovery already sees nothing; pinning the scan to empty
+  # here says so where these cases are read, whatever `@service` was built with.
   def with_no_local_claude_processes(&block)
     @service.stub(:find_active_claude_processes, [], &block)
   end
@@ -1957,13 +1957,10 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
 
   # === Host isolation (#1095) ===
   #
-  # Orphan detection is "a live `claude` process this uid owns whose pid no
-  # running session records". The test database records no real pid, so a scan of
-  # the host from inside a test would classify every live agent on the machine as
-  # an orphan and terminate it — three times over, including the session running
-  # the test. `config/environments/test.rb` therefore configures `:none`, and these
-  # cases are what keeps that true: a service built the way every production
-  # caller builds it must not construct the host scanner in this environment.
+  # Why a test must never see the host's processes is told once, in
+  # docs/operate/testing.md. These cases keep the seam that prevents it wired: a
+  # service built without an explicit discovery must not construct the host
+  # scanner in this environment.
 
   test "a service built without an explicit discovery is blind in the test environment" do
     assert_equal :none, Rails.configuration.x.host_process_discovery
@@ -1975,7 +1972,12 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   end
 
   test "cleanup_orphaned_processes terminates nothing in the test environment" do
-    Session.delete_all # so every host process WOULD be an orphan, were the host scanned
+    # Make every process the scanner could report an orphan: no session records
+    # any pid, and the manager says every pid is alive (its default answer for a
+    # pid it never spawned is "dead", which would filter a scanned host process out
+    # before termination and make this case pass for the wrong reason).
+    Session.delete_all
+    @mock_process_manager.running_hook = ->(_pid) { true }
     ProcessTerminationService.any_instance.expects(:terminate).never
 
     results = HealthMonitorService.new(process_manager: @mock_process_manager).cleanup_orphaned_processes
@@ -1999,16 +2001,6 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
 
     assert_same discovery, service.process_discovery
     assert_equal [ 4242 ], service.send(:find_orphaned_processes, service.send(:find_active_claude_processes)).map { |p| p[:pid] }
-  end
-
-  # Constructing a HostProcessDiscovery touches nothing; only #claude_processes
-  # does, and the block never calls it.
-  def with_host_process_discovery(value)
-    original = Rails.configuration.x.host_process_discovery
-    Rails.configuration.x.host_process_discovery = value
-    yield
-  ensure
-    Rails.configuration.x.host_process_discovery = original
   end
 
   test "retry_failed_sessions returns results structure" do
@@ -3036,5 +3028,15 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     )
 
     assert HealthMonitorService.new.full_health_report[:overall_status].critical?
+  end
+
+  # Constructing a HostProcessDiscovery touches nothing; only #claude_processes
+  # does, and the block never calls it.
+  def with_host_process_discovery(value)
+    original = Rails.configuration.x.host_process_discovery
+    Rails.configuration.x.host_process_discovery = value
+    yield
+  ensure
+    Rails.configuration.x.host_process_discovery = original
   end
 end

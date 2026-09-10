@@ -20,9 +20,10 @@ require "open3"
 #
 # Security: `-u` restricts the scan to the current user's processes.
 class HostProcessDiscovery
-  # The discovery that sees nothing. Its answer is "no process is visible from
-  # here", which HealthMonitorService already treats as "not knowable", not "none
-  # exist" — the `observable` flag on process_health tells the two apart.
+  # The discovery that sees nothing. HealthMonitorService#process_health already
+  # copes with an empty scan: whenever a session records an agent process this
+  # process cannot probe, it reports the count as not observable from here rather
+  # than as zero orphans.
   class None
     def claude_processes
       []
@@ -52,6 +53,8 @@ class HostProcessDiscovery
       { pid: pid, command: command, running: @process_manager.running?(pid) }
     end
   rescue => e
+    # An incomplete scan is no scan: a partial list would feed the orphan check a
+    # subset that says nothing about the processes it never reached.
     @logger.error("Failed to find active processes", error: e.message)
     []
   end
