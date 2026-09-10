@@ -200,21 +200,24 @@ in development, so it has been left alone.
 hundred an hour is the app being broken for every writer, which is what
 [#19](https://github.com/tadasant/zimmer/issues/19) was. Both look identical to a rule that
 counts to one, and re-tuning that rule is an obs-side change living in `tadasant-internal`
-(`obs/`), not in this repo. What *is* in this repo now is the other pipeline: `Sentry` no
-longer inherits sentry-rails' exclusion of `ActionController::InvalidAuthenticityToken`, and
+(`obs/`), not in this repo. The Sentry pipeline does count a rate: the initializer subtracts
+`ActionController::InvalidAuthenticityToken` from sentry-rails' inherited exclusions, and
 `CsrfRejectionMonitor` reports one GlitchTip event (plus one WARN) per five-minute bucket once
 ten rejections land in it
 ([details](/operate/observability/#a-rate-of-csrf-rejections-pages-a-single-one-does-not)).
-The residual limitation is that this counts *globally* rather than per client, so a single
-determined prober hitting real routes can trip it — the report carries `session_cookie` and
-`user_agent` precisely so that costs one glance rather than an investigation.
+Two edges remain there. The counter is *global*, not per client, so one client repeatedly
+posting without a token to real routes can trip it — the report carries `session_cookie` and
+`user_agent` so that costs one glance rather than an investigation. And whether a GlitchTip
+event actually reaches Slack depends on GlitchTip's alert rules, which live outside this repo
+and have not been verified end to end (ask 2 of #23).
 
 **Administrate is not covered by the handler.** `Supervisor::ApplicationController` descends
 from `Administrate::ApplicationController`, not from Zimmer's `ApplicationController`, so it
 never sees the handler. A tokenless non-GET to any `/supervisor/*` route still raises, still
 logs at ERROR, and still pages. Nothing links to those routes from the public UI, so the
-realistic trigger is a probe rather than a user. It does now also reach GlitchTip with its URL
-and user agent attached, which is the one thing the ERROR record never carried.
+realistic trigger is a probe rather than a user. It also reaches GlitchTip, one event per
+request, with the URL and user agent the ERROR record lacks. The GoodJob dashboard at `/jobs`
+behaves the same way, for the same reason.
 
 ### An agent session's shell still carries the OTLP ingest token
 

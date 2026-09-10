@@ -81,7 +81,9 @@ Two things keep the handler narrow, and the first is easy to get wrong.
 `rescue_from` matches subclasses, so a lone `rescue_from ActionController::UnknownFormat` would
 swallow a forgotten view into a quiet 406 as well. `ApplicationController` therefore declares a
 second, more specific handler that re-raises it; handler lookup runs in reverse declaration
-order, so the specific one wins and a missing template stays a loud ERROR. Second, the reach is
+order, so the specific one wins and a missing template stays a loud ERROR — and a GlitchTip
+event, since the Sentry initializer subtracts `UnknownFormat` from its inherited exclusions for
+exactly this subclass ([details](#a-rate-of-csrf-rejections-pages-a-single-one-does-not)). Second, the reach is
 the web UI and nothing else: the JSON API descends from `Api::BaseController <
 ActionController::API` and Administrate from `Administrate::ApplicationController`, so neither
 inherits the handler and a format error on either of those surfaces is left to surface on its
@@ -406,71 +408,89 @@ An operator who *wants* a console exception recorded still has one: run it witho
 
 ## A rate of CSRF rejections pages; a single one does not
 
-`excluded_exceptions` does not start empty. sentry-ruby seeds it, and sentry-rails'
-`after(:initialize)` hook concatenates fourteen more classes
-(`Sentry::Rails::IGNORE_DEFAULT`, plus `ActionController::TooManyRequests` on Rails ≥ 8.1.1)
-**before** `config/initializers/sentry.rb` runs. Everything the initializer used to do was
-`+=`, so nothing ever audited what it inherited.
+`excluded_exceptions` does not start empty. sentry-ruby seeds it with seven names, and
+sentry-rails' `after(:initialize)` hook concatenates fifteen more
+(`Sentry::Rails::IGNORE_DEFAULT`'s fourteen, plus `ActionController::TooManyRequests` on
+Rails ≥ 8.1.1) **before** `config/initializers/sentry.rb` runs. The initializer's own list
+only appends, and nothing audited what it inherited.
 
-`ActionController::InvalidAuthenticityToken` is item 4 of that inherited list, and the bill
-came due in [#19](https://github.com/tadasant/zimmer/issues/19): a proxy stopped forwarding
-`X-Forwarded-Proto`, **every write in the UI failed CSRF validation for hours**, and GlitchTip
-received nothing at all — the events were dropped client-side, in the SDK, before any
-transport. A human found the outage by clicking a button
+`ActionController::InvalidAuthenticityToken` is in that inherited list, and the bill came due
+in [#19](https://github.com/tadasant/zimmer/issues/19): `assume_ssl` on a plain-HTTP tailnet
+deploy made the app's computed origin disagree with the browser's, **every write in the UI
+failed CSRF validation for hours**, and GlitchTip received nothing at all — the events were
+dropped in the SDK, before any transport. A human found the outage by clicking a button
 ([#23](https://github.com/tadasant/zimmer/issues/23)).
 
 The default is right for what it was written for. One CSRF rejection is a stale form, a tab
-left open across a deploy, or a probe. **A hundred an hour is the app being broken for every
-writer**, and the two are the same exception. So the initializer removes the exclusion, and
-`CsrfRejectionMonitor` supplies the missing distinction:
+left open across a deploy, or a client posting without a token. **A hundred an hour is the
+app being broken for every writer**, and the two are the same exception. So the initializer
+subtracts it, and `CsrfRejectionMonitor` supplies the missing distinction:
 
 ```ruby
-config.excluded_exceptions -= [ "ActionController::InvalidAuthenticityToken" ]
+config.excluded_exceptions -= [
+  "ActionController::InvalidAuthenticityToken",
+  "ActionController::UnknownFormat"
+]
 ```
 
-- Every rejection increments a counter in a **tumbling five-minute bucket** (`Rails.cache`,
-  which is Redis in production).
+- Every rejection `ApplicationController` handles increments a counter in a **tumbling
+  five-minute bucket** (`Rails.cache`, which is Redis in production).
 - The rejection that pushes a bucket to **10** captures **one** exception to GlitchTip — with
-  the count, the verb, the path, the user agent, whether a session cookie was present, and
-  the exception message that separates a stale token from an `Origin` mismatch — and emits
-  **one** `WARN` so the same conclusion is reachable from VictoriaLogs.
+  the count, the verb, the path, the user agent, whether a session cookie was present, and the
+  exception message that separates a stale token from an `Origin` mismatch — under the fixed
+  fingerprint `csrf-rejection-rate`, and emits **one** `WARN` so the same conclusion is
+  reachable from VictoriaLogs.
 - Every later rejection in that bucket is silent.
 
-So the loudest possible storm costs one event and one WARN per five minutes, and the quiet
-base rate costs nothing: the record that first tripped the log-based alert on 2026-08-02 was
-the *only* `InvalidAuthenticityToken` in production across the full 14-day VictoriaLogs
-retention window.
+So on the `ApplicationController` path — the whole web UI — the loudest possible storm costs
+one event and one WARN per five minutes, and the quiet base rate costs nothing: per the triage
+on #23, the record that first tripped the log-based alert on 2026-08-02 was the only
+`InvalidAuthenticityToken` in production across the 14-day VictoriaLogs retention window.
 
-Two properties are worth stating because both were deliberate:
+**Two surfaces have no such handler, and report per request.** `/supervisor`
+(`Supervisor::ApplicationController < Administrate::ApplicationController`) and `/jobs` (the
+GoodJob engine, `protect_from_forgery with: :exception`) never see `ApplicationController`'s
+`rescue_from`, so a tokenless non-GET there raises through the capture middleware. Both already
+log that failure at ERROR, which pages; GlitchTip receives the twin of the page, carrying the URL
+and user agent the log record lacks. On this deployment the host is tailnet-only, so the only
+clients that can reach either surface are tailnet members. The fixed fingerprint is what keeps
+those per-request events and the rate report from sharing an issue — without it, a storm's report
+could land as one more event on an issue opened weeks earlier by a single stray POST.
 
-**Subtraction, not a rewrite.** `-=` removes the name if the SDK ships it and is a harmless
-no-op if a future sentry-rails stops. What it cannot catch is the SDK excluding the class
-under another name or via a superclass, so `test/initializers/sentry_test.rb` asserts the
-*behaviour* of the fully-resolved configuration — that it really will build an event for this
-exception — rather than the contents of the array.
+**`UnknownFormat` is subtracted for its subclass.** Exclusion matches with `===`, so an entry
+silences every subclass of what it names. `ActionController::MissingExactTemplate` — an action with
+no template in *any* format, on an ordinary browser page load: a forgotten view — is a subclass of
+`UnknownFormat`, and `ApplicationController` deliberately re-raises it to keep it loud. It reached
+the capture middleware and was dropped there. Plain `UnknownFormat` is still handled at INFO by
+`ApplicationController#unknown_format`, so on the web UI nothing about it changes.
 
-**It fails silent, not open.** A dead Redis makes `increment` return `nil` rather than raise
-(the store is configured with a swallowing `error_handler`), and no counter means no report.
-Reporting *every* rejection when the counter is unavailable would be an unbounded flood into
-the alert path, which is the failure this whole thing exists to prevent. The per-record INFO
-line survives regardless, and a Redis outage has its own alerting.
+Three properties are worth stating because each was a choice:
 
-:::note[The un-exclusion also uncovers `/supervisor`]
-`Supervisor::ApplicationController` descends from `Administrate::ApplicationController`, not
-from Zimmer's `ApplicationController`, so it never sees the `rescue_from` — a tokenless
-non-GET to any `/supervisor/*` route raises through the capture middleware. That path was
-already logging at ERROR and paging; what it did **not** do was reach GlitchTip. It does now,
-with the URL and user agent attached, which is the one context the log record never had.
-:::
+**Subtraction, not a rewrite.** `-=` removes a name if the SDK ships it and is a harmless no-op if
+a future sentry-rails stops. What it cannot catch is the SDK excluding a class under another name
+or via a new ancestor, so `test/initializers/sentry_test.rb` pins the whole resolved list and
+asserts the *behaviour* — that the fully-resolved configuration builds an event for each
+subtracted class — rather than trusting the array.
 
-**The rest of the inherited list was audited at the same time and deliberately left alone**,
-with the reason for each recorded inline in the initializer. In summary: `RoutingError`,
-`UnknownFormat` and `ActiveRecord::RecordNotFound` are already handled and re-logged at INFO,
-so un-excluding them would change nothing while adding bot noise; ten classes are
-client-supplied garbage at the protocol edge, where a rate says something about the internet
-rather than about the app; three are re-added by the initializer on purpose; and four
-(`ParameterMissing`, `ActionNotFound`/`UnknownAction`, `TooManyRequests`,
-`Mongoid::Errors::DocumentNotFound`) are arguable, kept, and argued in the file.
+**A global subtraction, not a monitor-only bypass.** The monitor could have kept the exclusion and
+passed `hint: { ignore_exclusions: true }` to its own capture. That would have left `/supervisor`
+and `/jobs` out of GlitchTip — silently swallowed, which is the shape #23 is about.
+
+**It fails closed on reporting, not open.** RedisCacheStore's `failsafe` rescues a connection
+error, hands it to the configured `error_handler` — which logs it at ERROR, so a dead Redis is loud
+on its own — and returns `nil`. No counter means no report. Reporting *every* rejection when the
+counter is unavailable would be an unbounded flood into the alert path, which is the failure this
+exists to prevent. The per-record INFO line survives regardless.
+
+**The rest of the inherited list was audited in the same pass and deliberately left alone**, with
+the reason for each recorded inline in the initializer. `RoutingError` and
+`ActiveRecord::RecordNotFound` are handled by `ErrorsController` and `record_not_found`, so
+subtracting them reaches nothing; nine classes are malformed input at the protocol edge, each the
+client's mistake with no server-side cause a rate would reveal; three are re-added by the
+initializer on purpose; `ParameterMissing` (with its subclass `ExpectedParameterMissing`),
+`ActionNotFound` and `TooManyRequests` are arguable, kept, and argued in the file; and
+`Mongoid::Errors::DocumentNotFound`, `Sinatra::NotFound` and `ActionController::UnknownAction`
+name no class loaded in this app, so they are inert.
 
 ## Configuring it
 
