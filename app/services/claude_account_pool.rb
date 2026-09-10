@@ -61,18 +61,26 @@ class ClaudeAccountPool
   #
   # An AVERAGE, to match the utilization figure beside it: accounts reset at
   # different moments, and the pool number those seconds are paced against is
-  # itself an average over the same accounts. Only accounts with a reset still
-  # ahead of them contribute — a reset in the past describes a window that has
-  # already rolled, the same rule `effective_utilization` applies to the counter.
-  # Nil when nobody could say, which turns the pacing curve off rather than
-  # guessing at a rollover.
+  # itself an average over the same accounts. That last clause is load-bearing
+  # and is why `five_hour_seconds_remaining` follows `five_hour` onto the
+  # SERVABLE set — the curve multiplies the spot budget by an elapsed fraction
+  # derived from these seconds, so a weekly-spent account whose 5-hour reset sits
+  # far out would drag the denominator up and lower the curve the servable
+  # accounts are paced against. The weekly pair needs no such narrowing: both
+  # halves of it are over the whole pool.
+  #
+  # Only accounts with a reset still ahead of them contribute — a reset in the
+  # past describes a window that has already rolled, the same rule
+  # `effective_utilization` applies to the counter. Nil when nobody could say,
+  # which turns the pacing curve off rather than guessing at a rollover.
   # == The 5-hour figure is over the accounts whose WEEK still has room
   #
   # `five_hour` averages the 5-hour counter across the accounts a request could
-  # actually land on — the ones whose 7-day window is not spent — and reads 1.0
-  # when none of them is. A weekly-spent account is left OUT of that average
-  # rather than counted at 100% in it, which is the correction this used to
-  # carry and the cause of tadasant/zimmer#693.
+  # actually land on — the ones whose 7-day window is not spent. A weekly-spent
+  # account is left OUT of that average rather than counted at 100% in it, which
+  # is the correction this used to carry and the cause of tadasant/zimmer#693.
+  # `#servable_sample` has the three cases, including what happens when no
+  # account's week has room and when none of the ones with room can be read.
   #
   # Both spellings say "its 5-hour headroom cannot be served", and the second is
   # the one that is true of the number. Substituting 1.0 says something stronger
@@ -151,10 +159,12 @@ class ClaudeAccountPool
     fives_uncorrected = []
     weeklies = []
     five_hour_remaining = []
+    five_hour_remaining_servable = []
     weekly_remaining = []
     capacity_times = []
     weekly_resets = []
     read_count = 0
+    weekly_room_count = 0
     weekly_spent_count = 0
     blocked_count = 0
 
@@ -179,9 +189,13 @@ class ClaudeAccountPool
       # other case reads `fives_servable` — see the class comment.
       fives << five if five
       fives_servable << five if five && !weekly_spent
+      weekly_room_count += 1 unless weekly_spent
       raw_five = ClaudeAccountQuotaSnapshot.effective_utilization(snapshot.utilization_5h, snapshot.reset_5h)
       fives_uncorrected << raw_five if raw_five
-      five_hour_remaining << (snapshot.reset_5h - now) if pending?(snapshot.reset_5h)
+      if pending?(snapshot.reset_5h)
+        five_hour_remaining << (snapshot.reset_5h - now)
+        five_hour_remaining_servable << (snapshot.reset_5h - now) unless weekly_spent
+      end
       weekly_remaining << (snapshot.reset_7d - now) if pending?(snapshot.reset_7d)
 
       if weekly_spent
@@ -204,29 +218,52 @@ class ClaudeAccountPool
     # field stays nil and `capacity_now?` is what says which emptiness this is.
     serving_now = blocked_count < read_count
 
+    five_hour_sample = servable_sample(fives_servable, fives, weekly_room_count)
+
     Measure.new(
-      # The accounts a request could land on, and the whole pool only when there
-      # are none — which is the one state in which the old substitution said
-      # something true, and says it here without a substitution: every account
-      # left in `fives` is weekly-spent, so the fallback is 1.0.
-      five_hour: average(fives_servable) || average(fives),
+      five_hour: average(five_hour_sample),
       five_hour_uncorrected: average(fives_uncorrected),
       weekly: average(weeklies),
       # Read as "the worst of the accounts the figure beside it averaged", so it
       # follows `five_hour` onto the same population rather than reporting a
       # 100% nothing can be served from as the worst of a servable set.
-      worst_five_hour: fives_servable.max || fives.max, worst_weekly: weeklies.max,
+      worst_five_hour: five_hour_sample.max, worst_weekly: weeklies.max,
       account_count: @accounts.size, read_count: read_count,
       weekly_spent_count: weekly_spent_count,
       blocked_count: blocked_count,
       next_capacity_at: serving_now ? nil : capacity_times.min,
       next_weekly_reset: weekly_resets.min,
-      five_hour_seconds_remaining: average(five_hour_remaining)&.round,
+      five_hour_seconds_remaining:
+        average(servable_sample(five_hour_remaining_servable, five_hour_remaining, weekly_room_count))&.round,
       weekly_seconds_remaining: average(weekly_remaining)&.round
     )
   end
 
   private
+
+  # Which of two populations a 5-hour figure is built from, in three cases.
+  #
+  #   1. Some servable account could say — use them. The ordinary case.
+  #   2. NO account's week has room — use the whole pool. Every account in it is
+  #      weekly-spent and contributes 1.0, so the figure reaches "no 5-hour
+  #      headroom" honestly rather than by substituting onto a servable set.
+  #   3. An account's week HAS room but none of them could say — neither. The
+  #      whole-pool figure here would be the weekly-spent accounts' substituted
+  #      1.0 reported as the servable set's utilization, which is #693's shape
+  #      again on a pool that is actually serving: the gate would read the 5-hour
+  #      budget as spent and pause every running spot session while
+  #      `capacity_now?` said the pool had room.
+  #
+  # Case 3 returns empty, so the caller's `average` is nil and QuotaCapacityModel
+  # drops the window — this class's existing answer for a window nobody could
+  # read, and the fail-open direction. "We cannot read the servable set" and "the
+  # servable set is full" are opposite claims.
+  def servable_sample(servable, whole_pool, weekly_room_count)
+    return servable unless servable.empty?
+    return whole_pool if weekly_room_count.zero?
+
+    []
+  end
 
   # When an account carrying this reading can serve again: the later of the
   # resets it is actually waiting on. A window with room contributes nothing —

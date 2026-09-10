@@ -269,6 +269,22 @@ class SpotGateServiceTest < ActiveSupport::TestCase
       "…and it is still in flight for anyone else asking"
   end
 
+  # The reading is runtime-scoped like every other fleet figure the gate reads. A
+  # Codex session spends nothing against a Claude account, so it is not the spot
+  # work whose absence waives a CLAUDE window's pacing curve.
+  test "a codex spot session in flight does not end the waiver" do
+    seed(current_5h: 0.40, current_7d: 0.05, reset_5h: 4.hours.from_now)
+    codex = Session.create!(git_root: "https://github.com/t/r.git", prompt: "codex",
+                            genesis: SessionGenesis::SCHEDULE, status: :running,
+                            agent_runtime: "codex")
+    on_a_worker!(codex)
+
+    decision = SpotGateService.evaluate
+
+    assert decision.five_hour.pace_waived, "no CLAUDE spot work is in flight"
+    assert decision.allowed?
+  end
+
   # The waiver is only ever of the PACE. The reserve is absolute: an idle fleet
   # facing a spent spot budget is still held.
   test "the idle-fleet waiver never spends into the reserve" do

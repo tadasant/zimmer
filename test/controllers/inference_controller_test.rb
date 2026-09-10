@@ -327,12 +327,15 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     get inference_url
 
     assert_response :success
+    # The card and the aggregate line above it have to say the same thing about
+    # the same account — the drift this assertion exists to catch.
     assert_select "#account_card_#{accounts.first.id}" do
-      assert_select "p", text: /Counted as 100% in the pool figure — the 7-day window is spent/
+      assert_select "p", text: /Left out of the pool's 5-hour figure — the 7-day window is spent/
     end
     assert_select "#account_card_#{accounts.second.id}" do
-      assert_select "p", text: /Counted as 100% in the pool figure/, count: 0
+      assert_select "p", text: /Left out of the pool's 5-hour figure/, count: 0
     end
+    assert_match(/is left out here/, aggregate_stats_text)
   end
 
   test "show has back link to sessions index" do

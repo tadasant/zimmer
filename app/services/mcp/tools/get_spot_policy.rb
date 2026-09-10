@@ -220,7 +220,8 @@ module Mcp
                    "#{"account".pluralize(decision.pool_size)} in the pool " \
                    "(every status counts on the weekly window, needs_reauth included; the 5-hour " \
                    "figure averages only the accounts whose 7-day window still has room, since " \
-                   "those are the ones a turn could land on)"
+                   "those are the ones a turn could land on — or the whole pool at 100% when no " \
+                   "account's week has room)"
         end
 
         lines.concat(pool_capacity_lines(pool_capacity))

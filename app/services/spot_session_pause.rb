@@ -509,12 +509,32 @@ class SpotSessionPause
     # one's, and a fleet whose workers are all busy would drain the whole pause
     # queue into the `agents` lane a batch every five minutes.
     def resume_budget(decision)
+      return 1 if pace_waived?(decision)
       return MAX_RESUMES_PER_SWEEP if decision.fleet_cap.nil?
 
       in_flight = decision.active_sessions.to_i + decision.awaiting_sessions.to_i
       headroom = [ decision.fleet_cap - in_flight, 0 ].max
 
       [ headroom, MAX_RESUMES_PER_SWEEP ].min
+    end
+
+    # True when this decision only allows anything because the pacing curve was
+    # WAIVED — no spot work is in flight, so the pace test was skipped rather
+    # than passed. See SpotGateService and QuotaCapacityModel.
+    #
+    # A batch of five is the wrong answer there. The waiver's whole contract is
+    # "one session runs, gets ahead of the curve, and the next admission waits
+    # for the curve to catch up" — a duty cycle rather than a burst — and a fleet
+    # with every spot session paused and only priority work running is now
+    # exactly the state that waives (tadasant/zimmer#693 made the waiver
+    # reachable; before it, this could not arise). Resuming one puts spot work
+    # back in flight, so the NEXT sweep five minutes later is paced normally.
+    #
+    # Only the pace. The cap still bounds the money with RESUME_MARGIN_PCT held
+    # back on top of the reserve, and the fleet cap still bounds the slots; this
+    # narrows a batch, it does not admit one.
+    def pace_waived?(decision)
+      [ decision.five_hour, decision.weekly ].compact.any? { |reading| reading.pace_waived && !reading.within_pace }
     end
 
     # Resume one paused session: a row lock, a re-check under it, and one
