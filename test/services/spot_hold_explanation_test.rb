@@ -48,9 +48,13 @@ class SpotHoldExplanationTest < ActiveSupport::TestCase
 
   # With a WORKER on its turn: the gate counts nothing else, so a session without
   # one is invisible to both the fleet cap and the idle-fleet pace waiver.
+  #
+  # SPOT, because these fixtures exist to make the PACING case reachable and the
+  # waiver keys on spot work in flight — a priority session on a worker leaves
+  # the pace waived and there is no pacing hold to explain.
   def running_session(index)
     record = Session.create!(git_root: "https://github.com/t/r.git", prompt: "running #{index}",
-                    genesis: SessionGenesis::WEB_UI, status: :running, agent_runtime: "claude_code")
+                    genesis: SessionGenesis::SCHEDULE, status: :running, agent_runtime: "claude_code")
     GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
                          job_class: "AgentSessionJob",
                          serialized_params: { "arguments" => [ record.id ] },
@@ -180,7 +184,8 @@ class SpotHoldExplanationTest < ActiveSupport::TestCase
     assert_equal :pacing_curve, decision.ceiling
 
     held_until = explain(decision).lines.last.sentence
-    assert_match(/Not while anything is running/, held_until)
+    assert_match(/Not while other spot work is running/, held_until)
+    assert_match(/Once no spot work is in flight the pace test is waived/, held_until)
     refute_match(/falls below -/, held_until)
   end
 

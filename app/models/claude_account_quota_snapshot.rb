@@ -133,24 +133,25 @@ class ClaudeAccountQuotaSnapshot < ApplicationRecord
       window_dimension_clear?(reset_7d, utilization_7d)
   end
 
-  # The 5-hour utilization this account contributes to a pool figure.
+  # The 5-hour utilization this account contributes to a pool figure, with a
+  # weekly-spent account counted as fully utilized because its 5-hour headroom
+  # cannot be served.
   #
-  # An account whose weekly allowance is spent cannot serve a request no matter
-  # how much 5-hour headroom its counter reports, so it counts as fully utilized.
-  # Anywhere else this is the raw 5-hour figure, which keeps the number to one
-  # statement: 5-hour utilization, with weekly-blocked accounts counted as 100%.
+  # **This is not what the pooled 5-hour figure averages any more.**
+  # ClaudeAccountPool leaves a weekly-spent account out of that average
+  # altogether, because reading a substituted 1.0 as consumption put a floor on
+  # the 5-hour pacing curve that no amount of idling could bring down
+  # (tadasant/zimmer#693). What survives here is the one case where the
+  # substitution says something true: when EVERY account's week is spent, the
+  # pool falls back to averaging this, and gets the 1.0 it should.
   #
   # The correction runs one way. The 7-day window subsumes the 5-hour one: an
   # account at its 5-hour cap is idle for minutes and then serves again, so it
   # must never be reported as having burned its week.
   #
   # This is a utilization, which is why it does not read #five_hour_window_spent?
-  # and round a refused-but-lightly-used 5-hour window up to 100%. The figure
-  # says what it says: 5-hour utilization, with weekly-blocked accounts counted
-  # as 100%. Servability is the countdown's question, not this one's.
-  #
-  # Lives here rather than in the view helper because the spot gate decides on
-  # the same figure /inference renders — see ClaudeAccountPool.
+  # and round a refused-but-lightly-used 5-hour window up to 100%. Servability is
+  # the countdown's question, not this one's.
   def pool_utilization_5h
     return 1.0 if seven_day_window_spent?
 

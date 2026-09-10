@@ -421,6 +421,29 @@ class Session < ApplicationRecord
     where(agent_runtime: ClaudeAuthProvider::RUNTIME).running_turns
   end
 
+  # The same reading over SPOT sessions alone, optionally with one session left
+  # out of it.
+  #
+  # SpotGateService's pacing waiver is the only caller, and both halves of the
+  # signature are things that waiver got wrong (tadasant/zimmer#693).
+  #
+  # Spot alone, because the waiver protects the SPOT budget: a fleet of priority
+  # sessions is work happening, but it is not spot work happening, and the money
+  # above the reserve goes unspent either way. Keying on the whole fleet meant
+  # the routers and pollers a live deployment always has switched the waiver off
+  # permanently.
+  #
+  # `excluding`, because the gate is asked about a session that is ALREADY
+  # inside `AgentSessionJob#perform` — its `agents` job carries a `performed_at`
+  # while its row still reads `waiting`, so RunningTurns reports it as awaiting a
+  # worker. Counting the asker made "is any spot work in flight" answer yes on a
+  # completely empty fleet, every single time.
+  def self.running_claude_code_spot_turns(excluding: nil)
+    scope = where(agent_runtime: ClaudeAuthProvider::RUNTIME)
+    scope = scope.where.not(id: excluding) if excluding
+    scope.spot.running_turns
+  end
+
   # The [harness, model] pair of every Claude Code session that has been HANDED a
   # turn, as HarnessModelBurnRate keys its rates — so the spot gate can price what
   # the fleet is burning in one query rather than one per session.

@@ -27,10 +27,11 @@ module Mcp
         (`remaining spot budget / time left in the window` — the rate that lands on 100% exactly at
         rollover), and a session slot is free. Because the sustainable rate is recomputed from what is
         LEFT over the time LEFT, a quiet window releases work faster and a busy one throttles, so there
-        is work happening at every hour instead of a burst and then an idle stretch. When nothing at all
-        is running the pace test is waived — a session is not infinitely divisible, and a deployment
+        is work happening at every hour instead of a burst and then an idle stretch. When no SPOT work is
+        in flight the pace test is waived — a session is not infinitely divisible, and a deployment
         whose single-session burn exceeds its sustainable rate should still do work in a duty cycle
-        rather than none. The reserve is never waived.
+        rather than none. Priority sessions running do not stand in for spot work here, and the
+        session being admitted does not count itself. The reserve is never waived.
 
         That covers every spot TURN, not just first starts — a session woken by a trigger, a follow-up, a
         poller or a restart is deferred the same way, so while a window is ahead of its curve the only
@@ -217,8 +218,9 @@ module Mcp
           counted = decision.accounts_read == decision.pool_size ? "all #{decision.pool_size}" : "#{decision.accounts_read} of #{decision.pool_size}"
           lines << "- **Windows averaged across:** #{counted} " \
                    "#{"account".pluralize(decision.pool_size)} in the pool " \
-                   "(every status counts, needs_reauth included; an account whose 7-day window is " \
-                   "spent counts as 100% in the 5-hour figure)"
+                   "(every status counts on the weekly window, needs_reauth included; the 5-hour " \
+                   "figure averages only the accounts whose 7-day window still has room, since " \
+                   "those are the ones a turn could land on)"
         end
 
         lines.concat(pool_capacity_lines(pool_capacity))
