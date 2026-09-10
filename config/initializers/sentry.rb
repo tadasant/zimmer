@@ -55,6 +55,93 @@ if ENV["SENTRY_DSN_BACKEND"].present?
       "Rack::Timeout::RequestTimeoutError"
     ]
 
+    # ---- and what this initializer takes back OUT of the inherited list -------
+    #
+    # `excluded_exceptions` does not start empty. sentry-ruby seeds it with its own
+    # IGNORE_DEFAULT + PUMA_IGNORE_DEFAULT, and sentry-rails' `after(:initialize)`
+    # hook concatenates a further fourteen classes (Sentry::Rails::IGNORE_DEFAULT,
+    # plus ActionController::TooManyRequests on Rails >= 8.1.1) *before* this block
+    # ever runs. Every line above only ever appends, so nothing here ever audited
+    # what it inherited — and issue #23 is the bill for that: production served a
+    # storm of CSRF 422s (#19) in which **every write in the UI failed**, and
+    # GlitchTip received nothing at all, because
+    # ActionController::InvalidAuthenticityToken is item 4 of that inherited list.
+    # A human found the outage by clicking a button.
+    #
+    # Subtraction, not a rewrite of the list: `-=` removes the name if it is there
+    # and is a harmless no-op if a future sentry-rails stops shipping it, so this
+    # line cannot break on an SDK that changes its own defaults. What it cannot
+    # catch is the SDK excluding the class under some *other* name or via a
+    # superclass, so test/initializers/sentry_test.rb asserts the behaviour rather
+    # than the array — that the real, fully-resolved configuration will actually
+    # build an event for this exception.
+    #
+    # The trade, stated plainly: a *rate* of CSRF rejections now reaches GlitchTip,
+    # not each one. CsrfRejectionMonitor (called from
+    # ApplicationController#invalid_authenticity_token) counts rejections in
+    # five-minute buckets and captures a single exception once a bucket clears its
+    # threshold, so the loudest possible storm costs one event per five minutes.
+    # That explicit capture is the reason this removal matters at all:
+    # Sentry::Client#event_from_exception checks excluded_exceptions on an explicit
+    # `Sentry.capture_exception` exactly as it does on a middleware capture, so
+    # while the name is in the resolved list the monitor's report is silently
+    # dropped too. There is also one path with no rescue_from in front of it —
+    # Supervisor::ApplicationController descends from
+    # Administrate::ApplicationController, so a tokenless non-GET to /supervisor/*
+    # raises through the middleware — and this removal is what puts that event, with
+    # its URL and user agent, in GlitchTip instead of only in an unattributable
+    # stack trace.
+    #
+    # **The rest of the inherited list was audited at the same time, and is
+    # deliberately left alone.** For each class, why:
+    #
+    #   Already handled and re-logged at INFO, so un-excluding them would change
+    #   nothing (nothing reaches the capture middleware) while adding bot noise to
+    #   any path that later stopped being rescued:
+    #     ActionController::RoutingError    — ErrorsController#not_found (the
+    #                                         catch-all route); the class #23 named
+    #                                         as "and friends", and the reason it is
+    #                                         not the same case as CSRF is that a
+    #                                         404 rate is normal for a public host.
+    #     ActionController::UnknownFormat   — ApplicationController#unknown_format
+    #                                         (#453). Its subclass
+    #                                         MissingExactTemplate is deliberately
+    #                                         re-raised and stays a loud ERROR.
+    #     ActiveRecord::RecordNotFound      — ApplicationController#record_not_found
+    #                                         renders 404; a stale link, not a fault.
+    #
+    #   Client-supplied garbage at the protocol edge. Zimmer is a public host and
+    #   these are what a scanner produces; a rate of them says something about the
+    #   internet, not about the app:
+    #     ActionController::MethodNotAllowed, ActionController::NotImplemented,
+    #     ActionController::UnknownHttpMethod, ActionController::InvalidCrossOriginRequest,
+    #     ActionDispatch::Http::MimeNegotiation::InvalidType,
+    #     Rack::QueryParser::ParameterTypeError, Sinatra::NotFound,
+    #     Puma::MiniSSL::SSLError, Puma::HttpParserError, Puma::HttpParserError501
+    #
+    #   Re-added by the block above on purpose, so they are excluded twice over and
+    #   removing them from the inherited list would be meaningless:
+    #     ActionController::BadRequest, ActionDispatch::Http::Parameters::ParseError,
+    #     Rack::QueryParser::InvalidParameterError
+    #
+    #   Genuinely arguable, and left excluded for now with the reason recorded
+    #   rather than silently inherited:
+    #     ActionController::ParameterMissing  — a *Zimmer* form omitting a required
+    #       param would be a real bug, but the same exception is what a probe
+    #       posting junk to a real route raises, and the two are indistinguishable
+    #       from inside the exception. Zimmer's forms are covered by controller tests;
+    #       this would trade a tested failure mode for untested noise.
+    #     AbstractController::ActionNotFound / ActionController::UnknownAction — a
+    #       route pointing at a missing action IS a server defect, but it is one
+    #       `bin/rails routes` and the controller tests catch at CI time, and it cannot
+    #       reach production without every request to that route failing loudly.
+    #     ActionController::TooManyRequests — Rails 8.1's rate-limiter raising is
+    #       the limiter *working*. Zimmer declares no `rate_limit` today, so this is
+    #       inert either way.
+    #     Mongoid::Errors::DocumentNotFound — no Mongoid in this app; the string
+    #       never resolves to a class and the entry is inert.
+    config.excluded_exceptions -= [ "ActionController::InvalidAuthenticityToken" ]
+
     # An interactive `bin/rails runner` on the box is an operator, not the app.
     #
     # sentry-rails' runner hook reports every uncaught `rails runner` exception with the
