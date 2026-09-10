@@ -232,8 +232,8 @@ class RestartFromScratchParityTest < ActionDispatch::IntegrationTest
   # [#830](https://github.com/tadasant/zimmer/issues/830). These two tests pin the
   # agreement and the one remaining, deliberate difference.
 
-  # Any session the web UI offers Restart for, the other two doors accept.
-  test "the web door never accepts a session MCP and REST would refuse" do
+  # Any STATUS the web UI offers Restart for, the other two doors accept.
+  test "the web door never accepts a status MCP and REST would refuse" do
     %i[needs_input failed].each do |status|
       SURFACES.each do |surface|
         session = Session.create!(
@@ -271,6 +271,53 @@ class RestartFromScratchParityTest < ActionDispatch::IntegrationTest
     assert_redirected_to session_path(session)
     assert_match(/Cannot restart a session that is waiting/, flash[:alert])
     assert_equal "waiting", session.reload.status
+  end
+
+  # The armed-wake divergence, pinned as the deliberate thing it is rather than
+  # left to be rediscovered. `#paused_until_scheduled_time?` is status-agnostic, so
+  # a `needs_input` session can be asleep on a one-time wake — a follow-up
+  # preserves those rather than consuming them. MCP and the REST API refuse such a
+  # session outright; the web UI's Restart button consumes the wake and takes the
+  # session over, which is the interactive-door distinction
+  # `Sessions::RestartFromScratch`'s header already draws and is older than #830.
+  test "a needs_input session asleep on a wake: MCP and REST refuse it, the web door takes it over" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Fix the auth bug",
+      status: :needs_input,
+      session_id: SecureRandom.uuid
+    )
+    Trigger.create!(
+      name: "Wake session ##{session.id}",
+      status: "enabled",
+      agent_root_name: "zimmer",
+      prompt_template: "Wake up",
+      reuse_session: true,
+      last_session_id: session.id,
+      trigger_conditions_attributes: [
+        { condition_type: "schedule",
+          configuration: { "scheduled_at" => 3.hours.from_now.utc.iso8601, "timezone" => "UTC" } }
+      ]
+    )
+    # Creating the wake sleeps the session; #830's subject is the needs_input one.
+    session.update_columns(status: "needs_input")
+
+    assert session.paused_until_scheduled_time?
+    assert session.restartable_by_hand?,
+      "the web door offers Restart here on purpose — a person clicking it is taking the session over"
+
+    error = assert_raises(Mcp::ToolError) do
+      restart_through(:mcp, session)
+    end
+    assert_match(/asleep on a wake-up it has not reached yet/, error.message)
+
+    restart_through(:api, session)
+    assert_response :unprocessable_entity
+    assert_match(/asleep on a wake-up it has not reached yet/, JSON.parse(response.body)["message"])
+    assert_equal "needs_input", session.reload.status, "neither non-interactive door may start it"
+
+    restart_through(:web, session)
+    assert_equal "waiting", session.reload.status, "the web door takes it over"
   end
 
   # The REST API answers 503 rather than the 500 it raised before the retry moved

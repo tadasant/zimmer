@@ -328,8 +328,8 @@ export default class extends Controller {
         // `failed`, and from `needs_input` a restart is a takeover: it resumes
         // the session and enqueues a turn nobody asked for. The other two render
         // sites hand that sentence to Turbo as `data-turbo-confirm`; this one
-        // synthesizes its own form, so it asks here. Absent (a failed session)
-        // means fire straight away, as it always did.
+        // synthesizes its own form, so it asks here. The attribute is empty for a
+        // failed session, which fires on the tap.
         const restartConfirm = this.element.dataset.restartConfirm
         if (restartConfirm && !window.confirm(restartConfirm)) break
         this._submitForm(this.element.dataset.restartUrl, "post")

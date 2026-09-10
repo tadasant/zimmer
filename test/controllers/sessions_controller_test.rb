@@ -3418,6 +3418,63 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert session.logs.where("content LIKE ?", "%Restarting session from scratch%").exists?
   end
 
+  # A turn that died before its prompt was ever delivered parks in `needs_input`
+  # with a PRE_PROMPT_FAILURE_REASONS reason — which is #830's own population, and
+  # the branch that re-sends the original prompt rather than the continue nudge.
+  test "restart of a needs_input session whose prompt was never delivered re-sends that prompt" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Deploy the new feature",
+      status: :needs_input,
+      session_id: SecureRandom.uuid
+    )
+
+    clone_path = Rails.root.join("tmp", "test_clone_undelivered_#{session.id}")
+    FileUtils.mkdir_p(clone_path)
+    session.update!(metadata: {
+      "clone_path" => clone_path.to_s,
+      "working_directory" => clone_path.to_s,
+      "runtime_started" => true,
+      "failure_reason" => "unstarted_turn_not_recoverable"
+    })
+
+    assert_not session.needs_restart_from_scratch?, "setup completed, so this is not the from-scratch branch"
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ session.id, "Deploy the new feature" ]) do
+      post restart_session_url(session)
+    end
+
+    session.reload
+    assert_equal "waiting", session.status
+    assert session.logs.where("content LIKE ?", "%re-sending initial prompt%").exists?
+    assert_nil session.metadata["runtime_started"],
+      "a pre-prompt restart drops runtime_started so the spawn uses --session-id, not --resume"
+
+    FileUtils.rm_rf(clone_path)
+  end
+
+  # The one shape of `needs_input` the button is withheld from: the agent is alive
+  # and blocked on an elicitation whose answer form is on the same page.
+  test "should not restart a needs_input session blocked on an elicitation" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Test prompt",
+      status: :needs_input,
+      session_id: SecureRandom.uuid,
+      metadata: { "blocked_on_elicitation" => true }
+    )
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      post restart_session_url(session)
+    end
+
+    assert_redirected_to session_path(session)
+    assert_match(/Cannot restart a session that is needs_input/, flash[:alert])
+    session.reload
+    assert_equal "needs_input", session.status
+    assert session.blocked_on_elicitation?, "the block marker must survive a refused restart"
+  end
+
   # `waiting` is the one state `may_resume?` allows that this door deliberately
   # does not: the session is in flight, not stranded.
   test "should not restart a waiting session" do
