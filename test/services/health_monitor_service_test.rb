@@ -1955,6 +1955,62 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert results.key?(:already_dead)
   end
 
+  # === Host isolation (#1095) ===
+  #
+  # Orphan detection is "a live `claude` process this uid owns whose pid no
+  # running session records". The test database records no real pid, so a scan of
+  # the host from inside a test would classify every live agent on the machine as
+  # an orphan and terminate it — three times over, including the session running
+  # the test. `config/environments/test.rb` therefore configures `:none`, and these
+  # cases are what keeps that true: a service built the way every production
+  # caller builds it must not construct the host scanner in this environment.
+
+  test "a service built without an explicit discovery is blind in the test environment" do
+    assert_equal :none, Rails.configuration.x.host_process_discovery
+
+    service = HealthMonitorService.new(process_manager: @mock_process_manager)
+
+    assert_instance_of HostProcessDiscovery::None, service.process_discovery
+    assert_equal [], service.send(:find_active_claude_processes)
+  end
+
+  test "cleanup_orphaned_processes terminates nothing in the test environment" do
+    Session.delete_all # so every host process WOULD be an orphan, were the host scanned
+    ProcessTerminationService.any_instance.expects(:terminate).never
+
+    results = HealthMonitorService.new(process_manager: @mock_process_manager).cleanup_orphaned_processes
+
+    assert_equal({ terminated: [], failed: [], already_dead: [] }, results)
+  end
+
+  test "any other configuration builds the host scanner" do
+    with_host_process_discovery(:host) do
+      service = HealthMonitorService.new(process_manager: @mock_process_manager)
+
+      assert_instance_of HostProcessDiscovery, service.process_discovery
+    end
+  end
+
+  test "an injected discovery wins over the configuration" do
+    discovery = Object.new
+    def discovery.claude_processes = [ { pid: 4242, command: "claude", running: true } ]
+
+    service = HealthMonitorService.new(process_manager: @mock_process_manager, process_discovery: discovery)
+
+    assert_same discovery, service.process_discovery
+    assert_equal [ 4242 ], service.send(:find_orphaned_processes, service.send(:find_active_claude_processes)).map { |p| p[:pid] }
+  end
+
+  # Constructing a HostProcessDiscovery touches nothing; only #claude_processes
+  # does, and the block never calls it.
+  def with_host_process_discovery(value)
+    original = Rails.configuration.x.host_process_discovery
+    Rails.configuration.x.host_process_discovery = value
+    yield
+  ensure
+    Rails.configuration.x.host_process_discovery = original
+  end
+
   test "retry_failed_sessions returns results structure" do
     results = @service.retry_failed_sessions
 

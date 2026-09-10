@@ -58,4 +58,13 @@ Rails.application.configure do
   # Use test adapter for ActiveJob to enable assert_enqueued_with, etc.
   # GoodJob's inline mode doesn't support these test helpers
   config.active_job.queue_adapter = :test
+
+  # HealthMonitorService must not look at the host's processes from a test. Its
+  # orphan check is "a live `claude` process this uid owns whose pid no running
+  # session in the database records" — and the test database records no real pid,
+  # so from inside a test every live agent on the machine is an orphan and
+  # `cleanup_orphaned_processes` kills them all, the test's own session included
+  # (#1095). `:none` builds HostProcessDiscovery::None, which sees nothing; a test
+  # of the scanner itself constructs a HostProcessDiscovery and injects it.
+  config.x.host_process_discovery = :none
 end
