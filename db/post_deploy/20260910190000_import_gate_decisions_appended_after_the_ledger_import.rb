@@ -8,8 +8,8 @@
 # eight more hours, until the cutover to `record_gate_decision`
 # (tadasant/tadasant-internal#2348, merged 23:19Z), and for about an hour after it
 # as the documented fallback while that tool was unreachable. Nothing read the
-# archive again, so all 52 of those appends, across 13 files, are in the frozen
-# archive and not in the table. The first task's per-file counts on /health match
+# archive again, so none of those 52 appends, across 13 files, was imported.
+# The first task's per-file counts on /health match
 # the archive at d5b4fa3273 (the last ledger commit before it started) file for
 # file, and every file since has only grown at its tail.
 #
@@ -29,19 +29,20 @@
 # the archive would find these rows already present rather than add them again.
 #
 # A GUARD FOR ANYTHING RECORDED SINCE. A pinned entry is skipped if the table
-# holds a row a gate recorded itself (MCP or API, not import) for the same gate,
-# surface and artifact, decided within a day of the entry. That is the shape
-# #2399's re-rate took. Nothing pinned matches it today; the guard exists in case
-# one is recorded between this file being written and it running. It can only
-# skip an insert, never add one, and a missed insert is the recoverable mistake:
-# a later task can add a row, and nothing can take one away.
+# holds a row a gate recorded itself (MCP or API, not import) for the same gate
+# and artifact, decided within a day of the entry. That is the shape #2399's
+# re-rate took. None of the 50 matched it when they were checked; the guard is
+# for a row recorded after that check and before this runs. It can only skip an
+# insert, never add one, and a missed insert is the recoverable mistake: a later
+# task can add a row, and nothing can take one away.
 #
 # A PINNED ENTRY IT CANNOT FIND IS A FAILURE. If one is absent from the archive,
 # carries a different verdict, or is refused by the model, nothing is written for
 # it. Every other file still finishes first, and then the task raises, so the run
 # parks `failed` on /health, naming the unresolved entries, rather than reporting
-# `succeeded` over a backfill it did not do. A retry re-reads nothing: the cursor
-# holds every finished file.
+# `succeeded` over a backfill it did not do. The files holding those entries are
+# taken off the cursor before it raises, so a retry, or a re-arm from /health
+# after the archive or this list is fixed, re-reads exactly those files.
 #
 # IDEMPOTENT. Rows are keyed on `source_key`, so a second pass finds each one
 # present and writes nothing. `human_feedback` goes through the importer's own
@@ -133,29 +134,35 @@ class ImportGateDecisionsAppendedAfterTheLedgerImport < PostDeployTask
   class Unresolved < StandardError; end
 
   def up
-    source = GateDecisions::LedgerSource.resolve
-    importer = GateDecisions::LedgerImporter.new(source: source, logger: logger)
     done = Array(cursor["files_done"])
-    listed = source.files.index_by(&:name)
+    pending = PINNED.keys - done
 
-    PINNED.each do |name, pinned|
-      next if done.include?(name)
+    if pending.any?
+      source = GateDecisions::LedgerSource.resolve
+      importer = GateDecisions::LedgerImporter.new(source: source, logger: logger)
+      listed = source.files.index_by(&:name)
 
-      file = listed[name]
-      outcomes, feedback = file ? import_pinned(importer, file, pinned) : [ pinned.transform_values { "not_in_archive" }, 0 ]
-      done += [ name ]
-      record(done, outcomes, feedback)
+      pending.each_with_index do |name, index|
+        file = listed[name]
+        outcomes, feedback = file ? import_pinned(importer, file, PINNED[name]) : [ PINNED[name].transform_values { "not_in_archive" }, 0 ]
+        done += [ name ]
+        record(done, outcomes, feedback)
 
-      return CONTINUE if out_of_time? && (PINNED.keys - done).any?
+        return CONTINUE if out_of_time? && index < pending.size - 1
+      end
     end
 
-    unresolved = stats.fetch("entries", {}).reject { |_key, outcome| RESOLVED.include?(status_of(outcome)) }
-    if unresolved.any?
-      raise Unresolved, "#{unresolved.size} pinned gate decision(s) were not imported: " +
-                        unresolved.map { |key, outcome| "#{key} (#{outcome})" }.join("; ")
-    end
+    unresolved = pinned_outcomes.reject { |_key, outcome| RESOLVED.include?(status_of(outcome)) }
+    return nil if unresolved.empty?
 
-    nil
+    # Hand every file holding an unresolved pin back to the next attempt, so a
+    # retry or a re-arm re-reads those files and nothing else. Re-reading is
+    # safe: a row already written is found by its key.
+    retry_files = PINNED.select { |_name, pinned| pinned.keys.intersect?(unresolved.keys) }.keys
+    checkpoint!(cursor: cursor.merge("files_done" => done - retry_files), files_done: (done - retry_files).size)
+
+    raise Unresolved, "#{unresolved.size} pinned gate decision(s) were not imported: " +
+                      unresolved.map { |key, outcome| "#{key} (#{outcome})" }.join("; ")
   rescue GateDecisions::LedgerSource::Unavailable => e
     # The same split as ImportGateDecisionLedgers: in production the archive
     # exists and not reading it is a failure to show on /health; everywhere else
@@ -201,23 +208,36 @@ class ImportGateDecisionsAppendedAfterTheLedgerImport < PostDeployTask
 
   # A row a gate recorded itself for the same artifact, within a day either side
   # of the entry's date. The window is the #2399 shape: appended to the archive as
-  # 2026-09-02, recorded over MCP as 2026-09-03.
+  # 2026-09-02, recorded over MCP as 2026-09-03. Surface is deliberately not
+  # matched: live rows have been recorded under the wrong one, and this guard can
+  # only ever withhold an insert, so it errs wide.
   def recorded_live(file, parsed)
     return nil if parsed.artifact_url.blank? || parsed.decided_at.nil?
 
     GateDecision
-      .where(gate: file.gate, surface: file.surface, artifact_url: parsed.artifact_url)
+      .where(gate: file.gate, artifact_url: parsed.artifact_url)
       .where.not(recorded_via: GateDecision::IMPORT)
       .where(decided_at: (parsed.decided_at - 1)..(parsed.decided_at + 1))
       .order(:id)
       .first
   end
 
-  # One write per finished file: the cursor that stops it being re-read, the
-  # outcome of every pinned entry in it, and totals a reader can check against
-  # the 50 without counting.
+  # The latest outcome for every pinned key. A key with none — its file has not
+  # been read — counts as unresolved rather than silently passing.
+  def pinned_outcomes
+    recorded = stats.fetch("entries", {})
+    PINNED.values.flat_map(&:keys).index_with { |key| recorded.fetch(key, "not_attempted") }
+  end
+
+  # One write per file read: the cursor that stops it being re-read, the outcome
+  # of every pinned entry in it, and totals a reader can check against the 50
+  # without counting. A re-read reports a row this task wrote earlier as
+  # `imported` still, so the totals describe the backfill rather than the
+  # latest pass.
   def record(done, outcomes, feedback)
-    entries = stats.fetch("entries", {}).merge(outcomes)
+    entries = stats.fetch("entries", {}).merge(outcomes) do |_key, before, now|
+      before == "imported" && now == "already_present" ? before : now
+    end.slice(*PINNED.values.flat_map(&:keys))
     tally = entries.values.map { |outcome| status_of(outcome) }.tally
 
     checkpoint!(

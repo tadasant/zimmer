@@ -90,7 +90,7 @@ module GateDecisions
     end
 
     # Inserts one entry unless its key is already in the table, and transcribes
-    # its `human_feedback` either way.
+    # its `human_feedback` onto whichever row, found or inserted, now holds it.
     #
     # @return [EntryOutcome] status :imported, :already_present or :rejected
     def import_entry(file, keyed)

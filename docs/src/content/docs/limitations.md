@@ -5039,9 +5039,9 @@ Zimmer reads them on a schedule. Each import from them is a
 once and never again. A gate that falls back to appending its decision there because
 `record_gate_decision` errored has written a decision that `search_gate_decisions` will not return
 until someone ships another task for it. This has happened once. 52 entries were appended after
-the first import, and the 50 that no gate had also recorded live were invisible for a week, until
+the first import, and the 50 that no gate had also recorded live were invisible for a week.
 [`ImportGateDecisionsAppendedAfterTheLedgerImport`](/operate/gate-decisions/#the-appends-the-first-import-missed)
-imported them. The archive has had no appends since 2026-09-03.
+is the task written to import them. The archive has had no appends since 2026-09-03.
 
 ---
 
