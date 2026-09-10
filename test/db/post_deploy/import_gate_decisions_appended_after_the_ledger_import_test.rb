@@ -205,8 +205,23 @@ class ImportGateDecisionsAppendedAfterTheLedgerImportTest < ActiveSupport::TestC
     assert_equal 49, run.stats["imported"]
   end
 
-  test "a pinned entry missing from the archive fails the run once the rest are in" do
-    files = archive
+  test "the live-record guard does not trust the surface a live row was recorded under" do
+    seed_production
+    # A live row carrying the wrong surface is a real shape: id 1652 is a
+    # tadasant-internal issue recorded under `zimmer`.
+    live = GateDecisions::Record.call(gate: GateDecision::ISSUE_WORK, surface: "zimmer",
+                                      entry: entry_for(ARTIFACTS_ISSUE_LEDGER, ISSUE_2416, "2026-09-02", "hold"),
+                                      recorded_via: GateDecision::MCP).decision
+
+    run, = run_task
+
+    assert_equal "recorded_live as ##{live.id}", run.stats.dig("entries", KEY_2416)
+    assert_equal [ live.id ], GateDecision.for_artifact(ISSUE_2416).pluck(:id)
+  end
+
+  test "a pinned entry missing from the archive fails the run, and a retry re-reads only its file" do
+    full = archive
+    files = full.deep_dup
     files[ARTIFACTS_ISSUE_LEDGER][:tail].reject! { |entry| entry["issue"] == ISSUE_2417 }
     seed_production(files)
 
@@ -222,6 +237,38 @@ class ImportGateDecisionsAppendedAfterTheLedgerImportTest < ActiveSupport::TestC
     assert_equal 1, run.stats["unresolved"]
     assert GateDecision.for_artifact(ISSUE_2416).exists?
     assert_not GateDecision.for_artifact(ISSUE_2417).exists?
+    assert_equal @pinned.keys - [ ARTIFACTS_ISSUE_LEDGER ], run.cursor["files_done"],
+                 "the file holding the unresolved pin is handed back to the next attempt"
+
+    # The archive regains the entry; the retry reads that one file and finishes.
+    write_ledgers(full.transform_values { |parts| parts[:prefix] + parts[:tail] })
+    before = GateDecision.count
+    outcome = with_ledger_dir(@dir) { @task_class.new(run: run, logger: Rails.logger).up }
+
+    assert_nil outcome
+    assert_equal before + 1, GateDecision.count
+    assert GateDecision.for_artifact(ISSUE_2417).exists?
+    run.reload
+    assert_equal [ 50, 0, 0 ], run.stats.values_at("imported", "already_present", "unresolved"),
+                 "rows written by the failed attempt still count as imported"
+    assert_equal 13, run.cursor["files_done"].size
+  end
+
+  test "a pinned entry the model refuses fails the run without costing the others" do
+    files = archive
+    files[ARTIFACTS_ISSUE_LEDGER][:tail].find { |entry| entry["issue"] == ISSUE_2416 }["reason"] =
+      "x" * (GateDecision::MAX_PAYLOAD_BYTES + 1)
+    seed_production(files)
+
+    run = PostDeployTaskRun.ledger_for(@entry)
+    run.claim!(owner: "test")
+    assert_raises(@task_class::Unresolved) do
+      with_ledger_dir(@dir) { @task_class.new(run: run, logger: Rails.logger).up }
+    end
+
+    assert_equal "rejected", run.reload.stats.dig("entries", KEY_2416)
+    assert_equal [ 49, 1 ], run.stats.values_at("imported", "unresolved")
+    assert_not GateDecision.for_artifact(ISSUE_2416).exists?
   end
 
   test "a pinned entry whose verdict differs is not imported" do
@@ -236,6 +283,7 @@ class ImportGateDecisionsAppendedAfterTheLedgerImportTest < ActiveSupport::TestC
     end
 
     assert_match(/verdict_mismatch/, run.reload.stats.dig("entries", KEY_2416))
+    assert_equal [ 49, 1 ], run.stats.values_at("imported", "unresolved")
     assert_not GateDecision.for_artifact(ISSUE_2416).exists?
   end
 
@@ -261,7 +309,7 @@ class ImportGateDecisionsAppendedAfterTheLedgerImportTest < ActiveSupport::TestC
   end
 
   test "outside production, an unreachable source is recorded and the task completes" do
-    run =PostDeployTaskRun.ledger_for(@entry)
+    run = PostDeployTaskRun.ledger_for(@entry)
     run.claim!(owner: "test")
 
     outcome = with_ledger_dir("/nope/not/here") { @task_class.new(run: run, logger: Rails.logger).up }
