@@ -317,10 +317,17 @@ class HealthMonitorService
     end
   end
 
-  def initialize(process_manager: nil)
+  # @param process_discovery [#claude_processes, nil] where `active_processes` come
+  #   from. Nil means "whatever `config.x.host_process_discovery` says" — the real
+  #   `pgrep` scanner everywhere but the test environment, which configures `:none`
+  #   so a test can never mistake the host's live agents for its own orphans (#1095).
+  def initialize(process_manager: nil, process_discovery: nil)
     @process_manager = process_manager || SystemProcessManager.new
     @logger = StructuredLogger.new({ service: "HealthMonitorService" })
+    @process_discovery = process_discovery || configured_process_discovery
   end
+
+  attr_reader :process_discovery
 
   # Generate a complete health report
   #
@@ -933,40 +940,21 @@ class HealthMonitorService
 
   private
 
-  # Find all active Claude CLI processes on the system
-  # Security: Only finds processes owned by the current user
+  # Find all active Claude CLI processes on the system — through the discovery
+  # this service was built with, which is the only thing here allowed to touch
+  # the host. See HostProcessDiscovery.
   def find_active_claude_processes
-    processes = []
+    @process_discovery.claude_processes
+  end
 
-    begin
-      # Use pgrep to find Claude CLI processes owned by current user
-      # -u restricts to current user's processes for security
-      require "open3"
-      output, _status = Open3.capture2("pgrep", "-fl", "-u", Process.uid.to_s, "claude")
-
-      output.each_line do |line|
-        parts = line.strip.split(/\s+/, 2)
-        next if parts.size < 2
-
-        pid = parts[0].to_i
-        command = parts[1]
-
-        # Skip if this is our own process
-        next if pid == Process.pid
-        # Only match processes that look like the actual Claude CLI
-        next unless command.match?(/\bclaude\b/)
-
-        processes << {
-          pid: pid,
-          command: command,
-          running: @process_manager.running?(pid)
-        }
-      end
-    rescue => e
-      @logger.error("Failed to find active processes", error: e.message)
+  # The discovery `config.x.host_process_discovery` names: `:none` is the blind
+  # one, anything else (including unset) is the real host scanner.
+  def configured_process_discovery
+    if Rails.configuration.x.host_process_discovery == :none
+      HostProcessDiscovery::None.new
+    else
+      HostProcessDiscovery.new(process_manager: @process_manager, logger: @logger)
     end
-
-    processes
   end
 
   # Find orphaned processes (running but no matching session)

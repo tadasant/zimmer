@@ -162,6 +162,23 @@ end
 # the setting.
 Rails.application.eager_load!
 
+# Refuse to run at all if a HealthMonitorService built the way production builds
+# one can see the host's processes. Its orphan check is "a live `claude` process
+# this uid owns that no running session in the database records", and the test
+# database records no real pid — so from inside a test every live agent on the
+# machine is an orphan, and `cleanup_orphaned_processes` kills them all, the
+# session running the suite included (#1095). config/environments/test.rb sets
+# `config.x.host_process_discovery = :none` to prevent that; this is the check
+# that the setting is still in force and still wired, made once in the parent
+# before any test body — in any worker, in any order — can reach the action.
+# The per-case tripwires in HealthControllerTest and HealthMonitorServiceTest
+# cover their own cases; this covers the other sixteen POSTs and the next file.
+unless HealthMonitorService.new.process_discovery.is_a?(HostProcessDiscovery::None)
+  abort "[test_helper] HealthMonitorService would scan the host's processes from a test " \
+        "(config.x.host_process_discovery = #{Rails.configuration.x.host_process_discovery.inspect}). " \
+        "Refusing to run: see #1095 and docs/operate/testing.md."
+end
+
 # Resolve the Rack env template once here, before parallelize() forks its workers.
 #
 # Rails::Application#env_config memoizes its hash — including
