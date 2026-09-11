@@ -124,19 +124,19 @@ class Sessions::FollowUpGoalTest < ActiveSupport::TestCase
       enqueued_message: "Goal updated from enqueued message",
       trigger_reuse: "Goal updated from the trigger fire"
     }.each do |source, expected|
-      session = make_session(goal: "old")
+      session = make_session(goal: "the old goal")
 
-      Sessions::FollowUpGoal.apply!(session: session, goal: "new", source: source)
+      Sessions::FollowUpGoal.apply!(session: session, goal: "the new goal", source: source)
 
       assert_equal expected, session.logs.order(:id).last.content
     end
   end
 
   test "an unknown source raises rather than logging a mystery line" do
-    session = make_session(goal: "old")
+    session = make_session(goal: "the old goal")
 
     assert_raises(KeyError) do
-      Sessions::FollowUpGoal.apply!(session: session, goal: "new", source: :nope)
+      Sessions::FollowUpGoal.apply!(session: session, goal: "the new goal", source: :nope)
     end
   end
 
@@ -175,12 +175,12 @@ class Sessions::FollowUpGoalTest < ActiveSupport::TestCase
   # EnqueuedMessageProcessorService buffers its log lines when a turn is batching
   # them. The service decides WHAT the line says, never how it is persisted.
   test "log_with receives the line instead of writing it directly" do
-    session = make_session(goal: "old")
+    session = make_session(goal: "the old goal")
     captured = []
 
     Sessions::FollowUpGoal.apply!(
       session: session,
-      goal: "new",
+      goal: "the new goal",
       source: :enqueued_message,
       log_with: ->(content) { captured << content }
     )
@@ -189,13 +189,42 @@ class Sessions::FollowUpGoalTest < ActiveSupport::TestCase
     assert_not_equal "Goal updated from enqueued message", session.logs.order(:id).last&.content
   end
 
+  # The typed surfaces refuse an unknown id up front. A message queued before that
+  # check existed can still carry one, and its delivery must not fail on it.
+  test "an unknown goal id is not written, and the other attributes still are" do
+    session = make_session(goal: "the old goal")
+    captured = []
+
+    changed = Sessions::FollowUpGoal.apply!(
+      session: session,
+      goal: "retired-goal-id",
+      source: :enqueued_message,
+      also_update: { prompt: "next prompt" },
+      log_with: ->(content) { captured << content }
+    )
+
+    assert_not changed
+    session.reload
+    assert_equal "the old goal", session.goal
+    assert_equal "next prompt", session.prompt
+    assert_equal [ %(Goal "retired-goal-id" not applied from enqueued message: it is not a known goal id) ], captured
+  end
+
+  test "an unknown goal id does not clear the goal on the surface that clears on blank" do
+    session = make_session(goal: "the old goal")
+
+    Sessions::FollowUpGoal.apply!(session: session, goal: "retired-goal-id", source: :web_follow_up, clear_when_blank: true)
+
+    assert_equal "the old goal", session.reload.goal
+  end
+
   test "log_with is not called when nothing changed" do
-    session = make_session(goal: "same")
+    session = make_session(goal: "the same goal")
     captured = []
 
     Sessions::FollowUpGoal.apply!(
       session: session,
-      goal: "same",
+      goal: "the same goal",
       source: :enqueued_message,
       log_with: ->(content) { captured << content }
     )

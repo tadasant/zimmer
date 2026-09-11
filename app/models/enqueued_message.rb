@@ -74,6 +74,9 @@ class EnqueuedMessage < ApplicationRecord
   # Validations
   validates :content, presence: true, length: { maximum: Session::PROMPT_MAX_LENGTH, message: "is too long (maximum #{Session::PROMPT_MAX_LENGTH.to_fs(:delimited)} characters)" }
   validates :goal, length: { maximum: Session::GOAL_MAX_LENGTH, message: "is too long (maximum #{Session::GOAL_MAX_LENGTH.to_fs(:delimited)} characters)" }, allow_nil: true
+  # A message that repeats its session's goal changes nothing, so it is not judged —
+  # a session already carrying a retired id keeps taking queued messages.
+  validates :goal, goal_reference: true, if: -> { will_save_change_to_goal? && goal != session&.goal }
   validates :position, presence: true, numericality: { only_integer: true, greater_than: 0 }
   validates :status, inclusion: { in: STATUSES, message: "%{value} is not a valid status" }
   validates :origin, inclusion: { in: ORIGINS, message: "%{value} is not a valid origin" }

@@ -59,9 +59,9 @@ Three properties worth knowing:
 in `github_pr_tracking_started_at`.
 
 That list is load-bearing, and it is provenance rather than a bookmark folder. It's what
-`Github::PrPollPass` and its three evaluators — PR status and CI, review comments, merge conflicts —
-all key off, so anything on it has GitHub activity routed back to this session, and anything missing
-from it is invisible to all three.
+`Github::PrPollPass` and its evaluators — PR status and CI, review comments, merge conflicts, and
+the goal check's description facts — all key off, so anything on it has GitHub activity routed back
+to this session, and anything missing from it is invisible to all of them.
 
 So the question the hook answers is not "did a PR URL appear in this transcript" but **"does this
 transcript show this session opening that PR"**. Reading about a PR is not opening one. Four kinds

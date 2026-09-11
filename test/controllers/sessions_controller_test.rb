@@ -2212,6 +2212,73 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_includes flash[:alert], "Goal is too long"
   end
 
+  test "should reject a follow-up carrying an unknown goal id" do
+    session = sessions(:waiting)
+    session.update!(goal: "existing goal")
+
+    post follow_up_session_url(session), params: { follow_up_prompt: "Continue", goal: "open-reviewd-green-pr" }
+
+    session.reload
+    assert_equal "waiting", session.status
+    assert_equal "existing goal", session.goal
+    assert_redirected_to session_path(session)
+    assert_includes flash[:alert], %(Goal "open-reviewd-green-pr" is not a known goal id)
+  end
+
+  test "a follow-up to a session already holding an unknown id is not refused for it" do
+    session = sessions(:needs_input)
+    session.update_column(:goal, "retired-goal-id")
+
+    post follow_up_session_url(session), params: { follow_up_prompt: "Continue" }
+
+    assert_nil flash[:alert]
+    assert_equal "waiting", session.reload.status, "the follow-up was delivered"
+    assert_equal "retired-goal-id", session.goal
+  end
+
+  test "the session page shows the goal check for a catalog goal" do
+    pr = "https://github.com/owner/repo/pull/7"
+    session = sessions(:needs_input)
+    session.update!(
+      goal: "open-reviewed-green-pr",
+      custom_metadata: {
+        "github_pull_request_urls" => [ pr ],
+        "github_pull_request_statuses" => { pr => "open" },
+        "github_pull_request_ci_statuses" => { pr => "pending" }
+      }
+    )
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "#session_#{session.id}_goal_check:not(.hidden)" do
+      assert_select "[data-goal-check-verdict=pending]"
+      assert_select "[data-goal-check-criterion=ci_green][data-status=pending]", text: /CI is green.*running/m
+      assert_select "[data-goal-check-criterion=pull_request_open][data-status=met]"
+    end
+  end
+
+  test "the session page keeps an empty, hidden goal check target for a free-text goal" do
+    session = sessions(:needs_input)
+    session.update!(goal: "Answer the question inline")
+
+    get session_url(session)
+
+    assert_select "#session_#{session.id}_goal_check.hidden"
+    assert_select "[data-goal-check-verdict]", count: 0
+  end
+
+  test "update_goal refuses an unknown goal id" do
+    session = sessions(:needs_input)
+    session.update!(goal: "existing goal")
+
+    patch update_goal_session_url(session), params: { goal: "pr_merged" }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_includes JSON.parse(response.body)["error"], %(Goal "pr_merged" is not a known goal id)
+    assert_equal "existing goal", session.reload.goal
+  end
+
   # Turbo Stream response tests - verify the optimistic message fix works correctly
   # These tests ensure the follow_up action responds with Turbo Stream to avoid
   # page reload, which would cause the optimistic message to disappear.

@@ -68,8 +68,7 @@ class EnqueuedMessagesController < ApplicationController
       return
     end
 
-    # Validate goal length if present
-    if goal.present? && goal.length > Session::GOAL_MAX_LENGTH
+    if (goal_error = goal_refusal(goal))
       respond_to do |format|
         format.turbo_stream do
           # Replace the entire form to reset button state, plus show errors
@@ -82,12 +81,12 @@ class EnqueuedMessagesController < ApplicationController
             turbo_stream.update(
               "enqueued_messages_form_errors",
               partial: "enqueued_messages/form_errors",
-              locals: { errors: [ "Goal is too long (maximum #{Session::GOAL_MAX_LENGTH.to_fs(:delimited)} characters)" ] }
+              locals: { errors: [ goal_error ] }
             )
           ]
         end
         format.html do
-          redirect_to @session, alert: "Goal is too long (maximum #{Session::GOAL_MAX_LENGTH.to_fs(:delimited)} characters)"
+          redirect_to @session, alert: goal_error
         end
       end
       return
@@ -242,18 +241,17 @@ class EnqueuedMessagesController < ApplicationController
       return
     end
 
-    # Validate goal length if present
-    if goal.present? && goal.length > Session::GOAL_MAX_LENGTH
+    if (goal_error = goal_refusal(goal))
       respond_to do |format|
         format.turbo_stream do
           render turbo_stream: turbo_stream.replace(
             dom_id(@enqueued_message),
             partial: "enqueued_messages/enqueued_message",
-            locals: { message: @enqueued_message, error: "Goal is too long (maximum #{Session::GOAL_MAX_LENGTH.to_fs(:delimited)} characters)" }
+            locals: { message: @enqueued_message, error: goal_error }
           )
         end
         format.html do
-          redirect_to @session, alert: "Goal is too long (maximum #{Session::GOAL_MAX_LENGTH.to_fs(:delimited)} characters)"
+          redirect_to @session, alert: goal_error
         end
       end
       return
@@ -390,6 +388,17 @@ class EnqueuedMessagesController < ApplicationController
   end
 
   private
+
+  # Why a message's goal cannot be accepted, or nil. Checked before anything is
+  # written, like the content checks above. The session's own goal is never
+  # refused: a message that repeats it changes nothing.
+  def goal_refusal(goal)
+    if goal.present? && goal.length > Session::GOAL_MAX_LENGTH
+      "Goal is too long (maximum #{Session::GOAL_MAX_LENGTH.to_fs(:delimited)} characters)"
+    elsif goal != @session.goal && GoalsConfig.unknown_id?(goal)
+      GoalsConfig.unknown_id_message(goal)
+    end
+  end
 
   def find_session
     @session = Session.locate!(params[:session_id])

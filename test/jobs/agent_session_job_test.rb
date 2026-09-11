@@ -1286,7 +1286,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     clone_path = "/tmp/test-clone-nil-prompt-goal"
     @session.update!(
       prompt: nil,
-      goal: "pr_merged",
+      goal: "open-reviewed-green-pr",
       session_id: SecureRandom.uuid,
       status: :waiting,
       metadata: { "clone_path" => clone_path, "working_directory" => clone_path }
@@ -11147,7 +11147,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
   # the returned value being blank. Appending a goal here would (a) hide a task-less
   # spawn from the guard and (b) risk `nil + String` when base_prompt is nil.
   test "build_prompt_with_goal returns blank base prompt unchanged even with a goal set" do
-    @session.update!(goal: "pr_merged", session_notes: "some notes")
+    @session.update!(goal: "open-reviewed-green-pr", session_notes: "some notes")
 
     job = AgentSessionJob.new
 

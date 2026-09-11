@@ -268,6 +268,13 @@ for the channel the work arrived over; when it was not, the section says so in i
 `**Capture is NOT configured for …**` bullet and reads "the check could not be established" instead.
 See [Hierarchy and human messages](/sessions/hierarchy-and-human-messages/).
 
+When the session's goal is a catalog goal with checks, `get_session` includes a
+`### Goal Check (advisory)` section: the verdict, how many criteria are met, and one
+`- [status] label — detail` line per criterion. It reads the same `GoalCheck` as the web page's Goal
+check panel and the REST `goal_check` field, and nothing acts on it. A free-text goal gets no
+section, because an empty one would read as "checked". See
+[How a goal is checked](/sessions/goals/#how-a-goal-is-checked).
+
 `get_session` also always includes a `### Queued Messages` section: how many messages are `pending`
 for that session, and a one-line, hard-truncated preview of the first few by position. It is there
 because `get_session` is the dump a caller reads *before* it decides what to do with a session, and
@@ -667,7 +674,9 @@ the same choice by action name: `create` queues, `send_now` stages and interrupt
 non-blank goal becomes the session's new definition of done, a blank or omitted one leaves the
 existing goal untouched (use `change_goal` to clear one). `manage_enqueued_messages` takes a `goal`
 too, but it is the *message's* goal — `update` with a blank one clears it on the row, and neither it
-nor `create`/`send_now` length-check it before the insert. All three interrupt paths run through
+nor `create`/`send_now` length-check it before the insert. Every one of these, plus `start_session`
+and `change_goal`, refuses a single-word goal that is not a known goal id, naming the ids that
+exist. A free-text sentence is always accepted. All three interrupt paths run through
 `Sessions::InterruptService`, the same backend the web UI's "Send Now" button uses, so they inherit
 its per-session advisory lock and exactly-once delivery. An interrupt jumps its own message to the
 front of the queue; the messages still pending keep their order behind it.

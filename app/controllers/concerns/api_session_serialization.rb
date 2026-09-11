@@ -46,6 +46,10 @@ module ApiSessionSerialization
       branch: session.branch,
       subdirectory: session.subdirectory,
       goal: session.goal,
+      # What GoalCheck reads back about that goal, or null for a free-text goal.
+      # Advisory: nothing in Zimmer acts on it. Computed from custom_metadata
+      # alone, so it costs no query on a list.
+      goal_check: GoalCheck.for(session)&.to_h,
       mcp_servers: session.mcp_servers,
       # `mcp_servers` is only the explicitly-selected list. Consumers asking
       # "which MCP servers does this session actually have wired?" must read

@@ -103,7 +103,9 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
     message = EnqueuedMessage.new(
       session: session,
       content: "Test message",
-      goal: "a" * Session::GOAL_MAX_LENGTH,
+      # A sentence, not one 50,000-character word: a goal with no whitespace is
+      # read as a catalog id (GoalsConfig.unknown_id?), which this is not about.
+      goal: ("a" * (Session::GOAL_MAX_LENGTH - 2)) + " b",
       position: 1
     )
     assert message.valid?

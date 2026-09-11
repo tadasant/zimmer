@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 class GoalsConfigTest < ActiveSupport::TestCase
   # Test loading goals
@@ -236,5 +237,56 @@ class GoalsConfigTest < ActiveSupport::TestCase
     assert_includes description, "If a human invoked this session directly"
     assert_includes description, "report your answer back to that parent and archive yourself",
       "A research session spawned by a parent has no human waiting on it, so it must not park"
+  end
+
+  # ---- unknown ids (tadasant/zimmer#88) ----
+
+  test "unknown_id? is true only for a single word the catalog does not have" do
+    assert GoalsConfig.unknown_id?("open-reviewd-green-pr")
+    assert GoalsConfig.unknown_id?("  pr_merged  ")
+    assert_not GoalsConfig.unknown_id?("open-reviewed-green-pr")
+    assert_not GoalsConfig.unknown_id?("Ship the fix")
+    assert_not GoalsConfig.unknown_id?(nil)
+    assert_not GoalsConfig.unknown_id?("   ")
+    assert_not GoalsConfig.unknown_id?("Fix#123")
+    assert_not GoalsConfig.unknown_id?("修复登录测试")
+  end
+
+  test "resolve finds a goal by id or by its description verbatim, and nothing else" do
+    goal = GoalsConfig.find("open-reviewed-green-pr")
+
+    assert_equal goal, GoalsConfig.resolve("open-reviewed-green-pr")
+    assert_equal goal, GoalsConfig.resolve(goal.description)
+    assert_equal goal, GoalsConfig.resolve("  #{goal.description}  ")
+    assert_nil GoalsConfig.resolve("Ship the fix")
+    assert_nil GoalsConfig.resolve(nil)
+  end
+
+  # ---- checks ----
+
+  test "every goal that ships declares checks GoalCheck implements" do
+    GoalsConfig.all.each do |goal|
+      assert goal.checks.any?, "#{goal.id} declares no checks"
+      assert_empty goal.checks - GoalCheck::CRITERIA.keys, "#{goal.id} names a check GoalCheck does not implement"
+    end
+  end
+
+  test "the PR goals check the PR, its CI, its description and its label" do
+    %w[open-reviewed-green-pr open-reviewed-green-pr-with-version-bump e2e-verified-green-pr].each do |id|
+      assert_equal %w[pull_request_open ci_green verification_section verification_boxes_checked ready_to_merge_label],
+        GoalsConfig.find(id).checks
+    end
+    assert_equal %w[no_pull_request], GoalsConfig.find("codebase-question").checks
+  end
+
+  test "a goal naming a check GoalCheck does not implement refuses to load" do
+    GoalsConfig.stubs(:config).returns({ "goals" => { "g" => { "name" => "G", "description" => "d", "checks" => [ "ci_greeen" ] } } })
+    GoalsConfig.instance_variable_set(:@all, nil)
+
+    error = assert_raises(GoalsConfig::ConfigurationError) { GoalsConfig.all }
+    assert_includes error.message, "ci_greeen"
+  ensure
+    GoalsConfig.unstub(:config)
+    GoalsConfig.instance_variable_set(:@all, nil)
   end
 end

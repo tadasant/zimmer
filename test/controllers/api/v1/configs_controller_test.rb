@@ -196,6 +196,7 @@ class Api::V1::ConfigsControllerTest < ActionDispatch::IntegrationTest
       assert condition.key?("id"), "Goal should have id field"
       assert condition.key?("name"), "Goal should have name field"
       assert condition.key?("description"), "Goal should have description field"
+      assert condition["checks"].is_a?(Array), "Goal should list the checks GoalCheck reads back"
     end
   end
 
