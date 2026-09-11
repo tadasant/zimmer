@@ -62,7 +62,15 @@ which surface it was. A surface that doesn't name itself is recorded as `unattri
 rather than dropped.
 
 Moving a session the categorizer never ruled on records no correction. There's no answer to
-disagree with. The move still gets a timeline note.
+disagree with. Moving one into a **frozen** category records none either: frozen categories
+are never candidates, so no config could have picked it. Both moves still get a timeline
+note.
+
+A call that times out or fails records nothing. It hasn't declined anything, and counting it
+as a decline would make the decline rate measure inference availability.
+
+A session left Uncategorized is tried again each time it pauses, so one session can have
+several `uncategorized` rows and, eventually, an `auto_assigned` one.
 
 Every manual move writes a timeline note in the same voice as the auto path's:
 
@@ -83,14 +91,19 @@ the order to reach for them:
    the ones with no description. Edit one from the pencil on its dashboard section. The
    **+ New category** button opens the same form, so a category can have a description from
    the start.
-2. **Category guidance.** Free text, up to 2,000 characters, **appended** to the built-in
-   category instruction. It sits between that instruction and the candidate list. It can't
-   replace the instruction, can't reach the title half of the call, can't change the
-   response format, and can't remove "when in doubt, prefer NONE". Title and category share
-   one inference call, so a fully editable prompt would let a bad edit break titling too.
+2. **Category guidance.** Free text, up to 2,000 characters, placed inside the category
+   task between the built-in instruction and the candidate list, wrapped in
+   `<operator_guidance>` tags and introduced as being about the category choice only. You
+   can't edit or remove any of the fixed text around it: the title task, the response
+   format, or "when in doubt, prefer NONE". That's confined, not sealed. Title and category
+   share one inference call, so the same model reads your guidance while it writes the
+   title, and something like "answer with only the name" can cost sessions their generated
+   title. When the title line is missing, the session falls back to a title taken from its
+   prompt.
 3. **Model.** Any Claude Code model id. The call is served by `HeadlessInferenceService`,
-   which drives the Claude CLI, so a model id from another runtime is rejected on save. This
-   moves titling as well.
+   which drives the Claude CLI, so a model id from another runtime is rejected on save. It's
+   checked again on every call, so an override the catalog has since dropped falls back to
+   the default rather than failing every title. This moves titling as well.
 
 The same three are available to agents through `manage_categories`: `tuning` reads them,
 `set_tuning` writes the guidance and model, and descriptions are the tool's existing
@@ -114,10 +127,18 @@ shows how many it now gets right.
 - A call that times out or fails is not counted as a wrong answer. That row keeps its previous
   verdict.
 
-The score counts only rows that have been replayed. A corpus that has never been scored
-shows "Not replayed yet" rather than 0%.
+The score counts only rows that have been replayed and can still be scored. A corpus that
+has never been scored shows "Not replayed yet" rather than 0%. A correction whose category
+has since been deleted or frozen isn't scored and isn't replayed. The config can't be judged
+on a category it's no longer allowed to pick.
 
-The page also shows the **decline rate**: how many of the last 100 outcomes were `NONE`. A
+Only one replay runs at a time. Pressing the button again while one is queued or running
+says so instead of queueing another, so two replays can't hold both `inference` threads away
+from titling.
+
+The page also shows the **decline rate**: of the last 100 sessions the categorizer ruled
+on, how many it left Uncategorized. It reads each session's latest outcome, so a session
+that pauses often doesn't count once per attempt. A
 high decline rate is a different problem from a wrong answer. It means the work isn't
 covered by any category, so the fix is a new category rather than a sharper description.
 

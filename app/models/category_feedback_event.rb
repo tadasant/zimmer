@@ -45,10 +45,14 @@ class CategoryFeedbackEvent < ApplicationRecord
   MCP = "mcp"
   UNATTRIBUTED = "unattributed"
 
-  # How many corrections the eval corpus reads before de-duplicating by session,
-  # and how many it hands back by default.
-  CORPUS_SCAN_LIMIT = 500
+  # How many corrections the eval corpus hands back by default.
   DEFAULT_CORPUS_LIMIT = 25
+
+  # The columns that carry text bodies: the ≤8 KB snapshot and the two raw
+  # answers. A page or a scorecard needs none of them, and 25 rows of snapshot is
+  # 200 KB read for nothing, so readers that only render verdicts select around
+  # them with #without_bodies. Replay is the one reader that needs the snapshot.
+  BODY_COLUMNS = %w[context_snapshot raw_answer replay_raw_answer].freeze
 
   # The session and the categories are all nullable and all nullify on delete:
   # the corpus outlives them, which is the whole reason it is a table rather
@@ -64,6 +68,16 @@ class CategoryFeedbackEvent < ApplicationRecord
   scope :corrections, -> { where(kind: CORRECTION) }
   scope :inference_outcomes, -> { where(kind: INFERENCE_KINDS) }
   scope :newest_first, -> { order(id: :desc) }
+  scope :without_bodies, -> { select(column_names - BODY_COLUMNS) }
+
+  # One row per session: the latest by id. A row whose session has been deleted
+  # has no session to group by, so it stands alone (grouped by its own negated
+  # id, which no real session id can collide with).
+  scope :latest_per_session, lambda {
+    where(id: unscoped.merge(all)
+      .select("DISTINCT ON (COALESCE(session_id, -id)) id")
+      .reorder(Arel.sql("COALESCE(session_id, -id), id DESC")))
+  }
 
   class << self
     # Record what the categorizer answered, and the context it answered from.
@@ -131,25 +145,17 @@ class CategoryFeedbackEvent < ApplicationRecord
       where(session_id: session.id).inference_outcomes.newest_first.first
     end
 
-    # The eval corpus: the most recent correction PER SESSION, newest first, as
-    # an Array.
+    # The eval corpus: the most recent correction PER SESSION, newest first.
     #
     # Per session, because a human who moves a card twice has stated one opinion
     # about it, not two — counting both would weight an indecisive afternoon
     # over a month of first-time corrections. The earlier rows stay in the table
     # as the audit trail; they are simply not scored twice.
     #
-    # The scan is capped at CORPUS_SCAN_LIMIT rather than reading every
-    # correction ever recorded: this feeds a page and a replay batch, both of
-    # which want recent opinions, and an unbounded read here would grow with the
-    # table forever.
+    # The de-duplication is a `DISTINCT ON` in SQL, so what reaches Ruby is
+    # exactly `limit` rows. Chain #without_bodies when the snapshot is not needed.
     def eval_corpus(limit: DEFAULT_CORPUS_LIMIT)
-      seen = Set.new
-      corrections
-        .newest_first
-        .limit(CORPUS_SCAN_LIMIT)
-        .select { |event| event.session_id.nil? || seen.add?(event.session_id) }
-        .first(limit)
+      corrections.latest_per_session.includes(:corrected_category).newest_first.limit(limit)
     end
   end
 
@@ -179,19 +185,40 @@ class CategoryFeedbackEvent < ApplicationRecord
   # means the categories under-cover the work — no description needs sharpening,
   # a category is missing — and reading it off the same table is what keeps the
   # two from being confused for each other.
+  #
+  # Read off each session's LATEST outcome, not every attempt: a session left
+  # Uncategorized is re-tried on every pause, so counting attempts would let one
+  # session that pauses a lot outvote a hundred that were placed first time.
   def self.decline_rate(window: 100)
-    recent = inference_outcomes.newest_first.limit(window).pluck(:kind)
+    recent = inference_outcomes.latest_per_session.newest_first.limit(window).pluck(:kind)
     return nil if recent.empty?
 
     { sampled: recent.size, declined: recent.count(UNCATEGORIZED) }
   end
 
   # Whether the replay agreed with the human. Nil when this row has never been
-  # replayed, so "not yet scored" is never silently counted as a miss.
+  # replayed, or can no longer be scored — so "not scored" is never silently
+  # counted as a miss, or as a hit.
   def replay_correct?
-    return nil if replayed_at.blank?
+    return nil if replayed_at.blank? || !scorable?
 
     replay_category_id == corrected_category_id
+  end
+
+  # Whether the current config can be judged on this correction at all. Two
+  # cases say no, and both would otherwise corrupt the score:
+  #
+  #   * The corrected category was deleted. The foreign key nulled its id but
+  #     the name survives, so comparing ids would score a replay that answers
+  #     NONE as agreeing with the human — NULL equal to NULL.
+  #   * The corrected category is frozen. Frozen categories are never
+  #     candidates, so no config could ever pick it and the row would be a miss
+  #     forever, whatever the operator tuned.
+  def scorable?
+    return false if corrected_category_id.nil? && corrected_category_name.present?
+    return false if corrected_category_id && (corrected_category.nil? || corrected_category.is_frozen?)
+
+    true
   end
 
   # How the answer reads for a human: a name, or the word for "no category".

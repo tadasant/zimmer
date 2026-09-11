@@ -82,7 +82,7 @@ module Mcp
           },
           guidance: {
             type: [ "string", "null" ],
-            description: 'For "set_tuning". Extra guidance APPENDED to the built-in category instruction (max 2000 chars). It cannot replace that instruction, cannot reach the title half of the same inference call, and cannot remove "when in doubt, prefer NONE". Pass null or "" to clear.'
+            description: 'For "set_tuning". Extra guidance placed inside the category task only, delimited and introduced as being about the CATEGORY choice (max 2000 chars). It cannot edit or remove the fixed instruction, the title task, the response format or "when in doubt, prefer NONE". The same model call also writes the title, so keep it about categories. Pass null or "" to clear.'
           },
           inference_model: {
             type: [ "string", "null" ],
@@ -232,7 +232,7 @@ module Mcp
       def tuning(args)
         limit = CategorizationReplayJob.clamp_limit(args["limit"].presence || CategoryFeedbackEvent::DEFAULT_CORPUS_LIMIT)
         service = CategorizationService.new
-        corrections = CategoryFeedbackEvent.eval_corpus(limit: limit)
+        corrections = CategoryFeedbackEvent.eval_corpus(limit: limit).without_bodies.to_a
         scorecard = CategoryFeedbackEvent.scorecard(corrections)
         declines = CategoryFeedbackEvent.decline_rate
 
@@ -295,10 +295,16 @@ module Mcp
 
       def replay(args)
         limit = CategorizationReplayJob.clamp_limit(args["limit"].presence || CategorizationReplayJob::DEFAULT_LIMIT)
-        size = CategoryFeedbackEvent.eval_corpus(limit: limit).size
+        size = CategoryFeedbackEvent.eval_corpus(limit: limit).pluck(:id).size
         raise ToolError, "No corrections have been recorded yet, so there is nothing to replay." if size.zero?
 
-        CategorizationReplayJob.perform_later(limit)
+        unless CategorizationReplayJob.enqueue(limit)
+          return [
+            "## Categorization Replay Not Queued",
+            "",
+            "A replay is already queued or running. Read its scores with the \"tuning\" action once it finishes."
+          ].join("\n")
+        end
 
         [
           "## Categorization Replay Queued",

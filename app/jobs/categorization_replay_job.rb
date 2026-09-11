@@ -26,8 +26,25 @@
 class CategorizationReplayJob < ApplicationJob
   queue_as :inference
 
+  # At most one replay queued or running. Each is up to MAX_LIMIT serial
+  # inference calls on a two-thread lane that titling and needs-input pushes
+  # share, so two at once could hold both threads for the better part of half an
+  # hour. A second press is refused at enqueue, and #enqueue says so.
+  good_job_control_concurrency_with(
+    key: -> { "categorization_replay" },
+    total_limit: 1
+  )
+
   DEFAULT_LIMIT = 10
   MAX_LIMIT = 50
+
+  # Enqueue a replay. Returns false when one is already queued or running, so the
+  # page and the MCP tool can say so rather than claim a replay they did not
+  # start.
+  def self.enqueue(limit)
+    job = perform_later(limit)
+    job.respond_to?(:successfully_enqueued?) ? job.successfully_enqueued? : job != false
+  end
 
   def perform(limit = DEFAULT_LIMIT, inference_service: nil)
     events = CategoryFeedbackEvent.eval_corpus(limit: self.class.clamp_limit(limit))
@@ -56,6 +73,9 @@ class CategorizationReplayJob < ApplicationJob
 
   def replay(service, candidates, event)
     return if event.context_snapshot.blank?
+    # A correction into a since-deleted or since-frozen category cannot be
+    # scored, so asking the model about it would spend a call on nothing.
+    return unless event.scorable?
 
     result = service.infer(
       context: event.context_snapshot,

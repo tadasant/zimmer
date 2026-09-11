@@ -108,6 +108,29 @@ class CategorizationReplayJobTest < ActiveJob::TestCase
     assert @correction.reload.replay_correct?
   end
 
+  test "a correction into a since-frozen category is not replayed" do
+    @research.update!(is_frozen: true)
+    @inference.expects(:generate).never
+
+    CategorizationReplayJob.perform_now(10, inference_service: @inference)
+
+    assert_nil @correction.reload.replayed_at
+  end
+
+  test "enqueue reports a refused enqueue as not started" do
+    refused = CategorizationReplayJob.new(10)
+    refused.successfully_enqueued = false
+    CategorizationReplayJob.stubs(:perform_later).returns(refused)
+
+    refute CategorizationReplayJob.enqueue(10)
+  end
+
+  test "only one replay may be queued or running at a time" do
+    config = CategorizationReplayJob.good_job_concurrency_config
+
+    assert_equal 1, config[:total_limit]
+  end
+
   test "the batch size is clamped" do
     assert_equal CategorizationReplayJob::MAX_LIMIT, CategorizationReplayJob.clamp_limit(10_000)
     assert_equal 1, CategorizationReplayJob.clamp_limit(0)

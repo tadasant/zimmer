@@ -12,10 +12,11 @@
 #
 # This concern closes both halves at the ONE place every surface passes through:
 # an `after_update_commit` on the column itself. That is deliberate. The category
-# moves from six surfaces — the web `set_category`, a cross-section drag
+# moves through seven write paths — the web `set_category` and cross-section drag
 # (`Session.reorder_cards!`), the REST API's `set_category` and `reorder`, and
-# two MCP tools — and hanging the capture off each of them would mean the next
-# surface silently records nothing.
+# the MCP `set_session_category`, `reorder_sessions` and `change_category`
+# actions — and hanging the capture off each of them would mean the next path
+# silently records nothing.
 #
 # `category_change_source` names the surface for the audit half. The
 # categorizer's own write sets it to CATEGORY_CHANGE_BY_INFERENCE, which is what
@@ -48,20 +49,18 @@ module SessionCategorization
     after_update_commit :record_category_change, if: :saved_change_to_category_id?
   end
 
-  # The category this session is in, as a human reads it.
-  def category_label
-    category&.name.presence || "Uncategorized"
-  end
-
   private
 
   def record_category_change
     return if category_change_source == CATEGORY_CHANGE_BY_INFERENCE
 
-    previous_id = saved_change_to_category_id.first
-    previous = Category.find_by(id: previous_id) if previous_id
+    log_manual_category_change(previous_category)
 
-    log_manual_category_change(previous)
+    # A frozen category is a parked "leave it alone" bucket the categorizer can
+    # never pick, so moving a card into one is filing, not a correction: no
+    # config could have got it right, and the row would score as a miss forever.
+    return if category&.is_frozen?
+
     CategoryFeedbackEvent.record_correction!(
       session: self,
       corrected_category: category,
@@ -71,6 +70,17 @@ module SessionCategorization
     # One write, one attribution. Leaving it set would let the NEXT change on the
     # same in-memory record inherit a surface it did not come from.
     self.category_change_source = nil
+  end
+
+  # The category the session just left. Guarded like everything else in this
+  # after-commit hook: the move has already committed, so a failure here must not
+  # turn it into a 500 for the operator who made it.
+  def previous_category
+    previous_id = saved_change_to_category_id.first
+    previous_id && Category.find_by(id: previous_id)
+  rescue StandardError => e
+    Rails.logger.warn "[SessionCategorization] could not read previous category for session #{id}: #{e.class}: #{e.message}"
+    nil
   end
 
   # The timeline note the manual path never had. Same voice and same level as the

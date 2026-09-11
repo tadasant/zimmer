@@ -6730,10 +6730,12 @@ says it is still queued.
 
 Two related edges:
 
-- **The corpus table has no retention.** Every auto-categorized session adds one row with up to
-  8 KB of context. That's about one row per session, compressed by TOAST, and small next to
-  `logs`. Nothing prunes it yet, on purpose: the rows are the eval corpus, and they are meant to
-  outlive the sessions they came from.
+- **The corpus table has no retention.** Every categorization attempt that gets an answer adds
+  one row with up to 8 KB of context, compressed by TOAST. A session placed first time
+  contributes one row. A session left Uncategorized is retried on each pause, so it contributes
+  one per attempt until it's placed. That's still small next to `logs`. Nothing prunes it yet,
+  on purpose: the rows are the eval corpus, and they are meant to outlive the sessions they came
+  from.
 - **A replay verdict is from the config at the time it ran.** Edit a description after replaying
   and the chips still show the old verdicts until you replay again. `replay_prompt_version` and
   `replay_model` on each row say which config produced it, and `/supervisor/category_feedback_events`
