@@ -3132,25 +3132,30 @@ The scan that finds them walks the source tree once before the copy, skipping `.
 own clone, against a copy of the same tree that costs seconds. It never follows a symlinked
 directory, which both matches what the copy does with one and makes a symlink loop impossible.
 
-### Terminating a pid that is not this process's child falls back to a liveness check that lies
+### A process in another container cannot be terminated, only left alone
 
-`ProcessTerminationService` answers "is this still running?" with a non-blocking `wait`, which reaps
-as a side effect and so cannot be fooled by an exited child holding its own pid as a zombie. That
-answer is only available for a pid that is a child of **the process doing the asking**. For anything
-else `wait` raises `ECHILD` and the service falls back to `Process.kill(0, pid)`. That covers more
-than third-party processes: a session spawned by a previous worker process, a restarted container, or
-an earlier deploy is no longer anyone's child here, and recovering exactly those sessions is what
-`SessionRecoveryService` exists to do.
+`ProcessTerminationService` signals a pid only once it has matched it against the identity recorded
+at spawn — same boot, same PID namespace, same start time
+([How a process actually gets terminated](/sessions/lifecycle/#how-a-process-actually-gets-terminated)).
+A recycled pid is therefore never signalled. A pid recorded in **another PID namespace** is not
+signalled either, and the service reports `:unverifiable` instead: it cannot see that process, so it
+does not know whether the process is running. It does not claim `:already_dead`.
 
-Two things follow from that fallback. In a multi-container deploy each container has its own PID
-namespace, so signal 0 reports `ESRCH` for a process that is running perfectly well next door —
-`SessionRecoveryService` says so in its own header, and calls its `force_terminate_hung_process` path
-best-effort for exactly that reason: the signal may land nowhere, and the process is then the
-container runtime's problem. And within one namespace, a pid the OS has since recycled reads as
-alive; `process_info` compares uid and process state but never the command, so a recycled pid owned
-by the same user is indistinguishable from the agent that used to hold it.
+That is the honest answer, not a way to reach the process. Nothing routes a termination to the
+container that owns the pid. In production that costs nothing today: every job runs in the one
+`worker` container, so a foreign pid is one recorded by a worker container that has since been
+replaced, and the container runtime took that process down with it. It would start to matter if
+Zimmer ever ran agent processes in more than one live container at once. `SessionRecoveryService`
+then carries on with the restart regardless, so for a short while a session could have two agents
+running.
 
-Routing termination to the container that owns the pid is the fix, and it is not written.
+A pid with **no recorded identity** is pinned to whatever holds it when termination starts, and
+re-checked before every signal. That protects the ladder from a pid that changes hands part-way
+through. It cannot show that the pinned process is the one the caller meant. The callers that reach
+this path are the orphan cleanup, whose pids come from a host scan made moments earlier, and
+sessions spawned before identities were recorded. Between the `/proc` read and the `kill` there is
+still a window of microseconds that only a pidfd would close, and Ruby's standard library does not
+expose one.
 
 Tracked in [#365](https://github.com/tadasant/zimmer/issues/365).
 

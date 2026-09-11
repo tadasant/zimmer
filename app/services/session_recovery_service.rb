@@ -15,12 +15,15 @@
 # always attempt to re-monitor via AgentSessionJob (resume_monitoring: true),
 # which runs in the same container as the process and can reliably check its status.
 #
-# NOTE: The force_terminate_hung_process path still sends signals via
-# ProcessTerminationService, which has the same cross-container PID limitation.
-# This is acceptable because hung process termination is a best-effort operation:
-# if the signal fails (ESRCH), the process will eventually be cleaned up by the
-# container runtime. A future improvement could route termination through the
-# correct container.
+# NOTE: The force_terminate_hung_process path sends signals via
+# ProcessTerminationService, which only signals a pid it can prove is the process
+# recorded for this session (same boot, same PID namespace, same start time — see
+# AgentProcessLiveness). A pid recorded in another container comes back
+# :unverifiable and is left alone: from here we cannot tell whether it is running,
+# and signalling the number would reach whatever holds it in THIS namespace. In
+# production every job runs in the one worker container, so a foreign pid is one a
+# replaced worker recorded, and the container runtime took it down with that
+# container. Recovery carries on either way.
 #
 # Usage:
 #   service = SessionRecoveryService.new(session)
@@ -223,6 +226,14 @@ class SessionRecoveryService
 
     if result.success?
       add_log("Hung process #{process_pid} terminated: #{result.message}", level: "info")
+    elsif result.status == :unverifiable
+      # Not a failed kill — no kill was attempted. ProcessTerminationService already
+      # logged why; say what recovery does about it.
+      add_log(
+        "Hung process #{process_pid} is not visible from this container, so it was not " \
+        "signalled. Recovery continues regardless.",
+        level: "warning"
+      )
     else
       add_log("Failed to terminate hung process #{process_pid}: #{result.message}", level: "error")
     end

@@ -169,6 +169,37 @@ class AgentProcessLivenessTest < ActiveSupport::TestCase
     assert_equal :unknown, AgentProcessLiveness.status(@session.reload)
   end
 
+  # === Locality ============================================================
+  #
+  # `classify` folds both of these into `:unknown`; ProcessTerminationService needs
+  # them apart, because only the second one means "not ours to signal from here".
+
+  test "locality is :unrecorded for a blank identity or one missing a provenance field" do
+    assert_equal :unrecorded, AgentProcessLiveness.locality(nil)
+    assert_equal :unrecorded, AgentProcessLiveness.locality({ "pid" => 4242 })
+    # What a host with no /proc records at spawn: the pid and nothing to check it by.
+    assert_equal :unrecorded, AgentProcessLiveness.locality(
+      { "pid" => 4242, "boot_id" => nil, "pid_namespace" => nil, "started_at_ticks" => nil }
+    )
+  end
+
+  test "locality is :local for a complete identity recorded in this kernel and namespace" do
+    require_procfs
+
+    assert_equal :local, AgentProcessLiveness.locality(AgentProcessLiveness.identity_for(spawn_real_process))
+  end
+
+  test "locality is :foreign for a complete identity from another namespace, another boot, or a host with no /proc" do
+    require_procfs
+    identity = AgentProcessLiveness.identity_for(spawn_real_process)
+
+    assert_equal :foreign, AgentProcessLiveness.locality(identity.merge("pid_namespace" => "pid:[999999999]"))
+    assert_equal :foreign, AgentProcessLiveness.locality(identity.merge("boot_id" => SecureRandom.uuid))
+    AgentProcessLiveness.stub(:boot_id, nil) do
+      assert_equal :foreign, AgentProcessLiveness.locality(identity)
+    end
+  end
+
   # === The guard ===========================================================
 
   test "ensure_no_live_process! terminates an agent process that outlived its job" do

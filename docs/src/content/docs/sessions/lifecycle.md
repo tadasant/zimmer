@@ -2347,14 +2347,33 @@ stops at the first rung that works.
 3. **SIGKILL**, group first and then the leader, if it is still alive after its SIGTERM grace.
 4. **A group SIGKILL sweep**, once the leader is confirmed dead.
 
-Two details are load-bearing.
+Three details are load-bearing.
+
+**Nothing is signalled until the pid is shown to be the process Zimmer started.** A pid is only a
+number: another container's PID namespace can give it to a different process, and within one
+namespace the OS recycles it. So before the first rung the service compares the pid against the
+`process_identity` recorded when it was spawned (boot id, PID namespace, start time — see
+[One live agent process per session](/sessions/spawning/#one-live-agent-process-per-session)):
+
+| What `/proc` shows against the recorded identity | Result | Signals sent |
+| --- | --- | --- |
+| Another boot or PID namespace | `:unverifiable` — not a success. "We cannot tell" is the answer, never `:already_dead` | none |
+| Same namespace, the pid held by a process with a different start time | `:recycled` — a success, because the process we spawned is gone | none |
+| Same namespace, nothing holds the pid | `:already_dead` | none |
+| Same namespace, same start time | the ladder runs | as above |
+
+A pid with no recorded identity — one the orphan cleanup found by scanning the host, or a session
+spawned before identities were recorded — is pinned to whatever holds it when termination starts.
+Either way the start time is re-read before every signal, so a pid that changes hands part-way
+through the ladder is not signalled again and its group is not swept; the result is `:recycled`.
 
 **Liveness is answered by reaping, not by signal 0.** `Process.kill(0, pid)` succeeds for a child
 of ours that has already exited — an unreaped child holds its pid as a zombie until someone waits
 on it. So the service asks `waitpid(pid, WNOHANG)` instead: a status back means the child had
 exited and is now collected, `nil` means it is genuinely still running, and `ECHILD` means it is
-not our child, where signal 0 is the right answer and is used as the fallback. Once a pid is
-reaped it is never probed again — it belongs to the OS and can be recycled.
+not our child. For those, `/proc` answers: present, not a zombie, and still the pinned start time.
+Signal 0 is only the fallback on a host with no `/proc`. Once a pid is reaped it is never probed
+again — it belongs to the OS and can be recycled.
 
 Before this, every liveness check answered "still running" for a child that died on the first
 SIGTERM: termination burned ~15–25s of `sleep` in a GoodJob thread, sent two redundant SIGTERMs
