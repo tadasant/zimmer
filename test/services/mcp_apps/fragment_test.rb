@@ -4,6 +4,8 @@ require "test_helper"
 require "mocha/minitest"
 
 class McpApps::FragmentTest < ActiveSupport::TestCase
+  include McpAppsSettingsHelpers
+
   HTML = "<!DOCTYPE html><html><body>hi</body></html>"
 
   setup do
@@ -14,7 +16,7 @@ class McpApps::FragmentTest < ActiveSupport::TestCase
       agent_runtime: "claude_code", prompt: "x", mcp_servers: [ "notion" ],
       git_root: "https://github.com/test/repo.git", branch: "main"
     )
-    AppSetting.create!(mcp_apps_enabled: true, mcp_apps_allowed_servers: [ "notion" ])
+    enable_mcp_apps
 
     @client = mock("client")
     @connection = McpApps::ServerConnection.new(@session, "notion")

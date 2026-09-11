@@ -4,6 +4,8 @@ require "test_helper"
 require "mocha/minitest"
 
 class McpAppsControllerTest < ActionDispatch::IntegrationTest
+  include McpAppsSettingsHelpers
+
   TRANSCRIPT = [
     { "type" => "assistant", "message" => { "role" => "assistant", "content" => [
       { "type" => "tool_use", "id" => "toolu_01", "name" => "mcp__notion__open_panel", "input" => { "note" => "hi" } }
@@ -31,7 +33,7 @@ class McpAppsControllerTest < ActionDispatch::IntegrationTest
       mcp_servers: [ "notion" ],
       transcript: TRANSCRIPT.map(&:to_json).join("\n")
     )
-    AppSetting.create!(mcp_apps_enabled: true, mcp_apps_allowed_servers: [ "notion" ])
+    enable_mcp_apps
     stub_mcp_server
   end
 
@@ -97,7 +99,7 @@ class McpAppsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "nothing resolves while the feature is off, and the transcript is not even read" do
-    AppSetting.current.update!(mcp_apps_enabled: false)
+    enable_mcp_apps(enabled: false)
     # The gate is ahead of the transcript parse on purpose: a URL anyone can
     # request must not make a deployment with the feature off detoast and
     # normalize a multi-megabyte transcript column.
@@ -140,7 +142,7 @@ class McpAppsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "nothing resolves for a server nobody opted in" do
-    AppSetting.current.update!(mcp_apps_allowed_servers: [])
+    enable_mcp_apps(servers: [])
 
     get fragment_session_mcp_app_path(@session, "toolu_01"), params: panel_params
     assert_response :not_found

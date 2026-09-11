@@ -4,6 +4,8 @@ require "test_helper"
 require "mocha/minitest"
 
 class McpApps::PolicyTest < ActiveSupport::TestCase
+  include McpAppsSettingsHelpers
+
   test "a deployment that has decided nothing renders nothing" do
     refute McpApps::Policy.enabled?
     assert_empty McpApps::Policy.allowed_servers
@@ -11,20 +13,20 @@ class McpApps::PolicyTest < ActiveSupport::TestCase
   end
 
   test "the master switch alone is not enough" do
-    AppSetting.create!(mcp_apps_enabled: true)
+    enable_mcp_apps(enabled: true, servers: [])
 
     assert McpApps::Policy.enabled?
     refute McpApps::Policy.allows?("notion"), "no server has been opted in"
   end
 
   test "an opted-in server without the master switch is still off" do
-    AppSetting.create!(mcp_apps_enabled: false, mcp_apps_allowed_servers: [ "notion" ])
+    enable_mcp_apps(enabled: false)
 
     refute McpApps::Policy.allows?("notion")
   end
 
   test "both together allow exactly the named server" do
-    AppSetting.create!(mcp_apps_enabled: true, mcp_apps_allowed_servers: [ "notion" ])
+    enable_mcp_apps
 
     assert McpApps::Policy.allows?("notion")
     refute McpApps::Policy.allows?("figma")
@@ -47,7 +49,7 @@ class McpApps::PolicyTest < ActiveSupport::TestCase
   end
 
   test "an unreadable settings row leaves the feature off rather than on" do
-    AppSetting.create!(mcp_apps_enabled: true, mcp_apps_allowed_servers: [ "notion" ])
+    enable_mcp_apps
     AppSetting.stubs(:current).returns(AppSetting::NULL)
 
     refute McpApps::Policy.enabled?

@@ -4,6 +4,8 @@ require "test_helper"
 require "mocha/minitest"
 
 class McpApps::ToolIndexTest < ActiveSupport::TestCase
+  include McpAppsSettingsHelpers
+
   TOOLS = [
     { "name" => "open_panel", "title" => "Open panel", "description" => "Opens it",
       "inputSchema" => { "type" => "object", "properties" => { "note" => { "type" => "string" } } },
@@ -22,7 +24,7 @@ class McpApps::ToolIndexTest < ActiveSupport::TestCase
       agent_runtime: "claude_code", prompt: "x", mcp_servers: [ "notion" ],
       git_root: "https://github.com/test/repo.git", branch: "main"
     )
-    AppSetting.create!(mcp_apps_enabled: true, mcp_apps_allowed_servers: [ "notion" ])
+    enable_mcp_apps
 
     @client = mock("client")
     @connection = McpApps::ServerConnection.new(@session, "notion")

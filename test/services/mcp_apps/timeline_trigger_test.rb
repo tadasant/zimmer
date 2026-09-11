@@ -4,6 +4,8 @@ require "test_helper"
 require "mocha/minitest"
 
 class McpApps::TimelineTriggerTest < ActiveSupport::TestCase
+  include McpAppsSettingsHelpers
+
   # The test environment's store is a :null_store, which agrees with every write
   # and answers nil to every read — exactly the "index not warm yet" case. A real
   # store is needed to exercise the other one.
@@ -15,7 +17,7 @@ class McpApps::TimelineTriggerTest < ActiveSupport::TestCase
       agent_runtime: "claude_code", prompt: "x", mcp_servers: [ "notion" ],
       git_root: "https://github.com/test/repo.git", branch: "main"
     )
-    AppSetting.create!(mcp_apps_enabled: true, mcp_apps_allowed_servers: [ "notion" ])
+    enable_mcp_apps
   end
 
   teardown do
@@ -46,7 +48,7 @@ class McpApps::TimelineTriggerTest < ActiveSupport::TestCase
   end
 
   test "renders nothing at all when the feature is off" do
-    AppSetting.current.update!(mcp_apps_enabled: false)
+    enable_mcp_apps(enabled: false)
 
     refute trigger.active?
     assert_nil trigger.panel_for(item)
@@ -73,7 +75,7 @@ class McpApps::TimelineTriggerTest < ActiveSupport::TestCase
   end
 
   test "reads the settings row once however many rows it is asked about" do
-    AppSetting.expects(:current).once.returns(AppSetting.first)
+    AppSetting.expects(:current).once.returns(mcp_apps_setting)
 
     shared = trigger
     5.times { shared.panel_for(item) }
