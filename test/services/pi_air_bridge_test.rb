@@ -8,7 +8,8 @@ require "mocha/minitest"
 # and honors a plugin only as composition sugar for its skills, so if these files
 # are wrong a session's hooks exist in the database and nowhere Pi will look.
 class PiAirBridgeTest < ActiveSupport::TestCase
-  # AirCatalogService resolves with `--no-scope`, so Zimmer's catalog ids are bare.
+  # Zimmer's catalog ids are canonical tokens, which are bare for every artifact
+  # a single catalog contributes — this one included. See ArtifactIdentity.
   HOOK = "git-push-ci-reminder"
   PLUGIN = "ci-workflow"
 

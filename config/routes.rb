@@ -487,7 +487,7 @@ Rails.application.routes.draw do
   # Connectors page: every catalog MCP server with its auth status. Each row's
   # status is fetched individually by a lazy Turbo Frame hitting #show, so the
   # list renders before any probe resolves.
-  resources :connectors, only: [ :index, :show ], param: :name, constraints: { name: /[^\/]+/ } do
+  resources :connectors, only: [ :index ] do
     collection do
       # Which secret store is wired up, and what it can do. Its own lazy frame:
       # answering means an IAM probe against Google, which must never sit in
@@ -495,6 +495,19 @@ Rails.application.routes.draw do
       get :secret_store, path: "secret-store"
     end
   end
+
+  # One connector's row, keyed on the server's catalog name. A GLOB rather than
+  # a `resources … param: :name` member, because that name is a canonical AIR
+  # token and a server whose short id a second composed catalog also contributes
+  # is addressed by its fully-qualified `@scope/id` — which contains slashes
+  # (ArtifactIdentity). A single dynamic segment cannot hold one, so the row for
+  # the very server this exists to disambiguate would 404.
+  #
+  # `format: false` because an AIR scope may legitimately contain a dot, and
+  # Rails would otherwise strip everything after it as an extension. Declared
+  # AFTER the collection route above so `/connectors/secret-store` is not
+  # swallowed by the glob.
+  get "connectors/*name", to: "connectors#show", as: :connector, format: false
 
   # Deleting a stored OAuth credential (the "Disconnect" button on Connectors).
   resources :mcp_oauth_credentials, only: [ :destroy ], path: "connector_credentials"

@@ -143,7 +143,7 @@ catalog resolution — not your change. Verify with:
 
 ```bash
 AIR_CONFIG=$PWD/air.json "$(bin/rails runner 'print AirPrepareService::AIR_INSTALL_DIR')"/node_modules/.bin/air \
-  resolve --json --no-scope --git-protocol https | ruby -rjson -e \
+  resolve --json --git-protocol https | ruby -rjson -e \
   'j=JSON.parse($stdin.read); j.each { |k, v| puts "#{k}: #{v.size}" }'
 ```
 

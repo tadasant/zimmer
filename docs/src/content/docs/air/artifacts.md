@@ -35,9 +35,11 @@ The generic workflow skills are vendored here too, under `category: workflow`:
 :::note[The catalog is the only source of skills]
 A standalone Zimmer install inherits nothing from an outside orchestrator, so anything a session
 needs — generic or Zimmer-specific — is vendored into `skills/` and registered in `skills.json`.
-Everything resolves under a single `@local/` scope, so there is
-[no cross-scope shortname collision](/air/zimmer-integration/#the-catalog-is-self-contained-and-offline)
-to design around. Do still avoid registering the same id twice: a genuinely broken catalog
+Everything resolves under a single `@local/` scope, so every artifact is addressed by its bare
+short id. A deployment that composes a second catalog can share a short id across the two —
+[both sides stay selectable](/air/zimmer-integration/#artifact-names-are-qualified-and-reduced-to-a-token),
+with the non-local one addressed as `@owner/repo/<id>`. Do still avoid registering the same id twice
+within one catalog: a genuinely broken catalog
 hard-fails the resolve and, thanks to the boot-time pre-warm,
 [reddens the whole test suite](/air/zimmer-integration/#the-blast-radius-is-the-entire-test-suite).
 :::
@@ -184,7 +186,7 @@ The full procedure lives in `skills/zimmer-change-ai-artifact/SKILL.md`. The sho
 
 ```bash
 # From the repo root
-AIR_CONFIG=$PWD/air.json npx @pulsemcp/air-cli@0.13.0 resolve --json --no-scope
+AIR_CONFIG=$PWD/air.json npx @pulsemcp/air-cli@0.13.0 resolve --json
 ```
 
 Watch stderr, not the exit code. Lines containing `references unknown` and `Dropping the

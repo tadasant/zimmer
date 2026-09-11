@@ -8,9 +8,12 @@ class ReferencesConfig
 
   # Reference configuration object
   class Reference
+    include ArtifactIdentity::Entry
+
     attr_reader :id, :title, :description, :file, :path
 
     def initialize(id, config)
+      identify!(id, config)
       @id = id
       @title = config["title"] || id
       @description = config["description"]
@@ -25,6 +28,7 @@ class ReferencesConfig
     def to_h
       {
         id: id,
+        qualified_name: qualified_name,
         title: title,
         description: description,
         file: file,
@@ -42,8 +46,10 @@ class ReferencesConfig
       build_references
     end
 
+    # Accepts a canonical token, a fully-qualified `@scope/id`, or a bare short
+    # id that exactly one catalog contributes. See ArtifactIdentity.find.
     def find(id)
-      refs_by_id[id]
+      ArtifactIdentity.find(all, id)
     end
 
     def find!(id)
@@ -68,10 +74,6 @@ class ReferencesConfig
     end
 
     private
-
-    def refs_by_id
-      all.index_by(&:id)
-    end
 
     def build_references
       AirCatalogService.entries_for(:references).map { |id, entry| Reference.new(id, entry) }

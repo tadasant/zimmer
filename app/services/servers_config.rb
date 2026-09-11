@@ -11,6 +11,8 @@ class ServersConfig
 
   # Server configuration object
   class Server
+    include ArtifactIdentity::Entry
+
     # How much of an `unavailable` declaration is reported. A reason is one line
     # in a roster, not a second description; anything longer is a story the
     # catalog should be telling somewhere else.
@@ -18,6 +20,7 @@ class ServersConfig
     attr_reader :name, :title, :description, :type, :command, :args, :env, :url, :headers, :oauth
 
     def initialize(name, config)
+      identify!(name, config)
       @name = name
       @title = config["title"] || name
       @description = config["description"]
@@ -169,6 +172,11 @@ class ServersConfig
     def to_h
       result = {
         name: name,
+        # The fully-qualified AIR ID this entry resolved from. Reported
+        # alongside `name` rather than instead of it: `name` is what a session
+        # stores and what every existing caller matches on, while this is what
+        # tells two same-short-id servers from different catalogs apart.
+        qualified_name: qualified_name,
         title: title,
         description: description,
         type: type,
@@ -254,8 +262,10 @@ class ServersConfig
       build_servers
     end
 
+    # Accepts a canonical token, a fully-qualified `@scope/id`, or a bare short
+    # id that exactly one catalog contributes. See ArtifactIdentity.find.
     def find(name)
-      all.find { |server| server.name == name }
+      ArtifactIdentity.find(all, name)
     end
 
     def find!(name)

@@ -6,7 +6,10 @@ import { byAvailabilityThenOrder, unavailableRowMarkup, unavailableTitle } from 
 export default class extends Controller {
   static targets = ["input", "dropdown", "selectedContainer", "hiddenInputs"]
   static values = {
-    // Array of {name, title, description, unavailable, unavailable_reason} objects,
+    // Array of {name, title, scope, description, unavailable, unavailable_reason} objects,
+    // where `scope` is the contributing AIR catalog and is set ONLY when a second
+    // composed catalog contributes the same short id — the case where `name` is a
+    // qualified `@scope/id` and two chips would otherwise both read "Slack".
     // built by McpServerOptions. An unavailable server is one Zimmer already knows
     // cannot start; it is shown with its reason rather than hidden.
     servers: Array,
@@ -241,7 +244,7 @@ export default class extends Controller {
         else if (server.unavailable) tag.title = unavailableTitle(server)
         tag.innerHTML = `
           ${flagged ? `<svg class="h-3.5 w-3.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" /></svg>` : ''}
-          ${this.escapeHtml(server.title)}${server.missing ? ' (not in catalog)' : ''}
+          ${this.escapeHtml(server.title)}${server.missing ? ' (not in catalog)' : ''}${server.scope ? `<span class="text-xs font-mono opacity-70">${this.escapeHtml(server.scope)}</span>` : ''}
           <button type="button"
                   class="${server.missing ? 'text-red-700 hover:text-red-900' : (server.unavailable ? 'text-amber-700 hover:text-amber-900' : 'text-indigo-600 hover:text-indigo-800')} focus:outline-none"
                   data-action="click->mcp-server-select#removeServerFromTag"

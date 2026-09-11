@@ -11,9 +11,9 @@ Zimmer touches AIR in exactly two places: a **read path** that asks "what artifa
 ```mermaid
 flowchart TB
     subgraph read["READ PATH — AirCatalogService"]
-        R1["Open3: air resolve --json --no-scope --git-protocol https<br/>env: AIR_CONFIG = effective_air_json_path"]
+        R1["Open3: air resolve --json --git-protocol https<br/>env: AIR_CONFIG = effective_air_json_path"]
         R2{"stderr contains<br/>'references unknown' AND<br/>'Dropping the reference'?"}
-        R3["store_loaded_entries<br/>60s in-memory TTL<br/>+ persist CatalogSnapshot to Postgres"]
+        R3["canonicalize @scope/id → token<br/>store_loaded_entries<br/>60s in-memory TTL<br/>+ persist CatalogSnapshot to Postgres"]
         R4["raise CatalogError →<br/>serve_last_known_good!<br/>memory → CatalogSnapshot → else raise<br/>degraded = true"]
         R1 --> R2
         R2 -->|no| R3
@@ -44,8 +44,10 @@ Zimmer's `air.json` declares a catalog named `zimmer-catalog` with no `catalogs`
 `github://` URIs — only six local index paths, `gitProtocol: "https"`, and two extensions
 (`@pulsemcp/air-adapter-claude`, `@pulsemcp/air-secrets-env`).
 
-Everything lands under `@local/`, which is why `--no-scope` is safe: there can't be a cross-scope
-shortname collision when there's only one scope.
+Everything lands under `@local/`, so no short id is contested and every artifact is addressed by
+its bare short id — see [Artifact names are qualified, and reduced to a
+token](#artifact-names-are-qualified-and-reduced-to-a-token) for what changes when a deployment
+composes a second catalog.
 
 The catalog's own description states the intent: *"resolves fully offline (no private GitHub
 catalogs, no network), so the app's config services always resolve non-empty data."*
@@ -112,6 +114,52 @@ least one catalog is pinnable, `AIR_CATALOG_REF` warns at boot when it pinned no
 tests that cover the pinning path run in CI against synthetic remote-catalog fixtures rather than
 skipping for want of a real one ([#69](https://github.com/tadasant/zimmer/issues/69)).
 :::
+
+## Artifact names are qualified, and reduced to a token
+
+AIR addresses every artifact as `@<scope>/<id>` — `local` for the deployment's own indexes,
+`<owner>/<repo>` for anything a `github://` catalog contributes. The qualification is what lets two
+composed catalogs each contribute a `slack` MCP server without colliding.
+
+Zimmer used to ask AIR to throw it away (`air resolve --no-scope`), which produced shortname-keyed
+output and **hard-failed the whole resolve** on any cross-scope shortname collision. One duplicated
+short id therefore degraded the *entire* catalog to last-known-good until an operator dropped one
+side via `air.json#exclude` ([#208](https://github.com/tadasant/zimmer/issues/208)).
+
+It now resolves qualified, and `ArtifactIdentity` reduces each qualified ID to a **canonical
+token** — the value Zimmer stores in `sessions.mcp_servers` / `catalog_skills` /
+`metadata["agent_root_key"]`, validates against the catalog, shows in a picker, and hands back to
+`air prepare`:
+
+| Situation | Canonical token |
+| --- | --- |
+| One catalog contributes this short id | the bare short id (`slack`) |
+| Several do, one of them `@local` | `@local` keeps the bare short id; the others are `@owner/repo/slack` |
+| Several do, none `@local` | every one is `@owner/repo/slack`; no bare token exists |
+
+`@local` keeps the bare token because a bare name written into Zimmer's own database or index files
+most plausibly means the deployment's own artifact — the same "intra-catalog first" rule AIR applies
+to a short reference inside an artifact body. The practical consequence is the one that matters:
+**composing a new catalog that happens to share a short id cannot change the meaning of a name
+already stored here.**
+
+Three forms are accepted wherever an artifact is named — the canonical token, the fully-qualified
+`@scope/id`, and a bare short id exactly one catalog contributes — so every identifier written
+before this existed still resolves and no re-keying migration was needed.
+
+Two deliberate seams:
+
+- **What Zimmer stores is not always what AIR is handed.** AIR resolves a bare shortname only when
+  exactly one scope contributes it, so `AirPrepareService` expands every id to its qualified form
+  before building the `air prepare` argv.
+- **Reference fields inside entries are rewritten back.** A root's `default_skills`, a plugin's
+  `skills`/`mcp_servers`/`hooks`, a skill's `references` come back from AIR qualified; Zimmer
+  rewrites them to canonical tokens on the way in, which is why `default_in_roots` and every root
+  default still reads as bare ids.
+
+The qualified ID and the "another catalog contributes this short id too" flag are stamped onto each
+entry (`__zimmer_qualified_id`, `__zimmer_contested`) so they survive the `CatalogSnapshot`
+round-trip. An older snapshot carries neither, and serves exactly as it always did.
 
 ## A dangling reference is treated as a failed resolve
 

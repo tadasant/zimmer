@@ -93,7 +93,7 @@ class DeploymentInfoService
     # Get MCP configuration with secrets redacted
     # @return [Hash] mcp.json content with secrets redacted
     def mcp_config_with_redacted_secrets
-      config = ServersConfig.config.deep_dup
+      config = without_internal_keys(ServersConfig.config)
       redact_secrets_in_config(config)
       config
     end
@@ -107,7 +107,7 @@ class DeploymentInfoService
     # Get agent roots configuration
     # @return [Hash] roots.json content
     def agent_roots_config
-      AgentRootsConfig.config.deep_dup
+      without_internal_keys(AgentRootsConfig.config)
     end
 
     # Get count of configured agent roots
@@ -119,7 +119,22 @@ class DeploymentInfoService
     # Get skills configuration
     # @return [Hash] skills.json content
     def skills_config
-      SkillsConfig.config.deep_dup
+      without_internal_keys(SkillsConfig.config)
+    end
+
+    # The resolved tree as the settings page should read it: AIR's own fields,
+    # without the bookkeeping ArtifactIdentity stamps onto each entry
+    # (`__zimmer_qualified_id`, `__zimmer_contested`). Those two are Zimmer's
+    # way of carrying the catalog an artifact came from through the
+    # CatalogSnapshot round-trip, not something an operator reading
+    # `roots.json` on /settings asked to see.
+    #
+    # @param tree [Hash{String => Hash}]
+    # @return [Hash{String => Hash}]
+    def without_internal_keys(tree)
+      tree.deep_dup.transform_values do |entry|
+        entry.is_a?(Hash) ? entry.reject { |key, _| key.to_s.start_with?("__zimmer_") } : entry
+      end
     end
 
     # Get count of configured skills

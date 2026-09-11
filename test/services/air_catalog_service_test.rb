@@ -80,7 +80,33 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "invokes air resolve with --no-scope so AIR returns shortname-keyed output" do
+  # entries_from_snapshot is the one path that does NOT run canonicalize_tree,
+  # so a snapshot written by a deploy that predates zimmer#208 — bare keys, no
+  # `__zimmer_*` stamps — has to serve exactly as it always did.
+  test "a snapshot written before qualification was preserved serves unchanged" do
+    CatalogSnapshot.store!(
+      { skills: { "open-pr" => { "id" => "open-pr", "title" => "Open PR" } },
+        roots: { "general-agent" => { "name" => "general-agent" } },
+        mcp: {}, references: {}, hooks: {}, plugins: {} },
+      fetched_at: Time.current,
+      catalog_shas: {}
+    )
+    AirCatalogService.reset!
+
+    assert_equal [ "open-pr" ], AirCatalogService.entries_for(:skills).keys
+    assert_equal "open-pr", SkillsConfig.find("open-pr")&.name
+    # No qualification was recorded, so the token IS the qualified name, and
+    # nothing is contested.
+    assert_equal "open-pr", SkillsConfig.find("open-pr").qualified_name
+    refute SkillsConfig.find("open-pr").contested?
+    assert_equal "open-pr", AirCatalogService.air_reference(:skills, "open-pr")
+  end
+
+  # The flag's absence is the whole of zimmer#208: `--no-scope` asks AIR for
+  # shortname-keyed output and hard-fails the entire resolve on any cross-scope
+  # shortname collision, so one legitimately-duplicated short id took the whole
+  # catalog down to last-known-good.
+  test "invokes air resolve WITHOUT --no-scope so AIR returns qualified-ID-keyed output" do
     captured_args = nil
     without_install_bootstrap do
       AirCatalogService.stub(:air_binary, @fake_binary) do
@@ -93,8 +119,8 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
       end
     end
 
-    assert_includes captured_args, "--no-scope"
-    assert_equal %w[resolve --json --no-scope --git-protocol https], captured_args
+    refute_includes captured_args, "--no-scope"
+    assert_equal %w[resolve --json --git-protocol https], captured_args
   end
 
   test "bridges AIR_GITHUB_TOKEN from mcp_secrets into the air resolve subprocess env" do
@@ -202,7 +228,10 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     assert_equal "ghp_from_mcp_secrets", update_env["AIR_GITHUB_TOKEN"]
   end
 
-  test "passes shortname-keyed entries through unchanged (AIR 0.1.1 --no-scope owns scope stripping)" do
+  # A tree with no qualification at all is exactly what a CatalogSnapshot
+  # written before zimmer#208 holds, and what most of this suite stubs. It has
+  # to serve unchanged — canonicalization is the identity on it.
+  test "passes shortname-keyed entries through unchanged" do
     with_air_resolve(
       "roots" => {
         "general-agent" => {
