@@ -1465,6 +1465,39 @@ one. The candidate is `last_session_id`, and it is used when the session is aliv
 `resuscitate_archived` extends that to a session already in trash: `UnarchiveSessionService`
 restores its clone and its transcript, and the follow-up lands in the resumed conversation.
 
+### What the fire re-stamps onto the reused session
+
+The session is reused, but the *configuration* it runs under is the trigger's, re-applied on every
+fire. `Trigger#follow_up_session!` pushes five things onto the session before the prompt goes in:
+the four catalog-artifact columns (`mcp_servers`, `catalog_skills`, `catalog_hooks`,
+`catalog_plugins`) and the **goal**. All five take effect on the session's next process spawn, not
+on a turn already underway.
+
+**A blank value on the trigger never overwrites the session's.** A trigger that declares no skills
+is saying it has nothing to say about skills, not that the session should have none — and the same
+sentence is what makes the goal safe to sync at all. Every per-session wake is a `reuse_session`
+trigger with no goal of its own: `Sessions::ScheduleWakeUp` behind `wake_me_up_later`, and the
+session-scoped `ao_event` behind `wake_me_up_when_session_changes_state`. A rule of "blank
+overwrites" would wipe the goal of every sleeping session the instant it woke itself up. So a blank
+trigger goal **preserves** whatever the session has, which is the rule the `action_session`
+`follow_up` action already applies; clearing a goal is its own operation (the MCP `change_goal`
+action, the web **Goal** field, `PATCH /api/v1/sessions/:id`).
+
+A non-blank trigger goal that differs from the session's **overwrites** it, writes
+`[Trigger#<id>] Goal updated from the trigger fire` to the session's log, and logs the before and
+after at INFO — the same narration `#sync_session_artifact!` gives an artifact it removes.
+
+Why the goal needs re-stamping at all: it was previously stamped once, at
+`Session.create_from_agent_root!` on the spawn path, and never again — while the trigger's goal
+stayed editable in the UI. Editing a reuse trigger's goal therefore changed nothing the running
+session was ever told. And the session's copy is the one that wins, because Zimmer injects it into
+every resumption as *"The user has indicated the goal for this task is: …"* — framed as the human's
+own words, so it outranks both the trigger's prompt and the skill that prompt names. The nightly
+`Daily Backlog Groomer` ran that way for three nights in September 2026: the tech-debt pass had been
+removed from the `groom-repo-backlogs` skill, the trigger's own goal said three issues, and the
+reused session's stored goal — untouched since the session was created — still asked for five. It
+filed four to six a night.
+
 ### The archived session that never started
 
 Resuscitation only works when there is a conversation to follow up **into**. A session whose agent
