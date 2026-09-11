@@ -1151,6 +1151,10 @@ arrived" and "agent running" except a `gsub` on a `prompt_template`. Untrusted S
 interpolated into the prompt, and the agent is then trusted to act on identifiers it read out of that
 text. No validation, no trusted identifiers.
 
+The [workflow](/sessions/workflows/) contract is the start of the answer — a validated input, and
+trusted identifiers recorded where the model cannot rewrite them — but nothing fires a workflow in
+production yet, so this is still true of every trigger that runs.
+
 Tracked in [#50](https://github.com/tadasant/zimmer/issues/50).
 
 ### Quoted PR comment context is allowlisted; the diff hunk is not
@@ -3741,6 +3745,27 @@ and it is an accurate one.
 ---
 
 ## Triggers
+
+### Workflow triggers exist, and nothing fires one
+
+[Workflows](/sessions/workflows/) are Phase 0 of [#18](https://github.com/tadasant/zimmer/issues/18):
+`WorkflowRunner`, `WorkflowRegistry`, the `workflow_runs` table and the `echo` reference workflow
+are in the app and proven by tests, and have never run in production, because nothing calls them.
+No firing site — the Slack, GitHub, schedule, `ao_event` and `system_event` pollers, the Invoke
+button, `POST /api/v1/triggers/:id/invoke`, `action_trigger` — goes through `WorkflowRunner`, and no
+surface can set `triggers.workflow_id`.
+
+Two edges follow, and both fail loudly rather than quietly:
+
+- **A workflow trigger that reached a template firing site would raise, not fire.** Those sites
+  call `Trigger#interpolate_prompt` and `create_session!(prompt:)`, and both refuse a workflow
+  trigger. A one-time schedule fire that raises parks the trigger `failed`; a recurring one
+  advances its schedule and raises again at its next slot. Nothing can create such a row
+  today; Phase 1's `Trigger#fire!` routes every site through `WorkflowRunner`.
+- **If the `workflow_runs` insert fails, the session exists and is never enqueued.** The run is
+  written when the session row commits and before its start job is enqueued (see
+  `Trigger#create_new_session!`), so a failed write leaves a session that never starts rather than
+  one that starts without its trusted identifiers.
 
 ### The spawn lock is a Postgres advisory lock, so two cases still slip past it
 
