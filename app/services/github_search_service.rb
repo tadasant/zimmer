@@ -116,7 +116,7 @@ class GithubSearchService
   #        Retrying it does not make a genuinely dead credential quieter, only ~4s later:
   #        the exhausted-retry raise pages on that tick and every tick after. And a
   #        revoked token does not usually arrive here at all — `configured?` fails, the
-  #        tick skips, no heartbeat is stamped, and GithubTriggerHealthCheckJob pages on
+  #        tick skips, no heartbeat is stamped, and TriggerPollerLivenessCheckJob pages on
   #        the stale heartbeat, which is the backstop it documents itself as being.
   #   408  A request timeout GitHub reports itself, rather than one we imposed.
   #
@@ -263,7 +263,7 @@ class GithubSearchService
     # error on a configured host still raises out of search_issues and alerts.
     #
     # Answers ONLY "did GitHub accept the credential", collapsing every way of failing
-    # into a bare false — which is what GithubTriggerHealthCheckJob's no-baseline guard
+    # into a bare false — which is what TriggerPollerLivenessCheckJob's no-baseline guard
     # needs, since it must decline to seed unless the host has demonstrably polled.
     # Callers that report to a human want .auth_preflight instead, which does the actual
     # work: "no credential", "a credential GitHub refused" and "we could not ask" are the
@@ -271,7 +271,7 @@ class GithubSearchService
     def configured?
       preflight = auth_preflight
 
-      # The one breadcrumb this lossy shape owes its caller. GithubTriggerHealthCheckJob
+      # The one breadcrumb this lossy shape owes its caller. TriggerPollerLivenessCheckJob
       # asks this on its no-baseline path and then simply returns, so without a line here
       # a preflight that could not reach GitHub during exactly that window would leave no
       # record at all — the same silence this file's four states exist to break. Only
@@ -367,7 +367,12 @@ class GithubSearchService
     # reason it is the whole search that re-runs rather than the offending page. What
     # changes is only WHEN the caller hears about a failure, never WHETHER: three failed
     # attempts raise SearchError exactly as one used to.
-    def search_issues(query, sort: nil, order: nil)
+    # +limit+ caps how many items come back, and — the reason it exists — how much is
+    # asked for: a probe that only wants the newest item under `sort: "created", order:
+    # "desc"` asks for one page of that size and stops, rather than paginating the whole
+    # match set and taking its head. Nil means everything, up to MAX_PAGES.
+    def search_issues(query, sort: nil, order: nil, limit: nil)
+      per_page = limit.nil? ? PER_PAGE : [ limit, PER_PAGE ].min
       incomplete_attempt = 0
       transient_attempt = 0
       # Whether any attempt in this search failed OUTRIGHT, as opposed to coming back
@@ -382,7 +387,7 @@ class GithubSearchService
         page = 1
 
         loop do
-          payload = request(query, page: page, sort: sort, order: order)
+          payload = request(query, page: page, sort: sort, order: order, per_page: per_page)
 
           # A timed-out search returns whatever it managed to index. Treating that as
           # the complete picture would shrink the seen-set, so refuse the whole read.
@@ -395,6 +400,7 @@ class GithubSearchService
 
           total = payload["total_count"].to_i
           break if page_items.empty? || items.length >= total
+          break if limit && items.length >= limit
 
           page += 1
           if page > MAX_PAGES
@@ -403,7 +409,7 @@ class GithubSearchService
           end
         end
 
-        items
+        limit ? items.first(limit) : items
       rescue IncompleteResultsError => e
         delay = INCOMPLETE_RESULT_RETRY_DELAYS[incomplete_attempt]
 
@@ -545,12 +551,12 @@ class GithubSearchService
       "(#{terms.join(' OR ')})"
     end
 
-    def request(query, page:, sort:, order:)
+    def request(query, page:, sort:, order:, per_page: PER_PAGE)
       command = [
         "gh", "api", "-X", "GET", "search/issues",
         "--raw-field", "q=#{query}",
         "--field", "advanced_search=true",
-        "--field", "per_page=#{PER_PAGE}",
+        "--field", "per_page=#{per_page}",
         "--field", "page=#{page}"
       ]
       command.push("--field", "sort=#{sort}") if sort.present?

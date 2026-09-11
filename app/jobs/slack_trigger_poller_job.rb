@@ -171,12 +171,27 @@ class SlackTriggerPollerJob < ApplicationJob
   def perform
     return unless SlackService.configured?
 
-    TriggerCondition.slack
+    conditions = TriggerCondition.slack
       .joins(:trigger)
       .where(triggers: { status: "enabled" })
       .includes(:trigger)
-      .find_each do |condition|
+
+    # A tick that correctly found nothing to do is still liveness, and stamping it keeps
+    # the heartbeat fresh through a period with no Slack triggers. Otherwise the key would
+    # rot while there was legitimately nothing to poll, and enabling a trigger would flip
+    # the liveness check on against that stale value and page for a poller that is working
+    # perfectly. This can never mask a real stall: the check reads the heartbeat only when
+    # there IS something to poll. (GithubTriggerPollerJob does the same.)
+    unless conditions.exists?
+      PollerHeartbeat.stamp(:slack)
+      return
+    end
+
+    any_polled = false
+
+    conditions.find_each do |condition|
       process_condition(condition)
+      any_polled = true
     rescue SlackService::TransientError
       # Slack itself is throttling us or unreachable. That is not a defect in
       # THIS condition, and every remaining condition is about to hit the same
@@ -197,7 +212,34 @@ class SlackTriggerPollerJob < ApplicationJob
       )
     end
 
-    defer_poll(@transient_error) if @transient_error
+    if @transient_error
+      defer_poll(@transient_error)
+    elsif any_polled
+      # The liveness heartbeat, and its placement is the load-bearing part: it says "this
+      # sweep GENUINELY polled Slack", not "this sweep ran". Two things have to be true.
+      #
+      # At least one condition ran to completion — a sweep in which every condition
+      # raised (a bug, a bad cursor) polled nobody, exactly as GithubTriggerPollerJob's
+      # any_polled bar reads it.
+      #
+      # AND no unit of the sweep recorded a transient Slack failure. That second half is
+      # what the per-condition rescue above cannot see, and it is what makes the signal
+      # honest: the per-unit rescues (#note_unit_failure) and #fetch_recent_history
+      # swallow a 429 or a network failure so the sweep can finish its bookkeeping, which
+      # means a sweep in which Slack refused EVERY fetch still returns from every condition
+      # normally. #522 is that sweep — "the poller kept running and quietly processed
+      # nothing" — and a stamp keyed on the conditions completing would be green through
+      # it. @transient_error is the poller's own record that Slack threw part of this sweep
+      # away, so a sweep that set it is deferred instead and stamps nothing; the deferred
+      # re-run stamps if it comes back clean. Under a sustained refusal no sweep is ever
+      # clean, the deferral chain pages on its own, and once it has spent its budget the
+      # stale heartbeat is what TriggerPollerLivenessCheckJob pages on — the backstop for
+      # the chain not running at all.
+      #
+      # Deliberately below the loop rather than per condition, so it is written once per
+      # sweep and only once the whole sweep's verdict is in.
+      PollerHeartbeat.stamp(:slack)
+    end
   rescue SlackService::TransientError => e
     defer_poll(e)
   end

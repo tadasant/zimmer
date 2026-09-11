@@ -811,14 +811,15 @@ is most often imagined to cover. Running the alert job on `ubuntu-latest` protec
 *degraded* pool (jobs run, jobs fail, the alert goes out), not an absent one. Noticing that CI has
 gone quiet is still a human job.
 
-### The GitHub trigger-poll liveness alarm depends on Redis, and fails quiet
+### The trigger-poll liveness alarm depends on Redis, and fails quiet
 
-`GithubTriggerHealthCheckJob` decides whether polling has stalled by reading a heartbeat the poller
-writes to `Rails.cache` (Redis). When the heartbeat is **missing** — a cache flush, a Redis outage,
-or a gap longer than `HEARTBEAT_TTL` (7 days) — the check cannot date the absence, so it seeds a
-fresh baseline and stays quiet rather than paging on something it can't distinguish from a first
-boot. A genuine stall is still caught one cycle later (the seed itself goes stale and the next check
-pages), but a Redis outage silences the alarm for as long as it lasts.
+`TriggerPollerLivenessCheckJob` decides whether the Slack or GitHub poller has stalled by reading a
+heartbeat each poller writes to `Rails.cache` (Redis) through `PollerHeartbeat`. When the heartbeat
+is **missing** — a cache flush, a Redis outage, or a gap longer than `PollerHeartbeat::TTL` (7 days)
+— the check cannot date the absence, so it seeds a fresh baseline and stays quiet rather than paging
+on something it can't distinguish from a first boot. A genuine stall is still caught one cycle later
+(the seed itself goes stale and the next check pages), but a Redis outage silences the alarm for as
+long as it lasts.
 
 This is the conservative trade: the alternative — paging on any missing key — turns every deploy and
 cache flush into a false page, and a liveness alarm nobody trusts is worse than one with a known
@@ -4286,6 +4287,19 @@ trigger never re-fires it); the GitHub conditions have no equivalent, because th
 GitHub rather than through a session. Until they do, don't point a `github_issue` trigger at a repo
 whose triaging agent files issues.
 
+### The GitHub freshness check cannot see a query that matches nothing
+
+`GithubTriggerHealthCheckJob` asks GitHub the poller's own question once an hour and pages when the
+answer holds something the poller has been shown for hours and never recorded — a labelled item
+missing from a `github_label` condition's seen-set, an issue newer than a `github_issue` condition's
+cursor. That catches a condition the poller runs against without landing state, which is the case
+the shared liveness heartbeat masks. It cannot catch a condition whose search returns **nothing**: a
+label renamed in the repo, a repo the token lost access to (GitHub's search silently omits it rather
+than erroring), a scope edited into emptiness. Those return nothing to the poller and nothing to the
+probe alike, and a condition with no matching items is indistinguishable from a quiet one. Confirming
+that each watched label still exists in each watched repo would need a different request shape
+(`gh api repos/{repo}/labels/{label}`), and is not done.
+
 ### A `github_issue` trigger misses an issue indexed more than 30 minutes late
 
 GitHub's search index is eventually consistent and unordered. `GithubTriggerPollerJob` re-queries a
@@ -4335,7 +4349,7 @@ The tick is skipped the same way when the preflight *cannot reach GitHub* — bu
 rather than blaming the credential, and a `401` says "rotate this" rather than "provision one". The
 three are distinguishable from a single log line; see [Triggers](/sessions/triggers/) for the states.
 Nothing pages for any of them on the tick itself: the floor is still
-`GithubTriggerHealthCheckJob`'s stale heartbeat, which is up to 15 minutes.
+`TriggerPollerLivenessCheckJob`'s stale heartbeat, which is up to 15 minutes.
 
 ### A timed-out GitHub search index skips the tick quietly, and the escalation needs Redis
 
