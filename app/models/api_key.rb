@@ -19,7 +19,7 @@ require "digest"
 # to `/api/v1/sessions` or `/mcp` is refused the same way a revoked key is.
 #
 # Every read of that column goes through `effective_grant`, which answers `api`
-# when the column is not there at all. Code that hard-requires a column its own
+# when the table does not have the column at all. Code that hard-requires a column its own
 # deploy adds is code that breaks whenever the migration has not run yet, and on
 # 2026-09-11 that took down every authenticated request in production: a
 # duplicate migration version stopped `db:migrate` from applying anything, the
@@ -213,7 +213,8 @@ class ApiKey < ApplicationRecord
   def quick_router? = effective_grant == QUICK_ROUTER_GRANT
 
   # What this key opens — `api` on a database whose `grant` column has not been
-  # added yet. The only read of that attribute anywhere; see the class comment.
+  # added yet. Every read of the attribute goes through here, the dashboard's
+  # included; see the class comment.
   def effective_grant
     grant_column? ? self[:grant] : API_GRANT
   end
@@ -263,7 +264,13 @@ class ApiKey < ApplicationRecord
 
   private
 
-  def grant_column? = has_attribute?(:grant)
+  # Whether the table has the column at all — the class-level shape, which is
+  # what `mint!` asks too. Deliberately not `has_attribute?`: that is also false
+  # for a row loaded through a projection that left `grant` out, and answering
+  # `api` for a narrow key someone selected without that column would widen it
+  # to the whole API. Nothing selects partially from this table today, and this
+  # keeps that from becoming a way in.
+  def grant_column? = self.class.column_names.include?("grant")
 
   # Case-insensitive, like the unique index on `lower(name)`.
   def name_not_reserved
