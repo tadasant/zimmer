@@ -2,27 +2,37 @@
 
 # API controller for MCP server fallback elicitation endpoints.
 #
-# Provides three endpoints:
-#   POST  /api/v1/elicitations         - Create a new elicitation request (MCP, unauthenticated)
-#   GET   /api/v1/elicitations/:id     - Poll for elicitation status (MCP, unauthenticated)
-#   PATCH /api/v1/elicitations/:id/respond - Accept/decline a pending elicitation (authenticated)
+# The pulsemcp fallback-elicitation protocol, as an MCP server speaks it:
+#   POST  /api/v1/elicitations/session/:token      - Create an elicitation on the token's session
+#   GET   /api/v1/elicitations/session/:token/:id  - Poll one of that session's elicitations
 #
-# create/show implement the pulsemcp fallback elicitation protocol: MCP servers
-# POST approval requests here (unauthenticated), then poll for the user's
-# response. respond is the programmatic counterpart to the human-only web path
+# The API-key surface:
+#   POST  /api/v1/elicitations                     - Create an elicitation on _meta's session-id
+#   GET   /api/v1/elicitations/:id                 - Poll any elicitation
+#   PATCH /api/v1/elicitations/:id/respond         - Accept/decline/cancel a pending elicitation
+#
+# An MCP server has no API key, so it authenticates with the token in the path of
+# the URL ElicitationEndpoint.spawn_env gave it (ElicitationEndpoint explains why
+# the path). The token names one session, so on the token routes the session comes
+# from the token, a `_meta` session-id naming a different session is refused, and
+# a poll finds only that session's elicitations.
+#
+# respond is the programmatic counterpart to the human-only web path
 # (ElicitationsController#respond_to_elicitation); it lets an authenticated API
-# consumer (script, agent, or tool) resolve a pending elicitation, so it goes
-# through standard API-key auth.
+# consumer (script, agent, or tool) resolve a pending elicitation. A token does not
+# reach it: whoever raised a prompt must not be the one who answers it.
 #
 # On show, :id is the elicitation's request_id (the MCP-facing identifier). On
 # respond it is either the request_id or the DB primary key, so the identifier a
 # consumer already holds — from a poll response or from the web UI's own
 # /elicitations/:id/respond route — works on both surfaces.
 class Api::V1::ElicitationsController < Api::BaseController
-  # create/show are called by MCP servers without an API key. respond is a
-  # programmatic action and must be authenticated, so it is NOT skipped here.
+  # create/show authenticate by the path's token when there is one and by the API
+  # key otherwise. respond is API-key only, so it is NOT skipped here.
   skip_before_action :authenticate_api_key, only: [ :create, :show ]
+  before_action :authenticate_elicitation_caller, only: [ :create, :show ]
 
+  # POST /api/v1/elicitations/session/:token
   # POST /api/v1/elicitations
   def create
     meta = elicitation_meta
@@ -38,23 +48,8 @@ class Api::V1::ElicitationsController < Api::BaseController
       return
     end
 
-    session_identifier = meta["com.pulsemcp/session-id"]
-    session = find_session_from_meta(meta)
-
-    unless session
-      # A blank session-id means the MCP server process was spawned without
-      # ELICITATION_SESSION_ID (so @pulsemcp/mcp-elicitation omitted the tag). This
-      # is a spawn-env defect, not a stale/expired session — warn so it surfaces in
-      # obs (INFO isn't shipped) instead of silently 404ing. A present-but-unknown id
-      # is a genuine not-found; log at info to keep it out of the alert stream.
-      if session_identifier.blank?
-        Rails.logger.warn "[Api::V1::ElicitationsController] Elicitation POST arrived with blank session-id (request_id: #{request_id}, tool: #{meta['com.pulsemcp/tool-name']}) — the MCP server was spawned without ELICITATION_SESSION_ID"
-      else
-        Rails.logger.info "[Api::V1::ElicitationsController] Elicitation POST for unknown session-id: #{session_identifier} (request_id: #{request_id})"
-      end
-      render_api_error("Session not found", "Could not find session for session-id: #{session_identifier}", status: :not_found)
-      return
-    end
+    session = session_for_create(meta, request_id)
+    return unless session
 
     expires_at = parse_expiration(meta)
 
@@ -77,20 +72,19 @@ class Api::V1::ElicitationsController < Api::BaseController
     # Broadcast elicitation banner to session detail page
     broadcast_elicitation_created(session, elicitation)
 
-    poll_url = api_v1_elicitation_url(elicitation.request_id)
-
     render json: {
       action: "pending",
       _meta: {
         "com.pulsemcp/request-id" => request_id,
-        "com.pulsemcp/poll-url" => poll_url
+        "com.pulsemcp/poll-url" => poll_url_for(elicitation)
       }
     }, status: :created
   end
 
+  # GET /api/v1/elicitations/session/:token/:id
   # GET /api/v1/elicitations/:id
   def show
-    elicitation = Elicitation.find_by!(request_id: params[:id])
+    elicitation = elicitations_visible_to_caller.find_by!(request_id: params[:id])
 
     # Auto-expire if past expiration
     elicitation.expire_if_needed!
@@ -130,15 +124,105 @@ class Api::V1::ElicitationsController < Api::BaseController
 
   private
 
+  # Who may create or poll: the session a path token names, or an API-key holder.
+  #
+  # The token routes speak only tokens. One that does not verify is a 401 even with
+  # a valid API key alongside it, so a key never makes a forged URL look sound.
+  def authenticate_elicitation_caller
+    token = request.path_parameters[:token]
+
+    if token.nil?
+      authenticate_api_key_or_warn
+      return
+    end
+
+    @token_session = ElicitationEndpoint.session_for_token(token)
+    return if @token_session
+
+    if action_name == "create"
+      Rails.logger.warn "[Api::V1::ElicitationsController] Elicitation POST with a session token that does not verify " \
+        "(request_id: #{log_value(elicitation_meta['com.pulsemcp/request-id'])}) — a forged URL, or one minted under a different secret_key_base"
+    end
+    render_api_error("Unauthorized", "This elicitation URL does not belong to any session", status: :unauthorized)
+  end
+
+  # The bare routes take an API key. A keyless POST here is almost always an MCP
+  # server that was never handed its session's URL — spawned without a session, or
+  # pointed at the bare URL by a clone `.env` — so it warns, where obs sees it (INFO
+  # isn't shipped), rather than failing as quietly as a denial would.
+  def authenticate_api_key_or_warn
+    authenticate_api_key
+    return unless performed? && action_name == "create"
+
+    meta = elicitation_meta
+    Rails.logger.warn "[Api::V1::ElicitationsController] Elicitation POST without a session token or an API key " \
+      "(request_id: #{log_value(meta['com.pulsemcp/request-id'])}, session-id: #{log_value(meta['com.pulsemcp/session-id'])}, " \
+      "tool: #{log_value(meta['com.pulsemcp/tool-name'])}) — the MCP server was not given its session's ELICITATION_REQUEST_URL"
+  end
+
+  # A caller's value as it goes into a WARN line, which obs ships. Quoted, so a
+  # newline in it cannot forge a second log line, and bounded.
+  def log_value(value)
+    value.to_s.truncate(80).inspect
+  end
+
+  # The session an elicitation is raised on, or nil after rendering the refusal.
+  #
+  # On a token route it is the token's session. `_meta` may still carry a
+  # session-id — the client sends ELICITATION_SESSION_ID when it has one — and one
+  # naming a different session is refused rather than overruled: a caller whose URL
+  # and tag disagree is misconfigured or probing, and neither should land a prompt
+  # anywhere. A blank one is fine, because the token already said who is asking.
+  #
+  # On the API-key route, `_meta` is the only place the session can come from.
+  # `Session.locate` does not retry a numeric identifier as a slug: digits mean an
+  # id on every surface, and the only slug such a retry could find is an all-digit
+  # one, which the model refuses to write.
+  def session_for_create(meta, request_id)
+    claimed = meta["com.pulsemcp/session-id"]
+
+    if @token_session
+      return @token_session if claimed.blank? || Session.locate(claimed) == @token_session
+
+      Rails.logger.warn "[Api::V1::ElicitationsController] Elicitation POST whose _meta session-id #{log_value(claimed)} " \
+        "is not its token's session #{@token_session.id} (request_id: #{log_value(request_id)})"
+      render_api_error("Forbidden", "_meta[com.pulsemcp/session-id] #{claimed} is not the session this elicitation URL belongs to", status: :forbidden)
+      return nil
+    end
+
+    session = Session.locate(claimed)
+    return session if session
+
+    render_api_error("Session not found", "Could not find session for session-id: #{claimed}", status: :not_found)
+    nil
+  end
+
+  # Where the caller polls. An MCP server goes back to its token route, since it
+  # holds no key for the bare one.
+  def poll_url_for(elicitation)
+    if @token_session
+      api_v1_session_elicitation_url(request.path_parameters[:token], elicitation.request_id)
+    else
+      api_v1_elicitation_url(elicitation.request_id)
+    end
+  end
+
+  # A token sees its own session's elicitations; an API key sees them all. Another
+  # session's request_id answers 404, the same as one that does not exist, so a
+  # token cannot tell the two apart.
+  def elicitations_visible_to_caller
+    @token_session ? @token_session.elicitations : Elicitation
+  end
+
   # `respond` resolves the same elicitation the web path resolves, so it takes
   # the same identifiers: the `request_id` (what `show` and the poll response
   # speak) or the numeric primary key (what `PATCH /elicitations/:id/respond`
   # in the UI speaks). Without this, an API consumer holding the id it read off
   # the web page could not act on it.
   #
-  # Only `respond` is widened. `show` stays request_id-only on purpose — it is
-  # unauthenticated for the MCP poll protocol, and accepting a primary key there
-  # would turn it into a sequential-id enumeration of every elicitation.
+  # Only `respond` is widened. `show` stays request_id-only on purpose — the poll
+  # protocol speaks nothing else, and accepting a primary key there would turn it
+  # into a sequential-id enumeration of whatever the caller can see.
   def find_elicitation_for_respond!
     identifier = params[:id].to_s
 
@@ -181,15 +265,6 @@ class Api::V1::ElicitationsController < Api::BaseController
     params[:_meta]&.to_unsafe_h || {}
   end
 
-  # Find the Zimmer session from the meta session-id, by id or slug.
-  #
-  # `Session.locate` does not retry a numeric identifier as a slug: digits mean
-  # an id on every surface, and the only slug such a retry could find is an
-  # all-digit one, which the model refuses to write.
-  def find_session_from_meta(meta)
-    Session.locate(meta["com.pulsemcp/session-id"])
-  end
-
   # The deadline for this request.
   #
   # An MCP server that named its own `com.pulsemcp/expires-at` keeps it — it is
@@ -198,11 +273,11 @@ class Api::V1::ElicitationsController < Api::BaseController
   # set it, otherwise the built-in Elicitation::DEFAULT_EXPIRATION. An
   # unparseable timestamp is treated as if none was sent.
   #
-  # The server's value is held to the same MIN/MAX bounds the operator's is. This
-  # endpoint is unauthenticated by protocol necessity, so a deadline already in
-  # the past would mint an elicitation that is born expired — one that resolves
-  # straight into the "this approval request expired" banner on a session the
-  # caller does not own — and one years out would pin a session in needs_input.
+  # The server's value is held to the same MIN/MAX bounds the operator's is. It
+  # comes from a process Zimmer launched but did not write, so a deadline already
+  # in the past would mint an elicitation that is born expired — one that resolves
+  # straight into the "this approval request expired" banner — and one years out
+  # would pin a session in needs_input.
   def parse_expiration(meta)
     requested = parse_requested_expiration(meta)
     return Elicitation.default_expiration.from_now if requested.nil?

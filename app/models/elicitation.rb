@@ -46,8 +46,8 @@ class Elicitation < ApplicationRecord
   # — neither a deploy nor an MCP server's request may fail over a knob.
   #
   # They bound the MCP server's own `expires-at` too, not just the operator's
-  # setting: that value arrives on an unauthenticated endpoint, so "the server
-  # knows its own call best" holds inside a range and not beyond it.
+  # setting: that value comes from a process Zimmer launched but did not write,
+  # so "the server knows its own call best" holds inside a range and not beyond it.
   MIN_EXPIRATION = 1.minute
   MAX_EXPIRATION = 7.days
 
@@ -171,7 +171,7 @@ class Elicitation < ApplicationRecord
   end
 
   # Longest request description Zimmer will copy onto a session. `message` comes
-  # from an unauthenticated endpoint and has no length limit of its own; the copy
+  # from an MCP server and has no length limit of its own; the copy
   # lands in `sessions.metadata`, a column read on every render of that session's
   # page, so it is bounded here rather than at the point it is displayed.
   SUMMARY_LIMIT = 300

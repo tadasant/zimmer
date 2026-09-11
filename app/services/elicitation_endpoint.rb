@@ -31,8 +31,30 @@ require "net/http"
 # reverting to silent redaction, so ElicitationEndpointHealthCheckJob checks
 # reachability on a cron and OrchestratorSystemPromptBuilder tells the agent when
 # the answer is "no" — before the agent ever sees a redacted value.
+#
+# The address is also the credential. An MCP server has no Zimmer API key, and
+# @pulsemcp/mcp-elicitation sends no auth header — only `Content-Type` — and
+# appends `/<request-id>` to the poll URL it was given, which would swallow a
+# query string. So the one thing Zimmer controls that reaches both the POST and
+# every poll intact is the URL path, and that is where the session's token goes:
+# `/api/v1/elicitations/session/<token>`. The token names one session, and the
+# controller takes the session from it rather than from the caller's `_meta`.
 class ElicitationEndpoint
   PATH = "/api/v1/elicitations"
+
+  # The path segment between PATH and a session's token.
+  SESSION_SEGMENT = "session"
+
+  # A token is `<session id>-<HMAC-SHA256 of it, base64url, unpadded>`. The id is
+  # in the clear so a request can be verified without a lookup table: recompute
+  # the MAC for that id and compare. No leading zero, so every session has exactly
+  # one token.
+  TOKEN_FORMAT = /\A([1-9]\d*)-[A-Za-z0-9_-]{43}\z/
+
+  # Derives the token's HMAC key from secret_key_base. The salt names this purpose,
+  # so the key is not the one signing cookies or anything else, and it has no
+  # relation to API_KEYS: holding a session's token grants nothing an API key does.
+  TOKEN_KEY_SALT = "ElicitationEndpoint session token"
 
   # The variables an MCP server reads the endpoint from. Named here because two
   # injection paths (the agent process's env, each stdio server's own env table)
@@ -51,23 +73,83 @@ class ElicitationEndpoint
   # status back to "unknown" (which suppresses the warning) mid-incident.
   CACHE_TTL = 30.minutes
 
-  # A request_id no elicitation will ever have. The probe wants a routable 404 —
-  # proof the request reached Rails — not a side effect, so it reads rather than
-  # creates.
+  # Stands in for both the token and the request_id on the probe's poll. It can
+  # never verify as a token, so the probe gets a routable 401 — proof the request
+  # reached Rails — from the same route an MCP server polls, and no side effect.
   PROBE_REQUEST_ID = "zimmer-reachability-probe"
   PROBE_TIMEOUT_SECONDS = 5
 
   Result = Data.define(:reachable, :detail, :url)
 
   class << self
-    # The collection URL MCP servers POST an approval request to.
+    # The bare collection URL. It takes an API key, which an MCP server does not
+    # have, so a server is handed .session_url instead.
     def url
       "#{AppUrl.base_url.to_s.chomp('/')}#{PATH}"
     end
 
+    # Where one session's MCP servers POST an approval request, and what they
+    # append `/<request-id>` to when they poll.
+    #
+    # @param session_id [Integer, String]
+    # @return [String]
+    def session_url(session_id)
+      "#{url}/#{SESSION_SEGMENT}/#{token_for(session_id)}"
+    end
+
+    # The session's token. Deterministic, so the two injection paths — which run
+    # at different moments and never talk to each other — arrive at the same one
+    # without it being stored anywhere, and a respawned agent gets the same URL
+    # its session always had.
+    #
+    # @param session_id [Integer, String] a session's numeric id
+    # @return [String]
+    # @raise [ArgumentError] for anything that is not a session id
+    def token_for(session_id)
+      id = session_id.to_s
+      raise ArgumentError, "not a session id: #{session_id.inspect}" unless id.match?(/\A[1-9]\d*\z/)
+
+      mac = OpenSSL::HMAC.digest("SHA256", token_key, "session:#{id}")
+      "#{id}-#{Base64.urlsafe_encode64(mac, padding: false)}"
+    end
+
+    # The session a token was minted for, or nil when this Zimmer did not mint it
+    # or its session no longer exists. The MAC is compared in constant time.
+    #
+    # @param token [String, nil]
+    # @return [Session, nil]
+    def session_for_token(token)
+      token = token.to_s
+      match = TOKEN_FORMAT.match(token)
+      return nil unless match
+      return nil unless ActiveSupport::SecurityUtils.secure_compare(token_for(match[1]), token)
+
+      Session.find_by(id: match[1].to_i)
+    end
+
+    # A URL as it may appear in a log line: a token keeps its session id and loses
+    # its MAC, because the MAC is the credential.
+    #
+    # @param url [String, nil]
+    # @return [String]
+    def loggable_url(url)
+      url.to_s.sub(%r{(/#{SESSION_SEGMENT}/\d+-)[A-Za-z0-9_-]+}, '\1…')
+    end
+
+    def token_key
+      Rails.application.key_generator.generate_key(TOKEN_KEY_SALT, 32)
+    end
+    private :token_key
+
     # What an MCP server needs to reach the approval endpoint, and to choose it.
-    # Session-less callers get the URL but no session tag; the API logs a warning
-    # when a request arrives without one.
+    #
+    # With a session, both URLs are .session_url: the token in the path is the
+    # server's only credential. Without one there is no session to raise a prompt
+    # on and no token to mint, so the URLs are the bare collection URL, which
+    # answers a keyless POST with a 401 and logs a warning naming the cause.
+    # Naming no URL at all would be quieter and worse: the client would drop to
+    # native elicitation, which headless Claude Code declines on its own — the
+    # silent redaction this class exists to prevent.
     #
     # Two callers, because there are two ways a server gets an environment:
     # CliSpawnEnv puts these on the agent CLI process (which Claude Code's stdio
@@ -77,13 +159,13 @@ class ElicitationEndpoint
     # rebuilds a server's environment from HOME/LANG/PATH/PWD/SHELL plus the
     # entry's own tables, so nothing on the CLI process reaches it).
     #
-    # ELICITATION_POLL_URL is the same collection URL, and naming it is not
+    # ELICITATION_POLL_URL is the same URL as the request URL, and naming it is not
     # redundant. The create response does carry `_meta["com.pulsemcp/poll-url"]`,
     # but @pulsemcp/mcp-elicitation decides whether the HTTP fallback exists at all
     # before it has ever made that call — `Boolean(requestUrl && pollUrl)`. With the
     # poll URL unset the whole fallback tier is invisible to the client, so a request
     # URL on its own buys nothing. The client appends `/<request-id>` to it, which is
-    # exactly the `GET /api/v1/elicitations/:id` route.
+    # exactly the `GET /api/v1/elicitations/session/:token/:id` route.
     #
     # ELICITATION_PREFER_HTTP_FALLBACK is what puts the human back in the loop. The
     # client's default tier order tries native MCP elicitation first and only falls
@@ -112,9 +194,10 @@ class ElicitationEndpoint
     # @param session_id [Integer, String, nil]
     # @return [Hash{String=>String}]
     def spawn_env(session_id: nil)
+      address = session_id.present? ? session_url(session_id) : url
       env = {
-        "ELICITATION_REQUEST_URL" => url,
-        "ELICITATION_POLL_URL" => url,
+        "ELICITATION_REQUEST_URL" => address,
+        "ELICITATION_POLL_URL" => address,
         "ELICITATION_PREFER_HTTP_FALLBACK" => "true",
         "ELICITATION_TTL_MS" => (Elicitation.default_expiration.to_i * 1000).to_s
       }
@@ -124,13 +207,14 @@ class ElicitationEndpoint
 
     # Can this host reach the endpoint it just told MCP servers to use?
     #
-    # Any HTTP response counts as reachable — a 404 for the probe id is the
-    # expected answer and proves the request was routed to Rails. Only a transport
-    # failure (DNS, refused connection, TLS, timeout) is a broken gate.
+    # It polls the token route, the one MCP servers poll, with a token that cannot
+    # verify, so a 401 is the expected answer and proves the request was routed
+    # to Rails. Any HTTP response counts as reachable. Only a transport failure
+    # (DNS, refused connection, TLS, timeout) is a broken gate.
     #
     # @return [Result]
     def probe
-      probe_url = "#{url}/#{PROBE_REQUEST_ID}"
+      probe_url = "#{url}/#{SESSION_SEGMENT}/#{PROBE_REQUEST_ID}/#{PROBE_REQUEST_ID}"
       uri = URI.parse(probe_url)
       response = Net::HTTP.start(
         uri.host,
