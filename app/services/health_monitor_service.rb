@@ -347,6 +347,7 @@ class HealthMonitorService
     egress = egress_health
     auth = auth_health
     post_deploy = post_deploy_task_health
+    cron = cron_health
 
     {
       process_health: process,
@@ -358,11 +359,12 @@ class HealthMonitorService
       sigterm_retry_health: sigterm_retry_health,
       api_error_retry_health: api_error_retry_health,
       post_deploy_task_health: post_deploy,
+      cron_health: cron,
       # Absent from the status list below on purpose — see #log_retention_health
       # for why a draining backlog must not turn the whole report yellow.
       log_retention_health: log_retention_health,
       overall_status: calculate_overall_status(
-        [ process, session, system, egress, auth, post_deploy ].map { |section| section[:status] }
+        [ process, session, system, egress, auth, post_deploy, cron ].map { |section| section[:status] }
       ),
       generated_at: Time.current
     }
@@ -497,6 +499,29 @@ class HealthMonitorService
       status: HealthStatus.new(status: :warning, message: "Post-deploy task status could not be read: #{e.message}"),
       total: 0, pending: 0, running: 0, succeeded: 0, failed: 0, blocked: 0,
       awaiting_first_tick: 0, tasks: []
+    }
+  end
+
+  # Whether every scheduled cron key is still producing jobs on its own cadence. See
+  # CronFreshness for the rule, and for which readings SystemHealthMonitorJob pages on.
+  #
+  # Here so the answer is readable before, and without, a page: /health,
+  # `GET /api/v1/health`, `get_system_health` and `/health/export_diagnostics` all
+  # carry it. These are served by the web process, so unlike the page they still
+  # answer when the worker's cron manager is the thing that stopped — the one shape
+  # a monitor enqueued by that same cron manager cannot report on itself.
+  #
+  # Rescued, like the other secondary sections, so a failed read costs this card and
+  # not the report. SystemHealthMonitorJob calls CronFreshness directly instead, so
+  # the same failure there fails the job loudly rather than reading as "nothing stale".
+  def cron_health
+    CronFreshness.new.report
+  rescue StandardError => e
+    @logger.warn("Cron freshness could not be read", error: e.message)
+    {
+      status: HealthStatus.new(status: :warning, message: "Cron freshness could not be read: #{e.message}"),
+      cron_running_since: nil, checked_at: Time.current,
+      counts: CronFreshness::STATE_ORDER.index_with(0), keys: []
     }
   end
 

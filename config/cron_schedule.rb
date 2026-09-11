@@ -46,7 +46,7 @@ module CronSchedule
 
   # Every key an entry may carry. Anything else is a typo, or a GoodJob option `for`
   # would drop on the floor.
-  ENTRY_KEYS = (GOOD_JOB_KEYS + %i[environments cron_overrides]).freeze
+  ENTRY_KEYS = (GOOD_JOB_KEYS + %i[environments cron_overrides freshness_exempt]).freeze
 
   # Every entry:
   #
@@ -62,6 +62,13 @@ module CronSchedule
   #                    tadasant/zimmer#457 asked for, so that an environment-specific
   #                    cadence is a written difference rather than a reason to fork the
   #                    table again.
+  #   freshness_exempt: optional, a sentence saying why this key may legitimately go
+  #                    far longer than its own cadence without enqueuing a job.
+  #                    CronFreshness judges every other key and SystemHealthMonitorJob
+  #                    pages when one stops producing jobs; an exempt key is listed on
+  #                    /health as exempt, with this reason, and never judged. No entry
+  #                    needs one today. The reason is required, so an exemption is an
+  #                    argument a reviewer can disagree with rather than a bare flag.
   #
   # Development runs a deliberate subset: nothing that spends money or quota, and nothing
   # that reaps the deployed droplet's disk. Paging is not what decides it --
@@ -396,7 +403,7 @@ module CronSchedule
     system_health_monitor: {
       cron: "*/2 * * * *", # Every 2 minutes
       class: "SystemHealthMonitorJob",
-      description: "Alert when the GoodJob queue backlog is critical (sustained across checks)",
+      description: "Alert when the GoodJob queue backlog is critical, or a cron key has stopped producing jobs (sustained across checks)",
       environments: %i[production staging development]
     },
     # Development is deliberate: a real per-minute outbound DNS probe on a developer's
@@ -453,6 +460,14 @@ module CronSchedule
     end
   end
 
+  # `{ key => reason }` for every entry CronFreshness must not judge. Keyed by the
+  # string GoodJob gives a cron key, which is what the freshness readings carry.
+  def freshness_exemptions(entries = ENTRIES)
+    entries.each_with_object({}) do |(name, entry), exemptions|
+      exemptions[name.to_s] = entry[:freshness_exempt] if entry.key?(:freshness_exempt)
+    end
+  end
+
   # Run at load, so a malformed table fails the boot it would otherwise pass silently.
   # An entry that names an environment nobody schedules, an override for an environment
   # the entry does not run in, or a key `for` would quietly drop is a job that does not
@@ -480,6 +495,14 @@ module CronSchedule
       if undeclared.any?
         raise "cron entry #{name.inspect} overrides the schedule for #{undeclared.inspect}, " \
               "which it does not run in"
+      end
+
+      if entry.key?(:freshness_exempt)
+        reason = entry[:freshness_exempt]
+        unless reason.is_a?(String) && !reason.strip.empty?
+          raise "cron entry #{name.inspect} is freshness_exempt without a reason. " \
+                "Write the sentence that says why this key may go silent for longer than its cadence"
+        end
       end
     end
   end
