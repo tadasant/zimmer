@@ -812,6 +812,19 @@ the `get_transcript_archive` MCP tool are served by Puma in `web`. While the arc
 own empty copy and could never succeed, and every deploy destroyed the writer's copy too
 ([#714](https://github.com/tadasant/zimmer/issues/714)).
 
+Every tick starts by reclaiming the temp files earlier runs were killed before they could delete.
+`build_archive` removes its own temp in an `ensure`, which covers an exception but not a `SIGKILL` —
+and this job is killed routinely, by the OOM killer and by the container swap on every deploy. Each
+run picks a fresh random name, so nothing ever reclaimed the previous run's file: production
+accumulated 219 orphans holding 233.3 GiB, which took the 309 GB root filesystem to 100% and stopped
+`CloneDiskGuard` letting the fleet clone ([#1160](https://github.com/tadasant/zimmer/issues/1160)).
+The sweep matches `latest_<hex>.zip.tmp` **and anything suffixed onto it** — rubyzip's
+`Zip::File#commit` writes its own same-sized temp beside the job's, so one killed run leaks up to two
+multi-GB files rather than one — and it takes only what nothing has written to for 30 minutes, so a
+build in flight keeps its own. `latest.zip` and `latest_metadata.json` cannot match that pattern at
+all. A tick that reclaims something logs it at WARN; a tick that finds nothing is silent. The sweep
+runs before the change detection, so it happens on a quiet tick that rebuilds nothing too.
+
 The archive is a bulk export, not a search index: it is hundreds of megabytes and up to ten minutes
 stale. To find a session by something said in it, use the content search above.
 
