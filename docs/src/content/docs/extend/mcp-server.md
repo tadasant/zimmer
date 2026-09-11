@@ -145,6 +145,13 @@ With `allowed_agent_roots` set, the connection is locked to those [agent roots](
   [Limitations](/limitations/#a-restricted-connection-is-locked-out-of-mcp-servers-at-spawn-but-not-through-a-trigger).
 - `action_session`'s `change_mcp_servers` — and `change_plugins`, since plugins can bundle MCP
   servers — are refused outright.
+- `action_session`'s `fork` and `restart` are refused unless the session they name belongs to an
+  allowed root. A fork copies the source session's repository, branch and MCP servers onto a new
+  session, so it is a spawn by another name, and a restart runs that session's agent in its own
+  repository — without this, a connection fenced out of a repository could reach it through any
+  session id, and session ids are sequential integers `get_session` hands out for the asking. A
+  session the catalog cannot place at all — no `agent_root_key`, and a `git_root` no root
+  declares — is refused too: a fence that admits what it cannot place is not a fence.
 - `wake_me_up_when_session_changes_state` refuses to watch a session outside the allowed roots. (A
   session waking *itself* is never restricted.)
 - `get_configs` hides the roots you may not use, so the model never sees them.

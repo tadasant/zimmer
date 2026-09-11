@@ -2170,6 +2170,25 @@ one, because the injected URL passes no `tool_groups` and therefore carries the 
 `action_trigger` included. The gap is noted in `ActionTrigger`'s own comment as a deliberate
 non-closure and is not tracked by an issue.
 
+### A restricted connection cannot fork or restart a session outside its roots, but can still resume one
+
+`allowed_agent_roots` fences `action_session`'s `fork` and `restart` against the session they name
+([#1118](https://github.com/tadasant/zimmer/issues/1118)): a fork copies the source session's
+repository and MCP servers onto a new row, and a restart runs that row's agent, so both are spawns
+in everything but name.
+
+Three other actions put an agent into a session's repository and are **not** fenced: `follow_up`
+(which also chooses the prompt), `start_now`, and `unarchive`. Each of them acts on a session that
+already exists and already has a repository, rather than creating one or choosing where it points —
+but the agent that then runs is running somewhere the connection was fenced out of, so the
+distinction is one of degree. They were left out deliberately rather than missed: fencing
+`follow_up` in particular would change how an orchestrating session may reach the sessions it did
+not spawn, which is a policy decision about fleet orchestration and not the hole #1118 reported.
+
+Nothing reaches either half today, for the same reason as the entry above: no shipped agent root
+declares `default_subagent_roots`, and that injection is the only restricted connection the
+deployment creates for itself. It becomes live the moment a root declares one.
+
 ### Codex MCP credentials are a reverse-engineered format, written on every spawn
 
 `CodexMcpCredentialWriter` exists entirely to work around two open upstream Codex bugs
