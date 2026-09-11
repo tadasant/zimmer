@@ -22,11 +22,35 @@ class QuotaCheckServiceTest < ActiveSupport::TestCase
     }.to_json
   end
 
-  # The probe model is a floating alias, never a dated snapshot (#85). A snapshot
-  # pin silently outlives the model it names; the alias follows.
-  test "PROBE_MODEL is not pinned to a dated snapshot" do
+  # The probe model comes from ModelCatalog and is a Messages API floating alias:
+  # not a dated snapshot, which silently outlives the model it names, and not
+  # the bare CLI alias, which POST /v1/messages rejects with a 400 (#85).
+  test "PROBE_MODEL is the catalog's Messages API id for haiku" do
+    assert_equal ModelCatalog.messages_api_id_for("haiku"), QuotaCheckService::PROBE_MODEL
+    assert_equal "claude-haiku-4-5", QuotaCheckService::PROBE_MODEL
     refute_match(/-\d{8}\z/, QuotaCheckService::PROBE_MODEL,
       "PROBE_MODEL must be the floating alias, not a dated model snapshot")
+    refute_includes ModelCatalog.model_ids_for("claude_code"), QuotaCheckService::PROBE_MODEL,
+      "PROBE_MODEL must be a Messages API id, not the bare CLI alias"
+  end
+
+  test "the quota probe sends the catalog's Messages API id as the model" do
+    stub_credentials
+
+    profile_resp = stub_http_response(200, body: @profile_response_body)
+    quota_resp = stub_http_response(200, headers: {})
+    sent_model = nil
+
+    Net::HTTP.any_instance.stubs(:request)
+      .with { |req| req.path.include?("oauth/profile") }.returns(profile_resp)
+    Net::HTTP.any_instance.stubs(:request)
+      .with { |req| req.path.include?("messages") && (sent_model = JSON.parse(req.body)["model"]) }
+      .returns(quota_resp)
+
+    @service.check
+
+    assert_equal ModelCatalog.messages_api_id_for(QuotaCheckService::PROBE_CATALOG_MODEL), sent_model
+    assert_equal "claude-haiku-4-5", sent_model
   end
 
   test "returns error when credentials file does not exist" do

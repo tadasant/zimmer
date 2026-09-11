@@ -14,6 +14,18 @@
 # soon as its MODELS entry exists, even before RuntimeRegistry registers the
 # runtime's implementation bundle (see #resolve), so the data layer can land
 # ahead of the adapter that consumes it.
+#
+# It is also the one place a versioned Claude model id is written down. Code
+# that calls Anthropic with a specific model — the quota probe — looks the id up
+# here (#messages_api_id_for), and ModelCatalogTest fails on a Claude
+# model-version string literal anywhere else in app/, config/ or lib/ (#85).
+#
+# The list is a Ruby literal on purpose, so adding a model is a PR and a deploy.
+# Most additions need a CLI bump in the image anyway (Pi's list has to match the
+# Pi version pinned in Dockerfile.base, Codex's the pinned Codex CLI), and a
+# list editable at runtime could name a model the installed CLI cannot resolve,
+# which would only fail at spawn. The Claude Code ids are floating aliases, so a
+# new Opus or Sonnet release reaches sessions with no change here at all.
 class ModelCatalog
   # Per-runtime model definitions. Within a runtime the entry flagged
   # `default: true` is the runtime's default model (falling back to the first
@@ -27,6 +39,14 @@ class ModelCatalog
   # API-key-only account selects such a model. Models without the key are treated
   # as not requiring OAuth (see #requires_oauth?).
   #
+  # `messages_api_id` is the model's id on Anthropic's `POST /v1/messages`, for
+  # the Claude Code entries Zimmer also calls that endpoint with directly (the
+  # quota probe, see QuotaCheckService::PROBE_MODEL). It is never the bare CLI
+  # alias — the endpoint answers `haiku` with a 400 — and never a dated snapshot:
+  # it is the floating alias there (`claude-haiku-4-5`), which follows snapshot
+  # releases the way the bare alias does for the CLI. Only entries something
+  # sends to the endpoint carry one; see #messages_api_id_for.
+  #
   # Codex (GPT) model-catalog refresh discipline: this list mirrors the models
   # OpenAI publishes at https://developers.openai.com/codex/models — bump it when
   # OpenAI ships new models or retires old ones; see also the `ao-upgrade-codex`
@@ -36,7 +56,7 @@ class ModelCatalog
     "claude_code" => [
       { id: "opus", label: "opus", default: true },
       { id: "sonnet", label: "sonnet" },
-      { id: "haiku", label: "haiku" },
+      { id: "haiku", label: "haiku", messages_api_id: "claude-haiku-4-5" },
       { id: "fable", label: "fable" }
     ],
     "codex" => [
@@ -124,6 +144,22 @@ class ModelCatalog
     def requires_oauth?(runtime, model)
       entry = models_for(runtime).find { |m| m[:id] == model.to_s }
       entry ? !!entry[:requires_oauth] : false
+    end
+
+    # The `POST /v1/messages` id for a Claude Code catalog model.
+    #
+    # Raises rather than returning nil: callers resolve it into a constant at
+    # load time, so a missing or renamed entry fails the boot and the suite
+    # instead of surfacing later as a failed API call.
+    #
+    # @param model [String, Symbol] a claude_code catalog id (e.g. "haiku")
+    # @return [String] the entry's messages_api_id (e.g. "claude-haiku-4-5")
+    # @raise [KeyError] when the model is not in the claude_code catalog or
+    #   carries no messages_api_id
+    def messages_api_id_for(model)
+      entry = MODELS.fetch("claude_code").find { |m| m[:id] == model.to_s }
+      entry&.dig(:messages_api_id) ||
+        raise(KeyError, "ModelCatalog has no Messages API id for claude_code model #{model.inspect}")
     end
 
     private
