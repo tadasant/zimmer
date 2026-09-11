@@ -116,7 +116,7 @@
         make — so each row carries the evidence a triager starts from. %>
     <h2 class="text-sm font-semibold text-gray-900 mb-2">
       Stranded
-      <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.counts[:stranded]) %> off the queue with the issue still open, waiting on a triage decision</span>
+      <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.counts[:stranded]) %> off the queue and unresolved, waiting on a triage decision<%= ", showing the #{@board.stranded_rows.length} oldest" if @board.stranded_truncated? %></span>
     </h2>
     <%= render "started_rows", rows: @board.stranded_rows, liveness: true,
         empty_message: "Nothing that left the queue has been left behind." %>

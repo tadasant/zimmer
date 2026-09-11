@@ -81,20 +81,20 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
     unchecked.mark_started!(session: sessions(:archived), by: nil)
     # Route 2: removed on a reason with a shelf life.
     lapsed = backlog_item(key: "zimmer#2")
-    lapsed.remove!(reason: "issue_has_open_pr", by: "session:1")
+    lapsed.remove!(reason: "issue_has_open_pr", by: "session:1", now: 4.days.ago)
     # Resolved: the re-check found the issue closed.
     closed = backlog_item(key: "zimmer#3")
     closed.mark_started!(session: sessions(:archived), by: nil)
     closed.record_liveness!(WorkBacklogItem::LIVENESS_ISSUE_CLOSED)
     # Resolved: an open PR is moving.
     moving = backlog_item(key: "zimmer#4")
-    moving.remove!(reason: "issue_has_open_pr", by: "session:1")
+    moving.remove!(reason: "issue_has_open_pr", by: "session:1", now: 4.days.ago)
     moving.record_liveness!(WorkBacklogItem::LIVENESS_PR_OPEN)
     # Not a candidate at all: its session is still alive.
     alive = backlog_item(key: "zimmer#5")
     alive.mark_started!(session: sessions(:running), by: nil)
     # Not a candidate: a judgement removal has no expiry to re-check.
-    backlog_item(key: "zimmer#6").remove!(reason: "trust_failed", by: "session:1")
+    backlog_item(key: "zimmer#6").remove!(reason: "trust_failed", by: "session:1", now: 4.days.ago)
 
     assert_equal [ unchecked.id, lapsed.id ].sort, WorkBacklogItem.stranded.pluck(:id).sort
     assert_equal [ unchecked.id, lapsed.id, closed.id, moving.id ].sort,
@@ -132,6 +132,16 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
     assert item.started?
     assert_equal 6990, item.precedence
     assert_equal sessions(:archived).id, item.started_session_id
+  end
+
+  test "superseded? is true once a newer row carries the same key" do
+    item = backlog_item(key: "zimmer#9")
+    item.mark_started!(session: sessions(:archived), by: nil)
+    assert_not item.superseded?
+
+    backlog_item(key: "zimmer#9")
+
+    assert item.reload.superseded?
   end
 
   test "liveness_state is one of the known states" do

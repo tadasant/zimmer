@@ -14,14 +14,16 @@
 #                        Evidence for a human to triage, never a decision: the
 #                        sweep changes no row's status.
 #
-# The index is the sweep's candidate query: rows ordered by when they were last
-# checked, nulls (never checked) first.
+# The index serves the sweep's ordering — least-recently-checked first, nulls
+# first. It is on `liveness_checked_at` alone rather than on `(status, …)`,
+# because the candidate query has no single-status predicate to lead with: it is
+# an OR over two `id IN (…)` arms, one per route out of the queue.
 class AddLivenessToWorkBacklogItems < ActiveRecord::Migration[8.0]
   def change
     add_column :work_backlog_items, :liveness_checked_at, :datetime
     add_column :work_backlog_items, :liveness_state, :string
 
-    add_index :work_backlog_items, [ :status, :liveness_checked_at ],
+    add_index :work_backlog_items, :liveness_checked_at,
               name: "index_work_backlog_items_on_liveness"
   end
 end

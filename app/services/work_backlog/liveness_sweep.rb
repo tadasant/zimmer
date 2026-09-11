@@ -121,8 +121,8 @@ module WorkBacklog
           probes = probe(repo, rows, logger) { failed << repo }
           rows.each do |item|
             state = classify(item, probes && probes[item.issue_number], now)
-            item.record_liveness!(state, now: now)
             outcomes[state] += 1
+            record(item, state, now, logger)
           end
         end
 
@@ -149,6 +149,9 @@ module WorkBacklog
       # deliberate partial with a real remainder — and it is left ambiguous on
       # purpose rather than guessed at.
       def classify(item, probe, now)
+        # Asked before GitHub, because it is the one verdict that does not depend
+        # on GitHub: the triage already happened and left a newer row behind.
+        return WorkBacklogItem::LIVENESS_SUPERSEDED if item.superseded?
         return WorkBacklogItem::LIVENESS_UNKNOWN if probe.nil?
         return WorkBacklogItem::LIVENESS_ISSUE_CLOSED unless probe.open?
 
@@ -164,6 +167,19 @@ module WorkBacklog
       end
 
       private
+
+      # One row's verdict, written so that one bad row cannot cost every other.
+      # `update!` validates, and a legacy row that fails validation for an
+      # unrelated reason would abort the whole pass — permanently, because a row
+      # that raises keeps `liveness_checked_at` NULL and so sorts first on the
+      # next pass too, and the one after that. The sweep would go quiet while
+      # reporting nothing, which is the failure it exists to end.
+      def record(item, state, now, logger)
+        item.record_liveness!(state, now: now)
+      rescue ActiveRecord::ActiveRecordError => e
+        logger.warn("[WorkBacklog::LivenessSweep] could not record #{state} on item #{item.id} " \
+                    "(#{item.key}): #{e.class}: #{e.message}")
+      end
 
       # `nil` when the repo could not be read at all — which the caller turns into
       # `unknown` for every row, never into a conclusion about any of them.
@@ -216,8 +232,8 @@ module WorkBacklog
 
         AlertService.raise_alert(
           "Work backlog rows have been stranded for over #{ALERT_AFTER.inspect}",
-          details: "The oldest backlog row that has left `queued` and whose issue is still open has been " \
-                   "there #{(age / 86_400.0).round(1)} days. Nothing re-queues these automatically — telling a " \
+          details: "The oldest backlog row that has left `queued` without being resolved has been there " \
+                   "#{(age / 86_400.0).round(1)} days. Nothing re-queues these automatically — telling a " \
                    "finished issue from one with a deliberate remainder needs a judgement per issue. Triage " \
                    "them on Zimmer's Issues page under Stranded, or with `get_work_backlog` " \
                    "`status: \"stranded\"`, and put the ones with work left back with " \

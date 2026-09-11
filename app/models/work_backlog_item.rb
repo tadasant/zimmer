@@ -117,15 +117,24 @@ class WorkBacklogItem < ApplicationRecord
   LIVENESS_PR_MERGED_ISSUE_OPEN = "pr_merged_issue_open"
   LIVENESS_NO_PR = "no_pr"
   LIVENESS_UNKNOWN = "unknown"
+  #   superseded            a NEWER row carries this key, so the triage already
+  #                         happened: `append_work_backlog_item` puts an item back
+  #                         by creating a fresh row and leaving this one as
+  #                         history. Without this, a row re-queued today would go
+  #                         on ageing in the stranded count forever and the alert
+  #                         below it could never be cleared by the action it asks
+  #                         for.
+  LIVENESS_SUPERSEDED = "superseded"
 
   LIVENESS_STATES = [ LIVENESS_ISSUE_CLOSED, LIVENESS_PR_OPEN, LIVENESS_PR_STALLED,
-                      LIVENESS_PR_MERGED_ISSUE_OPEN, LIVENESS_NO_PR, LIVENESS_UNKNOWN ].freeze
+                      LIVENESS_PR_MERGED_ISSUE_OPEN, LIVENESS_NO_PR, LIVENESS_UNKNOWN,
+                      LIVENESS_SUPERSEDED ].freeze
 
   # The two verdicts that mean "nothing for a person to do here". Everything else
   # — including a row nothing has checked yet — is stranded until shown otherwise,
   # which is the honest default for a population whose whole problem was that
   # nobody was looking.
-  RESOLVED_LIVENESS_STATES = [ LIVENESS_ISSUE_CLOSED, LIVENESS_PR_OPEN ].freeze
+  RESOLVED_LIVENESS_STATES = [ LIVENESS_ISSUE_CLOSED, LIVENESS_PR_OPEN, LIVENESS_SUPERSEDED ].freeze
 
   # The keys in the file's item schema that have a column here. Everything else
   # in an item — ratings, prompt, notes, gate_session, and whatever the gate adds
@@ -318,7 +327,10 @@ class WorkBacklogItem < ApplicationRecord
   }
 
   # Rows removed for a reason that may since have expired. See
-  # PROVISIONAL_REMOVAL_REASONS.
+  # PROVISIONAL_REMOVAL_REASONS. The same grace applies to these as to a started
+  # row: an item removed a minute ago because a session is already working it has
+  # a premise that is still true, and probing it immediately would find no PR yet
+  # and report an item somebody is actively working as stranded.
   scope :removed_provisionally, -> { removed.where(removal_reason: PROVISIONAL_REMOVAL_REASONS) }
 
   # EVERY ROW WORTH RE-CHECKING, by both routes out of `queued`: a `started` row
@@ -333,7 +345,7 @@ class WorkBacklogItem < ApplicationRecord
   # under "In GitHub, not on the queue".
   scope :liveness_candidates, ->(grace: WorkBacklog::LivenessSweep::GRACE, now: Time.current) {
     where.not(issue_url: nil).where(id: ended_before(now - grace))
-      .or(where.not(issue_url: nil).where(id: removed_provisionally))
+      .or(where.not(issue_url: nil).where(id: removed_provisionally.where(removed_at: ...(now - grace))))
   }
 
   # The candidates the re-check has NOT resolved — the honest reading of "this
@@ -343,6 +355,13 @@ class WorkBacklogItem < ApplicationRecord
     liveness_candidates(grace: grace, now: now)
       .where("liveness_state IS NULL OR liveness_state NOT IN (?)", RESOLVED_LIVENESS_STATES)
   }
+
+  # Has a later row taken this key over? That is what the triage route leaves
+  # behind: `append_work_backlog_item` creates a fresh `queued` row rather than
+  # moving this one, so this row's job is done even though its status never
+  # changed. Keyed on `id` rather than a timestamp because the append's whole
+  # point is that it is a new row.
+  def superseded? = self.class.where(key: key).where("id > ?", id).exists?
 
   def queued? = status == QUEUED
   def started? = status == STARTED
