@@ -34,7 +34,7 @@ module Mcp
         },
         model: {
           type: "string",
-          description: "Only sessions that ran on this model id, exactly as recorded on the session (e.g. \"claude-opus-5\")."
+          description: "Only sessions that ran on this model id, exactly as recorded on the session — the ledger view's `model` field shows the values in use."
         },
         analyzed: {
           type: "string",

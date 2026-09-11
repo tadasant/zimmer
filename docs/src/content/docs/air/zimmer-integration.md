@@ -54,7 +54,7 @@ catalogs, no network), so the app's config services always resolve non-empty dat
 
 **What's in it:** 10 skills — 7 Zimmer-specific ones (`category: zimmer`) plus 3 vendored generic
 workflow skills (`category: workflow`: `open-pr`, `wait-for-ci`,
-`recover-from-compaction-thrashing`) — 16 MCP servers, 10 roots, 4 plugins, 1 hook, 5 references.
+`recover-from-compaction-thrashing`) — 17 MCP servers, 10 roots, 4 plugins, 1 hook, 5 references.
 The `zimmer` root turns 9 of those skills on by default and exactly one MCP server,
 `playwright-custom`; `awaken-waiting-sessions` and `zimmer-fleet` default on `fleet-maintenance`
 instead. It also defaults to both `ci-workflow` and `screenshots-videos`, and a plugin's own
