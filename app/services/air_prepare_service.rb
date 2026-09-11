@@ -607,6 +607,7 @@ class AirPrepareService
     # resolve the same frozen catalog refs as the rest of the app.
     env = SecretsLoader.all.merge("AIR_CONFIG" => AirCatalogService.effective_air_json_path)
 
+    catch_up_catalog_cache!(env)
     run_air_prepare_command!(cmd, env)
 
     Rails.logger.info "[AirPrepareService] AIR prepare completed successfully"
@@ -897,6 +898,23 @@ class AirPrepareService
     true
   rescue JSON::ParserError
     false
+  end
+
+  # Fetch this process's provider clones before `air prepare` when they are older
+  # than the ones the served catalog snapshot was resolved from.
+  #
+  # The skill list above was scrubbed against the snapshot, which the worker's
+  # cron keeps fresh; `air prepare` reads skills out of *this* container's
+  # ~/.air/cache. A fork or an unarchive runs here on the web container, whose
+  # clones are only as fresh as its last boot, so a skill the snapshot lists
+  # could be missing from disk and fail the prepare. On the worker the cron wrote
+  # the snapshot from this very disk, so the check is a directory glob and
+  # nothing more. Best-effort, like the root-not-found refresh below.
+  def catch_up_catalog_cache!(env)
+    return unless AirCatalogService.disk_cache_behind_snapshot?
+
+    Rails.logger.info "[AirPrepareService] provider cache is older than the catalog snapshot; fetching before air prepare"
+    refresh_catalog_cache!(env)
   end
 
   # Bust this worker's AIR github catalog cache by running a bounded `air update`,

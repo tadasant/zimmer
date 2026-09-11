@@ -7,11 +7,27 @@
 # caching). This service shells out to the installed CLI, parses the merged
 # artifact tree, and exposes it to the rest of the app.
 #
-# Two layers of caching:
-#   - 60 second in-memory TTL on the parsed artifact tree
-#   - refresh!: runs `air update` to refresh provider caches (github clones),
-#     then reloads the in-memory tree. Used by CatalogRefreshJob (every 15 min)
-#     and the manual /catalogs/refresh endpoint.
+# The persisted CatalogSnapshot is the source of truth for the resolved tree,
+# in every process. In production the web (Puma) and worker (GoodJob) run in
+# separate containers with separate ~/.air/cache directories, and only a
+# process that has just fetched its provider clones can resolve a fresh tree —
+# so resolving is a write, and serving is a read:
+#
+#   - Resolve (write): refresh! runs `air update` then `air resolve` and stores
+#     the result as the new snapshot. It runs once at boot in every process, on
+#     the worker's */15 CatalogRefreshJob cron, behind the "Refresh catalogs"
+#     button (which enqueues that same job), and when a catalog pin is saved.
+#     reload! resolves without fetching, and a process with no snapshot to
+#     serve resolves on first use.
+#   - Serve (read): a 60 second in-memory TTL on the parsed tree. When it
+#     expires the process reads the newest snapshot's header — one narrow
+#     query — and loads the tree only when that row is newer than the one it
+#     is serving. No process re-resolves on a timer, and none needs its own
+#     disk to be fresh to serve the catalog the fleet last resolved.
+#
+# Catalog health travels the same way: a failed refresh is recorded on the
+# newest snapshot, so a process that never resolves still reports degraded?
+# and resolve_failure truthfully.
 class AirCatalogService
   class CatalogError < StandardError; end
 
@@ -94,22 +110,28 @@ class AirCatalogService
       []
     end
 
-    # Resolve the commit SHA a catalog currently points at, by reading the AIR
-    # provider cache clone. Used by the settings UI to show what is live and to
-    # capture a SHA for "pin to current HEAD".
+    # The commit SHA a catalog resolved to in the snapshot this process serves.
+    # Used by the settings UI to show what is live and to capture a SHA for
+    # "pin to current HEAD".
+    #
+    # Read from the snapshot, not from this process's provider cache: the SHA
+    # that matters is the one the served tree was resolved from, and the writer
+    # recorded it off its own disk at resolve time (see local_catalog_shas). The
+    # web container's clones are only as fresh as its last boot.
+    #
+    # The snapshot carries HEAD plus each catalog's pinned ref as of the resolve
+    # that wrote it; a ref pinned since then reads nil until the next refresh.
     # @param catalog_uri [String] e.g. "github://tadasant/zimmer-catalog"
-    # @param ref [String] cache subdir to read ("HEAD" for the default branch)
-    # @return [String, nil] full commit SHA, or nil if not cached
+    # @param ref [String] "HEAD" for the default branch, or a pinned ref
+    # @return [String, nil] full commit SHA, or nil if the snapshot has none
     def resolved_sha_for(catalog_uri, ref: "HEAD")
-      owner_repo = github_owner_repo(catalog_uri)
-      return nil unless owner_repo
+      prefix = github_prefix(catalog_uri)
+      return nil unless prefix
 
-      owner, repo = owner_repo
-      clone_dir = File.join(GITHUB_CACHE_DIR, owner, repo, ref)
-      return nil unless File.directory?(File.join(clone_dir, ".git"))
-
-      stdout, _stderr, status = Open3.capture3("git", "-C", clone_dir, "rev-parse", "HEAD")
-      SubprocessStatus.success?(status) ? stdout.strip.presence : nil
+      ensure_loaded
+      @catalog_shas&.dig(prefix, ref)
+    rescue CatalogError
+      nil
     end
 
     # The directory containing air.json — preserved for callers that still
@@ -118,8 +140,9 @@ class AirCatalogService
       File.dirname(air_json_path)
     end
 
-    # Re-invoke `air resolve --json` and refresh the in-memory entry tree from
-    # its output. Does NOT fetch upstream provider data — use refresh! for that.
+    # Re-invoke `air resolve --json` against this process's disk, serve the
+    # result and store it as the new snapshot. Does NOT fetch upstream provider
+    # data — use refresh! for that.
     # Deliberately does not clear @entries first: if the fresh resolve fails,
     # load! falls back to the existing in-memory tree (see serve_last_known_good!)
     # rather than dropping the whole catalog to empty.
@@ -227,22 +250,59 @@ class AirCatalogService
       raise
     end
 
-    # Wall-clock time of the last provider-cache refresh. Derived from FETCH_HEAD
-    # mtimes on cached github clones so the value survives process restarts —
-    # important for the "Updated X ago" indicator that would otherwise reset on
-    # every deploy. Returns nil if no github clones exist yet.
+    # When the provider clones behind the served catalog were last fetched — the
+    # "Updated X ago" indicator. The writer read it off its own FETCH_HEAD
+    # mtimes at resolve time (see local_fetched_at) and stored it on the
+    # snapshot, so a process that never fetches still reports the fetch its
+    # catalog came from. nil when that writer had no github clones.
     def last_refreshed_at
-      return nil unless File.directory?(GITHUB_CACHE_DIR)
+      ensure_loaded
+      @fetched_at
+    rescue CatalogError
+      nil
+    end
 
-      Dir.glob(File.join(GITHUB_CACHE_DIR, "**", ".git", "FETCH_HEAD"))
-        .filter_map { |p| File.mtime(p) if File.exist?(p) }
-        .max
+    # Serve the newest snapshot now, without waiting out the in-memory TTL. The
+    # "Refresh catalogs" button calls this after the worker's refresh finishes,
+    # so the page it redirects to shows the catalog that refresh just stored.
+    # Resolves locally only when there is no snapshot at all.
+    # @return [Boolean] false when there was nothing to serve and the resolve failed
+    def sync_from_snapshot!
+      load! unless sync_from_snapshot
+      true
+    rescue CatalogError
+      false
+    end
+
+    # True when this process's provider clones were fetched before the ones the
+    # served snapshot was resolved from.
+    #
+    # Serving the catalog needs no disk, but `air prepare` does: it materializes
+    # skills and hooks out of this process's own ~/.air/cache. On the worker the
+    # cron keeps that cache fresh, but a fork or an unarchive runs `air prepare`
+    # on the web container, whose cache is only as fresh as its last boot.
+    # AirPrepareService asks this first and fetches when it is behind, so a
+    # skill the snapshot already lists is on disk by the time AIR looks for it.
+    # Compared to the second, because the two sides are mtimes from different
+    # containers and a database round trip truncates sub-second precision.
+    def disk_cache_behind_snapshot?
+      ensure_loaded
+      return false unless @fetched_at
+
+      local = local_fetched_at
+      local.nil? || local.to_i < @fetched_at.to_i
+    rescue CatalogError
+      false
     end
 
     # Find the local clone path for a given github repo URL.
     # Used by WarmSkillsCacheJob to locate cached clones for repo-native skill
     # discovery. Scans the AIR github cache directory (~/.air/cache/github/
     # <owner>/<repo>/<ref>) for a matching repo.
+    #
+    # Deliberately reads this process's disk rather than the snapshot: it wants
+    # a clone to read files from, which a snapshot cannot carry. Its only caller
+    # runs on the worker, whose cache the cron keeps fresh.
     # @param url [String] e.g. "https://github.com/tadasant/zimmer-catalog.git"
     # @return [String, nil] absolute path to the clone root, or nil if not found
     def repo_root_for(url:)
@@ -273,6 +333,9 @@ class AirCatalogService
       @degraded = nil
       @last_known_good_at = nil
       @resolve_failure = nil
+      @snapshot_id = nil
+      @fetched_at = nil
+      @catalog_shas = nil
     end
 
     # Test/dev hook: install an already-resolved tree as the in-memory cache
@@ -296,12 +359,87 @@ class AirCatalogService
       @resolve_failure = nil
       @effective_path = nil
       @effective_fingerprint = nil
+      @snapshot_id = nil
+      @fetched_at = nil
+      @catalog_shas = nil
     end
 
     private
 
+    # Serve from memory within the TTL; past it, serve the newest snapshot, and
+    # resolve locally only when there is no snapshot to serve.
     def ensure_loaded
-      load! if @entries.nil? || expired?
+      return unless @entries.nil? || expired?
+
+      load! unless sync_from_snapshot
+    end
+
+    # Bring this process up to the newest persisted snapshot. Reads the header
+    # (no tree) and loads the tree only for a row newer than the one served.
+    #
+    # Returns true when the snapshot table now governs what is served — it was
+    # adopted, it is already being served, or it is older than a tree this
+    # process resolved itself and failed to persist. Returns false when there is
+    # no snapshot at all, which sends the caller to a local resolve (a first
+    # boot, or a test that controls the table).
+    #
+    # A database error keeps serving the in-memory tree for another TTL rather
+    # than falling back to a resolve: the tree in memory is the fleet's last
+    # snapshot, and a local resolve could only be staler.
+    def sync_from_snapshot
+      header = CatalogSnapshot.latest_header
+      return false unless header
+
+      if header.id != @snapshot_id && newer_than_served?(header)
+        snapshot = CatalogSnapshot.find_by(id: header.id) || CatalogSnapshot.latest
+        return false unless snapshot
+
+        adopt_snapshot(snapshot)
+        header = snapshot
+      end
+
+      mirror_snapshot_health(header) if header.id == @snapshot_id
+      @loaded_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      true
+    rescue ActiveRecord::ActiveRecordError => e
+      return false if @entries.nil?
+
+      Rails.logger.warn "[AirCatalogService] could not read the catalog snapshot (#{e.class}: #{e.message}); " \
+        "serving the in-memory catalog for another #{CATALOG_CACHE_TTL}s"
+      @loaded_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      true
+    end
+
+    def newer_than_served?(header)
+      @entries.nil? || @last_known_good_at.nil? || header.resolved_at > @last_known_good_at
+    end
+
+    # Serve a persisted snapshot's tree and the provenance that came with it.
+    def adopt_snapshot(snapshot)
+      @entries = entries_from_snapshot(snapshot.entries)
+      @snapshot_id = snapshot.id
+      @last_known_good_at = snapshot.resolved_at
+      @fetched_at = snapshot.fetched_at
+      @catalog_shas = snapshot.catalog_shas || {}
+    end
+
+    # Take degraded? and resolve_failure from the snapshot being served, so a
+    # process that never resolves reports a refresh that failed elsewhere.
+    #
+    # Logged at .info, never .error: the process whose refresh failed already
+    # alerted on its own healthy→degraded transition (log_degraded, or
+    # CatalogRefreshJob), and every web and worker process echoing it at .error
+    # would page once per process for one failure.
+    def mirror_snapshot_health(snapshot)
+      failure = snapshot.failure
+      if failure && !@degraded
+        Rails.logger.info "[AirCatalogService] the last catalog refresh failed (#{failure[:message]}); serving " \
+          "the snapshot resolved at #{@last_known_good_at&.iso8601} as last-known-good"
+      elsif !failure && @degraded
+        Rails.logger.info "[AirCatalogService] catalog snapshot is healthy again; no longer degraded"
+      end
+      @degraded = failure.present?
+      @resolve_failure = failure
     end
 
     def expired?
@@ -344,8 +482,16 @@ class AirCatalogService
     # Scrubbed at the record site, not in the view: resolve_failure has more
     # than one reader, and a message that never carries a credential into memory
     # cannot be rendered by a reader that forgets to ask.
+    #
+    # Also written onto the newest snapshot, which is how every other process
+    # learns of it (mirror_snapshot_health). Inside the pin controller's
+    # transaction that write rolls back with the pins, so a rejected pin does
+    # not mark the fleet's catalog degraded.
     def record_failure(message)
       @resolve_failure = { message: redact_secrets(message.to_s), at: Time.current }
+      CatalogSnapshot.record_failure!(@resolve_failure[:message], at: @resolve_failure[:at])
+    rescue => e
+      Rails.logger.warn "[AirCatalogService] could not record the catalog failure on the snapshot: #{e.class}: #{e.message}"
     end
 
     # Credential values that could reach an AIR subprocess's stderr, longest
@@ -418,16 +564,23 @@ class AirCatalogService
         "index files were not found"
     end
 
-    # Cache a freshly resolved tree, persist it as the new last-known-good
-    # snapshot, and clear any degraded state.
+    # Cache a freshly resolved tree, persist it — with the fetch time and SHAs
+    # of the disk it was resolved from — as the new snapshot, and clear any
+    # degraded state.
     def store_loaded_entries(entries)
       Rails.logger.info "[AirCatalogService] catalog resolution recovered; serving freshly resolved catalog" if @degraded
+      fetched_at = local_fetched_at
+      catalog_shas = local_catalog_shas
+      snapshot = persist_snapshot(entries, fetched_at: fetched_at, catalog_shas: catalog_shas)
+
       @entries = entries
       @loaded_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      @last_known_good_at = Time.current
+      @snapshot_id = snapshot&.id
+      @last_known_good_at = snapshot&.resolved_at || Time.current
+      @fetched_at = fetched_at
+      @catalog_shas = catalog_shas
       @degraded = false
       @resolve_failure = nil
-      persist_snapshot(entries)
     end
 
     # Serve the last-known-good catalog after a failed resolve. Prefers the
@@ -436,22 +589,21 @@ class AirCatalogService
     # when neither exists. Refreshes @loaded_at so we serve the stale tree for a
     # full TTL before retrying, rather than re-shelling out on every request.
     def serve_last_known_good!(error)
-      source, entries, resolved_at =
+      source =
         if @entries.present?
-          [ :memory, @entries, @last_known_good_at ]
+          :memory
         elsif (snapshot = CatalogSnapshot.latest)
-          [ :snapshot, entries_from_snapshot(snapshot.entries), snapshot.resolved_at ]
+          adopt_snapshot(snapshot)
+          :snapshot
         end
 
-      unless entries
+      unless source
         Rails.logger.error "[AirCatalogService] air resolve failed (#{error.message}) and no last-known-good " \
           "snapshot exists; catalog is unavailable and session creation will fail until resolution succeeds."
         raise error
       end
 
-      log_degraded(error, source, resolved_at)
-      @entries = entries
-      @last_known_good_at = resolved_at
+      log_degraded(error, source, @last_known_good_at)
       @loaded_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       @degraded = true
     end
@@ -472,13 +624,55 @@ class AirCatalogService
       end
     end
 
-    # Persist the resolved tree as the last-known-good snapshot. A snapshot-write
-    # failure must never break catalog resolution, so DB errors are swallowed
-    # (logged at .warn) rather than propagated.
-    def persist_snapshot(entries)
-      CatalogSnapshot.store!(entries)
+    # Persist the resolved tree as the new snapshot. A snapshot-write failure
+    # must never break catalog resolution, so DB errors are swallowed (logged at
+    # .warn) rather than propagated. Returns the stored record, or nil.
+    def persist_snapshot(entries, fetched_at:, catalog_shas:)
+      CatalogSnapshot.store!(entries, fetched_at: fetched_at, catalog_shas: catalog_shas)
     rescue => e
       Rails.logger.warn "[AirCatalogService] failed to persist catalog snapshot: #{e.class}: #{e.message}"
+      nil
+    end
+
+    # When this process last fetched its provider clones, from FETCH_HEAD mtimes
+    # so the value survives restarts. nil when there are no github clones.
+    def local_fetched_at
+      return nil unless File.directory?(GITHUB_CACHE_DIR)
+
+      Dir.glob(File.join(GITHUB_CACHE_DIR, "**", ".git", "FETCH_HEAD"))
+        .filter_map { |p| File.mtime(p) if File.exist?(p) }
+        .max
+    end
+
+    # The commit each pinnable catalog points at on this process's disk, for
+    # HEAD and for its currently pinned ref — exactly the two refs the settings
+    # page asks resolved_sha_for about. Recorded on the snapshot so every
+    # process can answer without a clone of its own.
+    # @return [Hash{String => Hash{String => String}}] catalog => { ref => sha }
+    def local_catalog_shas
+      pins = CatalogPin.as_map
+      pinnable_catalogs.each_with_object({}) do |catalog, shas|
+        by_ref = [ "HEAD", pins[catalog] ].compact_blank.uniq.filter_map do |ref|
+          sha = local_sha(catalog, ref)
+          [ ref, sha ] if sha
+        end.to_h
+        shas[catalog] = by_ref if by_ref.any?
+      end
+    rescue => e
+      Rails.logger.warn "[AirCatalogService] could not read catalog SHAs from the provider cache: #{e.class}: #{e.message}"
+      {}
+    end
+
+    def local_sha(catalog_uri, ref)
+      owner, repo = github_owner_repo(catalog_uri)
+      return nil unless owner
+
+      clone_dir = File.join(GITHUB_CACHE_DIR, owner, repo, ref)
+      return nil unless File.directory?(File.join(clone_dir, ".git"))
+
+      stdout, _stderr, status = Open3.capture3("git", "-C", clone_dir, "rev-parse", "HEAD")
+      sha = stdout.to_s.strip
+      SubprocessStatus.success?(status) && sha.match?(/\A\h{40,64}\z/) ? sha : nil
     end
 
     # Shape a raw `air resolve` parse into the type-keyed tree, dropping any
