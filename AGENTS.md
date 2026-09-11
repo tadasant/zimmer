@@ -116,6 +116,7 @@ same PR.** If it introduces a limitation, a hack, or a known-broken edge, add it
 | `infra/`, `.github/workflows/**`, `Dockerfile*` | `operate/deploying.md`, `operate/provisioning.md` |
 | sshd, the firewall, `admin_ssh_pubkeys`, Tailscale SSH | `operate/ssh-access.md` |
 | `config/goals.json`, `app/services/orchestrator_system_prompt_builder.rb` | `sessions/goals.md` |
+| `app/workflows/**`, `WorkflowRun`, a trigger's `workflow_id` | `sessions/workflows.md` |
 | any cron job (`config/cron_schedule.rb`) | `operate/background-jobs.md` |
 | `BroadcastService`, `BroadcastsThroughService`, any model-side broadcast | `operate/background-jobs.md` (The circuit breaker on the UI) |
 | an ops action that would otherwise need a prod shell | `operate/deploying.md` (Ops actions ship with the deploy) |

@@ -10,6 +10,11 @@ trigger creates a new session — or resumes an existing one.
 
 Conditions on a trigger are ORed. Any one firing fires the trigger.
 
+Every trigger on this page renders a **prompt template**. A trigger can instead name a
+[workflow](/sessions/workflows/) — a class in this repo with a validated input contract — in
+`workflow_id`, and then it has no template at all. Nothing in production fires a workflow trigger
+yet, and no surface can create one, so everything below describes every trigger you will meet.
+
 ## The six condition types
 
 ```mermaid
