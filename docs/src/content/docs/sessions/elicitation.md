@@ -26,8 +26,8 @@ sequenceDiagram
 
     Note over P,M: spawn: ELICITATION_REQUEST_URL + POLL_URL + PREFER_HTTP_FALLBACK<br/>+ TTL_MS + SESSION_ID — CliSpawnEnv (agent process) + the<br/>server's own env table in the generated MCP config (all three runtimes)
     P->>M: tool call
-    M->>Z: POST /api/v1/elicitations (UNAUTHENTICATED)<br/>_meta["com.pulsemcp/request-id"] + message
-    Z->>S: create Elicitation (pending, expires per the configured window)
+    M->>Z: POST /api/v1/elicitations/session/:token<br/>_meta["com.pulsemcp/request-id"] + message
+    Z->>S: create Elicitation on the token's session<br/>(pending, expires per the configured window)
     Z-->>M: 201 {action: "pending", _meta: {poll-url}}
     Note over M: blocked — begins polling
     S->>S: after_commit → sync_elicitation_blocking_state!
@@ -36,7 +36,7 @@ sequenceDiagram
     Z->>U: push notification (elicitation_pending)
 
     loop every ~2s
-        M->>Z: GET /api/v1/elicitations/:request_id (UNAUTHENTICATED)
+        M->>Z: GET /api/v1/elicitations/session/:token/:request_id
         Z-->>M: {action: "pending"} (+ lazy expiry check)
     end
 
@@ -44,7 +44,7 @@ sequenceDiagram
     Z->>S: elicitation.resolve!
     S->>S: after_commit → unblock_from_elicitation!<br/>(needs_input → running)
     Z->>U: Turbo Stream: remove banner
-    M->>Z: GET /api/v1/elicitations/:request_id
+    M->>Z: GET /api/v1/elicitations/session/:token/:request_id
     Z-->>M: {action: "accept", content: {...}}
     M-->>P: tool result
     Note over P: agent continues its turn
@@ -85,10 +85,10 @@ call can stay open. Everything else gets the instance default. A blank
 and ignored. A deploy never fails over this knob.
 
 Every deadline, whoever names it, is held to `MIN_EXPIRATION`…`MAX_EXPIRATION` (1 minute … 7 days).
-That bounds the MCP server's own `expires-at` too, because it arrives on an unauthenticated
-endpoint: a timestamp already in the past would mint an elicitation that is born expired — one
-that resolves straight into the "this approval request expired" banner on a session the caller does
-not own — and one years out would pin a session in `needs_input`.
+That bounds the MCP server's own `expires-at` too, because it comes from a process Zimmer launched
+but did not write: a timestamp already in the past would mint an elicitation that is born expired —
+one that resolves straight into the "this approval request expired" banner — and one years out would
+pin a session in `needs_input`.
 
 The default is an hour, not the ten minutes it used to be: the feature exists to tolerate a human
 who is away from the desk, and a ten-minute fuse failed exactly the case it was for.
@@ -129,25 +129,54 @@ there is nothing for you to act on.
 The marker is dropped the moment the session moves on: a resume, a new elicitation, or an
 elicitation that actually gets answered.
 
+## Who may raise a prompt
+
+A prompt on a session asks a human for approval, with a push notification to announce it. A forged
+prompt is therefore a phishing attempt aimed at that approval, so it matters who can put one there.
+
+An MCP server has no Zimmer API key, and `@pulsemcp/mcp-elicitation` sends no auth header, only
+`Content-Type`. So the credential goes in the one thing Zimmer hands the server that survives the
+whole round trip: the URL path. Each session's servers get
+`<AppUrl.base_url>/api/v1/elicitations/session/<token>` as both the request URL and the poll URL,
+and the client appends `/<request-id>` to poll. A query string would not survive that append. The
+path does.
+
+The token is `<session id>-<HMAC-SHA256 of the id>`, keyed from `secret_key_base` under a salt of
+its own (`ElicitationEndpoint.token_for`). It is not an API key and is not derived from one. It is
+deterministic, so the two places that write it — the agent process's environment and each server's
+`env` table — agree without storing anything, and a session keeps one URL for life.
+
+The session always comes from the token. On the token routes:
+
+| Request | Answer |
+| --- | --- |
+| token does not verify (forged, tampered, or its session is gone) | 401 |
+| `_meta["com.pulsemcp/session-id"]` names a different session | 403, refused rather than overruled |
+| `_meta` session-id blank | accepted, since the token already names the session |
+| poll for another session's `request_id` | 404, the same answer as a `request_id` that does not exist |
+
+`respond` cannot be reached with a token, so whoever raised a prompt cannot also answer it.
+
+The bare `POST /api/v1/elicitations` and `GET /api/v1/elicitations/:request_id` take an API key, like
+the rest of the [REST API](/extend/rest-api/#elicitations). A keyless POST there is almost always a
+server that never got its session's URL, so it logs a warning. A session-less spawn is pointed there
+on purpose: with no session there is no token to mint. A URL that refuses with a 401 is louder than
+naming no URL at all. With no URL the client drops to native elicitation, and headless Claude Code
+declines that on its own.
+
 ## Known problems
 
-:::danger[The elicitation endpoints are unauthenticated]
-`POST /api/v1/elicitations` and `GET /api/v1/elicitations/:request_id` both call
-`skip_before_action :authenticate_api_key`. This is required by the pulsemcp fallback-elicitation
-protocol — the MCP child process has no API key.
+:::caution[The token keeps out the network, not the neighbours]
+Every session runs as the same Unix user on the same filesystem, and a session's token sits in its
+agent's environment and its clone's MCP config. An agent can raise a prompt on its own session. An
+agent that reads another clone's config can raise one on that session too, and so can any agent using
+the `SECRET_KEY_BASE` its own environment carries, which mints any session's token. None of them can
+answer a prompt.
 
-The consequence: anyone who can reach the host can create an elicitation prompt for any session
-id, or enumerate and poll any elicitation by `request_id`. Only `PATCH …/respond` is
-authenticated.
-
-That reach now extends past the transient banner: an elicitation that ends unanswered leaves a
-`lost_elicitation` marker on the session, whose `summary` is the caller's own `tool_name` and
-`message`, rendered in Zimmer's voice. It is escaped, truncated to
-`Elicitation::SUMMARY_LIMIT` (300 characters) on write, and cleared the moment the session moves
-on — but it is text a stranger can put on a session page.
-
-The old `docs/ELICITATION_FLOW.md` claimed the opposite — that both endpoints inherit API-key auth
-and showed `X-API-Key` in its request samples. That was wrong.
+An elicitation that ends unanswered leaves a `lost_elicitation` marker on the session. Its `summary`
+is the caller's own `tool_name` and `message`, rendered in Zimmer's voice. It is escaped, truncated
+to `Elicitation::SUMMARY_LIMIT` (300 characters) on write, and cleared the moment the session moves
+on. See [limitations](/limitations/#an-elicitation-url-is-a-session-credential-that-sits-on-disk).
 :::
 
 ## Where the request goes, and what happens when it can't get there
@@ -156,8 +185,8 @@ Five variables carry the address and the decision to use it:
 
 | Variable | Value |
 | --- | --- |
-| `ELICITATION_REQUEST_URL` | `<AppUrl.base_url>/api/v1/elicitations` |
-| `ELICITATION_POLL_URL` | the same collection URL — the client appends `/<request-id>` |
+| `ELICITATION_REQUEST_URL` | `<AppUrl.base_url>/api/v1/elicitations/session/<token>` ([who may raise a prompt](#who-may-raise-a-prompt)); the bare `…/api/v1/elicitations` for a session-less spawn |
+| `ELICITATION_POLL_URL` | the same URL — the client appends `/<request-id>` |
 | `ELICITATION_PREFER_HTTP_FALLBACK` | `true` |
 | `ELICITATION_TTL_MS` | `Elicitation.default_expiration` in milliseconds |
 | `ELICITATION_SESSION_ID` | the Zimmer session id |
@@ -198,7 +227,7 @@ different ways:
   to the client's baked-in `http://zimmer/…` default and died as `fetch failed`.
 
 A value already present in the session's `.env` wins in both places, so an operator can point a
-server at a different Zimmer.
+server at a different Zimmer — with a token URL that Zimmer minted. A bare URL there answers 401.
 
 **Zimmer's value beats a catalog entry's own `env`** for these five keys, and only these five. The
 address of Zimmer's own endpoint is Zimmer's to know; a copy in `mcp.json` is a duplicate that
@@ -225,8 +254,8 @@ from a denial — a gate that fails closed *and* fails silently, which is how on
 reading the secret it needed through the service account instead.
 
 `ElicitationEndpointHealthCheckJob` probes the endpoint every 5 minutes from the host agents run on
-(any HTTP response counts — a 404 for the probe id proves the request reached Rails; only a transport
-failure is a broken gate) and records the result. It runs in production and staging;
+(it polls the token route with a token that cannot verify; any HTTP response counts — the expected
+401 proves the request reached Rails; only a transport failure is a broken gate) and records the result. It runs in production and staging;
 [not in development](/operate/background-jobs/#why-the-elicitation-probe-doesnt-run-in-development),
 where the URL it would probe describes your own laptop rather than anything agents depend on. When
 the endpoint is unreachable, the job warns on every tick and pages once per incident, and `OrchestratorSystemPromptBuilder` puts the failure in the system prompt of every session
@@ -245,9 +274,9 @@ one hard-coding its own URL, still fails the same way.
 `PATCH /api/v1/elicitations/:id/respond` (API) takes **either** the `request_id` or the primary
 key, so whichever one you already hold works.
 
-`GET /api/v1/elicitations/:id` stays `request_id`-only on purpose. It is unauthenticated for the
-poll protocol, and accepting a primary key would turn it into a sequential-id enumeration of every
-elicitation.
+Both polls — `GET …/session/:token/:request_id` and the API-key `GET /api/v1/elicitations/:request_id`
+— stay `request_id`-only on purpose. The protocol speaks nothing else, and accepting a primary key
+would turn a poll into a sequential-id enumeration.
 
 Also: the API uses `action_type`, not `action`, because `action` collides with a Rails reserved
 param. Clients have to know that.

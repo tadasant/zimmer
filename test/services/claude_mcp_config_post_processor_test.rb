@@ -143,8 +143,11 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     build_processor.post_process!
 
     result = read_config
-    assert_equal ElicitationEndpoint.url, result.dig("mcpServers", "test-server", "env", "ELICITATION_REQUEST_URL")
+    assert_equal ElicitationEndpoint.session_url(@session.id), result.dig("mcpServers", "test-server", "env", "ELICITATION_REQUEST_URL")
     assert_equal @session.id.to_s, result.dig("mcpServers", "test-server", "env", "ELICITATION_SESSION_ID")
+    assert_equal @session,
+      ElicitationEndpoint.session_for_token(result.dig("mcpServers", "test-server", "env", "ELICITATION_REQUEST_URL").split("/").last),
+      "the server's own env table must carry a token that verifies as this session"
     assert_nil result.dig("mcpServers", "acme-http", "env"),
       "an HTTP entry has no child process, so it gets no env"
   end
@@ -164,7 +167,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     assert_equal "sk-literal-123", env["API_KEY"],
       "the env table holds the server's credentials — injection must merge, never replace"
     assert_equal "us-east-1", env["REGION"]
-    assert_equal ElicitationEndpoint.url, env["ELICITATION_REQUEST_URL"]
+    assert_equal ElicitationEndpoint.session_url(@session.id), env["ELICITATION_REQUEST_URL"]
   end
 
   test "post_process! overrides a catalog entry's own stale elicitation URL" do
@@ -178,7 +181,7 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
 
     build_processor.post_process!
 
-    assert_equal ElicitationEndpoint.url,
+    assert_equal ElicitationEndpoint.session_url(@session.id),
       read_config.dig("mcpServers", "test-server", "env", "ELICITATION_REQUEST_URL"),
       "Zimmer's address for its own endpoint wins over a catalog copy that can go stale"
   end
@@ -950,8 +953,8 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
           "args" => [ "-y", "some-package" ],
           "env" => {
             "TOKEN" => "fallback",
-            "ELICITATION_REQUEST_URL" => ElicitationEndpoint.url,
-            "ELICITATION_POLL_URL" => ElicitationEndpoint.url,
+            "ELICITATION_REQUEST_URL" => ElicitationEndpoint.session_url(@session.id),
+            "ELICITATION_POLL_URL" => ElicitationEndpoint.session_url(@session.id),
             "ELICITATION_PREFER_HTTP_FALLBACK" => "true",
             "ELICITATION_TTL_MS" => (Elicitation::DEFAULT_EXPIRATION.to_i * 1000).to_s,
             "ELICITATION_SESSION_ID" => @session.id.to_s,

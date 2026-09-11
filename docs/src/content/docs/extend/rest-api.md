@@ -922,20 +922,36 @@ in `unpriced_models` rather than being silently folded into the total.
 
 ## Elicitations
 
-- `POST /elicitations` — **UNAUTHENTICATED**. Requires `_meta["com.pulsemcp/request-id"]` and
-  `message`. → 201.
-- `GET /elicitations/:request_id` — **UNAUTHENTICATED**. Auto-expires past `expires_at`.
-- `PATCH /elicitations/:id/respond` — authenticated. `action_type` ∈ `accept | decline | cancel`,
+The [fallback-elicitation protocol](/sessions/elicitation/) that an MCP server speaks. These two routes
+take a session token in the path instead of an API key, because the MCP child process has no key and
+the client sends no auth header:
+
+- `POST /elicitations/session/:token` — creates an elicitation on the session the token names.
+  Requires `_meta["com.pulsemcp/request-id"]` and `message`. → 201, with
+  `_meta["com.pulsemcp/poll-url"]` pointing at the token route below. 401 when the token does not
+  verify. 403 when `_meta["com.pulsemcp/session-id"]` names a different session; a blank one is
+  accepted. 422 when `request-id` or `message` is missing, or the `request-id` is already taken.
+- `GET /elicitations/session/:token/:request_id` — polls one of that session's elicitations.
+  Auto-expires past `expires_at`. 401 when the token does not verify. 404 when the `request_id`
+  does not exist *or* belongs to another session.
+
+Nothing hands out a token URL except the `ELICITATION_REQUEST_URL` and `ELICITATION_POLL_URL` that
+Zimmer puts in a session's MCP server environment. See
+[who may raise a prompt](/sessions/elicitation/#who-may-raise-a-prompt).
+
+With an API key:
+
+- `POST /elicitations` — the session comes from `_meta["com.pulsemcp/session-id"]` (id or slug).
+  → 201. 401 without a valid key, 404 when the session-id names no session, 422 as above.
+- `GET /elicitations/:request_id` — polls any elicitation. 401 without a valid key.
+- `PATCH /elicitations/:id/respond` — `action_type` ∈ `accept | decline | cancel`,
   optional `content` (kept only for `accept`; `cancel` is the protocol's "dismissed without
   answering"). `:id` is either the `request_id` or the numeric primary key, so the identifier you
   already hold — from a poll response or from the web UI's own `/elicitations/:id/respond` route —
-  works here too.
+  works here too. A session token does not reach it.
 
-`show` stays `request_id`-only on purpose: it is unauthenticated for the poll protocol, and
-accepting a primary key there would turn it into a sequential-id enumeration of every elicitation.
-
-The first two skip auth because the MCP child process has no API key. See
-[Elicitation](/sessions/elicitation/).
+Both polls stay `request_id`-only on purpose: the protocol speaks nothing else, and accepting a
+primary key would turn a poll into a sequential-id enumeration.
 
 Note the parameter is `action_type`, not `action` — `action` is a Rails reserved param.
 
