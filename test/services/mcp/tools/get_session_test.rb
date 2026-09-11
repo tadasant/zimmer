@@ -252,6 +252,23 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
   # An agent reading its own session has to be able to tell a deferred turn from a
   # stuck one — and, when the gate refused a WAKE rather than a first start, that
   # the prompt it was woken for is still coming.
+  test "a session the starvation lane admitted says so" do
+    session = Session.create!(
+      prompt: "work", git_root: "https://github.com/test/repo.git", status: :running,
+      scheduling_class: SessionGenesis::SPOT,
+      metadata: {
+        SpotSessionHold::STARVATION_ADMITTED_AT => 10.minutes.ago.utc.iso8601,
+        SpotSessionHold::STARVATION_ADMITTED_AFTER_HOLDS => 127,
+        SpotSessionHold::STARVATION_ADMITTED_AFTER_SECONDS => 5.days.to_i
+      }
+    )
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "- **Admitted by the starvation lane:** This turn was admitted by the starvation lane"
+    assert_includes output, "held it 127 times over 5 days"
+  end
+
   test "a spot session held before its next turn says so, and says the prompt survives" do
     session = sessions(:running)
     session.update!(status: :waiting, scheduling_class: SessionGenesis::SPOT, metadata: {
@@ -267,7 +284,11 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
 
     assert_includes output, "**Spot gate: next turn held (`at_utilization_limit`):**"
     assert_includes output, "- **Hold re-check:** Next check"
-    assert_includes output, "- **Holds so far:** 3"
+    # The count rides with the age of the ladder — the two numbers that tell a
+    # session held three times from one held 127 times (tadasant/zimmer#693).
+    assert_includes output, "- **Waiting:** Waiting on this ladder for 20 minutes"
+    assert_includes output, "3 holds so far"
+    assert_includes output, "The starvation lane admits it once it has waited 24 hours"
     assert_includes output, "The prompt that woke it is not lost"
   end
 

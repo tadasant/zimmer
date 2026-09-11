@@ -22,6 +22,7 @@ class SpotPoliciesController < ApplicationController
     spot_reserve_five_hour_pct
     spot_reserve_weekly_pct
     spot_max_concurrent_sessions
+    spot_starvation_age_ceiling_hours
   ].freeze
   FIELDS = (BOOLEAN_FIELDS + INTEGER_FIELDS).freeze
 

@@ -57,12 +57,78 @@ class SpotHoldExplanation
   #   and its own number for the same reason the other two are: it shares the
   #   paused queue's resume owner but not its cause, so folding it into
   #   `paused_count` would report the concurrency limit's cost as the budget's.
-  def initialize(decision, paused_count:, held_count: 0, overdue_hold_count: 0, preempted_count: 0)
+  # @param starvation [Starvation, nil] the starvation lane's reading — the
+  #   ceiling, how many held sessions are past it, how old the oldest hold is
+  #   and who is in the lane. Nil renders nothing about the lane.
+  def initialize(decision, paused_count:, held_count: 0, overdue_hold_count: 0, preempted_count: 0,
+                 starvation: nil)
     @decision = decision
     @paused_count = paused_count.to_i
     @held_count = held_count.to_i
     @overdue_hold_count = overdue_hold_count.to_i
     @preempted_count = preempted_count.to_i
+    @starvation = starvation
+  end
+
+  # The starvation lane as one reading, taken once and handed to both surfaces
+  # so the page and the tool print the same numbers. See SpotSessionHold's "A
+  # hold has an age ceiling".
+  #
+  # @param ceiling [ActiveSupport::Duration, nil] nil when the lane is off
+  # @param starved_count [Integer] held sessions whose ladder is older than the ceiling
+  # @param oldest_hold_age [ActiveSupport::Duration, Numeric, nil] the oldest held session's wait
+  # @param occupants [Array<Integer, Symbol>] SpotSessionHold.starvation_lane_occupants
+  Starvation = Data.define(:ceiling, :starved_count, :oldest_hold_age, :occupants) do
+    def self.read(setting: AppSetting.current, now: Time.current)
+      ceiling = setting.spot_starvation_age_ceiling
+      new(
+        ceiling: ceiling,
+        starved_count: SpotSessionHold.starved_count(ceiling: ceiling, now: now),
+        oldest_hold_age: SpotSessionHold.oldest_hold_age(now: now),
+        occupants: SpotSessionHold.starvation_lane_occupants
+      )
+    end
+
+    def off? = ceiling.nil?
+    def unreadable? = occupants.include?(:unreadable)
+    def occupied? = occupants.any?
+  end
+
+  # The lane, in one sentence for the held-sessions line: whether anyone is past
+  # the ceiling, how old the oldest wait is, and what the lane is doing about
+  # it. Empty with no reading and nothing held.
+  def sessions_starved
+    return "" if @starvation.nil?
+
+    oldest = @starvation.oldest_hold_age
+    oldest_clause = oldest.present? ? "The oldest has been waiting #{distance_of_time_in_words(0, oldest.to_i)}." : nil
+
+    if @starvation.off?
+      return [ oldest_clause,
+               "The starvation lane is off (age ceiling 0), so a held session waits as long as the " \
+               "window stays over its ceiling — with no bound." ].compact.join(" ")
+    end
+
+    ceiling = @starvation.ceiling.inspect
+    lane = if @starvation.unreadable?
+      "The starvation lane could not be read, so it is treated as occupied and admits nothing."
+    elsif @starvation.occupied?
+      ids = @starvation.occupants.map { |id| "##{id}" }.join(", ")
+      "The starvation lane is running session #{ids} — admitted past the gate after waiting longer " \
+        "than the #{ceiling} age ceiling; the next starved session waits for that turn to end."
+    else
+      "The starvation lane is free."
+    end
+
+    starved = if @starvation.starved_count.zero?
+      "None has waited past the #{ceiling} age ceiling."
+    else
+      "#{@starvation.starved_count} #{@starvation.starved_count == 1 ? 'has' : 'have'} waited past the " \
+        "#{ceiling} age ceiling and #{@starvation.starved_count == 1 ? 'is' : 'are'} admitted by the " \
+        "starvation lane, one at a time, at #{@starvation.starved_count == 1 ? 'its' : 'their'} next re-check."
+    end
+
+    [ oldest_clause, starved, lane ].compact.join(" ")
   end
 
   # @return [Array<Line>] empty when spot work is running — there is no hold to

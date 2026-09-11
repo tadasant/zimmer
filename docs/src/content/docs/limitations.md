@@ -1890,6 +1890,34 @@ whole spot wake into one event, and the sharp edges are all about that concentra
   half. The shipped `fleet-maintenance` wake is the only listener on this deployment, so today this
   costs nothing.
 
+### The starvation lane bounds a turn's wait, not a session's — and it is a hole in the budget
+
+🟡 A spot session the gate has refused for longer than the
+[starvation age ceiling](/sessions/spot-and-priority/#a-hold-has-an-age-ceiling-the-starvation-lane)
+is admitted past a spent or over-paced quota window, one session at a time, for that one turn. That
+is deliberately a hole in the budget ceiling the gate enforces, and its edges are all consequences
+of keeping it small:
+
+- **The bound is per turn.** A session whose every turn is held waits up to the ceiling before
+  *each* of them: the admission clears the hold record, and the next turn's hold starts a fresh
+  ladder with a fresh clock. A long-running spot session under a spent week therefore gets one turn
+  a day, not one turn and then free passage.
+- **The lane is one session wide, so the ceiling is a floor on the wait, not a guarantee.** With
+  thirty starved sessions and an ~80-minute turn each, the thirtieth waits the ceiling *plus* about
+  forty hours for the lane. That is the trade: widening the lane would widen the hole by the same
+  factor, and the number is a constant (`SpotSessionHold::STARVATION_LANE_WIDTH`) rather than a
+  setting for that reason.
+- **The admitted turn runs to its end, however long that is.** The ceiling sweep leaves it alone,
+  so a starvation-admitted implementation session that runs for six hours holds the lane for six
+  hours. Priority preemption can still take its slot, and if it does the session goes back to the
+  paused queue and waits on the ordinary resume decision — the lane does not reach into that queue.
+- **Only `at_utilization_limit` is overridden.** A session held for `fleet_at_cap` waits without
+  bound, because that hold is priority work crowding spot work out and clears on its own; a fleet
+  that is permanently full of priority work starves spot work by design.
+- **A ladder written before `spot_hold_since` existed reads its age off its latest `spot_hold_at`**
+  until its next rung carries the older stamp forward, so for one re-check interval after the deploy
+  such a session under-reports its wait by up to an hour.
+
 ### The idle-fleet event is sampled, floored and cooled down, and each of the three has an edge
 
 🟡 [`no_sessions_in_progress`](/sessions/triggers/#no_sessions_in_progress) fires when the deployment

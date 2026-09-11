@@ -619,6 +619,45 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert_match(/Spot sessions held before a turn/, response.body)
   end
 
+  # A held session was invisible precisely because every rung of its ladder was
+  # correct (tadasant/zimmer#693). The card counts the ones past the age ceiling
+  # and says what the lane is doing about them — and says "none, lane free" the
+  # rest of the time, because that is the answer to "is anything waiting without
+  # bound".
+  test "show counts held sessions past the starvation age ceiling and names the lane's occupant" do
+    hold_spot_work(utilization_5h: 0.30, burn: 4.0, running: 1)
+    AppSetting.editable.update!(spot_starvation_age_ceiling_hours: 24)
+    held_spot_session(retry_at: 20.minutes.from_now)
+    starved = held_spot_session(retry_at: 20.minutes.from_now)
+    starved.merge_metadata!(SpotSessionHold::HELD_SINCE => 3.days.ago.utc.iso8601)
+    occupant = Session.create!(git_root: "https://github.com/t/r.git", prompt: "admitted", status: :running,
+                               genesis: SessionGenesis::GITHUB_ISSUE, agent_runtime: "claude_code",
+                               metadata: { SpotSessionHold::STARVATION_ADMITTED_AT => 5.minutes.ago.utc.iso8601 })
+
+    get inference_url
+
+    assert_response :success
+    assert_select "#spot-held-count", "2"
+    assert_select "#spot-starved-count", "1"
+    assert_select "#spot-gate-starvation-decision", text: /oldest has been waiting 3 days/
+    assert_select "#spot-gate-starvation-decision", text: /1 has waited past the 24 hours age ceiling/
+    assert_select "#spot-gate-starvation-decision", text: /running session ##{occupant.id}/
+    assert_select "input#app_setting_spot_starvation_age_ceiling_hours[value=?]", "24"
+  end
+
+  test "show says the starvation lane is off when the ceiling is zero" do
+    hold_spot_work(utilization_5h: 0.30, burn: 4.0, running: 1)
+    AppSetting.editable.update!(spot_starvation_age_ceiling_hours: 0)
+    held_spot_session(retry_at: 20.minutes.from_now)
+
+    get inference_url
+
+    assert_response :success
+    assert_select "#spot-starved-count", "0"
+    assert_select "#spot-gate-starvation-decision", text: /starvation lane is off/
+    assert_select "#spot-gate-starvation-decision", text: /no bound/
+  end
+
   # A hold past its own re-check time is a ladder that has stopped, and until
   # SpotHoldSweepJob existed nothing surfaced it anywhere.
   test "show names held sessions whose re-check is overdue" do

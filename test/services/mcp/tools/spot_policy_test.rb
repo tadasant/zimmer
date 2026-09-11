@@ -503,6 +503,30 @@ class Mcp::Tools::SpotPolicyTest < ActiveSupport::TestCase
     assert_match(/Priority preemption:\*\* off/, get_policy)
   end
 
+  # Parity: the /inference form has the field, so an agent has to be able to
+  # set it too — and 0 has to reach the column, since it is the value that turns
+  # the lane off.
+  test "set_gating sets the starvation age ceiling, and get reports it and the lane" do
+    AppSetting.editable.update!(spot_gating_enabled: true, spot_starvation_age_ceiling_hours: 24)
+
+    result = action(action: "set_gating", starvation_age_ceiling_hours: 48)
+    assert_equal 48, AppSetting.current.spot_starvation_age_ceiling_hours
+    assert_match(/starvation age ceiling 48h/, result)
+    policy = get_policy
+    assert_match(/Starvation age ceiling:\*\* 48h/, policy)
+    assert_match(/Spot starvation:\*\*/, policy)
+    assert_match(/starvation lane is free/, policy)
+
+    result = action(action: "set_gating", starvation_age_ceiling_hours: 0)
+    assert_equal 0, AppSetting.current.spot_starvation_age_ceiling_hours
+    assert_match(/starvation lane off/, result)
+    assert_match(/Starvation age ceiling:\*\* off/, get_policy)
+  end
+
+  test "set_gating refuses a starvation ceiling out of range" do
+    assert_raises(Mcp::ToolError) { action(action: "set_gating", starvation_age_ceiling_hours: -1) }
+  end
+
   test "set_gating turns priority preemption back on without touching the gate" do
     AppSetting.editable.update!(spot_gating_enabled: true, spot_preemption_enabled: false)
 

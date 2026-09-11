@@ -43,6 +43,7 @@ class AppSettingFleetPolicyAuditTest < ActiveSupport::TestCase
       spot_reserve_weekly_pct: 20,
       spot_max_concurrent_sessions: 10,
       spot_preemption_enabled: true,
+      spot_starvation_age_ceiling_hours: 24,
       fleet_idle_max_sessions: 3,
       fleet_idle_threshold_minutes: 5,
       fleet_idle_min_fire_interval_minutes: 60
@@ -55,6 +56,7 @@ class AppSettingFleetPolicyAuditTest < ActiveSupport::TestCase
         spot_reserve_weekly_pct: 40,
         spot_max_concurrent_sessions: 12,
         spot_preemption_enabled: false,
+        spot_starvation_age_ceiling_hours: 48,
         fleet_idle_max_sessions: 12,
         fleet_idle_threshold_minutes: 7,
         fleet_idle_min_fire_interval_minutes: 10
