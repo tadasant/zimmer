@@ -18,6 +18,16 @@ require "digest"
 # the caller to name the grant it will honour — so a `quick_router` key presented
 # to `/api/v1/sessions` or `/mcp` is refused the same way a revoked key is.
 #
+# Every read of that column goes through `effective_grant`, which answers `api`
+# when the column is not there at all. Code that hard-requires a column its own
+# deploy adds is code that breaks whenever the migration has not run yet, and on
+# 2026-09-11 that took down every authenticated request in production: a
+# duplicate migration version stopped `db:migrate` from applying anything, the
+# containers served the new code regardless, and reading `api_key.grant` raised
+# on a table that had no such column (#1156, #1163). A row with no `grant`
+# predates the column, so it predates the only grant that is not `api` —
+# answering `api` for it is not a fallback, it is what that row has always meant.
+#
 # Keys come from two places, recorded in `source`:
 #
 # - **`env`** — an entry in `ENV["API_KEYS"]`. Every client that exists today holds
@@ -85,10 +95,11 @@ class ApiKey < ApplicationRecord
     format: { without: /[\p{Cc}\p{Cf}]/, message: "can't contain control or formatting characters" }
   validates :token_digest, presence: true, uniqueness: true
   validates :source, inclusion: { in: SOURCES }
-  validates :grant, inclusion: { in: GRANTS }
+  validates :grant, inclusion: { in: GRANTS }, if: :grant_column?
   # An `API_KEYS` entry is in every agent session's environment, so it can never
   # be the browser extension's credential; only a minted key can be narrowed.
-  validates :grant, inclusion: { in: [ API_GRANT ], message: "must be #{API_GRANT} for an #{ENV_VAR} entry" }, if: :env?
+  validates :grant, inclusion: { in: [ API_GRANT ], message: "must be #{API_GRANT} for an #{ENV_VAR} entry" },
+    if: -> { grant_column? && env? }
   validate :name_not_reserved, if: :minted?
 
   scope :listed, -> { order(Arel.sql("revoked_at IS NOT NULL"), created_at: :desc) }
@@ -116,7 +127,7 @@ class ApiKey < ApplicationRecord
       return refuse(:unknown) if api_key.nil?
       return refuse(:revoked, api_key) if api_key.revoked?
       return refuse(:retired, api_key) if api_key.env? && !in_env
-      return refuse(:wrong_grant, api_key) unless api_key.grant == grant
+      return refuse(:wrong_grant, api_key) unless api_key.effective_grant == grant
 
       api_key.record_use!
       Authentication.new(api_key: api_key, refusal: nil)
@@ -127,8 +138,19 @@ class ApiKey < ApplicationRecord
     # @return [Array(ApiKey, String)]
     def mint!(name:, grant: API_GRANT)
       token = "#{MINTED_PREFIX}#{SecureRandom.hex(32)}"
-      api_key = create!(name: name.to_s.strip, source: MINTED_SOURCE, grant: grant, token_digest: digest(token))
-      [ api_key, token ]
+      attributes = { name: name.to_s.strip, source: MINTED_SOURCE, token_digest: digest(token) }
+
+      # A database that has the column records the choice. One that does not can
+      # still mint the key every key was before the column existed; a narrow one
+      # has nowhere to be stored, and saying so is better than handing back a key
+      # that silently opens everything.
+      if column_names.include?("grant")
+        attributes[:grant] = grant
+      elsif grant != API_GRANT
+        raise ActiveRecord::ActiveRecordError, "api_keys.grant does not exist yet, so a #{grant} key cannot be minted"
+      end
+
+      [ create!(**attributes), token ]
     end
 
     # Give every `API_KEYS` entry a row, so the settings page lists keys that have
@@ -188,7 +210,13 @@ class ApiKey < ApplicationRecord
   def env? = source == ENV_SOURCE
   def minted? = source == MINTED_SOURCE
   def revoked? = revoked_at.present?
-  def quick_router? = grant == QUICK_ROUTER_GRANT
+  def quick_router? = effective_grant == QUICK_ROUTER_GRANT
+
+  # What this key opens — `api` on a database whose `grant` column has not been
+  # added yet. The only read of that attribute anywhere; see the class comment.
+  def effective_grant
+    grant_column? ? self[:grant] : API_GRANT
+  end
 
   # The first characters of the key's SHA-256 — what the settings page shows.
   def fingerprint
@@ -234,6 +262,8 @@ class ApiKey < ApplicationRecord
   end
 
   private
+
+  def grant_column? = has_attribute?(:grant)
 
   # Case-insensitive, like the unique index on `lower(name)`.
   def name_not_reserved

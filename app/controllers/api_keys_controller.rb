@@ -112,7 +112,7 @@ class ApiKeysController < ApplicationController
   # is the audit trail this page exists to give.
   def log_lifecycle(verb, api_key)
     Rails.logger.warn(
-      "[api_key] #{verb} #{api_key.name.inspect} (api_key_id=#{api_key.id}, source=#{api_key.source}, grant=#{api_key.grant}) " \
+      "[api_key] #{verb} #{api_key.name.inspect} (api_key_id=#{api_key.id}, source=#{api_key.source}, grant=#{api_key.effective_grant}) " \
       "from the settings page, #{request.remote_ip}"
     )
   end
