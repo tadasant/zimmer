@@ -113,62 +113,53 @@ class SigtermRetryService
   # The noun the shared respawn log sentences interpolate.
   def recovery_label = "SIGTERM retry"
 
+  # The scaffold's rescue reads this to tell an intermediate failure from the final one.
+  def recovery_attempt_limit = BUDGET.max
+
+  # Back to the top of the loop: SIGTERM retries re-run the whole attempt,
+  # including the budget check, because each one spends an attempt.
+  def next_recovery_attempt(working_directory)
+    attempt_retry(working_directory)
+  end
+
   # Spawn a new process and verify it stays running
   # @param working_directory [String] The working directory
   # @param retry_attempt [Integer] Current retry attempt number
   # @return [Symbol] :success, :exhausted, :aborted, or recursive call result
   def spawn_and_verify_retry(working_directory, retry_attempt)
-    # Final status check immediately before spawning to prevent race condition
-    # where user sends a follow-up prompt between wait_with_status_checks and here.
-    # This is the last opportunity to abort before spawning an automated recovery
-    # process that would race with the user's follow-up prompt.
-    # Read before the status check rather than inside the branch below, because
+    # Read before the status check rather than inside the spawn below, because
     # the check has to be told which prompt this respawn will actually carry —
     # for a status-summary fork interrupted before it consumed its prompt, this
     # pending one IS the summary request, and refusing it would cost a blurb
     # every time a deploy landed mid-generation. Read only; it is still consumed
-    # and cleared where it is used.
+    # and cleared where it is used. Reading it here also fixes the value across
+    # the `session.reload` that `check_session_status` performs, which is why it
+    # is captured by the block rather than re-read inside it.
     pending_prompt = session.metadata&.dig("pending_follow_up_prompt")
 
-    abort_result = check_session_status(
+    # The scaffold makes the final status check immediately before spawning, to
+    # prevent the race where a user sends a follow-up prompt between
+    # wait_with_status_checks and here — the last opportunity to abort before
+    # spawning an automated recovery process that would race with it.
+    respawn_and_verify(
+      working_directory,
+      retry_attempt,
       resume_prompt: pending_prompt.presence || AutomatedPrompts::SYSTEM_RECOVERY
-    )
-    return :aborted if abort_result == :aborted
+    ) { spawn_retry_process(working_directory, pending_prompt) }
+  end
 
-    # Check if there's an existing conversation to resume
-    # If the original process was killed before producing any assistant response,
-    # we need to start fresh instead of trying to resume
-    spawn_result = if conversation_exists?(working_directory)
-      # Check for pending follow-up prompt that was lost due to race condition.
-      # This happens when the user sends a follow-up, the job is enqueued, but
-      # SIGTERM retry kicks in before the job processes the prompt.
-      resume_prompt = if pending_prompt.present?
-        add_log("Using pending follow-up prompt instead of automated recovery prompt", level: "info")
-        # Clear the pending prompt and sent_at now that we're using it
-        with_db_retry do
-          session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
-        end
-        pending_prompt
-      else
-        AutomatedPrompts::SYSTEM_RECOVERY
-      end
-
-      # Regenerate system prompt for retry consistency
-      system_prompt = OrchestratorSystemPromptBuilder.build(
-        session: session,
-        working_directory: session.working_directory
-      )
-
-      add_log("Resuming existing conversation", level: "debug")
-      cli_adapter.resume(
-        session_id: session.session_id,
-        prompt: resume_prompt,
-        working_dir: working_directory,
-        append_system_prompt: system_prompt,
-        model: session.config&.dig("model"),
-        auto_compact_window: session.auto_compact_window
-      )
-    else
+  # The one thing SIGTERM retry does differently from the other three recovery
+  # services: it may have nothing to resume. If the original process was killed
+  # before producing any assistant response there is no conversation on disk, and
+  # resuming would fail with "No conversation found" — so it starts fresh with the
+  # original prompt instead.
+  #
+  # @param working_directory [String] The working directory
+  # @param pending_prompt [String, nil] a follow-up the user sent that the job
+  #   never got to process, read before the scaffold's status check
+  # @return [Hash] the adapter's spawn result
+  def spawn_retry_process(working_directory, pending_prompt)
+    unless conversation_exists?(working_directory)
       # Regenerate system prompt for retry consistency
       system_prompt = OrchestratorSystemPromptBuilder.build(
         session: session,
@@ -176,7 +167,7 @@ class SigtermRetryService
       )
 
       add_log("No existing conversation found, starting fresh with original prompt", level: "info")
-      cli_adapter.execute(
+      return cli_adapter.execute(
         prompt: session.prompt,
         session_id: session.session_id,
         working_dir: working_directory,
@@ -187,53 +178,22 @@ class SigtermRetryService
       )
     end
 
-    new_pid = spawn_result[:pid]
-
-    add_log(
-      "Spawned new Claude CLI process with PID #{new_pid} for retry attempt #{retry_attempt}",
-      level: "info"
-    )
-
-    # Update session metadata with new process PID
-    with_db_retry do
-      session.record_agent_process!(new_pid)
+    # Check for pending follow-up prompt that was lost due to race condition.
+    # This happens when the user sends a follow-up, the job is enqueued, but
+    # SIGTERM retry kicks in before the job processes the prompt.
+    resume_prompt = if pending_prompt.present?
+      add_log("Using pending follow-up prompt instead of automated recovery prompt", level: "info")
+      # Clear the pending prompt and sent_at now that we're using it
+      with_db_retry do
+        session.remove_metadata!(%w[pending_follow_up_prompt pending_follow_up_sent_at])
+      end
+      pending_prompt
+    else
+      AutomatedPrompts::SYSTEM_RECOVERY
     end
 
-    # Verify the process stays running for the threshold period
-    if verify_process_running(new_pid, retry_attempt)
-      add_log(
-        "SIGTERM retry #{retry_attempt} successful - process #{new_pid} verified running for #{SUCCESS_THRESHOLD}s",
-        level: "info"
-      )
-      log_buffer.flush
-      @logger.info("SIGTERM retry successful", retry_attempt: retry_attempt, new_pid: new_pid)
-      return :success
-    end
-
-    # Process died during verification - continue to next retry attempt
-    attempt_retry(working_directory)
-  rescue => e
-    if retry_attempt >= BUDGET.max
-      # Final attempt failed and no retries remain — this is a genuine failure,
-      # so log at error (which surfaces to GlitchTip, with a backtrace).
-      add_log(
-        "Error during SIGTERM retry attempt #{retry_attempt}: #{e.message}",
-        level: "error"
-      )
-      log_buffer.flush
-      @logger.error("Error during SIGTERM retry", retry_attempt: retry_attempt, error: e.message, exception: e)
-      return :exhausted
-    end
-
-    # Intermediate attempt failed but retries remain; this is expected/transient
-    # and will self-resolve on the next attempt, so log at info (no alert).
-    add_log(
-      "Error during SIGTERM retry attempt #{retry_attempt}: #{e.message}",
-      level: "info"
-    )
-    log_buffer.flush
-    @logger.info("Error during SIGTERM retry", retry_attempt: retry_attempt, error: e.message)
-    attempt_retry(working_directory)
+    add_log("Resuming existing conversation", level: "debug")
+    resume_for_recovery(working_directory, prompt: resume_prompt)
   end
 
   # Check if a valid conversation exists in the transcript
@@ -241,11 +201,12 @@ class SigtermRetryService
   # @param working_directory [String] The working directory for finding the transcript
   # @return [Boolean] true if conversation exists, false otherwise
   def conversation_exists?(working_directory)
-    source = TranscriptRuntime.source_for(session, file_system: file_system)
-    transcript_dir = source.transcript_directory(working_directory: working_directory)
-    return false unless transcript_dir && file_system.directory?(transcript_dir)
-
-    transcript_file = source.find_main_transcript(transcript_directory: transcript_dir, session: session)
+    # `transcript_source.locate`, not the scaffold's `find_transcript_path`: that
+    # one answers nil for a transcript it cannot read, and nil here means "start
+    # fresh", which would replay the original prompt over a conversation that
+    # exists. A transcript that cannot be read must raise and be counted as a
+    # failed attempt instead.
+    transcript_file = transcript_source.locate(session: session, working_directory: working_directory)
     return false unless transcript_file && file_system.exists?(transcript_file)
 
     transcript_content = file_system.read(transcript_file)

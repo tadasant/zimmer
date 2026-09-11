@@ -290,147 +290,28 @@ class ContextLengthRetryService
     false
   end
 
-  # Find the transcript file path for the session
-  #
-  # Both halves — the directory and the file inside it — come from the session's
-  # runtime TranscriptSource, which is the single place that knows a runtime's
-  # on-disk layout.
-  #
-  # @param working_directory [String] Working directory for the session
-  # @return [String, nil] Path to transcript file, or nil if not found
-  def find_transcript_path(working_directory)
-    source = TranscriptRuntime.source_for(session, file_system: file_system)
-    transcript_dir = source.transcript_directory(working_directory: working_directory)
-    return nil unless transcript_dir
-    return nil unless file_system.directory?(transcript_dir)
-
-    source.find_main_transcript(transcript_directory: transcript_dir, session: session)
-  rescue => e
-    @logger.error("Error finding transcript path", error: e.message)
-    nil
-  end
-
-  # Extract text content from a transcript message entry
-  #
-  # API error messages have the structure:
-  # {
-  #   "message": {
-  #     "content": [{"type": "text", "text": "Prompt is too long"}]
-  #   }
-  # }
-  #
-  # @param entry [Hash] The transcript entry
-  # @return [String] The extracted text content
-  def extract_message_text(entry)
-    message = entry["message"]
-    return "" unless message.is_a?(Hash)
-
-    content = message["content"]
-    return "" unless content.is_a?(Array)
-
-    content.filter_map do |block|
-      block["text"] if block.is_a?(Hash) && block["type"] == "text"
-    end.join(" ")
-  end
-
-  # Get the current line count of the transcript file
-  #
-  # Used to track which lines have been processed for context length errors,
-  # preventing re-detection of the same error messages.
-  #
-  # @param working_directory [String] Working directory for locating transcript
-  # @return [Integer] Number of lines in the transcript, or 0 if file not found
-  def get_transcript_line_count(working_directory)
-    transcript_path = find_transcript_path(working_directory)
-    return 0 unless transcript_path
-    return 0 unless file_system.exists?(transcript_path)
-
-    content = file_system.read(transcript_path)
-    return 0 if content.blank?
-
-    content.lines.count
-  rescue => e
-    @logger.error("Error getting transcript line count", error: e.message)
-    0
-  end
-
   # Spawn a new process with /compact command and verify it stays running
   #
   # @param working_directory [String] The working directory
   # @param retry_attempt [Integer] Current retry attempt number
   # @return [Symbol] :success, :exhausted, :aborted, or recursive call result
   def spawn_and_verify_recovery(working_directory, retry_attempt)
-    # Final status check immediately before spawning to prevent race condition
-    # where user sends a follow-up prompt between attempt_recovery and here.
-    # This is the last opportunity to abort before spawning a "/compact" process
-    # that would race with the user's follow-up prompt.
-    abort_result = check_session_status(resume_prompt: COMPACT_PROMPT)
-    return :aborted if abort_result == :aborted
+    # The scaffold makes the final status check immediately before spawning, to
+    # prevent the race where a user sends a follow-up prompt between
+    # attempt_recovery and here — the last opportunity to abort before spawning a
+    # "/compact" process that would race with it.
+    respawn_and_verify(working_directory, retry_attempt, resume_prompt: COMPACT_PROMPT) do
+      add_log("Sending /compact command to reduce context size", level: "info")
 
-    # Send /compact command to reduce context
-    add_log("Sending /compact command to reduce context size", level: "info")
-
-    # Regenerate system prompt for compact operation consistency
-    system_prompt = OrchestratorSystemPromptBuilder.build(
-      session: session,
-      working_directory: session.working_directory
-    )
-
-    spawn_result = cli_adapter.resume(
-      session_id: session.session_id,
-      prompt: COMPACT_PROMPT,
-      working_dir: working_directory,
-      append_system_prompt: system_prompt,
-      model: session.config&.dig("model"),
-      auto_compact_window: session.auto_compact_window
-    )
-
-    new_pid = spawn_result[:pid]
-
-    add_log(
-      "Spawned Claude CLI process with PID #{new_pid} for compact attempt #{retry_attempt}",
-      level: "info"
-    )
-
-    # Update session metadata with new process PID
-    with_db_retry do
-      session.record_agent_process!(new_pid)
+      resume_for_recovery(working_directory, prompt: COMPACT_PROMPT)
     end
+  end
 
-    # Verify the process stays running for the threshold period
-    if verify_process_running(new_pid, retry_attempt)
-      add_log(
-        "Context length compact #{retry_attempt} successful - process #{new_pid} verified running for #{SUCCESS_THRESHOLD}s",
-        level: "info"
-      )
-      log_buffer.flush
-      @logger.info("Context length compact successful", retry_attempt: retry_attempt, new_pid: new_pid)
-      return :success
-    end
+  # The scaffold's rescue reads this to tell an intermediate failure from the final one.
+  def recovery_attempt_limit = BUDGET.max
 
-    # Process died during verification - continue to next retry attempt
-    attempt_recovery_retry(working_directory)
-  rescue => e
-    if retry_attempt >= BUDGET.max
-      # Final attempt failed and no retries remain — this is a genuine failure,
-      # so log at error (which surfaces to GlitchTip, with a backtrace).
-      add_log(
-        "Error during context length compact attempt #{retry_attempt}: #{e.message}",
-        level: "error"
-      )
-      log_buffer.flush
-      @logger.error("Error during context length compact", retry_attempt: retry_attempt, error: e.message, exception: e)
-      return :exhausted
-    end
-
-    # Intermediate attempt failed but retries remain; this is expected/transient
-    # and will self-resolve on the next attempt, so log at info (no alert).
-    add_log(
-      "Error during context length compact attempt #{retry_attempt}: #{e.message}",
-      level: "info"
-    )
-    log_buffer.flush
-    @logger.info("Error during context length compact", retry_attempt: retry_attempt, error: e.message)
+  # Back to the compact loop, which re-checks the budget on each pass.
+  def next_recovery_attempt(working_directory)
     attempt_recovery_retry(working_directory)
   end
 
