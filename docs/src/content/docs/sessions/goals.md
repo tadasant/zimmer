@@ -150,8 +150,8 @@ as CI still running) or `unknown` (Zimmer has no reading that could decide it). 
 computed when read rather than stored, so it always matches the PR badge and never goes stale on
 its own. It shows up in three places:
 
-- the **Goal check** section on the session page, just under Status, repainted whenever a PR
-  reading changes
+- the **Goal check** section on the session page, just under Status, repainted when a PR reading,
+  the goal, or the session's status changes
 - a `### Goal Check (advisory)` section in the MCP `get_session` output
 - `goal_check` on every session in the REST API (`null` for a free-text goal)
 
@@ -199,8 +199,10 @@ next fire. Change it on the trigger instead. A trigger with a blank goal writes 
 keeps a per-session wake from erasing the goal of the session it wakes — see
 [what the fire re-stamps onto the reused session](/sessions/triggers/#what-the-fire-re-stamps-onto-the-reused-session).
 
-**A goal is either a catalog id or a sentence.** A goal with no whitespace in it can only have
-been meant as an id, so it has to be one `config/goals.json` knows. Anything else is refused with
+**A goal is either a catalog id or a sentence.** A single word shaped like an id (ASCII letters and
+digits joined by `-`, `_` or `.`) can only have been meant as one, so it has to be an id
+`config/goals.json` knows. A sentence in a script written without spaces is not id-shaped and
+stays free text. Anything else is refused with
 the list of known ids, so a typo like `open-reviewd-green-pr` fails where it was typed instead of
 reaching the agent as its goal. The check is `GoalsConfig.unknown_id?`, and it runs wherever a
 goal is stored:
@@ -215,7 +217,11 @@ goal is stored:
 It judges only a goal that is being **changed**. A session or trigger that already holds an id
 since retired from the catalog keeps working. Its other fields still save, its follow-ups still
 go through, and a trigger fire with such a goal spawns its session with no goal and logs why,
-the same way it drops an artifact the catalog no longer has. The column is also capped at
+the same way it drops an artifact the catalog no longer has. A queued message that carries one,
+because it was queued before the check existed, is delivered without its goal:
+`Sessions::FollowUpGoal.apply!` logs the id and leaves the session's goal alone rather than failing
+the delivery. A fork copies its source's goal as it is (`goal_inherited`), so forking such a session,
+and the status summary that works by forking it, still succeeds. The column is also capped at
 `GOAL_MAX_LENGTH`.
 
 ## The heartbeat

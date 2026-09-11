@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 # GoalCheck reads a session's recorded state back against what its goal asks for.
 # It is advisory — nothing here acts on the result — so what these pin is that the

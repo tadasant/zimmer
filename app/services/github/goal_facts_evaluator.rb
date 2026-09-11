@@ -27,13 +27,19 @@ module Github
 
     METADATA_KEY = "github_pull_request_goal_facts"
 
-    # A Markdown heading whose text begins with "Verification", at any level.
-    VERIFICATION_HEADING = /\A\s{0,3}(#+)\s+verification\b/i
-    ANY_HEADING = /\A\s{0,3}(#+)\s+\S/
+    # An ATX heading (one to six #s) whose first word is "Verification". Leading
+    # punctuation or an emoji is allowed ("## ✅ Verification").
+    VERIFICATION_HEADING = /\A {0,3}\#{1,6}\s+[^\p{L}\p{N}]*verification\b/i
+    ANY_HEADING = /\A {0,3}(\#{1,6})\s+\S/
     # A task-list item: a bullet or an ordered-list marker, then [ ], [x] or [X].
-    TASK_ITEM = /\A\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]/
-    FENCE = /\A\s*(```|~~~)/
-    HTML_COMMENT = /<!--.*?-->/m
+    # GitHub renders one inside a blockquote as a checkbox too, so `>` may lead.
+    TASK_ITEM = /\A\s*(?:>\s*)*(?:[-*+]|\d+[.)])\s+\[([ xX])\]/
+    # A code fence. A fence closes only on a run of the same character at least as
+    # long as the one that opened it, so a ```` block can quote a ``` one.
+    FENCE = /\A {0,3}(`{3,}|~{3,})/
+    # A closed comment, or one left open — GitHub hides everything after an
+    # unterminated `<!--`.
+    HTML_COMMENT = /<!--.*?(?:-->|\z)/m
 
     # @param session [Session]
     # @param refs [Array<Github::PrRef>]
@@ -81,14 +87,19 @@ module Github
       verification_level = nil
       verification_checked = 0
       unchecked = 0
-      in_fence = false
+      open_fence = nil
 
       body.gsub(HTML_COMMENT, "").each_line do |line|
-        if line.match?(FENCE)
-          in_fence = !in_fence
+        if (fence = line.match(FENCE))
+          marker = fence[1]
+          if open_fence.nil?
+            open_fence = marker
+          elsif marker[0] == open_fence[0] && marker.length >= open_fence.length
+            open_fence = nil
+          end
           next
         end
-        next if in_fence
+        next if open_fence
 
         if (heading = line.match(ANY_HEADING))
           level = heading[1].length

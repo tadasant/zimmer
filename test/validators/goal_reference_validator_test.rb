@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 # An unknown goal id is refused wherever a goal is stored. Before this, any string
 # was a legal goal, so a typo in an id fell through as free text and reached the
@@ -40,6 +41,17 @@ class GoalReferenceValidatorTest < ActiveSupport::TestCase
   test "the example id the start_session tool used to advertise is refused" do
     # `pr_merged` was the MCP tool's documented example and never a goal.
     assert_not build_session(goal: "pr_merged").valid?
+  end
+
+  test "a sentence in a script written without spaces is free text, not an id" do
+    assert build_session(goal: "修复登录测试并打开拉取请求").valid?
+  end
+
+  test "an inherited goal is not judged" do
+    session = build_session(goal: "retired-goal-id")
+    session.goal_inherited = true
+
+    assert session.valid?, session.errors.full_messages.inspect
   end
 
   test "a blank goal is not an id" do

@@ -257,10 +257,20 @@ class Session < ApplicationRecord
   # Broadcast metadata changes to session detail page (e.g., clone_path, failure_reason, exit_status, exception_class)
   after_update_commit :broadcast_metadata_change, if: :should_broadcast_metadata_change?
 
+  # Set by a writer that copies another session's goal rather than choosing one —
+  # ForkSessionService. The goal_reference validation judges a goal someone is
+  # setting; a copied one was judged (or predates the check) on the session it came
+  # from, and refusing it would fail the fork — and with it every status summary,
+  # which forks the session it summarizes.
+  attr_accessor :goal_inherited
+
   # Broadcast custom_metadata changes to session detail page (e.g., github_pull_request_statuses)
   after_update_commit :broadcast_custom_metadata_change, if: :saved_change_to_custom_metadata?
 
   # A new goal can bring a goal check with it, change its criteria, or take it away.
+  # This covers a goal changed on its own (`change_goal`, PATCH, the web Goal
+  # field); a goal that arrives with a follow-up is repainted by
+  # #broadcast_status_change instead.
   after_update_commit :broadcast_goal_check_panel, if: :saved_change_to_goal?
 
   # A newly-spawned child changes the hierarchy and human-message scope for
@@ -811,7 +821,7 @@ class Session < ApplicationRecord
   validates :idempotency_key, uniqueness: true, length: { maximum: IDEMPOTENCY_KEY_MAX_LENGTH }, allow_nil: true
   validates :title, length: { maximum: 100, message: "is too long (maximum 100 characters)" }, allow_nil: true
   validates :goal, length: { maximum: GOAL_MAX_LENGTH, message: "is too long (maximum #{GOAL_MAX_LENGTH.to_fs(:delimited)} characters)" }, allow_nil: true
-  validates :goal, goal_reference: true, if: :will_save_change_to_goal?
+  validates :goal, goal_reference: true, if: -> { will_save_change_to_goal? && !goal_inherited }
   validates :session_notes, length: { maximum: 50_000, message: "is too long (maximum 50,000 characters)" }, allow_nil: true
   # Cap at 1M tokens — well above any realistic Claude Code model context (~200K)
   # while still preventing runaway/typo values from polluting the spawn env.
@@ -2997,6 +3007,12 @@ class Session < ApplicationRecord
     # Also broadcast metadata - it may contain status-dependent UI elements
     # (e.g., OAuth authorization buttons only shown when status is failed)
     broadcast_metadata_change
+    # The goal check's "session still running" note follows status. And every
+    # follow-up that brings a new goal also changes status, inside one transaction
+    # whose last save is not the goal write — so `saved_change_to_goal?` cannot be
+    # relied on to see it (the same trap track_status_change_for_broadcast exists
+    # for), and this is the repaint that does.
+    broadcast_goal_check_panel
   end
 
   def broadcast_status_badge

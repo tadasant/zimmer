@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 class GoalsConfigTest < ActiveSupport::TestCase
   # Test loading goals
@@ -247,6 +248,8 @@ class GoalsConfigTest < ActiveSupport::TestCase
     assert_not GoalsConfig.unknown_id?("Ship the fix")
     assert_not GoalsConfig.unknown_id?(nil)
     assert_not GoalsConfig.unknown_id?("   ")
+    assert_not GoalsConfig.unknown_id?("Fix#123")
+    assert_not GoalsConfig.unknown_id?("修复登录测试")
   end
 
   test "resolve finds a goal by id or by its description verbatim, and nothing else" do

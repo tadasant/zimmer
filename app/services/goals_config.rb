@@ -87,16 +87,21 @@ class GoalsConfig
       find(value) || all.find { |g| g.description.to_s.strip == value }
     end
 
-    # A goal is either a catalog id or a sentence. A value with no whitespace in
-    # it cannot be a sentence, so it can only have been meant as an id — and an id
-    # the catalog does not have is a typo that would otherwise reach the agent as
-    # free text ("The user has indicated the goal for this task is: open-reviewd-pr").
+    # The shape of a catalog id: one "word" of ASCII letters and digits, joined by
+    # hyphens, underscores or dots. Deliberately ASCII — a sentence in a script
+    # written without spaces is free text, not an id.
+    ID_SHAPE = /\A[a-z0-9]+(?:[-_.][a-z0-9]+)*\z/i
+
+    # A goal is either a catalog id or a sentence. A single word shaped like an id
+    # can only have been meant as one — and an id the catalog does not have is a
+    # typo that would otherwise reach the agent as free text ("The user has
+    # indicated the goal for this task is: open-reviewd-pr").
     #
     # @param goal [String, nil]
     # @return [Boolean] true when the goal is id-shaped and names no catalog goal
     def unknown_id?(goal)
       value = goal.to_s.strip
-      value.present? && !value.match?(/\s/) && !exists?(value)
+      value.match?(ID_SHAPE) && !exists?(value)
     end
 
     # Why an id-shaped goal was refused, phrased to follow the word "Goal" — the

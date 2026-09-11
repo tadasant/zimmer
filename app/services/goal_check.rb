@@ -204,7 +204,7 @@ class GoalCheck
 
   def check_ready_to_merge_label
     per_subject do |ref|
-      next [ "met", "merged" ] if merged?(ref)
+      next [ "met", nil ] if merged?(ref)
 
       facts = @facts[ref.url]
       next [ "unknown", "labels not read yet" ] unless facts.is_a?(Hash)
