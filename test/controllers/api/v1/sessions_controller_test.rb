@@ -998,6 +998,61 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "undelivered", queued.reload.status
   end
 
+  # The live-turn refusal runs under the archive guard's lock, after the queue
+  # check — see Sessions::ArchiveGuard.guarded_archive!.
+  test "archive refuses a session with a turn in flight" do
+    session = sessions(:running)
+    Sessions::LiveTurn.stubs(:in_flight?).returns(true)
+
+    post archive_api_v1_session_path(session.id), headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_includes response.body, "A turn is in flight"
+    assert_equal "running", session.reload.status
+  end
+
+  test "archive names the queue before the live turn" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
+    Sessions::LiveTurn.stubs(:in_flight?).returns(true)
+
+    post archive_api_v1_session_path(session.id), headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_includes response.body, "Queued messages would be discarded"
+    assert_not_includes response.body, "A turn is in flight"
+  end
+
+  test "a forced archive over a live turn records the loss on the session" do
+    session = sessions(:running)
+    Sessions::LiveTurn.stubs(:in_flight?).returns(true)
+
+    post archive_api_v1_session_path(session.id), params: { force: true }, headers: @headers
+
+    assert_response :success
+    assert_equal "archived", session.reload.status
+    assert session.logs.where(level: "warning").where("content LIKE ?", "Archived by the REST API while an agent turn was in flight%").exists?
+  end
+
+  test "bulk_archive reports a session with a turn in flight and archives the rest" do
+    live = sessions(:running)
+    idle = sessions(:needs_input)
+    Sessions::LiveTurn.stubs(:in_flight?).with { |session| session.id == live.id }.returns(true)
+    Sessions::LiveTurn.stubs(:in_flight?).with { |session| session.id != live.id }.returns(false)
+
+    post bulk_archive_api_v1_sessions_path,
+      params: { session_ids: [ live.id, idle.id ] },
+      headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal 1, json["archived_count"]
+    assert_equal [ live.id ], json["errors"].map { |e| e["id"] }
+    assert_includes json["errors"].sole["message"], "an agent turn is in flight"
+    assert_equal "running", live.reload.status
+    assert_equal "archived", idle.reload.status
+  end
+
   test "should archive running session" do
     session = sessions(:running)
     post archive_api_v1_session_path(session.id), headers: @headers

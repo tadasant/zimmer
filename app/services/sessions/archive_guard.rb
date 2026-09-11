@@ -45,32 +45,41 @@ module Sessions
     # Archive +session+ unless that would discard a queued message, with the
     # check and the transition under one row lock.
     #
-    # THE DEFECT THIS EXISTS FOR (#1139). Every surface used to read the queue
-    # unlocked and then call `archive!`. A wake that committed a pending row in
-    # between was neither refused nor delivered: the archive's retirement
-    # callback found it, stranded it, and paged. Production session 16494 hit it
+    # THE DEFECT THIS EXISTS FOR (#1139). Reading the queue unlocked and then
+    # calling `archive!` loses a race: a wake that commits a pending row in
+    # between is neither refused nor delivered, because the archive's retirement
+    # callback finds it, strands it, and pages. Production session 16494 hit it
     # at 10:47:02Z on 2026-09-11, when a held backstop wake came due in the same
     # second its woken turn self-archived.
     #
-    # The lock is the session row, taken `FOR UPDATE`. That closes the window
-    # against every enqueuer, not only the ones that lock the session themselves
-    # (Trigger#follow_up_session!, EnqueuedMessageProcessorService): the insert's
-    # foreign-key check takes `FOR KEY SHARE` on the same row, which `FOR UPDATE`
-    # conflicts with. So an enqueue that committed first is read here and
-    # refused, and one that arrives later waits for the archive to commit and
-    # then meets an archived session.
+    # The lock is the session row, taken `FOR UPDATE`. That serializes the
+    # archive against every enqueuer, not only the ones that lock the session
+    # themselves (Trigger#follow_up_session!, EnqueuedMessageProcessorService):
+    # the insert's foreign-key check takes `FOR KEY SHARE` on the same row, which
+    # `FOR UPDATE` conflicts with. So an enqueue that committed first is read
+    # here and refused, and one that arrives later waits for the archive to
+    # commit. What it meets then is the enqueuer's own business —
+    # Trigger#follow_up_session! re-reads the status under its lock and drops
+    # the fire, while the plain create surfaces have no status guard (#549).
     #
-    # Held across `archive!` and its `after` callbacks, which run inside the
-    # transition's transaction and already held this row from the status
-    # `UPDATE` onwards. Taking it earlier adds no new lock ordering. The pages
-    # and triggers in those callbacks are deferred to after commit, so they fire
-    # once the lock is released.
+    # This is a stronger lock than the transition takes on its own. The status
+    # `UPDATE` holds `FOR NO KEY UPDATE`, which does not block that foreign-key
+    # check — which is why an unlocked read lost the race. `FOR UPDATE` blocks
+    # every child-row insert on this session (logs, enqueued messages) until the
+    # archive commits, `after` callbacks included. Those callbacks write on this
+    # same connection, so they are not blocked; none of them may wait on another
+    # connection that writes a child row of this session. The pages and triggers
+    # they raise are deferred to after commit, so they fire once the lock is
+    # released. Lock order is unchanged: the session row still comes before
+    # anything the callbacks lock.
     #
     # The block, if given, runs under the same lock after the queue check and
     # before the transition. It is where a surface puts its other refusals —
     # the live-turn one — so they cannot come ahead of this one: a caller told
     # about the live turn first would send `force`, and `force` skips the queue
-    # check without ever showing the queue. Raise from it to refuse.
+    # check without ever showing the queue. Raise from it to refuse. Keep it to
+    # decisions on values read before the lock: a statement that fails in here
+    # aborts the transaction, and the archive with it.
     #
     # @param session [Session] reloaded by the lock, so it reflects the row as
     #   the transition sees it

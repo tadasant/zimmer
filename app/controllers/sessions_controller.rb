@@ -1087,8 +1087,7 @@ class SessionsController < ApplicationController
       return
     end
 
-    # Eager load logs to avoid N+1 queries
-    sessions = Session.includes(:logs).where(id: session_ids)
+    sessions = Session.where(id: session_ids)
     archived_count = 0
     skipped_with_queue = 0
 

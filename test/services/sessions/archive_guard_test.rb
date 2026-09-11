@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class Sessions::ArchiveGuardTest < ActiveSupport::TestCase
   test "a session with nothing queued is not blocked" do
@@ -156,9 +157,16 @@ class Sessions::ArchiveGuardTest < ActiveSupport::TestCase
 
     lock_at = sql.index { |query| query.match?(/FROM "sessions".*FOR UPDATE/m) }
     queue_at = sql.index { |query| query.match?(/SELECT "enqueued_messages"\.\* FROM "enqueued_messages"/) }
+    transition_at = sql.index { |query| query.match?(/UPDATE "sessions" SET "status"/) }
     assert lock_at, "expected a FOR UPDATE on the session row, got: #{sql.inspect}"
     assert queue_at, "expected a read of the pending queue, got: #{sql.inspect}"
+    assert transition_at, "expected the status transition, got: #{sql.inspect}"
     assert_operator lock_at, :<, queue_at, "the queue must be read under the lock, not before it"
+    assert_operator queue_at, :<, transition_at
+    # Tests run inside a transaction, so the lock's own transaction is a
+    # savepoint: releasing it before the transition is the lock ending early.
+    assert sql[lock_at...transition_at].none? { |query| query.match?(/\A(RELEASE|COMMIT)/) },
+      "the transition must happen inside the lock's transaction, got: #{sql[lock_at..transition_at].inspect}"
   end
 
   test "guarded_archive! archives an empty queue and records the actor" do
