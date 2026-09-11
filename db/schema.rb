@@ -545,9 +545,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_12_130000) do
     t.datetime "created_at", null: false
     t.jsonb "filters", default: {}, null: false
     t.datetime "finished_at"
+    t.bigint "started_by_session_id"
+    t.string "started_via", default: "web_ui", null: false
     t.string "status", default: "running", null: false
     t.integer "total_count", default: 0, null: false
     t.datetime "updated_at", null: false
+    t.index ["started_by_session_id"], name: "index_outcome_analysis_batches_on_started_by_session_id", where: "(started_by_session_id IS NOT NULL)"
+    t.index ["started_via"], name: "index_outcome_analysis_batches_one_running_mcp", unique: true, where: "(((status)::text = 'running'::text) AND ((started_via)::text = 'mcp'::text))"
     t.index ["status", "id"], name: "index_outcome_analysis_batches_on_status_and_id"
   end
 
@@ -1035,6 +1039,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_12_130000) do
   add_foreign_key "outcome_analysis_batch_items", "outcome_analysis_batches", on_delete: :cascade
   add_foreign_key "outcome_analysis_batch_items", "sessions", column: "analysis_session_id", on_delete: :nullify
   add_foreign_key "outcome_analysis_batch_items", "sessions", on_delete: :cascade
+  add_foreign_key "outcome_analysis_batches", "sessions", column: "started_by_session_id", on_delete: :nullify
   add_foreign_key "runtime_login_attempts", "claude_accounts", on_delete: :nullify
   add_foreign_key "session_experimental_flags", "sessions", on_delete: :cascade
   add_foreign_key "session_status_summaries", "sessions", column: "fork_session_id", on_delete: :nullify

@@ -24,6 +24,38 @@ class OutcomeAnalyses::SpawnAnalysisSessionTest < ActiveSupport::TestCase
     assert_equal SessionGenesis::WEB_UI, analysis.genesis
   end
 
+  test "a web-UI analysis carries no MCP provenance and is not held to the agent cap" do
+    OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY.times do |i|
+      Session.create!(prompt: "a", git_root: "https://github.com/tadasant/zimmer.git", status: :running, metadata: {
+        Session::OUTCOME_ANALYSIS_MARKER => "#{@target.id}#{i}",
+        OutcomeAnalyses::SpawnAnalysisSession::REQUESTED_VIA_KEY => OutcomeAnalysisBatch::STARTED_VIA_MCP
+      })
+    end
+    assert_equal OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY, OutcomeAnalyses::SpawnAnalysisSession.live_mcp_single_count
+
+    analysis = OutcomeAnalyses::SpawnAnalysisSession.call(session: @target)
+
+    assert_nil analysis.metadata[OutcomeAnalyses::SpawnAnalysisSession::REQUESTED_VIA_KEY]
+    assert_nil analysis.metadata[OutcomeAnalyses::SpawnAnalysisSession::REQUESTED_BY_KEY]
+    assert_equal SessionGenesis::WEB_UI, analysis.genesis
+  end
+
+  test "an MCP analysis names who asked and inherits their genesis" do
+    requester = Session.create!(prompt: "r", git_root: "https://github.com/tadasant/zimmer.git", status: :running,
+                                genesis: SessionGenesis::SLACK)
+
+    analysis = OutcomeAnalyses::SpawnAnalysisSession.call(
+      session: @target, requested_via: OutcomeAnalysisBatch::STARTED_VIA_MCP, requested_by: requester
+    )
+
+    assert_equal "mcp", analysis.metadata[OutcomeAnalyses::SpawnAnalysisSession::REQUESTED_VIA_KEY]
+    assert_equal requester.id.to_s, analysis.metadata[OutcomeAnalyses::SpawnAnalysisSession::REQUESTED_BY_KEY]
+    assert_equal SessionGenesis::SLACK, analysis.genesis
+    assert_equal SessionGenesis::SPOT, analysis.scheduling_class, "an explicit spot class, whatever the genesis"
+    assert_equal analysis, OutcomeAnalyses::SpawnAnalysisSession.in_flight_for(@target)
+    assert_equal 1, OutcomeAnalyses::SpawnAnalysisSession.live_mcp_single_count
+  end
+
   test "is identifiable as an analysis session and stays out of the ledger" do
     analysis = OutcomeAnalyses::SpawnAnalysisSession.call(session: @target)
 

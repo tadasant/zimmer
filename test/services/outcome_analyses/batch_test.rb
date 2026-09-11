@@ -79,6 +79,85 @@ class OutcomeAnalyses::BatchTest < ActiveSupport::TestCase
     assert_equal 1, OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 0).concurrency
   end
 
+  test "a web-UI batch records where it came from" do
+    stub_spawn!
+    batch = OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 2)
+
+    assert_equal OutcomeAnalysisBatch::STARTED_VIA_WEB_UI, batch.started_via
+    assert_nil batch.started_by_session
+  end
+
+  test "an MCP batch above the agent cap is refused, not clamped; at the cap it runs" do
+    cap = OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY
+
+    error = assert_raises(OutcomeAnalyses::StartBatch::AgentCapExceeded) do
+      OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: cap + 1, started_via: OutcomeAnalysisBatch::STARTED_VIA_MCP)
+    end
+    assert_match(/at most #{cap} analyses at a time \(asked for #{cap + 1}\)/, error.message)
+    assert_equal 0, OutcomeAnalysisBatch.count
+
+    batch = OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: cap, started_via: OutcomeAnalysisBatch::STARTED_VIA_MCP)
+    assert_equal cap, batch.concurrency
+    assert batch.started_via_mcp?
+  end
+
+  test "the database holds one running MCP batch, even against a racing insert" do
+    OutcomeAnalysisBatch.create!(filters: {}, concurrency: 1, total_count: 0, started_via: OutcomeAnalysisBatch::STARTED_VIA_MCP)
+
+    assert_raises(ActiveRecord::RecordNotUnique) do
+      OutcomeAnalysisBatch.transaction(requires_new: true) do
+        OutcomeAnalysisBatch.create!(filters: {}, concurrency: 1, total_count: 0, started_via: OutcomeAnalysisBatch::STARTED_VIA_MCP)
+      end
+    end
+
+    # A finished MCP batch, and any number of web-UI ones, do not hold the slot.
+    OutcomeAnalysisBatch.create!(filters: {}, concurrency: 1, total_count: 0, status: OutcomeAnalysisBatch::COMPLETED,
+                                 started_via: OutcomeAnalysisBatch::STARTED_VIA_MCP)
+    2.times { OutcomeAnalysisBatch.create!(filters: {}, concurrency: 1, total_count: 0) }
+    assert_equal 1, OutcomeAnalysisBatch.active.started_via_mcp.count
+  end
+
+  test "StartBatch turns a lost race for the MCP slot into the same refusal as the check" do
+    stub_spawn!
+    # The friendly pre-check sees no running MCP batch, the INSERT still collides.
+    OutcomeAnalysisBatch.stubs(:active).returns(OutcomeAnalysisBatch.none).then.returns(OutcomeAnalysisBatch.where(status: "running"))
+    OutcomeAnalysisBatch.create!(filters: {}, concurrency: 1, total_count: 0, started_via: OutcomeAnalysisBatch::STARTED_VIA_MCP)
+
+    error = assert_raises(OutcomeAnalyses::StartBatch::AgentCapExceeded) do
+      OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 1, started_via: OutcomeAnalysisBatch::STARTED_VIA_MCP)
+    end
+    assert_match(/started over MCP, is still running/, error.message)
+    assert_equal 1, OutcomeAnalysisBatch.count, "the transaction the caller is in survives the collision"
+  end
+
+  test "an expected count that does not match refuses the batch and creates nothing" do
+    error = assert_raises(OutcomeAnalyses::StartBatch::CountMismatch) do
+      OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 1, expected_count: 50)
+    end
+
+    assert_match(/match 5 unanalyzed archived sessions, not the 50 expected/, error.message)
+    assert_equal 0, OutcomeAnalysisBatch.count
+  end
+
+  test "the pump spawns each item with its batch's provenance" do
+    starter = sessions(:running)
+    batch = OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 2,
+                                             started_via: OutcomeAnalysisBatch::STARTED_VIA_MCP, started_by_session: starter)
+    OutcomeAnalyses::SpawnAnalysisSession.unstub(:call)
+    AgentSessionJob.stubs(:enqueue_new_session).returns(nil)
+
+    OutcomeAnalyses::PumpBatch.call(batch)
+
+    spawned = batch.items.running.map(&:analysis_session)
+    assert_equal 2, spawned.size
+    spawned.each do |analysis|
+      assert_equal "mcp", analysis.metadata[OutcomeAnalyses::SpawnAnalysisSession::REQUESTED_VIA_KEY]
+      assert_equal starter.id.to_s, analysis.metadata[OutcomeAnalyses::SpawnAnalysisSession::REQUESTED_BY_KEY]
+      assert_equal batch.id.to_s, analysis.metadata["outcome_analysis_batch_id"]
+    end
+    assert_equal 0, OutcomeAnalyses::SpawnAnalysisSession.live_mcp_single_count, "batch items are not single analyses"
+  end
+
   test "concurrency 1 keeps exactly one analysis in flight" do
     stub_spawn!
     batch = OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 1)

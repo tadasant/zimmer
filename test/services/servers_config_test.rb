@@ -414,6 +414,21 @@ class ServersConfigTest < ActiveSupport::TestCase
 
     assert_equal [ "zimmer-work-backlog" ], reaching.map(&:name)
   end
+
+  test "zimmer-outcome-analyses is the only catalog entry that can start an analysis, and it can read what it started" do
+    reaching = ServersConfig.all.select do |server|
+      groups = Rack::Utils.parse_query(URI.parse(server.url.to_s).query.to_s)["tool_groups"].to_s.split(",").map(&:strip)
+      Mcp::Registry.tools_for(groups.presence || Mcp::Registry::BASE_GROUPS)
+        .map(&:tool_name).include?("action_outcome_analysis")
+    end
+
+    assert_equal [ "zimmer-outcome-analyses" ], reaching.map(&:name)
+
+    groups = Rack::Utils.parse_query(URI.parse(reaching.first.url.to_s).query.to_s)["tool_groups"].split(",")
+    names = Mcp::Registry.tools_for(groups).map(&:tool_name)
+    assert_includes names, "get_outcome_analysis"
+    assert_not_includes names, "start_session", "the entry adds the analysis write, not session orchestration"
+  end
   test "required_variables spans env, headers, url and args" do
     server = ServersConfig::Server.new("composite", {
       "type" => "streamable-http",

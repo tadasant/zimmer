@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 29 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 31 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -76,16 +76,17 @@ session gets exactly the surface it should have and no more.
 
 | URL | Tools |
 | --- | --- |
-| `/mcp` | The default surface — 23 tools; the opt-in groups are not among them |
+| `/mcp` | The default surface — 24 tools; the opt-in groups are not among them |
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
 | `/mcp?tool_groups=self_session` | Self-management: the 8 tools a session needs to run itself |
 | `/mcp?tool_groups=gate_decisions` | The [gate decision ledger](/operate/gate-decisions/): search past ratings, read the human corrections, record one |
 | `/mcp?tool_groups=work_backlog` | The [work backlog](/operate/work-backlog/): read the ranked queue, append a cleared issue, pull the top items into spot sessions |
+| `/mcp?tool_groups=sessions_readonly,outcome_analyses` | [Outcome analysis](/sessions/outcomes/#over-mcp): start, batch and stop analyses, plus the session reads |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
 | `/mcp?tool_groups=self_session&session_id=42` | Names the calling session, so self-management tools can default to it |
 
-The base groups are `sessions`, `notifications`, `triggers` and `health`; `gate_decisions` and
-`work_backlog` are **opt-in** groups, and `self_session` is a composite. Each domain group, opt-in included, has a
+The base groups are `sessions`, `notifications`, `triggers` and `health`; `gate_decisions`,
+`work_backlog` and `outcome_analyses` are **opt-in** groups, and `self_session` is a composite. Each domain group, opt-in included, has a
 `_readonly` variant. Omitting `tool_groups` enables the four base groups and nothing else — an
 opt-in group is valid and addressable but never handed out by default, so `/mcp` on its own does
 not carry `record_gate_decision`. An unknown group is dropped with a warning rather than failing
@@ -193,16 +194,17 @@ production.
 
 ## The tool surface
 
-29 tools, six domains — 23 of them on the unscoped surface.
+31 tools, seven domains — 24 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
-| `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_categories`, `respond_to_elicitation`, `save_outcome_analysis` |
+| `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_categories`, `respond_to_elicitation`, `get_outcome_analysis`, `save_outcome_analysis` |
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` (self-scoped variant on `self_session`) |
 | `gate_decisions` (opt-in) | `search_gate_decisions`, `get_gate_decision_feedback`, `record_gate_decision` |
 | `work_backlog` (opt-in) | `get_work_backlog`, `append_work_backlog_item`, `pull_work_backlog_items` |
+| `outcome_analyses` (opt-in) | `action_outcome_analysis` (its read, `get_outcome_analysis`, is in `sessions`) |
 
 `quick_search_sessions` matches session titles plus the `metadata` and `custom_metadata` JSON by
 default, and `search_contents: true` widens it to the **transcript** — this is the MCP route to
@@ -319,6 +321,17 @@ other: no tool pins an item, hand-places it, removes it by judgement, or starts 
 session — those are the human's levers over what the fleet works on next and exist only on the REST
 controller. The one removal an agent may make is on a pull, with a reason from a fixed vocabulary of
 observed facts. `zimmer-work-backlog` (mcp.json) is the one catalog entry that names the group.
+
+`outcome_analyses` is opt-in because every [outcome analysis](/sessions/outcomes/#over-mcp) is a full
+`spot` session, and `action_outcome_analysis`'s `analyze_all` turns one call into a batch of them. It
+is the only opt-in group that holds a write and not its read. `get_outcome_analysis` starts nothing,
+so it sits in `sessions` beside `get_session`, and `outcome_analyses_readonly` is empty. The write
+stays out of `sessions` because analysis sessions are spawned with `zimmer-sessions`, and there it
+would let an analysis start analyses. Once a caller has the tool, it is still held to limits the web
+form does not have: at most 3 analyses in flight per batch, one MCP-started batch running at a time,
+and an `expected_count` that must match what the filters would queue. `zimmer-outcome-analyses`
+(mcp.json, `?tool_groups=sessions_readonly,outcome_analyses`) is the one catalog entry that names the
+group.
 
 `get_session_provenance` returns those same two sections on their own, for one `session_id`, with
 every entry it lists rendered in full — it exists to serve that record and nothing else, so it has no

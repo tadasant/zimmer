@@ -7,15 +7,33 @@ module OutcomeAnalyses
   # filters when the button was clicked are the sessions the batch will analyze,
   # even if new ones archive while it runs. A batch that silently grew would have
   # no honest completion point.
+  #
+  # Two callers, two contracts. The web UI's Analyze All button honors whatever
+  # concurrency a human types. A batch started over MCP (`started_via: "mcp"`) is
+  # held to OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY and to one running MCP
+  # batch at a time — the Outcomes feature's premise is that nothing is analyzed
+  # implicitly, and an agent that can start batches without a ceiling is the
+  # nearest thing to implicit that an explicit call can be.
   class StartBatch
     class Error < StandardError; end
     class NothingToAnalyze < Error; end
+    class AgentCapExceeded < Error; end
+    class CountMismatch < Error; end
 
-    def self.call(filters:, concurrency:)
-      new(filters: filters, concurrency: concurrency).call
+    def self.call(filters:, concurrency:, started_via: OutcomeAnalysisBatch::STARTED_VIA_WEB_UI,
+                  started_by_session: nil, expected_count: nil)
+      new(filters: filters, concurrency: concurrency, started_via: started_via,
+          started_by_session: started_by_session, expected_count: expected_count).call
     end
 
-    def initialize(filters:, concurrency:)
+    # @param expected_count [Integer, nil] how many sessions the caller believes
+    #   it is queuing. When given, a batch of any other size is refused and
+    #   nothing is created. It is the MCP half of the web form's confirm dialog,
+    #   which shows a human the count before the click lands: a filter typed
+    #   wrong or left out widens a batch silently, and saying the number is how
+    #   an agent looks before it leaps.
+    def initialize(filters:, concurrency:, started_via: OutcomeAnalysisBatch::STARTED_VIA_WEB_UI,
+                   started_by_session: nil, expected_count: nil)
       @filters = filters
       # Honor the number as typed — including the ill-advised ones. The floor is
       # the only clamp, because a batch with concurrency 0 would never start.
@@ -23,18 +41,22 @@ module OutcomeAnalyses
       # ignored rather than raising, which is the same forgiveness LedgerFilters
       # applies to every other input on this form.
       @concurrency = [ Array(concurrency).first.to_i, OutcomeAnalysisBatch::MIN_CONCURRENCY ].max
+      @started_via = started_via
+      @started_by_session = started_by_session
+      @expected_count = expected_count
     end
 
     def call
+      enforce_agent_cap! if via_mcp?
+
       session_ids = LedgerQuery.new(@filters).analyzable_session_ids
       raise NothingToAnalyze, "No unanalyzed archived sessions match these filters." if session_ids.empty?
+      if @expected_count && @expected_count != session_ids.size
+        raise CountMismatch, "These filters match #{session_ids.size} unanalyzed archived " \
+                             "#{'session'.pluralize(session_ids.size)}, not the #{@expected_count} expected. Nothing was queued."
+      end
 
-      batch = OutcomeAnalysisBatch.create!(
-        filters: @filters.to_h,
-        concurrency: @concurrency,
-        status: OutcomeAnalysisBatch::RUNNING,
-        total_count: session_ids.size
-      )
+      batch = create_batch!(session_ids.size)
 
       # One INSERT for the whole queue: an Analyze All over a few thousand
       # sessions must not be a few thousand round trips.
@@ -55,6 +77,50 @@ module OutcomeAnalyses
       # tick, so the click has a visible effect.
       OutcomeAnalysisBatchPumpJob.perform_later(batch.id)
       batch
+    end
+
+    private
+
+    def via_mcp? = @started_via == OutcomeAnalysisBatch::STARTED_VIA_MCP
+
+    # Rejected rather than clamped: an agent that asked for 10 and silently got 3
+    # would report the wrong thing to whoever asked it, and the message says
+    # where the higher number is available.
+    def enforce_agent_cap!
+      if @concurrency > OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY
+        raise AgentCapExceeded,
+              "A batch started over MCP runs at most #{OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY} analyses at a time " \
+              "(asked for #{@concurrency}). Pass a concurrency of #{OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY} or less; " \
+              "a human can start a wider batch from the Analyze All button on /outcomes."
+      end
+
+      running = OutcomeAnalysisBatch.active.started_via_mcp.recent.first
+      raise AgentCapExceeded, already_running_message(running) if running
+    end
+
+    # The partial unique index is what actually holds "one running MCP batch":
+    # the check above is the friendly message, this is the race it cannot see.
+    # `requires_new` so a losing INSERT rolls back to a savepoint rather than
+    # poisoning a transaction the caller is already in.
+    def create_batch!(total_count)
+      OutcomeAnalysisBatch.transaction(requires_new: true) do
+        OutcomeAnalysisBatch.create!(
+          filters: @filters.to_h,
+          concurrency: @concurrency,
+          status: OutcomeAnalysisBatch::RUNNING,
+          total_count: total_count,
+          started_via: @started_via,
+          started_by_session: @started_by_session
+        )
+      end
+    rescue ActiveRecord::RecordNotUnique
+      raise AgentCapExceeded, already_running_message(OutcomeAnalysisBatch.active.started_via_mcp.recent.first)
+    end
+
+    def already_running_message(batch)
+      subject = batch ? "Batch ##{batch.id}" : "Another batch"
+      "#{subject}, started over MCP, is still running, and only one MCP-started batch runs at a time. " \
+        "Wait for it to finish, or stop it with the cancel_batch action#{batch ? " (batch_id: #{batch.id})" : ''}."
     end
   end
 end

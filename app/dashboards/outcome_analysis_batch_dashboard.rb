@@ -7,6 +7,8 @@ class OutcomeAnalysisBatchDashboard < Administrate::BaseDashboard
     filters: Field::Text,
     concurrency: Field::Number,
     status: Field::String,
+    started_via: Field::String,
+    started_by_session: Field::BelongsTo.with_options(class_name: "Session"),
     total_count: Field::Number,
     finished_at: Field::DateTime,
     created_at: Field::DateTime,
@@ -16,6 +18,7 @@ class OutcomeAnalysisBatchDashboard < Administrate::BaseDashboard
   COLLECTION_ATTRIBUTES = %i[
     id
     status
+    started_via
     concurrency
     total_count
     created_at

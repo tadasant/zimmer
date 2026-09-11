@@ -1427,10 +1427,24 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     with_agent_root(analyzed, AgentRootsConfig.all.first.name)
     unanalyzed = create_session(title: "Short one", status: :archived, archived_at: 2.days.ago)
     OutcomeAnalyses::Save.call(session: analyzed, root: outcome_tree)
+    # A running batch an agent started over MCP: the card's header row then
+    # carries status, concurrency, the "via MCP" badge, the starter's link and
+    # the Stop button at once — its widest state.
+    starter = create_session(title: "Weekly outcomes sweep")
+    OutcomeAnalysisBatch.create!(
+      filters: { "agent_root" => AgentRootsConfig.all.first.name, "from" => "2026-09-01", "to" => "2026-09-07" },
+      concurrency: OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY, total_count: 12,
+      started_via: OutcomeAnalysisBatch::STARTED_VIA_MCP, started_by_session: starter
+    )
 
     visit outcomes_path
     assert_text "Short one"
+    assert_selector "span", text: "via MCP"
+    assert_selector "a", text: "by session ##{starter.id}"
+    assert_selector "button", text: "Stop"
     assert_no_horizontal_overflow("outcomes ledger")
+    scroll_to find("span", text: "via MCP"), align: :center
+    page.save_screenshot(Rails.root.join("tmp/screenshots/outcomes-mcp-batch-375.png").to_s)
     # The action buttons are the LAST column, so they only stay on screen because
     # the metadata columns collapse below their breakpoints. If those come back at
     # phone width, Analyze goes back off the right edge behind a sideways scroll.
