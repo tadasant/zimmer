@@ -74,6 +74,83 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
     assert item.removed_at.present?
   end
 
+  test "stranded covers both routes out of the queue, and drops the resolved ones" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    # Route 1: started, session ended, nothing has looked at it.
+    unchecked = backlog_item(key: "zimmer#1")
+    unchecked.mark_started!(session: sessions(:archived), by: nil)
+    # Route 2: removed on a reason with a shelf life.
+    lapsed = backlog_item(key: "zimmer#2")
+    lapsed.remove!(reason: "issue_has_open_pr", by: "session:1", now: 4.days.ago)
+    # Resolved: the re-check found the issue closed.
+    closed = backlog_item(key: "zimmer#3")
+    closed.mark_started!(session: sessions(:archived), by: nil)
+    closed.record_liveness!(WorkBacklogItem::LIVENESS_ISSUE_CLOSED)
+    # Resolved: an open PR is moving.
+    moving = backlog_item(key: "zimmer#4")
+    moving.remove!(reason: "issue_has_open_pr", by: "session:1", now: 4.days.ago)
+    moving.record_liveness!(WorkBacklogItem::LIVENESS_PR_OPEN)
+    # Not a candidate at all: its session is still alive.
+    alive = backlog_item(key: "zimmer#5")
+    alive.mark_started!(session: sessions(:running), by: nil)
+    # Not a candidate: a judgement removal has no expiry to re-check.
+    backlog_item(key: "zimmer#6").remove!(reason: "trust_failed", by: "session:1", now: 4.days.ago)
+
+    assert_equal [ unchecked.id, lapsed.id ].sort, WorkBacklogItem.stranded.pluck(:id).sort
+    assert_equal [ unchecked.id, lapsed.id, closed.id, moving.id ].sort,
+                 WorkBacklogItem.liveness_candidates.pluck(:id).sort
+  end
+
+  test "a started row inside the grace is not yet a liveness candidate" do
+    sessions(:archived).update_columns(archived_at: 5.minutes.ago)
+    item = backlog_item(key: "zimmer#7")
+    item.mark_started!(session: sessions(:archived), by: nil)
+
+    assert_empty WorkBacklogItem.liveness_candidates
+  end
+
+  test "an issueless row is never a liveness candidate, having no issue to probe" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    item = backlog_item(key: "manual-thing", issue_url: nil, added_by: "human",
+                        payload: { "prompt" => "Do the thing" })
+    item.mark_started!(session: sessions(:archived), by: nil)
+
+    assert_empty WorkBacklogItem.liveness_candidates
+  end
+
+  test "record_liveness! writes the verdict and when it was reached, and moves nothing" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    item = backlog_item(key: "zimmer#8", precedence: 6990)
+    item.mark_started!(session: sessions(:archived), by: sessions(:running), now: 2.days.ago)
+
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+
+    item.reload
+    assert_equal WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN, item.liveness_state
+    assert item.liveness_checked_at.present?
+    # The row itself is untouched: the re-check is evidence, not a decision.
+    assert item.started?
+    assert_equal 6990, item.precedence
+    assert_equal sessions(:archived).id, item.started_session_id
+  end
+
+  test "superseded? is true once a newer row carries the same key" do
+    item = backlog_item(key: "zimmer#9")
+    item.mark_started!(session: sessions(:archived), by: nil)
+    assert_not item.superseded?
+
+    backlog_item(key: "zimmer#9")
+
+    assert item.reload.superseded?
+  end
+
+  test "liveness_state is one of the known states" do
+    item = backlog_item(key: "zimmer#8")
+    item.liveness_state = "vibes"
+    assert_not item.valid?
+    assert item.errors[:liveness_state].any?
+  end
+
   test "session prompt is the issue URL plus the ask, and a note beside an issue rides along" do
     item = backlog_item(key: "zimmer#42")
     assert_equal "https://github.com/tadasant/zimmer/issues/42\n\nPlease implement this.", item.session_prompt

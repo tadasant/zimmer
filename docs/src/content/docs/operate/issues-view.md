@@ -12,7 +12,7 @@ It is a *view*. It stores nothing. Every number on it comes from `work_backlog_i
 `gate_decisions`, or a live read of GitHub — there is no Issues table, no sync job, and nothing to
 reconcile.
 
-## The five lists
+## The six lists
 
 **The spot queue** is every `queued` backlog item in rank order — precedence descending, oldest
 first within a tie, which is the order [`WorkBacklog::Ranking`](/operate/work-backlog/#ranking)
@@ -45,6 +45,17 @@ an hour after that work finished, and therefore reads as a fleet that did nothin
 measured from the end and not from the start, because an item started on Monday that only finishes
 on Wednesday — its session parked on a PR in between — is exactly the one this list must not drop
 at the moment it lands.
+
+**Stranded** is every row that has left the queue and gone nowhere: a `started` item whose session
+ended more than six hours ago, or a mechanically `removed` item whose removal reason has expired —
+in both cases with the issue still open. Before it existed, these rendered only in the GitHub list
+below, as ordinary un-triaged issues, so a pile of work the fleet had started and dropped read as
+work nobody had rated yet. `WorkBacklogLivenessSweepJob` re-checks them hourly and puts the evidence
+on each row — whether a PR references the issue, whether it merged, and whether an open one has
+gone quiet — but **puts nothing back**, because a merged PR with no closing keyword is either
+finished work or a deliberate remainder and no mechanical signal separates them. This is a triage
+list: decide per row, and re-queue the ones with work left. See [When a row leaves the queue and
+goes nowhere](/operate/work-backlog/#when-a-row-leaves-the-queue-and-goes-nowhere).
 
 **In GitHub, not on the queue** is every open issue across the six repos with no live backlog row —
 held by the gate, unrated, or simply not picked up yet. This is the half that makes the page "what

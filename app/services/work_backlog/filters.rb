@@ -15,24 +15,30 @@ module WorkBacklog
     MAX_LIMIT = 200
     ANY_STATUS = "all"
 
-    # Four readings of `started` that are not columns: which of the sessions the
+    # Five readings of `started` that are not columns: which of the sessions the
     # backlog produced are still being advanced, which of THOSE are dormant at the
-    # spot gate, which have stopped on a person, and the advancing plus the
-    # stopped together. They are offered as `status` values because that is
-    # the question a caller is actually asking — `counts.in_flight` says HOW MANY
-    # without saying WHICH, and a caller told "parked is not part of your WIP
-    # arithmetic", or "14 of your 20 in-flight items are sitting at the spot
-    # gate", needs to be able to go and look at them. The Issues page reads them
-    # through the same model scopes.
+    # spot gate, which have stopped on a person, the advancing plus the stopped
+    # together, and the ones whose session ended without finishing the work. They
+    # are offered as `status` values because that is the question a caller is
+    # actually asking — `counts.in_flight` says HOW MANY without saying WHICH, and
+    # a caller told "parked is not part of your WIP arithmetic", or "14 of your 20
+    # in-flight items are sitting at the spot gate", needs to be able to go and
+    # look at them. The Issues page reads them through the same model scopes.
     #
     # `spot_held` is the odd one: a SUBSET of `in_flight` rather than a slice
     # beside it, because a held item still holds its WIP slot. See
     # WorkBacklogItem.spot_held for why.
+    #
+    # `stranded` is the population WorkBacklog::LivenessSweep reports on, and it
+    # is listable for the same reason the others are: an operator asking "why is
+    # this issue neither held nor queued" needs the rows, not a number. It is the
+    # one that spans statuses — a stranded row may be `started` or `removed`.
     LIVE_STATUSES = {
       "in_flight" => :in_flight,
       "spot_held" => :spot_held,
       "parked" => :parked,
-      "claimed" => :claimed
+      "claimed" => :claimed,
+      "stranded" => :stranded
     }.freeze
 
     STATUS_VOCABULARY = (WorkBacklogItem::STATUSES + LIVE_STATUSES.keys + [ ANY_STATUS ]).freeze

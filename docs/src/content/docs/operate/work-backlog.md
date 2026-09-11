@@ -33,10 +33,11 @@ not mirror issue state, and a reader re-checks the issue before acting on it.
 | `estimated_cost` | `small` / `medium` / `large` — **the ranking input**, rated by the gate |
 | `gate_verdict`, `decided_at`, `added_at`, `added_by`, `added_via` | The gate's decision and when and how the row arrived |
 | `precedence`, `pinned` | Where it sits, and whether a human put it there |
-| `status` | `queued` → `started` or `removed` |
+| `status` | `queued` → `started` or `removed`. Nothing moves a row back; see below |
 | `writing_session_id` | The session that appended it — stamped from the MCP connection, self-declared on REST |
 | `started_session_id`, `started_by_session_id`, `started_at` | The session it became, the session that pulled it, and when |
 | `removed_at`, `removed_by`, `removal_reason` | For a removed item, who and why |
+| `liveness_state`, `liveness_checked_at` | What the liveness re-check last observed about a row that left the queue, and when |
 | `payload` | `ratings`, `prompt`, `notes`, `gate_session`, and whatever the gate adds next |
 
 **A row is never deleted.** The file dropped an item when it was pulled, so the history of what got
@@ -221,6 +222,76 @@ keeps pulling while `parked` climbs. The rule for a groomer is therefore a secon
 than a second number: when `parked` keeps growing, the useful action is to get those PRs merged,
 not to pull more. See [Limitations](/limitations/).
 
+## When a row leaves the queue and goes nowhere
+
+A row leaves `queued` by two routes. A pull marks it `started` and spawns a session; a pull's
+mechanical removal marks it `removed` with the fact it observed. **Neither route has a way back**,
+and nothing reads the row again — `WorkBacklog::Ranking` and the pull both look only at `queued`
+rows. So when the premise expires, the item is neither queued nor being worked, and nothing says
+so. On 2026-09-11, 41 of 159 open convergent issues across the gated repos were `started`, and 13
+had been for four days or more.
+
+`WorkBacklogLivenessSweepJob` (hourly, `WorkBacklog::LivenessSweep`) re-checks those rows,
+least-recently-checked first, and records what GitHub currently says in `liveness_state`:
+
+| Found | `liveness_state` | Stranded? |
+| --- | --- | --- |
+| The issue is closed | `issue_closed` | No — resolved |
+| An open PR referencing it moved within `STALE_PR_AFTER` (14 days) | `pr_open` | No — someone is on it |
+| The only open PRs referencing it have gone quiet | `pr_stalled` | Yes |
+| A merged PR references it, but the issue is still open | `pr_merged_issue_open` | Yes — **ambiguous**, see below |
+| No PR has ever referenced it | `no_pr` | Yes |
+| GitHub could not be read | `unknown` | Yes — re-checked next pass |
+| A newer row carries the same key | `superseded` | No — someone already re-queued it |
+
+### It puts nothing back, and that is the design
+
+The obvious fix — re-queue a `started` row whose session ended with the issue still open — is
+wrong. On 2026-09-11 a session examined 12 such rows by hand and found: **6 deliberate partial
+completions**, where the PR fixed part of the issue and said so ("Addresses #419 … auto-closing on
+merge would drop a known, still-live production gap") and a real remainder is outstanding; **4
+fully done**, where the work merged and the PR simply carried no closing keyword; **2 with an open
+PR**; and **1 pulled a month after its fix had already merged**.
+
+**The first two groups are indistinguishable by any mechanical signal.** Both are "issue open, a
+merged PR references it, no closing keyword". Separating them took reading each PR's scope section
+and checking whether the defect still existed in `main` — a judgement per issue. A sweep keyed on
+"session archived and issue still open" re-queues the finished four; one keyed on "a merged PR
+references the issue" closes the six with a remainder. Both destroy something, so the sweep makes
+the only call a cron job is entitled to make: it classifies, and a human or an agent decides.
+
+Putting an item back is then an ordinary `append_work_backlog_item`. Appending on a key whose only
+row is `started` creates a fresh `queued` row and leaves the old one as history — confirmed 6 of 6
+on 2026-09-11.
+
+### The three ways a row strands, and the one this misses
+
+1. **`started` rows whose session ended** — covered.
+2. **`removed` rows whose removal was provisional** — covered. A pull may remove an item because
+   the issue has an open PR, or because a session is already working it. Both are facts with a
+   shelf life: `zimmer#522` was removed as `issue_has_open_pr` and that PR has not been touched
+   since 2026-08-21. `trust_failed` is deliberately excluded — a judgement about the thread has no
+   expiry to re-check — and so is `issue_closed`, which is terminal.
+3. **Issues with no backlog row at all** — **not covered, and cannot be from here.** Before
+   2026-08-29 the gate started sessions itself, and the migration into this table imported only
+   `queued` items, so that work left no row. `zimmer#368` sat 37 days that way. Those issues appear
+   on the Issues view under "In GitHub, not on the queue"; reaching them would take a sweep over
+   GitHub rather than over this table.
+
+### Where the count shows up
+
+The rows the re-check has not resolved are the `stranded` population: a **Stranded** section and
+count on [the Issues view](/operate/issues-view/), `status: "stranded"` in `get_work_backlog` and
+the REST index, and `counts.stranded`. Because nothing clears it automatically, it is a triage
+queue rather than a fault counter.
+
+Every pass logs what it examined and the age of the oldest stranded row — at WARN when a repo could
+not be read, INFO otherwise, since production exports WARN and above
+([#584](https://github.com/tadasant/zimmer/issues/584)). The backstop is an alert: when the oldest
+unresolved row passes `ALERT_AFTER` (7 days), it is reported through `ErrorReporter` to the obs
+pipeline, which pages `#alerts` — because a population nothing
+drains needs an upper bound that is not a person remembering to look.
+
 ## The import
 
 The existing file is imported by a [one-time post-deploy
@@ -243,8 +314,8 @@ chart of open-issue counts over time. Promote does not post to `start_now`: it g
 browser-only controller that calls the same `WorkBacklog::Start`, deliberately away from the
 API-key surface every agent session holds.
 
-## What is not here yet
+## The frozen file
 
-The gate and groomer skills in the companion repo still write the JSON file until they are cut
-over to these tools, and nothing here requires them to change: the table and the file coexist, and
-the table was seeded from the file.
+The gate and groomer skills in the companion repo were cut over to these tools on 2026-09-03.
+`WORK_BACKLOG.json` is kept there as the snapshot this table was seeded from, and is written only by
+the gate's fallback when `append_work_backlog_item` errors.
