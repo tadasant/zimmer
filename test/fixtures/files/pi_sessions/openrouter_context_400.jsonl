@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"11111111-2222-3333-4444-555555555555","timestamp":"2026-09-11T23:11:15.629Z","cwd":"/workspace/clone"}
+{"type":"model_change","id":"715fa604","parentId":null,"timestamp":"2026-09-11T23:11:15.933Z","provider":"sim","modelId":"sim-model"}
+{"type":"thinking_level_change","id":"0431c1a8","parentId":"715fa604","timestamp":"2026-09-11T23:11:15.933Z","thinkingLevel":"off"}
+{"type":"message","id":"c7197436","parentId":"0431c1a8","timestamp":"2026-09-11T23:11:15.994Z","message":{"role":"user","content":[{"type":"text","text":"say hi"}],"timestamp":1789168275985}}
+{"type":"message","id":"ca56d4fa","parentId":"c7197436","timestamp":"2026-09-11T23:11:16.271Z","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"sim","model":"sim-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1789168276092,"errorMessage":"400: {\"message\":\"This endpoint's maximum context length is 128000 tokens. However, you requested about 190000 tokens.\",\"code\":400}"}}

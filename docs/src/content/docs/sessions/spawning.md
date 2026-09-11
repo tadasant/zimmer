@@ -1124,10 +1124,13 @@ Two scoping notes. *This* alert covers the **failure** branch only — a Claude 
 completion and never reaches it — but the normal-completion branch is not silent: it asks the same
 recovery questions and then the terminal-API-error backstop below, which pages on an unrecognized
 wording of its own. What lands in `needs_input` quietly is a turn that wrote real output and simply
-did not say anything Zimmer recognises as trouble. And a runtime whose strategy classifies nothing —
-Codex, until #3779 characterizes its transcript envelope — answers `classifies_exits? => false` and
-gets the loud log without the page, because for it "no classifier matched" is the designed-for path
-rather than news.
+did not say anything Zimmer recognises as trouble. And a runtime whose strategy classifies nothing
+answers `classifies_exits? => false` and gets the loud log without the page, because for it "no
+classifier matched" is the designed-for path rather than news. No shipped runtime is in that state:
+Claude, Codex ([#54](https://github.com/tadasant/zimmer/issues/54)) and Pi
+([#856](https://github.com/tadasant/zimmer/issues/856)) all classify their exits from evidence the
+runtime records, so an unclassified exit on any of them pages. The branch is there for the next
+runtime to land before its failures are characterized.
 :::
 
 ### A transcript with no conversation in it wedges a session id

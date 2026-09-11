@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"11111111-2222-3333-4444-555555555555","timestamp":"2026-09-11T20:34:18.846Z","cwd":"/workspace/clone"}
+{"type":"model_change","id":"e7e7d4fe","parentId":null,"timestamp":"2026-09-11T20:34:18.996Z","provider":"sim","modelId":"sim-model"}
+{"type":"thinking_level_change","id":"e8eef000","parentId":"e7e7d4fe","timestamp":"2026-09-11T20:34:18.998Z","thinkingLevel":"off"}
+{"type":"message","id":"89cb4f9b","parentId":"e8eef000","timestamp":"2026-09-11T20:34:19.051Z","message":{"role":"user","content":[{"type":"text","text":"say hi"}],"timestamp":1789158859048}}
+{"type":"message","id":"ae8931ca","parentId":"89cb4f9b","timestamp":"2026-09-11T20:34:19.209Z","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"sim","model":"sim-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1789158859088,"errorMessage":"403: {\"message\":\"You are not allowed to access this model.\",\"type\":\"invalid_request_error\",\"code\":\"permission_denied\"}"}}

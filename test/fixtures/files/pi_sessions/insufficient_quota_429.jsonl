@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"11111111-2222-3333-4444-555555555555","timestamp":"2026-09-11T20:36:24.390Z","cwd":"/workspace/clone"}
+{"type":"model_change","id":"1a3731c4","parentId":null,"timestamp":"2026-09-11T20:36:24.548Z","provider":"sim","modelId":"sim-model"}
+{"type":"thinking_level_change","id":"f273ecfa","parentId":"1a3731c4","timestamp":"2026-09-11T20:36:24.548Z","thinkingLevel":"off"}
+{"type":"message","id":"c18474c9","parentId":"f273ecfa","timestamp":"2026-09-11T20:36:24.578Z","message":{"role":"user","content":[{"type":"text","text":"say hi"}],"timestamp":1789158984573}}
+{"type":"message","id":"520b89d6","parentId":"c18474c9","timestamp":"2026-09-11T20:36:24.720Z","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"sim","model":"sim-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1789158984612,"errorMessage":"429: {\"message\":\"You exceeded your current quota, please check your plan and billing details.\",\"type\":\"insufficient_quota\",\"code\":\"insufficient_quota\"}"}}

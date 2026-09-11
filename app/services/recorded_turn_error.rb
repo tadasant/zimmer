@@ -4,7 +4,7 @@
 # turn, minus the ones a recovery path has already acted on.
 #
 # For a runtime whose transcript keeps a structured record of how each turn
-# ended (TranscriptSource#records_turn_errors? — Codex today), this is what the
+# ended (TranscriptSource#records_turn_errors? — Codex and Pi), this is what the
 # retry strategy classifies an exit by and what the recovery services confirm
 # before they act. Both sides read it here so they cannot disagree about which
 # error is live: a classifier that saw an error its service then refused to act
