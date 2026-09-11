@@ -168,8 +168,9 @@ with "no rollout found".
 **To add a mount everywhere, add it to `config/deploy.yml`. To add one for a single destination,
 use that destination's top-level `volumes:` key** — Kamal appends it to every app role's
 `docker run`, so it stacks with the shared list instead of replacing it. Production does exactly
-that for the three `/opt/zimmer` bind mounts `artifacts-sync-prod` delivers — the catalog, its
-encrypted credentials, and the [private extension](#an-extension-can-also-arrive-from-outside-the-image).
+that for its three `/opt/zimmer` bind mounts — the catalog and its encrypted credentials, both
+delivered by `artifacts-sync-prod`, and the
+[private extension](#an-extension-can-also-arrive-from-outside-the-image).
 `test/config/kamal_deploy_config_test.rb` asserts the merged result for both destinations, so
 getting this wrong fails CI rather than a deploy.
 
@@ -987,8 +988,8 @@ vacuously), that it does not fire on a healthy tree, that the canary is where th
 The rule above is about extensions whose code is *in the repository*. One is not:
 `PtyTransportExtension` (id `pty_transport`) depends on internal-only techniques that are
 deliberately not published, so `BUILTIN_EXTENSION_CLASSES` names the class and this repository
-carries none of its code. Production gets it as a read-only bind mount, delivered to the host by
-`artifacts-sync-prod` alongside the catalog:
+carries none of its code. Production gets it as a read-only bind mount, from a host directory the
+private companion repo delivers alongside the catalog:
 
 ```yaml
 # config/deploy.production.yml
@@ -1004,13 +1005,14 @@ touched) while the directory it protects was invisible at runtime.
 
 A **missing or empty** host directory is inert: Docker creates the path, Zeitwerk's
 `collapse("app/extensions/*")` finds no files, `safe_constantize` returns `nil`, the registry skips
-the name, and headless inference stays on native `claude -p`. That is what makes the mount safe to
-carry on a host where nothing has been delivered yet — which is every host but this one.
+the name, and headless inference stays on native `claude -p`. So the mount is safe to declare on a
+host where nothing has been delivered yet — a fresh droplet, or a staging box that never gets the
+extension at all.
 
-Production eager-loads, so the code has to be on disk when the container boots. Populating or
-updating the host directory therefore takes effect on the next health-gated `kamal deploy` cutover
-rather than on a restart of a running container — the same delivery path everything else here uses,
-and one that needs no shell on the box.
+Production eager-loads, so the code has to be on disk when the container **boots** — a container
+already running when the files land does not pick them up. What reboots it is the delivery path
+everything else here uses: a health-gated `kamal deploy` cutover, which needs no shell on the box
+and holds the old container serving until the new one answers.
 
 `test/config/kamal_deploy_config_test.rb` asserts the merged mount on both roles, and that nothing
 mounts over `/rails/app/extensions` itself. `test/services/zimmer/extension_registry_test.rb`

@@ -81,12 +81,12 @@ class Zimmer::ExtensionRegistryTest < ActiveSupport::TestCase
     refute_includes ids, "definitely_not_a_real_extension_constant"
   end
 
-  # The list is non-empty for real now: it names PtyTransportExtension, whose code lives
-  # outside this repository and arrives in production as a bind mount. So the skip above
-  # is no longer a hypothetical about a deleted directory -- it is the path THIS build
-  # takes at boot, and the two assertions below pin both halves of it: boot does not
-  # raise, and nothing registers, so every seam stays native. If an extension is ever
-  # vendored into this repo, this test is the one that should be rewritten deliberately.
+  # BUILTIN_EXTENSION_CLASSES names PtyTransportExtension, whose code lives outside this
+  # repository and reaches production as a bind mount. The skip above is therefore the
+  # path THIS build takes at boot rather than a hypothetical about a deleted directory,
+  # and the two tests below pin both halves of it: boot does not raise, and nothing
+  # registers, so every seam stays native. An extension vendored into this repo is a
+  # deliberate change to make these fail, not an accident to work around.
   test "the real built-in list registers nothing in this checkout" do
     Zimmer::ExtensionRegistry.reset!
     assert_nothing_raised { Zimmer::ExtensionRegistry.register_builtins! }
@@ -98,11 +98,15 @@ class Zimmer::ExtensionRegistryTest < ActiveSupport::TestCase
   end
 
   test "every built-in class name is absent from this repository by design" do
-    unresolved = Zimmer::ExtensionRegistry::BUILTIN_EXTENSION_CLASSES.reject { |n| n.safe_constantize }
+    builtins = Zimmer::ExtensionRegistry::BUILTIN_EXTENSION_CLASSES
 
-    assert_equal Zimmer::ExtensionRegistry::BUILTIN_EXTENSION_CLASSES, unresolved,
-      "A built-in name resolves here. That is fine in itself, but it means the OSS build " \
-      "no longer falls back to native for that seam -- check the docs claim in " \
+    # Pins the test's own premise: against an empty list every assertion below is
+    # vacuously true, so emptying the constant would silently retire this test.
+    refute_empty builtins, "BUILTIN_EXTENSION_CLASSES is empty, so this test proves nothing."
+
+    assert_equal builtins, builtins.reject { |name| name.safe_constantize },
+      "A built-in name resolves here. That is fine in itself, but it means this build no " \
+      "longer falls back to native for that seam -- check the docs claim in " \
       "docs/src/content/docs/extend/extensions.md before changing this."
   end
 

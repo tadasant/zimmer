@@ -2269,9 +2269,16 @@ The first extension **vendored into** `app/extensions/` after
 path end to end. The class of failure open until then is a Zeitwerk one — a file whose constant does
 not match the collapsed path, so `safe_constantize` returns `nil` and the registry skips it exactly
 as it would skip a deleted directory. Presence in the image no longer hides that; nothing else
-catches it either. A bind-mounted extension has the same exposure with one more way in: an empty or
-wrongly-named host directory is silently indistinguishable from an absent one, which is the property
-that makes the mount safe to merge and the same property that makes a broken delivery quiet.
+catches it either.
+
+A **bind-mounted** extension fails differently, and in one respect better. `production.rb` sets
+`eager_load = true`, so a mounted file whose constant does not match its path raises
+`Zeitwerk::NameError` while the container boots: it never answers the health gate, kamal-proxy keeps
+the old container serving, and the deploy fails loudly rather than degrading. What stays quiet is
+the delivery itself — an empty, absent or wrongly-named host directory is indistinguishable from an
+extension that was never meant to be there. That is the same property that makes the mount safe to
+declare on every other host, so it is a trade rather than an oversight, but it does mean a broken
+sync leaves production silently on the native backend.
 
 ### The login flow screen-scrapes a TUI
 

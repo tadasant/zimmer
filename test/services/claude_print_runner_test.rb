@@ -7,9 +7,10 @@ require "test_helper"
 # exactly one place, so these tests pin that decision.
 #
 # The seam is tested against a FAKE extension registered into the registry rather
-# than any concrete (deletable) extension like pty_transport — so this file keeps
-# passing even in an OSS build with the PTY extension removed. PTY-specific
-# selection is covered in test/extensions/pty_transport/.
+# than any concrete extension. It has to be: pty_transport's code is deliberately
+# not in this repository, so there is nothing here to instantiate and no sibling
+# test directory for it. PTY-specific selection is covered alongside the extension
+# itself, in the private repo that carries it.
 class ClaudePrintRunnerTest < ActiveSupport::TestCase
   # A minimal backend + extension exercising the print-runner seam. The backend
   # only needs to be identifiable; it never actually runs here.
