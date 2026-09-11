@@ -81,7 +81,13 @@ class SchemaVerifyTaskTest < ActiveSupport::TestCase
       "CREATE AGGREGATE zz_probe_aggregate (int) (SFUNC = int4pl, STYPE = int)",
       "CREATE UNLOGGED TABLE zz_probe_unlogged (id int)",
       "CREATE TABLE zz_probe_partitioned (id int) PARTITION BY RANGE (id)",
-      "CREATE TABLE zz_probe_exclusion (r int4range, EXCLUDE USING gist (r WITH &&))"
+      "CREATE TABLE zz_probe_exclusion (r int4range, EXCLUDE USING gist (r WITH &&))",
+      "CREATE TABLE zz_probe_child () INHERITS (zz_probe_rules)",
+      "CREATE TABLE zz_probe_partition PARTITION OF zz_probe_partitioned FOR VALUES FROM (0) TO (10)",
+      "CREATE TABLE zz_probe_fill (id int) WITH (fillfactor = 70)",
+      "CREATE FUNCTION zz_probe_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$",
+      "CREATE TRIGGER zz_probe_trigger BEFORE INSERT ON zz_probe_rules FOR EACH ROW EXECUTE FUNCTION zz_probe_fn()",
+      "ALTER TABLE zz_probe_rules DISABLE TRIGGER zz_probe_trigger"
     ].each { |sql| connection.execute(sql) }
 
     added = catalog - before
@@ -100,10 +106,18 @@ class SchemaVerifyTaskTest < ActiveSupport::TestCase
       "AGGREGATE zz_probe_aggregate(integer)" => "aggregate",
       "TABLE zz_probe_unlogged UNLOGGED" => "unlogged table",
       "TABLE zz_probe_partitioned PARTITION BY RANGE (id)" => "partitioned table",
-      "CONSTRAINT zz_probe_exclusion_r_excl ON zz_probe_exclusion EXCLUDE USING gist" => "exclusion constraint"
+      "EXCLUSION CONSTRAINT ON zz_probe_exclusion EXCLUDE USING gist" => "exclusion constraint",
+      "TABLE zz_probe_child INHERITS (zz_probe_rules)" => "inheriting table",
+      "TABLE zz_probe_partition PARTITION OF zz_probe_partitioned FOR VALUES FROM (0) TO (10)" => "partition",
+      "TABLE zz_probe_fill WITH (fillfactor=70)" => "table with storage parameters",
+      "CREATE OR REPLACE FUNCTION public.zz_probe_fn()" => "function",
+      "CREATE TRIGGER zz_probe_trigger BEFORE INSERT ON public.zz_probe_rules" => "trigger"
     }.each do |prefix, kind|
       assert added.any? { |line| line.start_with?(prefix) }, "the catalog does not see a #{kind}:\n#{added.join("\n")}"
     end
+
+    trigger = added.find { |line| line.start_with?("CREATE TRIGGER zz_probe_trigger ") }
+    assert trigger.end_with?(" -- disabled"), "a disabled trigger reads the same as an enabled one: #{trigger}"
   end
 
   test "the catalog leaves out what the dump already carries as a table" do

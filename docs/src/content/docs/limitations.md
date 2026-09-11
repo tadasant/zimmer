@@ -4531,11 +4531,19 @@ standalone sequences, or partitioned or `UNLOGGED` tables. A migration that buil
 would leave it in production and nowhere else, so `schema_verify` fails the PR instead. See
 [Functions and triggers are dumped; other DDL is refused](/operate/testing/#functions-and-triggers-are-dumped-other-ddl-is-refused).
 
-Two smaller edges come with the dumper. Functions are dumped in signature order. A plpgsql body is
-not checked until it runs, but a SQL-language function that calls one dumped after it fails the
-schema load, and it fails in `schema_verify`, not quietly. And a trigger someone has disabled with
-`ALTER TABLE … DISABLE TRIGGER` is dumped enabled; the catalog records the difference, so that
-fails in `schema_verify` too.
+The dumper has three smaller edges, and each one fails `schema_verify` rather than passing quietly:
+
+- **Functions come after every table.** A column default, check constraint, generated column or
+  expression index that calls a user function makes `db/schema.rb` fail to load, because the
+  function does not exist yet when the table is created.
+- **Functions are dumped in signature order.** A plpgsql body is not checked until it runs, but a
+  SQL-language function that calls one dumped after it fails the schema load.
+- **Disabled triggers are dumped enabled.** A trigger someone has disabled with
+  `ALTER TABLE … DISABLE TRIGGER` comes back enabled; the catalog records the difference.
+
+The catalog is not exhaustive either. It reads the kinds a migration most plausibly builds with
+`execute`; foreign tables, extended statistics, grants, operators and collations are among what it
+does not read.
 
 `gate_decisions` is append-only in Postgres as well as in the model. `gate_decision_feedbacks` is
 append-only in the model only.

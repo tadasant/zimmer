@@ -83,8 +83,8 @@ class GateDecision < ApplicationRecord
   # with an error a caller can read. The `gate_decisions_append_only` Postgres
   # trigger (AddAppendOnlyTriggerToGateDecisions) refuses the paths that never
   # reach a callback: `update_all`, `delete_all`, `update_column`, raw SQL. The one
-  # UPDATE it allows is the foreign key clearing `writing_session_id` when that
-  # session is deleted. The API and MCP surfaces expose no update or destroy at all.
+  # UPDATE it allows is the foreign key clearing `writing_session_id` once that
+  # session has been deleted. The API and MCP surfaces expose no update or destroy.
   before_update { raise ActiveRecord::ReadOnlyRecord, "GateDecision is append-only: record a new decision instead of editing one" }
   before_destroy { raise ActiveRecord::ReadOnlyRecord, "GateDecision is append-only and cannot be deleted" }
 

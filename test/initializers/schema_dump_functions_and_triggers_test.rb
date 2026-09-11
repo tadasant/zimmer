@@ -87,4 +87,15 @@ class SchemaDumpFunctionsAndTriggersTest < ActiveSupport::TestCase
     assert_no_match(/<<~/, statement)
     assert_equal body, loaded_sql(statement)
   end
+
+  # Ruby's parser drops a carriage return from the end of a heredoc line, so a
+  # CRLF body could not come back byte for byte from one.
+  test "a body with carriage returns is dumped as a string instead" do
+    body = "CREATE OR REPLACE FUNCTION public.f()\r\nAS $function$\r\n  SELECT 1\r\n$function$"
+
+    statement = SchemaDumpFunctionsAndTriggers.execute_statement(body)
+
+    assert_no_match(/<<~/, statement)
+    assert_equal body, loaded_sql(statement)
+  end
 end

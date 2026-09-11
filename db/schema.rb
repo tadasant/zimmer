@@ -977,7 +977,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_150000) do
     BEGIN
       IF TG_OP = 'UPDATE'
          AND NEW.writing_session_id IS NULL
-         AND (to_jsonb(NEW) - 'writing_session_id') = (to_jsonb(OLD) - 'writing_session_id') THEN
+         AND (to_jsonb(NEW) - 'writing_session_id') = (to_jsonb(OLD) - 'writing_session_id')
+         AND NOT EXISTS (SELECT 1 FROM sessions WHERE id = OLD.writing_session_id) THEN
         RETURN NEW;
       END IF;
 
