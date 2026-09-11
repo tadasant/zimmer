@@ -30,9 +30,35 @@
 # rather than appending to them -- restating it here would override the durable
 # volume list in config/deploy.yml, and the next entry added there would silently
 # reach staging only.
+#
+# The third entry is the `pty_transport` extension, whose code deliberately does not
+# live in this repository -- it depends on internal-only techniques we do not publish,
+# so it is delivered to the host by artifacts-sync-prod and mounted over the directory
+# Zeitwerk would have loaded it from. ExtensionRegistry names the class
+# (BUILTIN_EXTENSION_CLASSES) and resolves it with safe_constantize, so this mount is
+# the only difference between a container that has the extension and one that does not.
+#
+# Three properties of that line are load-bearing:
+#
+#   * It mounts the extension's OWN subdirectory, never /rails/app/extensions. Mounting
+#     the parent would shadow the in-image app/extensions/CLAUDE.md and
+#     app/extensions/image_canary/ -- and the canary is precisely what
+#     scripts/assert-extensions-shipped.sh exists to find.
+#   * Read-only, on a persistent host path, so it survives `kamal deploy`. The deleted
+#     scripts/install-extension.sh wrote into the container's writable layer instead,
+#     and every deploy threw the result away.
+#   * A missing or empty host directory is INERT, which is why this is safe to carry
+#     before anything populates it: Docker creates the path, Zeitwerk's collapse of
+#     app/extensions/* finds no files, safe_constantize returns nil, the registry skips
+#     the name, and headless inference stays on native `claude -p`.
+#
+# Production eager-loads, so the files have to be there at container boot -- which is why
+# populating the host directory is picked up by a health-gated Kamal cutover rather than
+# by restarting a running container.
 volumes:
   - /opt/zimmer/catalog:/rails/catalog:ro
   - /opt/zimmer/credentials:/rails/config/credentials:ro
+  - /opt/zimmer/extensions/pty_transport:/rails/app/extensions/pty_transport:ro
 
 # init: true, the durable volume list, and the worker's cmd/proxy live in
 # config/deploy.yml -- they are identical in both destinations, and a list written

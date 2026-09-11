@@ -212,8 +212,8 @@ catalog onto the box and point the app at it with the **`AIR_CONFIG`** env var:
 Production's real catalog lives in a private companion repo (`air.json` +
 `artifacts/`). It is delivered like this — the same pattern any self-hoster can copy:
 
-1. **Mount two persistent host directories** into both the `web` and `worker` roles
-   (`config/deploy.production.yml`), and set `AIR_CONFIG`:
+1. **Mount the catalog and its credentials as persistent host directories** into both the `web` and
+   `worker` roles (`config/deploy.production.yml`), and set `AIR_CONFIG`:
    ```yaml
    volume:
      - /opt/zimmer/catalog:/rails/catalog:ro                 # your air.production.json + artifacts/

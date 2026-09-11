@@ -108,6 +108,26 @@ class ClaudePrintRunnerTest < ActiveSupport::TestCase
     assert_equal "/fake/claude", runner.instance_variable_get(:@claude_binary)
   end
 
+  # Everything above drives a FAKE extension, which proves the seam works but says
+  # nothing about what this build actually resolves at boot. BUILTIN_EXTENSION_CLASSES
+  # names PtyTransportExtension, whose code is deliberately not in this repository, so
+  # the answer here has to be native -- and that is the property the whole withheld-code
+  # arrangement rests on. Registering the real built-ins is what makes this a boot-level
+  # assertion rather than a restatement of the fake-extension tests.
+  #
+  # What it pins is the DEFAULT POSTURE, not the absence of an extension: enablement is
+  # the safety property, so vendoring PtyTransportExtension into app/extensions/ would
+  # leave this green (default_enabled? is false). The absence is pinned in
+  # extension_registry_test.rb, which is the test that fails on such a directory.
+  test "the real built-in registry leaves print inference on the native backend" do
+    Zimmer::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.register_builtins!
+
+    refute ClaudePrintRunner.pty_enabled?,
+      "No extension's code ships in this repository, so nothing can provide a backend."
+    assert_instance_of NativeClaudePrintRunner, ClaudePrintRunner.build
+  end
+
   test "forwards the model and binary to the extension backend" do
     enable_fake(true)
     runner = ClaudePrintRunner.build(
