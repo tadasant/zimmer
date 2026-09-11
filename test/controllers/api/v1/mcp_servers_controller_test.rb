@@ -164,7 +164,8 @@ class Api::V1::McpServersControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     JSON.parse(response.body)["mcp_servers"].each do |server|
-      assert_equal %w[name title description unavailable unavailable_reason].sort, server.keys.sort
+      assert_equal %w[name title description unavailable unavailable_reason startup_timeout_sec].sort,
+        server.keys.sort
     end
   end
 end

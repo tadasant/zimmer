@@ -16,6 +16,8 @@ class Api::V1::McpServersController < Api::BaseController
   #   - description: Brief description of the server's purpose
   #   - unavailable: true when Zimmer cannot start this server right now
   #   - unavailable_reason: why, in a few words; nil unless `unavailable`
+  #   - startup_timeout_sec: the startup budget this entry declares for itself,
+  #     or nil when it declares none and McpStartupTimeout::SECONDS applies
   #
   # The list is never filtered. An unavailable server exists and should not be
   # re-registered — it is flagged so a caller does not attach one, since an
