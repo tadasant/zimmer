@@ -25,18 +25,34 @@
     <% else %>
       <div class="space-y-3">
         <% rows.each do |row| %>
-          <% scope = { job_class: row[:job_class], queue_name: row[:queue_name] }.compact %>
-          <% label = [ row[:job_class] || "(unknown class)", row[:queue_name] || "(unknown queue)" ].join(" on ") %>
+          <%# A row is only actionable when BOTH columns are present. `eligible`
+              scopes by equality, so there is no predicate for "job_class IS NULL"
+              — a control on such a row would post a half-scope that matches more
+              rows than the line it sits next to, and the count confirmation would
+              refuse it every single time. Show the count, withhold the buttons,
+              and say why. GoodJob sets both columns at enqueue, so in practice
+              this is the never-taken branch rather than a common one. %>
+          <% scope = { job_class: row[:job_class], queue_name: row[:queue_name] } %>
+          <% actionable = scope.values.all?(&:present?) %>
+          <% label = [ row[:job_class] || QueuedJobMaintenance::UNKNOWN, row[:queue_name] || QueuedJobMaintenance::UNKNOWN ].join(" on ") %>
           <div class="flex flex-col gap-3 rounded-md border border-gray-200 p-3 sm:flex-row sm:items-end sm:justify-between">
             <div class="min-w-0">
-              <p class="text-sm font-medium text-gray-900 break-words font-mono"><%= row[:job_class] || "(unknown class)" %></p>
+              <p class="text-sm font-medium text-gray-900 break-words font-mono"><%= row[:job_class] || QueuedJobMaintenance::UNKNOWN %></p>
               <p class="mt-1 text-xs text-gray-500">
-                queue <span class="font-mono"><%= row[:queue_name] || "(unknown)" %></span> ·
+                queue <span class="font-mono"><%= row[:queue_name] || QueuedJobMaintenance::UNKNOWN %></span> ·
                 <span class="font-medium text-gray-700"><%= row[:count] %></span>
                 waiting
               </p>
             </div>
 
+            <% unless actionable %>
+              <p class="text-xs text-gray-500 sm:text-right sm:max-w-56">
+                No controls: this row is missing a class or a queue name, so it cannot be scoped
+                precisely enough to act on safely.
+              </p>
+            <% end %>
+
+            <% if actionable %>
             <div class="flex flex-wrap items-end gap-2">
               <%# delay_minutes defaults to 0 — "run as soon as the queue allows", which is what
                   an operator draining a backlog after lifting a halt actually wants. %>
@@ -60,6 +76,7 @@
                   form: { data: { turbo_confirm: "Discard #{row[:count]} queued #{label}? This is NOT recoverable — those jobs will never run." } },
                   class: "inline-flex justify-center items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500" %>
             </div>
+            <% end %>
           </div>
         <% end %>
       </div>
