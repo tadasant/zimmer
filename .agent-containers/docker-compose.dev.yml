@@ -35,7 +35,8 @@ services:
       # them; only interactive agent/PR work needs them.
       - ${HOME}/.claude:/root/.claude
       - ${HOME}/.config/gh:/root/.config/gh
-      # Let the container drive sibling Docker containers via the host daemon.
+      # Let the container drive sibling Docker containers via the daemon that runs
+      # this stack: the host's on a workstation, the worker's nested one in a session.
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       # APP_PORT=0 (the default) publishes container :3000 on a random host port.

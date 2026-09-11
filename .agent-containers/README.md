@@ -136,7 +136,9 @@ opening PRs need them.
   contention.
 - Inside the compose network, the app reaches Postgres at `db:5432` and Redis at
   `redis:6379` — that wiring lives in [`.env.dev`](.env.dev).
-- `/var/run/docker.sock` is mounted in so a session can drive sibling containers.
+- `/var/run/docker.sock` is mounted in so a session can drive sibling containers —
+  the socket of whichever daemon runs the stack (the worker's nested daemon in a
+  Zimmer session).
 
 ## Services
 
