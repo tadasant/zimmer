@@ -129,8 +129,11 @@ class GateDecisionsControllerTest < ActionDispatch::IntegrationTest
     assert_no_match "ImportGateDecisionLedgers", response.body
 
     GateDecisionFeedback.delete_all
-    # `delete_all`, not `destroy_all`: GateDecision refuses to be destroyed, which
-    # is the property under test everywhere else in this file.
+    # GateDecision refuses to be destroyed, and the table's append-only trigger
+    # refuses `delete_all` too. This test needs an empty ledger, so it switches the
+    # trigger off for its own transaction: DDL is transactional in Postgres, and
+    # the rollback at the end of the test switches it back on.
+    GateDecision.connection.execute("ALTER TABLE gate_decisions DISABLE TRIGGER gate_decisions_append_only")
     GateDecision.delete_all
 
     get gate_decisions_path

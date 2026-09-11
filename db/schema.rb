@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_11_024903) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_11_150000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -965,4 +965,29 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_024903) do
   add_foreign_key "work_backlog_items", "sessions", column: "started_by_session_id", on_delete: :nullify
   add_foreign_key "work_backlog_items", "sessions", column: "started_session_id", on_delete: :nullify
   add_foreign_key "work_backlog_items", "sessions", column: "writing_session_id", on_delete: :nullify
+
+  # Functions and triggers, which the Ruby schema format has no DSL for. Dumped
+  # as the SQL Postgres reports — see
+  # config/initializers/schema_dump_functions_and_triggers.rb.
+  execute <<~'SQL'
+    CREATE OR REPLACE FUNCTION public.gate_decisions_append_only()
+     RETURNS trigger
+     LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF TG_OP = 'UPDATE'
+         AND NEW.writing_session_id IS NULL
+         AND (to_jsonb(NEW) - 'writing_session_id') = (to_jsonb(OLD) - 'writing_session_id') THEN
+        RETURN NEW;
+      END IF;
+
+      RAISE EXCEPTION 'gate_decisions is append-only: % of row % refused', TG_OP, OLD.id
+        USING HINT = 'Record a new decision citing the one it corrects.';
+    END;
+    $function$
+  SQL
+
+  execute <<~'SQL'
+    CREATE TRIGGER gate_decisions_append_only BEFORE DELETE OR UPDATE ON public.gate_decisions FOR EACH ROW EXECUTE FUNCTION gate_decisions_append_only()
+  SQL
 end

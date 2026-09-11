@@ -30,6 +30,56 @@ class GateDecisionTest < ActiveSupport::TestCase
     assert GateDecision.exists?(record.id)
   end
 
+  # The paths below never reach a model callback, so what refuses them is the
+  # table's Postgres trigger. Each runs in a savepoint because a refused statement
+  # aborts the transaction it ran in, and the assertions after it need this one.
+  def refused_by_the_database(&block)
+    error = assert_raises(ActiveRecord::StatementInvalid) { GateDecision.transaction(requires_new: true, &block) }
+    assert_match(/gate_decisions is append-only/, error.message)
+  end
+
+  test "the database refuses an update that skips the model" do
+    record = decision
+
+    refused_by_the_database { GateDecision.where(id: record.id).update_all(decision: "hold") }
+    refused_by_the_database { record.update_column(:decision, "hold") }
+    refused_by_the_database { GateDecision.connection.execute("UPDATE gate_decisions SET payload = '{}'") }
+
+    assert_equal "auto-merge", record.reload.decision
+  end
+
+  test "the database refuses a delete that skips the model" do
+    record = decision
+
+    refused_by_the_database { GateDecision.where(id: record.id).delete_all }
+    refused_by_the_database { record.delete }
+
+    assert GateDecision.exists?(record.id)
+  end
+
+  # `writing_session_id` is ON DELETE SET NULL, so the one UPDATE the trigger lets
+  # through is the one Postgres issues when the writing session is deleted.
+  test "deleting the session that wrote a decision clears the pointer and nothing else" do
+    writer = create_session
+    record = decision(writing_session: writer)
+    before = record.reload.attributes.except("writing_session_id")
+
+    Session.where(id: writer.id).delete_all
+
+    assert_nil record.reload.writing_session_id
+    assert_equal before, record.attributes.except("writing_session_id")
+  end
+
+  test "clearing the writing session does not carry any other change past the trigger" do
+    record = decision(writing_session: create_session)
+
+    refused_by_the_database do
+      GateDecision.where(id: record.id).update_all(writing_session_id: nil, decision: "hold")
+    end
+
+    assert_not_nil record.reload.writing_session_id
+  end
+
   test "feedback is not cascaded away with its decision" do
     record = decision
     record.feedbacks.create!(verdict: "should-have-held", channel: GateDecisionFeedback::IMPORTED)

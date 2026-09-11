@@ -14,5 +14,13 @@ namespace :db do
 
       SchemaVerifyTask.run
     end
+
+    namespace :verify do
+      # The last step of each db:schema:verify pass, not something to run by hand —
+      # hence no `desc`, which keeps it out of `bin/rails -T`.
+      task catalog: :environment do
+        SchemaVerifyTask.write_catalog(ENV.fetch(SchemaVerifyTask::CATALOG_ENV))
+      end
+    end
   end
 end

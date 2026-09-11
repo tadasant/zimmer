@@ -4522,6 +4522,27 @@ plan, not a side effect of a CI job.
 
 No issue — this is a recorded ceiling, not work in flight.
 
+### A migration cannot install a view, a rule, a policy or a custom domain
+
+🟡 `db/schema.rb` is a Ruby dump. It carries functions and triggers, because
+`config/initializers/schema_dump_functions_and_triggers.rb` writes them into it, but not views,
+materialized views, rules, row-level security, domains, composite or range types, aggregates,
+standalone sequences, or partitioned or `UNLOGGED` tables. A migration that builds one of those
+would leave it in production and nowhere else, so `schema_verify` fails the PR instead. See
+[Functions and triggers are dumped; other DDL is refused](/operate/testing/#functions-and-triggers-are-dumped-other-ddl-is-refused).
+
+Two smaller edges come with the dumper. Functions are dumped in signature order. A plpgsql body is
+not checked until it runs, but a SQL-language function that calls one dumped after it fails the
+schema load, and it fails in `schema_verify`, not quietly. And a trigger someone has disabled with
+`ALTER TABLE … DISABLE TRIGGER` is dumped enabled; the catalog records the difference, so that
+fails in `schema_verify` too.
+
+`gate_decisions` is append-only in Postgres as well as in the model. `gate_decision_feedbacks` is
+append-only in the model only.
+
+No issue. The limitation fails a check instead of passing silently, and extending the dumper is how
+to lift it for the next kind that is needed.
+
 ### The `cable` database's schema is not replay-checked
 
 🟡 `db:schema:verify`'s replay half is scoped to databases that have migrations. solid_cable's
