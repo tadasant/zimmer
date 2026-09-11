@@ -333,7 +333,9 @@ class CostsMobileTest < ApplicationSystemTestCase
     assert_current_path costs_path(days: 30, agent_root: root)
     assert_text "Agent root"
     assert_text root
-    assert_text "All agent roots", "a narrowed page needs the way back"
+    # The way back to the fleet. One argument only: Capybara's `assert_text` reads
+    # a two-string call as (type, text) and rejects the first as a query type.
+    assert_text "All agent roots"
     # The fleet had two roots; this one is the other root's spend gone.
     assert_no_text "artifacts-agent-roots-pr-merge-gate"
 
