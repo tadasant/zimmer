@@ -182,12 +182,13 @@ module Mcp
       # one call into a batch of them. Folded into `sessions`, every session
       # carrying `zimmer-sessions` could start one — including the analysis
       # sessions themselves, which are spawned with exactly that server, so an
-      # analysis could start analyses. In BASE_GROUPS the unscoped `zimmer` server
+      # analysis would hold the tool. In BASE_GROUPS the unscoped `zimmer` server
       # would carry it into every root that lists it. So a connection names
       # `outcome_analyses` to get it, and `zimmer-outcome-analyses` (mcp.json) is
-      # the catalog entry that does; no root attaches it by default. It is a human
-      # handing a session this server — a trigger's MCP list, a start_session
-      # call — that makes an agent-started analysis explicit.
+      # the catalog entry that does; no root attaches it by default. As with
+      # gate_decisions, this decides what a session is OFFERED, not what it can
+      # reach: anything holding start_session or action_trigger can spawn a child
+      # with that server. What bounds an agent that does are the limits below.
       #
       # The group holds only the write, so `outcome_analyses_readonly` is empty by
       # construction: the read, get_outcome_analysis, lives in `sessions` above.

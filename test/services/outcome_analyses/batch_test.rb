@@ -158,6 +158,53 @@ class OutcomeAnalyses::BatchTest < ActiveSupport::TestCase
     assert_equal 0, OutcomeAnalyses::SpawnAnalysisSession.live_mcp_single_count, "batch items are not single analyses"
   end
 
+  test "a stopped MCP batch's analyses in flight block the next MCP batch until they land" do
+    batch = OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 2, started_via: OutcomeAnalysisBatch::STARTED_VIA_MCP)
+    OutcomeAnalyses::SpawnAnalysisSession.unstub(:call)
+    AgentSessionJob.stubs(:enqueue_new_session).returns(nil)
+    OutcomeAnalyses::PumpBatch.call(batch)
+    OutcomeAnalyses::CancelBatch.call(batch)
+    assert_equal 2, OutcomeAnalyses::SpawnAnalysisSession.live_mcp_batch_item_count
+
+    error = assert_raises(OutcomeAnalyses::StartBatch::AgentCapExceeded) do
+      OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 3, started_via: OutcomeAnalysisBatch::STARTED_VIA_MCP)
+    end
+    assert_match(/2 analyses from a stopped MCP batch are still in flight/, error.message)
+    assert_equal 1, OutcomeAnalysisBatch.count
+
+    # A web-UI batch is not held to it.
+    OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 3)
+
+    batch.items.running.each { |item| item.analysis_session.update!(status: :archived) }
+    assert OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 3, started_via: OutcomeAnalysisBatch::STARTED_VIA_MCP)
+  end
+
+  test "the cron sweep reconciles a stopped batch's in-flight items, and spawns nothing for it" do
+    stub_spawn!
+    batch = OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 1)
+    OutcomeAnalyses::PumpBatch.call(batch)
+    in_flight = batch.items.running.sole
+    OutcomeAnalyses::CancelBatch.call(batch)
+    OutcomeAnalyses::Save.call(session: in_flight.session, root: tree_for(in_flight.session))
+    spawned_before = @spawned.size
+
+    OutcomeAnalysisBatchPumpJob.perform_now
+
+    assert_equal OutcomeAnalysisBatchItem::SUCCEEDED, in_flight.reload.state
+    assert_equal OutcomeAnalysisBatch::CANCELED, batch.reload.status
+    assert_equal 0, batch.items.running.count
+    assert_equal spawned_before, @spawned.size
+  end
+
+  test "stopping a batch that already finished is refused, not relabelled" do
+    batch = OutcomeAnalysisBatch.create!(filters: {}, concurrency: 1, total_count: 0, status: OutcomeAnalysisBatch::COMPLETED)
+
+    error = assert_raises(OutcomeAnalyses::CancelBatch::NotRunning) { OutcomeAnalyses::CancelBatch.call(batch) }
+
+    assert_match(/already completed/, error.message)
+    assert_equal OutcomeAnalysisBatch::COMPLETED, batch.reload.status
+  end
+
   test "concurrency 1 keeps exactly one analysis in flight" do
     stub_spawn!
     batch = OutcomeAnalyses::StartBatch.call(filters: filters, concurrency: 1)

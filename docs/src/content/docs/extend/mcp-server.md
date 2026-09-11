@@ -327,9 +327,10 @@ observed facts. `zimmer-work-backlog` (mcp.json) is the one catalog entry that n
 is the only opt-in group that holds a write and not its read. `get_outcome_analysis` starts nothing,
 so it sits in `sessions` beside `get_session`, and `outcome_analyses_readonly` is empty. The write
 stays out of `sessions` because analysis sessions are spawned with `zimmer-sessions`, and there it
-would let an analysis start analyses. Once a caller has the tool, it is still held to limits the web
-form does not have: at most 3 analyses in flight per batch, one MCP-started batch running at a time,
-and an `expected_count` that must match what the filters would queue. `zimmer-outcome-analyses`
+would hand every analysis session the tool directly. Once a caller has the tool, it is still held to
+limits the web form does not have: at most 3 analyses in flight per batch, one MCP-started batch
+running at a time (and none while a stopped one's analyses are still in flight), and an
+`expected_count` that must match what the filters would queue. `zimmer-outcome-analyses`
 (mcp.json, `?tool_groups=sessions_readonly,outcome_analyses`) is the one catalog entry that names the
 group.
 

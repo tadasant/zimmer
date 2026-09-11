@@ -8,15 +8,24 @@ module OutcomeAnalyses
   # would throw away work already paid for, and the thing a runaway batch needs
   # stopped is the spawning, which this does immediately.
   class CancelBatch
+    class NotRunning < StandardError; end
+
     # @return [Integer] how many queued items were actually canceled — counted
     #   inside the lock, because a pump wave can claim some of them between a
     #   caller's count and this call, and a message that overstates what it
     #   stopped is worse than no number.
+    # @raise [NotRunning] when the batch has already completed or been stopped.
+    #   Relabelling a completed batch as canceled would be a lie about what
+    #   happened to it.
     def self.call(batch)
       # The same row lock PumpBatch claims under, so Stop cannot land between a
       # wave deciding which items are its own and those items being marked
       # RUNNING — which would otherwise cancel an item the wave then resurrects.
+      # `with_lock` reloads the row, so the status read here is the locked one:
+      # a pump that completed the batch a moment ago is seen, not overwritten.
       batch.with_lock do
+        raise NotRunning, "Batch ##{batch.id} is already #{batch.status}; there is nothing to stop." unless batch.running?
+
         canceled = batch.items.queued.update_all(
           state: OutcomeAnalysisBatchItem::CANCELED,
           finished_at: Time.current,

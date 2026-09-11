@@ -292,6 +292,15 @@ class OutcomesControllerTest < ActionDispatch::IntegrationTest
     assert_match(/Stopped batch ##{batch.id}/, flash[:notice])
   end
 
+  test "Stop on a batch that already completed says so and leaves it completed" do
+    batch = OutcomeAnalysisBatch.create!(filters: {}, concurrency: 1, total_count: 0, status: OutcomeAnalysisBatch::COMPLETED)
+
+    post cancel_outcome_batch_path(batch)
+
+    assert_equal OutcomeAnalysisBatch::COMPLETED, batch.reload.status
+    assert_match(/already completed; there is nothing to stop/, flash[:alert])
+  end
+
   test "the ledger reaches the stats view and back, carrying the filters" do
     get outcomes_path, params: { agent_runtime: "codex", model: "gpt-5.6-terra" }
 

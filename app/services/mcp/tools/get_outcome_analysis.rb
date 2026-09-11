@@ -294,6 +294,8 @@ module Mcp
         {
           max_batch_concurrency: OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY,
           running_mcp_batch_id: running&.id,
+          # Running or stopped: while any are in flight, a new MCP batch is refused.
+          mcp_batch_analyses_in_flight: OutcomeAnalyses::SpawnAnalysisSession.live_mcp_batch_item_count,
           max_single_analyses_in_flight: OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY,
           single_analyses_in_flight: OutcomeAnalyses::SpawnAnalysisSession.live_mcp_single_count
         }
