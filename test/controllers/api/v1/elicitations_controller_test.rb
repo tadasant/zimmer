@@ -693,6 +693,24 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
   end
 
+  test "the token route takes a .json suffix without reading it as part of the token" do
+    post "#{protocol_create_path}.json", params: protocol_params, as: :json
+
+    assert_response :created
+  end
+
+  # The WARN lines quote what an uncredentialed caller sent, and obs ships them.
+  test "a caller's _meta cannot forge a line in the WARN log" do
+    logged = []
+    Rails.logger.stub(:warn, ->(msg) { logged << msg.to_s }) do
+      post api_v1_elicitations_path, params: protocol_params(request_id: "req-1\nFAKE: all clear"), as: :json
+    end
+
+    assert_response :unauthorized
+    assert_equal 1, logged.size
+    assert_not_includes logged.first, "\n"
+  end
+
   private
 
   def protocol_create_path(session = @session)

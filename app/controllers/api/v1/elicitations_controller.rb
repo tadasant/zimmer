@@ -141,7 +141,7 @@ class Api::V1::ElicitationsController < Api::BaseController
 
     if action_name == "create"
       Rails.logger.warn "[Api::V1::ElicitationsController] Elicitation POST with a session token that does not verify " \
-        "(request_id: #{elicitation_meta['com.pulsemcp/request-id']}) — a forged URL, or one minted under a different secret_key_base"
+        "(request_id: #{log_value(elicitation_meta['com.pulsemcp/request-id'])}) — a forged URL, or one minted under a different secret_key_base"
     end
     render_api_error("Unauthorized", "This elicitation URL does not belong to any session", status: :unauthorized)
   end
@@ -156,8 +156,14 @@ class Api::V1::ElicitationsController < Api::BaseController
 
     meta = elicitation_meta
     Rails.logger.warn "[Api::V1::ElicitationsController] Elicitation POST without a session token or an API key " \
-      "(request_id: #{meta['com.pulsemcp/request-id']}, session-id: #{meta['com.pulsemcp/session-id'].presence || 'blank'}, " \
-      "tool: #{meta['com.pulsemcp/tool-name']}) — the MCP server was not given its session's ELICITATION_REQUEST_URL"
+      "(request_id: #{log_value(meta['com.pulsemcp/request-id'])}, session-id: #{log_value(meta['com.pulsemcp/session-id'])}, " \
+      "tool: #{log_value(meta['com.pulsemcp/tool-name'])}) — the MCP server was not given its session's ELICITATION_REQUEST_URL"
+  end
+
+  # A caller's value as it goes into a WARN line, which obs ships. Quoted, so a
+  # newline in it cannot forge a second log line, and bounded.
+  def log_value(value)
+    value.to_s.truncate(80).inspect
   end
 
   # The session an elicitation is raised on, or nil after rendering the refusal.
@@ -178,8 +184,8 @@ class Api::V1::ElicitationsController < Api::BaseController
     if @token_session
       return @token_session if claimed.blank? || Session.locate(claimed) == @token_session
 
-      Rails.logger.warn "[Api::V1::ElicitationsController] Elicitation POST whose _meta session-id #{claimed} " \
-        "is not its token's session #{@token_session.id} (request_id: #{request_id})"
+      Rails.logger.warn "[Api::V1::ElicitationsController] Elicitation POST whose _meta session-id #{log_value(claimed)} " \
+        "is not its token's session #{@token_session.id} (request_id: #{log_value(request_id)})"
       render_api_error("Forbidden", "_meta[com.pulsemcp/session-id] #{claimed} is not the session this elicitation URL belongs to", status: :forbidden)
       return nil
     end

@@ -930,7 +930,7 @@ the client sends no auth header:
   Requires `_meta["com.pulsemcp/request-id"]` and `message`. → 201, with
   `_meta["com.pulsemcp/poll-url"]` pointing at the token route below. 401 when the token does not
   verify. 403 when `_meta["com.pulsemcp/session-id"]` names a different session; a blank one is
-  accepted.
+  accepted. 422 when `request-id` or `message` is missing, or the `request-id` is already taken.
 - `GET /elicitations/session/:token/:request_id` — polls one of that session's elicitations.
   Auto-expires past `expires_at`. 401 when the token does not verify. 404 when the `request_id`
   does not exist *or* belongs to another session.
@@ -942,8 +942,8 @@ Zimmer puts in a session's MCP server environment. See
 With an API key:
 
 - `POST /elicitations` — the session comes from `_meta["com.pulsemcp/session-id"]` (id or slug).
-  → 201, or 404 when it names no session.
-- `GET /elicitations/:request_id` — polls any elicitation.
+  → 201. 401 without a valid key, 404 when the session-id names no session, 422 as above.
+- `GET /elicitations/:request_id` — polls any elicitation. 401 without a valid key.
 - `PATCH /elicitations/:id/respond` — `action_type` ∈ `accept | decline | cancel`,
   optional `content` (kept only for `accept`; `cancel` is the protocol's "dismissed without
   answering"). `:id` is either the `request_id` or the numeric primary key, so the identifier you

@@ -127,6 +127,15 @@ class ElicitationEndpoint
       Session.find_by(id: match[1].to_i)
     end
 
+    # A URL as it may appear in a log line: a token keeps its session id and loses
+    # its MAC, because the MAC is the credential.
+    #
+    # @param url [String, nil]
+    # @return [String]
+    def loggable_url(url)
+      url.to_s.sub(%r{(/#{SESSION_SEGMENT}/\d+-)[A-Za-z0-9_-]+}, '\1…')
+    end
+
     def token_key
       Rails.application.key_generator.generate_key(TOKEN_KEY_SALT, 32)
     end
@@ -156,7 +165,7 @@ class ElicitationEndpoint
     # before it has ever made that call — `Boolean(requestUrl && pollUrl)`. With the
     # poll URL unset the whole fallback tier is invisible to the client, so a request
     # URL on its own buys nothing. The client appends `/<request-id>` to it, which is
-    # exactly the `GET /api/v1/elicitations/:id` route.
+    # exactly the `GET /api/v1/elicitations/session/:token/:id` route.
     #
     # ELICITATION_PREFER_HTTP_FALLBACK is what puts the human back in the loop. The
     # client's default tier order tries native MCP elicitation first and only falls

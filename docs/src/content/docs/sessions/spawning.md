@@ -717,7 +717,7 @@ Shared scrubbing (`CliSpawnEnv`):
   there ([who may raise a prompt](/sessions/elicitation/#who-may-raise-a-prompt)). A value in the
   clone's `.env` wins. This reaches the CLI, and on
   Claude Code the stdio MCP servers that inherit its environment; on **all three** runtimes the
-  stdio servers also get the two values from their own `env` table in the generated config,
+  stdio servers also get the same values from their own `env` table in the generated config,
   written by `RuntimeConfigPostProcessor#inject_elicitation_env!` — which Pi's post-processor
   inherits along with the rest of the shared pipeline. That second channel exists
   for the same reason as the `SSH_PRIVATE_KEY_PATH` forwarding below — Codex inherits neither —

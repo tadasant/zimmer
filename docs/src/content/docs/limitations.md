@@ -968,6 +968,9 @@ What the token does not do:
 - **It does not expire and cannot be revoked per session.** It is deterministic, so a session keeps
   the same URL for life. Rotating `SECRET_KEY_BASE` revokes every token at once. The deploy that
   rotates it also respawns every agent process, and the respawned processes get the new tokens.
+- **It shows up in local request logs.** Rails logs every request path at INFO, token included.
+  Those lines stay in the container's own log, because the OTEL exporter ships WARN and above, and
+  Zimmer's own log lines cut the token's MAC.
 - **A clone `.env` that names `ELICITATION_REQUEST_URL` still wins**, and a bare URL there fails: the
   POST answers 401 and the API logs a warning. To point a session's servers at a different Zimmer,
   name a token URL that the other Zimmer minted.

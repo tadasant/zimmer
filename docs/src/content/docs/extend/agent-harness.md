@@ -530,8 +530,6 @@ classifier, not the recovery.
 
 Other known gaps:
 
-- `ELICITATION_SESSION_ID` is Claude-only — elicitations
-  [silently no-op on Codex](/sessions/elicitation/#known-problems).
 - `Zimmer::ExtensionRegistry.spawn_env_contributions` is Claude-only — extension env contributions are
   unreachable from Codex, despite the hook receiving a `runtime` context.
 - `SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`.
