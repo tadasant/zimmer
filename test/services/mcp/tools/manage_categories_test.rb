@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class Mcp::Tools::ManageCategoriesTest < ActiveSupport::TestCase
   setup do
