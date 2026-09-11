@@ -359,16 +359,16 @@ resource "digitalocean_droplet" "zimmer" {
   # below: a persistent host that runs every session must not be destroyed to turn on
   # a metrics agent.
   #
-  # So a droplet that already exists gets the agent from its deploy instead of from
-  # Terraform. An idempotent converge step installs `do-agent` over the root SSH the
-  # deploy already holds, with pinned trust, and only when its systemd unit is absent.
-  # Production's step belongs in the companion repo's production deploy, where the
-  # long-lived droplet is applied. Staging has none because it needs none:
-  # `Teardown staging` destroys the droplet and `Deploy staging` creates the next
-  # one, so every staging droplet is one this attribute reached. Whether an agent
-  # installed after creation makes DO list `monitoring` in the droplet's `features[]`
-  # (the value the provider reads back) is unconfirmed. See docs limitations, and
-  # tadasant/zimmer#651.
+  # So a droplet that already exists can only get the agent from its deploy: an
+  # idempotent converge step that installs `do-agent` over the root SSH the deploy
+  # already holds, with pinned trust, and only when its systemd unit is absent.
+  # Production's droplet predates this attribute, and its step belongs in the
+  # companion repo's production deploy (tadasant/zimmer#651). Staging needs none: no
+  # staging droplet in state predates this attribute, and `Deploy staging` creates
+  # each new one with it set. Two things are unverified -- that a droplet this module
+  # creates actually comes up with the agent, and whether an agent installed after
+  # creation makes DO list `monitoring` in `features[]` (the value the provider reads
+  # back). See docs limitations.
   monitoring = var.monitoring
 
   # Pin the droplet into the managed cluster's VPC (production) so its private_host
