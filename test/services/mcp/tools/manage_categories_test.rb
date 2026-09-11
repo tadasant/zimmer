@@ -190,18 +190,20 @@ class Mcp::Tools::ManageCategoriesTest < ActiveSupport::TestCase
 
   test "reorder_sessions moves a card in from another section when session_id is given" do
     category = Category.create!(name: "Infra")
-    a = build_card(created_at: 3.hours.ago, category: category)
+    older = build_card(created_at: 3.hours.ago, category: category)
+    newer = build_card(created_at: 2.hours.ago, category: category)
     moved = build_card(created_at: 1.hour.ago)
 
+    # The section reads newer, older; the moved card goes between them.
     @tool.call(
       "action" => "reorder_sessions",
       "category_id" => category.id,
-      "session_ids" => [ moved.id, a.id ],
+      "session_ids" => [ newer.id, moved.id, older.id ],
       "session_id" => moved.id
     )
 
     assert_equal category.id, moved.reload.category_id
-    assert_equal [ moved.id, a.id ], Session.where(category_id: category.id).card_ordered.pluck(:id)
+    assert_equal [ newer.id, moved.id, older.id ], Session.where(category_id: category.id).card_ordered.pluck(:id)
   end
 
   test "reorder_sessions without session_ids raises" do

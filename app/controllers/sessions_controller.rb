@@ -293,9 +293,10 @@ class SessionsController < ApplicationController
       return
     end
 
-    # The category grid's own ordering: where the operator dragged each card, with
-    # newest-first as the tiebreaker for every card nobody has ever dragged (they all
-    # hold sort_order 0). See SessionCardOrder.
+    # The category grid's own ordering: where the operator dragged each card. A card
+    # that arrived without being placed — created, or re-categorized — went on top of
+    # its section, and cards nothing has ever placed tie at the column default and fall
+    # back to newest-first. See SessionCardOrder.
     carded = sessions.card_ordered
 
     # Per-category pagination. Each category section — including the "Uncategorized"
@@ -2141,12 +2142,11 @@ class SessionsController < ApplicationController
   #
   # The body is `{ ids: [...], category_id: "<id>"|"", session_id: "<id>" }`: the
   # destination section's live DOM order, the section it is (empty or the
-  # "uncategorized" sentinel for the Uncategorized bucket), and — when the drag
-  # crossed sections — the card that moved, so one request persists both the
-  # category change and the new position. `ids` is one PAGE of the section, so
-  # Session.reorder_cards! deals the cards back into the slots they already hold in
-  # the bucket's global order rather than treating the index in this list as the
-  # position; see SessionCardOrder.
+  # "uncategorized" sentinel for the Uncategorized bucket), and the card that moved
+  # — so when the drag crossed sections, one request persists both the category
+  # change and the new position. `ids` is one PAGE of the section as the browser
+  # holds it, so its indices are never read as positions: the moved card is placed
+  # next to its neighbour in it and nothing else moves; see SessionCardOrder.
   def reorder
     category_id = params[:category_id].to_s.strip
 
@@ -2158,10 +2158,14 @@ class SessionsController < ApplicationController
       end
     end
 
+    # By id or slug, and a miss is a 404 like every other session lookup, rather than
+    # a 2xx that quietly skipped the move.
+    moved = Session.locate!(params[:session_id]) if params[:session_id].present?
+
     Session.reorder_cards!(
       params[:ids],
       category_id: category&.id,
-      moved_session_id: params[:session_id]
+      moved_session_id: moved&.id
     )
 
     head :no_content

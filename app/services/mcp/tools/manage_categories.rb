@@ -24,7 +24,7 @@ module Mcp
         - **delete**: Delete a category (requires "category_id"). Sessions in it fall back to Uncategorized.
         - **reorder**: Set the top-to-bottom order of categories (requires "ids" — an array of category IDs). Categories omitted keep their existing position. Include the string "uncategorized" to position the Uncategorized section.
         - **set_session_category**: Assign a session to a category (requires "session_id"; "category_id" to assign, or omit/null to clear to Uncategorized).
-        - **reorder_sessions**: Set the top-to-bottom order of session cards inside one section (requires "session_ids"; "category_id" names the section, omit/null for Uncategorized). The dashboard shows a section 50 cards at a time, so a partial list is fine: the sessions you name are dealt back into the slots they already hold, in your order, and sessions you omit keep their positions. Pass "session_id" as well to move a card in from another section and place it in the same call — the dashboard's cross-section drag.
+        - **reorder_sessions**: Set the top-to-bottom order of session cards inside one section (requires "session_ids"; "category_id" names the section, omit/null for Uncategorized). The dashboard shows a section 50 cards at a time, so a partial list is fine: the sessions you name are dealt back into the slots they already hold, in your order, and sessions you omit keep their positions. Pass "session_id" to move ONE card instead, as the dashboard's drag does: it is placed immediately above the session after it in "session_ids" (or below the one before it, if it is last), nothing else moves, and if it is in another section it is moved into this one first.
 
         **Note:** All freeze state uses "is_frozen".
       DESC
@@ -60,12 +60,12 @@ module Mcp
           },
           session_id: {
             oneOf: [ { type: "string" }, { type: "number" } ],
-            description: 'Session ID (numeric) or slug (string). Required for "set_session_category". Optional for "reorder_sessions": the card being moved IN from another section, reassigned to "category_id" before positions are written.'
+            description: 'Session ID (numeric) or slug (string). Required for "set_session_category". Optional for "reorder_sessions": the one card being moved — placed next to its neighbour in "session_ids", and moved into "category_id" first if it is in another section.'
           },
           session_ids: {
             type: "array",
-            items: { oneOf: [ { type: "number" }, { type: "string" } ] },
-            description: 'Required for "reorder_sessions". New top-to-bottom order of session IDs within the section named by "category_id". Sessions omitted keep their positions.'
+            items: { type: "number" },
+            description: 'Required for "reorder_sessions". New top-to-bottom order of numeric session IDs within the section named by "category_id". Sessions omitted keep their positions; IDs not in that section are ignored.'
           }
         },
         required: [ "action" ]

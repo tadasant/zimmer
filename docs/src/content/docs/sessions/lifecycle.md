@@ -2400,40 +2400,43 @@ or an array of them.
 ### Card order is yours to set, and it stays set
 
 Inside a section, cards are ordered by where you dragged them — `sessions.sort_order` ascending,
-newest-first for anything nobody has dragged. Grab a card by the grip bar at the top of it and drop
-it where you want it, in its own section or in another one. The drop POSTs the section's new
-top-to-bottom order to `POST /sessions/reorder`, so it survives a reload, a trip into a session and
-back, and paging the section.
+newest-first for anything nobody has placed. Grab a card by the grip bar at the top of it and drop
+it where you want it, in its own section or in another one. The drop POSTs the section's order to
+`POST /sessions/reorder`, naming the card you moved, so it survives a reload, a trip into a session
+and back, and paging the section.
 
-Five things are worth knowing about how that is stored (`SessionCardOrder`):
+How that is stored (`SessionCardOrder`):
 
-- **A card you have never dragged sits exactly where it always did.** `sort_order` defaults to `0`,
-  so an untouched section is one big tie broken by `created_at DESC` — the newest-first order the
-  dashboard had before any of this existed. That same tie is what keeps a *brand new* session at the
-  top of a section you HAVE reordered: it arrives at `0` and outranks the reordered cards on
-  `created_at`. Nothing renumbers when a session is created.
-- **A position belongs to the section it was set in.** A card that changes category any other
-  way — the auto-categorizer, `set_category`, the MCP and REST equivalents, or its category being
-  deleted — drops back to `0` and arrives near the top the way a new session does, rather than
-  carrying its old section's rank into a section it was never ranked in.
+- **A drag moves one card, next to its neighbour.** The server puts the moved card immediately
+  above the card that is now below it (or immediately below the card above it, if you dropped it
+  last) and moves nothing else. It never reads a card's index in the posted list as its position:
+  sections paginate at 50 independently, and the browser's copy of a page can hold cards the server
+  would render elsewhere — a new session a broadcast prepended onto page 2, say. Anchoring on the
+  neighbour means a drag on page 2 cannot renumber page 1, and a card you did not touch stays put —
+  including one the status filter is hiding, and a favorited card rendered up in **Starred**.
+- **An arrival goes on top.** A new session, a card the auto-categorizer or `set_category` moves,
+  and the cards of a deleted category all take one below their new section's lowest `sort_order`,
+  so they appear at the top the way a new session always has, and nobody else's row is rewritten to
+  make room. A section nobody has ever reordered is one big tie at the column default `0`, broken by
+  `created_at DESC` — newest first.
+- **A drag rewrites what moved, not the section.** The section's existing values are handed back out
+  along the new order, so only the cards whose rank changed are written — dragging a card from 40th
+  to 1st writes 41 rows, not the thousands of archived sessions sharing its section. The exception
+  is a section whose values tie — one nobody has reordered, or one where two sessions arrived in the
+  same instant and read the same minimum — which is renumbered once on its next drag. Drags that
+  touch the same section, including both ends of a cross-section drag, are serialized with an
+  advisory lock; creating a session takes no lock, which is why that tie can happen at all.
 - **The order is global, not yours.** Zimmer is a single circle of trust with no `User` model, so
   there is no principal to hang a per-viewer order on — the position lives on the session row, the
   same way `position` lives on the category. Everyone sees the board you arranged.
-- **A drop sends one page, and cannot renumber the others.** Sections paginate at 50 independently,
-  so the ids a drop carries are a page rather than a bucket. Their index in that list is *not* the
-  position: the server reads the slots those cards already hold and deals them back out in the order
-  you sent. A card you did not name never moves — not one on another page, and not a favorited card,
-  which is still in the bucket but rendered up in **Starred**.
 - **Starred cards are not drag-orderable, and lose nothing by it.** A favorited card floats out of
   its section into the pinned group, which sits outside the drag-and-drop controller and carries no
-  grip bar — its category placement is invisible while it is starred, so an affordance there would
-  be a no-op. Starring does not disturb `sort_order`, so unstarring puts the card back in the slot
-  you dragged it to.
+  grip bar — its category placement is invisible while it is starred. Starring does not touch
+  `sort_order`, so unstarring puts the card back where it was.
 
-A cross-section drag is one write, not two: the same request carries the destination section's new
-order *and* the id of the card that crossed, so the category change and the position can never land
-without each other. Right-clicking a card's grip bar opens the same move as a menu, for when
-dragging is awkward.
+A cross-section drag is one write, not two: the moved card's category change and its placement land
+in the same transaction. Right-clicking a card's grip bar opens the same move as a menu, which puts
+the card at the top of the page of that section you have open.
 
 The equivalents for an agent are `manage_categories`' `reorder_sessions` action over MCP and
 `POST /api/v1/sessions/reorder` over REST.

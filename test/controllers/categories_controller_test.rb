@@ -278,10 +278,29 @@ class CategoriesControllerTest < ActionDispatch::IntegrationTest
     delete category_url(category), as: :turbo_stream
 
     assert_response :success
-    # Section is removed and the orphaned card is appended into the Uncategorized grid.
+    # Section is removed and the orphaned card is prepended into the Uncategorized grid:
+    # orphans land on top of Uncategorized, which is where a reload renders them.
     assert_match(/turbo-stream action="remove" target="#{ActionView::RecordIdentifier.dom_id(category)}"/, response.body)
-    assert_match(/turbo-stream action="append" target="sessions_grid"/, response.body)
+    assert_match(/turbo-stream action="prepend" target="sessions_grid"/, response.body)
     assert_match(/session_#{session.id}/, response.body)
     assert_nil session.reload.category_id
+  end
+
+  test "destroy streams the orphans in the order a reload renders them" do
+    Session.any_instance.stubs(:broadcast_update_to_sessions_index)
+    Session.any_instance.stubs(:broadcast_create_to_sessions_index)
+    category = Category.create!(name: "temp")
+    older = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", title: "Older", category: category, created_at: 2.hours.ago)
+    newer = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", title: "Newer", category: category, created_at: 1.hour.ago)
+    Session.reorder_cards!([ older.id, newer.id ], category_id: category.id)
+
+    delete category_url(category), as: :turbo_stream
+
+    assert_response :success
+    # Prepends apply in document order, so the LAST prepend ends up on top: `older`
+    # (dragged above `newer`) must be prepended after it.
+    prepended = response.body.scan(/<turbo-stream action="prepend" target="sessions_grid">.*?id="session_(\d+)"/m).flatten.map(&:to_i)
+    assert_equal [ newer.id, older.id ], prepended
+    assert_equal [ older.id, newer.id ], Session.where(category_id: nil).card_ordered.limit(2).pluck(:id)
   end
 end

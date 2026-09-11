@@ -74,16 +74,20 @@ class CategoriesController < ApplicationController
     @category = Category.find(params[:id])
     # Capture the cards before destroy nullifies them so the Turbo Stream can move
     # them into the Uncategorized grid rather than letting them vanish with the
-    # removed section.
-    orphaned_sessions = @category.sessions.order(favorited: :desc, created_at: :desc).to_a
+    # removed section. They land on top of Uncategorized, in the order they had here
+    # (Category's before_destroy writes exactly that), so the stream prepends them —
+    # last first, so the first ends up on top — to match what a reload renders.
+    # Starred ones are left out: they render in the pinned group, not in any section's
+    # grid, and a second frame with the same DOM id there would shadow the first.
+    orphaned_sessions = @category.sessions.where(favorited: false).card_ordered.to_a
     @category.destroy
 
     respond_to do |format|
       format.turbo_stream do
         render turbo_stream: [
           turbo_stream.remove(helpers.dom_id(@category)),
-          *orphaned_sessions.map do |session|
-            turbo_stream.append("sessions_grid", partial: "sessions/session_card_frame", locals: { agent_session: session })
+          *orphaned_sessions.reverse.map do |session|
+            turbo_stream.prepend("sessions_grid", partial: "sessions/session_card_frame", locals: { agent_session: session })
           end
         ]
       end
