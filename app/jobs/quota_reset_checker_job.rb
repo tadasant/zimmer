@@ -100,13 +100,18 @@ class QuotaResetCheckerJob < ApplicationJob
 
     # On 401, the access token may have been invalidated server-side.
     # Try refreshing and retry once.
-    if !result.success? && result.error_message&.include?("401") && account.can_refresh_token?
+    if !result.success? && result.credential_refused? && account.can_refresh_token?
       if account.refresh_token!
         account.reload
         token = account.claude_access_token
         result = QuotaCheckService.check_with_token(token) if token.present?
       end
     end
+
+    # The verdict this probe reached, after the one refresh it is allowed. See
+    # ClaudeAccount#record_credential_probe! — nothing is recorded when Anthropic
+    # could not be reached.
+    account.record_credential_probe!(result, probed_token: token)
 
     unless result.success?
       logger.warn("Quota check failed, using stale snapshot",

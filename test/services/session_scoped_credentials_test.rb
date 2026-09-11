@@ -50,7 +50,11 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
 
   test "activate! is a DB write and a snapshot, with no filesystem step" do
     secondary = claude_accounts(:secondary)
-    QuotaCheckService.stubs(:check_with_token).returns(stub(success?: false, error_message: "skip"))
+    # Unreachable, so the probe is a no-op rather than a verdict: this test is
+    # about activate! touching no filesystem, not about credential state.
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: false, unreachable: true, error_message: "skip")
+    )
 
     with_setting(true) do
       AccountRotationService.new.activate!(secondary, snapshot_trigger: "manual_switch")
@@ -67,6 +71,34 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
     with_setting(true) do
       assert_equal primary, AccountRotationService.new.ensure_active_account!
       refute File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH)
+    end
+  end
+
+  test "ensure_active_account! drops a current account whose stored token Anthropic refused" do
+    primary = claude_accounts(:primary)
+    primary.update!(is_current: true, status: :active)
+    primary.record_credential_probe!(
+      QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+        error_message: "No rate-limit headers in response (HTTP 401)."),
+      probed_token: primary.claude_access_token
+    )
+    # The live re-probe agrees with the recorded verdict: this token is dead.
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: true, utilization_5h: 0.1, utilization_7d: 0.1,
+        status_5h: "allowed", status_7d: "allowed")
+    )
+    QuotaCheckService.stubs(:check_with_token)
+      .with(primary.oauth_config.dig("credentials_json", "claudeAiOauth", "accessToken"))
+      .returns(QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+        error_message: "No rate-limit headers in response (HTTP 401)."))
+    ClaudeAccount.any_instance.stubs(:refresh_token!).returns(false)
+
+    with_setting(true) do
+      promoted = AccountRotationService.new.ensure_active_account!
+
+      assert_not_equal primary, promoted,
+        "under session-scoped credentials the stored token IS what the session is handed"
+      assert promoted.present?
     end
   end
 
@@ -350,7 +382,9 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
   # Drive ClaudeLoginDriver#capture! against a scratch dir holding a complete,
   # Anthropic-honoured token pair — the state a finished interactive login leaves.
   def capture_login!(account)
-    QuotaCheckService.stubs(:token_rejected?).returns(false)
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: true, utilization_5h: 0.1, utilization_7d: 0.1)
+    )
 
     Dir.mktmpdir("claude-login-scratch") do |scratch|
       File.write(File.join(scratch, ".credentials.json"), JSON.generate(

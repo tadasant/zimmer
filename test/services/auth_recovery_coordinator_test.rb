@@ -126,6 +126,7 @@ class AuthRecoveryCoordinatorTest < ActiveSupport::TestCase
     QuotaCheckService::Result.new(
       success: false,
       unreachable: false,
+      status_code: 401,
       error_message: "No rate-limit headers in response (HTTP 401)"
     )
   end

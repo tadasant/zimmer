@@ -1594,7 +1594,7 @@ Anthropic ever exposes a structured reason.
 ### An Anthropic outage makes the account probes inconclusive, and they promote anyway
 
 🟡 Bootstrap, rotation and the UI login flow all validate an account before promoting it by probing
-Anthropic with its access token (`QuotaCheckService.token_rejected?`, see
+Anthropic with its access token (`QuotaCheckService::Result#rejected?`, see
 [Bootstrap validates before it promotes](/auth/harness/#bootstrap-validates-before-it-promotes)).
 The probe distinguishes three answers, and only *Anthropic answered and refused* condemns an account.
 A probe that never reached Anthropic — timeout, DNS failure, 5xx — is treated as no evidence, and the
@@ -1607,6 +1607,20 @@ outage, bootstrap gives you exactly the behaviour it had before this validation 
 
 The same asymmetry applies to `ClaudeLoginDriver#capture!` — a login completed while Anthropic is
 unreachable is stored rather than thrown away.
+
+### A card can read "not yet checked" for an account that is perfectly healthy
+
+🟡 `/inference` reports what the last probe learned about the access token **currently** in the row,
+and a refresh writes a new one — so every proactive token refresh retires the verdict and the card
+falls back to *"Credentials stored, not yet checked against Anthropic."* until something probes again.
+For the serving account that is the next `ClaudeUsageSamplerJob` tick (15 minutes); for a spare it can
+be up to `SPARE_MAX_STALENESS` plus a tick, around 75 minutes. Pressing the card's refresh button
+probes immediately.
+
+That is the deliberate direction: the alternative is a card that keeps saying *"verified"* about a
+token that no longer exists, which is the class of claim this replaced. "Unverified" is never a claim
+that anything is wrong — only `:rejected` is — and the pool treats it as serviceable, so nothing
+parks over it. See [Stored is not verified](/auth/harness/#stored-is-not-verified).
 
 ### A capped account is marked from whichever reading happens to arrive first
 

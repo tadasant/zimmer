@@ -119,6 +119,14 @@ class ClaudeAccount < ApplicationRecord
   validates :runtime, inclusion: { in: RUNTIMES }
 
   scope :available, -> { active.where.not(oauth_config: {}).order(:priority) }
+
+  # The accounts whose stored access token Anthropic answered and refused — the
+  # SQL form of #credential_rejected?, for the surfaces that want a count rather
+  # than the rows. See #credential_state.
+  scope :credential_refused, -> {
+    where.not(credential_rejected_at: nil)
+      .where("credential_verified_at IS NULL OR credential_rejected_at > credential_verified_at")
+  }
   scope :for_runtime, ->(runtime) { where(runtime: runtime) }
 
   # The accounts that can serve a request for `runtime`, judged on the same
@@ -153,9 +161,17 @@ class ClaudeAccount < ApplicationRecord
     # Through the provider seam, so a blank runtime resolves to Claude Code the
     # same way every other pool read does. Scoping on the raw column here instead
     # would answer "no accounts" for a nil runtime, which reads as an outage.
+    # `credential_refused` excludes an account whose stored token Anthropic
+    # ANSWERED and refused, whatever its label and whatever its quota windows
+    # say. That row is the 2026-07-31 state: `active`, credentials stored,
+    # counted by every "is the pool dry" surface, and a 401 on every request made
+    # with it (#239). Only an authentication-class refusal gets recorded, and the
+    # verdict retires the moment a different token is written, so neither an
+    # Anthropic blip nor a repaired account can strand the pool here.
     candidates = RuntimeAuthProvider.for(runtime).accounts
       .where(status: [ statuses[:active], statuses[:quota_exceeded] ])
       .where.not(oauth_config: {})
+      .where.not(id: credential_refused.select(:id))
       .order(:priority)
       .to_a
 
@@ -200,6 +216,12 @@ class ClaudeAccount < ApplicationRecord
   # account that was re-authed while carrying two strikes would be condemned again
   # on its first lost race.
   before_save :reset_stale_refresh_tracking_on_new_credential
+
+  # A verdict is about the access token it was taken on. Writing a different one
+  # — a refresh, a human re-auth, a filesystem sync — retires both the
+  # verification and the refusal, and the row goes back to "stored, unverified"
+  # until something probes it. See #credential_state.
+  before_save :reset_credential_verdict_on_new_token
 
   # How long a single account's needs_reauth event stays suppressed after one is
   # emitted. Not a nicety: plenty of machinery writes `active` back onto a
@@ -353,8 +375,134 @@ class ClaudeAccount < ApplicationRecord
     oauth_account.is_a?(Hash) ? oauth_account["emailAddress"] : oauth_account
   end
 
+  # True when this row carries SOMETHING in oauth_config. A structural check and
+  # nothing more: it says a credential was stored, never that Anthropic or OpenAI
+  # will honour it.
+  #
+  # Deliberately still `keys.any?`. Every caller that gates a real action on it —
+  # the Codex provider's filesystem adoption, rotation's current-account branch,
+  # the two rake listings — is asking "is there anything here to work with", and
+  # tightening the predicate underneath them would change three runtimes' worth of
+  # behaviour to fix a sentence on one page. What changed instead is that the UI
+  # no longer uses this as a proxy for "usable": it renders #credential_state,
+  # which is the evidence. See issue #239 and #record_credential_probe!.
   def has_valid_config?
     oauth_config.present? && oauth_config.is_a?(Hash) && oauth_config.keys.any?
+  end
+
+  # What the last non-consuming probe of the STORED access token learned, as one
+  # of four states:
+  #
+  #   :none       — nothing stored. Authenticate it.
+  #   :unverified — credentials are stored, and nothing has presented them to the
+  #                 vendor since they were last written. The honest default: a
+  #                 complete token pair is not a working one, which is the whole
+  #                 lesson of 2026-07-31 (#239).
+  #   :verified   — Anthropic answered a probe of this exact access token and
+  #                 served it, at #credential_verified_at.
+  #   :rejected   — Anthropic answered a probe of this exact access token and
+  #                 refused it, at #credential_rejected_at. A session handed this
+  #                 row would get "Not logged in".
+  #
+  # The verdict describes the token in the row, not the account in the abstract:
+  # writing a different access token clears it (see
+  # #reset_credential_verdict_on_new_token), so a refreshed or re-authenticated
+  # account falls back to :unverified rather than carrying a stale claim. That is
+  # what keeps a rejection from outliving the credential it was about — an
+  # account whose refresh repairs it is serviceable again on the next save,
+  # without anybody probing anything.
+  #
+  # "Unreachable" is never recorded, here or anywhere: an Anthropic blip is not a
+  # verdict on a credential, and reading it as one would condemn the whole pool at
+  # once (#259).
+  #
+  # Codex rows have no equivalent non-consuming probe, so they never leave :none
+  # or :unverified and no surface claims otherwise.
+  #
+  # @return [Symbol]
+  def credential_state
+    return :none unless has_valid_config?
+    return :rejected if credential_rejected?
+    return :verified if credential_verified?
+
+    :unverified
+  end
+
+  # True when the last answered probe of the stored token was a refusal.
+  #
+  # The two timestamps are compared rather than one being cleared by the other, so
+  # a rejection recorded after a verification wins without either write having to
+  # read the other first.
+  def credential_rejected?
+    return false if credential_rejected_at.blank?
+
+    credential_verified_at.blank? || credential_rejected_at > credential_verified_at
+  end
+
+  def credential_verified?
+    return false if credential_verified_at.blank?
+
+    credential_rejected_at.blank? || credential_verified_at >= credential_rejected_at
+  end
+
+  # Record what a probe that has already happened learned about the access token
+  # it was taken on.
+  #
+  # Costs nothing: every caller is holding a QuotaCheckService::Result it took for
+  # its own reasons, so this adds no network request and — critically — spends no
+  # single-use refresh token (#242). Call it only with a FINAL verdict: a refusal
+  # a caller is about to try to repair with a refresh is not one.
+  #
+  # Three answers are recorded as nothing at all, and each for the same reason —
+  # they are not evidence about the credential:
+  #
+  #   * the probe never reached Anthropic (#unreachable?),
+  #   * Anthropic answered something that is not about authentication — a 400 for
+  #     a retired model id, a 404, a proxy that strips the rate-limit headers
+  #     (see QuotaCheckService::Result#credential_refused?),
+  #   * there was no token to present.
+  #
+  # **The write is conditional on the row still holding the token that was
+  # probed**, which is why `probed_token:` is required rather than re-read here.
+  # The probe is an HTTP round trip, and RefreshRuntimeAuthTokensJob can rotate
+  # this row inside it; without the condition a 401 about the token we sent would
+  # be persisted as a refusal of the token that replaced it, dropping a healthy
+  # account out of `.serviceable_for` until something probed it again.
+  #
+  # A conditional UPDATE rather than `update_columns`, and the choice is
+  # load-bearing three times over. It is atomic against that racer; it must not
+  # bump `updated_at`, because `.serviceable_for` compares a reading's
+  # `created_at` against it to decide whether the reading outranks the status
+  # label, and a probe that touched the row would make every fresh reading look
+  # older than the label it was meant to overrule; and it must not fire callbacks
+  # — recording a verdict is not a status transition and must not alert as one.
+  #
+  # @param result [QuotaCheckService::Result]
+  # @param probed_token [String, nil] the access token the caller presented
+  # @return [Symbol, nil] the state recorded, or nil when there was no verdict
+  def record_credential_probe!(result, probed_token:)
+    return nil if result.nil? || probed_token.blank?
+    return nil unless result.success? || result.credential_refused?
+
+    values =
+      if result.success?
+        # The reason is cleared with the verdict it belonged to: leaving it would
+        # show a stale refusal next to a verified account on /supervisor.
+        { credential_verified_at: Time.current, credential_rejection_reason: nil }
+      else
+        { credential_rejected_at: Time.current,
+          credential_rejection_reason: result.error_message.to_s.truncate(255).presence }
+      end
+
+    return nil unless write_credential_verdict(values, probed_token)
+
+    Rails.logger.warn "[ClaudeAccount] Anthropic refused #{email}'s stored access token: #{result.error_message}" unless result.success?
+    result.success? ? :verified : :rejected
+  rescue StandardError => e
+    # Bookkeeping must never take down the path that was doing the real work —
+    # every caller is mid-probe, mid-rotation or mid-login.
+    Rails.logger.warn "[ClaudeAccount] Could not record the credential probe for #{email}: #{e.class} - #{e.message}"
+    nil
   end
 
   # True when a credentials_json blob carries both an accessToken and a
@@ -559,10 +707,10 @@ class ClaudeAccount < ApplicationRecord
   # Claude only: Codex accounts have no equivalent non-consuming probe, so they
   # answer false and take the refresh path they already took.
   #
-  # An unreachable Anthropic answers false too (QuotaCheckService.token_rejected?
-  # reports inconclusive as "not rejected", which would be a false GO here), so
-  # callers degrade to the refresh path rather than admitting an unverified
-  # account on a network blip.
+  # An unreachable Anthropic answers false too (a probe that never arrived is not
+  # a verdict, and reporting it as one would be a false GO here), so callers
+  # degrade to the refresh path rather than admitting an unverified account on a
+  # network blip.
   def access_token_honored?
     return false if codex?
     return false if token_expired?
@@ -570,7 +718,12 @@ class ClaudeAccount < ApplicationRecord
     token = claude_access_token
     return false if token.blank?
 
-    QuotaCheckService.check_with_token(token).success?
+    result = QuotaCheckService.check_with_token(token)
+    # The probe happened either way, so the page may as well learn from it. A
+    # refusal recorded here is about the token we just presented; the caller's
+    # fallback refresh writes a new one, which retires the verdict.
+    record_credential_probe!(result, probed_token: token)
+    result.success?
   rescue StandardError => e
     Rails.logger.info "[ClaudeAccount] Access-token probe for #{email} was inconclusive: #{e.message}"
     false
@@ -1539,6 +1692,66 @@ class ClaudeAccount < ApplicationRecord
 
     self.stale_refresh_failures = 0
     self.last_stale_refresh_failure_at = nil
+  end
+
+  # Apply a verdict only while the row still holds `probed_token`, and mirror it
+  # onto this instance when it lands. See #record_credential_probe!.
+  #
+  # **The token never enters SQL; its SHA-256 does.** Production's Sentry SDK
+  # records every `sql.active_record` statement's text as a breadcrumb, and
+  # whether a string `where("... = ?", token)` keeps the value out of that text
+  # depends on the connection: with prepared statements on it travels as a bind,
+  # and with them off — `unprepared_statement`, a pooler that disables them — it
+  # is quoted into the statement, and a live bearer token would ship to GlitchTip
+  # with the next event in the same scope. So Postgres hashes the stored value and
+  # the statement carries only the digest, the same one-way fingerprint
+  # AuthRecoveryCoordinator already keeps in session metadata. Safe whatever the
+  # connection setting, and the compare-and-set stays one atomic UPDATE.
+  #
+  # @return [Boolean] whether the verdict was written
+  def write_credential_verdict(values, probed_token)
+    written = self.class.where(id: id)
+      .where(
+        "encode(sha256(convert_to(oauth_config #>> '{credentials_json,claudeAiOauth,accessToken}', 'UTF8')), 'hex') = ?",
+        Digest::SHA256.hexdigest(probed_token)
+      )
+      .update_all(values)
+
+    if written.zero?
+      Rails.logger.info "[ClaudeAccount] Discarded a credential probe for #{email}: the stored token moved while the probe was in flight"
+      return false
+    end
+
+    # The row is authoritative and already updated; this keeps an instance the
+    # caller is about to render (or re-read) from disagreeing with it. Assigned
+    # rather than reloaded so an UPDATE does not cost a SELECT on every sweep.
+    values.each { |attribute, value| write_attribute(attribute, value) }
+    clear_attribute_changes(values.keys)
+    true
+  end
+
+  # See the before_save that calls this.
+  def reset_credential_verdict_on_new_token
+    # Codex has no non-consuming probe, so a Codex row never carries a verdict
+    # and there is never one to retire.
+    return if codex?
+    return unless will_save_change_to_oauth_config?
+
+    before, after = oauth_config_change_to_be_saved
+    return if claude_access_token_in(before) == claude_access_token_in(after)
+
+    self.credential_verified_at = nil
+    self.credential_rejected_at = nil
+    self.credential_rejection_reason = nil
+  end
+
+  # The Claude access token inside an oauth_config blob. Reads the blob passed in
+  # rather than the attribute, for the same reason #refresh_token_in does: it is
+  # asked about the value a save is about to replace.
+  def claude_access_token_in(config)
+    return nil unless config.is_a?(Hash)
+
+    config.dig("credentials_json", "claudeAiOauth", "accessToken")
   end
 
   # The refresh token inside an oauth_config blob, whichever runtime owns it.

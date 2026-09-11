@@ -778,12 +778,19 @@ class HealthMonitorService
     available = ClaudeAccount.available.for_runtime(ClaudeAuthProvider::RUNTIME).count
     serviceable = ClaudeAccount.serviceable_for(ClaudeAuthProvider::RUNTIME).count
     needs_reauth = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).needs_reauth.count
+    # The third way an account can be unusable, and the one that used to be
+    # invisible: `active`, credentials stored, and a token Anthropic refuses. It
+    # is a reason a pool is dry, so it belongs beside the other two — on the card
+    # and, through the same report, in `get_system_health` (#239).
+    refused = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).credential_refused.count
 
     status =
       if credentials.corrupt?
         HealthStatus.new(status: :critical, message: credentials.detail)
       elsif serviceable.zero?
-        HealthStatus.new(status: :warning, message: "No Claude account is available to serve sessions")
+        HealthStatus.new(status: :warning,
+          message: "No Claude account is available to serve sessions" +
+            (refused.positive? ? " — #{refused} hold#{"s" if refused == 1} credentials Anthropic refuses" : ""))
       elsif available.zero?
         HealthStatus.new(status: :warning,
           message: "No Claude account is active yet — #{serviceable} labelled quota_exceeded over a " \
@@ -810,6 +817,7 @@ class HealthMonitorService
       available_accounts: available,
       serviceable_accounts: serviceable,
       needs_reauth_accounts: needs_reauth,
+      refused_credential_accounts: refused,
       checked_at: credentials.checked_at
     }
   rescue => e

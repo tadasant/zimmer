@@ -487,4 +487,93 @@ class InferenceHelperTest < ActionView::TestCase
   def snapshot(**attributes)
     ClaudeAccountQuotaSnapshot.new(**attributes)
   end
+  # --- The dry-pool banner (#239) --------------------------------------------
+
+  test "dry_pool is nil while any account can still serve" do
+    accounts = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).to_a
+
+    assert_nil dry_pool(ClaudeAuthProvider::RUNTIME, accounts, {})
+  end
+
+  test "dry_pool is nil for an empty pool, which is a different problem" do
+    assert_nil dry_pool(ClaudeAuthProvider::RUNTIME, [], {})
+  end
+
+  test "dry_pool accounts for every account, most specific reason first" do
+    refusal = QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+      error_message: "No rate-limit headers in response (HTTP 401).")
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).each do |account|
+      if account.claude_access_token.present?
+        account.record_credential_probe!(refusal, probed_token: account.claude_access_token)
+      else
+        account.update!(status: :needs_reauth)
+      end
+    end
+    accounts = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).reload.to_a
+
+    alert = dry_pool(ClaudeAuthProvider::RUNTIME, accounts, {})
+
+    assert alert
+    assert_match(/refused by Anthropic/, alert.breakdown)
+    assert_equal accounts.size, alert.reasons.values.sum,
+      "every account in the pool has to be accounted for, or the banner is arithmetic the operator cannot check"
+    assert_match(/Authenticate one below/, alert.recovery)
+  end
+
+  test "a refused token outranks a quota label on the same account" do
+    account = claude_accounts(:exceeded)
+    account.record_credential_probe!(
+      QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+        error_message: "No rate-limit headers in response (HTTP 401)."),
+      probed_token: account.claude_access_token
+    )
+
+    assert_equal :refused, dry_pool_reason(account.reload, nil),
+      "a quota window that resets on its own is not what is wrong with this account"
+  end
+
+  test "a pool that is only out of quota says it recovers by itself" do
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).where.not(oauth_config: {})
+      .update_all(status: ClaudeAccount.statuses[:quota_exceeded])
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).where(oauth_config: {}).destroy_all
+    accounts = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).reload.to_a
+
+    alert = dry_pool(ClaudeAuthProvider::RUNTIME, accounts, {})
+
+    assert alert
+    assert_match(/resume on their own/, alert.recovery)
+  end
+
+  # --- The card's credential line (#239) -------------------------------------
+
+  test "credential_state_line reports the evidence, not the presence of a blob" do
+    account = claude_accounts(:primary)
+    assert_match(/not yet checked/, credential_state_line(account).first)
+
+    account.record_credential_probe!(
+      QuotaCheckService::Result.new(success: true, status_code: 200, utilization_5h: 0.1, utilization_7d: 0.1),
+      probed_token: account.claude_access_token
+    )
+    sentence, colour = credential_state_line(account.reload)
+    assert_match(/verified against Anthropic/, sentence)
+    assert_equal "text-gray-500", colour
+
+    account.record_credential_probe!(
+      QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+        error_message: "No rate-limit headers in response (HTTP 401)."),
+      probed_token: account.claude_access_token
+    )
+    sentence, colour = credential_state_line(account.reload)
+    assert_match(/Anthropic refused these credentials/, sentence)
+    assert_equal "text-red-600", colour
+  end
+
+  test "credential_state_line says nothing about verification for a Codex row" do
+    assert_equal "Credentials stored. Re-authenticate to replace them.",
+      credential_state_line(claude_accounts(:codex_primary)).first
+  end
+
+  test "credential_state_line tells an account with no credentials to authenticate" do
+    assert_match(/No credentials yet/, credential_state_line(claude_accounts(:unconfigured)).first)
+  end
 end

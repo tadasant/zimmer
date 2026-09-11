@@ -20,8 +20,13 @@ class QuotaCheckService
   PROBE_MODEL = ModelCatalog.messages_api_id_for(PROBE_CATALOG_MODEL)
   REQUEST_TIMEOUT = 10
 
+  # HTTP statuses that say the CREDENTIAL is the problem, as opposed to the
+  # request, the model id, or the endpoint. Only these justify recording a
+  # durable verdict against an account — see #credential_refused?.
+  AUTH_REFUSAL_STATUSES = [ 401, 403 ].freeze
+
   Result = Struct.new(
-    :success, :error_message, :unreachable, :subscription_type, :rate_limit_tier, :email,
+    :success, :error_message, :unreachable, :status_code, :subscription_type, :rate_limit_tier, :email,
     :utilization_5h, :utilization_7d, :status_5h, :status_7d,
     :reset_5h, :reset_7d, :overage_status, :overage_disabled_reason,
     keyword_init: true
@@ -33,6 +38,34 @@ class QuotaCheckService
     # network, not about the token, so callers deciding whether a credential is
     # dead must not read it as a refusal.
     def unreachable? = !!unreachable
+
+    # True when Anthropic answered this probe and refused the token — the pool's
+    # non-consuming validity verdict. Unlike ClaudeAccount#refresh_token!, which
+    # spends a SINGLE-USE refresh token to find out whether credentials work, the
+    # probe behind this reads rate-limit headers off a 1-token message, so it can
+    # be run over every candidate in the pool without burning anything (#242).
+    #
+    # False when the probe cannot tell: an unreachable API says nothing about the
+    # credential, and condemning the whole pool on an Anthropic blip would park
+    # every session at once. A blank token, on the other hand, is a refusal —
+    # there is nothing to present, and #check_with_token answers accordingly.
+    def rejected? = !success? && !unreachable?
+
+    # True when Anthropic answered and said the CREDENTIAL is bad — 401 or 403,
+    # nothing else.
+    #
+    # Narrower than #rejected? on purpose, and the difference is the whole
+    # failure direction. #rejected? is "answered with something I could not read
+    # a quota out of", which includes a 400 for a model id Anthropic has retired,
+    # a 404 on a moved endpoint, and a 200 from a proxy that strips the
+    # rate-limit headers. Those are Anthropic-side or configuration faults, and
+    # reading one as "this credential is dead" would condemn every account in the
+    # pool within two sweeps — the outage of #239 from the other side.
+    #
+    # So a refusal that gets WRITTEN DOWN, and therefore takes an account out of
+    # `ClaudeAccount.serviceable_for`, has to be about authentication. Anything
+    # else answered is no verdict, exactly like unreachable.
+    def credential_refused? = !success? && AUTH_REFUSAL_STATUSES.include?(status_code)
   end
 
   def self.check
@@ -41,32 +74,6 @@ class QuotaCheckService
 
   def self.check_with_token(token)
     new.check_with_token(token)
-  end
-
-  # True when Anthropic answered a probe of this access token and refused it.
-  #
-  # This is the pool's non-consuming validity test. Unlike ClaudeAccount#refresh_token!,
-  # which spends a SINGLE-USE refresh token to find out whether credentials work,
-  # this reads the rate-limit headers off a 1-token message — so it can be run
-  # over every candidate in the pool without burning anything (#242).
-  #
-  # It answers false when it cannot tell: a blank result from an unreachable API
-  # says nothing about the credential, and condemning the whole pool on an
-  # Anthropic blip would park every session at once. A blank token, on the other
-  # hand, is a refusal — there is nothing to present.
-  #
-  # @param token [String, nil] an OAuth access token (sk-ant-oat01-*)
-  # @return [Boolean] true only when the token was presented and rejected
-  def self.token_rejected?(token)
-    return true if token.blank?
-
-    result = check_with_token(token)
-    return false if result.success?
-
-    !result.unreachable?
-  rescue StandardError => e
-    Rails.logger.warn "[QuotaCheckService] Token probe raised, treating as inconclusive: #{e.message}"
-    false
   end
 
   def check
@@ -172,7 +179,8 @@ class QuotaCheckService
       # dead" to the callers that probe before activating an account.
       return error_result(
         "No rate-limit headers in response (HTTP #{response.code}). Token may be expired or invalid.",
-        unreachable: response.code.to_i >= 500
+        unreachable: response.code.to_i >= 500,
+        status_code: response.code.to_i
       )
     end
 
@@ -181,6 +189,7 @@ class QuotaCheckService
 
     Result.new(
       success: true,
+      status_code: response.code.to_i,
       subscription_type: account_info[:subscription_type],
       rate_limit_tier: account_info[:rate_limit_tier],
       email: account_info[:email],
@@ -195,7 +204,7 @@ class QuotaCheckService
     )
   end
 
-  def error_result(message, unreachable: false)
-    Result.new(success: false, error_message: message, unreachable: unreachable)
+  def error_result(message, unreachable: false, status_code: nil)
+    Result.new(success: false, error_message: message, unreachable: unreachable, status_code: status_code)
   end
 end
