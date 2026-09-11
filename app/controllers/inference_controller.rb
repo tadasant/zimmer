@@ -388,6 +388,10 @@ class InferenceController < ApplicationController
     # `@spot_paused_count` would report the concurrency limit's cost under the
     # budget ceiling's label.
     @spot_preempted_count = SpotSessionPause.preempted_count
+    # The starvation lane: how many held sessions are past the age ceiling, how
+    # old the oldest wait is, and which session (if any) the lane is running.
+    # One reading, shared with `get_spot_policy`.
+    @spot_starvation = SpotHoldExplanation::Starvation.read(setting: @app_setting)
     # Which of the three ceilings is holding spot work and what lifts it, in the
     # words `get_spot_policy` uses for the same decision.
     @spot_hold_explanation = SpotHoldExplanation.new(
@@ -395,7 +399,8 @@ class InferenceController < ApplicationController
       paused_count: @spot_paused_count,
       held_count: @spot_held_count,
       overdue_hold_count: @spot_overdue_hold_count,
-      preempted_count: @spot_preempted_count
+      preempted_count: @spot_preempted_count,
+      starvation: @spot_starvation
     )
     # The capacity model behind the reserve controls: the form types a
     # percentage and prints the dollars that percentage carves out, and both

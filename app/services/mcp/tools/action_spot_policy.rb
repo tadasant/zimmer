@@ -26,7 +26,7 @@ module Mcp
       # by the whole fleet and names a caller but not a session.
       CHANGE_SOURCE = "mcp:action_spot_policy"
 
-      # The five gate settings, as tool argument → column. Read by the dispatch
+      # The six gate settings, as tool argument → column. Read by the dispatch
       # below and by the audit-coverage test, so a knob added here that
       # AppSetting does not record fails the build rather than moving silently.
       GATING_FIELDS = {
@@ -34,7 +34,8 @@ module Mcp
         "five_hour_reserve_pct" => :spot_reserve_five_hour_pct,
         "weekly_reserve_pct" => :spot_reserve_weekly_pct,
         "max_concurrent_sessions" => :spot_max_concurrent_sessions,
-        "preemption_enabled" => :spot_preemption_enabled
+        "preemption_enabled" => :spot_preemption_enabled,
+        "starvation_age_ceiling_hours" => :spot_starvation_age_ceiling_hours
       }.freeze
 
       # The two of those that arrive as booleans and need casting. `false` is the
@@ -77,6 +78,14 @@ module Mcp
           the cap instead. It is separate from `enabled` so the one part of the policy that stops work
           already underway can be turned off without turning the gate off and letting the fleet run
           unpaced.
+
+          `starvation_age_ceiling_hours` bounds how long a spot session can be HELD before a turn. A
+          session the gate has refused for longer than this is admitted by the starvation lane — one
+          session at a time, past the quota ceilings only (never past `max_concurrent_sessions`), for
+          that one turn, and recorded on the session as admitted by the lane rather than by the gate.
+          The lane leaves at most one extra session's burn running over the line. 24 by default; 0 turns
+          the lane off, which restores the unbounded wait (a session was once held 127 times over five
+          days under a gate that was right every time).
         - **set_top_up**: Tune when the `no_sessions_in_progress` trigger event fires — the event that
           hands a fleet with spare capacity more work. Any of `max_running_sessions`, `idle_minutes` and
           `min_fire_interval_minutes` may be given; omitted ones are left alone.
@@ -162,6 +171,15 @@ module Mcp
                          "max_concurrent_sessions instead. Separate from `enabled`: this is the only part " \
                          "of the policy that stops work already underway for the CONCURRENCY limit."
           },
+          starvation_age_ceiling_hours: {
+            type: "integer",
+            minimum: 0,
+            maximum: AppSetting::MAX_SPOT_STARVATION_AGE_CEILING_HOURS,
+            description: "set_gating: how long a spot session may be held at the gate before the starvation " \
+                         "lane admits its turn, in hours, 0-#{AppSetting::MAX_SPOT_STARVATION_AGE_CEILING_HOURS} " \
+                         "(#{AppSetting::DEFAULT_SPOT_STARVATION_AGE_CEILING_HOURS} by default). One session at a " \
+                         "time, quota ceilings only, one turn. 0 turns the lane off."
+          },
           max_running_sessions: {
             type: "integer",
             minimum: 1,
@@ -226,7 +244,7 @@ module Mcp
 
         if changes.empty?
           raise ToolError, "Nothing to change: pass enabled, five_hour_reserve_pct, weekly_reserve_pct, " \
-                           "max_concurrent_sessions or preemption_enabled"
+                           "max_concurrent_sessions, preemption_enabled or starvation_age_ceiling_hours"
         end
 
         # Surface a bad reserve as a message the caller can act on rather than
@@ -245,6 +263,9 @@ module Mcp
         when "weekly_reserve_pct" then "weekly priority reserve #{setting.spot_reserve_weekly_pct}%"
         when "max_concurrent_sessions" then "max #{setting.spot_max_concurrent_sessions} sessions at once"
         when "preemption_enabled" then "priority preemption #{setting.spot_preemption_enabled ? 'enabled' : 'disabled'}"
+        when "starvation_age_ceiling_hours"
+          hours = setting.spot_starvation_age_ceiling_hours
+          hours.zero? ? "starvation lane off" : "starvation age ceiling #{hours}h"
         end
       end
 
