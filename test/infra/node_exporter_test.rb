@@ -12,8 +12,8 @@ require "test_helper"
 #      gated, or a module every downstream copy mirrors starts installing a daemon nobody
 #      asked for on the next rebuild.
 #   2. The bind is the security boundary. The DO firewall admits exactly one inbound rule
-#      (UDP 41641) and no public TCP, so `0.0.0.0` is not reachable from the internet TODAY --
-#      but the bind is the half that does not depend on the firewall staying that way.
+#      (UDP 41641) and no public TCP, so a wildcard bind reaches no one from the internet --
+#      but only for as long as that holds, and the bind is the half that does not depend on it.
 #
 # These assertions read the RENDERED cloud-config (see CloudInitRender), not the raw template,
 # so they check what the droplet would actually receive.
