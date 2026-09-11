@@ -3706,7 +3706,9 @@ all three concerns, not one; and `mergeable` now rides in the same `gh pr view` 
 `state,mergedAt`, so anything that makes that one field unserviceable takes PR status down with it
 rather than only conflict detection. `mergeStateStatus` was left out of the query for exactly that
 reason — GitHub serves it only to a viewer with push access and `gh` fails the whole query when one
-requested field is refused.
+requested field is refused. `body` and `labels` ride the same query for the goal check. Both are
+readable by anyone who can read the PR, so neither can be the refused field. What they cost is size:
+a long PR description now comes back on every poll of that PR.
 
 Unlike `GithubTriggerPollerJob`, the pass has no heartbeat and no watchdog, so a freeze is still
 detected by a human noticing that PRs stopped updating.
@@ -4770,14 +4772,28 @@ When you drag a mis-sorted session to the right one, the correction is written t
 `sessions.category_id` and nowhere else — the model's original choice, its context, even a timeline
 note are all discarded. The next identical session is mis-sorted identically, forever.
 
-### A goal has zero runtime enforcement
+### A goal is checked, not enforced
 
-`AgentSessionJob#build_prompt_with_goal` appends the goal's description to the prompt string. That is
-the entire mechanism. Nothing checks that CI went green, that a review happened, or that the PR has the
-`## Verification` section the goal demanded. The stop condition is enforced only by the LLM obeying
-English.
+`AgentSessionJob#build_prompt_with_goal` appends the goal's description to the prompt, and the agent
+decides when it is done. `GoalCheck` reads back what GitHub can show: the PR is open or merged, CI is
+green, the description has a checked `## Verification` section with no unchecked boxes, and the
+`ready to merge` label is on. It reports an advisory verdict on the session page, in `get_session` and
+in the REST session JSON. See [How a goal is checked](/sessions/goals/#how-a-goal-is-checked).
 
-Tracked in [#88](https://github.com/tadasant/zimmer/issues/88).
+Three things it does not do:
+
+- **It does not act.** An `unmet` session is not failed, blocked from archiving, or re-prompted. The
+  stop condition is still enforced only by the LLM obeying English, and a session that declares
+  victory early is still believed. Reporting comes first, and deliberately: a wrong enforcement traps
+  finished work. Whether to attach a consequence, and which one, is still open in
+  [#88](https://github.com/tadasant/zimmer/issues/88).
+- **It cannot see a review, a skill, or proof.** Whether a fresh-eyes review ran, whether `open-pr`
+  was used, and whether the screenshots show what they claim are not in GitHub's state. `met` means
+  nothing visible contradicts the goal.
+- **It reads the description the way this deployment writes one.** A Verification heading and
+  Markdown task-list boxes. A repository with no CI reads `unknown` on `ci_green` forever, so its
+  verdict never gets past `pending`. A session whose PR Zimmer never recorded (see the next entry)
+  reads `unmet` on `pull_request_open` even if the PR exists.
 
 ### PR ownership is a transcript heuristic, and both ways of being wrong are silent
 

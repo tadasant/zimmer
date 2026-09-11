@@ -190,7 +190,8 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "should accept goal at maximum length" do
-    max_condition = "a" * Session::GOAL_MAX_LENGTH
+    # A sentence, not one 50,000-character word, which would read as a catalog id.
+    max_condition = ("a" * (Session::GOAL_MAX_LENGTH - 2)) + " b"
 
     assert_difference("@session.enqueued_messages.count") do
       post session_enqueued_messages_url(@session), params: {
@@ -201,6 +202,31 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
 
     message = @session.enqueued_messages.last
     assert_equal max_condition, message.goal
+  end
+
+  test "should reject a message carrying an unknown goal id" do
+    assert_no_difference("@session.enqueued_messages.count") do
+      post session_enqueued_messages_url(@session), params: {
+        content: "Test message",
+        goal: "open-reviewd-green-pr"
+      }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
+    end
+
+    assert_response :success
+    assert_match(/is not a known goal id/, response.body)
+  end
+
+  test "should reject editing a queued message to an unknown goal id" do
+    message = @session.enqueued_messages.create!(content: "Test message", position: 1)
+
+    patch session_enqueued_message_url(@session, message), params: {
+      content: "Test message",
+      goal: "pr_merged"
+    }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
+    assert_match(/is not a known goal id/, response.body)
+    assert_nil message.reload.goal
   end
 
   test "should respond with html redirect on validation error" do

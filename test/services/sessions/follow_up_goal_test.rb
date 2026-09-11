@@ -124,19 +124,19 @@ class Sessions::FollowUpGoalTest < ActiveSupport::TestCase
       enqueued_message: "Goal updated from enqueued message",
       trigger_reuse: "Goal updated from the trigger fire"
     }.each do |source, expected|
-      session = make_session(goal: "old")
+      session = make_session(goal: "the old goal")
 
-      Sessions::FollowUpGoal.apply!(session: session, goal: "new", source: source)
+      Sessions::FollowUpGoal.apply!(session: session, goal: "the new goal", source: source)
 
       assert_equal expected, session.logs.order(:id).last.content
     end
   end
 
   test "an unknown source raises rather than logging a mystery line" do
-    session = make_session(goal: "old")
+    session = make_session(goal: "the old goal")
 
     assert_raises(KeyError) do
-      Sessions::FollowUpGoal.apply!(session: session, goal: "new", source: :nope)
+      Sessions::FollowUpGoal.apply!(session: session, goal: "the new goal", source: :nope)
     end
   end
 
@@ -175,12 +175,12 @@ class Sessions::FollowUpGoalTest < ActiveSupport::TestCase
   # EnqueuedMessageProcessorService buffers its log lines when a turn is batching
   # them. The service decides WHAT the line says, never how it is persisted.
   test "log_with receives the line instead of writing it directly" do
-    session = make_session(goal: "old")
+    session = make_session(goal: "the old goal")
     captured = []
 
     Sessions::FollowUpGoal.apply!(
       session: session,
-      goal: "new",
+      goal: "the new goal",
       source: :enqueued_message,
       log_with: ->(content) { captured << content }
     )
@@ -190,12 +190,12 @@ class Sessions::FollowUpGoalTest < ActiveSupport::TestCase
   end
 
   test "log_with is not called when nothing changed" do
-    session = make_session(goal: "same")
+    session = make_session(goal: "the same goal")
     captured = []
 
     Sessions::FollowUpGoal.apply!(
       session: session,
-      goal: "same",
+      goal: "the same goal",
       source: :enqueued_message,
       log_with: ->(content) { captured << content }
     )

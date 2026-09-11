@@ -10,12 +10,15 @@ class GoalsConfig
 
   # Goal configuration object
   class Goal
-    attr_reader :id, :name, :description
+    attr_reader :id, :name, :description, :checks
 
     def initialize(id, config)
       @id = id
       @name = config["name"]
       @description = config["description"]
+      # What GoalCheck can read off recorded state for this goal — criterion keys
+      # from GoalCheck::CRITERIA. Empty means the goal is prompt text only.
+      @checks = Array(config["checks"]).map(&:to_s).freeze
     end
 
     # Convert to hash representation
@@ -23,7 +26,8 @@ class GoalsConfig
       {
         id: id,
         name: name,
-        description: description
+        description: description,
+        checks: checks
       }
     end
 
@@ -67,6 +71,51 @@ class GoalsConfig
       find(id).present?
     end
 
+    # The catalog goal a session's stored goal names, or nil for a free-text goal.
+    #
+    # A session's goal column holds one of two shapes for a catalog goal: the id
+    # (the web form, `POST /api/v1/sessions`, `change_goal`, a trigger) or the
+    # description verbatim, because MCP `start_session` swaps an id for its
+    # description before it stores it. Both name the same goal.
+    #
+    # @param goal [String, nil] a session's goal
+    # @return [Goal, nil]
+    def resolve(goal)
+      value = goal.to_s.strip
+      return nil if value.empty?
+
+      find(value) || all.find { |g| g.description.to_s.strip == value }
+    end
+
+    # A goal is either a catalog id or a sentence. A value with no whitespace in
+    # it cannot be a sentence, so it can only have been meant as an id — and an id
+    # the catalog does not have is a typo that would otherwise reach the agent as
+    # free text ("The user has indicated the goal for this task is: open-reviewd-pr").
+    #
+    # @param goal [String, nil]
+    # @return [Boolean] true when the goal is id-shaped and names no catalog goal
+    def unknown_id?(goal)
+      value = goal.to_s.strip
+      value.present? && !value.match?(/\s/) && !exists?(value)
+    end
+
+    # Why an id-shaped goal was refused, phrased to follow the word "Goal" — the
+    # form ActiveModel's full_messages gives it, and the form every surface shows.
+    #
+    # @param goal [String]
+    # @return [String]
+    def unknown_id_reason(goal)
+      "#{goal.to_s.strip.inspect} is not a known goal id (known: #{ids.join(', ')}). " \
+        "A free-text goal is also accepted, but it has to be a sentence, not a single word."
+    end
+
+    # @param goal [String]
+    # @return [String] the refusal as a whole sentence, for surfaces that do not
+    #   prefix an attribute name
+    def unknown_id_message(goal)
+      "Goal #{unknown_id_reason(goal)}"
+    end
+
     # Reload the configuration from disk
     # @return [Array<Goal>] reloaded list of goals
     def reload!
@@ -97,7 +146,18 @@ class GoalsConfig
     # Load goals from configuration
     def load_goals
       goals_data = config["goals"] || {}
-      goals_data.map { |id, goal_config| Goal.new(id, goal_config) }
+      goals_data.map { |id, goal_config| Goal.new(id, goal_config) }.each { |goal| validate_checks!(goal) }
+    end
+
+    # A check name GoalCheck does not implement would be silently skipped, which
+    # would report a goal as checked on fewer criteria than its catalog entry
+    # claims. Refuse to load instead.
+    def validate_checks!(goal)
+      unknown = goal.checks - GoalCheck::CRITERIA.keys
+      return if unknown.empty?
+
+      raise ConfigurationError,
+        "Goal '#{goal.id}' declares unknown checks: #{unknown.join(', ')}. Known: #{GoalCheck::CRITERIA.keys.join(', ')}"
     end
   end
 end

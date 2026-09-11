@@ -1502,7 +1502,10 @@ changed on that session through `change_goal` or the web **Goal** field is rever
 fire. Change it on the trigger. Nothing validates the length of a trigger's goal and `Session` caps
 its own at `GOAL_MAX_LENGTH`, so a goal over that cap is refused at the re-stamp with a WARN naming
 the trigger, and the fire carries on and delivers its prompt rather than raising on every fire
-forever.
+forever. A goal id the catalog does not know is refused when the trigger is saved. A trigger that
+already holds one, saved before that check existed or holding an id since retired, fires with no
+goal: `Trigger#resolvable_goal` drops it with a WARN on both the spawn and the reuse path, so the new
+session gets none and a reused one keeps the goal it had.
 
 Why the goal needs re-stamping at all: it was previously stamped once, at
 `Session.create_from_agent_root!` on the spawn path, and never again — while the trigger's goal

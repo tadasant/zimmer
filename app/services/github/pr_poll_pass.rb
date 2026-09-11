@@ -13,9 +13,10 @@ module Github
   # about it, and the third read the first one's stored answer out of the database
   # rather than being handed it (#711).
   #
-  # So: enumerate once, gate once, parse once, fetch each PR once, stamp once. The three
+  # So: enumerate once, gate once, parse once, fetch each PR once, stamp once. The
   # evaluators own only their own state transitions, and the PR reading they share is a
-  # local variable rather than a round trip and a column.
+  # local variable rather than a round trip and a column. Github::GoalFactsEvaluator is
+  # the fourth, and the one with no GitHub call or cadence of its own.
   #
   # WHAT THIS COSTS
   # ---------------
@@ -126,7 +127,7 @@ module Github
       end
     end
 
-    # One session's poll: the gate, the fetch, the three evaluators, the stamp.
+    # One session's poll: the gate, the fetch, the evaluators, the stamp.
     #
     # @param session [Session]
     # @return [void]
@@ -149,6 +150,12 @@ module Github
       # archive signal, so nothing slower gets to run in front of it.
       run_evaluator(session, "PrStatusEvaluator") do
         PrStatusEvaluator.new.evaluate(session, refs, snapshots)
+      end
+
+      # No GitHub call and no cadence of its own: it reads the description and
+      # labels off the snapshots just taken, for GoalCheck.
+      run_evaluator(session, "GoalFactsEvaluator") do
+        GoalFactsEvaluator.new.evaluate(session, refs, snapshots)
       end
 
       if PollBackoff.should_poll?(

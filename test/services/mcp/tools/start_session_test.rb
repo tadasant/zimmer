@@ -208,6 +208,23 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
     assert_includes result, "No prompt was provided"
   end
 
+  # A single word the catalog does not know is a mistyped id, not a goal (#88).
+  test "refuses an unknown goal id and creates no session" do
+    assert_no_difference("Session.count") do
+      error = assert_raises(Mcp::ToolError) do
+        @tool.call("agent_root" => "zimmer", "title" => "Goal typo", "goal" => "open-reviewd-green-pr")
+      end
+      assert_includes error.message, %(Goal "open-reviewd-green-pr" is not a known goal id)
+      assert_includes error.message, "open-reviewed-green-pr"
+    end
+  end
+
+  test "passes a free-text goal through verbatim" do
+    @tool.call("agent_root" => "zimmer", "title" => "Free text", "goal" => "Answer the question inline")
+
+    assert_equal "Answer the question inline", Session.order(:id).last.goal
+  end
+
   test "resolves a goal id to its catalog description" do
     @tool.call("agent_root" => "zimmer", "title" => "Goal test", "goal" => "codebase-question")
 

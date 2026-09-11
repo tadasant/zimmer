@@ -189,6 +189,7 @@ module AtomicJsonMetadata
     display_changed = metadata_column && metadata_display_fields_changed?(before, after)
     mcp_status_changed = !metadata_column &&
       before&.dig("mcp_servers_status") != after&.dig("mcp_servers_status")
+    goal_check_changed = !metadata_column && goal_check_inputs_changed?(before, after)
 
     index_worthy = !status_summary_fork?
 
@@ -197,7 +198,7 @@ module AtomicJsonMetadata
       if metadata_column
         broadcast_metadata_change if display_changed
       else
-        broadcast_custom_metadata_change(mcp_status_changed: mcp_status_changed)
+        broadcast_custom_metadata_change(mcp_status_changed: mcp_status_changed, goal_check_changed: goal_check_changed)
       end
     end
   end

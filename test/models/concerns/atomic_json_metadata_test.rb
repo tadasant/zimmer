@@ -158,9 +158,25 @@ class AtomicJsonMetadataTest < ActiveSupport::TestCase
 
   test "merging custom_metadata re-broadcasts the index card and the header actions" do
     @session.expects(:broadcast_update_to_sessions_index).once
-    @session.expects(:broadcast_custom_metadata_change).with(mcp_status_changed: false).once
+    @session.expects(:broadcast_custom_metadata_change).with(mcp_status_changed: false, goal_check_changed: false).once
+
+    @session.merge_custom_metadata!("some_note" => "x")
+  end
+
+  # A recorded PR is a GoalCheck input, so the goal check panel repaints with it.
+  test "merging a goal check input flags it for the goal check broadcast" do
+    @session.expects(:broadcast_update_to_sessions_index).once
+    @session.expects(:broadcast_custom_metadata_change).with(mcp_status_changed: false, goal_check_changed: true).once
 
     @session.merge_custom_metadata!("github_pull_request_urls" => [ "https://github.com/o/r/pull/1" ])
+  end
+
+  # Every poll pass rewrites its stamp; that alone must not repaint the panel.
+  test "merging only a poll stamp does not flag the goal check" do
+    @session.expects(:broadcast_update_to_sessions_index).once
+    @session.expects(:broadcast_custom_metadata_change).with(mcp_status_changed: false, goal_check_changed: false).once
+
+    @session.merge_custom_metadata!("poller_last_polled_at" => { "github_pr_poller" => Time.current.iso8601 })
   end
 
   # The before/after comparison that decides whether to broadcast has to be measured
@@ -175,7 +191,7 @@ class AtomicJsonMetadataTest < ActiveSupport::TestCase
     status["a"] = { "status" => "connected" }
 
     @session.expects(:broadcast_update_to_sessions_index).once
-    @session.expects(:broadcast_custom_metadata_change).with(mcp_status_changed: true).once
+    @session.expects(:broadcast_custom_metadata_change).with(mcp_status_changed: true, goal_check_changed: false).once
 
     @session.merge_custom_metadata!("mcp_servers_status" => status)
 
@@ -184,7 +200,7 @@ class AtomicJsonMetadataTest < ActiveSupport::TestCase
 
   test "merging mcp_servers_status flags the status change for the header broadcast" do
     @session.expects(:broadcast_update_to_sessions_index).once
-    @session.expects(:broadcast_custom_metadata_change).with(mcp_status_changed: true).once
+    @session.expects(:broadcast_custom_metadata_change).with(mcp_status_changed: true, goal_check_changed: false).once
 
     @session.merge_custom_metadata!("mcp_servers_status" => { "a" => { "status" => "connected" } })
   end
