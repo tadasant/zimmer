@@ -781,6 +781,36 @@ cache flush into a false page, and a liveness alarm nobody trusts is worse than 
 hole. It fails quiet, not loud. The same Redis dependency already underlies
 `SystemHealthMonitorJob`'s streak, so a Redis outage degrades that whole family together.
 
+### A cron manager that stops inside a live worker is not paged on
+
+The "Cron schedule stale" page comes from `SystemHealthMonitorJob`, which is itself a cron job. If
+the worker's cron manager stops enqueuing everything while the worker process stays up and keeps
+its heartbeat, the monitor stops being enqueued too, so it cannot report the stop. The worker
+heartbeat rule does not fire either, because the worker is alive. The readings stay correct:
+`/health`, `GET /api/v1/health`, `get_system_health` and `/health/export_diagnostics` are served by
+the web process, and every key reads `stale` there. But nothing pages until someone looks.
+
+GoodJob's cron gives each key its own task chain and reschedules the next tick before enqueuing
+the current one, so a failure on one key is the likely shape, and the monitor does catch that one.
+Closing the whole-manager case needs a check that runs outside the worker. The obs collector already
+scrapes `/health/export_diagnostics`, so a Grafana rule over a count of stale keys would do it, but
+the collector and its rules live in `tadasant-internal`, not here.
+
+### Cron freshness pages once for a daily job whose single tick failed to enqueue
+
+A daily key gets a two-hour grace after its fire time. GoodJob does not retry a cron enqueue, so a
+transient database error at exactly 06:00 means that day's job never runs, and the key pages at
+08:00 and stays stale until the next day's tick. The page is true (the job did not run that day),
+but nothing is wedged, and it clears only when the next tick lands. The witness check does not
+excuse it, because the other keys enqueued fine at 06:00: the cron manager was running, and only
+this key's insert failed.
+
+Two blunter edges are in the safe direction. Enabling or disabling *any* cron key in the GoodJob
+dashboard resets every key's lower bound, since GoodJob keeps all the switches in one settings row.
+That delays every key's next possible finding by up to its grace. And an owed tick counts only if
+another configured key's row carries the same fire time, so a tick the cron manager fired while
+every other key's enqueue also failed is excused rather than counted.
+
 ### The docs guardrail does not look in the image's `tmp/`
 
 🟡 `scripts/assert-docs-excluded.sh` — the check that keeps the documentation site out of the

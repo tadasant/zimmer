@@ -103,4 +103,15 @@ module HealthHelper
     else "bg-gray-100 text-gray-800"
     end
   end
+
+  # The pill on each Cron Freshness row. `stale` is what pages; `overdue` is behind
+  # but left to the queue gates, so it is a warning colour rather than an alarm.
+  def cron_freshness_state_class(state)
+    case state
+    when :stale then "bg-red-100 text-red-800"
+    when :overdue then "bg-yellow-100 text-yellow-800"
+    when :fresh then "bg-green-100 text-green-800"
+    else "bg-gray-100 text-gray-800"
+    end
+  end
 end
