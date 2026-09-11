@@ -260,6 +260,7 @@ module ActiveSupport
     include FixtureHelpers
     include BroadcastHelpers
     include LogCaptureHelpers
+    include ErrorReporterHelpers
     include McpOauthTestHelpers
     include McpAvailabilityHelpers
     include SessionMemoryCgroupHelpers

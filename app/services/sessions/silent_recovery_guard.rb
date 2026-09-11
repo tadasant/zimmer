@@ -94,7 +94,7 @@ module Sessions
     WATERMARK_TRANSCRIPT_LINES = "transcript_lines"
 
     # Written to `failure_reason`, so `Session#failure_summary`, the session page's
-    # metadata panel and the `#eng-alerts` orphaned-trigger report all name the same
+    # metadata panel and the `#alerts` orphaned-trigger report all name the same
     # thing. Deliberately distinct from `unstarted_turn_not_recoverable`, which is
     # the empty-turn give-up: that one has a process behind it and this one does not.
     FAILURE_REASON = "recovery_produced_no_output"

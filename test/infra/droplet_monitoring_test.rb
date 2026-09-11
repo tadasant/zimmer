@@ -16,10 +16,14 @@ class DropletMonitoringTest < ActiveSupport::TestCase
   MAIN_TF = Rails.root.join("infra/terraform/main.tf")
 
   test "the droplet asks for the DigitalOcean metrics agent" do
-    assert_match(/^\s*monitoring\s*=\s*true\s*$/, droplet,
-      "The droplet no longer sets `monitoring = true`, so DigitalOcean collects no CPU, " \
-      "memory, disk or load history for it and DO's own resource alert policies -- which " \
-      "evaluate agent-reported metrics -- cannot target it.")
+    assert_match(/^\s*monitoring\s*=\s*var\.monitoring\s*$/, droplet,
+      "The droplet no longer wires `monitoring` to var.monitoring, so a downstream copy of " \
+      "this module cannot turn the metrics agent off without forking the file.")
+
+    assert_match(/^\s*default\s*=\s*true\s*$/, monitoring_variable,
+      "var.monitoring no longer defaults to true, so DigitalOcean would collect no CPU, " \
+      "memory, disk or load history for a droplet this module creates and DO's own resource " \
+      "alert policies -- which evaluate agent-reported metrics -- could not target it.")
   end
 
   test "monitoring is under ignore_changes, so enabling it can never replace the droplet" do
@@ -52,6 +56,15 @@ class DropletMonitoringTest < ActiveSupport::TestCase
       body = File.read(MAIN_TF)[/resource "digitalocean_droplet" "zimmer" \{.*?\n\}/m]
       assert body, "resource \"digitalocean_droplet\" \"zimmer\" not found in #{MAIN_TF} -- " \
         "this test cannot check anything until that block parses again."
+      body
+    end
+  end
+
+  def monitoring_variable
+    @monitoring_variable ||= begin
+      body = File.read(MAIN_TF)[/variable "monitoring" \{.*?\n\}/m]
+      assert body, "variable \"monitoring\" not found in #{MAIN_TF} -- the droplet's " \
+        "`monitoring = var.monitoring` would not even plan."
       body
     end
   end

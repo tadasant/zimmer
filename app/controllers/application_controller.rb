@@ -78,14 +78,12 @@ class ApplicationController < ActionController::Base
   # Zimmer runs one Puma process, and an extra check per process costs one indexed
   # read of a one-row table.
   #
-  # `defer_alert` because AlertService posts to Slack inline and SlackService may
-  # spend tens of seconds on an unreachable Slack. See QueueRecoveryModeAlertJob.
   RECOVERY_MODE_RECONCILE_INTERVAL = 30.seconds
 
   def reconcile_queue_recovery_mode
     return unless recovery_mode_reconcile_due?
 
-    QueueRecoveryMode.expire_if_due!(defer_alert: true)
+    QueueRecoveryMode.expire_if_due!
   rescue StandardError => e
     Rails.logger.error("[queue_recovery_mode] reconcile skipped: #{e.class}: #{e.message}")
     nil

@@ -1344,20 +1344,20 @@ the fire, the PR showed a clean label and no comment, and no alert fired anywher
 
 - writes an ERROR line on the session's own timeline saying the fire is spent and its subject has
   nobody on it, and
-- raises an `#eng-alerts` alert naming the trigger, the session, why it died, and the GitHub PR or
-  issue if one can be found in the prompt the fire carried.
+- raises an alert naming the trigger, the session, why it died, and the GitHub PR or issue if one
+  can be found in the prompt the fire carried.
 
 "Why it died" is sent in **two** places, and the split is security-relevant rather than cosmetic.
 `Session#failure_summary` — a closed `case` over enumerated `failure_reason` values that never
-interpolates runtime output — goes in `details:`, which `AlertService` passes to Slack untouched.
-The raw `exit_status` and `exception_message` go through `error:`, which `AlertService` runs through
-`AlertSnippet` for redaction, clamping, UTF-8 coercion and fencing. Both are needed: the summary
+interpolates runtime output — goes in the report's `details:` prose, assembled here. The raw
+`exit_status` and `exception_message` go through `AlertSnippet` into a field of their own, for
+redaction, clamping and UTF-8 coercion. Both are needed: the summary
 renders `process_failed` as "Process failed", while the sentence that identifies the 7844 failure —
 "Runtime session id … is already in use" — lives only in `exit_status`. And the raw half has to be
 redacted, because `AirPrepareError` embeds `air prepare`'s full stderr and `air prepare` is the step
 that resolves `.mcp.json`'s `${VAR}` credential substitutions, so that text can plausibly carry a
-secret *value*. This is the first path by which either field leaves the box, and a secret posted to
-`#eng-alerts` cannot be un-posted. `UnclassifiedFailureReporter` makes the same call for the same
+secret *value*. This is the first path by which either field leaves the box, and a secret that has
+been sent to an alert channel cannot be un-sent. `UnclassifiedFailureReporter` makes the same call for the same
 reason.
 
 `metadata.trigger_id` alone would be too wide, because a trigger creates sessions on paths where a
@@ -1930,21 +1930,16 @@ Three things this is *not*, mirroring the forced branch:
 
 ##### One bulk archive is one page
 
-The alert's dedup key is per session and deliberately does not collapse across sessions: a sweep that
-strands queues on N sessions has discarded N distinct messages, and one alert standing in for all of
-them is the summary that hides the other N−1. That is right for the count and wrong for the delivery,
-which is what produced seven separate pages — and seven router sessions — from one call.
+Each stranded queue is reported on its own, naming its own session: a sweep that strands queues on N
+sessions has discarded N distinct messages, and one alert standing in for all of them is the summary
+that hides the other N−1. That is right for the record and wrong for the delivery, which is what
+produced seven separate pages — and seven router sessions — from one call.
 
-So the three archive paths that walk a list wrap themselves in `AlertBatcher`: MCP `bulk_archive`,
-`POST /api/v1/sessions/bulk_archive`, and `HealthMonitorService`'s stale-session sweep. One
-consolidated `… (×N)` message replaces N of them, and the `×N` in the title is always the true count.
-
-**The body is bounded and the tail is cut.** `AlertBatcher` clamps an aggregate to 2,700 characters,
-which is Slack's section limit with headroom, so somewhere around half a dozen stranded-queue
-occurrences the later ones stop being spelled out. That is a real loss of the per-session detail this
-alert exists to give, and it is the reason the batch is a delivery fix rather than a reporting one:
-the complete record is the archive line on each session and the `undelivered` rows themselves, both
-of which survive whatever the page has room for.
+The delivery is fixed a layer out rather than in this process. Every one of those reports carries the
+same message, *"Queued messages stranded by an archive"*, with the session id in its context — so
+GlitchTip groups them into one issue and Grafana groups them by `alertname` over a five-minute
+interval. N records, one page, and no per-session detail lost on the way: the complete record is the
+ERROR record for each session, the archive line on the session itself, and the `undelivered` rows.
 
 The sweep is the path this matters most on, because it is the only one of the three that can strand
 *unforced* across many sessions at once — the two caller-facing bulk paths only strand when the
@@ -2233,18 +2228,19 @@ rescue => e
 end
 ```
 
-`alert: true` logs **and** raises an operational alert via `AlertService` (the same
-`#eng-alerts` seam the trigger pollers and `SystemHealthMonitorJob` use). `alert: false` logs
-only. The split is by consequence, not by severity of the exception:
+`alert: true` logs **and** reports the exception to GlitchTip through `ErrorReporter` (the same
+seam the trigger pollers and `SystemHealthMonitorJob` use). `alert: false` logs only — which is
+still an ERROR record, and still pages; the difference is the structured event and its backtrace. The split is by consequence, not by severity of the exception:
 
 | | Callbacks | Why |
 | --- | --- | --- |
 | **Alerts** | `set_archived_at`, `cleanup_running_job`, `clear_stale_mcp_failure_metadata`, `clear_auth_recovery_budget`, `execute_pending_sleep`, `cancel_pending_one_time_wake_triggers`, `retire_held_wake_triggers`, `clear_pending_sleep`, `set_blocked_on_elicitation_marker`, `cleanup_watched_session_ao_event_triggers`, `fire_ao_event_triggers`, `clear_trash_expiry` | The failure leaves persistent state inconsistent and nothing reconciles it — a resumed session that re-fails on a stale MCP flag, an armed wake-up that fires into live work, a restored session still queued for deletion. |
 | **Logs only** | `reset_elapsed_time_counter`, `log_state_change`, `clear_blocked_on_elicitation_marker`, `clear_paused_by_metadata`, `mark_notifications_stale`, `dismiss_notifications`, `enqueue_failure_push_notification`, `enqueue_debounced_needs_input_push_notification`, `enqueue_session_inference_if_needed`, `set_trash_expiry`, `enqueue_deferred_cleanup` | Cosmetic, best-effort by construction, or already covered by a reconciling sweep — `CleanupExpiredElicitationsJob` for a stranded elicitation marker, `StaleCloneCleanupJob` for a nil `trash_after`, `EmptyTrashJob` for a missed cleanup enqueue. A second alert path to an event that already self-heals is just noise. |
 
-The alert's dedup key is the **callback name, not the session**. A sick database hits the same
-callback for every session in flight; collapsing them into one page per
-`AlertService::DEDUP_WINDOW` is the difference between a signal and a flood.
+The report identifies the **callback**, and the session rides in its context. A sick database hits
+the same callback for every session in flight, and GlitchTip groups by exception and stack, so the
+wave collapses into one issue rather than one per session — while each event still says which
+session it was.
 
 Note this covers reporting only, with one exception: **a failure that aborted the transaction is
 not swallowed.** Swallowing exists so a transition can finish with one side effect missing, and once
@@ -2396,6 +2392,53 @@ search, and replaces the grid with a flat result list.
 
 The equivalent for an agent is `quick_search_sessions`, whose `status` argument takes one status
 or an array of them.
+
+### Card order is yours to set, and it stays set
+
+Inside a section, cards are ordered by where you dragged them — `sessions.sort_order` ascending.
+A card nobody has placed sits where it arrived, which is newest-first: every session Zimmer creates
+is stamped as it is created. Grab a card by the grip bar at the top of it and drop
+it where you want it, in its own section or in another one. The drop POSTs the section's order to
+`POST /sessions/reorder`, naming the card you moved, so it survives a reload, a trip into a session
+and back, and paging the section.
+
+How that is stored (`SessionCardOrder`):
+
+- **A drag moves one card, next to its neighbour.** The server puts the moved card immediately
+  above the card that is now below it (or immediately below the card above it, if you dropped it
+  last) and moves nothing else. It never reads a card's index in the posted list as its position:
+  sections paginate at 50 independently, and the browser's copy of a page can hold cards the server
+  would render elsewhere — a new session a broadcast prepended onto page 2, say. Anchoring on the
+  neighbour means a drag on page 2 cannot renumber page 1, and a card you did not touch stays put —
+  including one the status filter is hiding, and a favorited card rendered up in **Starred**.
+- **An arrival goes on top.** A new session, a card the auto-categorizer or `set_category` moves,
+  and the cards of a deleted category all take one below their new section's lowest `sort_order`,
+  so they appear at the top the way a new session always has, and nobody else's row is rewritten to
+  make room. Rows nothing has ever placed tie at the column default `0` and fall back to
+  `created_at DESC`. Note what "on top" means once you have arranged a section by hand: a new
+  session outranks the card you dragged to the top, because the alternative — inserting it by
+  `created_at` into an order you chose — has no defined answer.
+- **A drag rewrites what moved, not the section.** The section's existing values are handed back out
+  along the new order, so only the cards whose rank changed are written — dragging a card from 40th
+  to 1st writes 41 rows, not the thousands of archived sessions sharing its section. The exception
+  is a section whose values tie — one nobody has reordered, or one where two sessions arrived in the
+  same instant and read the same minimum — which is renumbered once on its next drag. Drags that
+  touch the same section, including both ends of a cross-section drag, are serialized with an
+  advisory lock; creating a session takes no lock, which is why that tie can happen at all.
+- **The order is global, not yours.** Zimmer is a single circle of trust with no `User` model, so
+  there is no principal to hang a per-viewer order on — the position lives on the session row, the
+  same way `position` lives on the category. Everyone sees the board you arranged.
+- **Starred cards are not drag-orderable, and lose nothing by it.** A favorited card floats out of
+  its section into the pinned group, which sits outside the drag-and-drop controller and carries no
+  grip bar — its category placement is invisible while it is starred. Starring does not touch
+  `sort_order`, so unstarring puts the card back where it was.
+
+A cross-section drag is one write, not two: the moved card's category change and its placement land
+in the same transaction. Right-clicking a card's grip bar opens the same move as a menu, which puts
+the card at the top of the page of that section you have open.
+
+The equivalents for an agent are `manage_categories`' `reorder_sessions` action over MCP and
+`POST /api/v1/sessions/reorder` over REST.
 
 ## Manual refresh
 

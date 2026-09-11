@@ -63,6 +63,43 @@ class CloudInitTemplateTest < ActiveSupport::TestCase
     MSG
   end
 
+  # The bug this guards: `- jq ... '{"a": {"b": "c"}}'` is not YAML. A plain scalar cannot
+  # contain a colon-space, so that runcmd line opened an implicit mapping key and the whole
+  # document failed to parse -- and cloud-init does not partially apply a cloud-config it
+  # cannot parse, it runs NONE of it. The droplet would have come up with no Docker and no
+  # Tailscale, unreachable over a tailnet it never joined.
+  #
+  # Nothing caught it, because `ignore_changes = [user_data]` means this file is rendered
+  # exactly once, at droplet creation: a rendering that has not happened yet is a rendering
+  # nobody has tested. Every combination of the gating variables is parsed here so that a
+  # branch only one environment takes is checked before it reaches a boot.
+  test "every combination of the gating variables renders to a parseable cloud-config" do
+    [ true, false ].repeated_permutation(3) do |host_key, domain, node_exporter|
+      vars = {
+        "ssh_host_ed25519_key" => host_key ? "key" : "",
+        "domain" => domain ? "zimmer.example.com" : "",
+        "node_exporter_enabled" => node_exporter
+      }
+
+      config = begin
+        CloudInitRender.parse(vars)
+      rescue Psych::SyntaxError => e
+        flunk <<~MSG
+          #{TEMPLATE.basename} renders to a cloud-config that is not valid YAML for
+          #{vars.inspect}. cloud-init parses user_data with the same strictness and does NOT
+          partially apply a document it rejects -- it runs nothing, so the droplet boots with
+          no Docker and no Tailscale.
+
+          #{e.message}
+        MSG
+      end
+
+      assert_kind_of Hash, config
+      assert config["runcmd"].present?, "runcmd vanished for #{vars.inspect}"
+      assert config["write_files"].present?, "write_files vanished for #{vars.inspect}"
+    end
+  end
+
   # The bug this guards: DigitalOcean force-expires root's password on a droplet created with
   # no DO-registered key (ssh_key_fingerprints is deliberately empty), and pam_unix then rejects
   # every real-OpenSSH session on :2222 AFTER publickey auth succeeds. Tailscale SSH does not run

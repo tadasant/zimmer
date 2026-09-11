@@ -9,10 +9,10 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
   setup do
     AppSetting.delete_all
     GoodJob::Setting.delete_all
-    # Every entry/exit raises a Slack alert. The alert path is asserted
-    # explicitly in its own tests; everywhere else it is noise, and the test
-    # environment is outside ALERTING_ENVIRONMENTS anyway.
-    AlertService.stubs(:raise_alert).returns(true)
+    # Every entry/exit reports an alert. The alert path is asserted explicitly in
+    # its own tests; everywhere else it is noise, and ErrorReporter is a no-op in
+    # test anyway (no Sentry DSN, and the environment allowlist excludes test).
+    ErrorReporter.stubs(:report_message)
   end
 
   teardown do
@@ -144,12 +144,11 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
 
     assert_equal 1, alerts.size
     assert_equal "Queue recovery mode extended", alerts.first[:title]
-    # entered_at is deliberately preserved across an extension, so the expiry has to
-    # be in the dedup key or AlertService swallows every extension for an hour.
-    refute_equal(
-      "queue_recovery_mode_entered:2026-08-03T12:00:00Z",
-      alerts.first[:dedup_key]
-    )
+    # entered_at is deliberately preserved across an extension, so the extension is
+    # distinguishable from the original entry by its title and its expiry, not by
+    # entered_at.
+    assert_equal "2026-08-03T12:00:00Z", alerts.first[:context][:entered_at]
+    assert_equal "2026-08-03T12:50:00Z", alerts.first[:context][:expires_at]
   end
 
   test "enter refuses when GoodJob pauses are disabled, rather than faking a halt" do
@@ -188,7 +187,14 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
 
   # The one failure here that no timer resolves. Clearing the metadata would leave
   # the queue paused with nothing left that would ever lift it.
-  test "a failed unpause keeps the metadata so the backstop retries, and pages" do
+  #
+  # It pages through the ERROR record and NOT through GlitchTip, which is the one
+  # place these four alerts differ: this one re-reports on every retried exit —
+  # including the web backstop's, up to twice a minute — where the other three fire
+  # once per transition. Grafana collapses the records into one notification per
+  # group interval; an event per retry would put thousands behind one issue and
+  # notify no more often.
+  test "a failed unpause keeps the metadata so the backstop retries, and pages by log record" do
     QueueRecoveryMode.enter!(reason: "x")
     GoodJob.stubs(:unpause).with(queue: "pollers").raises(ActiveRecord::StatementInvalid, "boom")
     GoodJob.stubs(:unpause).with(queue: "triggers").returns(true)
@@ -196,12 +202,19 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
     GoodJob.stubs(:unpause).with(queue: "maintenance").returns(true)
     GoodJob.stubs(:unpause).with(queue: "default").returns(true)
 
-    alerts = capture_alerts { QueueRecoveryMode.exit! }
+    alerts = nil
+    entries = capture_log_entries do
+      alerts = capture_alerts { QueueRecoveryMode.exit! }
+    end
 
     assert QueueRecoveryMode.active?, "the mode must stay on record while a queue is still halted"
     assert_includes GoodJob.paused(:queues), "pollers"
-    assert_equal 1, alerts.size
-    assert_includes alerts.first[:title], "could NOT resume pollers"
+    assert_empty alerts, "a per-retry condition must not open a GlitchTip event on every retry"
+
+    stuck_errors = entries.select do |severity, message|
+      severity == "ERROR" && message.include?("could NOT resume pollers")
+    end
+    assert_equal 1, stuck_errors.size, "the ERROR record is the page, and it is emitted"
   end
 
   test "expire_if_due! reports false when a queue could not be unpaused" do
@@ -277,16 +290,16 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
 
   # --- Alerts ------------------------------------------------------------------
 
-  # Records what AlertService was called with, tolerant of how Mocha hands a
-  # keyword-argument call to a `with` block.
+  # Records what ErrorReporter was called with, flattened into the shape these
+  # assertions read: the title, the prose, and the structured context.
   def capture_alerts
     captured = []
-    AlertService.stubs(:raise_alert).with { |*args| captured << args; true }.returns(true)
-    yield
-    captured.map do |args|
-      kwargs = args.last.is_a?(Hash) ? args.last : {}
-      { title: args.first }.merge(kwargs.symbolize_keys)
+    ErrorReporter.stubs(:report_message).with do |message, opts|
+      captured << { title: message, level: opts[:level], details: opts[:context][:details], context: opts[:context] }
+      true
     end
+    yield
+    captured
   end
 
   test "entering pages the alert channel and names what is and is not halted" do
@@ -313,19 +326,22 @@ class QueueRecoveryModeTest < ActiveSupport::TestCase
     assert_includes alerts.first[:details], "TTL backstop"
   end
 
-  test "the deferred alert path hands the Slack post to a job" do
+  test "exiting pages inline, with no job in between" do
     QueueRecoveryMode.enter!(reason: "x")
-    AlertService.unstub(:raise_alert)
-    AlertService.stubs(:raise_alert).returns(true)
 
-    assert_enqueued_with(job: QueueRecoveryModeAlertJob) do
-      QueueRecoveryMode.exit!(defer_alert: true)
+    alerts = nil
+    assert_no_enqueued_jobs do
+      alerts = capture_alerts { QueueRecoveryMode.exit! }
     end
+
+    assert_equal 1, alerts.size
+    assert_equal "Queue recovery mode exited", alerts.first[:title]
+    assert_equal :error, alerts.first[:level]
   end
 
   test "exiting a mode that was never on does not page" do
-    AlertService.unstub(:raise_alert)
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.unstub(:report_message)
+    ErrorReporter.expects(:report_message).never
 
     QueueRecoveryMode.exit!
   end

@@ -1,6 +1,20 @@
 # frozen_string_literal: true
 
 module HealthHelper
+  # The queued-job maintenance panel's rows: every (job_class, queue_name) pair
+  # with jobs that are unfinished, unstarted and unclaimed. Memoized per request
+  # so the panel and its empty-state check agree on one read.
+  #
+  # Never raises. This is one panel on a page whose whole job is to be readable
+  # when the instance is unwell, and a `good_jobs` read that fails must cost the
+  # panel, not the dashboard.
+  def queued_job_maintenance_rows
+    @queued_job_maintenance_rows ||= QueuedJobMaintenance.breakdown
+  rescue StandardError => e
+    Rails.logger.error("[health] could not read the queued job breakdown: #{e.class}: #{e.message}")
+    []
+  end
+
   def status_banner_class(status)
     case status.status
     when :healthy

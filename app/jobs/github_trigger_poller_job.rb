@@ -242,55 +242,54 @@ class GithubTriggerPollerJob < ApplicationJob
     rate_limit = nil
     rate_limited_skips = 0
 
-    AlertBatcher.with_batch do
-      conditions.find_each do |condition|
-        # A rate limit belongs to the credential, not to the condition that happened to
-        # meet it, so every condition left in this sweep would spend a `gh` call to be
-        # told the same thing — and spend it on the one class of failure that extra
-        # requests make worse and longer. Stop asking; the next tick is the retry, and
-        # under seen-set semantics a skipped tick costs nothing because the next one
-        # re-derives the whole set.
-        if rate_limit
-          rate_limited_skips += 1
-          next
-        end
+    conditions.find_each do |condition|
+      # A rate limit belongs to the credential, not to the condition that happened to
+      # meet it, so every condition left in this sweep would spend a `gh` call to be
+      # told the same thing — and spend it on the one class of failure that extra
+      # requests make worse and longer. Stop asking; the next tick is the retry, and
+      # under seen-set semantics a skipped tick costs nothing because the next one
+      # re-derives the whole set.
+      if rate_limit
+        rate_limited_skips += 1
+        next
+      end
 
-        process_condition(condition)
-        any_polled = true
-        clear_incomplete_search_streak(condition)
-      rescue GithubSearchService::IncompleteResultsError => e
-        skip_incomplete_search(condition, e)
-      rescue GithubSearchService::RateLimitedError => e
-        # The incomplete-search streak is deliberately left alone, neither bumped nor
-        # cleared. A rate limit is refused at the edge, so the search never reached the
-        # index and this tick holds no verdict about it either way — and the conditions
-        # skipped below, spared the call for the same credential-level reason, keep their
-        # streaks too. Clearing here would single out whichever condition happened to meet
-        # the limit first and could reset a genuine index degradation forever.
-        rate_limit = e
-      rescue => e
-        # Clearing here too is what makes the streak's "consecutive" literal: a tick that
-        # failed some other way is not an incomplete-index tick, and it pages on its own
-        # below, so it must break the run rather than be counted into it.
-        clear_incomplete_search_streak(condition)
-        Rails.logger.error "[GithubTriggerPollerJob] Error processing condition #{condition.id}: #{e.message}"
-        AlertService.raise_alert(
-          "GitHub trigger poller error",
+      process_condition(condition)
+      any_polled = true
+      clear_incomplete_search_streak(condition)
+    rescue GithubSearchService::IncompleteResultsError => e
+      skip_incomplete_search(condition, e)
+    rescue GithubSearchService::RateLimitedError => e
+      # The incomplete-search streak is deliberately left alone, neither bumped nor
+      # cleared. A rate limit is refused at the edge, so the search never reached the
+      # index and this tick holds no verdict about it either way — and the conditions
+      # skipped below, spared the call for the same credential-level reason, keep their
+      # streaks too. Clearing here would single out whichever condition happened to meet
+      # the limit first and could reset a genuine index degradation forever.
+      rate_limit = e
+    rescue => e
+      # Clearing here too is what makes the streak's "consecutive" literal: a tick that
+      # failed some other way is not an incomplete-index tick, and it pages on its own
+      # below, so it must break the run rather than be counted into it.
+      clear_incomplete_search_streak(condition)
+      Rails.logger.error "[GithubTriggerPollerJob] Error processing condition #{condition.id}: #{e.message}"
+      ErrorReporter.report_exception(
+        e,
+        context: {
+          title: "GitHub trigger poller error",
+          source: "GithubTriggerPollerJob",
           details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' " \
                    "(ID: #{condition.trigger_id}) failed.",
-          source: "GithubTriggerPollerJob",
-          dedup_key: "github_trigger_condition_#{condition.id}",
-          error: e
-        )
-      end
+          condition_id: condition.id,
+          trigger_id: condition.trigger_id
+        }
+      )
+    end
 
-      # Inside the batch so the escalation coalesces with anything else this sweep
-      # raised, exactly as skip_incomplete_search's does.
-      if rate_limit
-        defer_rate_limited_sweep(rate_limit, skipped: rate_limited_skips)
-      else
-        clear_rate_limited_streak
-      end
+    if rate_limit
+      defer_rate_limited_sweep(rate_limit, skipped: rate_limited_skips)
+    else
+      clear_rate_limited_streak
     end
 
     # Record the heartbeat only when the poller actually did work — see the constant's
@@ -371,28 +370,32 @@ class GithubTriggerPollerJob < ApplicationJob
     if streak.nil? || streak < CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT
       run = streak ? "#{streak} consecutive" : "streak untracked"
 
-      # .warn, not .error: an ERROR line pages #alerts on its own (see the logging
-      # philosophy), which would leave this every bit as noisy as the alert it replaces.
+      # .warn, not .error: an ERROR record pages on its own (see the logging
+      # philosophy), and a self-healing blip is not worth a page.
       Rails.logger.warn "[GithubTriggerPollerJob] GitHub's search index returned incomplete " \
                         "results for condition #{condition.id} (#{run}); skipping it this " \
                         "tick — the next tick re-derives the full seen-set"
       return
     end
 
-    Rails.logger.warn "[GithubTriggerPollerJob] GitHub's search index has returned incomplete " \
-                      "results for condition #{condition.id} on #{streak} consecutive ticks; " \
-                      "alerting #eng-alerts."
-    AlertService.raise_alert(
-      "GitHub search index degraded",
-      details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' " \
-               "(ID: #{condition.trigger_id}) has been skipped for #{streak} consecutive ticks " \
-               "because GitHub's search API keeps returning incomplete results. Its items are " \
-               "not being polled, so this trigger is not firing. A single occurrence is a normal " \
-               "self-healing blip; this many in a row is not. Check githubstatus.com, and whether " \
-               "the condition's query has grown expensive enough to time the index out.",
-      source: "GithubTriggerPollerJob",
-      dedup_key: "github_search_incomplete_results_#{condition.id}",
-      error: error
+    # .error past the streak threshold: this line IS the page.
+    Rails.logger.error "[GithubTriggerPollerJob] GitHub's search index has returned incomplete " \
+                       "results for condition #{condition.id} on #{streak} consecutive ticks"
+    ErrorReporter.report_exception(
+      error,
+      context: {
+        title: "GitHub search index degraded",
+        source: "GithubTriggerPollerJob",
+        details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' " \
+                 "(ID: #{condition.trigger_id}) has been skipped for #{streak} consecutive ticks " \
+                 "because GitHub's search API keeps returning incomplete results. Its items are " \
+                 "not being polled, so this trigger is not firing. A single occurrence is a normal " \
+                 "self-healing blip; this many in a row is not. Check githubstatus.com, and whether " \
+                 "the condition's query has grown expensive enough to time the index out.",
+        condition_id: condition.id,
+        trigger_id: condition.trigger_id,
+        consecutive_ticks: streak
+      }
     )
   end
 
@@ -436,27 +439,30 @@ class GithubTriggerPollerJob < ApplicationJob
     if streak.nil? || streak < CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT
       run = streak ? "#{streak} consecutive" : "streak untracked"
 
-      # .warn, not .error: an ERROR line pages #alerts on its own (see the logging
-      # philosophy), which would leave this every bit as noisy as the alert it replaces.
+      # .warn, not .error: an ERROR record pages on its own (see the logging
+      # philosophy), and a self-clearing burst limit is not worth a page.
       Rails.logger.warn "[GithubTriggerPollerJob] GitHub rate-limited the search API " \
                         "(#{run}); skipping the rest of this sweep — the next tick is " \
                         "the retry#{remainder}. #{error.message}"
       return
     end
 
-    Rails.logger.warn "[GithubTriggerPollerJob] GitHub has rate-limited the search API on " \
-                      "#{streak} consecutive ticks; alerting #eng-alerts."
-    AlertService.raise_alert(
-      "GitHub search API rate limit not clearing",
-      details: "GitHub has rate-limited `gh api search/issues` on #{streak} consecutive ticks. Each " \
-               "of those sweeps stopped at the condition that met the limit, so GitHub triggers have " \
-               "been going unpolled for that long and are firing late or not at all. A single " \
-               "occurrence is a normal, self-clearing burst limit; this many in a row means " \
-               "the fleet is asking for more than GitHub will serve at this cadence. Check " \
-               "githubstatus.com, and what else is spending this credential's search quota.",
-      source: "GithubTriggerPollerJob",
-      dedup_key: "github_search_rate_limited",
-      error: error
+    # .error past the streak threshold: this line IS the page.
+    Rails.logger.error "[GithubTriggerPollerJob] GitHub has rate-limited the search API on " \
+                       "#{streak} consecutive ticks"
+    ErrorReporter.report_exception(
+      error,
+      context: {
+        title: "GitHub search API rate limit not clearing",
+        source: "GithubTriggerPollerJob",
+        details: "GitHub has rate-limited `gh api search/issues` on #{streak} consecutive ticks. Each " \
+                 "of those sweeps stopped at the condition that met the limit, so GitHub triggers have " \
+                 "been going unpolled for that long and are firing late or not at all. A single " \
+                 "occurrence is a normal, self-clearing burst limit; this many in a row means " \
+                 "the fleet is asking for more than GitHub will serve at this cadence. Check " \
+                 "githubstatus.com, and what else is spending this credential's search quota.",
+        consecutive_ticks: streak
+      }
     )
   end
 
@@ -625,16 +631,23 @@ class GithubTriggerPollerJob < ApplicationJob
                       "with #{current_keys.size} already-labelled item(s); firing none"
     return unless lost_baseline && current_keys.any?
 
-    AlertService.raise_alert(
+    details = "Condition #{condition.id} on trigger '#{condition.trigger&.name}' " \
+              "(ID: #{condition.trigger_id}) had already polled but came back with no seen-set, so it " \
+              "has been re-baselined against the #{current_keys.size} item(s) currently labelled: " \
+              "#{listed_keys(current_keys)}. Any of them that gained the label after the " \
+              "seen-set was lost has been absorbed as already-seen and will NOT get a session. Check " \
+              "them for a missing session and use action_trigger `invoke` for any that never fired."
+
+    Rails.logger.error "[GithubTriggerPollerJob] GitHub trigger baseline was reset: #{details}"
+    ErrorReporter.report_message(
       "GitHub trigger baseline was reset",
-      details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' " \
-               "(ID: #{condition.trigger_id}) had already polled but came back with no seen-set, so it " \
-               "has been re-baselined against the #{current_keys.size} item(s) currently labelled: " \
-               "#{listed_keys(current_keys)}. Any of them that gained the label after the " \
-               "seen-set was lost has been absorbed as already-seen and will NOT get a session. Check " \
-               "them for a missing session and use action_trigger `invoke` for any that never fired.",
-      source: "GithubTriggerPollerJob",
-      dedup_key: "github_trigger_baseline_reset_#{condition.id}"
+      level: :error,
+      context: {
+        source: "GithubTriggerPollerJob",
+        details: details,
+        condition_id: condition.id,
+        trigger_id: condition.trigger_id
+      }
     )
   end
 

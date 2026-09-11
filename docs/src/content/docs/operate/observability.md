@@ -34,6 +34,13 @@ anything anywhere saying so. Do not infer "no errors" from "no data"; ask the ap
 Both OTLP variables are required. **Either one missing is a silent no-op** — a set endpoint
 with an unset token ships nothing at all.
 
+That table is about what the **app** ships. Host telemetry — CPU, memory, disk, load — is the
+droplet's, not the app's, and it has its own two paths: DigitalOcean's metrics agent (`var.monitoring`,
+on by default, readable in DO's console) and an optional Prometheus `node_exporter` on the tailnet
+(`var.node_exporter_enabled`, off by default). Both are
+[Terraform variables](/operate/provisioning/#terraform-variables) and both land only on a droplet
+Terraform creates.
+
 Zimmer's failures live in GoodJob background jobs and the session lifecycle, not in HTTP
 requests, so that is what the log exporter is shaped around. It ships two kinds of record:
 
@@ -148,7 +155,7 @@ actually happened to the work.**
 | What happened to the work | Level | In `SlackTriggerPollerJob` |
 | --- | --- | --- |
 | Slack threw a fetch away before its cursor moved, so the deferred poll re-reads it | WARN | the per-channel / per-thread / per-DM rescues, and each deferral |
-| The retry budget is spent — five deferrals, ~15 minutes of unavailability | ERROR | the give-up line, alongside its `AlertService` alert |
+| The retry budget is spent — five deferrals, ~15 minutes of unavailability | ERROR | the give-up line, alongside its GlitchTip report |
 | The failure loses work the deferral cannot bring back | ERROR | `#process_message`, whose caller advances the cursor past that message either way, and `#fetch_recent_history`, which degrades to an empty slice its callers finish the sweep trusting |
 | Not transient at all — a renamed channel, a bad cursor, a bug in the job | ERROR | every non-`TransientError` in those same rescues |
 

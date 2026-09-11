@@ -115,8 +115,9 @@ Three layers, most specific first:
    the bot.
 
 Zimmer's own messages never trigger anything, whatever the allowlist says — it posts to Slack with
-the same token (`AlertService`), and a `bot_mention` condition with no channel configured polls
-*every* channel the bot is in, so without that rule an alert could trigger a session that alerts.
+the same token, and a `bot_mention` condition with no channel configured polls
+*every* channel the bot is in, so without that rule one of Zimmer's own posts could trigger a
+session.
 Messages from *other* apps do still qualify: bots are valid trigger sources.
 
 :::caution[The open default means any workspace member can spawn an agent session]
@@ -216,10 +217,11 @@ top-level messages. The newest is remembered per channel in `bot_activity_timest
 moves forward, so a channel stays engaged for the full window even through polls where nothing has
 moved, and a tick that happens to observe *older* activity can't wind it back and disengage early.
 
-The alert channel (`ENG_ALERTS_SLACK_CHANNEL_ID`) is excluded from that signal. `AlertService` posts
-there with the same token and therefore the same user ID, so one automated alert would otherwise
-mark the channel engaged and turn the whole window of it into a session per message — in the one
-channel guaranteed to be noisy when things are going wrong. Threads there are unaffected: if Zimmer
+The alert channel (`ENG_ALERTS_SLACK_CHANNEL_ID`, read through `SlackService.alert_channel_id`) is
+excluded from that signal. Zimmer does not post there itself — the obs pipeline's incoming webhook
+does — and a machine-posted page would otherwise mark the channel engaged and turn the whole window
+of it into a session per message, in the one channel guaranteed to be noisy when things are going
+wrong. Threads there are unaffected: if Zimmer
 actually replied in one, that is a conversation and `passive_listen_thread` still follows it.
 
 A thread seen for the first time has no cursor of its own and falls back to the channel's, which
@@ -1129,7 +1131,7 @@ history showed the fire, the PR showed a clean label and no comment, and no aler
 
 The `fail` transition now reports it. A failing session whose fire was genuinely *consumed* — a
 `github_label`, `github_issue`, `slack` or `ao_event` genesis, carrying a `trigger_id`, and not a
-burst notice — gets an ERROR line on its own timeline and an `#eng-alerts` alert naming the trigger,
+burst notice — gets an ERROR line on its own timeline and an `#alerts` alert naming the trigger,
 the session, the reason it died and the GitHub subject it was fired for, so the drop is
 re-dispatched deliberately in minutes rather than in hours. A recurring `schedule` and a
 `system_event` are excluded because they fire again on their own, and a manual Invoke because
@@ -1351,7 +1353,7 @@ session never receives a name the catalog does not know, and the trigger never l
 | The trigger row | Untouched. The name the operator wrote stays written. |
 | The session it spawns | Gets only the names the catalog resolves — a genuinely deleted artifact is dropped from the *session*, which is where dropping it is right. |
 | `unresolved_catalog_references` | Records which names are unresolvable and when each was first seen that way. Bookkeeping, so the alert fires **once** and not once per fire. |
-| The alert | One deduped `#eng-alerts` notice per artifact kind, naming what does not resolve, what still does, and the two repairs — remap a rename, remove a deletion. |
+| The alert | One `#alerts` notice per artifact kind, on the fire that first finds a given set unresolvable, naming what does not resolve, what still does, and the two repairs — remap a rename, remove a deletion. |
 
 The heal used to `update_column` the survivors instead. A catalog **rename** is indistinguishable
 from a deletion here — the old slug simply stops resolving — and renames are far the commoner of the
@@ -1396,11 +1398,12 @@ All of those read the recorded bookkeeping rather than asking the catalog per na
 what fires have found: a trigger that has not fired since the rename shows nothing yet.
 
 **The alert is announced once; the log line is not.** Every fire that finds an unresolvable
-reference writes a `WARN` naming it, whether or not that fire announces it. `AlertService` throttles
-a repeated dedup key for an hour and swallows an alert outright when alerting is off, so the alert
-alone is not a durable record — and the alert's dedup key carries a digest of *which* names are
-unresolvable, so a second artifact going missing inside that hour is a new key rather than a
-suppressed duplicate.
+reference writes a `WARN` naming it, whether or not that fire announces it. The announcement is one
+ERROR record plus one GlitchTip event, raised on the fire that first sees a given set go
+unresolvable — GlitchTip notifies at most once per issue, and `ErrorReporter` is a no-op outside the
+deployed environments, so the announcement alone is not a durable record. The set of unresolvable
+names rides in the report's context, so a second artifact going missing is reported with the whole
+current picture rather than repeating the first report's list.
 
 **A trigger whose whole list stops resolving takes the agent root's defaults**, because
 `Session.create_from_agent_root!` reads an empty list as "no opinion" — the same thing that happened

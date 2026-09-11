@@ -171,31 +171,30 @@ class SlackTriggerPollerJob < ApplicationJob
   def perform
     return unless SlackService.configured?
 
-    # Wrap iteration in an AlertBatcher scope so catalog issues affecting many
-    # triggers in one tick emit a single aggregated Slack message.
-    AlertBatcher.with_batch do
-      TriggerCondition.slack
-        .joins(:trigger)
-        .where(triggers: { status: "enabled" })
-        .includes(:trigger)
-        .find_each do |condition|
-        process_condition(condition)
-      rescue SlackService::TransientError
-        # Slack itself is throttling us or unreachable. That is not a defect in
-        # THIS condition, and every remaining condition is about to hit the same
-        # wall — so don't alert once per condition and don't keep grinding through
-        # the sweep. Abort it and let #perform defer the whole poll.
-        raise
-      rescue => e
-        Rails.logger.error "[SlackTriggerPollerJob] Error processing condition #{condition.id}: #{e.message}"
-        AlertService.raise_alert(
-          "Slack trigger poller error",
-          details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' (ID: #{condition.trigger_id}) failed.",
+    TriggerCondition.slack
+      .joins(:trigger)
+      .where(triggers: { status: "enabled" })
+      .includes(:trigger)
+      .find_each do |condition|
+      process_condition(condition)
+    rescue SlackService::TransientError
+      # Slack itself is throttling us or unreachable. That is not a defect in
+      # THIS condition, and every remaining condition is about to hit the same
+      # wall — so don't report once per condition and don't keep grinding through
+      # the sweep. Abort it and let #perform defer the whole poll.
+      raise
+    rescue => e
+      Rails.logger.error "[SlackTriggerPollerJob] Error processing condition #{condition.id}: #{e.message}"
+      ErrorReporter.report_exception(
+        e,
+        context: {
+          title: "Slack trigger poller error",
           source: "SlackTriggerPollerJob",
-          dedup_key: "slack_trigger_condition_#{condition.id}",
-          error: e
-        )
-      end
+          details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' (ID: #{condition.trigger_id}) failed.",
+          condition_id: condition.id,
+          trigger_id: condition.trigger_id
+        }
+      )
     end
 
     defer_poll(@transient_error) if @transient_error
@@ -296,21 +295,26 @@ class SlackTriggerPollerJob < ApplicationJob
       # recovering. The per-unit failures that led here logged at WARN precisely so
       # that this line still means something when it appears.
       #
-      # It is louder than the alert beside it, and that is accepted rather than
-      # overlooked. A give-up costs ~16 minutes (930s of backoff plus a tick) and the
-      # next cron tick starts a fresh chain from zero, so a sustained outage reaches
-      # here roughly four times an hour while AlertService::DEDUP_WINDOW suppresses
-      # all but the first Slack message. Four ERROR lines an hour for an outage that
-      # is genuinely ongoing is a fair price for not making the Grafana signal
-      # conditional on the alert cache; do not demote this line back to WARN on the
-      # grounds that the alert already covers it, which is the reasoning that let a
-      # recovered 429 page in the first place (#509).
+      # A give-up costs ~16 minutes (930s of backoff plus a tick) and the next cron
+      # tick starts a fresh chain from zero, so a sustained outage reaches here
+      # roughly four times an hour. This ERROR line is what pages — Grafana's
+      # notification policy collapses the repeats into one message per group
+      # interval and re-pages every 4 hours while the condition lasts — so do not
+      # demote it back to WARN on the grounds that GlitchTip already has it: a
+      # GlitchTip issue notifies at most once, ever (#509).
       Rails.logger.error "[SlackTriggerPollerJob] Slack still unavailable after #{MAX_DEFERRALS} deferrals: #{error.message}"
-      AlertService.raise_alert(
+      ErrorReporter.report_message(
         "Slack trigger poller deferred repeatedly",
-        details: "Slack has been unavailable across #{MAX_DEFERRALS} deferred polls. Latest error:\n#{error.message}",
-        source: "SlackTriggerPollerJob",
-        dedup_key: "slack_trigger_poller_deferred"
+        level: :error,
+        context: {
+          source: "SlackTriggerPollerJob",
+          details: "Slack has been unavailable across #{MAX_DEFERRALS} deferred polls. Latest error:\n#{error.message}",
+          # report_message rather than report_exception: the incident is the outage,
+          # not the particular 429 that happened to be last, so the message is stable
+          # and every give-up lands in one issue. The class is what the exception
+          # would have contributed that the prose does not.
+          error_class: error.class.name
+        }
       )
       return
     end
@@ -468,7 +472,7 @@ class SlackTriggerPollerJob < ApplicationJob
   # Whether a message is an @mention of the bot that this condition may fire on.
   #
   # The bot's OWN messages never qualify, whatever the allow-list says. Zimmer posts
-  # to Slack with this same token (AlertService), and a bot_mention condition with no
+  # to Slack with this same token, and a bot_mention condition with no
   # channel configured polls EVERY channel the bot is in -- so without this, an alert
   # quoting "<@bot>" would trigger a session, which would alert, which would trigger.
   #
@@ -754,11 +758,11 @@ class SlackTriggerPollerJob < ApplicationJob
 
   # Whether Zimmer's own posts in this channel count as being in a conversation.
   #
-  # They don't in the alert channel. AlertService posts there with the same token
-  # and therefore the same user ID, so a single automated alert would otherwise mark
-  # the channel engaged and turn the whole engagement window of it into a session
-  # per message — in the one channel guaranteed to be noisy when things are going
-  # wrong. Threads are unaffected: if Zimmer actually replied in a thread there,
+  # They don't in the alert channel. Zimmer does not post there itself — the obs
+  # pipeline's incoming webhook does — and a machine-posted page would otherwise
+  # mark the channel engaged and turn the whole engagement window of it into a
+  # session per message, in the one channel guaranteed to be noisy when things are
+  # going wrong. Threads are unaffected: if Zimmer actually replied in a thread there,
   # that IS a conversation and passive_listen_thread still follows it.
   def engagement_channel?(channel_id)
     channel_id != alert_channel_id
@@ -767,7 +771,7 @@ class SlackTriggerPollerJob < ApplicationJob
   def alert_channel_id
     return @alert_channel_id if defined?(@alert_channel_id)
 
-    @alert_channel_id = AlertService.channel_id
+    @alert_channel_id = SlackService.alert_channel_id
   end
 
   # The oldest a reply may be and still fire, given the baseline passive listening

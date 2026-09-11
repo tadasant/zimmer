@@ -15,53 +15,47 @@
 # ApiErrorRetryService::ACCOUNT_QUOTA_LIMIT_PATTERN). The fix for that specific
 # wording was a better regex; the fix for the *class* of bug is this: when no
 # classifier matches, say so out loud, and carry the unmatched output so the
-# next wording change is a Slack message instead of an archaeology session.
+# next wording change is a page instead of an archaeology session.
 #
 # This deliberately does not try to classify better. It makes the unknown
 # announce itself.
 #
 # == Noise budget ==
 #
-# The dedup key is derived from (kind, summary) and deliberately excludes the
-# session id, so a fleet-wide wave of the same unknown failure mode collapses
-# into one #eng-alerts message per AlertService::DEDUP_WINDOW rather than one
-# per session. A genuinely *new* failure mode has a different summary and pages
-# on its own.
+# The reported message is the KIND alone — never the session id, never the summary
+# — so a fleet-wide wave of the same unknown collapses into one GlitchTip issue
+# rather than one per session. The summary rides in the context, where it is what
+# tells two failure modes of the same kind apart. A genuinely new mode still pages
+# on its own: every occurrence writes its own ERROR record, and that is the half
+# that pages per occurrence.
 class UnclassifiedFailureReporter
   class << self
     # Report a failure that no classifier recognized.
     #
     # @param kind [String] the classifier family that came up empty, e.g.
-    #   "process exit" or "recovery contradiction". Part of the dedup key.
+    #   "process exit" or "recovery contradiction". This is the reported message,
+    #   and therefore what GlitchTip groups on.
     # @param summary [String] a short, low-cardinality description of this
-    #   particular unknown — e.g. "exit code: 2". Also part of the dedup key, so
-    #   it must NOT contain a session id, pid, or timestamp.
+    #   particular unknown — e.g. "exit code: 2". Reported as context and logged,
+    #   so it must NOT contain a session id, pid, or timestamp.
     # @param source [String] the call site, e.g. "ProcessLifecycleManager#handle_exit"
     # @param session [Session, nil] the affected session, linked in the alert
     # @param output [String, nil] the unmatched output (stderr tail, transcript
     #   error text) that no pattern recognized
     # @param logger [StructuredLogger, nil] logger for the loud log line
-    # @return [Boolean] whether the alert was sent
+    # @return [Boolean] true once the unknown has been reported
     def report(kind:, summary:, source:, session: nil, output: nil, logger: nil)
-      # Loud log first, so the unknown is greppable even if Slack is down.
+      # The unmatched output goes through AlertSnippet rather than being
+      # hand-pasted into the prose. AlertSnippet owns redaction, clamping and
+      # UTF-8 coercion — and it has to: this output is raw agent-process stderr,
+      # which arrives as bytes and can end mid-multibyte-character when
+      # BoundedSubprocess kills a process group on deadline. Re-implementing any
+      # of that here would be a second, weaker copy of a security-relevant seam.
       log_loudly(
         kind: kind, summary: summary, source: source, session: session,
         output: AlertSnippet.build(output.presence), logger: logger
       )
-
-      # The unmatched output goes through `error:`, not hand-pasted into
-      # `details`. AlertSnippet owns redaction, clamping, UTF-8 coercion, and
-      # fencing — and it has to: this output is raw agent-process stderr, which
-      # arrives as bytes and can end mid-multibyte-character when
-      # BoundedSubprocess kills a process group on deadline. Re-implementing any
-      # of that here would be a second, weaker copy of a security-relevant seam.
-      AlertService.raise_alert(
-        "Unclassified failure: #{kind}",
-        details: alert_details(kind: kind, summary: summary, session: session),
-        source: source,
-        dedup_key: dedup_key(kind, summary),
-        error: output.presence
-      )
+      true
     rescue => e
       # Self-guarding, like SessionStateMachine#report_swallowed_side_effect.
       # Announcing a failure must never become a second way for that failure to
@@ -72,13 +66,36 @@ class UnclassifiedFailureReporter
 
     private
 
+    # The single emission: one ERROR record — which is what pages, through the
+    # Grafana rule on Zimmer's error logs — and one GlitchTip event carrying the
+    # same fields. A StructuredLogger does both halves itself (StructuredLogger#error
+    # routes to ErrorReporter), so the explicit report below is only for the plain
+    # Rails.logger path; doing both would open two issues for one event.
     def log_loudly(kind:, summary:, source:, session:, output:, logger:)
-      message = "No classifier matched this #{kind} — unclassified failure"
-      fields = { kind: kind, summary: summary, source: source, session_id: session&.id, unmatched_output: output }.compact
+      message = "Unclassified failure: #{kind}"
+      fields = {
+        kind: kind,
+        summary: summary,
+        source: source,
+        session_id: session&.id,
+        unmatched_output: output,
+        # Newlines flattened: this rides in a single formatted log line as well as
+        # in the reported context, and a multi-paragraph value would turn one ERROR
+        # record into several lines that nothing reassembles.
+        details: alert_details(kind: kind, summary: summary, session: session).squish
+      }.compact
 
-      if logger.respond_to?(:error)
+      if logger.is_a?(StructuredLogger)
+        # One call, both halves. It writes the record first and reports second, so a
+        # logger that raises loses the GlitchTip half — that is StructuredLogger's
+        # own ordering, shared by every caller of it, and not something to work
+        # around here with a second report that would open a second issue.
         logger.error(message, **fields)
       else
+        # Reported before the log line, not after: ErrorReporter swallows its own
+        # failures and cannot raise, so ordering it first keeps the GlitchTip half
+        # alive even when the logger is the thing that is broken.
+        ErrorReporter.report_message(message, level: :error, context: fields)
         Rails.logger.error("[UnclassifiedFailureReporter] #{message} #{fields.inspect}")
       end
     rescue => e
@@ -95,21 +112,16 @@ class UnclassifiedFailureReporter
       lines = []
       lines << "No classifier matched this #{kind}, so the failure was handled by the generic path."
       lines << ""
-      lines << "*What happened:* #{summary}"
+      lines << "What happened: #{summary}"
       lines << ""
       lines << "This usually means an upstream wording or exit-code change outran a pattern in " \
-               "the retry strategies. Compare the unmatched output below against the classifiers " \
+               "the retry strategies. Compare `unmatched_output` against the classifiers " \
                "before assuming the session simply failed."
       if session
         lines << ""
-        lines << "<#{AppUrl.base_url}/sessions/#{session.id}|View session #{session.id} in Zimmer>"
+        lines << "Session: #{AppUrl.base_url}/sessions/#{session.id}"
       end
       lines.join("\n")
-    end
-
-    # (kind, summary) only — see the noise budget note in the class docs.
-    def dedup_key(kind, summary)
-      "unclassified_failure_#{Digest::SHA256.hexdigest("#{kind}:#{summary}")[0..15]}"
     end
   end
 end

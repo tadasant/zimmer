@@ -4703,7 +4703,7 @@ class SessionTest < ActiveSupport::TestCase
     ServersConfig.stubs(:all).returns([ OpenStruct.new(name: "keeper") ])
     ServersConfig.stubs(:exists?).with("keeper").returns(true)
     ServersConfig.stubs(:exists?).with("gone-server").returns(false)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     resolvable = nil
     assert_nothing_raised { resolvable = session.heal_catalog_references! }

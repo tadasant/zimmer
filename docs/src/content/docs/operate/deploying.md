@@ -1661,14 +1661,20 @@ the box. The cost of freezing `user_data` is that the deploy key and Caddyfile c
 place — see [Known limitations](/limitations/#user_data-is-frozen-so-the-deploy-key-and-the-caddyfile-cant-be-updated-in-place).
 
 `monitoring` is in that same `ignore_changes` list, for the same reason from the other direction. The
-droplet asks for DigitalOcean's metrics agent (`monitoring = true`) so a newly created box gets host
-CPU/memory/disk/load history for free, but the attribute is `ForceNew` in the provider — setting it on
+droplet asks for DigitalOcean's metrics agent (`monitoring = var.monitoring`, defaulting to `true`) so
+a newly created box gets host CPU/memory/disk/load history for free, but the attribute is `ForceNew`
+in the provider — setting it on
 a droplet that already exists is a replace, not an update, and both environments apply with
 `-auto-approve`. Ignoring it keeps a routine `apply` from destroying the host over a metrics agent.
 The trade is that an existing droplet only gets the agent when it is rebuilt: DigitalOcean offers no
 API action to enable it, and its documented remedy is a root shell on the box, which this deployment
 does not have. See
 [Known limitations](/limitations/#the-digitalocean-metrics-agent-reaches-only-a-droplet-terraform-creates-never-one-that-exists).
+
+`ignore_changes = [user_data]` now gates a second create-time-only feature the same way.
+`var.node_exporter_enabled` puts a tailnet-bound Prometheus `node_exporter` in cloud-init, so setting
+it produces no plan diff and installs nothing on a running box — a rebuild is what delivers it. See
+[Known limitations](/limitations/#node_exporter-is-opt-in-and-reaches-only-a-rebuilt-droplet).
 
 ## Terraform, briefly
 

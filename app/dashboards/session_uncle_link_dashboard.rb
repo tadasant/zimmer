@@ -29,8 +29,11 @@ class SessionUncleLinkDashboard < Administrate::BaseDashboard
 
   # No form attributes. Edges are written by Sessions::RecordUncleEdge, which is
   # what enforces the acyclicity invariant — hand-authoring one here would go
-  # around it. Supervisor is the operator's escape hatch for REMOVING an edge
-  # recorded in error, which is the case issue #299 tracks a product surface for.
+  # around it. Removing one recorded in error has product surfaces of its own
+  # (the hierarchy panel's ×, `action_session` → `remove_uncle`, and
+  # DELETE /api/v1/sessions/:id/uncle_links/:uncle_id, all through
+  # Sessions::RemoveUncleEdge); the destroy here is the operator's escape hatch
+  # for an edge those cannot name, and it records nothing on either timeline.
   FORM_ATTRIBUTES = [].freeze
 
   COLLECTION_FILTERS = {}.freeze

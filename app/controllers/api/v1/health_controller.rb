@@ -63,6 +63,67 @@ class Api::V1::HealthController < Api::BaseController
     render json: PostDeployTask::Runner.request!
   end
 
+  # GET /api/v1/health/queued_jobs
+  # Count the queued jobs a maintenance call would act on, by class and queue.
+  #
+  # Query params:
+  #   - job_class: Optional exact job class
+  #   - queue_name: Optional exact queue name
+  #
+  # At least one is required, because the number this returns is the argument the
+  # two POSTs below demand as `expected_count`, and it has to be scoped exactly
+  # the way the write will be.
+  def queued_jobs
+    render json: QueuedJobMaintenance.preview(
+      job_class: params[:job_class],
+      queue_name: params[:queue_name]
+    ).as_json
+  rescue QueuedJobMaintenance::Refused => e
+    render_api_error("Refused", e.message, status: :unprocessable_entity)
+  end
+
+  # POST /api/v1/health/discard_queued_jobs
+  # Discard queued jobs by class and/or queue. NOT RECOVERABLE.
+  #
+  # Request body:
+  #   - job_class / queue_name: the scope; at least one required
+  #   - expected_count: required; a mismatch refuses and discards nothing
+  #   - reason: optional free text recorded on the discarded rows
+  #
+  # Deliberately not behind HealthActionCooldown, for the reason the recovery mode
+  # pair is exempt plus one of its own — see the note on
+  # Mcp::Tools::ActionHealth::RATE_LIMITED_ACTIONS.
+  def discard_queued_jobs
+    render json: QueuedJobMaintenance.discard!(
+      job_class: params[:job_class],
+      queue_name: params[:queue_name],
+      expected_count: params[:expected_count],
+      reason: params[:reason],
+      actor: "REST API"
+    ).as_json
+  rescue QueuedJobMaintenance::Refused => e
+    render_api_error("Refused", e.message, status: :unprocessable_entity)
+  end
+
+  # POST /api/v1/health/reschedule_queued_jobs
+  # The reversible sibling: move the same scope's `scheduled_at` instead of ending
+  # it. Same scope, cap and `expected_count` rules.
+  #
+  # Request body:
+  #   - job_class / queue_name / expected_count: as above
+  #   - delay_minutes: optional, default 0 (as soon as the queue allows)
+  def reschedule_queued_jobs
+    render json: QueuedJobMaintenance.reschedule!(
+      job_class: params[:job_class],
+      queue_name: params[:queue_name],
+      expected_count: params[:expected_count],
+      scheduled_at: params[:delay_minutes].presence&.to_i&.minutes&.from_now,
+      actor: "REST API"
+    ).as_json
+  rescue QueuedJobMaintenance::Refused => e
+    render_api_error("Refused", e.message, status: :unprocessable_entity)
+  end
+
   # POST /api/v1/health/exit_queue_recovery_mode
   # Resume normal processing. Idempotent, and never gated: the way out of a halt
   # must always be available.
