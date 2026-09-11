@@ -154,6 +154,21 @@ class ClaudeUsageSamplerJob < ApplicationJob
     end
 
     result = QuotaCheckService.check_with_token(token)
+
+    # One repair per refused token, the same one QuotaResetCheckerJob and a page
+    # refresh take: a server-side-invalidated access token is the refusal a
+    # refresh can fix. Bounded by the verdict rather than by the tick — a token
+    # this sweep has already recorded as refused is not refreshed again, so a dead
+    # subscription with a live refresh endpoint costs one single-use token per
+    # token death, not one every 15 minutes (#242). It is also what makes
+    # AccountRotationService#usable_candidate?'s own guard true: a refusal on
+    # record is one whose repair has already been tried.
+    if result.credential_refused? && account.can_refresh_token? && !account.credential_rejected? && account.refresh_token!
+      account.reload
+      token = account.claude_access_token
+      result = QuotaCheckService.check_with_token(token) if token.present?
+    end
+
     # This sweep is the pool's most regular probe — the serving account every
     # tick, each spare as its reading goes stale — so it is also the most regular
     # source of truth about whether a stored token still works. Recording costs

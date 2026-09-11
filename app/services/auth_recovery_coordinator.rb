@@ -400,8 +400,11 @@ class AuthRecoveryCoordinator
     account.record_credential_probe!(probe, probed_token: account.claude_access_token)
   end
 
+  # Only an authentication-class refusal is worth a refresh: a 400 or a 404 is
+  # about the request, and refreshing on one would spend a single-use token per
+  # recovery for as long as the Anthropic-side fault lasts (#242).
   def access_token_refused?(probe)
-    probe.rejected?
+    probe.credential_refused?
   end
 
   def session_scoped_claude?

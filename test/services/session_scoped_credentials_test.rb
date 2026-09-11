@@ -89,7 +89,7 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
     )
     QuotaCheckService.stubs(:check_with_token)
       .with(primary.oauth_config.dig("credentials_json", "claudeAiOauth", "accessToken"))
-      .returns(QuotaCheckService::Result.new(success: false, unreachable: false,
+      .returns(QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
         error_message: "No rate-limit headers in response (HTTP 401)."))
     ClaudeAccount.any_instance.stubs(:refresh_token!).returns(false)
 

@@ -892,6 +892,32 @@ class AccountRotationServiceTest < ActiveSupport::TestCase
     assert_equal :verified, secondary.reload.credential_state
   end
 
+  test "bootstrap promotes a candidate whose probe was answered with something other than a refusal" do
+    # A 400 for a retired probe model, a 404, a header-stripping proxy: an
+    # Anthropic-side or configuration fault, not a verdict on the credential.
+    # Skipping on one skips every candidate at once and the instance cannot spawn.
+    ClaudeAccount.update_all(is_current: false)
+    primary = claude_accounts(:primary)
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 400,
+        error_message: "No rate-limit headers in response (HTTP 400).")
+    )
+    ClaudeAccount.any_instance.expects(:refresh_token!).never
+
+    assert_equal primary, @service.ensure_active_account!
+    assert_equal :unverified, primary.reload.credential_state
+  end
+
+  test "bootstrap skips a candidate that holds no access token at all" do
+    ClaudeAccount.update_all(is_current: false)
+    primary = claude_accounts(:primary)
+    secondary = claude_accounts(:secondary)
+    primary.update!(oauth_config: { "claude_json" => { "oauthAccount" => primary.email } })
+
+    assert_equal secondary, @service.ensure_active_account!,
+      "an identity with no token is nothing a session could be handed"
+  end
+
   test "ensure_active_account! does not refresh a candidate whose token already works" do
     # The probe is non-consuming; a refresh spends a single-use token, and
     # spending one per candidate is what drained the pool in #242.
