@@ -683,9 +683,10 @@ module Mcp
         end
 
         actor = archive_actor_phrase(args)
+        in_flight = Sessions::LiveTurn.in_flight?(session)
         destroyed_turn = false
         archived = guarded_archive(session, args, actor: actor) do
-          destroyed_turn = refuse_archive_over_live_turn(session, args)
+          destroyed_turn = refuse_archive_over_live_turn(session, args, in_flight: in_flight)
         end
         # A concurrent archive won the lock.
         raise ToolError, "Session cannot be trashed from current status: #{session.status}" unless archived
@@ -746,10 +747,15 @@ module Mcp
       # a refusal none of them could reconsider would be a fleet-wide stuck state
       # with no human in the loop to clear it.
       #
+      # +in_flight+ is read by the caller before the archive lock is taken, and
+      # this runs under it: the read is a GoodJob query that swallows its own
+      # errors, and a failed statement inside the lock's transaction would abort
+      # the archive rather than answer the question.
+      #
       # @return [Boolean] true when a live turn is being destroyed anyway because
       #   the caller forced it, so the caller can record and report the loss
-      def refuse_archive_over_live_turn(session, args, batch: false)
-        return false unless Sessions::LiveTurn.in_flight?(session)
+      def refuse_archive_over_live_turn(session, args, in_flight:, batch: false)
+        return false unless in_flight
         return false if archiving_own_session?(session)
         return true if boolean(args["force"])
 
@@ -1433,6 +1439,7 @@ module Mcp
 
         Session.where(id: session_ids).where.not(status: :archived).each do |session|
           actor = "#{archive_actor_phrase(args)} (bulk)"
+          in_flight = Sessions::LiveTurn.in_flight?(session)
           destroyed_turn = false
           begin
             # Same refusals as the single-session action: a queue about to be
@@ -1441,7 +1448,7 @@ module Mcp
             # batch, and `force` applies to the whole batch because the argument
             # is one flag.
             archived = guarded_archive(session, args, batch: true, actor: actor) do
-              destroyed_turn = refuse_archive_over_live_turn(session, args, batch: true)
+              destroyed_turn = refuse_archive_over_live_turn(session, args, in_flight: in_flight, batch: true)
             end
           rescue ToolError => e
             errors << { id: session.id, error: e.message }

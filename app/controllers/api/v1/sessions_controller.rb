@@ -1271,12 +1271,15 @@ class Api::V1::SessionsController < Api::BaseController
   # the same answer the MCP tool gives an unidentified connection: refuse, and
   # let `force` through. See Sessions::LiveTurn.
   #
+  # The live turn is read before the lock and only acted on under it: the read
+  # is a GoodJob query that swallows its own errors, and a failed statement
+  # inside the lock's transaction would abort the archive.
+  #
   # @return [Boolean] whether it archived
   # @raise [Sessions::ArchiveGuard::Refused, LiveTurnRefused]
   def guarded_rest_archive!(session, force:, actor:)
-    live_turn = false
+    live_turn = Sessions::LiveTurn.in_flight?(session)
     archived = Sessions::ArchiveGuard.guarded_archive!(session, force: force, actor: actor) do
-      live_turn = Sessions::LiveTurn.in_flight?(session)
       raise LiveTurnRefused if live_turn && !force
     end
     note_archive_over_live_turn(session, actor) if archived && live_turn

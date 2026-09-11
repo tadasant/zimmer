@@ -2761,8 +2761,9 @@ deliberate override ([lifecycle](/sessions/lifecycle/)) — so the retirement pa
 archive or a system-initiated one, and in both cases someone or something has already decided the
 message is going. The check and the transition run under one `FOR UPDATE` lock on the session row
 (`Sessions::ArchiveGuard.guarded_archive!`), which every enqueue serializes on through its
-foreign-key check, so a message that lands in the same second as the archive is refused rather than
-stranded ([#1139](https://github.com/tadasant/zimmer/issues/1139)). What it does not do is re-route the content: getting it acted on still means a
+foreign-key check, so a message committed before the archive is refused rather than stranded
+([#1139](https://github.com/tadasant/zimmer/issues/1139)). One committed after it is the
+already-archived case below. What it does not do is re-route the content: getting it acted on still means a
 human re-sending it.
 
 **Deleting a session is the uncovered path, and it is worse than archiving one.** `DELETE
