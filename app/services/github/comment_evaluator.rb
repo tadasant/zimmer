@@ -7,7 +7,9 @@ module Github
   # Driven by Github::PrPollPass, which owns the enumeration, the backoff gate and the
   # url parsing. Its two comment endpoints are the pass's only fetch that is NOT served
   # by Github::PrSnapshot — issue comments and review comments are separate resources
-  # from the PR object, so they stay their own calls.
+  # from the PR object, so they stay their own calls. The pass's reading of the PR
+  # object is still handed over, for one thing: a PR it read as merged or closed is not
+  # polled at all (see #pollable).
   #
   # Tracks comments in custom_metadata as github_comments:
   # {
@@ -131,8 +133,14 @@ module Github
 
     # @param session [Session]
     # @param refs [Array<Github::PrRef>] the session's tracked PRs, already resolved
+    # @param snapshots [Hash{String => Github::PrSnapshot, nil}] this pass's reading of
+    #   each PR, keyed by url. A nil value, or a url with no entry at all, is "we could
+    #   not ask about this one" and is polled. Required, like the sibling evaluators'
+    #   third argument: a default would let a caller skip the reading silently, and the
+    #   silent direction here is a PR that keeps being polled forever.
     # @return [void]
-    def evaluate(session, refs)
+    def evaluate(session, refs, snapshots)
+      refs = pollable(refs, snapshots, session)
       return if refs.empty?
 
       current_comments = session.custom_metadata&.dig("github_comments") || {}
@@ -202,6 +210,39 @@ module Github
     end
 
     private
+
+    # The tracked PRs still worth reading a comment thread off, which is every one
+    # this pass did not positively read as merged or closed.
+    #
+    # A merged or closed PR's thread is over: the session has already been told the
+    # PR merged (Github::PrStatusEvaluator), and the two things that arrive on a
+    # thread afterwards are Zimmer's own automation and an agent's own note — which
+    # is the #214 loop, because `gh` in every session authenticates as the human and
+    # the prompt the poller builds asks the agent to reply on GitHub. Session 684 was
+    # handed three such comments on tadasant/tadasant-internal#1751, the first of them
+    # half an hour after that PR merged.
+    #
+    # Only a POSITIVE terminal reading stops the polling, the same rule
+    # GithubPullRequestMergeability#interpret applies at the other end: a PR we could
+    # not read this pass (nil snapshot, or no snapshot handed over at all) is polled,
+    # because the failure that matters here is silent — a human's comment nobody
+    # answers.
+    #
+    # What this does cost is a human comment on a PR after it merges: it no longer
+    # wakes the session. That is deliberate and documented in
+    # docs/src/content/docs/limitations.md; Zimmer's own follow-up surfaces — the web
+    # form, the REST endpoint, MCP `action_session` — reach a live session directly and
+    # do not depend on a PR being open.
+    def pollable(refs, snapshots, session)
+      refs.reject do |ref|
+        status = snapshots[ref.url]&.status
+        next false unless PrSnapshot::TERMINAL_STATUSES.include?(status)
+
+        Rails.logger.info "[Github::CommentEvaluator] Not polling comments on #{ref.url} for session " \
+          "#{session.id}: the PR is #{status}"
+        true
+      end
+    end
 
     # Write the comment blob when it differs from what is already stored.
     #

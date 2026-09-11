@@ -851,6 +851,9 @@ baseline to the cgroup's incarnation rather than trusting it to persist.
 `custom_metadata`, but only some of them wake the session. A comment produces a follow-up prompt
 when all of these hold:
 
+- the PR is not one this pass read as **merged or closed** — a terminal PR's thread is not polled
+  at all, so nothing on it is fetched, recorded or dispatched (see below);
+
 - the author is in `GithubCommentAllowlist::USERS` (`tadasant`, `macoughl`);
 - the body carries no `[CC Says]` marker — that's how the agent's own comments are attributed;
 - **no Zimmer session is on record as having posted it** (see below);
@@ -865,6 +868,23 @@ when all of these hold:
 Every comment carries the outcome in its `dispatch_state` field in `custom_metadata`:
 `dispatched`, `deferred` (too new to attribute; re-examined next poll), or `skipped:<reason>`
 (terminal). A comment that never woke a session says why it didn't.
+
+### A merged or closed PR is not comment-polled
+
+The pass hands `Github::CommentEvaluator` the same `gh pr view` reading the other two evaluators
+get, and a PR it read as `merged` or `closed` is dropped before either comment endpoint is asked.
+The thread is over: the session has already been told the PR merged, and what arrives afterwards is
+Zimmer's own automation or an agent's own note — which is the loop in
+[#214](https://github.com/tadasant/zimmer/issues/214), since every session's `gh` authenticates as
+the human and the prompt asks the agent to reply on GitHub. Session 684 was handed three such
+comments on a PR that had merged half an hour before the first of them.
+
+Only a *positive* terminal reading stops the polling. A PR this pass could not read — a failed or
+timed-out `gh pr view` — is polled as usual, the same way
+`GithubPullRequestMergeability` fails open at the other end of the same question: the failure that
+matters here is silent, a human's comment nobody answers. What it does cost is a human comment
+posted after the merge; see
+[Limitations](/limitations/#a-comment-on-a-merged-or-closed-pr-no-longer-reaches-the-session).
 
 ### How Zimmer knows which comments its own agents posted
 
@@ -883,6 +903,16 @@ endpoint), reads the comment id out of the permalink those commands print
 (`#issuecomment-<id>` / `#discussion_r<id>`), and records an `AgentPostedGithubComment` row. The
 table is keyed by comment, not by session, so one session's post is suppressed for every session
 polling that PR.
+
+A comment posted through a **GitHub MCP server** has no shell command to read, so the tool's own
+name is what says the call posted: a `mcp__<server>__<tool>` call whose tool half is one of
+`MCP_COMMENT_POST_TOOLS` (`add_issue_comment`, `add_comment_to_pending_review`,
+`create_pull_request_review` and the rest of that list) is a post, and its result is read as the
+JSON of the resource it created — `html_url` and nothing else it printed. That is the same tier
+`TranscriptHooks::GithubPrUrlHook` grew for `create_pull_request`
+([#971](https://github.com/tadasant/zimmer/issues/971)), and it closes the route that left an
+agent's comment looking exactly like a human's. Adding a server whose posting tool is named
+something else means adding that name to the list.
 
 Only the output of *posting* commands is scanned. An agent that merely reads a comment
 (`gh api repos/…/issues/comments/<id>`) gets that comment's own `html_url` back, and treating that

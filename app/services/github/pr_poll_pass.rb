@@ -150,7 +150,7 @@ module Github
       if PollBackoff.should_poll?(session, job_key: COMMENT_BACKOFF_KEY, base_interval: COMMENT_INTERVAL_SECONDS)
         stamped_keys << COMMENT_BACKOFF_KEY
         run_evaluator(session, "CommentEvaluator") do
-          CommentEvaluator.new.evaluate(session, refs)
+          CommentEvaluator.new.evaluate(session, refs, snapshots)
         end
       end
 

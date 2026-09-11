@@ -73,6 +73,13 @@ module Github
       @mergeable = mergeable
     end
 
+    # The two #status values a PR never comes back from. Named here because this class
+    # owns the vocabulary, and read by everything that has to ask "is this PR over":
+    # Github::CommentEvaluator, which stops polling its comments, and
+    # GithubPullRequestMergeability, which reads it as a positive reason a queued
+    # conflict notice is moot.
+    TERMINAL_STATUSES = %w[merged closed].freeze
+
     # The PR's lifecycle status in Zimmer's vocabulary — "open", "merged", "closed" — or
     # nil when GitHub answered with a state this does not recognise.
     #

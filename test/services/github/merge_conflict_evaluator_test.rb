@@ -228,6 +228,22 @@ class Github::MergeConflictEvaluatorTest < ActiveSupport::TestCase
     assert_equal "automated_merge_conflict", message.origin
   end
 
+  # A conflict that stays unresolved is reported ONCE, however many polls see it.
+  #
+  # The re-fire half of #214: session 460 was told three times about merge conflicts
+  # on one PR. Dedup lives in the confirmed marker, and nothing but a clean reading
+  # clears it — behaviour that already holds, pinned here over more polls than the
+  # report saw rather than changed.
+  test "a persistent conflict notifies once, not once per poll" do
+    track(PR_URL)
+
+    6.times { evaluate(@session_with_pr, :conflicting) }
+
+    assert_equal 1, @session_with_pr.reload.enqueued_messages.where(origin: "automated_merge_conflict").count,
+      "one unresolved conflict is one notice"
+    assert_equal 1, @session_with_pr.logs.where("content LIKE ?", "%Merge conflict detected%").count
+  end
+
   private
 
   def track(pr_url, status: nil, extra: {})

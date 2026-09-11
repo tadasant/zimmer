@@ -96,7 +96,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
 
     # Create job with mocked API calls
     job = TestEvaluatorWithMockedComments.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -124,7 +124,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     })
 
     job = TestEvaluatorWithMockedComments.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -146,7 +146,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
     job = TestEvaluatorWithWhitelistedComment.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -159,7 +159,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
     job = TestEvaluatorWithNonWhitelistedComment.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -171,7 +171,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
     job = TestEvaluatorWithAgentComment.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -236,7 +236,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
     job = TestEvaluatorWithBlacklistedComment.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -248,7 +248,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     @session_with_pr.update!(custom_metadata: { "github_pull_request_urls" => [ "https://github.com/owner/repo/pull/123" ] })
 
     job = TestEvaluatorWithBlacklistedReviewComment.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -271,7 +271,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     AgentSessionJob.expects(:enqueue_with_prompt).with(session_needs_input.id, "Test prompt for immediate send", images: nil, files: nil).once
 
     job = TestEvaluatorWithWhitelistedComment.new
-    job.evaluate(session_needs_input, Github::PrRef.for_session(session_needs_input))
+    job.evaluate(session_needs_input, Github::PrRef.for_session(session_needs_input), {})
 
     session_needs_input.reload
 
@@ -306,7 +306,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     AgentSessionJob.expects(:enqueue_with_prompt).never
 
     job = TestEvaluatorWithWhitelistedComment.new
-    job.evaluate(session_running, Github::PrRef.for_session(session_running))
+    job.evaluate(session_running, Github::PrRef.for_session(session_running), {})
 
     session_running.reload
 
@@ -333,7 +333,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     AgentSessionJob.expects(:enqueue_with_prompt).never
 
     job = TestEvaluatorWithWhitelistedComment.new
-    job.evaluate(session_waiting, Github::PrRef.for_session(session_waiting))
+    job.evaluate(session_waiting, Github::PrRef.for_session(session_waiting), {})
 
     session_waiting.reload
 
@@ -683,7 +683,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     GithubCommentPromptBuilder.expects(:new).never
 
     job = TestEvaluatorWithOldComment.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -708,7 +708,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
     job = TestEvaluatorWithNewComment.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -729,7 +729,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
     job = TestEvaluatorWithWhitelistedComment.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -787,7 +787,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     GithubCommentPromptBuilder.expects(:new).never
 
     job = TestEvaluatorWithOldReviewComment.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -812,7 +812,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     GithubCommentPromptBuilder.stubs(:new).returns(mock_builder)
 
     job = TestEvaluatorWithNewReviewComment.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -876,7 +876,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     BoundedSubprocess.expects(:run).never
 
     job = TestEvaluatorWithMergeGateComment.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -892,7 +892,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     BoundedSubprocess.expects(:run).never
 
     job = TestEvaluatorWithMergeGateReviewComment.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -911,7 +911,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
       .returns([ "", "HTTP 502", fake_process_status(exitstatus: 1) ])
 
     job = TestEvaluatorWithWhitelistedComment.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -925,7 +925,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     BoundedSubprocess.expects(:run).never
 
     job = TestEvaluatorWithWhitelistedComment.new
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -944,7 +944,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     job = TestEvaluatorWithWhitelistedComment.new
     job.define_singleton_method(:add_eyes_reaction) { |info| reacted_to << info.dig(:data, "id") }
 
-    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr))
+    job.evaluate(@session_with_pr, Github::PrRef.for_session(@session_with_pr), {})
 
     @session_with_pr.reload
 
@@ -1186,7 +1186,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     # No 👀 either: reacting is a promise to reply, and there is nothing to reply to.
     BoundedSubprocess.expects(:run).never
 
-    TestEvaluatorWithAgentPostedComment.new.evaluate(session, Github::PrRef.for_session(session))
+    TestEvaluatorWithAgentPostedComment.new.evaluate(session, Github::PrRef.for_session(session), {})
 
     assert_equal 0, session.reload.enqueued_messages.count
     assert_equal "skipped:agent_posted", stored_pr_comments(session).first["dispatch_state"]
@@ -1197,7 +1197,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     AgentPostedGithubComment.record!(session: sessions(:running), comment_type: "pr", comment_id: 5145406778)
     stub_actionable_builder
 
-    TestEvaluatorWithAgentPostedComment.new.evaluate(session, Github::PrRef.for_session(session))
+    TestEvaluatorWithAgentPostedComment.new.evaluate(session, Github::PrRef.for_session(session), {})
 
     stored = stored_pr_comments(session)
     assert_equal 1, stored.size, "the comment is suppressed, not hidden"
@@ -1209,7 +1209,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     stub_actionable_builder
     BoundedSubprocess.expects(:run).never
 
-    TestEvaluatorWithFreshComment.new.evaluate(session, Github::PrRef.for_session(session))
+    TestEvaluatorWithFreshComment.new.evaluate(session, Github::PrRef.for_session(session), {})
 
     assert_equal 0, session.reload.enqueued_messages.count
     assert_equal "deferred", stored_pr_comments(session).first["dispatch_state"]
@@ -1221,11 +1221,11 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     job = TestEvaluatorWithFreshComment.new
     job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
 
-    job.evaluate(session, Github::PrRef.for_session(session))
+    job.evaluate(session, Github::PrRef.for_session(session), {})
     assert_equal "deferred", stored_pr_comments(session).first["dispatch_state"]
 
     travel (Github::CommentEvaluator::ATTRIBUTION_GRACE_SECONDS + 1).seconds do
-      job.evaluate(session, Github::PrRef.for_session(session))
+      job.evaluate(session, Github::PrRef.for_session(session), {})
     end
 
     assert_equal 1, session.reload.enqueued_messages.count
@@ -1239,14 +1239,14 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     stub_actionable_builder
     job = TestEvaluatorWithFreshComment.new
 
-    job.evaluate(session, Github::PrRef.for_session(session))
+    job.evaluate(session, Github::PrRef.for_session(session), {})
     assert_equal "deferred", stored_pr_comments(session).first["dispatch_state"]
 
     AgentPostedGithubComment.record!(session: sessions(:running), comment_type: "pr", comment_id: 5145406778)
 
     BoundedSubprocess.expects(:run).never
     travel (Github::CommentEvaluator::ATTRIBUTION_GRACE_SECONDS + 1).seconds do
-      job.evaluate(session, Github::PrRef.for_session(session))
+      job.evaluate(session, Github::PrRef.for_session(session), {})
     end
 
     assert_equal 0, session.reload.enqueued_messages.count
@@ -1258,12 +1258,12 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     stub_actionable_builder
     job = TestEvaluatorWithNonWhitelistedComment.new
 
-    job.evaluate(session, Github::PrRef.for_session(session))
+    job.evaluate(session, Github::PrRef.for_session(session), {})
     stored = stored_pr_comments(session)
     assert_equal "skipped:author_not_whitelisted", stored.first["dispatch_state"]
 
     # A second poll must not re-open a decision that was already made.
-    job.evaluate(session, Github::PrRef.for_session(session))
+    job.evaluate(session, Github::PrRef.for_session(session), {})
     assert_equal 1, stored_pr_comments(session).size
     assert_equal "skipped:author_not_whitelisted", stored_pr_comments(session).first["dispatch_state"]
     assert_equal 0, session.reload.enqueued_messages.count
@@ -1273,7 +1273,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     session = trusted_pr_session
     stub_actionable_builder
 
-    TestEvaluatorWithAgentComment.new.evaluate(session, Github::PrRef.for_session(session))
+    TestEvaluatorWithAgentComment.new.evaluate(session, Github::PrRef.for_session(session), {})
 
     assert_equal "skipped:self_marker", stored_pr_comments(session).first["dispatch_state"]
   end
@@ -1284,7 +1284,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     job = TestEvaluatorWithWhitelistedComment.new
     job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
 
-    job.evaluate(session, Github::PrRef.for_session(session))
+    job.evaluate(session, Github::PrRef.for_session(session), {})
 
     assert_equal 1, session.reload.enqueued_messages.count
     assert_equal "dispatched", stored_pr_comments(session).first["dispatch_state"]
@@ -1297,7 +1297,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
 
     job = TestEvaluatorWithWhitelistedComment.new
     job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
-    job.evaluate(session, Github::PrRef.for_session(session))
+    job.evaluate(session, Github::PrRef.for_session(session), {})
 
     assert_equal 1, session.reload.enqueued_messages.count
   end
@@ -1333,7 +1333,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     GithubCommentPromptBuilder.stubs(:new).returns(failing_builder)
 
     job = TestEvaluatorWithUnknownVisibilityComment.new
-    job.evaluate(session, Github::PrRef.for_session(session))
+    job.evaluate(session, Github::PrRef.for_session(session), {})
 
     assert_equal 0, session.reload.enqueued_messages.count
     assert_equal "deferred", stored_pr_comments(session).first["dispatch_state"]
@@ -1341,7 +1341,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     # Once `gh` answers, the same comment goes out rather than having been lost.
     stub_actionable_builder
     job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
-    job.evaluate(session, Github::PrRef.for_session(session))
+    job.evaluate(session, Github::PrRef.for_session(session), {})
 
     assert_equal 1, session.reload.enqueued_messages.count
     assert_equal "dispatched", stored_pr_comments(session).first["dispatch_state"]
@@ -1359,7 +1359,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     job.created_at # stamp the comment's age now, so travelling ages the comment itself
 
     travel (Github::CommentEvaluator::VISIBILITY_RETRY_WINDOW_SECONDS + 60).seconds do
-      job.evaluate(session, Github::PrRef.for_session(session))
+      job.evaluate(session, Github::PrRef.for_session(session), {})
     end
 
     assert_equal "skipped:visibility_unknown", stored_pr_comments(session).first["dispatch_state"]
@@ -1374,7 +1374,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     GithubCommentPromptBuilder.stubs(:new).returns(public_builder)
 
     job = TestEvaluatorWithWhitelistedComment.new
-    job.evaluate(session, Github::PrRef.for_session(session))
+    job.evaluate(session, Github::PrRef.for_session(session), {})
 
     assert_equal "skipped:not_actionable", stored_pr_comments(session).first["dispatch_state"]
   end
@@ -1387,13 +1387,13 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     # Die where the process would: after the pre-dispatch write, inside the handover.
     job.define_singleton_method(:enqueue_follow_up_prompt) { |_s, _i| raise Interrupt }
 
-    assert_raises(Interrupt) { job.evaluate(session, Github::PrRef.for_session(session)) }
+    assert_raises(Interrupt) { job.evaluate(session, Github::PrRef.for_session(session), {}) }
 
     assert_equal "dispatching", stored_pr_comments(session).first["dispatch_state"],
       "the comment must be on record before the handover, so it is not re-dispatched forever"
 
     # A later poll leaves that terminal state alone.
-    TestEvaluatorWithWhitelistedComment.new.evaluate(session, Github::PrRef.for_session(session))
+    TestEvaluatorWithWhitelistedComment.new.evaluate(session, Github::PrRef.for_session(session), {})
     assert_equal "dispatching", stored_pr_comments(session).first["dispatch_state"]
     assert_equal 0, session.reload.enqueued_messages.count
   end
@@ -1595,6 +1595,130 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
 
     assert_empty errors,
       "a hung gh child must be an ordinary failed call, not an error escaping to the per-session rescue"
+  end
+
+
+  # --- A merged or closed PR is not comment-polled (#214) ----------------------
+
+  # Fails loudly if anything asks GitHub for this PR's comments.
+  class TestEvaluatorThatMustNotFetch < Github::CommentEvaluator
+    def fetch_pr_comments(_owner, _repo, _pr_number)
+      raise "fetched comments on a PR that should not have been polled"
+    end
+
+    def fetch_review_comments(_owner, _repo, _pr_number)
+      raise "fetched review comments on a PR that should not have been polled"
+    end
+  end
+
+  test "evaluate does not poll comments on a PR this pass read as merged" do
+    session = trusted_pr_session
+    refs = Github::PrRef.for_session(session)
+
+    assert_nothing_raised do
+      TestEvaluatorThatMustNotFetch.new.evaluate(session, refs, snapshots_for(refs, state: "MERGED", merged_at: "2026-08-28T07:33:35Z"))
+    end
+
+    assert_equal 0, session.reload.enqueued_messages.count
+    assert_nil session.custom_metadata["github_comments"], "nothing was read, so nothing is recorded"
+  end
+
+  test "evaluate does not poll comments on a PR this pass read as closed" do
+    session = trusted_pr_session
+    refs = Github::PrRef.for_session(session)
+
+    assert_nothing_raised do
+      TestEvaluatorThatMustNotFetch.new.evaluate(session, refs, snapshots_for(refs, state: "CLOSED"))
+    end
+
+    assert_equal 0, session.reload.enqueued_messages.count
+  end
+
+  test "evaluate keeps polling a PR whose reading could not be taken" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
+    refs = Github::PrRef.for_session(session)
+
+    # nil is "we could not ask about this one", never "it is gone": a human comment
+    # must not be dropped because one `gh pr view` failed.
+    job.evaluate(session, refs, { refs.first.url => nil })
+
+    assert_equal 1, session.reload.enqueued_messages.count
+    assert_equal "dispatched", stored_pr_comments(session).first["dispatch_state"]
+  end
+
+  test "evaluate polls a PR this pass read as open" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
+    refs = Github::PrRef.for_session(session)
+
+    job.evaluate(session, refs, snapshots_for(refs, state: "OPEN"))
+
+    assert_equal 1, session.reload.enqueued_messages.count
+  end
+
+  test "a human comment dispatched while the PR was open is not re-dispatched after it merges" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
+    refs = Github::PrRef.for_session(session)
+
+    job.evaluate(session, refs, snapshots_for(refs, state: "OPEN"))
+    assert_equal 1, session.reload.enqueued_messages.count
+
+    job.evaluate(session, refs, snapshots_for(refs, state: "MERGED", merged_at: "2026-08-28T07:33:35Z"))
+
+    assert_equal 1, session.reload.enqueued_messages.count, "the stored dispatch_state still stands"
+  end
+
+  # --- Re-fire: a comment is dispatched once, however many polls see it (#214) --
+  #
+  # These two pin behaviour that already holds on `main` — the per-comment
+  # `dispatch_state` from #250, and the atomic metadata merge from #260. No code in
+  # this change produces them; they are here so the re-fire #214 reported cannot come
+  # back unnoticed.
+
+  test "evaluate does not re-dispatch a comment it already handed over" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
+
+    3.times { job.evaluate(session, Github::PrRef.for_session(session), {}) }
+
+    assert_equal 1, session.reload.enqueued_messages.count
+    assert_equal 1, stored_pr_comments(session).size
+    assert_equal "dispatched", stored_pr_comments(session).first["dispatch_state"]
+  end
+
+  test "evaluate does not re-dispatch a comment across a metadata write by another poller" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
+
+    job.evaluate(session, Github::PrRef.for_session(session), {})
+
+    # The other two evaluators in the pass write their own keys on the same column.
+    # Before the merge was atomic (#260) a write like this could carry a stale
+    # `github_comments` back over the one above, and the comment was dispatched again.
+    Session.find(session.id).merge_custom_metadata!("github_pull_request_statuses" => { "https://github.com/tadasant/zimmer/pull/123" => "open" })
+
+    job.evaluate(Session.find(session.id), Github::PrRef.for_session(session), {})
+
+    assert_equal 1, session.reload.enqueued_messages.count
+  end
+
+  # One reading of a PR for each ref, as Github::PrPollPass hands them over.
+  def snapshots_for(refs, state:, merged_at: nil, mergeable: nil)
+    refs.to_h do |ref|
+      [ ref.url, Github::PrSnapshot.new(ref: ref, state: state, merged_at: merged_at, mergeable: mergeable) ]
+    end
   end
 
   # Collects the strings passed to Rails.logger.warn during the block.

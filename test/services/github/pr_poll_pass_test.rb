@@ -73,7 +73,10 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
       .with { |_s, _refs, snapshots| snapshots[PR_URL].equal?(snapshot) }
     Github::MergeConflictEvaluator.any_instance.expects(:evaluate)
       .with { |_s, _refs, snapshots| snapshots[PR_URL].equal?(snapshot) }
+    # The comment evaluator takes the same reading: it is what tells it the thread is
+    # over (#214).
     Github::CommentEvaluator.any_instance.expects(:evaluate)
+      .with { |_s, _refs, snapshots| snapshots[PR_URL].equal?(snapshot) }
 
     Github::PrPollPass.new.run
   end
