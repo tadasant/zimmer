@@ -3564,20 +3564,26 @@ same transaction. Two narrow cases remain, and both are deliberate:
 
 The dedup across fires — the thing the setting is mostly for — is unaffected by either.
 
-### Agent-posted comments are only recognized when a known command posted them
+### Agent-posted comments are only recognized when a known posting route posted them
 
 `TranscriptHooks::GithubCommentAuthorshipHook` is what keeps Zimmer from routing its own agents'
-GitHub comments back to agents, and it works by recognizing the *command* that posted the comment:
-`gh pr comment`, `gh issue comment`, `gh pr review`, and `gh api` writes to a comments endpoint. A
-comment posted any other way — a Python script, an MCP GitHub tool, `curl` — leaves no
-`AgentPostedGithubComment` row, so it still looks exactly like a human comment and can still wake a
-session. The `[CC Says]` marker remains a second line of defence for those, with the weakness that
-put it here: an agent can forget it.
+GitHub comments back to agents, and it works by recognizing the *route* that posted the comment:
+the commands `gh pr comment`, `gh issue comment`, `gh pr review` and `gh api` writes to a comments
+endpoint, plus an MCP tool call whose name ends in one of `MCP_COMMENT_POST_TOOLS`. A comment posted
+any other way — a Python script, a `curl`, an MCP server whose posting tool is named something not
+on that list — leaves no `AgentPostedGithubComment` row, so it still looks exactly like a human
+comment and can still wake a session. The `[CC Says]` marker remains a second line of defence for
+those, with the weakness that put it here: an agent can forget it.
 
 Deliberately narrow rather than scanning every tool result: an agent that merely *reads* a comment
 gets that comment's own `html_url` back, and treating that as a post would silence a human. Covering
-a new posting route means adding its pattern to `DIRECT_POST_PATTERNS`, or teaching
-`gh_api_post?` the shape.
+a new posting route means adding its pattern to `DIRECT_POST_PATTERNS`, its tool name to
+`MCP_COMMENT_POST_TOOLS`, or teaching `gh_api_post?` the shape.
+
+The MCP tier is narrower than the shell ones in what a result may vouch for: only the `html_url` of
+the JSON resource the call created, never a free-text scan. A server that answers in prose, or one
+whose posting tool both posts and lists, records nothing — a lost recording costs one comment its
+suppression, while a wrong one costs a human their reply, permanently and fleet-wide.
 
 The recognition reads what a command segment *runs*, not what it quotes
 ([#870](https://github.com/tadasant/zimmer/issues/870)), so `grep -rn "gh pr comment" docs/` over
@@ -3628,6 +3634,24 @@ outside it by construction.
 
 The same recognition gap sets the cost of the 60-second `ATTRIBUTION_GRACE_SECONDS` hold-down: every
 human comment waits up to a minute longer (on top of the 30-second poll) before it wakes a session.
+
+### A comment on a merged or closed PR no longer reaches the session
+
+`Github::CommentEvaluator` drops a tracked PR the poll pass read as `merged` or `closed` before it
+asks either comment endpoint, so a comment posted after the merge does not wake the session that
+opened the PR — not a human's either. That is the deliberate half of the
+[#214](https://github.com/tadasant/zimmer/issues/214) fix: a terminal PR's thread is where Zimmer's
+own automation and an agent's own notes land, every session's `gh` authenticates as the human, and
+the prompt the poller builds asks the agent to reply on GitHub — so a comment there is much more
+likely to start a self-reply loop than to be a human waiting for an answer.
+
+What a human loses is one route to a session, not the session: the web follow-up form, `POST
+/api/v1/sessions/:id/enqueued_messages` and MCP `action_session` all reach a live session directly
+and do not care whether a PR is open. Nothing announces the drop on GitHub, though — no 👀, no
+reply — so a human commenting on a merged PR and expecting an agent gets silence. The skip is
+logged at `info` naming the PR and the session.
+
+A PR the pass could not *read* is still polled: only a positive terminal reading stops it.
 
 ### A failed repo visibility lookup drops the comment
 

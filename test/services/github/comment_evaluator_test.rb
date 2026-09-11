@@ -1597,6 +1597,125 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
       "a hung gh child must be an ordinary failed call, not an error escaping to the per-session rescue"
   end
 
+
+  # --- A merged or closed PR is not comment-polled (#214) ----------------------
+
+  # Fails loudly if anything asks GitHub for this PR's comments.
+  class TestEvaluatorThatMustNotFetch < Github::CommentEvaluator
+    def fetch_pr_comments(_owner, _repo, _pr_number)
+      raise "fetched comments on a PR that should not have been polled"
+    end
+
+    def fetch_review_comments(_owner, _repo, _pr_number)
+      raise "fetched review comments on a PR that should not have been polled"
+    end
+  end
+
+  test "evaluate does not poll comments on a PR this pass read as merged" do
+    session = trusted_pr_session
+    refs = Github::PrRef.for_session(session)
+
+    assert_nothing_raised do
+      TestEvaluatorThatMustNotFetch.new.evaluate(session, refs, snapshots_for(refs, state: "MERGED", merged_at: "2026-08-28T07:33:35Z"))
+    end
+
+    assert_equal 0, session.reload.enqueued_messages.count
+    assert_nil session.custom_metadata["github_comments"], "nothing was read, so nothing is recorded"
+  end
+
+  test "evaluate does not poll comments on a PR this pass read as closed" do
+    session = trusted_pr_session
+    refs = Github::PrRef.for_session(session)
+
+    assert_nothing_raised do
+      TestEvaluatorThatMustNotFetch.new.evaluate(session, refs, snapshots_for(refs, state: "CLOSED"))
+    end
+
+    assert_equal 0, session.reload.enqueued_messages.count
+  end
+
+  test "evaluate keeps polling a PR whose reading could not be taken" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
+    refs = Github::PrRef.for_session(session)
+
+    # nil is "we could not ask about this one", never "it is gone": a human comment
+    # must not be dropped because one `gh pr view` failed.
+    job.evaluate(session, refs, { refs.first.url => nil })
+
+    assert_equal 1, session.reload.enqueued_messages.count
+    assert_equal "dispatched", stored_pr_comments(session).first["dispatch_state"]
+  end
+
+  test "evaluate polls a PR this pass read as open" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
+    refs = Github::PrRef.for_session(session)
+
+    job.evaluate(session, refs, snapshots_for(refs, state: "OPEN"))
+
+    assert_equal 1, session.reload.enqueued_messages.count
+  end
+
+  test "a human comment dispatched while the PR was open is not re-dispatched after it merges" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
+    refs = Github::PrRef.for_session(session)
+
+    job.evaluate(session, refs, snapshots_for(refs, state: "OPEN"))
+    assert_equal 1, session.reload.enqueued_messages.count
+
+    job.evaluate(session, refs, snapshots_for(refs, state: "MERGED", merged_at: "2026-08-28T07:33:35Z"))
+
+    assert_equal 1, session.reload.enqueued_messages.count, "the stored dispatch_state still stands"
+  end
+
+  # --- Re-fire: a comment is dispatched once, however many polls see it (#214) --
+
+  test "evaluate does not re-dispatch a comment it already handed over" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
+
+    3.times { job.evaluate(session, Github::PrRef.for_session(session)) }
+
+    assert_equal 1, session.reload.enqueued_messages.count
+    assert_equal 1, stored_pr_comments(session).size
+    assert_equal "dispatched", stored_pr_comments(session).first["dispatch_state"]
+  end
+
+  test "evaluate does not re-dispatch a comment across a metadata write by another poller" do
+    session = trusted_pr_session
+    stub_actionable_builder
+    job = TestEvaluatorWithWhitelistedComment.new
+    job.define_singleton_method(:add_eyes_reaction) { |_info| nil }
+
+    job.evaluate(session, Github::PrRef.for_session(session))
+
+    # The other two evaluators in the pass write their own keys on the same column.
+    # Before the merge was atomic (#260) a write like this could carry a stale
+    # `github_comments` back over the one above, and the comment was dispatched again.
+    Session.find(session.id).merge_custom_metadata!("github_pull_request_statuses" => { "https://github.com/tadasant/zimmer/pull/123" => "open" })
+
+    job.evaluate(Session.find(session.id), Github::PrRef.for_session(session))
+
+    assert_equal 1, session.reload.enqueued_messages.count
+  end
+
+  # One reading of a PR for each ref, as Github::PrPollPass hands them over.
+  def snapshots_for(refs, state:, merged_at: nil, mergeable: nil)
+    refs.to_h do |ref|
+      [ ref.url, Github::PrSnapshot.new(ref: ref, state: state, merged_at: merged_at, mergeable: mergeable) ]
+    end
+  end
+
   # Collects the strings passed to Rails.logger.warn during the block.
   def capture_warn_logs(&block)
     capture_logs_at(:warn, &block)
