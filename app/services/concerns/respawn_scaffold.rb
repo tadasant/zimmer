@@ -26,7 +26,7 @@ module RespawnScaffold
   extend ActiveSupport::Concern
 
   # `respawn_and_verify` records the new pid through `with_db_retry`, so the
-  # scaffold owns that dependency rather than leaving each host to remember it.
+  # scaffold declares that dependency for hosts that do not otherwise need it.
   include DatabaseRetry
 
   # Minimum time (seconds) a re-spawned process must stay up before the re-spawn counts
@@ -84,7 +84,7 @@ module RespawnScaffold
   # whether the dead process ever got as far as a conversation. Everything around
   # it — the last abort check before spawning, the pid bookkeeping, the
   # verification, the recursion into the next attempt, and the rescue — is the
-  # same in all four, and was written out four times before.
+  # same in all four.
   #
   # `resume_prompt` is passed separately rather than inferred from the block: it
   # is what `check_session_status` tests a status-summary fork against, and that
@@ -124,9 +124,8 @@ module RespawnScaffold
     # genuine failure with nothing left to recover it, so it logs at .error —
     # which is what surfaces to GlitchTip, with a backtrace.
     #
-    # That decision was written out four times, once per service, in four copies
-    # of the same five-line comment. It lives here now, which is also why the next
-    # such decision cannot be made in three services and forgotten in the fourth.
+    # One copy of that decision, for four services. The next change to it is made
+    # once rather than in three services with the fourth forgotten.
     if retry_attempt >= recovery_attempt_limit
       add_log("Error during #{recovery_label} attempt #{retry_attempt}: #{e.message}", level: "error")
       log_buffer.flush
@@ -144,7 +143,6 @@ module RespawnScaffold
   #
   # The system prompt is rebuilt rather than reused so the re-spawn is told the
   # same things a fresh spawn would be: the session's goal, its root, its clone.
-  # Every host used to carry a byte-identical copy of this call.
   #
   # @param working_directory [String] the cwd to resume in
   # @param prompt [String] the prompt to hand the resumed runtime
@@ -323,19 +321,17 @@ module RespawnScaffold
   # --- Reading the transcript the symptom was found in --------------------------
   #
   # Three of the four services scan the session's transcript for the error that
-  # triggers them, and each carried its own copy of these three helpers.
+  # triggers them, and this is the one reader they share.
   #
-  # WHY THEY LIVE HERE AND NOT ON `TranscriptSource`. What the copies actually
-  # were is a runtime seam BYPASS: `find_transcript_path` re-implemented, line for
-  # line, the body of `TranscriptSource#locate` — directory, `directory?` guard,
-  # `find_main_transcript` — which every runtime source already answers for
-  # itself. So the transcript half moves onto the seam (these now just call
-  # `locate`), and what is left over is not transcript knowledge at all: it is
-  # this module's ERROR POLICY. A recovery service is running because the session
-  # is already in trouble, so a transcript it cannot read must never be what takes
-  # the recovery down — it answers nil, or zero, and the loop carries on. That
-  # policy belongs to respawning, and it is why these are three-line wrappers here
-  # rather than three more methods on `TranscriptSource`.
+  # WHY THEY LIVE HERE AND NOT ON `TranscriptSource`. The transcript half of the
+  # question belongs to the seam and is asked there: `find_transcript_path` calls
+  # `TranscriptSource#locate`, so every runtime answers for its own on-disk
+  # layout and no Claude path is baked in here. What is left over is not
+  # transcript knowledge at all — it is this module's ERROR POLICY. A recovery
+  # service runs because the session is already in trouble, so a transcript it
+  # cannot read must never be what takes the recovery down: it answers nil, or
+  # zero, and the loop carries on. That policy belongs to respawning, which is why
+  # these are three-line wrappers here rather than methods on `TranscriptSource`.
 
   # The session's runtime transcript source, bound to this service's file system
   # adapter so tests drive it without touching disk.
