@@ -36,22 +36,53 @@
 #   503 overloaded_error          503: {"message":"The engine is currently …"}      :retryable
 #   429 rate_limit_exceeded       429: {"message":"Rate limit reached for …"}       :retryable
 #   429 insufficient_quota        429: {"message":"You exceeded your current …"}    :retryable
+#   408 timeout                   408: {"message":"Request timed out.", …}          :retryable
 #   stream closed mid-response    terminated                                        :retryable
 #   connection refused            Connection error.                                 :retryable
+#   non-HTTP bytes, socket close  Connection error.                                 :retryable
 #   401 invalid_api_key           401: {"message":"Incorrect API key provided…"}    :auth_terminal
 #   403 permission_denied         403: {"message":"You are not allowed to …"}       :auth_terminal
+#   402 insufficient credits      402: {"message":"Insufficient credits. …"}        :auth_terminal
 #   400 context_length_exceeded   400: {"message":"This model's maximum context …"} :context_length_terminal
-#   400 invalid_value             400: {"message":"Invalid value for 'temperature'…"} :unclassified
+#   400 invalid_value             400: {"message":"Invalid value for 'temperature'…"} :request_rejected
 #
-# Two things about that table are worth stating, because they are Pi behaviours
-# rather than provider ones. **Pi retries some of these itself** before it gives
-# up: a 5xx, a rate-limit 429 and a transport failure each produced three or
-# four consecutive error records in one run, so an error that reaches Zimmer has
-# already failed repeatedly — which is why Zimmer's own backoff applies on top,
-# exactly as it does for Codex. And **the status prefix is not always followed
-# by a colon**: a JSON error body is recorded as `NNN: {…}` and a non-JSON one
-# (the 502 above) as `NNN <body>`, which is why #http_status matches on the
-# digits and the delimiter rather than on `"NNN: "`.
+# Two things about that table are Pi behaviours rather than provider ones. **Pi
+# retries some of these itself** before it gives up: a 5xx, a rate-limit 429 and
+# a transport failure each produced three or four consecutive error records in
+# one run, so an error that reaches Zimmer has already failed repeatedly — which
+# is why Zimmer's own backoff applies on top, exactly as it does for Codex. And
+# **the status prefix is not always followed by a colon**: a JSON error body is
+# recorded as `NNN: {…}` and a non-JSON one (the 502 above) as `NNN <body>`,
+# which is why #http_status matches on the digits and the delimiter rather than
+# on `"NNN: "`.
+#
+# == Why the status decides, and the body almost never does ==
+#
+# The stub above speaks OpenAI's error dialect. **Production Pi does not**: every
+# model ModelCatalog offers Pi is an `openrouter/*` id, and OpenRouter words its
+# bodies differently — its context-window refusal carries a numeric `"code":400`
+# rather than `"code":"context_length_exceeded"`, and it uses 402 for an
+# exhausted balance. A classifier keyed on one provider's body strings would
+# therefore misroute the provider Zimmer actually ships, and — because
+# PiRetryStrategy#classifies_exits? is true — would turn every unrecognized
+# shape into a page rather than a quiet failure.
+#
+# So #kind is decided by the **HTTP status**, which is Pi's own framing and is
+# provider-independent, and the body is consulted for exactly one refinement: it
+# can name a 400 as a context-window refusal when it happens to say so. A 4xx
+# Zimmer has no more specific name for is `:request_rejected` — *recognized*,
+# terminal, and not news. That is the point of the split: Zimmer read a status,
+# so it understands the shape well enough that failing on it is not an unknown
+# failure mode, even when it cannot name the sub-reason. Only a message with no
+# status Zimmer could read and no transport wording it knows is `:unclassified`,
+# and that one pages.
+#
+# The two transport wordings are the one place a string still decides, and they
+# were narrowed by driving the binary rather than guessed: a refused connection,
+# a non-HTTP response and a socket destroyed before any reply all collapse to
+# the same `Connection error.`, because the SDK normalizes them. A wording not
+# in that list arrives with no status and pages — which is the alert doing its
+# job, and the signal to add it here.
 #
 # == What Pi does NOT recover from ==
 #
@@ -66,14 +97,23 @@
 # spend the retry budget making the conversation longer. `:context_length_terminal`
 # says that: recognized, named, and terminal.
 #
-# **Auth.** PiAuthProvider pools no accounts by design — Pi resolves a provider
-# API key from the session environment per request — so AuthRecoveryService has
-# no credential to rewrite and no account to rotate to. A 401 or 403 is a
-# configuration fact about the key the session was handed, not a transient
-# condition, so `:auth_terminal` fails the session naming the provider's own
-# words instead of rotating into nothing.
+# **Auth, and the balance behind it.** PiAuthProvider pools no accounts by design
+# — Pi resolves a provider API key from the session environment per request — so
+# AuthRecoveryService has no credential to rewrite and no account to rotate to.
+# A 401, a 403 or a 402 is a fact about the key the session was handed and the
+# account paying for it, not a transient condition, so `:auth_terminal` fails the
+# session naming the provider's own words instead of rotating into nothing.
 #
-# Both kinds are `recognized?`, which is what keeps them out of the
+# 402 sits with them rather than with the retryable statuses deliberately: an
+# exhausted balance does not refill on a backoff, so six attempts would spend the
+# budget to reach the same end more slowly. That is also the shape of the gap
+# this leaves — a pooled runtime answers a quota wall by rotating or by parking
+# until QuotaResetCheckerJob wakes it, and Pi has neither a pool to rotate
+# through nor a snapshot to wake on, so it fails. The 429 `insufficient_quota`
+# row is the same gap read from the other side: it IS retried, because 429 does
+# clear on its own, but nothing paces it.
+#
+# All three terminal kinds are `recognized?`, which is what keeps them out of the
 # unclassified-failure alert: they are known failures with a known and
 # deliberate disposition, not unknown ones.
 class PiTurnError
@@ -85,12 +125,23 @@ class PiTurnError
   # (`502 <html>…`), and a transport failure has no status at all.
   HTTP_STATUS_PREFIX = /\A(\d{3})(?=[:\s]|\z)/
 
-  # Pi's whole-message wording for a request that never completed: `terminated`
-  # is the stream closing mid-response, `Connection error.` is a connection that
-  # was never established. Both were produced against the real binary, both are
-  # the network rather than the request, and both are worth another attempt.
-  # Matched against the entire message so a provider error that merely mentions
-  # one of these words cannot be mistaken for one.
+  # Statuses that are a transient failure worth another attempt, beside the
+  # whole 5xx class: 429 (the provider is pacing us) and 408 (the request timed
+  # out). Both are retryable by what the status itself means, in any dialect.
+  RETRYABLE_STATUSES = [ 408, 429 ].freeze
+
+  # Statuses that say the credential or the account behind it cannot serve this
+  # request: unauthenticated, forbidden, and out of credit. Pi pools no accounts,
+  # so none of the three has a recovery — see "What Pi does NOT recover from".
+  AUTH_STATUSES = [ 401, 402, 403 ].freeze
+
+  # Pi's whole-message wording for a request that never got a response.
+  # `terminated` is the stream closing mid-response; `Connection error.` is every
+  # connection-level failure, which the SDK normalizes to one string (a refused
+  # connection, a non-HTTP reply and a socket destroyed before any response all
+  # produced it against the real binary). Matched against the entire message so
+  # a provider error that merely mentions one of these words cannot be mistaken
+  # for one.
   TRANSPORT_FAILURE_MESSAGES = [
     /\Aterminated\z/i,
     /\AConnection error\.?\z/i
@@ -100,8 +151,13 @@ class PiTurnError
   # window, as it appears in the JSON body Pi passes through verbatim. Read as a
   # `"code"` FIELD rather than as a substring: an unrelated failure whose prose
   # happens to name context_length_exceeded (an upstream router reporting on a
-  # sibling request, say) must not be classified by it. Paired with a 400 status,
-  # which is the only status the providers use for it.
+  # sibling request, say) must not be classified by it.
+  #
+  # This is a refinement, never the thing that decides retry-vs-terminal: a 400
+  # is terminal either way (see #kind), and a provider that words it differently
+  # — OpenRouter sends a numeric `"code":400` — lands in `:request_rejected`,
+  # which fails identically and equally quietly. All this buys is the more
+  # precise name in the logs and the docs.
   CONTEXT_LENGTH_BODY_CODE = /"code"\s*:\s*"context_length_exceeded"/
 
   attr_reader :message, :id, :line
@@ -163,29 +219,36 @@ class PiTurnError
     @line = line
   end
 
-  # Which recovery path owns this error.
+  # Which recovery path owns this error, decided by the HTTP status Pi recorded.
   #
-  # Only :retryable names a path that can actually act. The two `_terminal`
-  # kinds are deliberate dead ends — see "What Pi does NOT recover from" above —
-  # and naming them distinctly rather than reusing :context_length / :auth is
-  # what makes the seam fail safe: no service looks for these kinds, so a Pi 401
-  # cannot reach AuthRecoveryService (which has nothing to rewrite) and a Pi
-  # context-length 400 cannot reach ContextLengthRetryService (which has no
-  # compaction to trigger), however the ladder is rearranged later.
+  # Only :retryable names a path that can act. The three terminal kinds are
+  # deliberate dead ends — see "What Pi does NOT recover from" above — and naming
+  # them distinctly rather than reusing :context_length / :auth is what makes the
+  # seam fail safe: no service looks for these kinds, so a Pi 401 cannot reach
+  # AuthRecoveryService (which has nothing to rewrite) and a Pi context-length
+  # 400 cannot reach ContextLengthRetryService (which has no compaction to
+  # trigger), however the ladder is rearranged later.
   #
-  # @return [Symbol] :retryable, :auth_terminal, :context_length_terminal, or :unclassified
+  # @return [Symbol] :retryable, :auth_terminal, :context_length_terminal,
+  #   :request_rejected, or :unclassified
   def kind
-    return :context_length_terminal if context_length_exceeded?
-    return :auth_terminal if [ 401, 403 ].include?(http_status)
-    return :retryable if http_status == 429 || http_status.to_i.between?(500, 599)
-    return :retryable if transport_failure?
+    status = http_status
+    return transport_failure? ? :retryable : :unclassified if status.nil?
 
+    return :retryable if RETRYABLE_STATUSES.include?(status) || status.between?(500, 599)
+    return :auth_terminal if AUTH_STATUSES.include?(status)
+    return :context_length_terminal if status == 400 && message.match?(CONTEXT_LENGTH_BODY_CODE)
+    return :request_rejected if status.between?(400, 499)
+
+    # A 1xx/2xx/3xx on a turn Pi called failed is a shape nothing here predicts.
     :unclassified
   end
 
-  # Whether this error is one Zimmer knows — false only for :unclassified, which
-  # is the one worth an alert. The two terminal kinds are recognized: they end
-  # the session, but they are not news.
+  # Whether Zimmer understands this error well enough that failing on it is not
+  # news. True for everything it could read a status from, and for the transport
+  # wordings it knows — false only for :unclassified, which is the one worth an
+  # alert. The terminal kinds are recognized: they end the session, but they are
+  # not a mystery.
   def recognized?
     kind != :unclassified
   end
@@ -201,16 +264,14 @@ class PiTurnError
   # failure that never got a response.
   #
   # @return [Integer, nil]
+  # Matched against the STRIPPED message: a leading newline would otherwise cost
+  # the status, and a 500 that lost its status would be retried no longer.
   def http_status
-    match = message.match(HTTP_STATUS_PREFIX)
+    match = message.strip.match(HTTP_STATUS_PREFIX)
     match && match[1].to_i
   end
 
   private
-
-  def context_length_exceeded?
-    http_status == 400 && message.match?(CONTEXT_LENGTH_BODY_CODE)
-  end
 
   def transport_failure?
     stripped = message.strip

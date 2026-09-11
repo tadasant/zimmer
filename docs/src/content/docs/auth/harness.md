@@ -65,7 +65,7 @@ session](/operate/secrets-parameter-store/#how-the-key-reaches-a-pi-session).
 
 Two consequences are worth carrying forward. `#pool_exhausted?` is permanently true for Pi, so a Pi
 session's [status summary](/sessions/status-summary/) is always produced by a headless completion
-rather than by forking the session. And **a Pi 401 or 403 is terminal, not recoverable**:
+rather than by forking the session. And **a Pi 401, 402 or 403 is terminal, not recoverable**:
 `PiRetryStrategy#auth_recovery_needed?` is `false` by design, because the recovery on the other side
 of it is "rewrite the active account's credentials and rotate to the next account" and Pi has
 neither. `PiTurnError` classifies such a turn `:auth_terminal`, which fails the session naming the

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # PiRetryStrategy answers ProcessLifecycleManager's recovery questions from the
 # error Pi recorded on the failed turn (PiTurnError). These tests pin down three
@@ -21,7 +22,12 @@ class PiRetryStrategyTest < ActiveSupport::TestCase
       session: @session,
       file_system: @file_system,
       process_manager: MockProcessManager.new,
-      rate_limit_tracker: nil
+      rate_limit_tracker: nil,
+      # The logger ProcessLifecycleManager passes. Its rescue blocks log with
+      # keyword fields, which a plain Rails.logger does not take — so a test that
+      # let the signature's default stand would raise from inside the rescue that
+      # exists to stop exactly that.
+      logger: StructuredLogger.new({ service: "PiRetryStrategyTest" })
     )
   end
 
@@ -48,7 +54,7 @@ class PiRetryStrategyTest < ActiveSupport::TestCase
 
   test "every transient provider failure is an API error worth retrying" do
     %i[server_500 bad_gateway_502 overloaded_503 rate_limit_429 insufficient_quota_429
-       stream_terminated connection_error].each do |fixture|
+       timeout_408 stream_terminated connection_error connection_error_garbage].each do |fixture|
       write_transcript(pi_session_for(fixture, @session.session_id))
 
       assert @strategy.api_error_for_retry?(working_dir: WORKING_DIR),
@@ -85,9 +91,21 @@ class PiRetryStrategyTest < ActiveSupport::TestCase
       "the backstop ignores the marker: a turn a recovery gave up on is still dead"
   end
 
-  test "an unreadable working directory is declined rather than raised" do
+  test "no working directory and no transcript are both declined" do
     assert_not @strategy.api_error_for_retry?(working_dir: nil)
     assert_not @strategy.api_error_for_retry?(working_dir: WORKING_DIR)
+  end
+
+  # The rescue in #unhandled_error / #terminal_api_error is what keeps a
+  # transcript read that blows up from breaking exit handling on an
+  # already-failing session. Exercised, not assumed.
+  test "a transcript read that raises is declined rather than propagated" do
+    write_transcript(pi_session_for(:server_500, @session.session_id))
+    @file_system.stubs(:read).raises(Errno::EIO)
+
+    assert_not @strategy.api_error_for_retry?(working_dir: WORKING_DIR)
+    assert_nil @strategy.terminal_api_error(working_dir: WORKING_DIR)
+    assert_nil @strategy.unclassified_error_text(working_dir: WORKING_DIR)
   end
 
   # === What is declined by design ===
@@ -112,7 +130,7 @@ class PiRetryStrategyTest < ActiveSupport::TestCase
   end
 
   test "an auth failure is declined: PiAuthProvider pools nothing to rotate to" do
-    %i[unauthorized_401 forbidden_403].each do |fixture|
+    %i[unauthorized_401 forbidden_403 insufficient_credits_402].each do |fixture|
       write_transcript(pi_session_for(fixture, @session.session_id))
 
       assert_equal :auth_terminal, PiTurnError.terminal(pi_session_for(fixture, @session.session_id)).kind
@@ -149,11 +167,25 @@ class PiRetryStrategyTest < ActiveSupport::TestCase
   end
 
   test "an unrecognized failure is reported as unrecognized and offered to the alert" do
-    write_transcript(pi_session_for(:bad_request_400, @session.session_id))
+    write_transcript(pi_session_with_unknown_error(@session.session_id))
 
     assert_not @strategy.terminal_api_error(working_dir: WORKING_DIR).recognized?
     assert_includes @strategy.unclassified_error_text(working_dir: WORKING_DIR),
-      "Invalid value for 'temperature'"
+      PiSessionFixtures::UNKNOWN_WORDING
+  end
+
+  # A 4xx Zimmer read a status from is recognized even when it cannot name the
+  # sub-reason, so it fails without paging. Production Pi runs on OpenRouter,
+  # whose context refusal carries no code Zimmer knows — this is the case that
+  # would otherwise be a standing alert.
+  test "a rejection Zimmer cannot name more precisely is still not alert material" do
+    %i[bad_request_400 openrouter_context_400].each do |fixture|
+      write_transcript(pi_session_for(fixture, @session.session_id))
+
+      assert @strategy.terminal_api_error(working_dir: WORKING_DIR).recognized?, fixture.to_s
+      assert_nil @strategy.unclassified_error_text(working_dir: WORKING_DIR), fixture.to_s
+      assert_not @strategy.api_error_for_retry?(working_dir: WORKING_DIR), fixture.to_s
+    end
   end
 
   # Pi appends its own bookkeeping records around messages. A trailing one must
@@ -175,6 +207,12 @@ class PiRetryStrategyTest < ActiveSupport::TestCase
   test "a missing transcript or working directory is nil rather than an error" do
     assert_nil @strategy.terminal_api_error(working_dir: nil)
     assert_nil @strategy.terminal_api_error(working_dir: WORKING_DIR)
+  end
+
+  # The strategy's whole classification rests on the transcript source answering
+  # this; a source that stopped would silently turn every retry back into a failure.
+  test "the Pi transcript source is what makes any of this reachable" do
+    assert PiTranscriptSource.new.records_turn_errors?
   end
 
   # Pi's classifiers now answer from the error Pi itself recorded, so an exit

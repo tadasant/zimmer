@@ -1598,11 +1598,30 @@ failure gets, characterized against the real `pi 0.84.4` binary driven by a loca
 | --- | --- | --- |
 | 500 / 502 / 503 | `500: {…}`, `502 <html>…`, `503: {…}` | backoff retry, up to 6 |
 | 429 rate limit or `insufficient_quota` | `429: {…}` | backoff retry, up to 6 |
+| 408 timeout | `408: {…}` | backoff retry, up to 6 |
 | stream closed mid-response | `terminated` | backoff retry, up to 6 |
-| connection refused | `Connection error.` | backoff retry, up to 6 |
-| 401 / 403 | `401: {…}` / `403: {…}` | fail, naming the provider — no page |
-| 400 `context_length_exceeded` | `400: {…}` | fail, naming the provider — no page |
-| anything else | whatever Pi wrote | fail, and page |
+| connection refused, non-HTTP reply, early socket close | `Connection error.` | backoff retry, up to 6 |
+| 401 / 402 / 403 | `401: {…}` / `402: {…}` / `403: {…}` | fail, naming the provider — no page |
+| any other 4xx, context-window refusals among them | `400: {…}` | fail, naming the provider — no page |
+| no HTTP status, and no transport wording Zimmer knows | whatever Pi wrote | fail, **and page** |
+
+**The status decides, not the error body — and that is a deliberate consequence of which
+provider Pi actually talks to.** The characterization above drove an OpenAI-dialect stub, but
+every Pi model `ModelCatalog` offers is an `openrouter/*` id, and OpenRouter words its bodies
+differently: its context-window refusal carries a numeric `"code":400` rather than
+`"code":"context_length_exceeded"`, and it uses 402 for an exhausted balance. A classifier keyed
+on one provider's strings would misroute the provider Zimmer ships — and, because
+`classifies_exits?` is now `true`, would turn every unmemorized shape into a page. So `PiTurnError`
+classifies on the HTTP status, which is Pi's own framing and provider-independent, and consults the
+body for exactly one refinement: naming a 400 as a context-window refusal when it happens to say
+so. A 4xx Zimmer cannot name more precisely still fails quietly, because Zimmer *read a status* —
+it understands the shape well enough that failing is not an unknown failure mode, even when the
+sub-reason is out of reach.
+
+The cost of that choice, stated plainly: a genuine bad-request bug (a 400 Pi should never have
+sent) fails the session quietly instead of paging. The thing that still pages is a turn error with
+no readable status and no transport wording Zimmer knows — a genuinely novel shape, which is what
+the alert is for.
 
 **Context length is terminal because Pi has no compaction to trigger.** It has no `/compact`
 command, and — unlike Codex — it does not compact on a plain resume either
@@ -1620,10 +1639,13 @@ pool that does not exist. That cell of [#856](https://github.com/tadasant/zimmer
 closed as "terminal by design", not implemented.
 
 **Quota is a gap rather than a decision.** A Pi `insufficient_quota` 429 takes the same bounded
-backoff as a rate limit and then fails, where a Claude or Codex quota wall rotates or parks and is
-woken by `QuotaResetCheckerJob`. There is no Pi account pool to rotate through and no Pi quota
-snapshot to wake on, so a bounded failure is the best available answer — but it is worse than the
-budget pacing the other two runtimes get.
+backoff as a rate limit and then fails, and an OpenRouter 402 (balance exhausted) fails
+immediately, because an exhausted balance does not refill on a backoff. A Claude or Codex quota
+wall instead rotates, or parks and is woken by `QuotaResetCheckerJob`. There is no Pi account pool
+to rotate through and no Pi quota snapshot to wake on, so a bounded failure is the best available
+answer — but it is worse than the budget pacing the other two runtimes get, and it is the one cell
+of [#856](https://github.com/tadasant/zimmer/issues/856) that is genuinely unfinished rather than
+decided.
 
 `classifies_exits?` is now `true` for Pi, so an exit no classifier claims pages instead of only
 logging. That is the point of the classification: the ordinary Pi failures are accounted for, so

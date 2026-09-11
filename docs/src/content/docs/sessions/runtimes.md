@@ -185,10 +185,13 @@ Either way each is worth knowing before you route real work to Pi.
   even when the model call returned 401, 429, 500 or a context-length 400 — it records
   `stopReason: "error"` in the transcript and writes nothing to stderr. `PiTranscriptSource` answers
   `TranscriptSource#records_turn_errors?`, so `ApiErrorRetryService` reads `PiTurnError` through the
-  same `RecordedTurnError` seam Codex uses: a 5xx, a 429, a dropped stream or a refused connection
-  gets the same six-attempt backoff a Claude session gets. A 401/403 and a context-length 400 are
+  same `RecordedTurnError` seam Codex uses: a 5xx, a 429, a 408, a dropped stream or a refused
+  connection gets the same six-attempt backoff a Claude session gets — classified by the HTTP
+  status Pi records rather than by the provider's error body, since production Pi runs on
+  OpenRouter and the characterization ran against an OpenAI-dialect stub. A 401/402/403 and a 4xx
+  rejection (context-window refusals among them) are
   **terminal by design** rather than unimplemented — Pi pools no credentials to rotate to, and it
-  does not compact on a resume the way Codex does, so there is no recovery to route them into. Both
+  does not compact on a resume the way Codex does, so there is no recovery to route them into. They
   fail naming the provider's own wording, without a page. See [Known
   limitations](/limitations/#pi-retries-a-transient-provider-failure-auth-and-context-length-are-terminal).
 - **Status summaries always take the cheap path.** `SessionStatusSummaryGenerator#pool_exhausted?`

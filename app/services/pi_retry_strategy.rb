@@ -56,10 +56,16 @@
 # routes to cannot disagree about which error is live. PiTurnError holds the
 # evidence table; the short version is:
 #
-#   5xx, 429, `terminated`, `Connection error.`  -> api_error_for_retry?  (backoff retry)
-#   401, 403                                     -> terminal, named, no page
-#   400 context_length_exceeded                  -> terminal, named, no page
-#   anything else                                -> unclassified: fail and page
+#   5xx, 429, 408, `terminated`, `Connection error.` -> api_error_for_retry?  (backoff retry)
+#   401, 402, 403                                    -> terminal, named, no page
+#   any other 4xx (context length among them)        -> terminal, named, no page
+#   no status, and no transport wording it knows     -> unclassified: fail and page
+#
+# The status decides, not the body. Production Pi talks to OpenRouter, whose
+# error bodies read nothing like the OpenAI-dialect stub the characterization
+# used, so a classifier keyed on body strings would misroute the provider Zimmer
+# actually ships — and, with #classifies_exits? true, would page on every shape
+# it had not memorized. PiTurnError carries that reasoning in full.
 #
 # The two terminal rows are the honest answer rather than a gap, and they are
 # why #context_length_error? and #auth_recovery_needed? still return false:
@@ -127,7 +133,7 @@ class PiRetryStrategy
 
   # Always false: Pi has no credential pool to recover into.
   #
-  # A 401 or 403 IS detected — PiTurnError classifies it as :auth_terminal — but
+  # A 401, 402 or 403 IS detected — PiTurnError classifies it :auth_terminal — but
   # AuthRecoveryService recovers by rewriting the active account's credentials
   # and rotating to the next account, and PiAuthProvider pools none of either.
   # Answering true would park the session asking a human to re-authenticate a
