@@ -247,9 +247,9 @@
 
       <%# The starvation lane, beside the population it bounds — and rendered
           whether or not anyone is past the ceiling, because "none, and the lane
-          is free" is the answer to "is anything waiting without bound", which
-          nothing used to answer. A held session was invisible precisely because
-          every rung of its ladder was correct (tadasant/zimmer#693). %>
+          is free" is the answer to "is anything waiting without bound". A held
+          session was invisible precisely because every rung of its ladder was
+          correct (tadasant/zimmer#693). %>
       <p class="mt-2 text-sm <%= @spot_starvation.starved_count.positive? || @spot_starvation.off? ? "text-amber-800" : "text-gray-600" %>" id="spot-gate-starvation-decision">
         Spot sessions past the starvation age ceiling:
         <strong id="spot-starved-count"><%= @spot_starvation.starved_count %></strong>.

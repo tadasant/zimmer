@@ -1910,13 +1910,16 @@ of keeping it small:
 - **The admitted turn runs to its end, however long that is.** The ceiling sweep leaves it alone,
   so a starvation-admitted implementation session that runs for six hours holds the lane for six
   hours. Priority preemption can still take its slot, and if it does the session goes back to the
-  paused queue and waits on the ordinary resume decision — the lane does not reach into that queue.
+  paused queue and waits on the ordinary resume decision — the lane does not reach into that queue,
+  and the admission already cleared the session's ladder, so once it is resumed and held again it
+  starts a fresh ceiling from zero.
 - **Only `at_utilization_limit` is overridden.** A session held for `fleet_at_cap` waits without
   bound, because that hold is priority work crowding spot work out and clears on its own; a fleet
   that is permanently full of priority work starves spot work by design.
-- **A ladder written before `spot_hold_since` existed reads its age off its latest `spot_hold_at`**
-  until its next rung carries the older stamp forward, so for one re-check interval after the deploy
-  such a session under-reports its wait by up to an hour.
+- **A ladder that predates `spot_hold_since` starts its clock at its last pre-deploy rung.** The
+  wait before it is not on the record anywhere the gate can trust — `created_at` would let a Restart,
+  which clears the ladder, walk straight into the lane — so a session already days deep at deploy
+  time waits a further full ceiling from that rung, once.
 
 ### The idle-fleet event is sampled, floored and cooled down, and each of the three has an edge
 

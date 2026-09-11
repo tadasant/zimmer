@@ -4311,7 +4311,38 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "[data-spot-starvation-admission]", text: /Admitted by the starvation lane/
     assert_select "[data-spot-starvation-admission]", text: /held it 127 times over 5 days/
+    assert_select "[data-spot-starvation-admission]", text: /It runs to its end/
     assert_select "[data-spot-hold-banner]", false
+
+    session.update!(status: :needs_input)
+    get session_url(session)
+    assert_select "[data-spot-starvation-admission]", text: /That turn has ended/
+  end
+
+  # A fleet-cap hold is never admitted by the lane, and the banner must not say
+  # it will be — a fleet permanently full of priority work is the documented
+  # unbounded case, and those sessions would be told the wrong thing forever.
+  test "the spot hold banner does not promise the lane to a fleet-cap hold, however old" do
+    session = Session.create!(
+      prompt: "Fix the bug", status: :waiting, scheduling_class: SessionGenesis::SPOT,
+      git_root: "https://github.com/test/repo.git"
+    )
+    session.update!(metadata: {
+      SpotSessionHold::HELD_AT => 30.minutes.ago.iso8601,
+      SpotSessionHold::HELD_SINCE => 5.days.ago.iso8601,
+      SpotSessionHold::HELD_REASON => "fleet_at_cap",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: 8 of 8 session slots taken.",
+      SpotSessionHold::HELD_RETRY_AT => 20.minutes.from_now.iso8601,
+      SpotSessionHold::HELD_COUNT => 200,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    })
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "[data-spot-hold-waiting]", text: /200 holds so far/
+    assert_select "[data-spot-hold-waiting]", text: /which the starvation lane does not override/
+    assert_select "[data-spot-hold-waiting]", text: /starvation lane admits it/, count: 0
   end
 
   # One box, two spot records: the banner used to render whichever the HOLD keys

@@ -13,7 +13,7 @@
       </svg>
       <div class="min-w-0">
         <h3 class="text-sm font-medium text-amber-900">Admitted by the starvation lane</h3>
-        <p class="mt-1 text-sm text-amber-800"><%= admission.sentence %></p>
+        <p class="mt-1 text-sm text-amber-800"><%= admission.sentence(running: agent_session.running?) %></p>
       </div>
     </div>
   </div>
