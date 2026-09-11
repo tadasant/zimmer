@@ -2,7 +2,7 @@
     has stalled on a person, and how the queue splits by direction. Backlog counts
     are the WHOLE queue rather than the filtered slice — a filter narrows what you
     are reading, it does not change how much work there is. %>
-<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2 mb-4">
+<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-8 gap-2 mb-4">
   <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
     <div class="text-[11px] uppercase tracking-wide text-gray-500">Queued</div>
     <div class="text-xl font-bold text-gray-900 tabular-nums"><%= number_with_delimiter(counts[:queued]) %></div>
@@ -17,6 +17,14 @@
         is usually this number rather than the one to its left. %>
     <div class="text-[11px] uppercase tracking-wide text-gray-500">Parked on a person</div>
     <div class="text-xl font-bold text-amber-700 tabular-nums"><%= number_with_delimiter(counts[:parked]) %></div>
+  </div>
+  <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
+    <%# The items the fleet started and dropped. It reads as zero on a healthy
+        deployment, because the hourly sweep puts back everything whose session
+        left nothing behind — so anything here is something the sweep looked at
+        and deliberately left, and the rows say which. %>
+    <div class="text-[11px] uppercase tracking-wide text-gray-500">Stranded</div>
+    <div class="text-xl font-bold text-rose-700 tabular-nums"><%= number_with_delimiter(counts[:stranded]) %></div>
   </div>
   <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
     <div class="text-[11px] uppercase tracking-wide text-gray-500">Queued convergent</div>

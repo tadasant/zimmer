@@ -15,6 +15,8 @@ module Issues
   #   parked    a started item whose session has stopped in `needs_input`: a
   #             person is what it is waiting on, usually over an open PR
   #   ended     a started item whose session archived or failed recently
+  #   stranded  a started item whose session ended without the work landing, and
+  #             which WorkBacklog::StaleStartSweep could not put back
   #   loose     an open GitHub issue with no queued or CLAIMED backlog row —
   #             held, unrated, or simply not picked up yet
   #
@@ -104,6 +106,24 @@ module Issues
       @recently_ended_rows ||= started_rows(WorkBacklogItem.ended_since(RECENTLY_ENDED_WINDOW.ago))
     end
 
+    # Started items whose session ended a while ago and whose issue has not been
+    # seen closed — the population this page used to hide.
+    #
+    # It hid it by omission rather than by error: such an issue is open, no live
+    # row claims it, so it rendered in "In GitHub, not on the queue" alongside
+    # everything the gate has never rated. That reads as "not picked up yet",
+    # which is the opposite of true — the fleet started it and dropped it — and
+    # it is exactly the confusion that prompted "what's up with the rest of the
+    # convergent issues, why aren't they getting scheduled?" on 2026-09-11.
+    #
+    # WorkBacklog::StaleStartSweep re-queues the ones whose session left nothing
+    # behind, so a healthy fleet keeps this list short. What stays on it is what
+    # the sweep deliberately did not put back, and `liveness_state` on each row
+    # says which of those it is.
+    def stranded_rows
+      @stranded_rows ||= started_rows(WorkBacklogItem.stranded)
+    end
+
     # Open GitHub issues with no live backlog row, filtered by the repo and
     # direction the filter bar is set to. This is the half of the page that is
     # "what is going on in GitHub" rather than "what is on the queue".
@@ -152,6 +172,7 @@ module Issues
         in_flight: WorkBacklogItem.in_flight.count,
         spot_held: WorkBacklogItem.spot_held.count,
         parked: WorkBacklogItem.parked.count,
+        stranded: WorkBacklogItem.stranded.count,
         github_open: snapshot.issues.count(&:open?)
       }
     end
@@ -245,7 +266,7 @@ module Issues
       @all_queued_rows ||= WorkBacklogItem.queued.in_rank_order.map { |item| build_row(item, nil) }
     end
 
-    # The three started-item lists, newest start first. One shape, so a reader
+    # The four started-item lists, newest start first. One shape, so a reader
     # comparing "running" against "parked" is comparing the same rows.
     def started_rows(scope)
       scope.includes(:started_session).order(started_at: :desc).map { |item| build_row(item, nil) }

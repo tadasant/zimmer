@@ -74,6 +74,44 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
     assert item.removed_at.present?
   end
 
+  test "requeue! puts a started item back at its old precedence and keeps the dead session as history" do
+    item = backlog_item(key: "zimmer#7", precedence: 6990)
+    item.mark_started!(session: sessions(:archived), by: sessions(:running), now: 2.days.ago)
+
+    item.requeue!
+
+    item.reload
+    assert item.queued?
+    assert_equal 6990, item.precedence
+    assert_equal 1, item.requeue_count
+    assert_equal WorkBacklogItem::LIVENESS_REQUEUED, item.liveness_state
+    assert_nil item.started_session_id
+    assert_nil item.started_by_session_id
+    assert_equal [ sessions(:archived).id ], item.payload["requeues"].map { |a| a["session_id"] }
+    assert_equal [ sessions(:archived).id ], item.attempted_session_ids
+  end
+
+  test "stranded is started items whose session ended past the grace, except a closed issue" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    unchecked = backlog_item(key: "zimmer#1")
+    unchecked.mark_started!(session: sessions(:archived), by: nil)
+    closed = backlog_item(key: "zimmer#2")
+    closed.mark_started!(session: sessions(:archived), by: nil)
+    closed.record_liveness!(WorkBacklogItem::LIVENESS_ISSUE_CLOSED)
+    alive = backlog_item(key: "zimmer#3")
+    alive.mark_started!(session: sessions(:running), by: nil)
+
+    assert_equal [ unchecked.id ], WorkBacklogItem.stranded.pluck(:id)
+    assert_empty WorkBacklogItem.stranded(now: 2.days.ago + 1.hour)
+  end
+
+  test "liveness_state is one of the known states" do
+    item = backlog_item(key: "zimmer#8")
+    item.liveness_state = "vibes"
+    assert_not item.valid?
+    assert item.errors[:liveness_state].any?
+  end
+
   test "session prompt is the issue URL plus the ask, and a note beside an issue rides along" do
     item = backlog_item(key: "zimmer#42")
     assert_equal "https://github.com/tadasant/zimmer/issues/42\n\nPlease implement this.", item.session_prompt

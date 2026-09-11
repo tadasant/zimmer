@@ -109,6 +109,19 @@
     <%= render "started_rows", rows: @board.recently_ended_rows,
         empty_message: "No session the backlog started has ended in the last #{pluralize(Issues::Board::RECENTLY_ENDED_WINDOW.in_hours.to_i, 'hour')}." %>
 
+    <%# The section that did not exist while 41 items sat in it. A started row
+        whose session ended without the work landing used to render only in the
+        GitHub list below — as an ordinary un-triaged issue, which is how the pile
+        stayed invisible. WorkBacklogStaleStartSweepJob puts back the ones whose
+        session left nothing behind; what is left here is what it deliberately did
+        not, and each row says which. %>
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">
+      Stranded
+      <span class="font-normal text-gray-500">— <%= number_with_delimiter(@board.counts[:stranded]) %> started, session over more than <%= pluralize(WorkBacklog::StaleStartSweep::GRACE.in_hours.to_i, "hour") %> ago, issue not closed</span>
+    </h2>
+    <%= render "started_rows", rows: @board.stranded_rows, liveness: true,
+        empty_message: "Nothing the backlog started has been dropped." %>
+
     <h2 class="text-sm font-semibold text-gray-900 mb-2">In GitHub, not on the queue</h2>
     <%= render "repo_summaries", summaries: @board.repo_summaries %>
     <%= render "github", rows: @board.loose_page_rows, snapshot: @snapshot, total: @board.loose_total,

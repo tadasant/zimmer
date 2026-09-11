@@ -329,6 +329,19 @@ module CronSchedule
       description: "Resume a session asleep in waiting on a wake-up that can never fire",
       environments: %i[production staging]
     },
+    # Hourly, off the top of the hour so it does not land with the other hourly
+    # entries. The population it re-checks is measured in days, so the cadence
+    # bounds how long a dropped item waits rather than anything sharper.
+    #
+    # Not in development: it spends GitHub search budget against the deployment's
+    # own repos, and a developer's database is full of `started` rows left over
+    # from testing whose issues it would go and look up.
+    work_backlog_stale_start_sweep: {
+      cron: "25 * * * *",
+      class: "WorkBacklogStaleStartSweepJob",
+      description: "Re-check started work-backlog rows whose session ended, and re-queue the ones it left with nothing to show",
+      environments: %i[production staging]
+    },
     burn_rate_recompute: {
       cron: "*/20 * * * *", # Every 20 minutes — the ledger only lands every 10, so this is not the bound
       class: "BurnRateRecomputeJob",

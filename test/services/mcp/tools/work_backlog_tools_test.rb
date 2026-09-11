@@ -92,6 +92,25 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
     assert_equal 1, counts[:parked]
   end
 
+  # The population nothing used to name: started, session over, issue not seen
+  # closed. Listable as well as counted, so an agent asking "why is this issue
+  # neither held nor queued" gets the rows, with the sweep's verdict on each.
+  test "read counts and lists stranded items with their liveness fields" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    dropped = backlog_item(key: "zimmer#5")
+    dropped.mark_started!(session: sessions(:archived), by: nil)
+    dropped.record_liveness!(WorkBacklogItem::LIVENESS_ISSUE_HAS_OPEN_PR)
+    running = backlog_item(key: "zimmer#6")
+    running.mark_started!(session: sessions(:running), by: nil)
+
+    output = @read.call("status" => "stranded")
+
+    assert_equal 1, output.dig(:counts, :stranded)
+    assert_equal [ "zimmer#5" ], output[:items].map { |i| i[:key] }
+    assert_equal WorkBacklogItem::LIVENESS_ISSUE_HAS_OPEN_PR, output[:items].first[:liveness_state]
+    assert_equal 0, output[:items].first[:requeue_count]
+  end
+
   # The whole point of the count: a groomer reading `in_flight` alone cannot tell
   # a fleet busy to its ceiling from one idle behind a quota window, and reported
   # the second as the first for two days (#1103). `spot_held` is a SUBSET of

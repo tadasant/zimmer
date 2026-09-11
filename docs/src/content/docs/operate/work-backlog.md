@@ -33,10 +33,11 @@ not mirror issue state, and a reader re-checks the issue before acting on it.
 | `estimated_cost` | `small` / `medium` / `large` — **the ranking input**, rated by the gate |
 | `gate_verdict`, `decided_at`, `added_at`, `added_by`, `added_via` | The gate's decision and when and how the row arrived |
 | `precedence`, `pinned` | Where it sits, and whether a human put it there |
-| `status` | `queued` → `started` or `removed` |
+| `status` | `queued` → `started` or `removed`, and `started` → `queued` again when the stale-start sweep re-queues it |
 | `writing_session_id` | The session that appended it — stamped from the MCP connection, self-declared on REST |
 | `started_session_id`, `started_by_session_id`, `started_at` | The session it became, the session that pulled it, and when |
 | `removed_at`, `removed_by`, `removal_reason` | For a removed item, who and why |
+| `liveness_state`, `liveness_checked_at`, `requeue_count` | What the stale-start sweep last concluded about a started item, when, and how many times it has been put back |
 | `payload` | `ratings`, `prompt`, `notes`, `gate_session`, and whatever the gate adds next |
 
 **A row is never deleted.** The file dropped an item when it was pulled, so the history of what got
@@ -221,6 +222,53 @@ keeps pulling while `parked` climbs. The rule for a groomer is therefore a secon
 than a second number: when `parked` keeps growing, the useful action is to get those PRs merged,
 not to pull more. See [Limitations](/limitations/).
 
+## When a started item goes nowhere
+
+A pull marks an item `started` and spawns a session. If that session archives or fails without the
+work landing, the row used to stay `started` for good: `Ranking` reads only `queued` rows, the pull
+reaches only `queued` rows, and nothing else looked. On 2026-09-11, 41 of 159 open convergent
+issues across the gated repos were in that state, one of them for 37 days. The Issues view showed
+each as an open issue with no live row, which reads as "not rated yet" rather than "dropped".
+
+`WorkBacklogStaleStartSweepJob` (hourly, `WorkBacklog::StaleStartSweep`) re-checks every started
+row whose session ended more than six hours ago, oldest-checked first, and records what it found in
+`liveness_state`:
+
+| Found | `liveness_state` | Done |
+| --- | --- | --- |
+| The issue is closed | `issue_closed` | Nothing. The row is finished and is never examined again |
+| The session merged a PR, but the issue is still open | `pr_merged` | Left alone |
+| The session left a PR that has not resolved | `session_pr_open` | Left alone |
+| GitHub links a PR to the issue (`linked:pr`) | `issue_has_open_pr` | Left alone |
+| The issue is open and none of the above | `requeued` | Put back on the queue at its old precedence |
+| The same key is already queued again | `already_queued` | Left alone |
+| Re-queued three times already | `requeue_exhausted` | Left alone, and `#eng-alerts` is paged |
+| GitHub could not be read for this issue | `unknown` | Nothing; re-examined next pass |
+
+**It re-queues only when the session left nothing behind**, because the two mistakes do not cost
+the same. Leaving a row alone in error strands it again, but visibly. Re-queuing in error spends a
+session redoing finished work and opens a second PR. The session's own PR record is checked as well
+as GitHub's links, because a PR with no closing keyword is invisible to `linked:pr`. And the pull
+still re-checks every candidate on GitHub before starting it, so an item re-queued wrongly is
+removed as `issue_closed` or `issue_has_open_pr` at pull time rather than started.
+
+**A re-queued item keeps its precedence.** It was pulled from the top of its band, so that is where
+it goes back. Recomputing a slot would put it at the bottom of the band, where it would never be
+reached. The dead session moves into `payload.requeues`, so the history of attempts survives.
+
+What the sweep did not put back is the `stranded` population: `get_work_backlog` counts it and lists
+it with `status: "stranded"`, and the Issues view has a **Stranded** section with each row's
+verdict. Those two are where a human reads the count. Every pass also logs how many rows it examined
+and re-queued, the outcomes, and the age of the oldest stranded row: at WARN when it re-queued
+something, at INFO otherwise. Production exports WARN and above only
+([#584](https://github.com/tadasant/zimmer/issues/584)), so a repair is findable in the log store
+and a quiet pass is not.
+
+Two edges it does not cover. An issue in a repo outside the Issues view's six, or closed more than
+180 days ago, is not in the GitHub read the sweep uses, so its row stays `unknown`. And a closed
+issue that is later reopened does not bring its `issue_closed` row back; it shows up as an open
+issue with no live row in the Issues view instead.
+
 ## The import
 
 The existing file is imported by a [one-time post-deploy
@@ -243,8 +291,8 @@ chart of open-issue counts over time. Promote does not post to `start_now`: it g
 browser-only controller that calls the same `WorkBacklog::Start`, deliberately away from the
 API-key surface every agent session holds.
 
-## What is not here yet
+## The frozen file
 
-The gate and groomer skills in the companion repo still write the JSON file until they are cut
-over to these tools, and nothing here requires them to change: the table and the file coexist, and
-the table was seeded from the file.
+The gate and groomer skills in the companion repo were cut over to these tools on 2026-09-03.
+`WORK_BACKLOG.json` is kept there as the snapshot this table was seeded from, and is written only by
+the gate's fallback when `append_work_backlog_item` errors.
