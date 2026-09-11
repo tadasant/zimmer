@@ -23,7 +23,7 @@ require "open3"
 #
 #   2. **Docker image pruning** — Images the inner daemon pulled or built for dev stacks
 #      (`postgres:16`, `redis:7-alpine`, the `Dockerfile.dev` app image) outlive the stacks that
-#      used them. Prunes images unused for 24+ hours. Zimmer's own ~9 GB deploy images live
+#      used them. Prunes images unused for 24+ hours. Zimmer's own ~8.8 GB deploy images live
 #      in the host daemon, which this job cannot see; Kamal's `retain_containers` in
 #      config/deploy.yml is what bounds those.
 #
@@ -91,10 +91,10 @@ class DockerCleanupJob < ApplicationJob
   # Uses `docker ps` to find containers matching the naming convention, then extracts
   # unique project names from the container labels.
   #
-  # A `docker ps` that fails is reported at WARN with its exit status and stderr, and only
-  # then treated as "nothing to reap". Without that line a daemon that is down, a socket
-  # this uid cannot open, or an inner dockerd that never came up is indistinguishable in the
-  # logs from a clean run — which is how #409 went unnoticed on a deployed Zimmer.
+  # A `docker ps` that fails is reported at WARN with its exit status and stderr before it
+  # is treated as "nothing to reap". That line is what separates a daemon that is down, a
+  # socket this uid cannot open, or an inner dockerd that never came up from a clean run
+  # with no stale stacks — `[]` alone reads identically in the logs (#409).
   def find_stale_dev_server_projects
     # List all running containers with their compose project and creation time
     stdout, stderr, status = run_command(
@@ -103,8 +103,7 @@ class DockerCleanupJob < ApplicationJob
       "--format", '{{.Label "com.docker.compose.project"}}\t{{.CreatedAt}}'
     )
     unless SubprocessStatus.success?(status)
-      Rails.logger.warn "[DockerCleanupJob] Stale dev-server discovery failed; `docker ps` " \
-        "(#{SubprocessStatus.describe_failure(status, stderr.to_s.truncate(200))}). Skipping dev-server cleanup this run."
+      log_command_failure("Stale dev-server discovery (`docker ps`)", status, stderr)
       return []
     end
 
@@ -138,7 +137,7 @@ class DockerCleanupJob < ApplicationJob
     if SubprocessStatus.success?(status)
       Rails.logger.info "[DockerCleanupJob] Stopped stale dev-server: #{project_name}"
     else
-      Rails.logger.warn "[DockerCleanupJob] Failed to stop #{project_name}: #{stderr.to_s.truncate(200)}"
+      log_command_failure("Failed to stop #{project_name}", status, stderr)
     end
   end
 
@@ -152,7 +151,7 @@ class DockerCleanupJob < ApplicationJob
       reclaimed = extract_reclaimed(stdout)
       Rails.logger.info "[DockerCleanupJob] Container prune: #{reclaimed}" if reclaimed.present?
     else
-      Rails.logger.warn "[DockerCleanupJob] Container prune failed: #{stderr.to_s.truncate(200)}"
+      log_command_failure("Container prune", status, stderr)
     end
   end
 
@@ -165,7 +164,7 @@ class DockerCleanupJob < ApplicationJob
       reclaimed = extract_reclaimed(stdout)
       Rails.logger.info "[DockerCleanupJob] Image prune: #{reclaimed}" if reclaimed.present?
     else
-      Rails.logger.warn "[DockerCleanupJob] Image prune failed: #{stderr.to_s.truncate(200)}"
+      log_command_failure("Image prune", status, stderr)
     end
   end
 
@@ -175,7 +174,7 @@ class DockerCleanupJob < ApplicationJob
       reclaimed = extract_reclaimed(stdout)
       Rails.logger.info "[DockerCleanupJob] Volume prune: #{reclaimed}" if reclaimed.present?
     else
-      Rails.logger.warn "[DockerCleanupJob] Volume prune failed: #{stderr.to_s.truncate(200)}"
+      log_command_failure("Volume prune", status, stderr)
     end
   end
 
@@ -190,7 +189,7 @@ class DockerCleanupJob < ApplicationJob
       reclaimed = extract_reclaimed(stdout)
       Rails.logger.warn "[DockerCleanupJob] Emergency image prune: #{reclaimed}" if reclaimed.present?
     else
-      Rails.logger.warn "[DockerCleanupJob] Emergency image prune failed: #{stderr.to_s.truncate(200)}"
+      log_command_failure("Emergency image prune", status, stderr)
     end
 
     # Prune build cache
@@ -199,7 +198,7 @@ class DockerCleanupJob < ApplicationJob
       reclaimed = extract_reclaimed(stdout)
       Rails.logger.warn "[DockerCleanupJob] Emergency builder prune: #{reclaimed}" if reclaimed.present?
     else
-      Rails.logger.warn "[DockerCleanupJob] Emergency builder prune failed: #{stderr.to_s.truncate(200)}"
+      log_command_failure("Emergency builder prune", status, stderr)
     end
   end
 
@@ -234,6 +233,14 @@ class DockerCleanupJob < ApplicationJob
   rescue StandardError => e
     Rails.logger.error "[DockerCleanupJob] Command failed: #{args.join(' ')} — #{e.message}"
     [ "", e.message, FailedStatus.new(false) ]
+  end
+
+  # Every failed `docker` command reports why through SubprocessStatus, so an empty stderr
+  # still yields a readable line: a non-zero exit names its code, a child reaped before its
+  # waiter says the exit code was never read, and a command that never ran says so.
+  def log_command_failure(what, status, stderr)
+    Rails.logger.warn "[DockerCleanupJob] #{what} failed: " \
+      "#{SubprocessStatus.describe_failure(status, stderr.to_s.truncate(200))}"
   end
 
   def extract_reclaimed(output)
