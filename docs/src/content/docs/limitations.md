@@ -4419,9 +4419,10 @@ Three bounds worth knowing:
   [#518](https://github.com/tadasant/zimmer/issues/518) — but the *first* reply in a thread that had
   gone quiet can sit for up to `ceil((n - 10) / 10)` polls before Zimmer sees it, which is about 17
   minutes on a channel tracking 172 threads. Once it is seen the thread joins the always-checked
-  band, so the rest of the conversation answers at the ordinary one-minute cadence. Migrating Slack
-  ingestion to Events API webhooks ([#141](https://github.com/tadasant/zimmer/issues/141),
-  [#217](https://github.com/tadasant/zimmer/issues/217)) would remove the wait entirely.
+  band, so the rest of the conversation answers at the ordinary one-minute cadence. With
+  [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery) switched on, an
+  @mention in such a thread fires as soon as Slack delivers it; passive listening still waits on the
+  rotation, because the webhook does not serve it.
 - **The budget bounds threads per poll, not Slack calls.** `SlackService.get_thread_replies`
   paginates at 100 until the thread is drained, so a thread carrying more than a page of unfetched
   replies costs more than one call. At the ordinary cadence a thread accrues far under a page between
@@ -4460,16 +4461,39 @@ is a `bot_mention` condition at least as wide as the passive ones; nothing enfor
 logs one `info` line naming the message and the condition that declined it, which is the only signal
 you get.
 
-### Everything is polled; there are no webhooks
+### GitHub is polled, and the Slack webhook has no public way in
 
 GitHub PR status and comments are polled every 30 seconds per open PR. A 30-second latency floor and
-a steady API burn.
+a steady API burn. The `github_label` and `github_issue` trigger conditions are polled too, once a
+minute, against GitHub's search API. There is no GitHub webhook ingress.
 
-The `github_label` and `github_issue` trigger conditions are polled too, once a minute, against
-GitHub's search API. Webhooks would remove the latency floor, but they need a public ingress that
-Zimmer's tailnet posture does not currently offer.
+Slack has one. `POST /webhooks/slack` takes Slack Events API deliveries and fires Slack triggers from
+them a second or two after the message is posted, instead of at the next poll — see
+[Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery). It is off by default, and
+switching it on in production does nothing yet: Slack has to reach the endpoint from the public
+internet, and Zimmer's tailnet posture offers no public ingress. Until something does — a scoped
+public route, a tunnel, or a relay into the tailnet — the endpoint works only where the app is
+publicly reachable, or locally with a signed request.
 
-Tracked in [#79](https://github.com/tadasant/zimmer/issues/79).
+What the webhook does not cover yet:
+
+- **The poller keeps running.** `webhook_with_poll_fallback` is the only webhook mode, so switching
+  it on buys latency and a path that does not wait behind a stuck poll, and retires none of the
+  Slack API calls the poller makes. The mode with no poller behind it arrives with the change that
+  deletes `SlackTriggerPollerJob` and its watermarks, which is the decision recorded on
+  [#141](https://github.com/tadasant/zimmer/issues/141).
+- **Passive listening stays on the poller in every mode.** Whether a reply continues a conversation
+  Zimmer is part of depends on `participating_threads` and `bot_activity_timestamps`, which only the
+  poller learns.
+- **A burst the webhook coalesces reaches the session in pieces.** The first message spawns the
+  session; the rest arrive as queued messages, which the session reads after its first turn rather
+  than in its first prompt.
+- **There is no screen for it.** Whether deliveries are arriving, and which path fired each message,
+  is in the `webhook_deliveries` and `trigger_event_claims` tables, which nothing in the UI or the
+  API reads yet.
+
+Tracked in [#79](https://github.com/tadasant/zimmer/issues/79); the design is
+[#217](https://github.com/tadasant/zimmer/issues/217).
 
 ### A `github_issue` trigger can fire itself
 

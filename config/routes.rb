@@ -150,6 +150,12 @@ Rails.application.routes.draw do
   match "mcp", to: "mcp#handle", via: [ :post, :get, :delete ], as: :mcp
 
   # API routes
+  # Inbound provider webhooks (#217). Outside /api because they authenticate with the
+  # provider's signature over the raw body, not Zimmer's API key — see Webhooks::BaseController.
+  namespace :webhooks do
+    post "slack", to: "slack#create", as: :slack
+  end
+
   namespace :api do
     get "secrets/keys", to: "secrets#keys"
 
