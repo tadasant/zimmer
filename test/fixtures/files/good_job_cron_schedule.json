@@ -228,7 +228,7 @@
     "system_health_monitor": {
       "cron": "*/2 * * * *",
       "class": "SystemHealthMonitorJob",
-      "description": "Alert when the GoodJob queue backlog is critical (sustained across checks)"
+      "description": "Alert when the GoodJob queue backlog is critical, or a cron key has stopped producing jobs (sustained across checks)"
     },
     "egress_health_check": {
       "cron": "* * * * *",
@@ -475,7 +475,7 @@
     "system_health_monitor": {
       "cron": "*/2 * * * *",
       "class": "SystemHealthMonitorJob",
-      "description": "Alert when the GoodJob queue backlog is critical (sustained across checks)"
+      "description": "Alert when the GoodJob queue backlog is critical, or a cron key has stopped producing jobs (sustained across checks)"
     },
     "egress_health_check": {
       "cron": "* * * * *",
@@ -617,7 +617,7 @@
     "system_health_monitor": {
       "cron": "*/2 * * * *",
       "class": "SystemHealthMonitorJob",
-      "description": "Alert when the GoodJob queue backlog is critical (sustained across checks)"
+      "description": "Alert when the GoodJob queue backlog is critical, or a cron key has stopped producing jobs (sustained across checks)"
     }
   }
 }

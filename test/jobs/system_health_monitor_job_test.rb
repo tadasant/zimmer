@@ -453,6 +453,113 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
   end
 
 
+  # --- cron freshness (tadasant/zimmer#619) --------------------------------------
+  #
+  # The test environment schedules no cron, so these hand the job a schedule and a
+  # live cron-running worker, and drive the reading with real `good_jobs` rows.
+
+  def schedule(*keys)
+    entries = keys.map { |key| GoodJob::CronEntry.new(key: key, cron: "*/5 * * * *", class: "PlaceholderJob") }
+    GoodJob::CronEntry.stubs(:all).returns(entries)
+    GoodJob::Process.insert_all([
+      { id: SecureRandom.uuid, state: { cron_enabled: true }, created_at: 1.day.ago, updated_at: Time.current }
+    ])
+  end
+
+  # A key whose last job finished two hours ago and that cron has produced nothing for since.
+  def stop_enqueuing(key)
+    at = 2.hours.ago
+    GoodJob::Job.insert_all([ { queue_name: "default", job_class: "PlaceholderJob", cron_key: key, cron_at: at,
+                                created_at: at, updated_at: at, scheduled_at: at, finished_at: at + 1 } ])
+  end
+
+  # A singleton whose one copy has been running for two hours: every tick since refused.
+  def hang(key)
+    at = 2.hours.ago
+    GoodJob::Job.insert_all([ { queue_name: "default", job_class: "PlaceholderJob", cron_key: key, cron_at: at,
+                                created_at: at, updated_at: at, scheduled_at: at, performed_at: at,
+                                locked_by_id: SecureRandom.uuid, locked_at: at } ])
+  end
+
+  def cron_pages
+    pages = []
+    ErrorReporter.stubs(:report_message).with do |title, opts|
+      pages << opts[:context][:stale_keys] if title == "Cron schedule stale"
+      true
+    end
+    yield
+    pages
+  ensure
+    ErrorReporter.unstub(:report_message)
+  end
+
+  test "a stale cron key pages on the second consecutive check, under its own title" do
+    Rails.cache.delete(SystemHealthMonitorJob::CRON_STREAK_CACHE_KEY)
+    schedule(:docker_cleanup, :zombie_reaper)
+    hang("docker_cleanup")
+    GoodJob::Job.insert_all([ { queue_name: "default", job_class: "PlaceholderJob", cron_key: "zombie_reaper",
+                                cron_at: 1.minute.ago, created_at: 1.minute.ago, updated_at: 1.minute.ago,
+                                scheduled_at: 1.minute.ago, finished_at: 1.minute.ago } ])
+
+    first = cron_pages { SystemHealthMonitorJob.perform_now }
+    assert_empty first, "one reading is not yet a confirmed finding"
+    assert_equal 1, Rails.cache.read(SystemHealthMonitorJob::CRON_STREAK_CACHE_KEY)
+
+    Rails.logger.expects(:error).with(regexp_matches(/Cron schedule stale: docker_cleanup stopped producing jobs/)).once
+    second = cron_pages { SystemHealthMonitorJob.perform_now }
+    assert_equal [ [ "docker_cleanup" ] ], second, "only the stale key is named, not the fresh one"
+  end
+
+  test "a fresh check resets the cron streak, and the backlog streak is untouched by it" do
+    Rails.cache.delete(SystemHealthMonitorJob::CRON_STREAK_CACHE_KEY)
+    schedule(:sweep)
+    stop_enqueuing("sweep")
+    make_queue_critical
+
+    cron_pages { SystemHealthMonitorJob.perform_now }
+    assert_equal 1, Rails.cache.read(SystemHealthMonitorJob::CRON_STREAK_CACHE_KEY)
+    assert_equal 1, Rails.cache.read(SystemHealthMonitorJob::STREAK_CACHE_KEY)
+
+    GoodJob::Job.where(cron_key: "sweep").update_all(cron_at: 1.minute.ago)
+    cron_pages { SystemHealthMonitorJob.perform_now }
+
+    assert_nil Rails.cache.read(SystemHealthMonitorJob::CRON_STREAK_CACHE_KEY)
+    assert_equal 2, Rails.cache.read(SystemHealthMonitorJob::STREAK_CACHE_KEY),
+                 "the backlog kept its own confirmation"
+  end
+
+  test "while the backlog page is firing, a key held by a running copy is left to it; an unenqueued one is not" do
+    Rails.cache.delete(SystemHealthMonitorJob::CRON_STREAK_CACHE_KEY)
+    schedule(:held, :silent)
+    hang("held")
+    stop_enqueuing("silent")
+    make_queue_critical
+
+    pages = cron_pages { 2.times { SystemHealthMonitorJob.perform_now } }
+
+    assert_equal [ [ "silent" ] ], pages
+  end
+
+  test "a key only behind because its copy is waiting for a worker never pages" do
+    Rails.cache.delete(SystemHealthMonitorJob::CRON_STREAK_CACHE_KEY)
+    schedule(:queued)
+    at = 3.hours.ago
+    GoodJob::Job.insert_all([ { queue_name: "maintenance", job_class: "PlaceholderJob", cron_key: "queued",
+                                cron_at: at, created_at: at, updated_at: at, scheduled_at: at } ])
+
+    pages = cron_pages { 3.times { SystemHealthMonitorJob.perform_now } }
+
+    assert_empty pages
+    assert_nil Rails.cache.read(SystemHealthMonitorJob::CRON_STREAK_CACHE_KEY)
+  end
+
+  test "a cron freshness check that cannot read fails the job rather than reading as nothing stale" do
+    schedule(:sweep)
+    GoodJob::CronEntry.stubs(:last_jobs_by_key).raises(ActiveRecord::StatementInvalid, "boom")
+
+    assert_raises(ActiveRecord::StatementInvalid) { SystemHealthMonitorJob.perform_now }
+  end
+
   # How many statements the block sends against `good_jobs`.
   def count_good_job_reads
     reads = 0

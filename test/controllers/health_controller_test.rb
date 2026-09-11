@@ -110,6 +110,35 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert_select "h3", text: "Maintenance Actions"
   end
 
+  # UI/MCP parity for cron freshness: `get_system_health` names the keys that stopped
+  # producing jobs and why, and this card is where /health says the same.
+  test "dashboard lists a stale cron key with its reason" do
+    GoodJob::CronEntry.stubs(:all).returns([
+      GoodJob::CronEntry.new(key: :docker_cleanup, cron: "0 */6 * * *", class: "DockerCleanupJob"),
+      GoodJob::CronEntry.new(key: :zombie_reaper, cron: "*/5 * * * *", class: "ZombieReaperJob")
+    ])
+    GoodJob::Process.insert_all([
+      { id: SecureRandom.uuid, state: { cron_enabled: true }, created_at: 2.days.ago, updated_at: Time.current }
+    ])
+    hung = 9.hours.ago
+    GoodJob::Job.insert_all([
+      { queue_name: "maintenance", job_class: "DockerCleanupJob", cron_key: "docker_cleanup", cron_at: hung,
+        created_at: hung, updated_at: hung, scheduled_at: hung, performed_at: hung,
+        locked_by_id: SecureRandom.uuid, locked_at: hung, finished_at: nil },
+      { queue_name: "default", job_class: "ZombieReaperJob", cron_key: "zombie_reaper", cron_at: 1.minute.ago,
+        created_at: 1.minute.ago, updated_at: 1.minute.ago, scheduled_at: 1.minute.ago, performed_at: 1.minute.ago,
+        locked_by_id: nil, locked_at: nil, finished_at: 1.minute.ago }
+    ])
+
+    get health_dashboard_url
+    assert_response :success
+
+    assert_select "h3", text: "Cron Freshness"
+    assert_match "Cron schedule stale: 1 key(s) stopped producing jobs (docker_cleanup)", response.body
+    assert_match(/Held by a run on maintenance that started 9h 0m ago and has not finished/, response.body)
+    assert_select "summary", text: /Every key \(2\)/
+  end
+
   test "dashboard displays overall status" do
     get health_dashboard_url
     assert_response :success
