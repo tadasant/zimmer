@@ -291,7 +291,11 @@ module Mcp
 
         allowed = context.allowed_agent_roots
         root = declared_agent_root(session)
-        return session if root && allowed.include?(root)
+        # Compared as canonical tokens, not as raw strings: an agent root has
+        # three legal spellings (ArtifactIdentity), and a fence that matched on
+        # one of them would refuse a session it should admit — while
+        # #enforce_allowed_root! on the same connection admitted the spawn.
+        return session if allowed_root?(root)
 
         raise ToolError, "The \"#{action}\" action is not allowed on session #{session.id}: this connection is " \
                          "restricted to agent roots [#{allowed.join(', ')}], and that session belongs to agent " \

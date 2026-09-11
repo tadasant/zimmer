@@ -204,7 +204,8 @@ module Mcp
 
         allowed = context.allowed_agent_roots
         watched_root = watched_session.agent_root_key
-        return if watched_root.present? && allowed.include?(watched_root)
+        # Canonical tokens on both sides — see Mcp::Tool#allowed_root?.
+        return if allowed_root?(watched_root)
 
         raise ToolError, "ALLOWED_AGENT_ROOTS is set — watched session #{watched_session.id} belongs to agent root " \
                          "\"#{watched_root.presence || '(unknown)'}\", which is not in the allowed list [#{allowed.join(', ')}]. " \

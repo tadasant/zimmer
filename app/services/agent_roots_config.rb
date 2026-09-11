@@ -112,9 +112,9 @@ class AgentRootsConfig
     # Accepts a canonical token, a fully-qualified `@scope/id`, or a bare short
     # id that exactly one catalog contributes. See ArtifactIdentity.find.
     #
-    # The bare-short-id path is what keeps ROUTER_ROOT_NAMES and every
-    # `metadata["agent_root_key"]` written before qualification was preserved
-    # resolving to the root they have always meant.
+    # ROUTER_ROOT_NAMES and every `metadata["agent_root_key"]` written before
+    # qualification was preserved resolve on the FIRST of those: on a catalog
+    # where one scope contributes the id, the canonical token IS the bare id.
     def find(name)
       ArtifactIdentity.find(all, name)
     end

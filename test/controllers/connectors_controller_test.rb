@@ -84,6 +84,28 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
       ConnectorsHelper::SEVERITY_RANKS.fetch(:needs_authorization).to_s
   end
 
+  # A server whose short id a second composed catalog also contributes is
+  # addressed by its fully-qualified `@owner/repo/<id>` (ArtifactIdentity), and
+  # that contains slashes — which the `resources … param: :name` member route
+  # could not hold, so the row for the very server the qualification exists to
+  # disambiguate 404'd. The show route is a glob for that reason, and the
+  # collection route above it must still win.
+  test "a connector whose name is a qualified AIR id is reachable" do
+    qualified = "@acme/catalog/notion"
+    AirCatalogService.stubs(:entries_for).with(:mcp).returns(
+      CATALOG.merge(qualified => CATALOG.fetch("notion"))
+    )
+
+    assert_equal "/connectors/#{qualified}", connector_path(qualified)
+
+    get connector_path(qualified)
+    assert_response :success
+    assert_select "[data-connector=?]", qualified
+
+    get secret_store_connectors_path
+    assert_response :success
+  end
+
   test "every state the probe can report has a rank, so nothing sorts by accident" do
     # A state with no rank falls back to "ready", which quietly buries a problem
     # row among the healthy ones. The probe is free to add a state; this is what
