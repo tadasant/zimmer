@@ -83,7 +83,12 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     # session that pulled it, and the session it became.
     [ "work_backlog_items", "started_by_session_id", :nullify ],
     [ "work_backlog_items", "started_session_id", :nullify ],
-    [ "work_backlog_items", "writing_session_id", :nullify ]
+    [ "work_backlog_items", "writing_session_id", :nullify ],
+    # Cascade, and the database is the only sweep: a workflow run records what one
+    # session was started with and bound to, so it is meaningless without it, and
+    # WorkflowRun is read-only once written, so an association-driven destroy
+    # could not remove it anyway.
+    [ "workflow_runs", "session_id", :cascade ]
   ].freeze
 
   test "row-level delete of a session with notifications does not raise a foreign key violation" do

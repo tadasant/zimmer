@@ -45,6 +45,11 @@ Rails.application.routes.draw do
     # and a Delete button here would only 500. A record goes away with its
     # session or not at all.
     resources :human_messages, only: [ :index, :show ]
+    # Read-only, with no destroy, for the same reason: a WorkflowRun refuses every
+    # write once recorded, and its `resolved` identifiers are only worth trusting
+    # if nothing but the workflow's #plan wrote them. A run goes away with its
+    # session.
+    resources :workflow_runs, only: [ :index, :show ]
     resources :logs
     # Read-only, like the gate ledger above: rows are append-only facts about
     # what Zimmer wrote to the Parameter Store, and an editable audit log is not

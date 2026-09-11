@@ -869,7 +869,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_180100) do
     t.integer "missed_fire_count", default: 0, null: false
     t.string "name", null: false
     t.integer "precedence"
-    t.text "prompt_template", null: false
+    t.text "prompt_template"
     t.boolean "resuscitate_archived", default: false, null: false
     t.boolean "reuse_session", default: false, null: false
     t.string "scheduling_class"
@@ -879,8 +879,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_180100) do
     t.jsonb "unresolved_catalog_references", default: {}, null: false
     t.datetime "updated_at", null: false
     t.datetime "wake_held_at"
+    t.string "workflow_id"
     t.index ["last_session_id"], name: "index_triggers_on_last_session_id"
     t.index ["status"], name: "index_triggers_on_status"
+    t.check_constraint "num_nonnulls(prompt_template, workflow_id) = 1", name: "triggers_prompt_template_xor_workflow_id"
+    t.check_constraint "workflow_id IS NULL OR reuse_session = false", name: "triggers_workflow_trigger_never_reuses_session"
   end
 
   create_table "users", force: :cascade do |t|
@@ -945,6 +948,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_180100) do
     t.index ["status", "precedence", "added_at", "id"], name: "index_work_backlog_items_rank", order: { precedence: :desc }
     t.index ["surface"], name: "index_work_backlog_items_on_surface"
     t.index ["writing_session_id"], name: "index_work_backlog_items_on_writing_session_id"
+  end
+
+  create_table "workflow_runs", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.jsonb "input", default: {}, null: false
+    t.jsonb "resolved", default: {}, null: false
+    t.bigint "session_id", null: false
+    t.bigint "trigger_id"
+    t.datetime "updated_at", null: false
+    t.string "workflow_id", null: false
+    t.index ["session_id"], name: "index_workflow_runs_on_session_id", unique: true
+    t.index ["trigger_id"], name: "index_workflow_runs_on_trigger_id"
+    t.index ["workflow_id"], name: "index_workflow_runs_on_workflow_id"
   end
 
   create_table "x_oauth_credentials", force: :cascade do |t|
@@ -1016,6 +1032,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_180100) do
   add_foreign_key "work_backlog_items", "sessions", column: "started_by_session_id", on_delete: :nullify
   add_foreign_key "work_backlog_items", "sessions", column: "started_session_id", on_delete: :nullify
   add_foreign_key "work_backlog_items", "sessions", column: "writing_session_id", on_delete: :nullify
+  add_foreign_key "workflow_runs", "sessions", on_delete: :cascade
+  add_foreign_key "workflow_runs", "triggers", on_delete: :nullify
 
   # Functions and triggers, which the Ruby schema format has no DSL for. Dumped
   # as the SQL Postgres reports — see
