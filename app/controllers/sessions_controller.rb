@@ -399,7 +399,13 @@ class SessionsController < ApplicationController
       agent_root = AgentRootsConfig.find(params[:agent_root_name])
       @session.branch = agent_root&.default_branch || "main" if @session.branch.blank?
       @session.subdirectory = agent_root&.subdirectory if @session.subdirectory.blank? && agent_root&.subdirectory.present?
-      @session.metadata = (@session.metadata || {}).merge("agent_root_key" => params[:agent_root_name])
+      # The resolved root's name where the form named a root the catalog knows,
+      # so what is stored is the canonical token rather than whichever of its
+      # spellings was posted (zimmer#208). Falls back to the posted value when
+      # the catalog cannot resolve it, which is what the existing-row heal and
+      # the "not in catalog" rendering are for.
+      root_key = agent_root&.name || params[:agent_root_name]
+      @session.metadata = (@session.metadata || {}).merge("agent_root_key" => root_key)
     elsif @session.git_root.present?
       # Fallback to URL-based lookup if agent_root_name is not provided (backward compatibility)
       agent_root = AgentRootsConfig.all.find { |ar| ar.url == @session.git_root }

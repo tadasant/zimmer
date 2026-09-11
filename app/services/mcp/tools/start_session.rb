@@ -360,7 +360,8 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         session.catalog_skills = root.default_skills || [] unless explicit_list?(args, "skills")
         session.catalog_plugins = root.default_plugins || [] unless explicit_list?(args, "plugins")
         session.catalog_hooks = root.default_hooks || [] unless explicit_list?(args, "hooks")
-        session.metadata = (session.metadata || {}).merge("agent_root_key" => agent_root_name)
+        # `root.name`, not the caller's spelling — see Session.create_from_agent_root!.
+        session.metadata = (session.metadata || {}).merge("agent_root_key" => root.name)
 
         return if session.config&.dig("model").present?
 

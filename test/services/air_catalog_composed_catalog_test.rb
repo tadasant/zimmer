@@ -158,6 +158,67 @@ class AirCatalogComposedCatalogTest < ActiveSupport::TestCase
     assert_includes message, "slack"
   end
 
+  # A repeated id, or one artifact written two ways, is ONE artifact named twice.
+  # Nothing dedupes on the way in — not the REST PATCH, not `start_session` —
+  # so a validator comparing raw strings would start rejecting saves that work
+  # today, on a single-scope catalog.
+  test "naming one artifact twice, or in two spellings, is not a collision" do
+    repeated = Session.new(
+      prompt: "x", git_root: "https://github.com/tadasant/zimmer.git", branch: "main",
+      mcp_servers: [ "solo-server", "solo-server" ]
+    )
+    assert repeated.valid?, repeated.errors.full_messages.join("; ")
+
+    spellings = Session.new(
+      prompt: "x", git_root: "https://github.com/tadasant/zimmer.git", branch: "main",
+      mcp_servers: [ "slack", "@local/slack" ]
+    )
+    assert spellings.valid?, spellings.errors.full_messages.join("; ")
+  end
+
+  # Accepting three spellings on input is not the same as storing three. What is
+  # persisted has to be the canonical token, because everything downstream keys
+  # on the stored string verbatim — the OAuth credential key, the picker's chip,
+  # the runtime's `.mcp.json`.
+  test "a selection written in any spelling is stored as the canonical token" do
+    session = create_session!(
+      mcp_servers: [ "@local/slack", "@local/solo-server" ],
+      catalog_skills: [ "@local/solo-skill", "@acme/catalog/shared-skill" ]
+    )
+
+    assert_equal [ "slack", "solo-server" ], session.mcp_servers
+    # The qualified form is ALREADY the canonical token for the losing side of a
+    # collision, so it is stored verbatim — there is nothing shorter to reduce
+    # it to.
+    assert_equal [ "solo-skill", "@acme/catalog/shared-skill" ], session.catalog_skills
+  end
+
+  test "a name the catalog cannot resolve is left exactly as written" do
+    session = Session.new(
+      prompt: "x", git_root: "https://github.com/tadasant/zimmer.git", branch: "main",
+      mcp_servers: [ "renamed-away" ]
+    )
+    session.valid?
+
+    assert_equal [ "renamed-away" ], session.mcp_servers
+  end
+
+  # The `_changed?` guard: a row that already holds a pair the validator would
+  # now reject still saves when something else on it changes.
+  test "a pre-existing collision does not block an edit to another column" do
+    session = create_session!(mcp_servers: [ "slack" ])
+    session.update_column(:mcp_servers, [ "slack", "@acme/catalog/slack" ])
+
+    assert session.reload.update(title: "renamed"), session.errors.full_messages.join("; ")
+    assert_equal [ "slack", "@acme/catalog/slack" ], session.reload.mcp_servers
+  end
+
+  test "an agent root named by its qualified id is stored by its canonical token" do
+    session = Session.create_from_agent_root!(agent_root_name: "@local/solo-root", prompt: "qualified")
+
+    assert_equal "solo-root", session.metadata["agent_root_key"]
+  end
+
   test "two artifacts with different short ids from two catalogs are not a collision" do
     session = Session.new(
       prompt: "x", git_root: "https://github.com/tadasant/zimmer.git", branch: "main",

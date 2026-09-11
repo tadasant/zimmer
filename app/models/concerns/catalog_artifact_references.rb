@@ -21,8 +21,9 @@
 # which registers `<attr>_must_be_array`, `<attr>_must_exist_in_catalog` and
 # `<attr>_short_ids_must_not_collide` (the last two scoped to `<attr>_changed?`,
 # so an untouched stale value on an existing row never blocks an unrelated save),
-# and defines `heal_stale_<attr>!` and the `resolvable_<attr>` reader a fire
-# spawns from.
+# a `before_validation` that collapses every name the catalog resolves to its
+# canonical token, and `heal_stale_<attr>!` plus the `resolvable_<attr>` reader
+# a fire spawns from.
 #
 # The heal is generated for every declaration, but only Trigger calls it — from
 # `#create_session!`, via `#heal_catalog_references!`. A Session's skill list is
@@ -111,13 +112,20 @@ module CatalogArtifactReferences
       define_method(:"#{attribute}_must_be_array") { catalog_reference_must_be_array(reference) }
       define_method(:"#{attribute}_must_exist_in_catalog") { catalog_reference_must_exist_in_catalog(reference) }
       define_method(:"#{attribute}_short_ids_must_not_collide") { catalog_reference_short_ids_must_not_collide(reference) }
+      define_method(:"#{attribute}_to_canonical_tokens") { catalog_reference_to_canonical_tokens(reference) }
       define_method(reference.heal_method) { heal_stale_catalog_reference!(reference) }
       private :"#{attribute}_must_be_array", :"#{attribute}_must_exist_in_catalog",
-              :"#{attribute}_short_ids_must_not_collide", reference.heal_method
+              :"#{attribute}_short_ids_must_not_collide", :"#{attribute}_to_canonical_tokens",
+              reference.heal_method
 
       # PUBLIC, unlike the three above: this is what a fire hands to a session,
       # and it is deliberately not the column. See #catalog_reference_resolvable.
       define_method(reference.resolvable_method) { catalog_reference_resolvable(reference) }
+
+      # BEFORE the validators, because what they judge is the normalized list.
+      # Scoped to the change for the same reason they are: a row written before
+      # this existed is not rewritten by an edit that does not touch it.
+      before_validation :"#{attribute}_to_canonical_tokens", if: :"#{attribute}_changed?"
 
       validate :"#{attribute}_must_be_array"
       # Scoped to the change so that a row persisted before an artifact vanished
@@ -179,6 +187,44 @@ module CatalogArtifactReferences
     errors.add(reference.attribute, "contains invalid #{reference.noun}(s): #{invalid.join(', ')}")
   end
 
+  # Rewrite every entry the catalog resolves to that artifact's CANONICAL TOKEN
+  # — the one identifier Zimmer stores, keys credentials on, and renders.
+  #
+  # An artifact has three legal spellings since zimmer#208 (the canonical token,
+  # the fully-qualified `@scope/id`, and a bare short id exactly one catalog
+  # contributes — see ArtifactIdentity), and every surface that writes one of
+  # these columns can now be handed any of them: the web form, `PATCH
+  # /api/v1/sessions/:id/mcp_servers`, `start_session`, `action_session`.
+  #
+  # Accepting a spelling is not the same as storing it. A row holding
+  # `@local/linear` on today's single-scope catalog would validate and would
+  # still break three things downstream, because each keys on the stored string
+  # verbatim: `McpOauthCredential.compute_credential_key` would look for
+  # `@local/linear|<hash>` and never find the credential saved under
+  # `linear|<hash>`; the picker's chip would render "not in catalog"; and the
+  # runtime's `.mcp.json` would get `@local/linear` as a server key.
+  #
+  # So the alternate spellings are an INPUT convenience, and this is the one
+  # place they are collapsed.
+  #
+  # A name the catalog cannot resolve is left exactly as written — the zimmer#853
+  # rule, which is what keeps a rename remappable — and nothing is rewritten at
+  # all while the catalog is empty, because every name looks unresolvable then.
+  def catalog_reference_to_canonical_tokens(reference)
+    values = public_send(reference.attribute)
+    return unless values.is_a?(Array)
+
+    config = reference.config
+    return if config.all.empty?
+
+    canonical = values.map do |entry|
+      entry.is_a?(String) ? (config.find(entry)&.canonical_token || entry) : entry
+    end
+    return if canonical == values
+
+    public_send(:"#{reference.attribute}=", canonical)
+  end
+
   # Two artifacts from different catalogs that share a short id cannot both be
   # activated for one session.
   #
@@ -208,15 +254,20 @@ module CatalogArtifactReferences
     return if values.size < 2
 
     config = reference.config
-    resolved = values.select { |entry| config.exists?(entry) }
-    colliding = resolved.group_by { |entry| ArtifactIdentity.short_id(entry) }
+    # DISTINCT artifacts, not distinct strings. A repeated id, or one id written
+    # two ways, is one artifact named twice — which `air prepare` is perfectly
+    # happy with, and which every programmatic writer can produce, since nothing
+    # dedupes on the way in. Only two different artifacts are the problem.
+    tokens = values.filter_map { |entry| config.find(entry)&.canonical_token }.uniq
+    colliding = tokens.group_by { |token| ArtifactIdentity.short_id(token) }
       .select { |_short, group| group.size > 1 }
     return if colliding.empty?
 
     detail = colliding.map { |short, group| "#{group.join(' and ')} both provide '#{short}'" }.join("; ")
     errors.add(
       reference.attribute,
-      "names two #{reference.noun}s with the same short id, which cannot be prepared together "       "(#{detail}). Pick one."
+      "names two #{reference.noun}s with the same short id, which cannot be prepared " \
+        "together (#{detail}). Pick one."
     )
   end
 

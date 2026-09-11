@@ -40,7 +40,7 @@ class NoWholeColumnMetadataWritersTest < ActiveSupport::TestCase
     # Creation paths: the row does not exist yet, so there is no other writer to
     # race with and no row to merge into.
     "models/session.rb" => [
-      "metadata: metadata.merge(\"agent_root_key\" => agent_root_name)",
+      "metadata: metadata.merge(\"agent_root_key\" => agent_root.name)",
       "custom_metadata: custom_metadata,",
       # after_create, inside the create transaction — the row is not yet visible
       # to any other connection.
@@ -56,13 +56,13 @@ class NoWholeColumnMetadataWritersTest < ActiveSupport::TestCase
     ],
     # Attribute assembly before Session.new / create — same reason as above.
     "controllers/sessions_controller.rb" => [
-      "@session.metadata = (@session.metadata || {}).merge(\"agent_root_key\" => params[:agent_root_name])"
+      "@session.metadata = (@session.metadata || {}).merge(\"agent_root_key\" => root_key)"
     ],
     "controllers/api/v1/sessions_controller.rb" => [
-      "@session.metadata = (@session.metadata || {}).merge(\"agent_root_key\" => agent_root_name)"
+      "@session.metadata = (@session.metadata || {}).merge(\"agent_root_key\" => agent_root.name)"
     ],
     "services/mcp/tools/start_session.rb" => [
-      "session.metadata = (session.metadata || {}).merge(\"agent_root_key\" => agent_root_name)"
+      "session.metadata = (session.metadata || {}).merge(\"agent_root_key\" => root.name)"
     ],
     # Not a session column at all: a TokenUsage row's own `metadata`, rendered.
     "controllers/api/v1/costs_controller.rb" => [ "metadata: record.metadata" ],

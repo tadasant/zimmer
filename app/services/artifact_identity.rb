@@ -200,9 +200,19 @@ module ArtifactIdentity
       entries.each_with_object({}) do |(key, entry), out|
         next unless entry.is_a?(Hash)
 
+        token = tokens[key]
+        # A key with no usable short id, and a token a previous key already
+        # took, both mean the input was not a well-formed AIR tree — a bare key
+        # sitting alongside the qualified form of the same artifact, say. Keying
+        # the second one under its own key keeps BOTH entries: last-write-wins
+        # would silently drop one, which is the failure mode this whole change
+        # exists to remove.
+        next if token.blank?
+        token = key if out.key?(token)
+
         stamped = qualified?(key) ? entry.merge(QUALIFIED_ID_KEY => key) : entry
         stamped = stamped.merge(CONTESTED_KEY => true) if contested.include?(short_id(key))
-        out[tokens[key]] = stamped
+        out[token] = stamped
       end
     end
 
@@ -308,6 +318,11 @@ module ArtifactIdentity
       return exact if exact
       return list.find { |entry| entry.qualified_name == ref } if qualified?(ref)
 
+      # Unreachable against a consistently canonicalized list — an entry whose
+      # short id matches a token that matched nothing must carry a qualified
+      # token, which means its short id is contested, which means there are at
+      # least two of them. Kept for the list that is NOT canonicalized: a
+      # CatalogSnapshot from a different code version, or a stubbed tree.
       candidates = list.select { |entry| entry.short_id == ref }
       candidates.size == 1 ? candidates.first : nil
     end

@@ -95,11 +95,14 @@ module Sessions
 
       # The ids a caller could legally have sent, for an error message that is
       # actionable on its own (a rename like `pr` → `open-pr` is then obvious).
-      # The three catalog artifacts key on `id`; a Server keys on `name`.
+      #
+      # The CANONICAL TOKEN, uniformly — not `Skill#id`, which is AIR's bare
+      # short id and is therefore not unique across a composed catalog. Listing
+      # two contested skills would otherwise print the same short id twice and
+      # never show the qualified form the caller actually has to send. See
+      # ArtifactIdentity.
       def valid_ids(attribute)
-        spec_for(attribute)[:config].constantize.all.map { |entry|
-          entry.respond_to?(:id) ? entry.id : entry.name
-        }.sort
+        spec_for(attribute)[:config].constantize.all.map(&:canonical_token).sort
       end
 
       def spec_for(attribute)
