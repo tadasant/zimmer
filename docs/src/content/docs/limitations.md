@@ -1094,15 +1094,21 @@ restart. What is still true:
 
 - **No scopes.** Any valid key can do anything to anything. That is the single circle of trust, not
   an oversight, but it means a leaked key is a full-API credential until someone revokes it.
-- **The agents share one key.** Every session's Zimmer MCP servers carry the deployment's
-  self-session key, the first `API_KEYS` entry. The log can say "the fleet's key did this" and not
-  which session did it. Revoking that key disconnects every session from Zimmer at once, and
-  replacing it for good means changing the deploy secret it comes from.
+- **The agents share one key, and can reach all of `API_KEYS`.** Every session's Zimmer MCP servers
+  carry the deployment's self-session key, the first `API_KEYS` entry, so the log can say "the
+  fleet's key did this" and not which session did it. Revoking that key disconnects every session
+  from Zimmer at once, and replacing it for good means changing the deploy secret it comes from.
+  `CliSpawnEnv` does not clear `API_KEYS` either, so every session's environment holds every entry:
+  revoking one does not fence it off from agents, and may break a session-side script that reads
+  it. Only a minted key is out of an agent's reach.
 - **Revoking is not rotating.** A revoked `API_KEYS` entry stays in the variable until a deploy
   removes it, and nothing issues its replacement. A minted key has no expiry.
 - **The logs are the audit trail, and INFO is not shipped.** A successful request's line goes to the
   container's stdout. Only the WARN lines ship to obs: a revoked or retired key being tried, and a
   key being minted, revoked or restored.
+- **Rolling code back past #46 undoes revocation.** The previous code reads `API_KEYS` alone: every
+  revoked entry authenticates again and every minted key stops working. Keep that in mind before
+  moving anything that matters onto a minted key.
 - **An `API_KEYS` entry is stored as an unsalted SHA-256.** A minted key has 256 random bits, so its
   digest gives nothing away. An `API_KEYS` entry is only as strong as whoever chose it: a short one
   can be brute-forced from a database dump.
@@ -4318,11 +4324,11 @@ those buttons.
 cooldown are independent gates and a caller passes both or nothing runs, so the 503 above lands on an
 authenticated operator exactly as it lands on an API key. No credential buys a way past a dead Redis.
 
-Two things per-caller bucketing does *not* give you. It is not per-identity: `API_KEYS` entries are
-opaque strings with no owner, so the bucket separates keys, not people. And it raises the
-**aggregate** ceiling — the total rate of destructive actions now scales with the number of valid
-keys, where one global bucket capped it at one per 30 seconds for the whole instance. With
-`API_KEYS` holding a handful of strings that is the right trade, but it is a trade.
+Two things per-caller bucketing does *not* give you. It is not per-identity: API keys have names but
+no owner, so the bucket separates keys, not people. And it raises the **aggregate** ceiling — the
+total rate of destructive actions now scales with the number of valid keys, where one global bucket
+capped it at one per 30 seconds for the whole instance. With a handful of keys that is the right
+trade, but it is a trade, and minting a key on `/settings/api_keys` adds a bucket without a deploy.
 
 Fixed in [#99](https://github.com/tadasant/zimmer/issues/99). The two consequences above are the trade
 that fix made, not a defect left behind it.

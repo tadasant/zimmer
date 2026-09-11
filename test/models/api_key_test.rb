@@ -18,6 +18,8 @@ class ApiKeyTest < ActiveSupport::TestCase
     @original_env.nil? ? ENV.delete(ApiKey::ENV_VAR) : ENV[ApiKey::ENV_VAR] = @original_env
   end
 
+  def fingerprint(key) = Digest::SHA256.hexdigest(key)[0, 8]
+
   # --- API_KEYS entries: the cutover ---
 
   test "an API_KEYS entry authenticates and gets a row named after its fingerprint" do
@@ -25,7 +27,7 @@ class ApiKeyTest < ActiveSupport::TestCase
       result = ApiKey.authenticate("env-key-two")
 
       assert_predicate result, :authenticated?
-      assert_equal "API_KEYS #{ApiKey.fingerprint_of('env-key-two')}", result.api_key.name
+      assert_equal "API_KEYS #{fingerprint('env-key-two')}", result.api_key.name
       assert_predicate result.api_key, :env?
       assert_predicate result.api_key, :persisted?
     end
@@ -66,24 +68,49 @@ class ApiKeyTest < ActiveSupport::TestCase
   end
 
   test "a failed registration still authenticates the API_KEYS entry, as it did before this table existed" do
-    ApiKey.stubs(:create_or_find_by!).raises(ActiveRecord::StatementInvalid, "PG::ReadOnlySqlTransaction")
+    ApiKey.stubs(:create!).raises(ActiveRecord::StatementInvalid, "PG::ReadOnlySqlTransaction")
 
     entries = capture_log_entries do
       result = ApiKey.authenticate("env-key-one")
 
       assert_predicate result, :authenticated?
       assert_predicate result.api_key, :new_record?
-      assert_equal "API_KEYS #{ApiKey.fingerprint_of('env-key-one')}", result.api_key.name
+      assert_equal "API_KEYS #{fingerprint('env-key-one')}", result.api_key.name
     end
 
     assert(entries.any? { |severity, message| severity == "WARN" && message.include?("authenticating it without one") })
   end
 
-  test "a name taken by another row does not lock the API_KEYS entry out" do
-    taken = "API_KEYS #{ApiKey.fingerprint_of('env-key-one')}"
+  test "a name taken by another row gives the entry its full digest as a name, so it is still listed and revocable" do
+    taken = "API_KEYS #{fingerprint('env-key-one')}"
     ApiKey.create!(name: taken, source: ApiKey::ENV_SOURCE, token_digest: ApiKey.digest("something-else"))
 
-    assert_predicate ApiKey.authenticate("env-key-one"), :authenticated?
+    api_key = ApiKey.authenticate("env-key-one").api_key
+
+    assert_predicate api_key, :persisted?
+    assert_equal "API_KEYS #{ApiKey.digest('env-key-one')}", api_key.name
+    api_key.revoke!
+    assert_equal :revoked, ApiKey.authenticate("env-key-one").refusal
+  end
+
+  test "losing the registration race returns the winner's row, quietly" do
+    winner = ApiKey.create!(name: "API_KEYS #{fingerprint('env-key-one')}", source: ApiKey::ENV_SOURCE,
+      token_digest: ApiKey.digest("env-key-one"))
+
+    # What a second worker does when its find_by ran before the winner committed.
+    entries = capture_log_entries do
+      assert_equal winner, ApiKey.send(:register_env_key, ApiKey.digest("env-key-one"))
+    end
+
+    assert_empty(entries.select { |severity, _message| severity == "WARN" })
+  end
+
+  test "the unique index settles a race the validation cannot see" do
+    ApiKey.create!(name: "API_KEYS #{fingerprint('env-key-one')}", source: ApiKey::ENV_SOURCE,
+      token_digest: ApiKey.digest("env-key-one"))
+    ApiKey.any_instance.stubs(:valid?).returns(true)
+
+    assert_predicate ApiKey.send(:register_env_key, ApiKey.digest("env-key-one")), :persisted?
   end
 
   test "register_env_keys gives every entry a row and is idempotent" do
@@ -110,9 +137,18 @@ class ApiKeyTest < ActiveSupport::TestCase
     assert_match(/Name has already been taken/, error.message)
   end
 
-  test "a minted key cannot take the prefix env rows are named with" do
-    error = assert_raises(ActiveRecord::RecordInvalid) { ApiKey.mint!(name: "API_KEYS deadbeef") }
-    assert_match(/can't start with "API_KEYS"/, error.message)
+  test "a minted key cannot take the prefix env rows are named with, in any case" do
+    [ "API_KEYS deadbeef", "api_keys deadbeef" ].each do |name|
+      error = assert_raises(ActiveRecord::RecordInvalid) { ApiKey.mint!(name: name) }
+      assert_match(/can't start with "API_KEYS"/, error.message)
+    end
+  end
+
+  test "a name cannot carry control or formatting characters" do
+    [ "two\nlines", "bidi\u202Eoverride", "tab\there" ].each do |name|
+      error = assert_raises(ActiveRecord::RecordInvalid) { ApiKey.mint!(name: name) }
+      assert_match(/control or formatting characters/, error.message)
+    end
   end
 
   # --- Refusals ---

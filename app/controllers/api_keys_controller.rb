@@ -30,18 +30,19 @@ class ApiKeysController < ApplicationController
   # Rendered rather than redirected: the response is the only place the new key
   # will ever appear, and a redirect would have to carry it through the flash —
   # which is to say, the session cookie. `no-store` keeps it out of the browser's
-  # cache and back/forward history.
+  # HTTP cache, and the view exempts the page from Turbo's snapshot cache.
   def create
-    @api_key, @minted_token = ApiKey.mint!(name: params.dig(:api_key, :name))
+    @api_key, @minted_token = ApiKey.mint!(name: submitted_name)
     log_lifecycle("minted", @api_key)
     response.headers["Cache-Control"] = "no-store"
     load_page
     render :index
   rescue ActiveRecord::RecordInvalid => e
-    @create_errors = e.record.errors.full_messages
-    @attempted_name = e.record.name
-    load_page
-    render :index, status: :unprocessable_entity
+    render_create_error(e.record.errors.full_messages)
+  rescue ActiveRecord::RecordNotUnique
+    # Two submits of one name at once (a double-click): the loser passes the
+    # uniqueness validation and meets the unique index instead.
+    render_create_error([ "Name has already been taken" ])
   end
 
   def revoke
@@ -62,6 +63,20 @@ class ApiKeysController < ApplicationController
     @api_key = ApiKey.find(params[:id])
   end
 
+  # `api_key[name]` from the form; nil for anything else, including a scalar
+  # `api_key` that `dig` would raise on.
+  def submitted_name
+    submitted = params[:api_key]
+    submitted[:name] if submitted.is_a?(ActionController::Parameters)
+  end
+
+  def render_create_error(messages)
+    @create_errors = messages
+    @attempted_name = submitted_name
+    load_page
+    render :index, status: :unprocessable_entity
+  end
+
   # `register_env_keys` gives every `API_KEYS` entry its row before the list is
   # read, so a key that has not been used since this table existed is still
   # listed — and can be revoked before it is ever used.
@@ -75,7 +90,7 @@ class ApiKeysController < ApplicationController
   # MCP entries, so the page can mark that row. A lookup that fails costs the
   # marker, not the page.
   def self_session_digest
-    key = SelfSessionInjector.new.self_target[:api_key]
+    key = SelfSessionInjector.new.self_target[:api_key].to_s.strip
     key.present? ? ApiKey.digest(key) : nil
   rescue StandardError => e
     Rails.logger.warn("[api_key] could not resolve the self-session key to mark it: #{e.class}: #{e.message.truncate(200)}")

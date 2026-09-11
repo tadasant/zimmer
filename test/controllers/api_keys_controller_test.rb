@@ -124,6 +124,44 @@ class ApiKeysControllerTest < ActionDispatch::IntegrationTest
     assert_not api_key.reload.revoked?
   end
 
+  test "a scalar api_key param is a validation error, not a 500" do
+    post api_keys_path, params: { api_key: "not-a-hash" }, headers: operator_headers
+
+    assert_response :unprocessable_entity
+    assert_includes response.body, "Name can&#39;t be blank"
+  end
+
+  test "a create that loses to the unique index re-renders with the error" do
+    ApiKey.stubs(:mint!).raises(ActiveRecord::RecordNotUnique, "duplicate key value")
+
+    post api_keys_path, params: { api_key: { name: "double click" } }, headers: operator_headers
+
+    assert_response :unprocessable_entity
+    assert_includes response.body, "Name has already been taken"
+  end
+
+  test "the page is exempt from Turbo's snapshot cache, so a shown key cannot be restored" do
+    post api_keys_path, params: { api_key: { name: "cached?" } }, headers: operator_headers
+
+    assert_select "meta[name='turbo-cache-control'][content='no-cache']"
+  end
+
+  test "the writes need a CSRF token even with the operator credential" do
+    api_key, _token = ApiKey.mint!(name: "csrf target")
+    original = ActionController::Base.allow_forgery_protection
+    ActionController::Base.allow_forgery_protection = true
+
+    post api_keys_path, params: { api_key: { name: "forged" } }, headers: operator_headers
+    assert_response :unprocessable_entity
+    post revoke_api_key_path(api_key), headers: operator_headers
+    assert_response :unprocessable_entity
+
+    assert_not ApiKey.exists?(name: "forged")
+    assert_not api_key.reload.revoked?
+  ensure
+    ActionController::Base.allow_forgery_protection = original
+  end
+
   test "the settings page links here without prefetching" do
     get settings_path
 

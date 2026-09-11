@@ -63,8 +63,7 @@ MCP clients that only know how to send a bearer token can send the same key as
 `Authorization: Bearer <key>` instead. There is one credential either way.
 
 :::caution[Scoping is an affordance, not a trust boundary]
-A key is an opaque string with no scope, no identity, and no audit trail — the same caveat as
-[the REST API](/extend/rest-api/). The scoping below (`tool_groups`, `allowed_agent_roots`) lives in
+A key has a name but no scope — the same caveat as [the REST API](/extend/rest-api/). The scoping below (`tool_groups`, `allowed_agent_roots`) lives in
 the URL, so a caller that holds a key can always widen it by asking for a different URL — or skip MCP
 and call `/api/v1` directly. It exists to give an agent the *right* surface, not to contain a
 determined one. Anyone you hand a key to can do anything a key can do.
