@@ -20,9 +20,12 @@ class CostAnalytics
   # The page is a summary, not an export; the REST index is the export.
   TOP_N = 15
 
-  attr_reader :from, :to
+  attr_reader :from, :to, :scope
 
-  def initialize(from: nil, to: nil)
+  # @param scope [CostScope] which slice of the ledger every figure covers. The
+  #   default is the whole fleet, which is what the page rendered before it could
+  #   be narrowed and what `get_costs` still answers with no arguments.
+  def initialize(from: nil, to: nil, scope: CostScope.new)
     # BOTH ends round down to the minute, including one the caller supplied.
     # `7.days.ago` carries sub-second precision, so a window built from it moves
     # every request: it can never be cached, never be compared between two
@@ -38,6 +41,7 @@ class CostAnalytics
     @to = given_to.change(sec: 0, usec: 0)
     @to += 1.minute if @to < given_to
     @from = (from || (@to - DEFAULT_WINDOW)).change(sec: 0, usec: 0)
+    @scope = scope
   end
 
   # Everything the Costs page and the REST rollup endpoint render, in one
@@ -73,7 +77,10 @@ class CostAnalytics
   # added, which moves no maximum.
   def cache_key
     [
-      "cost-analytics/v4", from.to_i, to.to_i,
+      # The scope is part of the key, not a filter applied after it. Leave it out
+      # and a page narrowed to one agent root reads the fleet's cached snapshot
+      # back under the root's heading — every figure wrong, nothing to show for it.
+      "cost-analytics/v5", scope.cache_token, from.to_i, to.to_i,
       SessionTokenUsage.maximum(:id).to_i, AdhocTokenUsage.maximum(:id).to_i,
       TokenUsageFeature.maximum(:id).to_i,
       # `updated_at`, not `id`: a session's SECOND observation is an update, so a
@@ -84,9 +91,9 @@ class CostAnalytics
     ].join("/")
   end
 
-  def session_scope = SessionTokenUsage.in_window(from, to)
-  def adhoc_scope = AdhocTokenUsage.in_window(from, to)
-  def feature_scope = TokenUsageFeature.in_window(from, to)
+  def session_scope = scope.narrow(SessionTokenUsage.in_window(from, to))
+  def adhoc_scope = scope.narrow_adhoc(AdhocTokenUsage.in_window(from, to))
+  def feature_scope = scope.narrow(TokenUsageFeature.in_window(from, to))
 
   # The denominator for feature ATTRIBUTION, which is a narrower population than
   # spend. ContextFeatureAttributor measures Claude Code's context-management
@@ -384,8 +391,8 @@ class CostAnalytics
   def both_tables_sum_by_component
     components = Hash.new(0.0)
 
-    [ SessionTokenUsage.in_window(from, to), AdhocTokenUsage.in_window(from, to) ].each do |scope|
-      scope.group(:model).pluck(
+    [ session_scope, adhoc_scope ].each do |relation|
+      relation.group(:model).pluck(
         :model,
         Arel.sql("COALESCE(SUM(input_tokens), 0)"),
         Arel.sql("COALESCE(SUM(output_tokens), 0)"),

@@ -278,6 +278,67 @@ class CostAnalyticsTest < ActiveSupport::TestCase
     assert_equal 1, CostAnalytics.new(from: window.from, to: window.to).totals[:api_calls]
   end
 
+  # The drilldown the Costs page reaches by clicking a by-agent-root row: every
+  # figure in the bundle has to narrow together, or the page shows one root's
+  # total over the fleet's daily series.
+  test "a scoped snapshot narrows every rollup, not just the headline" do
+    usage(agent_root: "zimmer-router", session_id: sessions(:running).id, cache_read_tokens: 500_000)
+    usage(agent_root: "issue-work-gate", session_id: sessions(:archived).id, cache_read_tokens: 100_000)
+
+    scoped = CostAnalytics.new(from: 1.day.ago, scope: CostScope.new(agent_root: "zimmer-router"))
+    fleet = CostAnalytics.new(from: 1.day.ago)
+
+    assert_equal [ "zimmer-router" ], scoped.by_agent_root.map { |r| r[:agent_root] }
+    assert_equal [ sessions(:running).id ], scoped.top_sessions.map { |r| r[:session_id] }
+    assert_equal 1, scoped.totals[:api_calls]
+    assert_equal 2, fleet.totals[:api_calls]
+    assert_operator fleet.totals[:cost_usd], :>, scoped.totals[:cost_usd]
+    assert_in_delta scoped.totals[:cost_usd], scoped.by_day.sum { |r| r[:cost_usd] }, 0.000001
+    assert_in_delta scoped.totals[:cost_usd], scoped.cost_breakdown.sum { |r| r[:cost_usd] }, 0.000001
+  end
+
+  test "a session scope narrows to that session alone" do
+    usage(session_id: sessions(:running).id, agent_root: "zimmer-router")
+    usage(session_id: sessions(:archived).id, agent_root: "zimmer-router")
+
+    scoped = CostAnalytics.new(from: 1.day.ago, scope: CostScope.new(session_id: sessions(:running).id))
+
+    assert_equal 1, scoped.totals[:api_calls]
+    assert_equal [ sessions(:running).id ], scoped.top_sessions.map { |r| r[:session_id] }
+  end
+
+  # Without the scope in the cache key the fleet snapshot and every scoped one
+  # share an entry, and whichever rendered first answers for all of them.
+  test "a scoped snapshot does not read the fleet's cached one" do
+    usage(agent_root: "zimmer-router")
+    usage(agent_root: "issue-work-gate")
+
+    fleet = CostAnalytics.new(from: 1.day.ago).snapshot
+    scoped = CostAnalytics.new(from: 1.day.ago, scope: CostScope.new(agent_root: "zimmer-router")).snapshot
+
+    assert_equal 2, fleet[:totals][:api_calls]
+    assert_equal 1, scoped[:totals][:api_calls]
+    assert_not_equal CostAnalytics.new(from: 1.day.ago).cache_key,
+                     CostAnalytics.new(from: 1.day.ago, scope: CostScope.new(agent_root: "zimmer-router")).cache_key
+  end
+
+  # Ad hoc calls are Zimmer's own inference, outside any session. Left in an
+  # agent-root view they would put the fleet's ad hoc bill under one root.
+  test "an agent-root scope drops ad hoc spend and a session scope keeps what was about it" do
+    usage(agent_root: "zimmer-router", session_id: sessions(:running).id)
+    AdhocTokenUsage.create!(request_id: "req_adhoc_scoped", source: "headless_inference",
+                            model: "claude-opus-5", called_at: 1.hour.ago, output_tokens: 500,
+                            subject_session_id: sessions(:running).id)
+
+    by_root = CostAnalytics.new(from: 1.day.ago, scope: CostScope.new(agent_root: "zimmer-router"))
+    by_session = CostAnalytics.new(from: 1.day.ago, scope: CostScope.new(session_id: sessions(:running).id))
+
+    assert_equal 0.0, by_root.totals[:adhoc_cost_usd]
+    assert_empty by_root.by_adhoc_source
+    assert_operator by_session.totals[:adhoc_cost_usd], :>, 0.0
+    assert_equal [ "headless_inference" ], by_session.by_adhoc_source.map { |r| r[:source] }
+  end
+
   test "a window with no attribution still reports a total and a full residual" do
     usage
 

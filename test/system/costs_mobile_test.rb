@@ -313,6 +313,59 @@ class CostsMobileTest < ApplicationSystemTestCase
     end
   end
 
+  test "narrowing the page to one agent root is reachable by tap and fits a phone" do
+    # The drilldown link sits INSIDE the row's <summary>, next to the cost. Two
+    # things have to hold at once and neither is implied by the other: the link
+    # must not push the cost off the right edge, and tapping it must navigate
+    # rather than be swallowed by the row's own open/close handling —
+    # hover_details_controller pins a hover-opened row by calling preventDefault
+    # on that very click, which would cancel the navigation.
+    seed_spend!
+    root = "tadasant-internal/artifacts-agent-roots-issue-work-gate"
+
+    visit costs_path(days: 30)
+    assert_text "By agent root"
+
+    link = first("a[href='#{costs_path(days: 30, agent_root: root)}']")
+    assert link, "the by-agent-root rows should offer a link that narrows the page"
+    link.click
+
+    assert_current_path costs_path(days: 30, agent_root: root)
+    assert_text "Agent root"
+    assert_text root
+    # The way back to the fleet. One argument only: Capybara's `assert_text` reads
+    # a two-string call as (type, text) and rejects the first as a query type.
+    assert_text "All agent roots"
+    # The fleet had two roots; this one is the other root's spend gone.
+    assert_no_text "artifacts-agent-roots-pr-merge-gate"
+
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
+      "the narrowed Costs page overflows the viewport at #{MOBILE_WIDTH}px"
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page"),
+      "the scope banner pushes something past the right edge at #{MOBILE_WIDTH}px"
+
+    page.save_screenshot("tmp/screenshots/costs-scoped-375.png")
+
+    # A window change from a narrowed page must keep the narrowing.
+    click_link "7 days"
+    assert_current_path costs_path(days: 7, agent_root: root)
+    assert_text root
+  end
+
+  test "narrowing to one session names it and fits a phone" do
+    seed_spend!
+    session = Session.order(:id).last
+
+    visit costs_path(days: 30, session_id: session.id)
+
+    assert_text "Session ##{session.id}"
+    assert_selector "a[href='#{session_path(session)}']"
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
+      "the session-scoped Costs page overflows the viewport at #{MOBILE_WIDTH}px"
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page"),
+      "the session scope banner pushes something past the right edge at #{MOBILE_WIDTH}px"
+  end
+
   test "the experiment report fits a phone, cohort cards and paired roots and all" do
     # Two stat cards side by side and a per-root comparison row carrying a long
     # agent-root name: signature 1 (a grid child that will not shrink) and

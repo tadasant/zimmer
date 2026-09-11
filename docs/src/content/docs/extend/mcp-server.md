@@ -78,7 +78,7 @@ session gets exactly the surface it should have and no more.
 | --- | --- |
 | `/mcp` | The default surface — 23 tools; the opt-in groups are not among them |
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
-| `/mcp?tool_groups=self_session` | Self-management: the 7 tools a session needs to run itself |
+| `/mcp?tool_groups=self_session` | Self-management: the 8 tools a session needs to run itself |
 | `/mcp?tool_groups=gate_decisions` | The [gate decision ledger](/operate/gate-decisions/): search past ratings, read the human corrections, record one |
 | `/mcp?tool_groups=work_backlog` | The [work backlog](/operate/work-backlog/): read the ranked queue, append a cleared issue, pull the top items into spot sessions |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
@@ -93,11 +93,12 @@ the connection.
 
 `self_session` is the important one. It is **auto-injected into every session** (see below) and
 carries `get_session`, `get_session_provenance`, `get_configs`, `send_push_notification`,
-`wake_me_up_later`, `wake_me_up_when_session_changes_state`, and a **restricted `action_session`** —
+`wake_me_up_later`, `wake_me_up_when_session_changes_state`, a **restricted `action_session`** —
 the same tool name, but its `action` enum is narrowed to `update_notes`, `update_title`, `set_heartbeat`,
-`pause_into_spot_queue`, `message_parent`, and `archive`. All but one of those are narrowings of the
-full surface; [`message_parent`](#message_parent-the-one-action-that-exists-only-here) is on this
-surface and on no other.
+`pause_into_spot_queue`, `message_parent`, and `archive` — and a **self-scoped `get_costs`**, narrowed
+the same way to the calling session's own spend. All but one of `action_session`'s actions are
+narrowings of the full surface; [`message_parent`](#message_parent-the-one-action-that-exists-only-here)
+is on this surface and on no other.
 A session can manage itself; it cannot restart, fork, or re-configure anything. In particular the
 capability/config edits on the full surface — `change_mcp_servers`, `change_model`, `change_skills`,
 `change_hooks`, `change_plugins`, `change_goal`, `change_auto_compact_window`, `change_category`,
@@ -190,7 +191,7 @@ production.
 | `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_categories`, `respond_to_elicitation`, `save_outcome_analysis` |
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
-| `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` |
+| `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` (self-scoped variant on `self_session`) |
 | `gate_decisions` (opt-in) | `search_gate_decisions`, `get_gate_decision_feedback`, `record_gate_decision` |
 | `work_backlog` (opt-in) | `get_work_backlog`, `append_work_backlog_item`, `pull_work_backlog_items` |
 
@@ -699,12 +700,27 @@ line naming the time, so a router redirecting a sleeper can see it does not have
 ### `get_costs`
 
 Reads Zimmer's token-spend ledger: what inference cost, by agent root, model, session, and kind of
-token. Fleet-wide by default; pass `agent_root` or `session_id` to scope it, `days` to set the
-window.
+token. Fleet-wide by default; pass `agent_root` or `session_id` to scope it, `days` — or `from`/`to`
+as `YYYY-MM-DD` — to set the window.
 
-It lives in `health` rather than `sessions` for the same reason `get_spot_policy` does — this is the
-deployment's posture, not one session's business — and it is therefore **not** in the `self_session`
-set injected into every session. A session has no reason to read the whole fleet's bill.
+It lives in `health` rather than `sessions` for the same reason `get_spot_policy` does: this is the
+deployment's posture, not one session's business. A session has no reason to read the whole fleet's
+bill — so what `self_session` carries is a **composite override**, `Mcp::Tools::SelfSessionGetCosts`,
+in exactly the shape `action_session` uses. Same tool name, same report body, one scope:
+
+- With no arguments it reports the **calling session's** spend — the session named in the connection's
+  `session_id` — never the fleet's. There is no argument that widens it.
+- `agent_root` is **refused**, with an error naming the `health` group and the Costs page as where
+  the fleet report lives. The narrowed schema does not advertise the argument, and the refusal is
+  what makes that a contract rather than a hint: no schema here sets `additionalProperties: false`.
+- An explicit `session_id` naming a *different* session is refused too, wherever the connection
+  knows which session it belongs to. A connection that names none — a human client on
+  `?tool_groups=self_session` — has to pass one, and gets an error rather than a fleet report if it
+  does not.
+
+A connection holding `health` (or `health_readonly`) gets the unrestricted tool even alongside
+`self_session`: domain membership outranks a composite override, the same way it does for
+`action_session`.
 
 Every fleet report states how complete the ledger is: a `Partial history` warning with the sweep's
 progress while the one-time historical backfill is still running, and the covered window once it has
