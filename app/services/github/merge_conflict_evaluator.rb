@@ -28,23 +28,23 @@ module Github
   # and 3889). The cost is up to one extra poll interval of latency before a genuine,
   # persistent conflict is reported.
   #
-  # THE DEBOUNCE IS A DURATION, NOT A POLL COUNT, and that is the fix for
-  # tadasant/zimmer#1123. It used to mean "two consecutive gated polls", which is only
-  # two minutes if the gate that supplies the cadence actually ticks every two minutes.
-  # It does not for the population this evaluator exists to serve: Github::PrPollPass
-  # caps a session holding an unresolved PR at AWAITING_PR_OUTCOME_MAX_POLL_INTERVAL
-  # (30 minutes), and past 24 hours of no user activity this evaluator's own gate rode
-  # PollBackoff's curve all the way to its 24-hour floor. "Two consecutive polls" was
-  # therefore half an hour or a day apart for exactly the idle PR-holding sessions the
-  # conflict notice is for, and any single clean reading in between — a stale MERGEABLE
-  # is the reading GitHub's lazily-recomputed mergeability produces — reset the streak
-  # to zero. A PR open since 2026-09-06 was still un-notified five days later, and a
-  # human flagged the conflict by hand.
+  # THE DEBOUNCE IS A DURATION, NOT A POLL COUNT (tadasant/zimmer#1123). Counted in
+  # polls, "two consecutive gated polls" is two minutes only if the gate that supplies
+  # the cadence ticks every two minutes, and for the population this evaluator exists
+  # to serve it does not: Github::PrPollPass caps a session holding an unresolved PR at
+  # AWAITING_PR_OUTCOME_MAX_POLL_INTERVAL (30 minutes), and an uncapped gate rides
+  # PollBackoff's curve to its 24-hour floor. Two consecutive polls are then half an
+  # hour or a day apart for exactly the idle PR-holding sessions the conflict notice is
+  # for, and any single clean reading in between — a stale MERGEABLE is the reading
+  # GitHub's lazily-recomputed mergeability produces — resets the streak to zero. That
+  # is how a PR open since 2026-09-06 went five days un-notified until a human flagged
+  # the conflict by hand.
   #
-  # Measuring the gap in seconds makes the debounce say what its own comment always
-  # claimed. The other half of the fix is in Github::PrPollPass: a session with a fresh
-  # suspicion is polled at MERGE_CONFLICT_INTERVAL_SECONDS so the confirming reading
-  # lands on the cadence this was tuned for rather than whenever the curve next allows.
+  # So the gap is measured in seconds here, and Github::PrPollPass polls a session with
+  # a fresh suspicion at MERGE_CONFLICT_INTERVAL_SECONDS, so the confirming reading
+  # lands on the cadence the debounce was tuned for rather than whenever the curve next
+  # allows. That narrows the window a stale clean reading has to land in; it does not
+  # close it — a stale MERGEABLE on the confirming reading still clears the marker.
   #
   class MergeConflictEvaluator
     include DatabaseRetry
@@ -60,10 +60,10 @@ module Github
     # confirm it. The debounce interval, stated as the duration it always claimed
     # to be rather than as a count of polls whose spacing lives in another class.
     #
-    # Two minutes is the cron cadence the debounce was originally tuned against,
-    # unchanged. What changes is that it is now enforced here: an evaluator run at
-    # any cadence — 30 seconds, 30 minutes, a day — confirms on the first
-    # conflicting reading at least this long after the first, and never sooner.
+    # Two minutes is the cron cadence the debounce was tuned against. It is enforced
+    # here, so an evaluator run at any cadence — 30 seconds, 30 minutes, a day —
+    # confirms on the first conflicting reading at least this long after the first,
+    # and never sooner.
     MIN_CONFIRMATION_GAP_SECONDS = 120
 
     # How long a suspicion entitles its session to the fast poll cadence
@@ -126,7 +126,7 @@ module Github
       end
     rescue StandardError => e
       # Never worth failing a whole pass over. Answering "no" leaves the session on
-      # its ordinary cadence, which is what it had before this existed.
+      # its ordinary cadence.
       Rails.logger.warn(
         "[Github::MergeConflictEvaluator] Could not read the suspicion age for session " \
         "#{session&.id}: #{e.class}: #{e.message}"
@@ -143,14 +143,15 @@ module Github
     # confirmed marker is what makes #evaluate skip it — cleared only by a CLEAN
     # reading. So without this call a suppression would be permanent: if the
     # `mergeable == true` that justified it was itself one of the stale readings the
-    # two-poll debounce exists because GitHub produces, the PR is still conflicting,
+    # debounce exists because GitHub produces, the PR is still conflicting,
     # every later poll takes the "already notified" branch, and the session is never
     # told. That is the silent, strictly-worse failure the guard is supposed to avoid,
     # reintroduced by the guard.
     #
     # Clearing both markers instead makes the guard self-correcting: a conflict
-    # that was real is re-suspected on the next poll and re-confirmed on the one
-    # after, costing one debounce cycle rather than the notice.
+    # that was real is re-suspected on the next poll and re-confirmed on the first
+    # conflicting reading MIN_CONFIRMATION_GAP_SECONDS after that, costing one
+    # debounce cycle rather than the notice.
     #
     # @param session [Session]
     # @param pr_url [String]

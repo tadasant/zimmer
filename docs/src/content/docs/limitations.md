@@ -3453,8 +3453,10 @@ because it spends `gh api` calls of its own and speeding it up for the whole idl
 rate-limit decision rather than a free one. `Github::MergeConflictEvaluator` no longer rides it — it
 inherits the pass's ceiling, and a PR it already suspects of conflicting pulls the session down to a
 two-minute cadence until the debounce resolves
-([#1123](https://github.com/tadasant/zimmer/issues/1123)) — which is free, because that evaluator
-reads the snapshot the pass already fetched. The cap is not a guarantee of delivery — the cases in
+([#1123](https://github.com/tadasant/zimmer/issues/1123)). Inheriting the ceiling is free, because
+that evaluator reads the snapshot the pass already fetched; the two-minute cadence is not, because it
+makes the whole pass due, and a pass spends a `gh pr view` per tracked PR and a `gh pr checks` per
+open one — usually for one extra pass, at most about fifteen per suspicion. The cap is not a guarantee of delivery — the cases in
 [A PR session waits for a merge message that three cases can prevent](#a-pr-session-waits-for-a-merge-message-that-three-cases-can-prevent)
 are untouched by it. And the cap itself expires after `AWAITING_PR_OUTCOME_MAX_IDLE` (7 days) of no
 user activity, because nothing removes an idle session from `Session.with_github_prs` and a deleted
@@ -3505,6 +3507,13 @@ The pathological case is a PR being force-pushed roughly as often as the gate fi
 read can land in GitHub's recompute window, and two consecutive conflicting readings never
 accumulate, so a real conflict on a PR under continuous rebasing may not be reported until the
 pushing stops. The old retry loop narrowed that window without closing it either.
+
+The same shape survives on an idle PR, narrowed rather than closed by
+[#1123](https://github.com/tadasant/zimmer/issues/1123). A suspected conflict now gets its confirming
+reading about two minutes after the first instead of up to a day later, but a stale `MERGEABLE` on
+that confirming reading still clears the marker, and the session drops back to its 30-minute
+ceiling until another conflicting reading starts a fresh suspicion. A genuinely conflicting PR that
+GitHub keeps misreading as mergeable can still go un-reported for as long as it keeps doing so.
 
 ---
 
