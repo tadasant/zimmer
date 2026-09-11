@@ -728,11 +728,11 @@ poller discovers them, stores each as a `SubagentTranscript` row, and links it b
 
 They render as a nested, collapsible accordion inside the parent's timeline row.
 
-:::caution[Subagent transcripts assume Claude]
-`SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`. Codex
-subagents, if they produced discoverable transcripts, would be normalized with the wrong parser.
-Pi is unaffected for a blunter reason: it has no subagent primitive at all, so
-`PiTranscriptNormalizer`'s subagent extractors always return `[]`.
+:::note[Subagent transcripts use the parent's runtime]
+`SubagentTranscript#open_transcript_events` resolves its normalizer through `TranscriptRuntime`, from
+the parent session's runtime, the same way every other transcript read does. Only Claude Code
+produces discoverable subagent transcripts today; Codex writes none, and Pi has no subagent
+primitive at all, so `PiTranscriptNormalizer`'s subagent extractors always return `[]`.
 :::
 
 ## Transcript hooks

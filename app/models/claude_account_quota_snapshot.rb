@@ -9,8 +9,12 @@
 # - By periodic cron: QuotaResetCheckerJob on every exceeded account, and
 #   ClaudeUsageSamplerJob on the serving one plus any spare whose reading is stale
 #
+# - When a Codex session hits its account's usage limit: the rate-limit windows
+#   Codex recorded with the refusal (CodexTurnError#quota_reading), which is
+#   what QuotaResetCheckerJob restores a Codex account on
+#
 # The trigger field records why the snapshot was taken: "rotation", "bootstrap",
-# "manual_refresh", "page_view", "scheduled", or "usage_sample".
+# "manual_refresh", "page_view", "scheduled", "usage_sample", or "usage_limit".
 #
 # A snapshot outlives the account it was taken for: deleting a ClaudeAccount
 # nullifies `claude_account_id` rather than destroying the reading, so the

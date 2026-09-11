@@ -88,7 +88,7 @@ module ClaudeSpawnEnv
     # baseline above so an extension can override a Zimmer default; with no
     # extension enabled this is a no-op and the child sees the baseline env
     # unchanged.
-    env_vars.merge!(Zimmer::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code"))
+    apply_extension_env(env_vars, runtime: "claude_code")
 
     # Export the durable per-session scratch dir (AO_SESSION_SCRATCH_DIR) so
     # agents persist cross-step state on the durable volume instead of ephemeral /tmp.

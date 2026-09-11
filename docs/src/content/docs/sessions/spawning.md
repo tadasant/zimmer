@@ -788,14 +788,11 @@ now, but the column stays: this is a value the app reads, not a change to how Zi
 runtime. An enabled extension can still override the variable through the spawn-env seam below —
 extension contributions are merged last.
 
-:::caution[A spawn-env asymmetry]
-`Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` — neither
-`CodexRuntimeAdapter#spawn_process` nor `PiRuntimeAdapter#spawn_process` consults it, so extension
-env contributions are unreachable for both, despite the hook receiving a `runtime` context that
-implies otherwise.
-
-The elicitation variables used to be the other half of this pair. They now come from `CliSpawnEnv`,
-which all three runtimes include.
+:::note[Extension env reaches every runtime]
+`Zimmer::ExtensionRegistry.spawn_env_contributions` is reached through `CliSpawnEnv#apply_extension_env`,
+which `ClaudeSpawnEnv`, `CodexRuntimeAdapter#spawn_process` and `PiRuntimeAdapter#spawn_process`
+all call with their own runtime id. The elicitation variables come from `CliSpawnEnv` too, which all
+three runtimes include.
 :::
 
 ## The boot-tasks readiness gate

@@ -293,6 +293,10 @@ class PiRuntimeAdapter
     env_vars = ensure_pi_home(env_vars)
     env_vars = quiet_pi_startup(env_vars)
     env_vars = apply_air_bridge_env(env_vars, working_dir)
+    # Enabled Zimmer Extensions contribute here, over the Pi baseline above. A
+    # provider key an extension contributes counts as already set, the same as one
+    # from the clone's `.env` (#apply_provider_key only fills a blank).
+    env_vars = apply_extension_env(env_vars, runtime: PiAuthProvider::RUNTIME)
     # Export the durable per-session scratch dir (AO_SESSION_SCRATCH_DIR) so
     # agents persist cross-step state on the durable volume instead of ephemeral /tmp.
     env_vars = apply_session_scratch_dir(env_vars)

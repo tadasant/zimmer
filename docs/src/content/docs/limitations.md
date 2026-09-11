@@ -1495,11 +1495,12 @@ That is no longer for want of a signature. Driven against a simulated localhost 
 the failure in its transcript as an assistant message with `stopReason: "error"` and an
 `errorMessage` led by the HTTP status. All four look the same, and nothing reaches stderr.
 
-What is missing is the recovery, and each path is Claude-shaped: `ContextLengthRetryService`
-recovers by sending Claude Code's `/compact` command, which Pi has no equivalent of;
-`ApiErrorRetryService` detects by Claude's `isApiErrorMessage` envelope, which Pi does not
-write; `AuthRecoveryService` re-writes the active account's credentials, and `PiAuthProvider`
-pools no accounts to re-write. Tracked in
+What is missing is the recovery. The three recovery services no longer have to be Claude-shaped —
+Codex reaches them through `TranscriptSource#records_turn_errors?` (the services ask the runtime's
+own record of how its turn ended instead of scanning for Claude's `isApiErrorMessage` envelope) and
+`RuntimeCliAdapter.compacts_on_resume?` (compaction resumes with the recovery nudge instead of
+`/compact`) — but Pi answers neither yet, and `AuthRecoveryService` re-writes the active account's
+credentials while `PiAuthProvider` pools no accounts to re-write. Tracked in
 [#856](https://github.com/tadasant/zimmer/issues/856).
 
 `PiRetryStrategy#terminal_api_error` covers the worst of it: a turn whose last conversational
@@ -1559,12 +1560,12 @@ Two gaps remain inside that, deliberately. A stale classifier still costs a **fa
 than the recovery it should have got: the held-session-id row above is one of those — Claude reports
 that refusal with exit 1 and writes nothing to the transcript at all, so no terminal API error exists
 for the backstop to see and the only state check that catches it is the empty-turn restart (see
-[Spawning](/sessions/spawning/)), which covers the first turn of a session and not a later one. And `CodexRetryStrategy` classifies nothing but a missing rollout, so
-every ordinary Codex failure is by construction an exit no classifier matched; it answers
+[Spawning](/sessions/spawning/)), which covers the first turn of a session and not a later one. And `PiRetryStrategy` classifies
+nothing, so every ordinary Pi failure is by construction an exit no classifier matched; it answers
 `classifies_exits? => false` and gets the loud log without a page, because paging on a runtime's
-designed-for path is how a channel gets ignored. The terminal-error backstop reads Claude's
-transcript format and `CodexRetryStrategy` does not answer the question at all, so Codex never
-reaches it.
+designed-for path is how a channel gets ignored. Codex was in the same position until its
+classifiers learned to read the code Codex records on a failed turn (#54); it now pages, and its
+`terminal_api_error` answers from that same record.
 
 Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 
@@ -1708,9 +1709,11 @@ that may be minutes old, which is the wrong trade for the path that hands an ide
 Two edges of the same asymmetry are worth knowing. A page load restores the **account** but does not
 resume the sessions parked on it — only `QuotaResetCheckerJob` calls
 `AuthOutageParkService.wake_parked_sessions!`, so those sessions wait for the sweep or their own
-timer. And the derivation needs a reading to work from, which **Codex accounts never have**: nothing
-snapshots quota for that runtime and the sweep is Claude-only, so a Codex account marked
-`quota_exceeded` on rotation keeps the label and stays out of its pool until something else moves it.
+timer. And the derivation needs a reading to work from, which a **Codex account has only when Codex
+recorded one with the refusal** — see [A Codex quota refusal with no rate-limit reading is never
+restored automatically](#a-codex-quota-refusal-with-no-rate-limit-reading-is-never-restored-automatically).
+Without it, a Codex account marked `quota_exceeded` on rotation keeps the label and stays out of its
+pool until someone re-activates it.
 
 ### The Inference page can hold row-lock transactions across a token endpoint call
 
@@ -1962,16 +1965,56 @@ that does it has known limits:
   page, in their own words, so "under the ceiling but still not firing" takes two readings to
   diagnose. Neither is on `/health` or in `get_system_health`.
 
-### `CodexRetryStrategy` classifies almost nothing
+### Codex failure classification rests on one CLI version's record
 
-🔴 It returns `false` from `context_length_error?`, `api_error_for_retry?`, and
-`auth_recovery_needed?`, and only matches `/no rollout found/i`. Exit 0 is treated as success.
+🟡 `CodexRetryStrategy` classifies a failed Codex turn by the `codex_error_info` code Codex writes on
+the rollout's `task_complete` record (see [Agent harness](/extend/agent-harness/#codex-classifies-by-the-code-it-records)).
+Every code and message it reads was produced by codex-cli 0.146.0 against a local fake of the
+ChatGPT backend — not captured from a production failure — and over the HTTPS transport, because
+the fake refused the WebSocket upgrade. A Codex release that renames a code, or a backend that
+reports a failure under a code the fake never produced, turns a recoverable exit into an
+unclassified one.
 
-For a Codex session that means: no context-length compaction retry, no API-error retry, no quota
-rotation, and no auth recovery. Everything the Claude path does to keep a session alive, Codex does
-without.
+That is now loud rather than silent: `classifies_exits?` is `true` for Codex, so an exit none of
+its classifiers claims fails the session **and** raises `UnclassifiedFailureReporter` with Codex's
+own message attached. Before, every ordinary Codex failure took that branch by design, so it logged
+and did not page. The new alert surface is intended; a burst of it after a Codex upgrade means the
+table in `CodexTurnError` needs a new row.
 
-Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).
+What the classifiers deliberately do not cover:
+
+- **An `other` code with no HTTP status in its prose** (a raw 400 body, "Error running remote
+  compact task", …) is unclassified. The one exception is a raw 400 whose body names the API's
+  `"code": "context_length_exceeded"`, which routes to compaction.
+- **`usage_not_included`** ("To use Codex with your ChatGPT plan, upgrade to Plus") shares
+  `usage_limit_exceeded` with a spent quota, so it rotates like one. It carries no rate-limit
+  reading, so the account is not restored automatically — which is right, because waiting does not
+  fix it.
+- **A 429 that is really an exhausted API-key quota** reads as `response_too_many_failed_attempts`
+  with status 429 — the same as a transient rate limit — so it is retried six times with backoff
+  before the session fails.
+- **Codex 429s do not count toward `GlobalRateLimitTracker`.** That tracker is the fleet's measure of
+  pressure on the Anthropic API and every Claude session's backoff reads it; an OpenAI rate limit
+  says nothing about it.
+- **Nothing reads Codex's stderr for these classifiers.** It is Codex's tracing log, full of WARN
+  lines quoting upstream errors Codex went on to retry past. Only the failed-resume signature
+  (`no rollout found`) is still a stderr match.
+
+### A Codex quota refusal with no rate-limit reading is never restored automatically
+
+🟡 `QuotaResetCheckerJob` restores a `quota_exceeded` Codex account on the reading Codex recorded
+when it refused the account — the `x-codex-primary-*` / `x-codex-secondary-*` windows it writes on a
+`token_count` record, kept as a `usage_limit` quota snapshot. A refusal that came with no windows,
+or with a capped window and no reset time, leaves no such reading, and the account stays
+`quota_exceeded` until someone re-activates it on `/inference`. So does an account whose latest
+reading predates the rotation that labelled it (by more than ten minutes): that reading is an older
+refusal's, and restoring on it would put an account the backend just refused back in rotation.
+
+Codex's primary window is stored in the snapshot's five-hour columns and its secondary window in the
+weekly ones. The restore predicate (`windows_clear?`) reads reset times and counters, not window
+lengths, so the naming does not change its answer. `/inference` does not draw a Codex account's
+windows at all — its card still reads "no usage quota tracked" — so the reading is visible only in
+the account's status badge (which, as for Claude, derives from it) and in the restore.
 
 ### A fresh-started Codex session has no runtime id until its first poll
 
@@ -2116,22 +2159,6 @@ extension to assert it about — `BUILTIN_EXTENSION_CLASSES` is empty, and `app/
 end. The class of failure still open is a Zeitwerk one — a file whose constant does not match the
 collapsed path, so `safe_constantize` returns `nil` and the registry skips it exactly as it would
 skip a deleted directory. Presence in the image no longer hides that; nothing else catches it either.
-
-### Extension env contributions are unreachable from Codex
-
-`Zimmer::ExtensionRegistry.spawn_env_contributions` is called only from `ClaudeSpawnEnv` — despite the hook
-receiving a `runtime` context that implies it's generic.
-
-Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).
-
-### Shared code still says "Claude"
-
-`SubagentTranscript#open_transcript_events` hardcodes `ClaudeTranscriptNormalizer`.
-
-`TranscriptPollerService`'s waiting log now names the session's own runtime via
-`RuntimeRegistry.label_for`, so it no longer tells a Codex session to wait on the Claude CLI.
-
-Tracked in [#54](https://github.com/tadasant/zimmer/issues/54).
 
 ### The login flow screen-scrapes a TUI
 

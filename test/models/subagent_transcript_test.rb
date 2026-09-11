@@ -35,6 +35,34 @@ class SubagentTranscriptTest < ActiveSupport::TestCase
     assert other_subagent.valid?
   end
 
+  # #54: the normalizer used to be ClaudeTranscriptNormalizer unconditionally, so a
+  # Codex-shaped line rendered as nothing (or worse, as a Claude line it resembled).
+  test "open_transcript_events normalizes with the parent session's runtime" do
+    @session.update!(agent_runtime: "codex")
+    codex_line = {
+      "timestamp" => "2026-09-11T13:23:47.742Z",
+      "type" => "response_item",
+      "payload" => { "type" => "message", "role" => "assistant",
+                     "content" => [ { "type" => "output_text", "text" => "hello from codex" } ] }
+    }
+    subagent = SubagentTranscript.new(session: @session, agent_id: "agent-codex", transcript: "#{codex_line.to_json}\n")
+
+    events = subagent.open_transcript_events
+
+    assert_equal 1, events.size
+    assert_includes events.first.to_json, "hello from codex"
+  end
+
+  test "open_transcript_events still normalizes Claude JSONL for a Claude session" do
+    claude_line = {
+      "type" => "assistant", "uuid" => "u-1", "timestamp" => "2026-09-11T13:23:47.742Z",
+      "message" => { "role" => "assistant", "content" => [ { "type" => "text", "text" => "hello from claude" } ] }
+    }
+    subagent = SubagentTranscript.new(session: @session, agent_id: "agent-claude", transcript: "#{claude_line.to_json}\n")
+
+    assert_includes subagent.open_transcript_events.to_json, "hello from claude"
+  end
+
   test "parsed_transcript returns empty array when transcript is nil" do
     subagent = SubagentTranscript.new(session: @session, agent_id: "agent-test")
     assert_equal [], subagent.parsed_transcript

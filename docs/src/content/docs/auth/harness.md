@@ -515,7 +515,8 @@ mark nothing acts on, over an account every spawn path still refuses.
 `CodexAuthProvider#rotate_under_lock` applies the same reason gate, and it is the *only* gate it can
 apply: a Codex account carries no Anthropic quota window to probe, so there is no reading to weigh.
 That also makes the mistake permanent on that side rather than merely slow — `QuotaResetCheckerJob`
-is Claude-only, so nothing ever restores a Codex account labelled by mistake.
+restores a Codex account only on the rate-limit reading Codex recorded when it refused the account
+(see [Codex quota and auth](#codex-quota-and-auth)), and a label written by mistake has none.
 
 :::caution[Without that, one blanked credential read as a drained pool]
 At 02:05Z on 2026-08-23 a Claude account's OAuth tokens were blanked to empty strings, so every
@@ -531,6 +532,39 @@ The `/inference` badge had been working around these labels since
 [#426](https://github.com/tadasant/zimmer/issues/426); the parking decision was still reading them
 raw.
 :::
+
+### Codex quota and auth
+
+A Codex session reaches the same rotation and recovery paths through the error Codex records on a
+failed turn (see [Agent harness](/extend/agent-harness/#codex-classifies-by-the-code-it-records)):
+
+- **`usage_limit_exceeded`** — "You've hit your usage limit … try again at 2:23 PM", and also "Quota
+  exceeded" and "To use Codex with your ChatGPT plan, upgrade to Plus" — goes to
+  `ApiErrorRetryService`, which answers `:quota_exceeded` without retrying, so
+  `ProcessLifecycleManager` rotates through `CodexAuthProvider#rotate_for_quota!` and resumes the
+  thread on the next account. With nothing to rotate into, the session parks with
+  `QUOTA_EXHAUSTED`, exactly as a Claude session does.
+- **The reading that says when the account is back.** Codex records the account's rate-limit
+  windows — `used_percent`, `window_minutes`, `resets_at` from the backend's `x-codex-primary-*` and
+  `x-codex-secondary-*` headers — on the `token_count` record it writes just before the refusal.
+  `ApiErrorRetryService` keeps that as a `usage_limit` quota snapshot against the account the
+  process ran as (primary window in the five-hour columns, secondary in the weekly ones), and
+  `QuotaResetCheckerJob` restores the account once `windows_clear?` says its capped windows have
+  reset. It is only kept when it explains the refusal — a window at its cap, with a reset time — and
+  the restore ignores a reading older than the rotation that labelled the account. The same reading
+  gives a Codex quota park its "resumes at" estimate.
+- **`unauthorized`** — "Your access token could not be refreshed because your refresh token has
+  expired / was revoked / was already used" — and a 401 go to `AuthRecoveryCoordinator`. When the
+  pool has not moved under the session, the coordinator refreshes the account first. For Codex a
+  refresh that succeeds proves the account serves (`CodexAuthProvider#refresh_proves_serviceable?`:
+  Codex reports quota with its own code, so this one is only about the credential), so the session
+  is **re-seeded** with it instead of being rotated away from a working account — the usual cause
+  is a Codex process losing the single-use-refresh-token race to another refresher. That happens
+  once per incident; failing the same way again rotates. A refresh that fails condemns or strikes
+  the account as usual and rotates.
+
+A Codex account marked `quota_exceeded` by a refusal that left no reading stays marked until someone
+re-activates it — see [Known limitations](/limitations/#a-codex-quota-refusal-with-no-rate-limit-reading-is-never-restored-automatically).
 
 ## Refreshing a token without burning it
 
