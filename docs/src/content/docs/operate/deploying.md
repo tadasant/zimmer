@@ -603,11 +603,25 @@ def effective_grant
 end
 ```
 
-`has_attribute?` is false exactly when the column is not in the table, so the answer is the meaning
-that row already had. Guard the column's validations with the same test, and have any write that
-*needs* the column fail loudly rather than silently storing something weaker. There is no guard for
-this one: the discipline is to route every read of a new column through a single accessor in the
-deploy that adds it.
+`column_names` is the table's own shape, so the answer is the meaning that row already had. Ask the
+table rather than the row: `has_attribute?` is *also* false for a record loaded through a projection
+that left the column out, and answering the old default for one of those would apply it to a row
+that really does carry a value. Guard the column's validations with the same test, and have any
+write that *needs* the column fail loudly rather than silently storing something weaker.
+
+**The default is only correct in the forward direction, and that bound is the price.** It holds
+while the column has never existed, because no row can yet carry a value other than the default. It
+does **not** hold in reverse: roll the migration back, or run an older image after narrow values
+exist, and every one of them silently reads as the default — for `api_keys.grant` that means every
+Quick Router key becomes a full-API key. So the accessor is not a licence to treat the migration as
+optional; it buys the window between the code landing and the migration applying, and nothing after
+it. Say so wherever the reverse is plausible, and prefer an irreversible `down` on a migration whose
+column carries a privilege.
+
+There is no guard for any of this: the discipline is to route every read of a new column through a
+single accessor in the deploy that adds it — including the ones that do not look like reads, such as
+an Administrate dashboard, which renders `ATTRIBUTE_TYPES` by `public_send` and will raise on the
+raw attribute exactly as application code does.
 
 ## One-time post-deploy tasks
 

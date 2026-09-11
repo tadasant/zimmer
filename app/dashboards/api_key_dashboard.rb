@@ -5,7 +5,7 @@ class ApiKeyDashboard < Administrate::BaseDashboard
     id: Field::Number,
     name: Field::String,
     source: Field::String,
-    grant: Field::String,
+    effective_grant: Field::String,
     last_used_at: Field::DateTime,
     revoked_at: Field::DateTime,
     created_at: Field::DateTime,
@@ -17,6 +17,12 @@ class ApiKeyDashboard < Administrate::BaseDashboard
   # test/dashboards/dashboard_schema_coverage_test.rb reads this, so an omission
   # is a reviewed decision rather than a gap nobody noticed.
   DELIBERATELY_OMITTED = [
+    # Rendered as `effective_grant` instead, which is the same value on every
+    # database that has the column and `api` on one that does not. Administrate
+    # renders any public method, and reading the raw attribute would 500 this
+    # page on a database whose migration has not run — the operator's own
+    # diagnostic surface, during exactly the incident it would be opened for.
+    :grant,
     # The SHA-256 of the key. Harmless for a minted key, but an API_KEYS entry is
     # only as strong as whoever chose it, and a short one can be brute-forced from
     # its digest. The API keys page shows an 8-character fingerprint instead.
@@ -27,7 +33,7 @@ class ApiKeyDashboard < Administrate::BaseDashboard
     id
     name
     source
-    grant
+    effective_grant
     last_used_at
     revoked_at
   ].freeze

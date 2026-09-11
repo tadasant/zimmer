@@ -43,6 +43,11 @@ class ApiKeysController < ApplicationController
     # Two submits of one name at once (a double-click): the loser passes the
     # uniqueness validation and meets the unique index instead.
     render_create_error([ "Name has already been taken" ])
+  rescue ActiveRecord::ActiveRecordError => e
+    # Last, so the two specific rescues above keep their own wording. Reaches
+    # the refusal `mint!` raises when the grant column is not on the table yet:
+    # a refusal this page can state is better than a 500.
+    render_create_error([ e.message ])
   end
 
   def revoke
