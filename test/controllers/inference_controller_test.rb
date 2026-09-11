@@ -381,6 +381,68 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert_select "form[action=?]", refresh_all_inference_path
   end
 
+  # ── The dry-pool banner and the card's credential line (#239) ─────────
+  #
+  # During the 2026-07-31 outage the page read "1 Active" while zero accounts
+  # could serve a session, and the one account's card said "Credentials stored.
+  # Re-authenticate to replace them." over a token that was answering 401.
+
+  test "show warns at the top when no account in the pool can serve a session" do
+    refuse_every_claude_account
+
+    get inference_url
+
+    assert_response :success
+    assert_select "#pool_alert h2", text: /No Claude Code account can serve a session/
+    assert_select "#pool_alert p", text: /refused by Anthropic/
+  end
+
+  test "show does not warn while an account can still serve" do
+    get inference_url
+
+    assert_response :success
+    assert_select "#pool_alert h2", count: 0
+  end
+
+  test "an account card says Anthropic refused its credentials" do
+    account = claude_accounts(:primary)
+    account.record_credential_probe!(
+      QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+        error_message: "No rate-limit headers in response (HTTP 401). Token may be expired or invalid."),
+      probed_token: account.claude_access_token
+    )
+
+    get inference_url
+
+    assert_response :success
+    assert_select "#account_card_#{account.id}" do
+      assert_select "span", text: "Token refused"
+      assert_select "span", text: /Anthropic refused these credentials/
+    end
+  end
+
+  test "an account card reports a verified credential rather than a stored one" do
+    account = claude_accounts(:primary)
+    account.record_credential_probe!(
+      QuotaCheckService::Result.new(success: true, status_code: 200, utilization_5h: 0.1, utilization_7d: 0.1),
+      probed_token: account.claude_access_token
+    )
+
+    get inference_url
+
+    assert_response :success
+    assert_select "#account_card_#{account.id} span", text: /Credentials verified against Anthropic/
+  end
+
+  test "an account card with credentials nobody has presented says exactly that" do
+    account = claude_accounts(:primary)
+
+    get inference_url
+
+    assert_response :success
+    assert_select "#account_card_#{account.id} span", text: "Credentials stored, not yet checked against Anthropic."
+  end
+
   test "show renders account cards with per-account refresh buttons" do
     get inference_url
 
@@ -1916,6 +1978,19 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "input#app_setting_spot_preemption_enabled" do |inputs|
       refute inputs.first.attributes.key?("checked")
+    end
+  end
+  # Every Claude account in the pool refused by Anthropic: the state that reads
+  # "1 Active" on the grid and cannot serve a single session.
+  def refuse_every_claude_account
+    refusal = QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+      error_message: "No rate-limit headers in response (HTTP 401).")
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).each do |account|
+      if account.claude_access_token.present?
+        account.record_credential_probe!(refusal, probed_token: account.claude_access_token)
+      else
+        account.update!(status: :needs_reauth)
+      end
     end
   end
 end

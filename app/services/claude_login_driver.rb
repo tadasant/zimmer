@@ -76,7 +76,9 @@ class ClaudeLoginDriver < RuntimeLoginDriver
     # gets the same non-consuming probe rotation and bootstrap use (#239): present
     # the freshly-minted access token and see whether Anthropic honours it. A
     # probe that cannot reach Anthropic says nothing and does not block the login.
-    if QuotaCheckService.token_rejected?(credentials_json.dig("claudeAiOauth", "accessToken"))
+    captured_token = credentials_json.dig("claudeAiOauth", "accessToken")
+    probe = QuotaCheckService.check_with_token(captured_token)
+    if probe.rejected?
       raise "claude login produced credentials Anthropic rejected — the login did not complete against a usable account"
     end
 
@@ -84,6 +86,13 @@ class ClaudeLoginDriver < RuntimeLoginDriver
       oauth_config: { "claude_json" => claude_json, "credentials_json" => credentials_json },
       status: :active
     )
+
+    # The probe above is the one piece of evidence anybody has about this brand
+    # new token, and the card is about to be asked what it means. Recorded AFTER
+    # the write, because storing a new access token retires whatever verdict the
+    # row was carrying — see ClaudeAccount#credential_state. An unreachable probe
+    # records nothing and the row reads "stored, unverified", which is the truth.
+    account.record_credential_probe!(probe, probed_token: captured_token)
 
     # Writing only the DB row is what made a successful re-auth of the CURRENT
     # account a no-op: the live ~/.claude/.credentials.json every session reads

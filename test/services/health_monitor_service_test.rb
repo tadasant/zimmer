@@ -3058,6 +3058,29 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_match(/No Claude account is available/, auth[:status].message)
   end
 
+  test "auth_health counts the accounts whose credentials Anthropic refuses, and names them" do
+    ClaudeCredentialHealth.stubs(:status).returns(
+      ClaudeCredentialHealth::Status.new(state: :ok, detail: "fine", owner_email: "a@b.com", checked_at: Time.current)
+    )
+    refusal = QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+      error_message: "No rate-limit headers in response (HTTP 401).")
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).each do |account|
+      if account.claude_access_token.present?
+        account.record_credential_probe!(refusal, probed_token: account.claude_access_token)
+      else
+        account.update!(status: :needs_reauth)
+      end
+    end
+
+    auth = HealthMonitorService.new.auth_health
+
+    assert auth[:status].warning?
+    assert_equal 0, auth[:serviceable_accounts],
+      "an account Anthropic refuses cannot serve, whatever its status column says"
+    assert auth[:refused_credential_accounts].positive?
+    assert_match(/credentials Anthropic refuses/, auth[:status].message)
+  end
+
   test "a corrupt credentials file makes the overall status critical" do
     ClaudeCredentialHealth.stubs(:status).returns(
       ClaudeCredentialHealth::Status.new(state: :corrupt, detail: "tokens blanked", owner_email: "a@b.com", checked_at: Time.current)

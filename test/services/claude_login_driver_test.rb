@@ -96,6 +96,30 @@ class ClaudeLoginDriverTest < ActiveSupport::TestCase
     end
   end
 
+  test "capture! records the probe it already took, so the card can say the credentials work" do
+    Dir.mktmpdir do |dir|
+      write_claude_config(dir, email: @account.email)
+      @driver.capture!(dir, @account)
+
+      assert_equal :verified, @account.reload.credential_state,
+        "a login that was checked against Anthropic should say so, not just 'credentials stored'"
+    end
+  end
+
+  test "capture! leaves a login it could not check reading as unverified, and does not fail it" do
+    QuotaCheckService.stubs(:check_with_token).returns(
+      QuotaCheckService::Result.new(success: false, unreachable: true, error_message: "timeout")
+    )
+
+    Dir.mktmpdir do |dir|
+      write_claude_config(dir, email: @account.email)
+      @driver.capture!(dir, @account)
+
+      assert @account.reload.active?, "an unreachable Anthropic is not a verdict on the login"
+      assert_equal :unverified, @account.credential_state
+    end
+  end
+
   test "capture! reads credentials nested under .claude/" do
     Dir.mktmpdir do |dir|
       FileUtils.mkdir_p(File.join(dir, ".claude"))

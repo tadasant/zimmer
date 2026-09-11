@@ -208,7 +208,16 @@ class AccountRotationService
 
     current = ClaudeAccount.current_account
 
-    if current&.active? && current&.has_valid_config?
+    # `has_valid_config?` answers "something is stored", which is exactly the
+    # proxy for "usable" that let a 401ing account stay current through every
+    # session spawn of the 2026-07-31 outage (#239). It is still asked — a row
+    # with no credentials has nothing to write to disk — but a row whose stored
+    # token Anthropic has ANSWERED and refused now falls through to the bootstrap
+    # path below, which probes candidates and promotes one that works. Reading a
+    # recorded verdict costs no network call and cannot spend a refresh token; an
+    # unreachable Anthropic records nothing, so a provider blip cannot depose a
+    # working account.
+    if current&.active? && current&.has_valid_config? && !current.credential_rejected?
       if config_file_matches?(current) || adopt_own_filesystem_identity(current)
         # The container-local identity file agrees this is the current account,
         # so it owns the shared credentials. Bootstrap the shared owner marker if
@@ -285,7 +294,11 @@ class AccountRotationService
     # session is handed, so a row carrying only a stored identity is not a usable
     # current account here even though the hash is non-empty. Keeping it current
     # would spawn token-less sessions while /health called the same row corrupt.
-    if current&.active? && current&.claude_access_token.present?
+    # ...and not one Anthropic has already refused, for the reason spelled out in
+    # #ensure_active_account!: under this setting the stored token IS what the
+    # session is handed, so a recorded refusal is a statement about the exact
+    # string that would be exported as CLAUDE_CODE_OAUTH_TOKEN.
+    if current&.active? && current&.claude_access_token.present? && !current.credential_rejected?
       if current.token_expired? || current.token_expiring_soon?
         @logger.info("Refreshing expired/expiring tokens for current account", email: current.email)
         @logger.warn("Token refresh failed for current account", email: current.email) unless current.refresh_token!
@@ -509,14 +522,38 @@ class AccountRotationService
   # the candidate is promoted unvalidated. Reading a provider outage as "every
   # account is dead" would park every session on the instance at once.
   def usable_candidate?(account)
-    result = QuotaCheckService.check_with_token(account.claude_access_token)
+    probed_token = account.claude_access_token
+    # Nothing to present, so nothing a session could be handed. `available` only
+    # requires a non-empty oauth_config, which a row holding just an identity
+    # satisfies.
+    if probed_token.blank?
+      @logger.warn("Candidate holds no access token, skipping during bootstrap", email: account.email)
+      return false
+    end
 
-    if !result.success? && !result.unreachable? && account.can_refresh_token?
+    result = QuotaCheckService.check_with_token(probed_token)
+
+    # The repair refresh is spent once per recorded refusal, not once per spawn.
+    # A candidate that already carries one has been through this: the verdict is
+    # about the token in the row right now (writing a new one retires it), so the
+    # refresh that would have fixed a merely stale token has either already been
+    # taken or was never going to help. Without the guard, a pool whose only
+    # account has a working refresh endpoint and a dead subscription spends a
+    # single-use token on every session spawn, forever — the shape #242 is about,
+    # arrived at from a different direction.
+    if result.credential_refused? && account.can_refresh_token? && !account.credential_rejected?
       @logger.info("Candidate's token was refused, refreshing before deciding", email: account.email)
       account.refresh_token!
       account.reload
-      result = QuotaCheckService.check_with_token(account.claude_access_token)
+      probed_token = account.claude_access_token
+      result = QuotaCheckService.check_with_token(probed_token)
     end
+
+    # The verdict this candidate was judged on, kept for the page that has to
+    # explain the decision afterwards. Recorded here rather than at the first
+    # probe above: a refusal we are about to try to repair with a refresh is not
+    # a final answer about the account. See ClaudeAccount#record_credential_probe!.
+    account.record_credential_probe!(result, probed_token: probed_token)
 
     if result.success?
       snapshot = QuotaSnapshotService.save_snapshot(account, result, trigger: "bootstrap")
@@ -527,15 +564,21 @@ class AccountRotationService
       return false
     end
 
-    if result.unreachable?
-      @logger.warn("Could not reach Anthropic to validate the candidate, promoting it unvalidated",
+    if result.credential_refused?
+      @logger.warn("Candidate's tokens were rejected by Anthropic, skipping during bootstrap",
         email: account.email, error: result.error_message)
-      return true
+      return false
     end
 
-    @logger.warn("Candidate's tokens were rejected by Anthropic, skipping during bootstrap",
-      email: account.email, error: result.error_message)
-    false
+    # Unreachable, or answered with something that is not about authentication —
+    # a 400 for a retired probe model, a 404, a proxy stripping the rate-limit
+    # headers. Neither is a verdict on the credential, and skipping on one would
+    # skip EVERY candidate at once: an Anthropic-side change becoming an
+    # instance that cannot spawn. The same line the recorded verdict draws; see
+    # QuotaCheckService::Result#credential_refused?.
+    @logger.warn("Could not validate the candidate against Anthropic, promoting it unvalidated",
+      email: account.email, error: result.error_message, unreachable: result.unreachable?)
+    true
   end
 
   # True when the account's most recent quota reading says its weekly allowance is
@@ -629,6 +672,7 @@ class AccountRotationService
     return unless token.present?
 
     result = QuotaCheckService.check_with_token(token)
+    account.record_credential_probe!(result, probed_token: token)
     return unless result.success?
 
     QuotaSnapshotService.save_snapshot(account, result, trigger: trigger)

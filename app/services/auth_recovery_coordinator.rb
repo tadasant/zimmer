@@ -325,6 +325,8 @@ class AuthRecoveryCoordinator
       probe = probe_access_token(current)
     end
 
+    record_final_probe(current, probe)
+
     if probe.success?
       snapshot = QuotaSnapshotService.save_snapshot(current, probe, trigger: "auth_recovery")
       unless snapshot.windows_clear?
@@ -388,8 +390,21 @@ class AuthRecoveryCoordinator
     QuotaCheckService.check_with_token(account.claude_access_token)
   end
 
+  # The verdict this recovery reached, once it is final. Recovery is the path
+  # most likely to be looking at a dead credential, and the operator reading
+  # /inference afterwards is the one who has to act on it — but a refusal this
+  # method is about to try to repair with a refresh is not a verdict, and
+  # recording one would take the account out of `ClaudeAccount.serviceable_for`
+  # for the seconds the repair takes. See ClaudeAccount#record_credential_probe!.
+  def record_final_probe(account, probe)
+    account.record_credential_probe!(probe, probed_token: account.claude_access_token)
+  end
+
+  # Only an authentication-class refusal is worth a refresh: a 400 or a 404 is
+  # about the request, and refreshing on one would spend a single-use token per
+  # recovery for as long as the Anthropic-side fault lasts (#242).
   def access_token_refused?(probe)
-    !probe.success? && !probe.unreachable?
+    probe.credential_refused?
   end
 
   def session_scoped_claude?

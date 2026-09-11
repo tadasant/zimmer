@@ -144,6 +144,44 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
       @session.reload.metadata[AuthOutageParkService::POOL_FINGERPRINT_KEY]
   end
 
+  # A credential verdict is the one thing that can change what the pool can serve
+  # WITHOUT changing any stored credential — so the fingerprint has to see it, or
+  # a session parked while an account was refused sleeps through its recovery
+  # (#239).
+  test "the pool fingerprint moves when a credential verdict does, and back when it retires" do
+    account = create_account(email: "present@example.com", status: :active)
+    healthy = AuthOutageParkService.pool_fingerprint("claude_code")
+
+    account.record_credential_probe!(
+      QuotaCheckService::Result.new(success: false, unreachable: false, status_code: 401,
+        error_message: "No rate-limit headers in response (HTTP 401)."),
+      probed_token: account.claude_access_token
+    )
+    refused = AuthOutageParkService.pool_fingerprint("claude_code")
+    assert_not_equal healthy, refused, "a refusal takes the account out of the pool and must show in the fingerprint"
+
+    account.record_credential_probe!(
+      QuotaCheckService::Result.new(success: true, status_code: 200, utilization_5h: 0.1, utilization_7d: 0.1),
+      probed_token: account.claude_access_token
+    )
+    assert_not_equal refused, AuthOutageParkService.pool_fingerprint("claude_code"),
+      "the recovery needs no credential write, so nothing else would tell a parked session it happened"
+  end
+
+  test "a repeat verification does not churn the pool fingerprint" do
+    account = create_account(email: "present@example.com", status: :active)
+    honored = QuotaCheckService::Result.new(success: true, status_code: 200, utilization_5h: 0.1, utilization_7d: 0.1)
+    account.record_credential_probe!(honored, probed_token: account.claude_access_token)
+    first = AuthOutageParkService.pool_fingerprint("claude_code")
+
+    travel 20.minutes do
+      account.record_credential_probe!(honored, probed_token: account.claude_access_token)
+
+      assert_equal first, AuthOutageParkService.pool_fingerprint("claude_code"),
+        "the sampler re-verifies the serving account every 15 minutes — hashing that would wake every parked session"
+    end
+  end
+
   # Creating the trigger while the session is still running is what makes the
   # session dormant: Trigger#sleep_target_session_if_applicable sets
   # pending_sleep, and the pause callback then transitions needs_input → waiting.

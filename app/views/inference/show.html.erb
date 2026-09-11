@@ -40,6 +40,12 @@
     <% if current_runtime == PiAuthProvider::RUNTIME %>
       <%= render "inference/pi_panel", status: @openrouter_status %>
     <% else %>
+      <!-- Dry pool. Above everything else on the page, because when it fires it is
+           the only thing on the page that matters: no account can serve a session
+           and every spawn is about to park. Rendered for both account pools (the
+           quota summary below is Claude-only, but "nothing can serve" is not). -->
+      <%= render partial: "inference/pool_alert", locals: { runtime: current_runtime, accounts: @accounts, snapshots: @snapshots } %>
+
       <!-- Aggregate Stats (Claude-only: the pool summary surfaces quota utilization,
            which has no Codex equivalent yet). -->
       <% if current_runtime == ClaudeAuthProvider::RUNTIME %>

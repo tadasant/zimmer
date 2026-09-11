@@ -79,6 +79,7 @@ class InferenceController < ApplicationController
         setting: AppSetting.current
       })
       yielder << turbo_stream.replace("aggregate_stats", html: aggregate_html)
+      pool_alert_stream(yielder)
       spot_gate_stream(yielder)
     end
   end
@@ -107,6 +108,7 @@ class InferenceController < ApplicationController
               setting: AppSetting.current
             }))
         ]
+        pool_alert_stream(streams, runtime: account.runtime)
         spot_gate_stream(streams, runtime: account.runtime)
         render turbo_stream: streams
       end
@@ -408,6 +410,18 @@ class InferenceController < ApplicationController
     @fleet_top_up = FleetTopUpStatus.current(setting: @app_setting)
   end
 
+  # Append a re-rendered dry-pool banner to a refresh response. A refresh is
+  # precisely when the pool's answer to "can anything serve a session" changes —
+  # it is the probe that discovers a refused token — so leaving the banner behind
+  # would leave the page's loudest element describing the pool as it was before
+  # the button was pressed.
+  def pool_alert_stream(sink, runtime: current_runtime)
+    sink << turbo_stream.replace("pool_alert",
+      html: render_to_string(partial: "inference/pool_alert", formats: [ :html ], locals: {
+        runtime: runtime, accounts: @accounts.reload, snapshots: @snapshots
+      }))
+  end
+
   # Append a re-rendered spot gate to a refresh response. The card's decision is
   # read from the very snapshots a refresh has just replaced, so without this a
   # refreshed page would show new utilization bars beside a decision taken before
@@ -540,13 +554,18 @@ class InferenceController < ApplicationController
 
     result = QuotaCheckService.check_with_token(token)
 
-    if !result.success? && result.error_message&.include?("401") && account.can_refresh_token?
+    if !result.success? && result.credential_refused? && account.can_refresh_token?
       if account.refresh_token!
         account.reload
         token = account.claude_access_token
         result = QuotaCheckService.check_with_token(token) if token.present?
       end
     end
+
+    # The verdict, after the one refresh this method allows — so the card the
+    # caller is about to re-render reports what Anthropic just said about the
+    # token now in the row rather than whether the row is non-empty (#239).
+    account.record_credential_probe!(result, probed_token: token)
 
     result
   end
