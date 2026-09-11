@@ -70,6 +70,14 @@ class GateDecisionTest < ActiveSupport::TestCase
     assert_equal before, record.attributes.except("writing_session_id")
   end
 
+  test "the writing session cannot be cleared while that session still exists" do
+    record = decision(writing_session: create_session)
+
+    refused_by_the_database { GateDecision.where(id: record.id).update_all(writing_session_id: nil) }
+
+    assert_not_nil record.reload.writing_session_id
+  end
+
   test "clearing the writing session does not carry any other change past the trigger" do
     record = decision(writing_session: create_session)
 

@@ -14,7 +14,7 @@
 # migrations here are written, does not have.
 #
 # Only functions and triggers. Views, rules, policies, domains and the rest are
-# still not dumped, and `db:schema:verify` (lib/schema_verify_task.rb) fails any
+# not dumped, and `db:schema:verify` (lib/schema_verify_task.rb) fails any
 # migration that builds one, because a schema load would not reproduce it. The
 # same check catches a function or trigger this dumper gets wrong: it compares
 # what Postgres reports after a from-zero migrate against what it reports after
@@ -24,7 +24,9 @@ module SchemaDumpFunctionsAndTriggers
 
   # Functions and procedures in the dumped schemas. Aggregates are left out
   # (`pg_get_functiondef` cannot render one), and so is anything an extension
-  # owns, which `enable_extension` already recreates. Ordered by signature so the
+  # owns, which `enable_extension` already recreates, or that Postgres made for
+  # another object (a range type's constructors, deptype 'i'), which comes back
+  # with that object or not at all. Ordered by signature so the
   # dump is the same whichever order the migrations created them in. A plpgsql
   # body is not checked until it runs, so the order only matters for a SQL-language
   # function calling another — which a schema load would fail on, loudly.
@@ -36,7 +38,7 @@ module SchemaDumpFunctionsAndTriggers
       AND p.prokind IN ('f', 'p')
       AND NOT EXISTS (
         SELECT 1 FROM pg_depend d
-        WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e'
+        WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype IN ('e', 'i')
       )
     ORDER BY p.oid::regprocedure::text
   SQL
@@ -56,11 +58,15 @@ module SchemaDumpFunctionsAndTriggers
   # One `execute` per statement, as a squiggly heredoc indented under the schema
   # block. Every definition Postgres renders starts at column 0, so the heredoc
   # strips exactly the four spaces added here and a function body comes back
-  # byte-for-byte. The quoted delimiter keeps Ruby from interpolating `#{`. A body
-  # with a line that would end the heredoc early falls back to a string literal.
+  # byte-for-byte. The quoted delimiter keeps Ruby from interpolating `#{`. Two
+  # bodies fall back to a string literal: one with a line that would end the
+  # heredoc early, and one with a carriage return, which Ruby's parser drops from
+  # the end of a heredoc line.
   def self.execute_statement(sql)
     sql = sql.strip
-    return "  execute #{sql.inspect}" if sql.each_line.any? { |line| line.strip == HEREDOC }
+    if sql.include?("\r") || sql.each_line.any? { |line| line.strip == HEREDOC }
+      return "  execute #{sql.inspect}"
+    end
 
     body = sql.each_line.map { |line| line.chomp.empty? ? "" : "    #{line.chomp}" }.join("\n")
     "  execute <<~'#{HEREDOC}'\n#{body}\n  #{HEREDOC}"

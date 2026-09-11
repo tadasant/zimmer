@@ -10,7 +10,7 @@
 # It could not ship with the table because db/schema.rb is a Ruby dump, and the
 # Ruby dumper has no way to write a trigger or a function down: a trigger installed
 # here would have existed in production and silently not existed in CI, in test,
-# or in anything rebuilt with `db:schema:load`. The dump now carries functions and
+# or in anything rebuilt with `db:schema:load`. The dump carries functions and
 # triggers (config/initializers/schema_dump_functions_and_triggers.rb), and
 # `db:schema:verify` fails any migration that builds an object a schema load
 # does not reproduce.
@@ -18,12 +18,14 @@
 # ONE UPDATE IS ALLOWED. `writing_session_id` is a foreign key with
 # ON DELETE SET NULL, so deleting a session updates every row it wrote, clearing
 # that column. Refusing it would make the session undeletable. The trigger lets an
-# UPDATE through only when `writing_session_id` ends up NULL and no other column
-# changed.
+# UPDATE through only when it clears `writing_session_id`, changes no other
+# column, and the session it pointed at no longer exists — which is true for the
+# foreign key's own UPDATE and false for anyone clearing the column by hand.
 #
-# TRUNCATE is not covered. It fires no row trigger, and it is already refused
-# while any GateDecisionFeedback row points at the table, because that foreign key
-# has no ON DELETE action.
+# TRUNCATE is not covered: it fires no row trigger. A plain TRUNCATE is refused
+# anyway, because gate_decision_feedbacks references the table; TRUNCATE … CASCADE
+# is not. A statement-level TRUNCATE trigger would close that, at the cost of
+# breaking `db:truncate_all` and `db:seed:replant` in development.
 class AddAppendOnlyTriggerToGateDecisions < ActiveRecord::Migration[8.1]
   def up
     execute <<~SQL
@@ -32,7 +34,8 @@ class AddAppendOnlyTriggerToGateDecisions < ActiveRecord::Migration[8.1]
       BEGIN
         IF TG_OP = 'UPDATE'
            AND NEW.writing_session_id IS NULL
-           AND (to_jsonb(NEW) - 'writing_session_id') = (to_jsonb(OLD) - 'writing_session_id') THEN
+           AND (to_jsonb(NEW) - 'writing_session_id') = (to_jsonb(OLD) - 'writing_session_id')
+           AND NOT EXISTS (SELECT 1 FROM sessions WHERE id = OLD.writing_session_id) THEN
           RETURN NEW;
         END IF;
 

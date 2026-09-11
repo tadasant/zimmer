@@ -39,8 +39,10 @@ module SchemaVerifyTask
       "AND d.objid = #{oid} AND d.deptype = 'e')"
   end
 
-  # Every kind of object a migration can build that is not a column or an index,
-  # one query per kind, each returning one self-describing line per object. Kinds
+  # The kinds of object a migration most plausibly builds with `execute` that are
+  # not a column or an index, one query per kind, each returning one
+  # self-describing line per object. Not exhaustive: foreign tables, extended
+  # statistics, grants, operators and collations, among others, are not read. Kinds
   # the dump does carry (enums, exclusion constraints, functions and triggers) are
   # listed too: they cost nothing when the two passes agree, and they catch the
   # dumper getting one wrong.
@@ -117,9 +119,11 @@ module SchemaVerifyTask
         AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
                           AND d.refobjsubid > 0 AND d.deptype IN ('a', 'i'))
     SQL
+    # Not by name: `add_exclusion_constraint` without `name:` hashes the expression
+    # as written, the dump omits that name, and a schema load hashes Postgres's
+    # normalized expression instead — a different name for the same constraint.
     "exclusion constraints" => <<~SQL,
-      SELECT 'CONSTRAINT ' || quote_ident(k.conname) || ' ON ' || k.conrelid::regclass::text || ' ' ||
-             pg_get_constraintdef(k.oid)
+      SELECT 'EXCLUSION CONSTRAINT ON ' || k.conrelid::regclass::text || ' ' || pg_get_constraintdef(k.oid)
       FROM pg_constraint k JOIN pg_namespace n ON n.oid = k.connamespace
       WHERE #{USER_SCHEMA} AND k.contype = 'x'
     SQL
