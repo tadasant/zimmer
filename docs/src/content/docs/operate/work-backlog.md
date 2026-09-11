@@ -242,6 +242,7 @@ least-recently-checked first, and records what GitHub currently says in `livenes
 | A merged PR references it, but the issue is still open | `pr_merged_issue_open` | Yes — **ambiguous**, see below |
 | No PR has ever referenced it | `no_pr` | Yes |
 | GitHub could not be read | `unknown` | Yes — re-checked next pass |
+| A newer row carries the same key | `superseded` | No — someone already re-queued it |
 
 ### It puts nothing back, and that is the design
 
@@ -287,7 +288,8 @@ queue rather than a fault counter.
 Every pass logs what it examined and the age of the oldest stranded row — at WARN when a repo could
 not be read, INFO otherwise, since production exports WARN and above
 ([#584](https://github.com/tadasant/zimmer/issues/584)). The backstop is an alert: when the oldest
-unresolved row passes `ALERT_AFTER` (7 days), `#eng-alerts` is told, because a population nothing
+unresolved row passes `ALERT_AFTER` (7 days), it is reported through `ErrorReporter` to the obs
+pipeline, which pages `#alerts` — because a population nothing
 drains needs an upper bound that is not a person remembering to look.
 
 ## The import
