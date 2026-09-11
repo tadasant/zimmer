@@ -113,7 +113,9 @@ Consumed as `${VAR}` placeholders in `mcp.json`, resolved by `SecretsLoader` at 
 
 - **Default runtime** (`claude_code` | `codex` | `pi`) and default model. See
   [Runtimes](/sessions/runtimes/).
-- **Extension toggles** — the `extension_states` JSONB map. See [Extensions](/extend/extensions/).
+- **Experimental toggles** — MCP tool search, session-scoped Claude credentials, and any
+  experimental extension (the `extension_states` JSONB map). See [Experimental
+  settings](/operate/costs/#experimental-settings) and [Extensions](/extend/extensions/).
 - Catalog refresh controls.
 
 Both values here are picked up by every session create that does not override them, with or without
@@ -122,6 +124,10 @@ an `agent_root`: `POST /api/v1/sessions` and MCP `start_session` both resolve th
 Pinned by `sessions_controller_contract_test.rb` ("create without agent_root honors the global
 default runtime and model") and by `start_session_test.rb` ("a rootless spawn resolves runtime and
 model through the Settings-page defaults").
+
+The default runtime and model and the Experimental toggles are also reachable over MCP, through
+`get_app_settings` / `action_app_settings` in the opt-in `settings` tool group. See [Zimmer's MCP
+server](/extend/mcp-server/).
 
 ## Hard-coded limits
 

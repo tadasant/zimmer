@@ -157,6 +157,53 @@ class McpControllerTest < ActionDispatch::IntegrationTest
     assert_empty all_tools.grep(/pin|place|remove|start_now|promote/)
   end
 
+  # The Settings page over the wire. The write changes what every later session
+  # is created under, so it is offered only to a connection that names
+  # `settings`: the unscoped surface and the self_session server injected into
+  # every session cannot even call it.
+  test "the settings tools exist only on a connection that names settings, and round-trip through POST /mcp" do
+    AppSetting.delete_all
+    tool_names = ->(path) { rpc("tools/list", path: path)["result"]["tools"].map { |t| t["name"] } }
+    text = ->(body) { body["result"]["content"].first["text"] }
+
+    refute_includes tool_names.call("/mcp"), "get_app_settings"
+    refute_includes tool_names.call("/mcp"), "action_app_settings"
+    refute_includes tool_names.call("/mcp?tool_groups=self_session"), "action_app_settings"
+
+    denied = rpc("tools/call", { "name" => "action_app_settings",
+                                 "arguments" => { "action" => "set_experimental_setting", "setting" => "mcp_tool_search", "enabled" => false } })
+    assert_equal(-32602, denied["error"]["code"], "the unscoped surface cannot call the write")
+    assert AppSetting.mcp_tool_search_enabled?, "a refused call wrote anyway"
+
+    assert_equal [ "get_app_settings" ], tool_names.call("/mcp?tool_groups=settings_readonly")
+
+    scoped = "/mcp?tool_groups=settings"
+    assert_equal %w[get_app_settings action_app_settings], tool_names.call(scoped)
+
+    before = rpc("tools/call", { "name" => "get_app_settings", "arguments" => {} }, path: scoped)
+    assert_includes text.call(before), "**Runtime:** `claude_code` (Claude Code) — shipped default, no override set"
+
+    set = rpc("tools/call", { "name" => "action_app_settings",
+                              "arguments" => { "action" => "set_session_defaults", "runtime" => "codex", "model" => "gpt-5.5" } }, path: scoped)
+    refute set["result"]["isError"], text.call(set)
+    assert_includes text.call(set), "**After:** runtime `codex` (override), model `gpt-5.5` (override)"
+
+    toggled = rpc("tools/call", { "name" => "action_app_settings",
+                                  "arguments" => { "action" => "set_experimental_setting", "setting" => "mcp_tool_search", "enabled" => false } }, path: scoped)
+    refute toggled["result"]["isError"], text.call(toggled)
+    refute AppSetting.mcp_tool_search_enabled?
+
+    refused = rpc("tools/call", { "name" => "action_app_settings",
+                                  "arguments" => { "action" => "set_session_defaults", "runtime" => "claude_code", "model" => "gpt-5.5" } }, path: scoped)
+    assert refused["result"]["isError"], "an invalid pair came back as a success"
+    assert_match(/gpt-5.5 is not available for Claude Code/, text.call(refused))
+
+    after = text.call(rpc("tools/call", { "name" => "get_app_settings", "arguments" => {} }, path: scoped))
+    assert_includes after, "**Runtime:** `codex` (Codex) — operator override"
+    assert_includes after, "**Model:** `gpt-5.5` — operator override"
+    assert_match(/`mcp_tool_search`\): \*\*off\*\* — operator override/, after)
+  end
+
   test "the append tool stamps the writing session from the connection, not the body" do
     writer = sessions(:running)
     args = { "key" => "zimmer#5", "issue_url" => "https://github.com/tadasant/zimmer/issues/5", "repo" => "tadasant/zimmer",

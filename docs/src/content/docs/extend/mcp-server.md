@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 33 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 35 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -82,11 +82,12 @@ session gets exactly the surface it should have and no more.
 | `/mcp?tool_groups=gate_decisions` | The [gate decision ledger](/operate/gate-decisions/): search past ratings, read the human corrections, record one |
 | `/mcp?tool_groups=work_backlog` | The [work backlog](/operate/work-backlog/): read the ranked queue, append a cleared issue, pull the top items into spot sessions |
 | `/mcp?tool_groups=sessions_readonly,outcome_analyses` | [Outcome analysis](/sessions/outcomes/#over-mcp): start, batch and stop analyses, plus the session reads |
+| `/mcp?tool_groups=settings` | The Settings page's global defaults: read and change the base runtime and model and the Experimental toggles |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
 | `/mcp?tool_groups=self_session&session_id=42` | Names the calling session, so self-management tools can default to it |
 
 The base groups are `sessions`, `notifications`, `triggers` and `health`; `gate_decisions`,
-`work_backlog` and `outcome_analyses` are **opt-in** groups, and `self_session` is a composite. Each domain group, opt-in included, has a
+`work_backlog`, `outcome_analyses` and `settings` are **opt-in** groups, and `self_session` is a composite. Each domain group, opt-in included, has a
 `_readonly` variant. Omitting `tool_groups` enables the four base groups and nothing else — an
 opt-in group is valid and addressable but never handed out by default, so `/mcp` on its own does
 not carry `record_gate_decision`. An unknown group is dropped with a warning rather than failing
@@ -201,7 +202,7 @@ production.
 
 ## The tool surface
 
-33 tools, seven domains — 26 of them on the unscoped surface.
+35 tools, eight domains — 26 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
@@ -212,6 +213,7 @@ production.
 | `gate_decisions` (opt-in) | `search_gate_decisions`, `get_gate_decision_feedback`, `record_gate_decision` |
 | `work_backlog` (opt-in) | `get_work_backlog`, `append_work_backlog_item`, `pull_work_backlog_items` |
 | `outcome_analyses` (opt-in) | `action_outcome_analysis` (its read, `get_outcome_analysis`, is in `sessions`) |
+| `settings` (opt-in) | `get_app_settings`, `action_app_settings` |
 
 `get_user_view` and `reorder_user_view` are the read and write halves of the dashboard's
 [User view](/sessions/user-view/) — the human's decision board. The read returns the board in the
@@ -353,6 +355,24 @@ running at a time (and none while a stopped one's analyses are still in flight),
 `expected_count` that must match what the filters would queue. `zimmer-outcome-analyses`
 (mcp.json, `?tool_groups=sessions_readonly,outcome_analyses`) is the one catalog entry that names the
 group.
+
+`settings` is the Settings page, and it is opt-in because of what it writes. `get_app_settings`
+reports the global base runtime and model and every Settings → Experimental toggle — MCP tool
+search, session-scoped Claude credentials, any registered experimental extension — each marked as
+the shipped default or an operator override. `action_app_settings` changes them: `set_session_defaults`
+takes a `runtime` and/or `model` (an empty string clears one, as the form's blank input does) and
+saves through the same model validation the form uses, so a pair the page refuses is refused here
+with the same message; `set_experimental_setting` takes a key from `ExperimentalSettingsRegistry`,
+the list the page renders, so an unregistered extension has no key and cannot be written. Those
+values are what every *later* session is created under, so a session holding the write can change
+the harness its successors run in. That is why the group is not in `health` beside the spot
+policy that shares its row, not in the base set, and never in `self_session`: a connection has to
+name `settings` to get the write, and `settings_readonly` gets the read alone. `zimmer-settings`
+and `zimmer-settings-readonly` (mcp.json) are the catalog entries that name them, and no root
+carries either by default. The usual caveat holds — a scoping boundary, not an authorization one —
+so the property that does not depend on the caller is the record: every write, from this tool or
+from `/settings`, leaves an `[AppSettings]` WARN line naming the surface, the action and the calling
+session, and every value that moved.
 
 `get_session_provenance` returns those same two sections on their own, for one `session_id`, with
 every entry it lists rendered in full — it exists to serve that record and nothing else, so it has no

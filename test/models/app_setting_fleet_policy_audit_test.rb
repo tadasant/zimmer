@@ -121,6 +121,48 @@ class AppSettingFleetPolicyAuditTest < ActiveSupport::TestCase
       "these settings can be changed but their change is not recorded"
   end
 
+  # The Settings page's half of the row gets a line of its own. An agent can move
+  # it through `action_app_settings`, and it decides what every later session is
+  # created under, so "who changed the default model" has to be answerable.
+  test "a change to a Settings page field is recorded on its own line, and not as fleet policy" do
+    setting = AppSetting.editable
+    setting.update!(default_model: "opus")
+
+    entries = capture_log_entries do
+      setting.policy_change_source = "test"
+      setting.update!(default_model: "sonnet", mcp_tool_search_enabled: false)
+    end
+
+    lines = entries.select { |_severity, message| message.include?("[AppSettings]") }
+    assert_equal 1, lines.size, "expected exactly one settings audit line, got #{lines.inspect}"
+    severity, message = lines.first
+    assert_equal "WARN", severity
+    assert_match(/changed via test/, message)
+    assert_match(/default_model "opus" -> "sonnet"/, message)
+    assert_match(/mcp_tool_search_enabled true -> false/, message)
+    assert_empty fleet_policy_lines(entries)
+  end
+
+  test "a fleet policy change writes no settings line" do
+    setting = AppSetting.editable
+    setting.update!(spot_max_concurrent_sessions: 12)
+
+    entries = capture_log_entries { setting.update!(spot_max_concurrent_sessions: 8) }
+
+    assert_empty entries.select { |_severity, message| message.include?("[AppSettings]") }
+  end
+
+  # The coverage guard for that half: every toggle Settings → Experimental
+  # renders from an AppSetting column, and both halves of the session default,
+  # have to be recorded when they move.
+  test "every Settings page column is in SESSION_SETTING_ATTRIBUTES" do
+    reachable = %w[default_runtime default_model extension_states] +
+      ExperimentalSettingsRegistry::BUILT_INS.map { |experimental| experimental.attribute.to_s }
+
+    assert_empty reachable - AppSetting::SESSION_SETTING_ATTRIBUTES,
+      "these settings can be changed but their change is not recorded"
+  end
+
   # Every comment in this area justifies the source constants by
   # distinguishability, and each surface's own test asserts its constant against
   # itself — which holds just as well for a copy-pasted duplicate.
@@ -129,7 +171,9 @@ class AppSettingFleetPolicyAuditTest < ActiveSupport::TestCase
       SpotPoliciesController::CHANGE_SOURCE,
       FleetTopUpPoliciesController::CHANGE_SOURCE,
       GenesisClassesController::CHANGE_SOURCE,
-      Mcp::Tools::ActionSpotPolicy::CHANGE_SOURCE
+      Mcp::Tools::ActionSpotPolicy::CHANGE_SOURCE,
+      AppSettingsController::CHANGE_SOURCE,
+      Mcp::Tools::ActionAppSettings::CHANGE_SOURCE
     ]
 
     assert_equal sources.size, sources.uniq.size, "two surfaces log under the same name"

@@ -116,6 +116,24 @@
       "X-API-Key": "${ZIMMER_PROD_API_KEY}"
     }
   },
+  "zimmer-settings-readonly": {
+    "title": "Zimmer Settings (read-only)",
+    "description": "Zimmer's native MCP server, scoped to reading the Settings page's global defaults: get_app_settings reports the global base runtime and model, and every Settings → Experimental toggle (MCP tool search, session-scoped Claude credentials, experimental extensions), each marked as the shipped default or an operator override. Read-only by construction — the settings group's write tool is excluded. The spot/priority policy on the same row is the health group's get_spot_policy, not this.",
+    "type": "streamable-http",
+    "url": "https://zimmer.example.com/mcp?tool_groups=settings_readonly",
+    "headers": {
+      "X-API-Key": "${ZIMMER_PROD_API_KEY}"
+    }
+  },
+  "zimmer-settings": {
+    "title": "Zimmer Settings",
+    "description": "Zimmer's native MCP server, scoped to the Settings page's global defaults: read them with get_app_settings and change them with action_app_settings — the global base runtime and model, and every Settings → Experimental toggle. These are what every NEW session is created under, so a session holding this entry can change the harness its successors run in; attach it only for work that is asked to change a setting, and prefer zimmer-settings-readonly otherwise. settings is an opt-in tool group, so this is the only catalog entry that reaches the write — the unscoped zimmer entry does not carry it. Every write leaves an [AppSettings] audit line naming the calling session.",
+    "type": "streamable-http",
+    "url": "https://zimmer.example.com/mcp?tool_groups=settings",
+    "headers": {
+      "X-API-Key": "${ZIMMER_PROD_API_KEY}"
+    }
+  },
   "figma": {
     "title": "Figma",
     "description": "Figma design MCP server (hosted, streamable-http). OAuth via browser flow.",
