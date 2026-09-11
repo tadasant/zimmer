@@ -66,6 +66,16 @@ class AirPrepareService
   # resolution is legitimately slow. Overridable via ENV for ops tuning.
   AIR_PREPARE_TIMEOUT_SECONDS = Integer(ENV.fetch("AIR_PREPARE_TIMEOUT_SECONDS", "600"))
 
+  # Bound on the pre-prepare catch-up fetch (see catch_up_catalog_cache!).
+  # Deliberately far shorter than AIR_PREPARE_TIMEOUT_SECONDS, because a fork and
+  # an unarchive run `air prepare` inside a web request: the Cloudflare edge in
+  # front of production cuts at ~100s, and prod Puma serves on RAILS_MAX_THREADS
+  # (3), so a fetch allowed to run for ten minutes could hold every thread the
+  # web has. Missing the catch-up costs a stale skill on one prepare, which the
+  # root-not-found retry below already recovers; blocking the web does not.
+  # Overridable via ENV for ops tuning.
+  CATALOG_CATCH_UP_TIMEOUT_SECONDS = Integer(ENV.fetch("CATALOG_CATCH_UP_TIMEOUT_SECONDS", "60"))
+
   # Bound on the post-install `air --version` health probe. A functional binary
   # answers in milliseconds, so this only has to outlast a loaded box — and it
   # has to, because a false from air_binary_healthy? is fatal: install_air_cli!
@@ -607,6 +617,7 @@ class AirPrepareService
     # resolve the same frozen catalog refs as the rest of the app.
     env = SecretsLoader.all.merge("AIR_CONFIG" => AirCatalogService.effective_air_json_path)
 
+    catch_up_catalog_cache!(env)
     run_air_prepare_command!(cmd, env)
 
     Rails.logger.info "[AirPrepareService] AIR prepare completed successfully"
@@ -899,6 +910,23 @@ class AirPrepareService
     false
   end
 
+  # Fetch this process's provider clones before `air prepare` when they are older
+  # than the ones the served catalog snapshot was resolved from.
+  #
+  # The skill list above was scrubbed against the snapshot, which the worker's
+  # cron keeps fresh; `air prepare` reads skills out of *this* container's
+  # ~/.air/cache. A fork or an unarchive runs here on the web container, whose
+  # clones are only as fresh as its last boot, so a skill the snapshot lists
+  # could be missing from disk and fail the prepare. On the worker the cron wrote
+  # the snapshot from this very disk, so the check is a directory glob and
+  # nothing more. Best-effort, like the root-not-found refresh below.
+  def catch_up_catalog_cache!(env)
+    return unless AirCatalogService.disk_cache_behind_snapshot?
+
+    Rails.logger.info "[AirPrepareService] provider cache is older than the catalog snapshot; fetching before air prepare"
+    refresh_catalog_cache!(env, timeout: CATALOG_CATCH_UP_TIMEOUT_SECONDS)
+  end
+
   # Bust this worker's AIR github catalog cache by running a bounded `air update`,
   # so a freshly-merged root that hasn't propagated here yet becomes resolvable on
   # the immediately-following `air prepare` retry. Best-effort: a refresh failure
@@ -910,12 +938,12 @@ class AirPrepareService
   # acceptable for the 15-min CatalogRefreshJob, but a hang risk on the synchronous
   # session-launch path this method runs on. Reuses the caller's env so the update
   # targets the same AIR_CONFIG catalog the prepare resolves against.
-  def refresh_catalog_cache!(env)
+  def refresh_catalog_cache!(env, timeout: AIR_PREPARE_TIMEOUT_SECONDS)
     air_bin = File.join(AIR_INSTALL_DIR, "node_modules", ".bin", "air")
     _stdout, stderr, status = BoundedSubprocess.run(
       [ air_bin, "update", "--git-protocol", "https" ],
       env: env,
-      timeout: AIR_PREPARE_TIMEOUT_SECONDS
+      timeout: timeout
     )
     return true if SubprocessStatus.success?(status)
 

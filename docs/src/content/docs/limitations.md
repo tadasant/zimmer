@@ -2661,17 +2661,27 @@ Three changes closed it ([#1078](https://github.com/tadasant/zimmer/issues/1078)
 
 Reported as [#69](https://github.com/tadasant/zimmer/issues/69).
 
-### A background thread inside Puma, to fix a container mismatch
+### The catalog snapshot trusts whichever process wrote last
 
-`~/.air/cache` is per-container, and the `*/15` refresh cron runs only in the worker — so the web
-container's catalog would drift stale for a full deploy cycle. `PeriodicCatalogRefresher` runs a bespoke
-background thread *inside Puma* every 300s to compensate. It waits on a `Concurrent::Event` rather than
-sleeping, so `stop!` wakes it immediately and an in-flight `air update` runs to completion instead of
-being killed mid-write — see
-[The streaming thread is asked to stop, never killed](/sessions/spawning/#the-streaming-thread-is-asked-to-stop-never-killed)
-for why an asynchronous kill on a thread that touches the database is not an option.
+Every process serves the newest `CatalogSnapshot` row
+([the snapshot is the source of truth](/air/zimmer-integration/#the-snapshot-is-the-source-of-truth)),
+and the newest row is the last one written, not the one written by the newest code. During a
+deploy the old worker is still running for a short while after the new one boots. If its `*/15`
+catalog refresh fires in that window, it stores a tree resolved from the *previous* image's in-repo
+catalog, and every process serves that until the next refresh, up to 15 minutes later. Only
+in-repo catalog changes (`skills/`, `roots.json`, `mcp.json`) are affected, since both images
+fetch the same github sources. **Refresh catalogs** clears it immediately.
 
-Tracked in [#98](https://github.com/tadasant/zimmer/issues/98).
+The same rule costs a developer something locally: editing `skills/skills.json` in a running dev
+server no longer shows up within a minute, because no process re-resolves on a timer. Press
+**Refresh catalogs**, or restart.
+
+A snapshot also says nothing about the process reading it. `degraded?` means "the latest refresh
+attempt failed", wherever it ran. A web container whose own boot-time `air update` fails marks
+the fleet's catalog degraded until the worker's next successful refresh, even though the worker's
+catalog was fine all along.
+
+Replaced the web-side refresh thread tracked in [#98](https://github.com/tadasant/zimmer/issues/98).
 
 ### The AIR CLI version is pinned in two places, and the catalog config in two files
 
@@ -3215,9 +3225,7 @@ What that leaves is bounded but real. The stop flag caps the thread at one more 
 finishes and exits on its own — but in the meantime it is a thread nobody is waiting for, and on the
 recovery-restart paths a second streaming thread is already running for the replacement process. The
 overrun is logged at `warn` (`"Log-streaming thread for session N did not stop within 5s"`), which is
-the only signal an operator gets; nothing counts it, and no alert fires on it. The same applies to
-`PeriodicCatalogRefresher#stop!` in the web container, which returns `false` and keeps its handle
-rather than clearing state it cannot vouch for.
+the only signal an operator gets; nothing counts it, and no alert fires on it.
 
 ### A stopped streaming thread stops reading its stderr file, and a truncated one goes unread
 

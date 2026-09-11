@@ -19,7 +19,6 @@ flowchart TB
     subgraph web["Web process (Puma / Thruster)"]
         RC["Controllers<br/>sessions · triggers · inference · mcp_oauth"]
         API["REST API<br/>/api/v1/* · X-API-Key"]
-        PCR["PeriodicCatalogRefresher<br/>(background thread, 300s)"]
     end
 
     subgraph worker["Worker process (GoodJob)"]
@@ -59,16 +58,15 @@ flowchart TB
     ASJ -->|"polls JSONL transcript"| CLONE
     CLI <--> EXT
     CRON <--> EXT
-    PCR --> RD
 ```
 
 ## The processes
 
 **Web (Puma, fronted by Thruster in production).** Serves the UI and the REST API. It runs
-no cron. It *does* run one background thread, `PeriodicCatalogRefresher`, which re-runs
-`air update` every 300 seconds, because the catalog cache lives on a per-container
-filesystem and the web container would otherwise serve a catalog frozen at boot.
-Tracked in [#98](https://github.com/tadasant/zimmer/issues/98).
+no cron and no background threads. It resolves the AIR catalog once at boot, then serves the
+newest `CatalogSnapshot` the worker's catalog refresh stored in Postgres, so it never needs
+its own copy of the catalog cache to be fresh. See
+[Zimmer integration](/air/zimmer-integration/#the-snapshot-is-the-source-of-truth).
 
 **Worker (GoodJob).** Everything that matters happens here: `AgentSessionJob` spawns agents
 and monitors them, and roughly two dozen cron jobs poll GitHub, poll Slack, refresh OAuth

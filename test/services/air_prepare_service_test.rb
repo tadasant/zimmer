@@ -1039,6 +1039,75 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_empty sleeps, "root-not-found refresh-and-retry should not use the transient backoff schedule"
   end
 
+  # A fork or unarchive runs `air prepare` on the web container, whose provider
+  # clones are only as fresh as its last boot, while the skill list was checked
+  # against the catalog snapshot the worker's cron keeps fresh (#98).
+  test "prepare! fetches before air prepare when the provider cache is behind the catalog snapshot" do
+    AirCatalogService.stubs(:disk_cache_behind_snapshot?).returns(true)
+    commands = []
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      commands << command_array[1]
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      AirPrepareService.new(session: @session, working_directory: @working_dir, file_system: @mock_fs).prepare!
+    end
+
+    assert_equal %w[update prepare], commands
+  end
+
+  # The catch-up runs inside a web request (fork/unarchive), behind an edge proxy
+  # that cuts at ~100s and on 3 Puma threads, so it gets its own short bound
+  # rather than `air prepare`'s 600s (fresh-eyes review of #1150).
+  test "prepare! bounds the catch-up fetch far shorter than air prepare itself" do
+    AirCatalogService.stubs(:disk_cache_behind_snapshot?).returns(true)
+    bounds = {}
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      bounds[command_array[1]] = timeout
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      AirPrepareService.new(session: @session, working_directory: @working_dir, file_system: @mock_fs).prepare!
+    end
+
+    assert_equal AirPrepareService::CATALOG_CATCH_UP_TIMEOUT_SECONDS, bounds["update"]
+    assert_equal AirPrepareService::AIR_PREPARE_TIMEOUT_SECONDS, bounds["prepare"]
+    assert_operator bounds["update"], :<, bounds["prepare"]
+  end
+
+  test "prepare! does not fetch when the provider cache is as fresh as the catalog snapshot" do
+    AirCatalogService.stubs(:disk_cache_behind_snapshot?).returns(false)
+    commands = []
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      commands << command_array[1]
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      AirPrepareService.new(session: @session, working_directory: @working_dir, file_system: @mock_fs).prepare!
+    end
+
+    assert_equal %w[prepare], commands
+  end
+
+  test "prepare! still runs air prepare when the catch-up fetch fails" do
+    AirCatalogService.stubs(:disk_cache_behind_snapshot?).returns(true)
+    commands = []
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      commands << command_array[1]
+      ok = command_array[1] != "update"
+      [ "", ok ? "" : "fatal: unable to access github.com", stub(success?: ok, exitstatus: ok ? 0 : 128) ]
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      AirPrepareService.new(session: @session, working_directory: @working_dir, file_system: @mock_fs).prepare!
+    end
+
+    assert_equal %w[update prepare], commands
+  end
+
   test "run_air_prepare_command! raises RootResolutionError when the root is still not found after a catalog refresh" do
     # A genuinely bad root name: even after a fresh catalog the root is absent.
     # This must raise the graceful, non-paging RootResolutionError (not a plain

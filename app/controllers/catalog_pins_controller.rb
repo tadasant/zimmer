@@ -29,6 +29,12 @@ class CatalogPinsController < ApplicationController
 
       # Validate the new pin set actually resolves before committing. Raises
       # CatalogError on failure, rolling back the pin changes above.
+      #
+      # This is the one web-side resolve after boot, and it has to be: only
+      # this connection can see the uncommitted pins. It fetches before it
+      # resolves, so this container's stale-since-boot clones do not matter,
+      # and the snapshot it stores commits with the pins — which is how the
+      # worker and every other process pick the pinned catalog up.
       AirCatalogService.refresh!
     end
 

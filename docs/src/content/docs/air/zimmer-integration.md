@@ -1,6 +1,6 @@
 ---
 title: How Zimmer consumes AIR
-description: The read path (AirCatalogService), the write path (AirPrepareService), the three cache layers, and the brittle stderr string-match that decides whether the catalog is healthy.
+description: The read path (AirCatalogService), the write path (AirPrepareService), the persisted CatalogSnapshot every process serves, and the brittle stderr string-match that decides whether the catalog is healthy.
 sidebar:
   order: 2
 ---
@@ -31,7 +31,7 @@ flowchart TB
         W --> W2 --> W3
     end
 
-    REFRESH["CatalogRefreshJob (worker cron, 15m)<br/>PeriodicCatalogRefresher (web thread, 300s)<br/>boot initializer"] --> R1
+    REFRESH["CatalogRefreshJob (worker cron, 15m)<br/>boot initializer (every process)<br/>catalog pin save"] --> R1
     R3 --> F
     R4 --> F
     F --> DB[("Session row:<br/>catalog_skills, mcp_servers,<br/>catalog_hooks, catalog_plugins")]
@@ -193,29 +193,59 @@ This is a second detector, not a replacement for the stderr one, and it does not
 [#1078](https://github.com/tadasant/zimmer/issues/1078), where a relocated config's relative index
 paths produced exactly this shape of empty tree and nothing noticed.
 
-## Three cache layers
+## The snapshot is the source of truth
 
-1. **60-second in-memory TTL** on the parsed tree, per process (`CATALOG_CACHE_TTL`).
-2. **`CatalogSnapshot`** — a Postgres-persisted last-known-good tree, written after every
-   *successful* resolve. Survives restarts, shared across web and worker.
-3. **AIR's own `~/.air/cache/github`** provider clones (dormant for an all-local catalog).
+In production the web (Puma) and worker (GoodJob) run in separate containers, so AIR's
+`~/.air/cache/github` provider clones are per-container. Only a process that has just fetched
+can resolve a fresh tree. So resolving is a write, and serving is a read:
 
-On failure, `load!` walks down: in-memory tree → `CatalogSnapshot.latest` → re-raise. It sets
-`@degraded = true`, logs at `error` once and `info` thereafter (no alert spam), and surfaces
-`degraded?` / `last_known_good_at` to health checks and the settings UI.
+- **Resolve (write).** `refresh!` runs `air update`, then `air resolve`, and stores the result as
+  the newest `CatalogSnapshot` row in Postgres. It runs once at boot in every process (so a new
+  image's in-repo catalog is live as soon as that image boots), on the worker's `*/15`
+  `CatalogRefreshJob` cron, behind the **Refresh catalogs** button (which enqueues that same job
+  on the worker), and when a catalog pin is saved. A process with no snapshot at all resolves on
+  first use.
+- **Serve (read).** A 60-second in-memory TTL on the parsed tree (`CATALOG_CACHE_TTL`). When it
+  expires, the process reads the newest snapshot's header (id, `resolved_at`, failure columns: one
+  narrow query) and loads the tree only if that row is newer than the one it is serving. No process
+  re-resolves on a timer, and there is no background thread anywhere.
 
-Only a first-ever cold boot with a broken catalog and no snapshot raises. The
-consequence: a broken catalog can be invisible until restart.
+So the web serves whatever the worker last resolved, at most a minute after the worker stored it.
 
-:::note[A background thread inside Puma, to paper over a container mismatch]
-`~/.air/cache` is per-container filesystem state, and the `*/15` `CatalogRefreshJob` cron runs
-**only in the worker**. The web container's catalog would otherwise be refreshed exactly once, at
-boot, and then drift stale for a full deploy cycle.
+The snapshot carries what a process used to read off its own disk:
 
-So `PeriodicCatalogRefresher` runs a bespoke background thread *inside Puma* that re-runs `air
-update` every 300 seconds. It works. It is also a background thread in a web server, existing
-purely to compensate for a container-topology mismatch.
-:::
+| Fact | Column | Read by |
+| --- | --- | --- |
+| When the writer last fetched its clones (FETCH_HEAD mtimes) | `fetched_at` | `last_refreshed_at`, the "Updated X ago" label |
+| The commit each pinnable catalog resolved to, for HEAD and its pinned ref | `catalog_shas` | `resolved_sha_for`, the settings page's catalog pins |
+| Whether the latest refresh attempt failed, and its scrubbed error | `failed_at`, `failure_message` | `degraded?`, `resolve_failure` |
+
+Two things still read the local disk, on purpose. `repo_root_for` wants a clone to read files out
+of, which a snapshot cannot carry; its only caller, `WarmSkillsCacheJob`, runs on the worker.
+`air prepare` materializes skills from the local cache too, and a fork or unarchive runs it on the
+web container. So before every prepare, `AirPrepareService` asks
+`AirCatalogService.disk_cache_behind_snapshot?` and runs an `air update` when this container's
+clones were fetched before the snapshot's, bounded by `CATALOG_CATCH_UP_TIMEOUT_SECONDS` (60s) —
+much shorter than `air prepare`'s own cap, because this one runs inside a web request. On the
+worker the check is a directory glob and nothing more.
+
+## Last-known-good and degraded
+
+A failed refresh (a failed `air update` or a failed `air resolve`) stores nothing new. It writes
+its error, scrubbed of credentials, onto the newest snapshot as `failed_at` / `failure_message` —
+unless that row was resolved *after* the failed attempt began, in which case another process
+succeeded while this one was failing and the row it wrote is fresh, so it is left alone.
+Every process that serves that row reports `degraded?` and `resolve_failure` from it on its next
+TTL tick, so the session form's failure banner and `get_configs` tell the truth in a web process
+that never resolves. The next successful refresh stores a fresh row, which clears it everywhere.
+
+The process whose refresh failed alerts: it logs at `error` on its own healthy→degraded transition
+(or `CatalogRefreshJob` does) and at `info` after that. A process that learns of the failure from the
+snapshot logs at `info` only, so one failure pages once, not once per process.
+
+Within the process that resolves, `load!` falls back in order: in-memory tree →
+`CatalogSnapshot.latest` → re-raise. Only a first-ever cold boot with a broken catalog and no
+snapshot raises.
 
 ## The write path: `AirPrepareService`
 
