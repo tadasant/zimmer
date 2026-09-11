@@ -46,6 +46,9 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     # is nullified so a deleted analyzer does not erase the record of the attempt.
     [ "outcome_analysis_batch_items", "analysis_session_id", :nullify ],
     [ "outcome_analysis_batch_items", "session_id", :cascade ],
+    # Nullify: the session that started a batch over MCP is provenance, not an
+    # owner — the batch and its record of what it analyzed outlive that session.
+    [ "outcome_analysis_batches", "started_by_session_id", :nullify ],
     # Cascade: an experimental-setting label describes one session's run and is
     # meaningless without it. Unlike a usage row it records no money spent, so
     # there is nothing to preserve past the session itself.
