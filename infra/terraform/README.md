@@ -22,7 +22,8 @@ The same module serves staging and production — the only difference is the
   Docker, joins Tailscale, runs **Caddy** as the TLS-terminating edge proxy
   (fronting kamal-proxy on `:8080`) and — only when a domain is set — bootstraps a
   self-signed cert for it, and authorizes the Kamal deploy key + admin/tooling keys
-  for root. It deliberately does **not** pull the image or start the app (nor
+  for root, and — only when `node_exporter_enabled` is set — a tailnet-bound
+  `node_exporter`. It deliberately does **not** pull the image or start the app (nor
   kamal-proxy) — Kamal does that over its SSH control channel after Terraform
   finishes.
 - `backend.staging.hcl` — partial S3-backend config (bucket/key/endpoint) for
@@ -109,11 +110,17 @@ force a droplet rebuild (needed only for the cloud-init-delivered changes that
 `ignore_changes = [user_data]` otherwise pins — see
 [Known limitations](../../docs/src/content/docs/limitations.md)).
 
-## Droplet monitoring
+## Host metrics
 
-The droplet sets `monitoring = true`, so DigitalOcean's (free) metrics agent is
-installed on every box this module creates — host CPU, memory, disk and load
-history, and the only metrics DO's own resource alert policies can evaluate.
+Two independent sources, both off-by-default-safe and both **create-time only**.
+
+### DigitalOcean's metrics agent (`monitoring`, default `true`)
+
+The droplet sets `monitoring = var.monitoring`, which defaults to `true`, so
+DigitalOcean's (free) metrics agent is installed on every box this module creates —
+host CPU, memory, disk and load history, and the only metrics DO's own resource alert
+policies can evaluate. It is a variable rather than a hardcode so a downstream copy of
+this module can decline it without forking the file.
 
 It is create-time only. `monitoring` is `ForceNew` in the provider and DigitalOcean
 has no droplet action to enable it, so it is also under `ignore_changes`: without
@@ -123,3 +130,32 @@ already-running droplet gets the agent only when it is rebuilt — DO's own reme
 is a root shell running their install script, which this deployment has no clean
 path to. See [Known limitations](../../docs/src/content/docs/limitations.md) and
 [zimmer#651](https://github.com/tadasant/zimmer/issues/651).
+
+### `node_exporter` (`node_exporter_enabled`, default `false`)
+
+Opt-in. When true, cloud-init installs a **pinned**, checksum-verified Prometheus
+[`node_exporter`](https://github.com/prometheus/node_exporter) as a systemd unit and
+serves `/metrics` on the droplet's **tailnet address only**, port `9100` — the
+conventional `node_*` metric names, for a deployment that scrapes host telemetry into
+its own monitoring plane. (Deliberately not the OpenTelemetry Collector's `hostmetrics`
+receiver, which emits `system.cpu.*`-style names and would mean rewriting every
+dashboard and alert rule written against the standard Prometheus host metrics.)
+
+- **No firewall rule, and none is wanted.** The bind is the droplet's single 100.x
+  address, never `0.0.0.0`, so `:9100` is reachable from tailnet peers and nowhere
+  else. This module's firewall still admits exactly one inbound rule (UDP 41641).
+  **The scraper must be on the tailnet.**
+- **It takes effect on the next droplet creation, not on a running box.** It is
+  delivered through cloud-init, and `user_data` is under `ignore_changes` — so
+  flipping this to `true` produces *no plan diff* and nothing reaches a live droplet.
+  A rebuild (`recreate_droplet: true`, or `terraform taint
+  digitalocean_droplet.zimmer`) is what applies it; installing it on an existing
+  droplet is a by-hand step over Tailscale SSH.
+- **The version is pinned** in `cloud-init.yaml.tftpl`, with its SHA-256 checked
+  before install. node_exporter reshapes collectors between minor releases, which
+  moves metric cardinality under whatever is scraping it. Bump the version and the
+  checksum together.
+
+`terraform plan` is not how you check this one. Render the template instead:
+`templatefile("cloud-init.yaml.tftpl", { ... node_exporter_enabled = true })`, or run
+`bin/rails test test/infra/`, which parses the rendered cloud-config both ways.
