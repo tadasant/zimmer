@@ -18,8 +18,8 @@ class RuntimeCliAdapterContractTest < ActiveSupport::TestCase
 
   # Permanent runtime adapters. Add new permanent runtimes here. Extension-provided
   # adapters (e.g. PtyClaudeCliAdapter, swapped in by the pty_transport extension)
-  # are contract-tested from their own extension test dir so the coverage is deleted
-  # along with the extension — see test/extensions/pty_transport/.
+  # are contract-tested alongside the extension itself, so the coverage travels with
+  # it — for pty_transport that is the private repo carrying its code, not this one.
   ADAPTERS = [
     ClaudeCliAdapter, MockClaudeCliAdapter,
     CodexRuntimeAdapter, MockCodexRuntimeAdapter,

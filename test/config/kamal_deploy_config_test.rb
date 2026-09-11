@@ -113,7 +113,7 @@ class KamalDeployConfigTest < ActiveSupport::TestCase
       # app/extensions/image_canary/ -- and the canary is the thing
       # scripts/assert-extensions-shipped.sh looks for, so the image guardrail would go
       # on passing while the tree it protects was hidden at runtime.
-      assert_empty volumes.grep(%r{:/rails/app/extensions(:|\z)}),
+      assert_empty volumes.grep(%r{:/rails/app/extensions/?(:|\z)}),
         "production/#{role} mounts over all of app/extensions/, hiding the image canary " \
         "and CLAUDE.md. Mount the extension's own subdirectory instead."
     end

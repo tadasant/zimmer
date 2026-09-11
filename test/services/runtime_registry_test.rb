@@ -91,7 +91,7 @@ class RuntimeRegistryTest < ActiveSupport::TestCase
   # ever naming a concrete extension. Exercised with a FAKE extension so this
   # coverage survives deletion of any real extension directory (the OSS-removal
   # invariant). The concrete pty_transport override is covered alongside the
-  # extension in test/extensions/pty_transport/pty_transport_extension_test.rb.
+  # extension, in the private repo that carries its code -- never here.
   FakeSwapAdapter = Class.new
 
   class FakeSwapExtension < Zimmer::Extension

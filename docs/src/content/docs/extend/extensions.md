@@ -69,20 +69,22 @@ three mount points, and the Settings → Experimental rendering all work. But in
 resolves to nothing, `register_builtins!` skips it, Settings → Experimental shows no extension, and
 every seam falls back to native.
 
-That is the removability mechanism working, not a gap in it. Registration is a class *name*;
-whether a name resolves is a property of the tree the app was built from.
+That is how the removability mechanism is meant to behave. Registration is a class *name*; whether
+a name resolves is a property of the tree the app was built from.
 
 `pty_transport` fulfils one-off headless inference — session titles, notification summaries,
 category inference — by driving the interactive Claude TUI inside a pseudo-terminal and scraping the
-transcript, instead of shelling out to `claude -p`. What that buys is the `usage` slot on
-`ClaudePrintRunner::Result`, which print mode can never fill. It depends on internal-only techniques
-we do not publish, which `Zimmer::Extension`'s own docstring says in as many words, so its code lives
+transcript, instead of shelling out to `claude -p`. It can therefore fill the `usage` slot on
+`ClaudePrintRunner::Result`, which print mode cannot; today every caller of
+`HeadlessInferenceService` discards that slot, so the slot is there for a backend that can populate
+it rather than for a consumer that reads it. The technique depends on internal-only methods we do
+not publish, which `Zimmer::Extension`'s own docstring says in as many words, so its code lives
 outside this repository and reaches the deployment that has it as a
 [bind mount](#enable-install-remove) rather than as a merged directory.
 
-So a standalone install of Zimmer gets the native path for headless inference and nothing is missing
-from it — `NativeClaudePrintRunner` is the historically-proven backend and always has been. The only
-thing it does not get is token usage on those calls.
+A standalone install of Zimmer therefore gets the native path for headless inference and gives up
+nothing observable: `NativeClaudePrintRunner` is the historically-proven backend, and it returns the
+same text for the same prompt.
 
 The extension that used to ship was `McpToolSearchExtension` (id `mcp_tool_search`), whose only hook
 returned `{"ENABLE_TOOL_SEARCH" => "true"}` for Claude Code. It is gone, because at the time it could
@@ -98,11 +100,11 @@ not — see [Extensions do ship in the image](/operate/deploying/#extensions-do-
 So the choice between an extension and an `AppSetting` column is back to being about what the thing
 *is*: an extension changes how Zimmer drives a runtime, a column is a value the app reads.
 
-:::caution[Don't write `PtyClaudePrintRunner` into this repository]
-The name is registered here and the code is withheld on purpose. Filling the gap in — adding
-`app/extensions/pty_transport/`, a PTY driver, or tests of one — publishes the technique the
-arrangement exists to keep private, and it turns `BUILTIN_EXTENSION_CLASSES`' claim about this build
-false. `test/services/zimmer/extension_registry_test.rb` asserts that every built-in name is
+:::caution[Don't vendor `app/extensions/pty_transport/` into this repository]
+The name is registered here and the code is withheld on purpose. Filling the gap in — the extension
+class, a PTY driver, or tests of either — publishes the technique the arrangement exists to keep
+private, and it falsifies what `BUILTIN_EXTENSION_CLASSES` claims about this build.
+`test/services/zimmer/extension_registry_test.rb` asserts that every built-in name is
 *unresolvable* here, so the first commit that lands such a directory fails CI and says why.
 
 The older docs got this backwards in the other direction: `docs/AO_EXTENSIONS.md` (now deleted)
