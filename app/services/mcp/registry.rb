@@ -96,8 +96,19 @@ module Mcp
       # global policy from inside a session it is being throttled by.
       # Costs is the ledger half of the same posture question GetSpotPolicy asks:
       # that one reads Anthropic's remaining headroom, this one reads what we
-      # spent. Read-only, and fleet-wide, so it stays out of self_session.
-      Definition.new(klass: "Mcp::Tools::GetCosts", group: "health", write: false),
+      # spent. Read-only, and fleet-wide — which is why self_session gets a
+      # composite OVERRIDE rather than the tool itself: SelfSessionGetCosts is
+      # hard-scoped to the calling session and refuses the fleet and agent-root
+      # forms, so a session can ask what it cost without being handed the
+      # deployment's bill. Same precedent, and same shape, as
+      # ActionSession -> SelfSessionActionSession above.
+      Definition.new(
+        klass: "Mcp::Tools::GetCosts",
+        group: "health",
+        write: false,
+        composite_groups: %w[self_session],
+        composite_overrides: { "self_session" => "Mcp::Tools::SelfSessionGetCosts" }
+      ),
       Definition.new(klass: "Mcp::Tools::GetSpotPolicy", group: "health", write: false),
       Definition.new(klass: "Mcp::Tools::ActionSpotPolicy", group: "health", write: true),
 

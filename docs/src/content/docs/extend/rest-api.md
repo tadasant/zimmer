@@ -927,6 +927,12 @@ unthrottled. `GET /health` is unaffected. See
 `by_day`, `by_agent_root`, `by_model`, `by_thread_kind`, `by_adhoc_source`, `top_sessions`, and
 `unpriced_models`. Window is `days` (default 7, clamped 1–365) or explicit `from`/`to`.
 
+Narrow every rollup with `agent_root` or `session_id` — the same two arguments `get_costs` takes and
+the Costs page's *Only this* links carry, so all three surfaces answer the same question. `session_id`
+wins when both are given, and the response echoes what it applied under `scope`. An agent-root scope
+excludes ad hoc spend, which belongs to no root; a session scope keeps the ad hoc calls made *about*
+that session. See [Narrowing the whole page](/operate/costs/#narrowing-the-whole-page).
+
 `GET /api/v1/costs/records` → the underlying rows, paginated. `kind` selects the table
 (`session`, the default, or `adhoc`); filter with `session_id`, `agent_root`, `agent_runtime`,
 `model`, `subagent`, or `source`. This is the export path for cost-versus-performance analysis —

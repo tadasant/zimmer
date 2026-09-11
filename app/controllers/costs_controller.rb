@@ -12,7 +12,14 @@ class CostsController < ApplicationController
     # One object carries the window whether it came from a one-click preset or the
     # calendar, so every link on the page can round-trip it with `to_params`.
     @window = CostWindow.from_params(params)
-    @analytics = @window.analytics
+
+    # The drilldown. `agent_root` and `session_id` are the same two arguments
+    # `get_costs` takes and `GET /api/v1/costs/records` filters by; without them
+    # here, a reader who spots one root at a large share on this page has to
+    # leave for the REST API to ask what that root actually spent it on.
+    @scope = CostScope.from_params(params)
+    @scoped_session = Session.find_by(id: @scope.session_id) if @scope.session?
+    @analytics = @window.analytics(scope: @scope)
 
     # One cached bundle rather than a dozen separate scans of the same window —
     # see CostAnalytics#snapshot for why that matters at a year of history.
@@ -60,7 +67,9 @@ class CostsController < ApplicationController
 
     # Back to the window the button was pressed from, preset or calendar range
     # alike — a sweep is not a reason to change what the viewer was looking at.
-    redirect_to costs_path(CostWindow.from_params(params).to_params),
+    # The scope rides back with the window for the same reason: a sweep is not a
+    # reason to widen the page from one agent root to the whole fleet either.
+    redirect_to costs_path(CostWindow.from_params(params).to_params.merge(CostScope.from_params(params).to_params)),
       notice: "History sweep #{run.status} — progress appears here as it runs."
   end
 end

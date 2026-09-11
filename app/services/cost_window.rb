@@ -107,5 +107,8 @@ class CostWindow
   # Whole days spanned, for prose that has to say "the last N days".
   def days = ((to - from) / 1.day).ceil.clamp(1, MAX_DAYS)
 
-  def analytics = CostAnalytics.new(from: from, to: to)
+  # @param scope [CostScope] which slice of the ledger to compute over. The
+  #   window and the scope are separate because they round-trip separately: a
+  #   reader changes one while keeping the other on every drilldown.
+  def analytics(scope: CostScope.new) = CostAnalytics.new(from: from, to: to, scope: scope)
 end

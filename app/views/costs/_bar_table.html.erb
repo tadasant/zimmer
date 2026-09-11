@@ -13,9 +13,18 @@
   locals: rows (Array<Hash>), label_key (Symbol), title (String),
           empty (String), max (Float), total (Float)
   optional: subtitle (String), detail_key (Symbol) — the key holding the row's
-            drilldown rows, and detail_label (Symbol) — the key naming each one.
+            drilldown rows, and detail_label (Symbol) — the key naming each one;
+            link_for (Proc) — given a row, the path that narrows the whole page
+            to it, or nil for a row that is not a scope (the folded "other (N)"
+            bucket is several roots, so it is not one thing to narrow to).
+
+  The narrowing link sits INSIDE the <summary> rather than replacing it. The row
+  already opens onto its own detail, and the two are different questions: the
+  panel says what this row is made of within the current page, the link makes the
+  whole page — daily series, model split, features — about this row alone.
 %>
 <% detail_key = local_assigns.fetch(:detail_key, nil) %>
+<% link_for = local_assigns.fetch(:link_for, nil) %>
 <% detail_label = local_assigns.fetch(:detail_label, :name) %>
 <% total = local_assigns.fetch(:total, nil) %>
 <div class="bg-white shadow rounded-lg overflow-hidden mb-6">
@@ -44,8 +53,17 @@
                   </svg>
                   <span class="truncate" title="<%= row[label_key] %>"><%= row[label_key] %></span>
                 </span>
-                <span class="text-sm font-medium text-gray-900 tabular-nums whitespace-nowrap">
-                  <%= number_to_currency(row[:cost_usd], precision: 2) %>
+                <span class="flex items-baseline gap-2 whitespace-nowrap">
+                  <span class="text-sm font-medium text-gray-900 tabular-nums">
+                    <%= number_to_currency(row[:cost_usd], precision: 2) %>
+                  </span>
+                  <% scoped_path = link_for&.call(row) %>
+                  <% if scoped_path %>
+                    <%= link_to scoped_path, class: "text-xs font-medium text-indigo-600 hover:text-indigo-500",
+                          title: "Show only #{row[label_key]}" do %>
+                      Only this<span aria-hidden="true"> &rarr;</span>
+                    <% end %>
+                  <% end %>
                 </span>
               </div>
               <div class="mt-1.5 flex items-center gap-2">

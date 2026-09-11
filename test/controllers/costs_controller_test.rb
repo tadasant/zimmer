@@ -58,6 +58,153 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     assert_match "cli_status_probe", response.body
   end
 
+  # The drilldown the issue asked for: a human who sees one root at a large share
+  # can click into it instead of leaving for the REST API.
+  test "the by-agent-root rows link into a page scoped to that root" do
+    usage(agent_root: "zimmer-router")
+    usage(agent_root: "issue-work-gate")
+
+    get costs_path(days: 7)
+
+    assert_response :success
+    assert_select "a[href=?]", costs_path(days: 7, agent_root: "zimmer-router")
+    assert_select "a[href=?]", costs_path(days: 7, agent_root: "issue-work-gate")
+  end
+
+  test "scoping to an agent root narrows every figure on the page" do
+    usage(agent_root: "zimmer-router", output_tokens: 200)
+    usage(agent_root: "issue-work-gate", output_tokens: 200)
+
+    get costs_path(agent_root: "zimmer-router")
+
+    assert_response :success
+    assert_match "zimmer-router", response.body
+    assert_no_match(/issue-work-gate/, response.body, "another root's spend must not appear on a scoped page")
+    assert_equal 1, @controller.instance_variable_get(:@totals)[:api_calls]
+    assert_equal [ "zimmer-router" ], @controller.instance_variable_get(:@by_agent_root).map { |r| r[:agent_root] }
+  end
+
+  test "scoping to a session narrows to that session and names it" do
+    mine = make_session("A router run")
+    theirs = make_session("Somebody else's run")
+    usage(session_id: mine.id)
+    usage(session_id: theirs.id, agent_root: "issue-work-gate")
+
+    get costs_path(session_id: mine.id)
+
+    assert_response :success
+    assert_match "A router run", response.body
+    assert_no_match(/Somebody else's run/, response.body)
+    assert_equal 1, @controller.instance_variable_get(:@totals)[:api_calls]
+    assert_select "a[href=?]", session_path(mine.id)
+  end
+
+  # Nothing on a scoped page may quietly widen back to the fleet: the window
+  # presets, the calendar form and the re-scan button all carry the scope.
+  test "the scope round-trips through the window controls and the re-scan button" do
+    usage(agent_root: "zimmer-router")
+
+    get costs_path(days: 7, agent_root: "zimmer-router")
+
+    assert_response :success
+    assert_select "a[href=?]", costs_path(days: 30, agent_root: "zimmer-router")
+    assert_select "input[type=hidden][name=agent_root][value=?]", "zimmer-router"
+    assert_select "form[action=?]", costs_backfill_path(days: 7, agent_root: "zimmer-router")
+    # The way back to the fleet.
+    assert_select "a[href=?]", costs_path(days: 7)
+  end
+
+  test "the re-scan button keeps the scope as well as the window" do
+    post costs_backfill_path(days: 30, agent_root: "zimmer-router")
+
+    assert_response :redirect
+    assert_equal costs_path(days: 30, agent_root: "zimmer-router"), response.location.sub(%r{\Ahttps?://[^/]+}, "")
+  end
+
+  # `"nope".to_i` is 0, a real id shape. A page silently narrowed to session 0
+  # would render an empty ledger with no explanation.
+  test "an unparseable session_id falls back to the fleet rather than to session 0" do
+    usage(agent_root: "zimmer-router")
+
+    get costs_path(session_id: "nope")
+
+    assert_response :success
+    assert_predicate @controller.instance_variable_get(:@scope), :fleet?
+    assert_match "zimmer-router", response.body
+  end
+
+  # Every panel on a narrowed page has to be narrowed or gone. The two that are
+  # fleet populations rather than rollups of this window — the burn rates and the
+  # experimental-setting cohorts — are gone, because under a heading naming one
+  # agent root a reader has no reason to suspect a figure is the whole fleet's.
+  test "the fleet-population panels do not render on a narrowed page" do
+    tagged_usage("cohort-off", cohort: false)
+    tagged_usage("cohort-on", cohort: true)
+    HarnessModelBurnRate.create!(harness: "claude_code", model: "claude-opus-5",
+                                usd_per_minute: 0.42, sample_session_count: 25,
+                                sample_minutes: 900, computed_at: Time.current)
+
+    get costs_path(days: 7)
+    assert_response :success
+    assert_match "Experimental settings", response.body
+    assert_match "Burn rate by harness + model", response.body
+
+    get costs_path(days: 7, agent_root: "zimmer")
+    assert_response :success
+    assert_no_match(/Experimental settings/, response.body)
+    assert_no_match(/Burn rate by harness \+ model/, response.body)
+  end
+
+  # Spend outlives its session — SessionTokenUsage nullifies rather than cascading
+  # — so the banner must not hyperlink a session row that is gone.
+  test "a scope naming a session that no longer exists says so instead of linking to a 404" do
+    gone = make_session("Since deleted")
+    usage(session_id: gone.id)
+    id = gone.id
+    gone.destroy!
+
+    get costs_path(session_id: id)
+
+    assert_response :success
+    assert_match "Session ##{id}", response.body
+    assert_match "(deleted)", response.body
+    assert_select "a[href=?]", session_path(id), count: 0
+  end
+
+  # `?agent_root[]=x` is an Array, and `to_s` on one produces a plausible-looking
+  # string that would then ride every link, the hidden form field and the cache key.
+  test "a non-scalar agent_root is ignored rather than stringified into the page" do
+    usage(agent_root: "zimmer-router")
+
+    get costs_path(days: 7, agent_root: [ "zimmer-router" ])
+
+    assert_response :success
+    assert_predicate @controller.instance_variable_get(:@scope), :fleet?
+    assert_no_match(/\[&quot;zimmer-router&quot;\]/, response.body)
+  end
+
+  test "a root-scoped page says ad hoc spend is excluded, not absent" do
+    usage(agent_root: "zimmer-router")
+    AdhocTokenUsage.create!(request_id: "req_adhoc_excluded", source: "cli_status_probe",
+                            model: "claude-opus-5", called_at: 1.hour.ago,
+                            input_tokens: 5, output_tokens: 10, cache_read_tokens: 20_000)
+
+    get costs_path(agent_root: "zimmer-router")
+
+    assert_response :success
+    assert_match "Ad hoc calls belong to no agent root", response.body
+    assert_no_match(/No ad hoc inference recorded/, response.body)
+  end
+
+  test "a scoped window with no spend says which scope it found nothing for" do
+    usage(agent_root: "zimmer-router")
+
+    get costs_path(agent_root: "not-a-root")
+
+    assert_response :success
+    assert_match "No usage recorded for not-a-root", response.body
+  end
+
   test "the window is selectable and bounded" do
     usage(called_at: 40.days.ago)
 
