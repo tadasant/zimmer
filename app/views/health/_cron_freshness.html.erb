@@ -51,8 +51,8 @@
     <p class="text-sm text-gray-700 break-words"><%= cron[:status].message %></p>
     <% if cron[:cron_running_since] %>
       <p class="mt-1 text-xs text-gray-500">
-        Cron manager running since <%= time_ago_in_words(cron[:cron_running_since]) %> ago
-        (the newest live worker's start — no key is judged late for time before it).
+        Newest cron-running worker started <%= time_ago_in_words(cron[:cron_running_since]) %> ago.
+        A tick counts against a key only if other keys' rows show the cron manager fired it.
       </p>
     <% end %>
 
