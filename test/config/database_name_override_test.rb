@@ -8,7 +8,7 @@ require "tmpdir"
 require "fileutils"
 
 # Agent sessions all share ONE Postgres -- the `devdb` Kamal accessory -- because a
-# session cannot start a database for itself (no root, no sudo, no Docker socket).
+# session cannot start a database for itself (no root, no sudo, no host Docker socket).
 # Sharing a server means the database NAMES have to be per-clone, or two sessions
 # that boot `bin/agent-dev` at the same time run each other's migrations.
 #
