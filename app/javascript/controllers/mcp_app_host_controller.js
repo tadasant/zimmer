@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { csrfHeaders } from "lib/csrf"
 
 // The browser half of Zimmer-as-MCP-host (SEP-1865 / io.modelcontextprotocol/ui).
 //
@@ -218,11 +219,7 @@ export default class extends Controller {
   async post(url, payload) {
     const response = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "X-CSRF-Token": this.csrfToken(),
-      },
+      headers: csrfHeaders({ Accept: "application/json" }),
       credentials: "same-origin",
       body: JSON.stringify(payload),
     })
@@ -231,10 +228,6 @@ export default class extends Controller {
       throw new Error(`Zimmer returned HTTP ${response.status}`)
     }
     return await response.json()
-  }
-
-  csrfToken() {
-    return document.querySelector("meta[name='csrf-token']")?.content || ""
   }
 
   // --- Host context --------------------------------------------------------
