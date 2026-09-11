@@ -131,9 +131,12 @@ see [Nested Docker for agent sessions](/operate/nested-docker/).
 
 Both roles mount the same durable named volumes, so state survives a deploy and a container recreate:
 
-- `zimmer_data` → `/home/rails/.zimmer` — the clones (`~/.zimmer/clones`) and scratch.
-- `claude_home` → `~/.claude` — Claude Code's transcripts, plus the shared credentials file
-  the entire [account-rotation system](/auth/harness/) hinges on.
+- `zimmer_data` → `/home/rails/.zimmer` — the clones (`~/.zimmer/clones`), scratch, and every
+  Claude session's own `CLAUDE_CONFIG_DIR` (`~/.zimmer/claude-config/<session_id>`), which is
+  the only credential file a Claude session reads and holds `mcpOAuth` and nothing else
+  ([the DB owns the chain](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain)).
+- `claude_home` → `~/.claude` — Claude Code's transcripts (`projects/`), which every
+  per-session config dir symlinks back to. No subscription credential lives here any more.
 - `codex_home` → `~/.codex` (`CODEX_HOME`) — Codex's rollout transcripts, `auth.json`, and
   thread store.
 - `pi_home` → `~/.pi/agent` (`PI_CODING_AGENT_DIR`) — Pi's credential and provider state

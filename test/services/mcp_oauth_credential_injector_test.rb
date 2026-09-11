@@ -18,8 +18,10 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
   # for the session-scoped Claude config dir, and a test that wants specific
   # on-disk entries layers with_claude_runtime_store / with_codex_runtime_store on
   # top of an already-redirected path.
+  # Claude Code is absent from this map deliberately: its store is not a constant
+  # but the session's own CLAUDE_CONFIG_DIR, redirected through the
+  # CLAUDE_SESSION_CONFIG_DIR env var below (issue #618).
   REDIRECTED_CREDENTIAL_STORES = {
-    ClaudeMcpCredentialWriter => :CLAUDE_CREDENTIALS_PATH,
     CodexMcpCredentialWriter => :CODEX_CREDENTIALS_PATH
   }.freeze
 
@@ -50,8 +52,10 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
       klass.any_instance.stubs(:macos?).returns(false)
     end
 
-    # The other path a Claude writer can resolve to: under session-scoped
-    # credentials, .for_session reads the session's own config dir instead.
+    # The only path a Claude writer resolves to: .for_session reads the session's
+    # own config dir. #macos? goes with it — the Claude writer mirrors to the
+    # login Keychain, which no test may touch either.
+    ClaudeMcpCredentialWriter.any_instance.stubs(:macos?).returns(false)
     @original_session_config_dir = ENV["CLAUDE_SESSION_CONFIG_DIR"]
     ENV["CLAUDE_SESSION_CONFIG_DIR"] = File.join(dir, "session-config")
 
@@ -855,7 +859,8 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     server_config = { type: "sse", url: "https://mcp.notion.com/sse", headers: { "X-Trace" => "1" } }
     ServersConfig.stubs(:credential_config).with("notion").returns(server_config)
 
-    claude_key = ClaudeMcpCredentialWriter.new.credential_key_for("notion", server_config)
+    claude_writer = ClaudeMcpCredentialWriter.for_session(@session)
+    claude_key = claude_writer.credential_key_for("notion", server_config)
     codex_key = CodexMcpCredentialWriter.new.credential_key_for("notion", server_config)
     assert_not_equal claude_key, codex_key, "the two runtimes must key this config differently for the test to bite"
 
@@ -867,7 +872,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
 
         assert_includes removed, claude_key
         assert_includes removed, codex_key
-        assert_empty ClaudeMcpCredentialWriter.new.read_runtime_credentials
+        assert_empty claude_writer.read_runtime_credentials
         assert_empty CodexMcpCredentialWriter.new.read_runtime_credentials
       end
     end
@@ -1042,7 +1047,7 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
       session = mock_claude_session([ "notion" ])
       injector = McpOauthCredentialInjector.new(session, working_directory: @working_directory)
 
-      status = with_claude_runtime_store(entries) { injector.check_credentials_status }
+      status = with_claude_runtime_store(entries, session) { injector.check_credentials_status }
 
       credential.reload
       assert_equal "runtime-rotated-refresh", credential.refresh_token,
@@ -1111,23 +1116,21 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     session
   end
 
-  # Points ClaudeMcpCredentialWriter's credential-store constant at a temp file
-  # holding the given mcpOAuth entries for the duration of the block.
-  def with_claude_runtime_store(entries)
+  # Seeds the session's own CLAUDE_CONFIG_DIR store with the given mcpOAuth
+  # entries — the file the CLI reads and writes back to, and the only Claude
+  # credential store there is (issue #618). The base redirect is already in
+  # place, so this writes into the temp tree rather than the real ~/.claude.
+  # `session` is POSITIONAL, not a keyword: every caller passes `entries` as a
+  # bare hash literal, and a method with any keyword parameter would swallow that
+  # literal into kwargs and leave `entries` empty.
+  def with_claude_runtime_store(entries, session = @session)
     ClaudeMcpCredentialWriter.any_instance.stubs(:macos?).returns(false)
-    dir = Dir.mktmpdir("claude-runtime-store")
-    path = File.join(dir, ".credentials.json")
+    path = ClaudeSessionConfigDirectory.credentials_path_for(session.id)
+    FileUtils.mkdir_p(File.dirname(path))
     File.write(path, JSON.generate("mcpOAuth" => entries))
-
-    klass = ClaudeMcpCredentialWriter
-    original = klass::CLAUDE_CREDENTIALS_PATH
-    klass.send(:remove_const, :CLAUDE_CREDENTIALS_PATH)
-    klass.const_set(:CLAUDE_CREDENTIALS_PATH, path)
     yield
   ensure
-    klass.send(:remove_const, :CLAUDE_CREDENTIALS_PATH)
-    klass.const_set(:CLAUDE_CREDENTIALS_PATH, original)
-    FileUtils.rm_rf(dir) if dir
+    FileUtils.rm_f(path) if path
   end
 
   # Helper to create a mock server config object

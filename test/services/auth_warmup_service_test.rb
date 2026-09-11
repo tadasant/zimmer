@@ -3,24 +3,18 @@
 require "test_helper"
 require "mocha/minitest"
 
-# Tests AuthWarmupService: the worker-boot warm-up that writes each runtime's
-# DB-current login identity to disk BEFORE GoodJob starts consuming jobs, closing
-# the post-deploy "Not logged in / Please run /login" cold-start gap.
+# Tests AuthWarmupService: the worker-boot warm-up that settles each runtime's
+# DB-current login identity BEFORE GoodJob starts consuming jobs, closing the
+# post-deploy "Not logged in / Please run /login" cold-start gap.
 #
-# Both runtimes' canonical credential paths are redirected to temp dirs so the
-# warm-up's disk writes are observable and never touch the real filesystem.
+# Codex's canonical auth.json path is redirected to a temp dir so its disk write
+# is observable and never touches the real filesystem. Claude writes nothing —
+# its sessions carry their own credentials (issue #618) — so the assertion for it
+# is that a usable account is current, which is what the spawn path now requires.
 class AuthWarmupServiceTest < ActiveSupport::TestCase
   setup do
     @service = AuthWarmupService.new
     @tmpdir = Dir.mktmpdir
-
-    # --- Redirect Claude credential paths (identity, credentials, owner marker) ---
-    @original_claude_json = ClaudeAuthProvider::CLAUDE_JSON_PATH
-    @original_credentials_json = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
-    ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, File.join(@tmpdir, "claude.json"))
-    ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, File.join(@tmpdir, ".credentials.json"))
 
     # --- Redirect Codex auth.json path ---
     @original_codex_home = CodexAuthProvider::CODEX_HOME
@@ -53,20 +47,14 @@ class AuthWarmupServiceTest < ActiveSupport::TestCase
 
   teardown do
     FileUtils.rm_rf(@tmpdir)
-    ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, @original_claude_json)
-    ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, @original_credentials_json)
     CodexAuthProvider.send(:remove_const, :CODEX_HOME)
     CodexAuthProvider.const_set(:CODEX_HOME, @original_codex_home)
     CodexAuthProvider.send(:remove_const, :AUTH_JSON_PATH)
     CodexAuthProvider.const_set(:AUTH_JSON_PATH, @original_auth_json_path)
   end
 
-  test "warm_all writes the DB-current identity to disk for every runtime" do
-    # Precondition: this is a cold worker boot — no identity files on disk yet.
-    refute File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
-    refute File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH)
+  test "warm_all settles the DB-current identity for every runtime" do
+    # Precondition: this is a cold worker boot — no identity file on disk yet.
     refute File.exist?(CodexAuthProvider::AUTH_JSON_PATH)
 
     results = @service.warm_all
@@ -75,16 +63,13 @@ class AuthWarmupServiceTest < ActiveSupport::TestCase
     assert_equal RuntimeAuthProvider::RUNTIMES.sort, results.map(&:runtime).sort
     assert results.all?(&:ok?), "expected every runtime to warm successfully, got #{results.inspect}"
 
-    # --- Claude identity written for the DB-current account (fixture: primary) ---
+    # --- Claude: a usable account is current, and nothing was written to disk ---
     claude_current = claude_accounts(:primary)
-    assert claude_current.is_current?
-    assert File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH), "~/.claude.json should be written on boot"
-    assert File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH), "~/.claude/.credentials.json should be written on boot"
-    claude_json = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
-    assert_equal claude_current.email, claude_json["oauthAccount"]
-
-    # Shared owner marker (the pulsemcp/pulsemcp#4183 invariant) is stamped to the warmed account.
-    assert_equal claude_current.email, ClaudeAccount.credentials_owner_email
+    assert claude_current.reload.is_current?
+    assert claude_current.claude_access_token.present?,
+      "the spawn path exports this token; a current account without one fails the spawn"
+    assert_equal [ "auth.json" ], Dir.children(@tmpdir),
+      "Claude writes no credential file at all — only Codex's auth.json should appear"
 
     # --- Codex identity written for the DB-current account (fixture: codex_primary) ---
     codex_current = claude_accounts(:codex_primary)
@@ -120,7 +105,7 @@ class AuthWarmupServiceTest < ActiveSupport::TestCase
     # Claude still warmed successfully — one runtime's empty pool can't block another.
     claude_result = results.find { |r| r.runtime == ClaudeAuthProvider::RUNTIME }
     assert claude_result.ok?
-    assert File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
+    assert_equal claude_accounts(:primary), claude_result.account
   end
 
   test "a runtime that raises is captured in its Result and does not abort the others" do
@@ -133,9 +118,9 @@ class AuthWarmupServiceTest < ActiveSupport::TestCase
     refute codex_result.ok?
     assert_equal boom, codex_result.error
 
-    # The Claude runtime is unaffected and still warms to disk.
+    # The Claude runtime is unaffected and still warms.
     claude_result = results.find { |r| r.runtime == ClaudeAuthProvider::RUNTIME }
     assert claude_result.ok?
-    assert File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH)
+    assert_equal claude_accounts(:primary), claude_result.account
   end
 end

@@ -991,7 +991,8 @@ way, in two places.
 
 **The gate is asked before the fork is made.** `SessionStatusSummaryGenerator` already checks the
 login pool before forking — if there is no account to run a fork on, it writes the blurb with one
-pool-independent `claude -p` completion instead. It asks the spot gate the same question, for the
+`claude -p` completion instead, which takes no pool slot (it runs on the current account's access
+token through `ClaudeHeadlessCredentials`). It asks the spot gate the same question, for the
 same reason: "the fleet is full" and "the pool is empty" both mean the fork cannot deliver, and
 neither is a reason to stand a session up. So while the gate is refusing, no summary fork is
 created at all — the blurb still arrives, from the path that spends no slot.

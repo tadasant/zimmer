@@ -120,18 +120,28 @@ module RuntimeMcpCredentialWriter
   end
 
   module ClassMethods
-    # The writer instance a given session's credentials should be routed
-    # through.
+    # Whether this runtime's credential store is addressable only through a
+    # session.
     #
-    # Most runtimes keep one host-global credential store and ignore the
-    # session entirely, which is what this default expresses. Claude Code
-    # overrides it: under session-scoped credentials each session reads and
-    # writes its own CLAUDE_CONFIG_DIR, so "which store" is a per-session
-    # question there. Callers that genuinely have no session — the cron sweep,
-    # the revocation path — keep calling `.new` directly.
+    # False for a runtime that keeps one host-global store, which is what lets a
+    # session-less caller — RefreshMcpOauthTokensJob's cron sweep — build a
+    # writer with `.new` and read it. Claude Code answers true: every session
+    # reads and writes its own CLAUDE_CONFIG_DIR and there is no host-global file
+    # left to read (issue #618), so the sweep skips it and the per-session
+    # reconciliation the injector does at every spawn is what captures a rotated
+    # token instead.
+    #
+    # @return [Boolean]
+    def session_scoped_store? = false
+
+    # The writer instance a given session's credentials should be routed
+    # through, or nil when this runtime cannot resolve one for that session.
+    #
+    # Most runtimes keep one host-global credential store and ignore the session
+    # entirely, which is what this default expresses.
     #
     # @param _session [Session]
-    # @return [RuntimeMcpCredentialWriter]
+    # @return [RuntimeMcpCredentialWriter, nil]
     def for_session(_session)
       new
     end

@@ -118,7 +118,7 @@ class InferenceController < ApplicationController
   # POST: Add an account to a runtime's pool. Creates the DB row (email +
   # priority); for Codex an optional api_key stores a ready-to-use OPENAI_API_KEY
   # credential. OAuth accounts are created empty here and authenticated via the
-  # Authenticate flow (or rake capture_tokens) afterward.
+  # Authenticate flow afterward.
   def add_account
     runtime = normalize_runtime(params[:runtime])
     email = params[:email].to_s.strip
@@ -165,8 +165,8 @@ class InferenceController < ApplicationController
 
   # DELETE: Remove an account from its runtime's pool. When the deleted account
   # is the current one, activate the next available account in that runtime (or
-  # leave the runtime with no current account if none remain). The worker's
-  # before-spawn reconciliation backfills the filesystem from the DB.
+  # leave the runtime with no current account if none remain). The next spawn
+  # reads the new current account out of the DB (Codex also rewrites auth.json).
   #
   # The account row goes; its history does not. Quota snapshots, login attempts,
   # and rotation events are nullified rather than destroyed, and each carries the
@@ -216,16 +216,18 @@ class InferenceController < ApplicationController
     current = ClaudeAccount.current_account(runtime)
 
     # Route through the provider's activate! so manual switches take exactly the
-    # same activation path as automatic rotations: write the runtime's credential
-    # files, mark current in the DB, snapshot (Claude). Skipping the filesystem
-    # write here would leave subsequent session spawns running under the previous
-    # account's credentials until reconciliation kicked in.
+    # same activation path as automatic rotations: mark current in the DB,
+    # snapshot (Claude), write ~/.codex/auth.json (Codex). Doing it by hand here
+    # would leave the two entry points free to drift.
     RuntimeAuthProvider.for(runtime).activate!(account)
 
     # Re-activating the account that is already current is a repair, not a
-    # rotation: it rewrites the live credential files from the DB copy. Recording
-    # it as a rotation from an account to itself would put a meaningless row in
-    # the history operators read to understand rotations.
+    # rotation: for a runtime that keeps a credential file (Codex), it rewrites
+    # that file from the DB copy. Recording it as a rotation from an account to
+    # itself would put a meaningless row in the history operators read to
+    # understand rotations. Claude Code offers no such control — there is no file
+    # to repair (issue #618) — but a direct POST still lands here, and answering
+    # it as a rotation-to-self would be the same meaningless row.
     reactivation = current&.id == account.id
 
     unless reactivation
@@ -237,7 +239,11 @@ class InferenceController < ApplicationController
       )
     end
 
-    notice = reactivation ? "Re-activated #{account.email} — its credentials were rewritten to the worker." : "Switched to #{account.email}"
+    notice = if reactivation
+      "Re-activated #{account.email}."
+    else
+      "Switched to #{account.email}"
+    end
     redirect_to inference_path(runtime: runtime), notice: notice
   end
 
@@ -476,7 +482,7 @@ class InferenceController < ApplicationController
   # Validate that an account can be made current. Returns [ok, error_message].
   # Codex API-key accounts authenticate statically — nothing to refresh. OAuth
   # accounts (both runtimes) must hold a refresh token that validates against the
-  # vendor before we write potentially-revoked credentials to the filesystem.
+  # vendor before we hand potentially-revoked credentials to a session.
   def validate_switchable(account)
     unless account.has_valid_config?
       return [ false, "Cannot switch to #{account.email} — no credentials stored. Authenticate the account first." ]

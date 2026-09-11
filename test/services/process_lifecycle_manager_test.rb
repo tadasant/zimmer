@@ -259,6 +259,30 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     assert_equal :idle, manager.current_state
   end
 
+  # A pool with nothing to hand the child is a configuration state, already red
+  # on /health and already alerted through needs_reauth — not a runtime fault. It
+  # still refuses the spawn, but at .warn: an .error here would page #alerts once
+  # per spawn attempt for as long as the pool stays empty (issue #618).
+  test "a spawn refused for want of a Claude credential is reported at warn, not error" do
+    @mock_cli_adapter.execute_hook = ->(opts) do
+      raise ClaudeSpawnEnv::MissingCredentialsError, "No Claude account in the pool holds a usable access token"
+    end
+
+    manager = create_manager
+    logger = manager.instance_variable_get(:@logger)
+    logger.expects(:error).never
+    logger.expects(:warn).with(regexp_matches(/spawn refused/i), anything).once
+
+    result = manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    assert_not result.success?
+    assert_match(/usable access token/, result.error)
+    assert_equal :idle, manager.current_state
+    @log_buffer.flush
+    assert @session.logs.exists?([ "content LIKE ?", "Cannot spawn:%" ]),
+      "the session log has to say why the turn never started"
+  end
+
   test "state transitions to terminated after terminate" do
     @mock_cli_adapter.execute_hook = ->(opts) do
       { pid: 12345, stderr_log_path: "/tmp/stderr.log" }

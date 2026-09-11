@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # Drives the native `claude -p` backend through its injected process manager.
 #
@@ -21,6 +22,21 @@ class NativeClaudePrintRunnerTest < ActiveSupport::TestCase
     @pm = MockProcessManager.new
     @logger = CapturingLogger.new
     @reaped = [] # pids the runner actually collected, in order
+    # Keep the shared headless config dir and its projects symlink out of the
+    # real ~/.zimmer and ~/.claude.
+    @config_base = Dir.mktmpdir("claude-config-base")
+    @original_config_dir = ENV["CLAUDE_SESSION_CONFIG_DIR"]
+    ENV["CLAUDE_SESSION_CONFIG_DIR"] = @config_base
+    ClaudeTranscriptSource.stubs(:projects_root).returns(File.join(@config_base, "shared-projects"))
+  end
+
+  teardown do
+    FileUtils.rm_rf(@config_base) if @config_base
+    if @original_config_dir
+      ENV["CLAUDE_SESSION_CONFIG_DIR"] = @original_config_dir
+    else
+      ENV.delete("CLAUDE_SESSION_CONFIG_DIR")
+    end
   end
 
   # Builds a runner with a tiny reap window so the bounded-poll tests cost
@@ -73,6 +89,39 @@ class NativeClaudePrintRunnerTest < ActiveSupport::TestCase
     assert_equal [ "/fake/claude", "--dangerously-skip-permissions", "--model", "haiku", "-p", "name this" ],
       @pm.spawned_processes.first[:command]
     assert_empty @pm.killed_processes, "a child that completes on time is never signalled"
+  end
+
+  # Print-mode inference has no Zimmer session, so it used to inherit the
+  # worker's environment and read the shared credentials file — which since
+  # issue #618 is a file nothing writes, so every title and summary call answered
+  # "Not logged in" and exited 1. The child gets the same two variables a
+  # session does, from the same row.
+  test "hands the child its own config dir and the current account's access token" do
+    write_output_on_spawn("a title\n")
+    account = claude_accounts(:primary)
+    account.update!(is_current: true)
+
+    build_runner.run(prompt: "name this", timeout: 5)
+
+    env = @pm.spawned_processes.first[:env]
+    assert_equal account.claude_access_token, env["CLAUDE_CODE_OAUTH_TOKEN"]
+    assert_equal ClaudeSessionConfigDirectory.path_for(ClaudeHeadlessCredentials::DIRECTORY_KEY), env["CLAUDE_CONFIG_DIR"]
+    refute_includes env.values, account.claude_refresh_token, "no refresh token ever reaches a child"
+  end
+
+  # A title that cannot be generated is a cosmetic degradation every caller
+  # already handles, so an empty pool does not raise the way a session spawn
+  # does — the child is spawned with no credential and exits 1, which the
+  # consumer reads as "no answer".
+  test "spawns with no credential rather than raising when the pool has nothing usable" do
+    write_output_on_spawn("")
+    ClaudeAccount.update_all(is_current: false)
+
+    build_runner.run(prompt: "name this", timeout: 5)
+
+    env = @pm.spawned_processes.first[:env]
+    refute env.key?("CLAUDE_CODE_OAUTH_TOKEN")
+    refute env.key?("CLAUDE_CONFIG_DIR")
   end
 
   test "raises without spawning when the prompt is blank" do
