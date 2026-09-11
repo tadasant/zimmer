@@ -155,6 +155,11 @@ Rails.application.routes.draw do
 
     # REST API v1
     namespace :v1 do
+      # The browser extension's ingest (#175): the Quick Router bubble from any
+      # page. Write-only by shape — one action, one response — and opened by an
+      # ApiKey with the `quick_router` grant, which nothing else here accepts.
+      post "quick_router", to: "quick_router#create"
+
       resources :configs, only: [ :index ]
       resources :mcp_servers, only: [ :index ]
       resources :skills, only: [ :index ]

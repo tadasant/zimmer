@@ -130,6 +130,62 @@ class ApiKeyTest < ActiveSupport::TestCase
     assert_equal api_key, ApiKey.authenticate(token).api_key
   end
 
+  # --- Grants (tadasant/zimmer#175) ---
+
+  test "a key opens the whole API unless it was minted narrower" do
+    _env_row = ApiKey.authenticate("env-key-one").api_key
+    minted, token = ApiKey.mint!(name: "laptop scripts")
+
+    assert_equal ApiKey::API_GRANT, _env_row.grant
+    assert_equal ApiKey::API_GRANT, minted.grant
+    assert_predicate ApiKey.authenticate(token), :authenticated?
+    assert_predicate ApiKey.authenticate("env-key-one"), :authenticated?
+  end
+
+  test "a quick_router key opens only the quick_router grant, and an api key does not open it" do
+    narrow, narrow_token = ApiKey.mint!(name: "chrome on the laptop", grant: ApiKey::QUICK_ROUTER_GRANT)
+    _wide, wide_token = ApiKey.mint!(name: "laptop scripts")
+
+    assert_predicate narrow, :quick_router?
+
+    opened = ApiKey.authenticate(narrow_token, grant: ApiKey::QUICK_ROUTER_GRANT)
+    assert_predicate opened, :authenticated?
+    assert_equal narrow, opened.api_key
+
+    refused = ApiKey.authenticate(narrow_token)
+    assert_equal :wrong_grant, refused.refusal
+    assert_equal narrow, refused.api_key, "the log line still needs to know which key was tried"
+
+    refused = ApiKey.authenticate(wide_token, grant: ApiKey::QUICK_ROUTER_GRANT)
+    assert_equal :wrong_grant, refused.refusal
+
+    refused = ApiKey.authenticate("env-key-one", grant: ApiKey::QUICK_ROUTER_GRANT)
+    assert_equal :wrong_grant, refused.refusal
+  end
+
+  test "a wrong-grant refusal does not count as a use" do
+    narrow, token = ApiKey.mint!(name: "chrome", grant: ApiKey::QUICK_ROUTER_GRANT)
+
+    ApiKey.authenticate(token)
+    assert_nil narrow.reload.last_used_at
+  end
+
+  test "revocation outranks the grant" do
+    narrow, token = ApiKey.mint!(name: "chrome", grant: ApiKey::QUICK_ROUTER_GRANT)
+    narrow.revoke!
+
+    assert_equal :revoked, ApiKey.authenticate(token, grant: ApiKey::QUICK_ROUTER_GRANT).refusal
+  end
+
+  test "a grant outside GRANTS is refused, and an env row can only be api" do
+    assert_raises(ActiveRecord::RecordInvalid) { ApiKey.mint!(name: "odd", grant: "everything") }
+
+    env_row = ApiKey.authenticate("env-key-one").api_key
+    env_row.grant = ApiKey::QUICK_ROUTER_GRANT
+    assert_not env_row.valid?
+    assert_includes env_row.errors[:grant].join, ApiKey::ENV_VAR
+  end
+
   test "names are unique regardless of case" do
     ApiKey.mint!(name: "Laptop")
 

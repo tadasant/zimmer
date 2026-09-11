@@ -66,7 +66,8 @@ module SessionGenesis
       label: "Zimmer web app",
       default_class: PRIORITY,
       description: "A human typed it into the Zimmer web app — the new-session form, the " \
-                   "dashboard quick prompt, the chat bubble, or the Invoke button on a trigger."
+                   "dashboard quick prompt, the chat bubble, the Invoke button on a trigger — " \
+                   "or into the Zimmer browser extension on some other page."
     ),
     Kind.new(
       key: SLACK,

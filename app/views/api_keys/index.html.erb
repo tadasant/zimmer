@@ -17,7 +17,9 @@
       </div>
       <p class="text-sm text-gray-600">
         The keys that open the REST API and the MCP endpoint at <code class="bg-gray-100 px-1 rounded">/mcp</code>.
-        Every key can do everything — there are no scopes. The request log names the key behind each call,
+        A full-API key can do everything — there are no per-resource scopes. The one narrower kind is a
+        Quick Router key, which opens <code class="bg-gray-100 px-1 rounded">POST /api/v1/quick_router</code> and nothing else;
+        it is the key the browser extension holds. The request log names the key behind each call,
         and revoking one refuses it from the next request on, without a restart.
       </p>
     </div>
@@ -31,6 +33,12 @@
           </p>
           <input type="text" readonly value="<%= @minted_token %>" aria-label="New API key"
                  class="mt-3 block w-full font-mono text-xs sm:text-sm border-green-300 rounded-md bg-white px-3 py-2">
+          <% if @api_key.quick_router? %>
+            <p class="mt-2 text-sm text-green-800">
+              Paste it into the Zimmer extension's options, with this instance's URL. It starts Quick Router
+              sessions and cannot read anything back.
+            </p>
+          <% end %>
         </div>
       <% end %>
 
@@ -60,6 +68,22 @@
                 Create key
               </button>
             </div>
+            <% attempted_grant = @attempted_grant || ApiKey::API_GRANT %>
+            <fieldset class="mt-4">
+              <legend class="text-sm font-medium text-gray-700">What it opens</legend>
+              <div class="mt-2 space-y-2">
+                <label class="flex items-start gap-2 text-sm text-gray-700">
+                  <input type="radio" name="api_key[grant]" value="<%= ApiKey::API_GRANT %>" <%= "checked" if attempted_grant == ApiKey::API_GRANT %>
+                         class="mt-0.5 h-4 w-4 border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                  <span><span class="font-medium">Full API</span> — the REST API and <code class="bg-gray-100 px-1 rounded">/mcp</code>, everything a script or an MCP client does.</span>
+                </label>
+                <label class="flex items-start gap-2 text-sm text-gray-700">
+                  <input type="radio" name="api_key[grant]" value="<%= ApiKey::QUICK_ROUTER_GRANT %>" <%= "checked" if attempted_grant == ApiKey::QUICK_ROUTER_GRANT %>
+                         class="mt-0.5 h-4 w-4 border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                  <span><span class="font-medium">Quick Router only</span> — for the browser extension. Starts a Quick Router session from a page and reads nothing; refused everywhere else.</span>
+                </label>
+              </div>
+            </fieldset>
           <% end %>
         </div>
       </div>
@@ -103,6 +127,10 @@
                       <span class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">
                         <%= api_key.env? ? ApiKey::ENV_VAR : "Minted" %>
                       </span>
+                      <% if api_key.quick_router? %>
+                        <span class="inline-flex rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-800"
+                              title="Opens POST /api/v1/quick_router and nothing else">Quick Router only</span>
+                      <% end %>
                       <% if self_session %>
                         <span class="inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800"
                               title="This deployment writes this key into every agent session's Zimmer MCP servers">Agent sessions use this key</span>

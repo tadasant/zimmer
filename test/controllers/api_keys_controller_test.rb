@@ -6,6 +6,8 @@ require "mocha/minitest"
 # The API keys settings page (tadasant/zimmer#46): every route behind the operator
 # credential, the new key shown exactly once, and revoke/restore.
 class ApiKeysControllerTest < ActionDispatch::IntegrationTest
+  include ActionView::RecordIdentifier
+
   PASSWORD_ENV = OperatorHttpBasicAuth::PASSWORD_ENV
   PASSWORD = "api-keys-page-test-password"
   ENV_KEY = "env-key-for-the-page"
@@ -95,6 +97,27 @@ class ApiKeysControllerTest < ActionDispatch::IntegrationTest
 
     get api_keys_path, headers: operator_headers
     assert_not_includes response.body, token
+  end
+
+  test "a key is minted with the grant the form chose, and the page says which it is" do
+    post api_keys_path, params: { api_key: { name: "chrome on the laptop", grant: ApiKey::QUICK_ROUTER_GRANT } }, headers: operator_headers
+    assert_response :success
+
+    api_key = ApiKey.find_by!(name: "chrome on the laptop")
+    assert_predicate api_key, :quick_router?
+    assert_includes response.body, "Paste it into the Zimmer extension"
+
+    get api_keys_path, headers: operator_headers
+    assert_select "##{dom_id(api_key)}", text: /Quick Router only/
+  end
+
+  test "no grant, or a tampered one, mints a full-API key" do
+    post api_keys_path, params: { api_key: { name: "plain" } }, headers: operator_headers
+    assert_equal ApiKey::API_GRANT, ApiKey.find_by!(name: "plain").grant
+
+    post api_keys_path, params: { api_key: { name: "tampered", grant: "everything" } }, headers: operator_headers
+    assert_response :success
+    assert_equal ApiKey::API_GRANT, ApiKey.find_by!(name: "tampered").grant
   end
 
   test "creating a key with a taken name re-renders with the error" do

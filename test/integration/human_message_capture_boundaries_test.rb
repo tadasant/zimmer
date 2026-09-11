@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "mocha/minitest"
+require "ostruct"
 
 # The crux of the feature: which input boundaries record a human, and
 # — more importantly — which do not.
@@ -119,6 +120,27 @@ class HumanMessageCaptureBoundariesTest < ActionDispatch::IntegrationTest
     event = HumanMessage.order(:id).last
     assert_equal "What is this session doing?", event.content
     refute_includes event.content, "MACHINE-WRITTEN"
+  end
+
+  test "the browser extension records the human's words: its key is a browser's, not the fleet's" do
+    _key, token = ApiKey.mint!(name: "chrome", grant: ApiKey::QUICK_ROUTER_GRANT)
+    AgentRootsConfig.stubs(:find!).with(AgentRootsConfig.router_root_name).returns(
+      OpenStruct.new(url: "https://github.com/test/repo.git", default_branch: "main",
+                     subdirectory: "agent-roots/zimmer-orchestrator", default_mcp_servers: [])
+    )
+
+    assert_difference("HumanMessage.count", 1) do
+      post "/api/v1/quick_router",
+           params: { prompt: "this comment is wrong", page_url: "https://github.com/x/y/pull/1", page_context: "PAGE" }.to_json,
+           headers: { "X-API-Key" => token, "Content-Type" => "application/json" }
+    end
+    assert_response :created
+
+    event = HumanMessage.order(:id).last
+    assert_equal "tadasant", event.author
+    assert_equal "this comment is wrong", event.content
+    assert_equal "browser_extension.quick_router", event.entry_point
+    refute_includes event.content, "PAGE"
   end
 
   test "a follow-up Tadas types in the web UI is recorded" do

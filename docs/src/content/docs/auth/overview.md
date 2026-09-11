@@ -15,7 +15,7 @@ flowchart TB
         SUP["/supervisor admin panel<br/>+ the mutating POST /health/* actions<br/>+ /settings/api_keys<br/>HTTP Basic vs ENV['SUPERVISOR_PASSWORD']<br/>fails closed when unset"]
     end
     subgraph api["2 · Client → REST API"]
-        A["X-API-Key header (or Bearer on /mcp)<br/>vs api_keys rows: API_KEYS entries + minted keys<br/>named, revocable, unscoped"]
+        A["X-API-Key header (or Bearer on /mcp)<br/>vs api_keys rows: API_KEYS entries + minted keys<br/>named, revocable; one grant: api or quick_router"]
     end
     subgraph harness["3 · Zimmer → Agent vendor"]
         H["ClaudeAccount pool (claude_code + codex)<br/>OAuth refresh + rotation on quota<br/>tokens on disk AND in Postgres<br/>(pi: a provider API key, no pool)"]
@@ -27,6 +27,7 @@ flowchart TB
     U["You"] --> W
     U --> SUP
     C["Script / MCP self-session"] --> A
+    X["Browser extension<br/>(quick_router key)"] --> A
     W --> H
     SUP --> H
     SUP -. mints and revokes .-> A
@@ -172,9 +173,22 @@ The success line is INFO, so it stays in the container's stdout, tagged with the
 refusal that names a known key (revoked, or no longer in `API_KEYS`) is WARN, so it ships to obs.
 `last_used_at` is stamped at most once a minute per key.
 
+Every key has a **grant**, and there are two. `api` is the whole REST API and `POST /mcp` — every
+`API_KEYS` entry is this, and so is a minted key unless the page was told otherwise. `quick_router`
+opens exactly one endpoint, [`POST /api/v1/quick_router`](/extend/rest-api/#the-quick-router-ingest),
+which creates a Quick Router session and returns its id and URL; it is the
+[browser extension](/extend/browser-extension/)'s credential, and it is narrow because of where it
+lives — a browser profile on a machine that browses the open web. `ApiKey.authenticate` takes the
+grant the calling controller honours and matches it exactly, so a `quick_router` key presented to
+`/api/v1/sessions` or `/mcp` is refused the way a revoked key is (and logged at WARN, by name), and
+an `api` key presented to the Quick Router ingest is refused too. The grant is a column the
+comparison reads, not a promise about how the key is used.
+
 What it still isn't:
 
-- **No scoping.** Any valid key can read, mutate, and delete every session, trigger, and category.
+- **No scoping within the API.** Any valid `api` key can read, mutate, and delete every session,
+  trigger, and category. The `quick_router` grant is a second, closed door beside that one, not a
+  permission system behind it.
 - **No per-session identity.** The agents share the deployment's self-session key. See
   [the limitation](/limitations/#api-keys-have-names-but-no-scope-and-the-whole-fleet-shares-one).
 
@@ -186,7 +200,8 @@ sessions' Zimmer MCP servers, but that is not the only entry agents hold: `CliSp
 clear `API_KEYS`, so every session's environment carries all of them. Only a minted key is out of an
 agent's reach. From there you can:
 
-- **Create** a named key. Copy it from the page, because it is not shown again.
+- **Create** a named key, choosing what it opens: **Full API**, or **Quick Router only** for the
+  browser extension. Copy it from the page, because it is not shown again.
 - **Revoke** a key. It is refused from the next request on. Revoking is a timestamp, not a delete, so
   that a revoked `API_KEYS` entry stays revoked while the key is still in the variable.
 - **Restore** a revoked key, if you revoked the wrong one. It authenticates again at once.
@@ -204,8 +219,11 @@ to its row:
 printf %s "$KEY" | sha256sum | cut -c1-8
 ```
 
-Two endpoints take a different credential instead:
+Three endpoints take a different credential instead:
 
+- `POST /api/v1/quick_router` — the browser extension's ingest. It takes a key with the
+  `quick_router` grant (above) and refuses every `api` key, so the one credential a browser holds
+  opens one write and no read.
 - `POST /api/v1/elicitations/session/:token` and `GET /api/v1/elicitations/session/:token/:request_id`
   — the MCP fallback-elicitation protocol. The MCP child process has no key, so it authenticates
   with a per-session token in the URL path, which Zimmer puts in its environment at spawn. A token

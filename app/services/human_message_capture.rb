@@ -18,6 +18,13 @@
 #         deployment config, not from anything in the request.
 #   * SlackTriggerPollerJob (a real Slack message)
 #       → User.for_slack_user_id(message.user).
+#   * Api::V1::QuickRouterController (the browser extension)
+#       → User.admin, the same way as the web UI. It is an API controller, but
+#         the credential it takes is not the fleet's: a `quick_router` ApiKey is
+#         minted, so no agent session's environment carries it, and it opens
+#         nothing but that one endpoint. Its only holder is the browser of the
+#         one human the deployment serves, which is what makes the actor at
+#         that boundary as established as it is in the web UI.
 #
 # Sessions carry an `auth_identity_email` in metadata that often matches a
 # User#email, and it is tempting to attribute from it. It is NOT wired here:
@@ -28,9 +35,10 @@
 # grows real per-human login, the request's authenticated email is what would
 # resolve through User.for_email — at the boundary, from the actor, same rule.
 #
-# Nothing else calls this. Api::V1 controllers, McpController and every MCP tool
-# authenticate an API key, not a person: an API key is shared by the whole fleet
-# and establishes no human author, so those paths deliberately record nothing.
+# Nothing else calls this. The other Api::V1 controllers, McpController and every
+# MCP tool authenticate a full-API key, not a person: that key is shared by the
+# whole fleet and establishes no human author, so those paths deliberately
+# record nothing.
 #
 # Every method is best-effort: a capture failure must never break the delivery
 # of the message it was describing. A missing record is a safe outcome.
