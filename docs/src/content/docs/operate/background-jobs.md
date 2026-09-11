@@ -1042,7 +1042,7 @@ Three rules keep it quiet:
   saw it is not this session's merge event, and wakes nobody.
 - **Once per PR.** `custom_metadata["github_pull_request_merged_notified"]` records which PRs have
   been announced. A session with three PRs is told about each one as it lands, and only then.
-- **No debounce, unlike merge conflicts.** The two-poll confirmation in
+- **No debounce, unlike merge conflicts.** The two-reading confirmation in
   `Github::MergeConflictEvaluator` exists because GitHub's `mergeable` field returns transient
   conflicting readings. `mergedAt` has no such failure mode: a PR with a merge timestamp is merged,
   and stays merged.
@@ -1133,11 +1133,20 @@ Two changes make the debounce mean what it always claimed:
   the confirming reading lands about two minutes after the first rather than whenever the curve next
   allows.
 
-The fast cadence is bounded at both ends. A suspicion normally resolves on the very next gated
-evaluation — confirmed or cleared — and `SUSPICION_FAST_POLL_WINDOW` (30 minutes) stops it granting
-anything after that, so a PR whose snapshot never comes back (deleted, or a repo the token cannot
-read) cannot pin its session at two-minute polling forever. Past the window the suspicion is still
-*confirmable*, just not privileged: later, rather than never.
+The fast cadence is **not free**, and it is bounded at both ends. The ceiling makes the whole pass
+due every two minutes, and a pass fetches every tracked PR (`gh pr view`) and CI for every open one
+(`gh pr checks`) — not only the suspected PR. Usually that costs one extra pass, because a suspicion
+resolves on the very next gated evaluation, confirmed or cleared. The worst case is a suspicion that
+nothing resolves — a PR whose snapshot never comes back (deleted, or a repo the token cannot read) —
+and `SUSPICION_FAST_POLL_WINDOW` (30 minutes) stops honouring it after that: about fifteen extra
+passes, once, rather than a session pinned at two-minute polling forever. Past the window the
+suspicion is still *confirmable*, just not privileged: later, rather than never.
+
+This **narrows** the #1123 failure rather than closing it. A stale `MERGEABLE` on the confirming
+reading still clears the marker, and the session drops back to its 30-minute ceiling until the next
+conflicting reading starts another suspicion. What is gone is the day-long gap that gave a stale
+reading a whole day's worth of chances to land — see
+[Limitations](/limitations/#a-parked-session-can-hear-about-its-merged-pr-up-to-half-an-hour-late).
 
 A suspected marker written before this change holds `true` and carries no timestamp. Those confirm
 on the next conflicting reading — they were written by an earlier gated poll, so the reading in

@@ -3,7 +3,7 @@
 # Whether a GitHub PR can be merged into its base branch *right now*.
 #
 # Github::MergeConflictEvaluator answers a narrower version of the same question
-# inside Github::PrPollPass, feeding the two-poll debounce. This module is the
+# inside Github::PrPollPass, feeding its two-reading debounce. This module is the
 # other caller — the one that has to ask again at the moment a conflict notice is
 # taken off a session's queue, which can be several minutes after the poll that
 # wrote it (see EnqueuedMessage#stale?).

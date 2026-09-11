@@ -407,8 +407,8 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
       @session_with_pr.custom_metadata["github_pull_request_merge_conflicts_suspected"].keys,
       "the first gated poll suspects the conflict"
 
-    # Before the fix this session was not due again for another 30 minutes, so the
-    # confirming reading never landed inside the debounce's own interval.
+    # Without the suspicion ceiling this session is not due again for another 30
+    # minutes, so the confirming reading never lands inside the debounce's interval.
     travel 3.minutes do
       GithubPrPollPassJob.perform_now
     end
@@ -438,6 +438,25 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
     Github::PrPollPass.new.run
   end
 
+  # The one case the suspicion ceiling raises a session from a 24-hour cadence to two
+  # minutes: past AWAITING_PR_OUTCOME_MAX_IDLE the 30-minute cap is gone, but a
+  # conflict the poller has already seen once still gets its confirming reading.
+  test "a fresh suspicion outranks the idle bound" do
+    idle_session_holding(
+      PR_URL, status: "open",
+      idle_for: Github::PrPollPass::AWAITING_PR_OUTCOME_MAX_IDLE + 1.day, last_polled: 5.minutes.ago
+    )
+    @session_with_pr.merge_custom_metadata!(
+      "github_pull_request_merge_conflicts_suspected" => { PR_URL => 4.minutes.ago.utc.iso8601 }
+    )
+    isolate
+    stub_evaluators
+
+    Github::PrSnapshot.expects(:fetch).once.returns(nil)
+
+    Github::PrPollPass.new.run
+  end
+
   test "a fresh suspicion makes a session due inside the 30-minute cap" do
     idle_session_holding(PR_URL, status: "open", idle_for: 10.hours, last_polled: 5.minutes.ago)
     @session_with_pr.merge_custom_metadata!(
@@ -451,11 +470,10 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
     Github::PrPollPass.new.run
   end
 
-  # The pass's own gate was capped and the evaluators inside it were not, so the
-  # class comment's claim that "gating the pass cannot starve an evaluator" stopped
-  # being true: a >24 hr idle session was polled every 30 minutes and its merge
-  # conflicts were evaluated once a day. The merge-conflict gate inherits the pass's
-  # ceiling now — free, because this evaluator takes no GitHub calls of its own.
+  # With only the pass's own gate capped, a >24 hr idle session is polled every 30
+  # minutes while its merge conflicts are evaluated once a day. The merge-conflict gate
+  # inherits the pass's ceiling, which costs no rate limit: this evaluator takes no
+  # GitHub calls of its own.
   test "the merge-conflict evaluator inherits the pass ceiling for a >24 hr idle session" do
     idle_session_holding(PR_URL, status: "open", idle_for: 2.days, last_polled: 1.hour.ago)
     @session_with_pr.merge_custom_metadata!(

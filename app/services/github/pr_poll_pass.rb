@@ -39,10 +39,11 @@ module Github
     # is due. It is the cadence each evaluator was written against, preserved now that
     # cron no longer supplies it:
     #
-    #   Merge conflicts ran on a 2-minute cron, and its two-consecutive-readings debounce
-    #   is tuned to that gap — two readings 30 seconds apart would confirm exactly the
-    #   transient it exists to reject. PollBackoff's curve answers 0 for a recently-active
-    #   session, so the floor has to be stated: MIN, not just base.
+    #   Merge conflicts ran on a 2-minute cron. The debounce's minimum gap between its
+    #   two readings is enforced by MergeConflictEvaluator::MIN_CONFIRMATION_GAP_SECONDS
+    #   itself, so this floor is not what rejects a transient — it bounds how often the
+    #   evaluator runs. PollBackoff's curve answers 0 for a recently-active session, so
+    #   the floor has to be stated: MIN, not just base.
     #
     #   Comments ran on the same 30-second cron as PR status, which is the pass's own
     #   cadence, so it needs no floor. It keeps its key and its curve because the PR
@@ -51,16 +52,15 @@ module Github
     #
     # Both stamps are written in the pass's single metadata write.
     #
-    # The pass's own gate USED TO BE never looser than either of these at any point
-    # on PollBackoff's curve, so gating the pass could not starve an evaluator. The
-    # cap below broke that in one direction and nothing noticed: past 24 hours of no
-    # user activity the pass polls a PR-holding session every 30 minutes while these
-    # inner gates ride the curve to its 24-hour floor — so the merge-conflict
-    # evaluator ran ONCE A DAY for exactly the population the conflict notice is for
-    # (tadasant/zimmer#1123). The merge-conflict gate therefore inherits the pass's
-    # own ceiling in #poll_session, which costs nothing: this evaluator takes no
-    # GitHub calls of its own, so running it on every pass the session has already
-    # earned is CPU and a conditional metadata write, not rate limit.
+    # The merge-conflict gate inherits the pass's own ceiling (see #poll_session), so it
+    # is never looser than the pass that has already decided the session is due. With
+    # the curve alone it is: past 24 hours of no user activity the pass polls a
+    # PR-holding session every 30 minutes while an uncapped inner gate rides the curve
+    # to its 24-hour floor — the merge-conflict evaluator evaluating once a day for
+    # exactly the population the conflict notice is for (tadasant/zimmer#1123).
+    # Inheriting the ceiling costs no rate limit: this evaluator takes no GitHub calls
+    # of its own, so running it on a pass the session has already earned is CPU and a
+    # conditional metadata write.
     #
     # The comment gate deliberately does NOT inherit it. Github::CommentEvaluator
     # does spend `gh api` calls, so raising its cadence for every idle PR-holding
@@ -132,7 +132,7 @@ module Github
     # @return [void]
     def poll_session(session)
       # One ceiling for the whole pass — the pass's own gate and the merge-conflict
-      # gate inside it now answer to the same number. See #max_poll_interval_for.
+      # gate inside it answer to the same number. See #max_poll_interval_for.
       ceiling = max_poll_interval_for(session)
 
       unless due?(session, ceiling)
@@ -200,15 +200,19 @@ module Github
       #
       # MergeConflictEvaluator's debounce needs a SECOND reading a couple of minutes
       # after the first. Every other ceiling in this method is half an hour or more,
-      # so the confirming reading landed thirty minutes to a day late and any single
-      # clean reading in that gap reset the streak to zero. That is how a PR open
-      # since 2026-09-06 went five days without its session ever being told it had a
+      # which puts the confirming reading thirty minutes to a day away, and any single
+      # clean reading in that gap resets the streak to zero. That is how a PR open
+      # since 2026-09-06 went five days without its session being told it had a
       # conflict (tadasant/zimmer#1123).
       #
-      # This cannot pin a session the way the idle bound guards against. A suspicion
-      # resolves on the very next gated evaluation — confirmed or cleared — and
-      # .fresh_suspicion? stops answering true after SUSPICION_FAST_POLL_WINDOW
-      # regardless, so the exemption is bounded at both ends.
+      # It is not free. The ceiling makes the whole PASS due every two minutes, and a
+      # pass fetches every tracked PR (`gh pr view`) and CI for every open one
+      # (`gh pr checks`) — not just the suspected PR. Usually that is one extra pass,
+      # because a suspicion resolves on the very next gated evaluation, confirmed or
+      # cleared. The worst case is a suspicion nothing resolves (a snapshot that never
+      # comes back), which .fresh_suspicion? stops honouring after
+      # SUSPICION_FAST_POLL_WINDOW: about fifteen extra passes, once, rather than a
+      # session pinned at two-minute polling for good.
       return MERGE_CONFLICT_INTERVAL_SECONDS if MergeConflictEvaluator.fresh_suspicion?(session)
 
       return nil if session.unresolved_pr_urls.empty?
