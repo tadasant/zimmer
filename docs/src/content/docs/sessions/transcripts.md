@@ -820,10 +820,17 @@ accumulated 219 orphans holding 233.3 GiB, which took the 309 GB root filesystem
 `CloneDiskGuard` letting the fleet clone ([#1160](https://github.com/tadasant/zimmer/issues/1160)).
 The sweep matches `latest_<hex>.zip.tmp` **and anything suffixed onto it** — rubyzip's
 `Zip::File#commit` writes its own same-sized temp beside the job's, so one killed run leaks up to two
-multi-GB files rather than one — and it takes only what nothing has written to for 30 minutes, so a
-build in flight keeps its own. `latest.zip` and `latest_metadata.json` cannot match that pattern at
-all. A tick that reclaims something logs it at WARN; a tick that finds nothing is silent. The sweep
-runs before the change detection, so it happens on a quiet tick that rebuilds nothing too.
+multi-GB files rather than one — and it takes only what nothing has written to for an hour, the same
+bar the archive is judged stale by, so a build in flight keeps its own. `latest.zip` and
+`latest_metadata.json` cannot match that pattern at all. A tick that reclaims something logs it at
+WARN; a tick that finds nothing is silent. The sweep runs before the change detection, so it happens
+on a quiet tick that rebuilds nothing too.
+
+The sweep covers the archive directory and nothing else. rubyzip also stages each entry it writes in
+its own temp file under the container's `/tmp` until the zip is committed, so a killed run leaves up
+to `MAX_SESSIONS_PER_RUN` of those behind as well. Those sit on the container's overlay layer, which
+every deploy recreates, not on the `zimmer_data` volume — a different footprint with a different
+lifetime, and out of this sweep's reach on purpose.
 
 The archive is a bulk export, not a search index: it is hundreds of megabytes and up to ten minutes
 stale. To find a session by something said in it, use the content search above.

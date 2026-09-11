@@ -104,6 +104,13 @@ class TranscriptArchiveJob < ApplicationJob
   # on 2026-09-11, 118 were the first form and 101 the second, so a pattern that ends
   # at `.zip.tmp` leaves about half the leak on disk (#1160).
   #
+  # Those two are what a kill leaves in THIS directory. rubyzip also stages every
+  # entry written through `get_output_stream` in its own `Tempfile` under `Dir.tmpdir`
+  # until `commit`, so a killed run leaves up to MAX_SESSIONS_PER_RUN of those in the
+  # container's /tmp as well. That is the overlay layer, recreated on every deploy,
+  # not the durable volume this sweep covers — it is out of this sweep's reach by
+  # design, not by oversight.
+  #
   # `\h+` rather than `\h{16}` so a later change to the `SecureRandom.hex(8)` width
   # does not silently strand a generation of orphans.
   TEMP_FILE_PATTERN = /\Alatest_\h+\.zip\.tmp/
@@ -115,18 +122,23 @@ class TranscriptArchiveJob < ApplicationJob
   # `perform`, before this run has created its temp, and SingletonSweep holds the job
   # to one copy queued-or-running — so under cron there is no other build whose temp
   # could be resident. The floor is what covers the paths that bypass that: a manual
-  # `perform_now` from a console racing the cron copy, or a future caller that drops
-  # the concurrency key.
+  # `perform_now` racing the cron copy, or a future caller that drops the concurrency
+  # key.
   #
-  # 30 minutes is three cron ticks, so a build has to overrun its own schedule three
-  # times over before the floor binds — and the mtime a long build presents is the
-  # copy's completion, not its start, because `FileUtils.cp` finishes early and
-  # rubyzip's `commit` writes the sibling temp rather than this one. It is also the
-  # floor the 219 production orphans were deleted under by hand, with every
-  # `/proc/<pid>/fd` on the worker walked first to establish that no process held any
-  # of them open. Erring long costs only reclaim latency: at the peak leak rate
-  # measured on that volume, a 30-minute floor defers about 25 GiB of 309 GiB.
-  TEMP_FILE_MIN_AGE = 30.minutes
+  # Read the mtime for what it is. The job's temp is written once by `FileUtils.cp`
+  # near the start of the build and then not touched again until rubyzip's `commit`
+  # renames its sibling over it at the end — so for the whole of the middle, the
+  # session loop, its mtime is frozen at the copy. The floor therefore has to exceed
+  # the longest that loop can run, not one tick. An hour is six ticks, and it is the
+  # same bar TranscriptArchiveStatus judges the archive stale by (STALE_AFTER): a
+  # build still in its loop an hour after copying is one the job already reports as
+  # a fault. If the floor ever does bind on a live build, what fails is that tick —
+  # rubyzip raises ENOENT reading an entry from a file that is gone and `ensure`
+  # runs — and `latest.zip`, which is only ever replaced by the final rename, is left
+  # as it was. Erring long costs only reclaim latency: a kill leaks about 8 GiB, so at
+  # one kill per tick an hour defers under 50 GiB of a 309 GiB volume, and at the peak
+  # rate actually measured (82.4 GiB in a day) about 3.5 GiB.
+  TEMP_FILE_MIN_AGE = 1.hour
 
   class << self
     # Resolved at call time (never memoized) so tests that stub HOME and ops that

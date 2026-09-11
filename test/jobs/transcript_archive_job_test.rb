@@ -820,6 +820,40 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
     TranscriptArchiveJob.perform_now
   end
 
+  # The sweep is a courtesy the build extends to its predecessors, not a precondition
+  # of the build. A directory it cannot list is logged and stepped over, and the tick
+  # goes on to do its real job.
+  test "an unlistable archive directory is logged and does not stop the run" do
+    Dir.stubs(:children).with(@archive_dir).raises(Errno::EACCES, @archive_dir.to_s)
+
+    Rails.logger.stubs(:error)
+    Rails.logger.expects(:error).with(regexp_matches(/\[TranscriptArchiveJob\] Failed to list .* for the temp sweep/)).once
+
+    assert_nothing_raised { TranscriptArchiveJob.perform_now }
+    assert File.exist?(@archive_path), "the build must still run when the sweep could not"
+  ensure
+    # Teardown's rm_rf lists the directory too, with arguments the stub does not cover.
+    Dir.unstub(:children)
+  end
+
+  # One entry that cannot be unlinked is not a reason to leave the rest of the leak in
+  # place — the next entry is still swept.
+  test "an entry that cannot be removed is logged and the sweep continues" do
+    stuck = orphan!("latest_2222222222222222.zip.tmp", 3.hours)
+    orphan = orphan!("latest_3333333333333333.zip.tmp", 3.hours)
+
+    # Names sort `2222…` before `3333…`, so the stuck one is met first. The catch-all
+    # stub absorbs the build's own `ensure` delete; the two expectations are the test.
+    File.stubs(:delete)
+    File.expects(:delete).with(stuck).raises(Errno::EPERM, stuck.to_s)
+    File.expects(:delete).with(orphan).returns(1)
+
+    Rails.logger.stubs(:error)
+    Rails.logger.expects(:error).with(regexp_matches(/Failed to remove orphaned temp latest_2222222222222222\.zip\.tmp/)).once
+
+    TranscriptArchiveJob.perform_now
+  end
+
   # A name that matches but is not a file is not something to unlink — and the sweep
   # must not abandon the rest of the directory over it.
   test "steps over a directory whose name matches, and keeps sweeping" do
