@@ -5,8 +5,9 @@ sidebar:
   order: 1
 ---
 
-Base URL `/api/v1`. Authentication is the `X-API-Key` header, compared against
-`ENV["API_KEYS"]` (comma-separated) with a constant-time comparison.
+Base URL `/api/v1`. Authentication is the `X-API-Key` header, which must hold an `API_KEYS` entry
+(comma-separated, from the environment) or a key minted on `/settings/api_keys`. See
+[the REST API's auth](/auth/overview/#2-client--rest-api-x-api-key).
 
 :::tip[Agents should use MCP, not this]
 Zimmer also serves a native MCP endpoint at `POST /mcp` — same API key, same service objects, 18
@@ -14,9 +15,10 @@ tools. If the caller is an agent rather than a script, that is the surface to po
 → [Zimmer's MCP server](/extend/mcp-server/).
 :::
 
-:::caution[API keys have no scope, no identity, and no audit trail]
-A key is an opaque string. Any valid key can do anything to any session, trigger, or category. Keys are
-memoized per request from ENV, so rotation requires a restart. There is no record of which key did what.
+:::caution[API keys have names, not scopes]
+Any valid key can do anything to any session, trigger, or category. Each key has a name, and the
+request log prints it, never the key. A revoke on `/settings/api_keys` refuses the key from the next
+request on. Every request that presents no key, an unknown key or a revoked one gets the same 401.
 :::
 
 ## Quick start

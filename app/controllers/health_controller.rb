@@ -15,7 +15,7 @@ class HealthController < ApplicationController
   # The mutating actions, behind the operator credential (#312, #371).
   #
   # Until this gate, `/health` was the one surface reaching HealthMonitorService that asked
-  # for nothing at all: `Api::V1::HealthController` requires an `API_KEYS` entry and the MCP
+  # for nothing at all: `Api::V1::HealthController` requires an API key and the MCP
   # `action_health` tool requires the `health` tool group, while these POSTs were anonymous.
   # The perimeter argument that covers the rest of the web UI does not reach them, because
   # **the caller they most need to exclude is already inside the perimeter**: agent sessions

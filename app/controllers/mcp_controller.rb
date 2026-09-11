@@ -20,9 +20,10 @@ require "mcp"
 # key), and what this connection may see (the scoped tool list).
 #
 # Auth is the same API key the rest of the API uses: an `X-API-Key` header matched
-# against the API_KEYS env var (see Api::BaseController). MCP clients that only
-# speak `Authorization: Bearer …` are accepted too — the bearer token is matched
-# against the same key list, so there is exactly one credential to provision.
+# against the API_KEYS env var and the minted keys (see Api::BaseController and
+# ApiKey). MCP clients that only speak `Authorization: Bearer …` are accepted too —
+# the bearer token is matched against the same keys, so there is exactly one
+# credential to provision.
 #
 # The transport runs stateless: each POST is a complete JSON-RPC message and gets
 # a complete JSON response, so no Mcp-Session-Id is issued and any Puma worker can
