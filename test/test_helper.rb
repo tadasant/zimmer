@@ -245,39 +245,6 @@ module ActiveSupport
     # test that measures cache behavior deserves a cold one.
     setup(prepend: true) { TranscriptRedactionCache.reset! }
 
-    # Rails.cache is process-global, and the ~20 files that swap the test env's
-    # :null_store for a real MemoryStore restore it from an ivar their setup
-    # captured. When that setup raises before the capture, the teardown still runs
-    # and restores nil: a nil Rails.cache for the rest of the worker and a pile of
-    # NoMethodError in files that never touched the cache, with a blast radius that
-    # depends on --seed. So both edges are checked, and both put the boot store back.
-    #
-    # The teardown check names the test that leaked. This prepended setup catches a
-    # leak that check never saw, because a teardown that raised ahead of it stopped
-    # the chain. It records its failure instead of raising: a raise here would skip
-    # the test's own setup, capture and all, and send its teardown straight back to
-    # restoring nil. See test/support/cache_isolation_guard.rb.
-    setup(prepend: true) do
-      unless CacheIsolationGuard.intact?
-        found = CacheIsolationGuard.restore!
-        begin
-          flunk CacheIsolationGuard.failure_message(
-            found, "an earlier test in this worker swapped it out and did not restore it, " \
-                   "and its teardown never got to say so (this test is the messenger, not the cause)."
-          )
-        rescue Minitest::Assertion => e
-          failures << e
-        end
-      end
-    end
-
-    teardown do
-      unless CacheIsolationGuard.intact?
-        found = CacheIsolationGuard.restore!
-        flunk CacheIsolationGuard.failure_message(found, "#{self.class.name}##{name} did not restore it.")
-      end
-    end
-
     # BroadcastService's circuit breaker is class-level state that outlives a
     # test, and since #524 EVERY broadcast in the app can trip it — including the
     # ones on Session/Log commit callbacks, which fire in tests that are about
@@ -290,6 +257,27 @@ module ActiveSupport
       BroadcastService.circuit_breaker_opened_at = nil
       BroadcastService.clear_published_circuit_open
     end
+
+    # Rails.cache is process-global, and the ~20 files that swap the test env's
+    # :null_store for a real MemoryStore restore it from an ivar their setup
+    # captured. When that setup raises before the capture, the teardown still runs
+    # and restores nil: a nil Rails.cache for the rest of the worker and a pile of
+    # NoMethodError in files that never touched the cache, with a blast radius that
+    # depends on --seed. So both edges are checked, and both put the boot store back.
+    #
+    # The teardown check names the test that leaked. This prepended setup catches a
+    # leak that check never saw, because a teardown that raised ahead of it stopped
+    # the chain. Declared after the other prepended setups so it runs before them,
+    # ahead of anything else that touches the cache. Neither check raises — see
+    # CacheIsolationGuard.check! for why.
+    setup(prepend: true) do
+      CacheIsolationGuard.check!(
+        self, "an earlier test in this worker swapped it out and did not restore it, " \
+              "and its teardown never got to say so (this test is the messenger, not the cause)."
+      )
+    end
+
+    teardown { CacheIsolationGuard.check!(self, "#{self.class.name}##{name} did not restore it.") }
 
     # Include test support helpers
     include MockHelpers

@@ -24,7 +24,7 @@
 #     that raises after botching its restore takes the teardown check down with
 #     it, so the leak has to be catchable from the far side too. That check
 #     records its failure rather than raising, so the test's own `setup` still
-#     runs and captures a real store.
+#     runs and captures a real store — and so does the teardown check.
 #
 # Either edge puts the boot store back, which is what keeps one broken file to one
 # failing file.
@@ -60,6 +60,23 @@ module CacheIsolationGuard
     # this).
     def current
       Rails.instance_variable_get(:@cache)
+    end
+
+    # Puts the boot store back if `test` finds something else there, and records
+    # a failure on `test` saying what it found and whose it is.
+    #
+    # Records rather than raises, on both edges. A raise from a setup callback
+    # skips the test's own setup, capture and all, and sends its teardown straight
+    # back to restoring nil; one from a teardown callback skips every teardown
+    # declared before it. Either way the guard would be re-creating the thing it
+    # exists to stop.
+    def check!(test, blame)
+      return if intact?
+
+      found = restore!
+      test.flunk(failure_message(found, blame))
+    rescue Minitest::Assertion => e
+      test.failures << e
     end
 
     def failure_message(found, blame)
