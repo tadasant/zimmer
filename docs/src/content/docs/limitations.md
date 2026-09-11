@@ -837,6 +837,22 @@ That delays every key's next possible finding by up to its grace. And an owed ti
 another configured key's row carries the same fire time, so a tick the cron manager fired while
 every other key's enqueue also failed is excused rather than counted.
 
+### A cron key's history reaches back 24 hours, and no further
+
+🟡 `CronFreshness` answers "has this key been running" over `HISTORY_WINDOW` (24 hours), which is
+short of the question that produced [#584](https://github.com/tadasant/zimmer/issues/584) — *has it
+been running since it deployed*. `good_jobs` retains fourteen days, so the rows are there; the
+window is a cost choice, because reading all fourteen days on every `/health` render and every
+two-minute monitor tick means scanning ~320,000 rows instead of ~23,000. A stop older than a day is
+therefore only readable from the GoodJob dashboard at `/jobs`, which an agent session has no route
+to.
+
+Two edges sit inside the window itself, both in the safe direction. A key with no tick at all
+*before* the window has its leading edge left unmeasured, so a stop that began before the window and
+ended inside it is understated rather than guessed at. And a silence that began before the last time
+any cron key was enabled or disabled in the GoodJob dashboard is not read as a stop, because GoodJob
+keeps all the switches in one settings row and cannot say which key the toggle was for.
+
 ### The docs guardrail does not look in the image's `tmp/`
 
 🟡 `scripts/assert-docs-excluded.sh` — the check that keeps the documentation site out of the

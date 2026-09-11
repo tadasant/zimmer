@@ -190,4 +190,69 @@ class HealthDashboardTest < ApplicationSystemTestCase
       page.driver.browser.manage.window.resize_to(1400, 900)
     end
   end
+
+  # The Cron Freshness card carries a per-key table, which cannot shrink below its
+  # min-content width and so lives in an `overflow-x-auto` wrapper. The reading that
+  # answers "has this sweep been running" added a column to it, so the assertion is
+  # that the widening stayed INSIDE that scroller: the document is no wider than the
+  # phone, and nothing in the card sticks out past the screen except through a
+  # wrapper the reader can scroll.
+  test "the cron freshness card fits a 375px viewport" do
+    GoodJob::CronEntry.stubs(:all).returns([
+      GoodJob::CronEntry.new(key: :zombie_reaper, cron: "*/5 * * * *", class: "ZombieReaperJob")
+    ])
+    GoodJob::Process.insert_all([
+      { id: SecureRandom.uuid, state: { cron_enabled: true }, created_at: 2.days.ago, updated_at: Time.current }
+    ])
+    last_tick = Time.current.beginning_of_minute - (Time.current.min % 5).minutes
+    GoodJob::Job.insert_all((0..359).reject { |i| (48..119).cover?(i) }.map do |i|
+      at = last_tick - (i * 5).minutes
+      { queue_name: "default", job_class: "ZombieReaperJob", cron_key: "zombie_reaper", cron_at: at,
+        created_at: at, updated_at: at, scheduled_at: at, finished_at: at + 1 }
+    end)
+
+    page.driver.browser.manage.window.resize_to(375, 812)
+
+    begin
+      visit health_dashboard_path
+      assert_text "Cron Freshness"
+      assert_text(/is enqueuing now, but was silent/)
+
+      find("summary", text: /Every key/).click
+      assert_selector "th", text: "Last 24 hours"
+
+      assert page.evaluate_script(
+        "document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"
+      ), "the health dashboard must not be wider than a 375px viewport"
+
+      outside_the_scroller = page.evaluate_script(<<~JS)
+        (function () {
+          const limit = document.documentElement.clientWidth;
+          const heading = Array.from(document.querySelectorAll("h3"))
+            .find((h) => h.textContent.trim() === "Cron Freshness");
+          if (!heading) return [ "the card did not render" ];
+          const card = heading.closest("div.bg-white");
+          const scroller = card.querySelector("table").parentElement;
+          return Array.from(card.querySelectorAll("*"))
+            .filter((el) => el.getBoundingClientRect().right > limit + 1)
+            .filter((el) => !scroller.contains(el))
+            .slice(0, 10)
+            .map((el) => el.tagName.toLowerCase() + "." + el.classList.value);
+        })()
+      JS
+      assert_empty outside_the_scroller,
+        "the cron freshness card sticks out past a 375px viewport: #{outside_the_scroller.inspect}"
+
+      assert page.evaluate_script(<<~JS), "the per-key table must stay inside a scrollable wrapper"
+        (function () {
+          const heading = Array.from(document.querySelectorAll("h3"))
+            .find((h) => h.textContent.trim() === "Cron Freshness");
+          const scroller = heading.closest("div.bg-white").querySelector("table").parentElement;
+          return getComputedStyle(scroller).overflowX === "auto";
+        })()
+      JS
+    ensure
+      page.driver.browser.manage.window.resize_to(1400, 900)
+    end
+  end
 end

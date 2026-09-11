@@ -153,17 +153,36 @@ module Mcp
       # their reasons, including the `overdue` ones the page does not speak for, so an
       # agent can tell a hung sweep from one queued behind a backlog. Every key's full
       # reading is in `cron_health` in the JSON below.
+      #
+      # The keys that stopped EARLIER in the window and recovered get a bullet of their
+      # own, because nothing else here would carry them: they read `fresh`, their
+      # summary line is INFO and so is not in VictoriaLogs, and "no log lines" is not
+      # evidence that nothing ran (tadasant/zimmer#584). The reader of this tool is an
+      # agent with no route to /jobs, so this is the only surface on which it can ask
+      # "has this sweep been running", rather than "is it running now".
       def cron_freshness_lines(report)
         cron = report[:cron_health] || {}
         status = cron[:status]
         return [] if status.nil?
 
-        behind = (cron[:keys] || []).select { |r| %i[stale overdue].include?(r[:state]) }
+        keys = cron[:keys] || []
+        behind = keys.select { |r| %i[stale overdue].include?(r[:state]) }
+        recovered = keys.select { |r| r[:state] == :fresh && r[:stopped_in_window] }
 
         [
           "- **Cron freshness:** #{status.message}",
-          *behind.map { |r| "  - `#{r[:key]}` (#{r[:state]}): #{r[:reason]}" }
+          *behind.map { |r| "  - `#{r[:key]}` (#{r[:state]}): #{r[:reason]}" },
+          *recovered.map { |r| recovered_key_line(r) }
         ]
+      end
+
+      def recovered_key_line(reading)
+        window = CronFreshness::HISTORY_WINDOW.inspect
+        silence = HealthMonitorService.format_wait(reading[:longest_gap_seconds])
+        resumed = reading[:gap_ended_at]&.utc&.strftime("%Y-%m-%d %H:%M UTC")
+
+        "  - `#{reading[:key]}` (enqueuing now, but stopped earlier): #{reading[:ticks_in_window]} tick(s) " \
+          "in the last #{window}, longest silence #{silence}, resumed #{resumed}"
       end
 
       # The single row the alerts fire on, named. The Slack page renders the same

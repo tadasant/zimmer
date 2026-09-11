@@ -83,10 +83,47 @@
 # Two readings are never judged at all: a key disabled in the GoodJob dashboard
 # (`disabled`), and a key whose entry in config/cron_schedule.rb carries
 # `freshness_exempt:` with its reason (`exempt`).
+#
+# AND HAS IT BEEN RUNNING, NOT JUST IS IT RUNNING
+# -----------------------------------------------
+# Everything above reads ONE row per key, the newest, so it answers "is this key
+# enqueuing now". A key that stopped for six hours overnight and recovered reads
+# `fresh`, identically to one that never missed a tick. Nothing else answers the
+# question either: the summary line a periodic job writes is `Rails.logger.info`, and
+# the OTel appender ships WARN and above, so a job's ordinary life is not in
+# VictoriaLogs and its absence there is not evidence of anything
+# (tadasant/zimmer#584).
+#
+# So each reading also carries the key's last HISTORY_WINDOW: how many ticks it
+# produced, and the longest silence inside that window, seeded with the newest tick
+# BEFORE the window so a hole at the leading edge is measured rather than skipped.
+#
+# A silence is a stop once it exceeds the key's own interval plus its own grace —
+# the same two numbers the live rule uses, applied to a gap instead of to a due time.
+# That is what makes the test work across cadences without a second threshold to
+# tune: a 5-minute singleton that legitimately refuses two ticks while its copy runs
+# is 15 minutes silent against 35, and a daily key's perfectly normal 24-hour silence
+# is 24 hours against 26.
+#
+# It is REPORTED, never paged. The gap is in the past and the key recovered, so a
+# page would be an alert about something already over; the live rule above is what
+# pages. And a gap that lands on every key at the same instant is a worker outage
+# rather than a per-key fault — true, and worth seeing during a post-mortem, which
+# is the whole use.
 class CronFreshness
   GRACE_TICKS = 2
   GRACE_FLOOR = 30.minutes
   GRACE_CAP = 2.hours
+
+  # How far back each key's tick history is read. A day covers the overnight stop
+  # nobody watched and keeps the scan to one day of cron rows (~23,000 across the
+  # whole schedule) rather than the fourteen days GoodJob retains.
+  HISTORY_WINDOW = 24.hours
+
+  # At most this many key names are spelled out in the history clause of the summary
+  # message. An outage stops every key at once, and a 50-name sentence is not a
+  # summary.
+  HISTORY_NAMES_IN_MESSAGE = 3
 
   # Between a worker registering its GoodJob process row and its cron manager having
   # scheduled a first tick. A tick that falls inside it may be missed without anything
@@ -130,6 +167,7 @@ class CronFreshness
     end
 
     last_jobs = newest_tick_by_key
+    @history = tick_history(@now - HISTORY_WINDOW)
     enabled = GoodJob::Setting.cron_keys_enabled(@entries.map { |entry| [ entry.key, entry.enabled_by_default? ] })
     @toggled_at = GoodJob::Setting.where(
       key: [ GoodJob::Setting::CRON_KEYS_ENABLED, GoodJob::Setting::CRON_KEYS_DISABLED ]
@@ -155,21 +193,83 @@ class CronFreshness
   # Every cron tick sets `cron_at` (only a manual "run now" from the dashboard leaves
   # it null, and that is not a tick), so this filters the nulls out and orders plain
   # `DESC`, and each key becomes one backward index probe.
-  def newest_tick_by_key
+  #
+  # `before:` takes the newest tick STRICTLY EARLIER than an instant instead, which is
+  # how #tick_history seeds the leading edge of its window.
+  def newest_tick_by_key(before: nil)
     keys = @entries.map { |entry| entry.key.to_s }
     from = GoodJob::Job.sanitize_sql_array([ "unnest(ARRAY[?]::text[]) AS cron_keys(cron_key)", keys ])
+    bound = before ? GoodJob::Job.sanitize_sql_array([ "AND good_jobs.cron_at < ?", before ]) : ""
 
     GoodJob::Job.select("lateral_jobs.*").from(from).joins(<<~SQL.squish).index_by(&:cron_key)
       CROSS JOIN LATERAL (
         SELECT * FROM good_jobs
-        WHERE good_jobs.cron_key = cron_keys.cron_key AND good_jobs.cron_at IS NOT NULL
+        WHERE good_jobs.cron_key = cron_keys.cron_key AND good_jobs.cron_at IS NOT NULL #{bound}
         ORDER BY good_jobs.cron_at DESC
         LIMIT 1
       ) AS lateral_jobs
     SQL
   end
 
+  # How many ticks each key produced over the window, and its longest silence inside
+  # it: one index range scan per key on the same `(cron_key, cron_at)` index, over one
+  # day of rows rather than the fourteen retained.
+  #
+  # The longest silence is the widest interval between consecutive ticks, INCLUDING
+  # the one that straddles the start of the window — a key dead for the first six
+  # hours of the day has ordinary five-minute gaps between every pair of rows inside
+  # the window, and the hole is only visible against the tick before it. That seed is
+  # the one lateral above with an upper bound. A key with no tick at all before the
+  # window has no seed, and its leading edge is not measured rather than guessed at:
+  # understating a silence can only lose a finding, never invent one.
+  #
+  # @return [Hash{String => Hash}] key => :ticks, :longest_gap_seconds, :gap_started_at,
+  #   :gap_ended_at. Keys that produced nothing in the window are absent.
+  def tick_history(window_start)
+    keys = @entries.map { |entry| entry.key.to_s }
+    seeds = newest_tick_by_key(before: window_start).transform_values(&:cron_at)
+
+    rows = GoodJob::Job.connection.select_all(GoodJob::Job.sanitize_sql_array([ <<~SQL.squish, keys, window_start ]))
+      SELECT DISTINCT ON (cron_key) cron_key, ticks, first_at, gap_seconds, gap_ended_at
+      FROM (
+        SELECT cron_key,
+               COUNT(*) OVER (PARTITION BY cron_key) AS ticks,
+               MIN(cron_at) OVER (PARTITION BY cron_key) AS first_at,
+               EXTRACT(EPOCH FROM cron_at - LAG(cron_at) OVER (
+                 PARTITION BY cron_key ORDER BY cron_at
+               )) AS gap_seconds,
+               cron_at AS gap_ended_at
+        FROM good_jobs
+        WHERE cron_key = ANY(ARRAY[?]::text[]) AND cron_at >= ?
+      ) windowed
+      ORDER BY cron_key, gap_seconds DESC NULLS LAST
+    SQL
+
+    rows.each_with_object({}) do |row, out|
+      entry = { ticks: row["ticks"].to_i, longest_gap_seconds: nil, gap_started_at: nil, gap_ended_at: nil }
+      widen(entry, row["gap_seconds"]&.to_f, row["gap_ended_at"])
+      widen(entry, seed_gap(seeds[row["cron_key"]], row["first_at"]), row["first_at"])
+      out[row["cron_key"]] = entry
+    end
+  end
+
+  def seed_gap(seed, first_at)
+    return nil if seed.nil? || first_at.nil?
+
+    first_at - seed
+  end
+
+  # Keeps whichever of the two candidate silences is longer.
+  def widen(entry, seconds, ended_at)
+    return if seconds.nil? || (entry[:longest_gap_seconds] && entry[:longest_gap_seconds] >= seconds)
+
+    entry[:longest_gap_seconds] = seconds.round
+    entry[:gap_ended_at] = ended_at
+    entry[:gap_started_at] = ended_at - seconds
+  end
+
   def read(entry, job, since, enabled, paused)
+    history = @history[entry.key.to_s] || {}
     reading = {
       key: entry.key.to_s,
       job_class: entry.job_class.to_s,
@@ -184,6 +284,11 @@ class CronFreshness
       outside_cron: false,
       executions: job&.executions_count,
       paused: job.present? && paused_job?(job, paused),
+      ticks_in_window: history[:ticks].to_i,
+      longest_gap_seconds: history[:longest_gap_seconds],
+      gap_started_at: history[:gap_started_at],
+      gap_ended_at: history[:gap_ended_at],
+      stopped_in_window: false,
       state: :fresh,
       reason: nil
     }
@@ -214,7 +319,8 @@ class CronFreshness
       overdue_seconds: [ @now - due_at, 0 ].max.round,
       grace_seconds: grace.round,
       blocker: blocker,
-      blocker_since: blocker_since
+      blocker_since: blocker_since,
+      stopped_in_window: stopped_in_window?(reading, interval + grace)
     )
     return reading if @now - due_at < grace
 
@@ -228,6 +334,20 @@ class CronFreshness
 
     state, reason = judge(reading)
     reading.merge(state: state, reason: reason)
+  end
+
+  # Did the key's longest silence inside the window exceed one whole interval plus its
+  # grace — the same allowance the live rule gives a due tick, measured against a gap?
+  #
+  # A silence that starts before the last time a cron key was enabled or disabled in
+  # the GoodJob dashboard is not read as a stop, for the reason the live rule has the
+  # same bound: a key switched off for a day was not failing while it was off.
+  def stopped_in_window?(reading, allowance)
+    gap = reading[:longest_gap_seconds]
+    return false if gap.nil? || gap <= allowance
+    return false if @toggled_at && reading[:gap_started_at] && @toggled_at >= reading[:gap_started_at]
+
+    true
   end
 
   # The fire times a key owes, newest first: after `after`, no later than `upto`, at
@@ -321,16 +441,40 @@ class CronFreshness
     stale = readings.select { |r| r[:state] == :stale }
     overdue = readings.select { |r| r[:state] == :overdue }
 
-    if stale.any?
-      status(:critical, "Cron schedule stale: #{stale.size} key(s) stopped producing jobs " \
-                        "(#{stale.map { |r| r[:key] }.join(', ')})")
-    elsif overdue.any?
-      status(:warning, "#{overdue.size} cron key(s) behind while their jobs wait or run " \
-                       "(#{overdue.map { |r| r[:key] }.join(', ')})")
-    else
-      judged = readings.count { |r| r[:state] == :fresh }
-      status(:healthy, "All #{judged} judged cron key(s) are enqueuing on schedule")
-    end
+    level, message =
+      if stale.any?
+        [ :critical, "Cron schedule stale: #{stale.size} key(s) stopped producing jobs " \
+                     "(#{stale.map { |r| r[:key] }.join(', ')})" ]
+      elsif overdue.any?
+        [ :warning, "#{overdue.size} cron key(s) behind while their jobs wait or run " \
+                    "(#{overdue.map { |r| r[:key] }.join(', ')})" ]
+      else
+        judged = readings.count { |r| r[:state] == :fresh }
+        [ :healthy, "All #{judged} judged cron key(s) are enqueuing on schedule" ]
+      end
+
+    status(level, [ message, recovered_clause(readings) ].compact.join(". "))
+  end
+
+  # The half of the answer the newest row cannot give, said in the summary rather
+  # than left in the per-key JSON for someone to notice.
+  #
+  # Only keys that are `fresh` NOW: a key still stale or overdue is already named by
+  # the message this follows, and its silence is the present, not the past. It does
+  # not move the status level — see the class comment on why a recovered stop is
+  # reported and not paged.
+  def recovered_clause(readings)
+    recovered = readings.select { |r| r[:state] == :fresh && r[:stopped_in_window] }
+    return nil if recovered.empty?
+
+    recovered = recovered.sort_by { |r| -r[:longest_gap_seconds] }
+    named = recovered.first(HISTORY_NAMES_IN_MESSAGE)
+                     .map { |r| "#{r[:key]} silent #{ago(r[:longest_gap_seconds])} to #{stamp(r[:gap_ended_at])}" }
+    rest = recovered.size - named.size
+    named << "and #{rest} more" if rest.positive?
+
+    "#{recovered.size} key(s) stopped and recovered in the last " \
+      "#{HISTORY_WINDOW.inspect} (#{named.join('; ')})"
   end
 
   def summary(readings, status, since = nil)
@@ -338,6 +482,8 @@ class CronFreshness
       status: status,
       cron_running_since: since,
       checked_at: @now,
+      history_window_seconds: HISTORY_WINDOW.to_i,
+      stopped_in_window: readings.count { |r| r[:stopped_in_window] },
       counts: STATE_ORDER.to_h { |state| [ state, readings.count { |r| r[:state] == state } ] },
       keys: readings
     }
