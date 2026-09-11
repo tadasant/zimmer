@@ -77,8 +77,6 @@ class QueuedJobMaintenance
   # rest into a labelled remainder.
   BREAKDOWN_LIMIT = 25
 
-  ACTIONS = %i[discard reschedule].freeze
-
   # The label a NULL/blank `job_class` or `queue_name` is reported under, matching
   # HealthMonitorService's own breakdowns so the two pages agree.
   UNKNOWN = "(unknown)"
@@ -273,10 +271,29 @@ class QueuedJobMaintenance
       refuse_over_cap!(action, snapshot)
       refuse_count_mismatch!(action, snapshot, expected_count)
 
-      # Re-read the ids AFTER every refusal has passed, and cap the read, so the
-      # rows written are a bounded set drawn from the scope just counted rather
-      # than whatever an unbounded cursor finds while the set is being mutated.
-      ids = eligible(job_class: job_class, queue_name: queue_name).limit(MAX_PER_CALL).pluck(:id)
+      # Re-read the ids AFTER every refusal has passed, bounded by the count the
+      # caller just CONFIRMED rather than by the cap.
+      #
+      # The bound is what makes the confirmation mean what it says. Rows keep
+      # arriving while this runs — a poller ticks, a trigger fires — so an
+      # unbounded re-read would write rows that landed after the count and were
+      # therefore never part of what the caller agreed to. Limiting to
+      # `snapshot.matched` means this call can only ever touch as many rows as
+      # were confirmed; rows that arrive in the window are simply left for the
+      # next call, and rows that LEFT in the window just make `affected` smaller
+      # than `matched`, which the receipt reports honestly.
+      #
+      # Oldest first, and the order is not decoration: it is what decides WHICH
+      # rows a shrunk-by-one bound leaves behind. Without it Postgres is free to
+      # hand back any `snapshot.matched` of them, so a call issued against a
+      # backlog an operator was looking at could skip the head of the queue and
+      # discard a row that arrived while they were reading. The order goes here
+      # rather than on `eligible`, because `preview` groups that same scope and
+      # Postgres rejects an ORDER BY on a column outside the GROUP BY.
+      ids = eligible(job_class: job_class, queue_name: queue_name)
+        .order(:created_at, :id)
+        .limit(snapshot.matched)
+        .pluck(:id)
 
       by_job_class = Hash.new(0)
       by_queue = Hash.new(0)

@@ -313,6 +313,32 @@ class QueuedJobMaintenanceTest < ActiveSupport::TestCase
     end
   end
 
+  # The count confirmation promises the caller acts on the set it agreed to. Rows
+  # keep arriving while a call runs, so the write has to be bounded by the
+  # confirmed count and not by the cap — otherwise a row that landed a
+  # millisecond after the count would be discarded without ever having been
+  # confirmed.
+  test "a row that arrives after the count is not swept up by the same call" do
+    2.times { build_job }
+
+    # Fires between the count and the id re-read, which is exactly the window.
+    QueuedJobMaintenance.stubs(:preview).returns(
+      QueuedJobMaintenance::Preview.new(
+        job_class: "CanaryJob", queue_name: nil, matched: 2,
+        by_job_class: { "CanaryJob" => 2 }, by_queue: { "default" => 2 }, over_cap: false
+      )
+    )
+    latecomer = build_job(created_at: 1.minute.from_now)
+
+    result = QueuedJobMaintenance.discard!(job_class: "CanaryJob", expected_count: 2, actor: "test")
+
+    assert_equal 2, result.affected
+    assert_equal 2, GoodJob::Job.where.not(finished_at: nil).count
+    # And it is the LATECOMER that survives, not an arbitrary one of the three:
+    # the re-read is ordered oldest-first.
+    assert_equal [ latecomer.id ], GoodJob::Job.where(finished_at: nil).pluck(:id)
+  end
+
   # === Preview ===
 
   test "preview counts without touching anything" do
