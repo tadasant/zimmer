@@ -26,7 +26,6 @@ export default class extends Controller {
   static targets = ["list", "sections", "menu"]
   static values = {
     reorderCardsUrl: String,
-    createUrl: String,
     reorderUrl: String
   }
 
@@ -427,36 +426,6 @@ export default class extends Controller {
   revert(event) {
     const siblings = Array.from(event.from.children).filter((child) => child !== event.item)
     event.from.insertBefore(event.item, siblings[event.oldIndex] || null)
-  }
-
-  // Prompt for a name and create a new category. The server responds with a Turbo
-  // Stream that appends the new (empty) section, which becomes a drop target via
-  // listTargetConnected.
-  addCategory(event) {
-    event.preventDefault()
-    const name = window.prompt("New category name:")
-    if (!name || !name.trim()) return
-
-    fetch(this.createUrlValue, {
-      method: "POST",
-      headers: csrfHeaders({ Accept: "text/vnd.turbo-stream.html" }),
-      body: JSON.stringify({ name: name.trim() })
-    })
-      .then((response) => {
-        if (!response.ok) {
-          return response.json().then((data) => {
-            throw new Error(data.error || `HTTP ${response.status}`)
-          })
-        }
-        return response.text()
-      })
-      .then((html) => {
-        if (html) window.Turbo.renderStreamMessage(html)
-      })
-      .catch((error) => {
-        console.error("Failed to create category", error)
-        window.alert(`Could not create category: ${error.message}`)
-      })
   }
 
   // The draggable item is the <turbo-frame id="session_123"> wrapping a card.

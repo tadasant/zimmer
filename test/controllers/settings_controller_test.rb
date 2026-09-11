@@ -19,6 +19,11 @@ class SettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "a[href=?]", root_path
   end
 
+  test "links to the categorization tuning page" do
+    get settings_url
+    assert_select "a[href=?]", categorization_path, text: /Tune categorization/
+  end
+
   test "should have notifications section" do
     get settings_url
     assert_select "h2", "Notifications"

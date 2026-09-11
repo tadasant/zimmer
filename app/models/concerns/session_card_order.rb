@@ -94,8 +94,12 @@ module SessionCardOrder
     #   named in `ids`, only that card moves, placed next to its neighbour in `ids`. If
     #   it belongs to another category it is moved into this one first, so a
     #   cross-section drag persists its category and its position in one transaction.
+    # @param source [String, nil] which surface the drag came from, recorded against the
+    #   category change it makes. A cross-section drag is the operator's PRIMARY way of
+    #   correcting the auto-categorizer, so it is also the primary producer of the
+    #   correction corpus — see SessionCategorization.
     # @return [Array<Integer>] the destination bucket's full order after the write.
-    def reorder_cards!(ids, category_id:, moved_session_id: nil)
+    def reorder_cards!(ids, category_id:, moved_session_id: nil, source: nil)
       posted = Array(ids).filter_map { |id| Integer(id.to_s, exception: false) }.uniq
       moved_id = moved_session_id && Integer(moved_session_id.to_s, exception: false)
 
@@ -105,7 +109,10 @@ module SessionCardOrder
         # leaves, whose moved card this transaction is about to write.
         lock_card_buckets!([ category_id, *(moved ? [ moved.category_id ] : []) ])
 
-        moved.update!(category_id: category_id) if moved && moved.category_id != category_id
+        if moved && moved.category_id != category_id
+          moved.category_change_source = source
+          moved.update!(category_id: category_id)
+        end
 
         current = where(category_id: category_id).card_ordered.pluck(:id, :sort_order)
         bucket = current.map(&:first)

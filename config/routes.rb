@@ -12,6 +12,11 @@ Rails.application.routes.draw do
     resources :app_settings
     resources :catalog_pins
     resources :categories
+    # Read-only: the categorization eval corpus is append-only by design — every
+    # row records what a model or a human actually did, and one somebody could
+    # hand-author here would not be evidence of anything. The `replay_*` columns
+    # are written by CategorizationReplayJob, from the categorization page.
+    resources :category_feedback_events, only: [ :index, :show ]
     resources :claude_accounts
     resources :claude_account_quota_snapshots
     resources :elicitations
@@ -360,6 +365,12 @@ Rails.application.routes.draw do
 
   # Settings page
   get "settings", to: "settings#show", as: :settings
+  # The categorization tuning loop: the guidance preamble, the model override,
+  # the correction corpus and the replay that scores the first two against the
+  # third. See CategorizationController.
+  get "settings/categorization", to: "categorization#show", as: :categorization
+  patch "settings/categorization", to: "categorization#update"
+  post "settings/categorization/replay", to: "categorization#replay", as: :categorization_replay
   patch "settings/catalog_pins", to: "catalog_pins#update", as: :catalog_pins
   patch "settings/session_defaults", to: "app_settings#update", as: :app_settings
 
