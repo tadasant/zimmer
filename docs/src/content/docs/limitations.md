@@ -847,11 +847,20 @@ two-minute monitor tick means scanning ~320,000 rows instead of ~23,000. A stop 
 therefore only readable from the GoodJob dashboard at `/jobs`, which an agent session has no route
 to.
 
-Two edges sit inside the window itself, both in the safe direction. A key with no tick at all
-*before* the window has its leading edge left unmeasured, so a stop that began before the window and
-ended inside it is understated rather than guessed at. And a silence that began before the last time
-any cron key was enabled or disabled in the GoodJob dashboard is not read as a stop, because GoodJob
-keeps all the switches in one settings row and cannot say which key the toggle was for.
+Three edges sit inside the window itself. Two understate: a key with no tick at all *before* the
+window has its leading edge left unmeasured, so a stop that began before the window and ended inside
+it is understated rather than guessed at; and a key whose interval is longer than the window (a weekly
+entry, say) has at most one tick in it and gets no history verdict at all, whatever it did. One
+overstates, for the day after a deploy: the allowance a gap is judged against is one interval plus
+grace from the schedule *as it is now*, so a key whose cadence a deploy just tightened (daily to
+every 30 minutes, say) still carries yesterday's perfectly normal 24-hour gap inside the window and
+reads `stopped_in_window` against the new 30m + 30m allowance until that gap ages out. It is
+reported, never paged, and it is true that the key was silent that long — the reading is only wrong
+about whether that was a fault.
+
+A dashboard toggle is deliberately not an excuse here, unlike for the live rule. GoodJob keeps every
+key's switch in one settings row, so a key switched off for six hours and back on reads as "stopped
+and recovered" — which it did.
 
 ### The docs guardrail does not look in the image's `tmp/`
 
