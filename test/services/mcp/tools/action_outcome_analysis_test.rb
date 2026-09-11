@@ -98,6 +98,21 @@ class Mcp::Tools::ActionOutcomeAnalysisTest < ActiveSupport::TestCase
     assert_equal cap + 1, Session.outcome_analysis_sessions.count
   end
 
+  test "an analysis stuck for longer than the pump's stale window stops holding a slot or its transcript" do
+    cap = OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY
+    @targets.first(cap).each { |target| @tool.call("action" => "analyze", "session_id" => target.id) }
+    stuck = Session.outcome_analysis_sessions.order(:id).first
+    stuck.update_columns(status: Session.statuses[:needs_input], created_at: (OutcomeAnalyses::PumpBatch::STALE_AFTER + 1.minute).ago)
+
+    # Its transcript is analyzable again, and its slot is free for that.
+    @tool.call("action" => "analyze", "session_id" => stuck.metadata[Session::OUTCOME_ANALYSIS_MARKER])
+    assert_equal cap + 1, Session.outcome_analysis_sessions.count
+
+    # The fresh ones still hold theirs.
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "analyze", "session_id" => @targets.last.id) }
+    assert_match(/#{cap} analyses requested one at a time over MCP are already in flight/, error.message)
+  end
+
   test "a web-UI analysis in flight does not count against the agent cap" do
     @targets.first(OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY).each do |target|
       OutcomeAnalyses::SpawnAnalysisSession.call(session: target)

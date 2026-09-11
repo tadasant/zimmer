@@ -114,7 +114,10 @@ the ledger renders its live counts, and **Stop** marks it canceled so the pump s
 That is the web form's contract. A batch an agent starts over MCP is held to a ceiling instead; see
 [Over MCP](#over-mcp).
 Cancel stops the *queue*, not the analyses already running: killing those would throw away work
-already paid for, and what a runaway batch needs stopped is the spawning.
+already paid for, and what a runaway batch needs stopped is the spawning. The pump keeps
+reconciling a stopped batch until those in-flight analyses land or fail, so its card's "running"
+count goes to zero instead of staying frozen. Stopping a batch that has already completed is
+refused rather than relabelling it canceled.
 
 ## The analysis session
 
@@ -196,11 +199,16 @@ over MCP gets a batch row, a card on `/outcomes`, and a Stop button, like any ot
 
 It lives in the **opt-in `outcome_analyses` tool group**, which no unscoped connection carries, and
 `zimmer-outcome-analyses` (`?tool_groups=sessions_readonly,outcome_analyses`) is the one catalog
-entry that names it. No root attaches that entry by default, so a session can start an analysis
-only when someone gave it that server on purpose. That is how an agent-started analysis stays
-explicit. The group is not in `sessions` for a specific reason: analysis sessions are spawned with
-`zimmer-sessions`, and a write there would let an analysis start analyses. Neither tool is on the
-`self_session` surface injected into every session.
+entry that names it. No root attaches that entry by default, so a session is offered the tool only
+when a trigger, a human, or a session that spawned it chose that server. The group is not in
+`sessions` for a specific reason: analysis sessions are spawned with `zimmer-sessions`, and a write
+there would hand every analysis the tool directly. Neither tool is on the `self_session` surface
+injected into every session.
+
+Like every tool group, this is a **scoping** boundary, not an authorization one. It decides what a
+session is offered. A session that can call `start_session` or `action_trigger` can still spawn a
+child with `zimmer-outcome-analyses` attached. That is one deliberate hop rather than a tool
+already in hand, and the limits below are what bound an agent that takes it.
 
 Because nobody is watching the ledger when an agent calls it, the write has limits the web form does
 not:
@@ -210,7 +218,8 @@ not:
   MCP is 1.
 - **One MCP-started batch runs at a time**, so the cap cannot be multiplied by calling again. A
   partial unique index on `outcome_analysis_batches` holds this, so two racing calls cannot both
-  win. Batches started from the web UI do not count.
+  win. A stopped MCP batch whose analyses are still in flight also blocks a new one, so stopping
+  and restarting cannot widen the ceiling either. Batches started from the web UI do not count.
 - **`analyze_all` requires `expected_count`**, the number of sessions the caller believes it is
   queuing, which is `counts.unanalyzed` from the ledger view with the same filters. A batch of any
   other size is refused, and nothing is created. It is the MCP half of the confirm dialog a human
@@ -218,6 +227,9 @@ not:
 - **At most 3 single `analyze` requests are in flight at once**, and a transcript that already has
   an analysis in flight is refused. A loop of `analyze` calls would otherwise be a batch with no
   Stop button.
+- An analysis that has produced nothing for **three hours** stops counting against these limits.
+  That is the same clock the pump uses to release a batch item's slot, so an analysis parked in
+  `needs_input` cannot hold a slot, or its transcript, forever.
 - Both analysis actions spawn under `general-agent`, so a connection fenced by `allowed_agent_roots`
   has to be allowed that root.
 

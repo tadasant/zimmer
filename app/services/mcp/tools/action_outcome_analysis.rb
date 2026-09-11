@@ -19,7 +19,9 @@ module Mcp
     #   * analyze_all takes the number of sessions the caller expects to queue and
     #     refuses a batch of any other size — the web form's confirm dialog;
     #   * single analyses are capped the same way, so a loop of `analyze` calls
-    #     cannot become a batch with no Stop button.
+    #     cannot become a batch with no Stop button;
+    #   * a stopped MCP batch's in-flight analyses block a new MCP batch until
+    #     they land, so stop-and-restart cannot widen the ceiling.
     #
     # Both analysis actions spawn under OutcomeAnalyses::Config.agent_root, so a
     # connection fenced by allowed_agent_roots has to be allowed that root.
@@ -62,7 +64,9 @@ module Mcp
         - A batch runs at most #{OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY} analyses at a time
           ("concurrency", default 1 — fully sequential). Asking for more is refused, not clamped; a
           human can start a wider batch from the Outcomes page.
-        - Only one batch started over MCP runs at a time. Wait for it to finish, or stop it.
+        - Only one batch started over MCP runs at a time. Wait for it to finish, or stop it. A stopped
+          MCP batch whose analyses are still in flight also blocks a new one until they finish, so
+          stopping and restarting does not widen the ceiling.
         - "expected_count" must equal the number of sessions the filters would queue — read it
           first as `counts.unanalyzed` from `get_outcome_analysis` view "ledger" with the same
           filters. A mismatch is refused with the real number and nothing is queued. This is the
@@ -70,6 +74,8 @@ module Mcp
           a batch, and stating the number is how you catch that before it spawns anything.
         - At most #{OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY} single "analyze" requests may be in
           flight at once. For more than a handful of transcripts, use analyze_all.
+        - An analysis that has produced nothing for #{OutcomeAnalyses::PumpBatch::STALE_AFTER.inspect}
+          stops counting against these limits.
 
         **Filters** (analyze_all): `from`, `to`, `agent_root`, `agent_runtime`, `model` — with the
         same meaning as in `get_outcome_analysis`'s ledger view. (`analyzed` and `outcome` are not
@@ -189,16 +195,13 @@ module Mcp
         raise ToolError, "\"batch_id\" is required for the \"cancel_batch\" action." if args["batch_id"].blank?
 
         batch = OutcomeAnalysisBatch.find_by(id: args["batch_id"]) || raise(ToolError, "Batch not found: #{args['batch_id']}")
-        # The Stop button only renders on a running batch. Cancelling a finished
-        # one would relabel a completed batch as canceled, which is a lie about
-        # what happened to it.
-        raise ToolError, "Batch ##{batch.id} is already #{batch.status}; there is nothing to stop." unless batch.running?
-
         canceled = OutcomeAnalyses::CancelBatch.call(batch)
 
         "## Batch ##{batch.id} stopped\n\n" \
           "- **Canceled:** #{canceled} queued #{'analysis'.pluralize(canceled)}\n" \
           "- **Still in flight:** #{batch.reload.running_count}, left to finish and save"
+      rescue OutcomeAnalyses::CancelBatch::NotRunning => e
+        raise ToolError, e.message
       end
 
       # The session this MCP connection was written for, when it names one. The

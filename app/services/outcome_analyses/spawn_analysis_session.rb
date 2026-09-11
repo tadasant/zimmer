@@ -29,27 +29,41 @@ module OutcomeAnalyses
     end
 
     # The live analysis session working on `target`, if there is one — the newest,
-    # should a web-UI click and an MCP call ever have both started one.
-    def self.in_flight_for(target)
-      live_analysis_sessions
-        .where("metadata->>? = ?", Session::OUTCOME_ANALYSIS_MARKER, target.id.to_s)
-        .order(id: :desc)
-        .first
+    # should a web-UI click and an MCP call ever have both started one. With
+    # `fresh_only`, one that has sat past PumpBatch::STALE_AFTER does not count.
+    def self.in_flight_for(target, fresh_only: false)
+      scope = fresh_only ? fresh(live_analysis_sessions) : live_analysis_sessions
+      scope.where("metadata->>? = ?", Session::OUTCOME_ANALYSIS_MARKER, target.id.to_s).order(id: :desc).first
     end
 
-    # How many analyses requested one at a time over MCP are still in flight.
-    # Batch items do not count: a batch has its own ceiling and its own Stop.
+    # How many analyses requested one at a time over MCP hold one of the agent's
+    # slots. Batch items do not count: a batch has its own ceiling and its own Stop.
     def self.live_mcp_single_count
-      live_analysis_sessions
-        .where("metadata->>? = ?", REQUESTED_VIA_KEY, OutcomeAnalysisBatch::STARTED_VIA_MCP)
-        .where("metadata->>'outcome_analysis_batch_id' IS NULL")
-        .count
+      agent_slot_holders.where("metadata->>'outcome_analysis_batch_id' IS NULL").count
+    end
+
+    # How many analyses spawned by an MCP-started batch — running or stopped —
+    # still hold a slot. A stopped batch's in-flight analyses are left to finish,
+    # so until they do they count against the next MCP batch.
+    def self.live_mcp_batch_item_count
+      agent_slot_holders.where("metadata->>'outcome_analysis_batch_id' IS NOT NULL").count
     end
 
     # Waiting, running, or parked in needs_input: anything that may yet save.
     def self.live_analysis_sessions
       Session.outcome_analysis_sessions.where(status: Session::NON_REAPABLE_STATUSES)
     end
+
+    # MCP-requested analyses still holding one of the agent's slots. An analysis
+    # that has produced nothing for PumpBatch::STALE_AFTER gives its slot back —
+    # the clock a batch item's slot is released on — so one parked in needs_input
+    # cannot hold a slot, or its transcript, forever.
+    def self.agent_slot_holders
+      fresh(live_analysis_sessions)
+        .where("metadata->>? = ?", REQUESTED_VIA_KEY, OutcomeAnalysisBatch::STARTED_VIA_MCP)
+    end
+
+    def self.fresh(scope) = scope.where(created_at: PumpBatch::STALE_AFTER.ago..)
 
     # @param batch [OutcomeAnalysisBatch, nil] the batch this item belongs to. A
     #   batch item takes its provenance from the batch, not from the arguments.
@@ -117,9 +131,10 @@ module OutcomeAnalyses
     # handful of transcripts; past AGENT_MAX_CONCURRENCY in flight, the caller
     # is building a batch by hand, and a hand-built batch has no Stop button.
     # A check rather than a lock: two calls in the same instant can both pass,
-    # which costs one extra spot session, not a runaway.
+    # which costs one extra spot session, not a runaway. Both checks read only
+    # analyses younger than PumpBatch::STALE_AFTER — see .agent_slot_holders.
     def enforce_agent_limits!
-      in_flight = self.class.in_flight_for(@session)
+      in_flight = self.class.in_flight_for(@session, fresh_only: true)
       if in_flight
         raise AgentCapExceeded, "Session ##{@session.id} is already being analyzed by session ##{in_flight.id}. " \
                                 "Its result replaces the current analysis when it saves; starting a second one would only race it."

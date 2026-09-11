@@ -10,10 +10,11 @@ module OutcomeAnalyses
   #
   # Two callers, two contracts. The web UI's Analyze All button honors whatever
   # concurrency a human types. A batch started over MCP (`started_via: "mcp"`) is
-  # held to OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY and to one running MCP
-  # batch at a time — the Outcomes feature's premise is that nothing is analyzed
-  # implicitly, and an agent that can start batches without a ceiling is the
-  # nearest thing to implicit that an explicit call can be.
+  # held to OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY, to one running MCP batch
+  # at a time, and to no new one while a stopped one's analyses are in flight.
+  # The Outcomes feature's premise is that nothing is analyzed implicitly, and an
+  # agent that can start batches without a ceiling is the nearest thing to
+  # implicit that an explicit call can be.
   class StartBatch
     class Error < StandardError; end
     class NothingToAnalyze < Error; end
@@ -56,22 +57,7 @@ module OutcomeAnalyses
                              "#{'session'.pluralize(session_ids.size)}, not the #{@expected_count} expected. Nothing was queued."
       end
 
-      batch = create_batch!(session_ids.size)
-
-      # One INSERT for the whole queue: an Analyze All over a few thousand
-      # sessions must not be a few thousand round trips.
-      now = Time.current
-      rows = session_ids.each_with_index.map do |session_id, index|
-        {
-          outcome_analysis_batch_id: batch.id,
-          session_id: session_id,
-          state: OutcomeAnalysisBatchItem::QUEUED,
-          position: index,
-          created_at: now,
-          updated_at: now
-        }
-      end
-      OutcomeAnalysisBatchItem.insert_all!(rows)
+      batch = create_batch!(session_ids)
 
       # Start the first wave now rather than waiting up to a minute for the cron
       # tick, so the click has a visible effect.
@@ -96,22 +82,51 @@ module OutcomeAnalyses
 
       running = OutcomeAnalysisBatch.active.started_via_mcp.recent.first
       raise AgentCapExceeded, already_running_message(running) if running
+
+      # Stop leaves a batch's in-flight analyses to finish, so without this a
+      # stop-and-restart would stack a fresh wave on top of the stopped one's and
+      # the ceiling would be per call again.
+      in_flight = SpawnAnalysisSession.live_mcp_batch_item_count
+      return unless in_flight.positive?
+
+      raise AgentCapExceeded,
+            "#{in_flight} #{'analysis'.pluralize(in_flight)} from a stopped MCP batch #{in_flight == 1 ? 'is' : 'are'} " \
+            "still in flight. A new MCP batch waits for #{in_flight == 1 ? 'it' : 'them'} to finish, so stopping and " \
+            "restarting cannot widen the ceiling."
     end
 
-    # The partial unique index is what actually holds "one running MCP batch":
-    # the check above is the friendly message, this is the race it cannot see.
-    # `requires_new` so a losing INSERT rolls back to a savepoint rather than
-    # poisoning a transaction the caller is already in.
-    def create_batch!(total_count)
+    # The batch row and its queue go in together, so no pump tick can find the
+    # row with an empty queue and complete it. The partial unique index is what
+    # actually holds "one running MCP batch": the check above is the friendly
+    # message, this is the race it cannot see. `requires_new` so a losing INSERT
+    # rolls back to a savepoint rather than poisoning a transaction the caller
+    # is already in.
+    def create_batch!(session_ids)
       OutcomeAnalysisBatch.transaction(requires_new: true) do
-        OutcomeAnalysisBatch.create!(
+        batch = OutcomeAnalysisBatch.create!(
           filters: @filters.to_h,
           concurrency: @concurrency,
           status: OutcomeAnalysisBatch::RUNNING,
-          total_count: total_count,
+          total_count: session_ids.size,
           started_via: @started_via,
           started_by_session: @started_by_session
         )
+
+        # One INSERT for the whole queue: an Analyze All over a few thousand
+        # sessions must not be a few thousand round trips.
+        now = Time.current
+        rows = session_ids.each_with_index.map do |session_id, index|
+          {
+            outcome_analysis_batch_id: batch.id,
+            session_id: session_id,
+            state: OutcomeAnalysisBatchItem::QUEUED,
+            position: index,
+            created_at: now,
+            updated_at: now
+          }
+        end
+        OutcomeAnalysisBatchItem.insert_all!(rows)
+        batch
       end
     rescue ActiveRecord::RecordNotUnique
       raise AgentCapExceeded, already_running_message(OutcomeAnalysisBatch.active.started_via_mcp.recent.first)

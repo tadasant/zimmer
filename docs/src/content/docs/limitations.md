@@ -2708,6 +2708,30 @@ the fact that an operator named the server — but "no network of any kind" is n
 
 ---
 
+### An opt-in tool group decides what a session is offered, not what it can reach
+
+`gate_decisions`, `work_backlog` and `outcome_analyses` are opt-in so that no unscoped connection
+carries their writes. That keeps a session from holding `record_gate_decision` or
+`action_outcome_analysis` in passing. It does not stop a session that holds `start_session` or
+`action_trigger` from spawning a child with `zimmer-outcome-analyses` (or either of the others)
+attached. An analysis session, which carries `zimmer-sessions`, is one such hop away from starting
+analyses. The API key is also shared by the whole fleet, so a caller that composed its own
+`?tool_groups=` URL would get the group outright.
+
+What bounds an agent that takes the hop is the tool's own limits (for Outcomes: 3 in flight per
+batch, one MCP batch at a time, `expected_count`, 3 single analyses in flight), not the group.
+
+### The Outcomes agent limits count sessions, and one of them is a check rather than a lock
+
+"One running MCP batch" is held by a partial unique index, so racing `analyze_all` calls cannot both
+win. The single-`analyze` limits are not: "at most 3 in flight" and "not while this transcript is
+already being analyzed" count live analysis sessions and then spawn, so two calls landing in the
+same instant can both pass. The cost is one extra spot session per collision, not a runaway.
+
+Both count only analyses younger than three hours (`PumpBatch::STALE_AFTER`). That is what stops
+one stuck in `needs_input` from holding a slot forever. It also means a legitimately slow analysis
+(one held that long in the spot queue, say) stops counting, and a fourth can start beside it.
+
 ## AIR catalog
 
 ### A dangling reference fails the entire test suite
