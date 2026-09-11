@@ -191,6 +191,10 @@ Two rules worth internalizing before you touch them:
 
 ## Conventions
 
+- Prefer fewer features that are proven to work at runtime over more that may or may not work. If
+  a code path can't be runtime-verified, don't add it, and never merge to `main` anything that
+  hasn't been proven to work at runtime. What counts as proof, and what to do with an unverifiable
+  path already on `main`: `references/ENGINEERING_PRACTICES.md`.
 - Keep controllers thin; put logic in models/services.
 - No temporal comments ("now", "used to be") — write code as the canonical state.
 - Don't add backwards-compat shims during refactors; update all call sites.
