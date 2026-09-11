@@ -77,6 +77,17 @@ class QueuedJobMaintenance
   # rest into a labelled remainder.
   BREAKDOWN_LIMIT = 25
 
+  # How many skipped rows a receipt names individually. Same reasoning as
+  # BREAKDOWN_LIMIT and the same failure it prevents: a call that skips most of a
+  # MAX_PER_CALL batch — recovery mode lifts mid-call and workers claim the rest —
+  # would otherwise serialize thousands of `{id, job_class, reason}` hashes into an
+  # agent's context. The overflow is reported as a count, not dropped.
+  SKIPPED_LIMIT = 25
+
+  # How much of a caller-supplied `reason` is kept. It is written onto every row
+  # the discard touches, so it is multiplied by up to MAX_PER_CALL.
+  MAX_REASON_LENGTH = 500
+
   # The label a NULL/blank `job_class` or `queue_name` is reported under, matching
   # HealthMonitorService's own breakdowns so the two pages agree.
   UNKNOWN = "(unknown)"
@@ -91,7 +102,7 @@ class QueuedJobMaintenance
   # how many rows.
   Result = Data.define(
     :action, :job_class, :queue_name, :matched, :affected, :by_job_class, :by_queue,
-    :skipped, :scheduled_at, :actor, :performed_at
+    :skipped, :skipped_total, :scheduled_at, :actor, :performed_at
   ) do
     def as_json(*)
       {
@@ -102,6 +113,7 @@ class QueuedJobMaintenance
         by_job_class: by_job_class,
         by_queue: by_queue,
         skipped: skipped,
+        skipped_total: skipped_total,
         scheduled_at: scheduled_at&.iso8601,
         actor: actor,
         performed_at: performed_at&.iso8601,
@@ -193,8 +205,11 @@ class QueuedJobMaintenance
     #   acting on. A mismatch refuses and writes nothing.
     # @return [Result]
     def discard!(job_class: nil, queue_name: nil, expected_count:, actor: nil, reason: nil)
+      # Truncated: this string is written into `good_jobs.error` on every row the
+      # call touches, so an unbounded free-text reason is up to MAX_PER_CALL copies
+      # of it.
       message = "Discarded from Zimmer queue maintenance by #{actor.presence || 'unknown'}" \
-                "#{": #{reason.to_s.strip}" if reason.present?}"
+                "#{": #{reason.to_s.strip.truncate(MAX_REASON_LENGTH)}" if reason.present?}"
 
       apply!(
         :discard,
@@ -300,7 +315,18 @@ class QueuedJobMaintenance
       skipped = []
 
       ids.each_slice(200) do |slice|
-        GoodJob::Job.where(id: slice).each do |job|
+        # Re-filtered through `eligible`, not read back as bare ids. The predicate
+        # has to be re-applied here because GoodJob's own guards are narrower than
+        # it is: `_discard_job` and `reschedule_job` refuse only on `finished_at`,
+        # so a row a worker CLAIMED between the id read and this line is caught
+        # only by `with_appropriate_lock`. That resolves to an advisory lock — which
+        # raises, and lands the row in `skipped`, correctly — solely because
+        # `GoodJob.configuration.lock_strategy` defaults to `:advisory`. Under
+        # GOOD_JOB_LOCK_STRATEGY=skiplocked it becomes a `FOR NO KEY UPDATE` reload
+        # instead, which would either block this request for the running job's whole
+        # duration or write `finished_at` onto a job mid-perform. One clause here
+        # keeps that off a gem default a config flag can flip.
+        eligible(job_class: job_class, queue_name: queue_name).where(id: slice).each do |job|
           row.call(job)
           by_job_class[job.job_class.presence || UNKNOWN] += 1
           by_queue[job.queue_name.presence || UNKNOWN] += 1
@@ -321,7 +347,8 @@ class QueuedJobMaintenance
         affected: by_job_class.values.sum,
         by_job_class: by_job_class.sort_by { |klass, count| [ -count, klass.to_s ] }.to_h,
         by_queue: by_queue.sort_by { |queue, count| [ -count, queue.to_s ] }.to_h,
-        skipped: skipped,
+        skipped: skipped.first(SKIPPED_LIMIT),
+        skipped_total: skipped.size,
         scheduled_at: scheduled_at,
         actor: actor.to_s.strip.presence,
         performed_at: Time.current
@@ -394,7 +421,11 @@ class QueuedJobMaintenance
       case value
       when Integer then value
       when Numeric then value.to_i == value ? value.to_i : nil
-      else Integer(value.to_s.strip, exception: false)
+      # Base 10 explicitly. Ruby's default honours a literal prefix, so an operator
+      # who types "010" meaning ten would have it read as EIGHT — and a
+      # confirmation that silently means a different number than it says is the one
+      # thing this guard must never do.
+      else Integer(value.to_s.strip, 10, exception: false)
       end
     end
 
@@ -430,7 +461,7 @@ class QueuedJobMaintenance
     def log(result)
       Rails.logger.warn(
         "[queued_job_maintenance] #{result.action}: scope=#{{ job_class: result.job_class, queue_name: result.queue_name }.compact} " \
-        "matched=#{result.matched} affected=#{result.affected} skipped=#{result.skipped.size} " \
+        "matched=#{result.matched} affected=#{result.affected} skipped=#{result.skipped_total} " \
         "by_class=#{result.by_job_class} actor=#{result.actor.inspect}"
       )
     end
@@ -450,12 +481,15 @@ class QueuedJobMaintenance
           "By class: #{format_counts(result.by_job_class)}",
           result.action == :reschedule ? "New scheduled_at: #{result.scheduled_at&.iso8601}" : nil,
           result.action == :discard ? "A discard is not recoverable — those jobs will never run." : nil,
-          result.skipped.any? ? "Skipped #{result.skipped.size} row(s) that changed state mid-call." : nil
+          result.skipped_total.positive? ? "Skipped #{result.skipped_total} row(s) that changed state mid-call." : nil
         ].compact.join("\n"),
         source: name,
-        # Keyed by the instant, so two separate maintenance passes both announce
-        # rather than the second being swallowed as a duplicate of the first.
-        dedup_key: "queued_job_maintenance:#{result.action}:#{result.performed_at.to_i}"
+        # Keyed by the scope AND the instant. The instant alone collides for two
+        # discards of different classes in the same second, and AlertService's
+        # dedup window is an hour — so the second incident would go unannounced
+        # for the rest of it, which is the opposite of what this alert is for.
+        dedup_key: "queued_job_maintenance:#{result.action}:#{result.job_class}:" \
+          "#{result.queue_name}:#{result.performed_at.to_i}"
       )
     rescue StandardError => e
       Rails.logger.error("[queued_job_maintenance] could not deliver alert: #{e.message}")

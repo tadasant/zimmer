@@ -132,6 +132,21 @@ class HealthControllerQueuedJobsTest < ActionDispatch::IntegrationTest
     assert_match(/Nothing is waiting/, response.body)
   end
 
+  # `eligible` scopes by equality, so there is no predicate for "job_class IS
+  # NULL". A control on such a row would post a half-scope matching more rows than
+  # the line it sits beside, and the count confirmation would refuse it every
+  # time — a permanently dead button. Show the count, withhold the controls.
+  test "a row missing a class or a queue is rendered without controls" do
+    enqueue_good_job.update_columns(job_class: nil)
+
+    get health_dashboard_path
+
+    assert_response :success
+    assert_match(/No controls: this row is missing a class or a queue name/, response.body)
+    assert_select "form[action=?]", discard_queued_jobs_health_path, false
+    assert_select "form[action=?]", reschedule_queued_jobs_health_path, false
+  end
+
   # === The actions ===
 
   test "discarding from the panel discards and names the classes in the flash" do

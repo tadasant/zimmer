@@ -338,7 +338,7 @@ module Mcp
 
           - **By class:** #{counts_line(result.by_job_class)}
           - **By queue:** #{counts_line(result.by_queue)}
-          #{"- **Skipped:** #{result.skipped.size} row(s) that changed state mid-call\n" if result.skipped.any?}
+          #{"- **Skipped:** #{result.skipped_total} row(s) that changed state mid-call\n" if result.skipped_total.positive?}
           #{note}
 
           #{json_block(result)}

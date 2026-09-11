@@ -339,6 +339,70 @@ class QueuedJobMaintenanceTest < ActiveSupport::TestCase
     assert_equal [ latecomer.id ], GoodJob::Job.where(finished_at: nil).pluck(:id)
   end
 
+  test "a count written with a leading zero is read as decimal, not octal" do
+    8.times { build_job }
+
+    # "010" is EIGHT to Ruby's default Integer(), and eight rows match — so a
+    # confirmation that silently meant something other than it said would go
+    # through here rather than being refused.
+    error = assert_raises(QueuedJobMaintenance::Refused) do
+      QueuedJobMaintenance.discard!(job_class: "CanaryJob", expected_count: "010", actor: "test")
+    end
+
+    assert_match(/you expected 10 rows, 8 match/, error.message)
+    assert_equal 0, GoodJob::Job.where.not(finished_at: nil).count
+  end
+
+  test "a long reason is truncated before it is written onto every row" do
+    build_job
+
+    QueuedJobMaintenance.discard!(
+      job_class: "CanaryJob", expected_count: 1, reason: "x" * 5_000, actor: "test"
+    )
+
+    assert_operator GoodJob::Job.first.error.length, :<,
+      QueuedJobMaintenance::MAX_REASON_LENGTH + 200
+  end
+
+  # The receipt goes into an agent's context. A call that skips most of a
+  # MAX_PER_CALL batch must not serialize thousands of hashes into it.
+  test "the skipped list is bounded, and the full count is still reported" do
+    (QueuedJobMaintenance::SKIPPED_LIMIT + 5).times { build_job }
+    total = QueuedJobMaintenance::SKIPPED_LIMIT + 5
+    GoodJob::Job.any_instance.stubs(:discard_job).raises(GoodJob::Job::ActionForStateMismatchError)
+
+    result = QueuedJobMaintenance.discard!(job_class: "CanaryJob", expected_count: total, actor: "test")
+
+    assert_equal 0, result.affected
+    assert_equal total, result.skipped_total
+    assert_equal QueuedJobMaintenance::SKIPPED_LIMIT, result.skipped.size
+    assert_equal QueuedJobMaintenance::SKIPPED_LIMIT, result.as_json[:skipped].size
+  end
+
+  # The id re-read is re-filtered through `eligible` rather than replayed as bare
+  # ids, so a row that stops being eligible between the read and the write is not
+  # touched at all — rather than relying on GoodJob's own guards, which check only
+  # `finished_at`, and on an advisory lock strategy a config flag can change.
+  test "a row claimed between the id read and the write is not touched" do
+    claimed_later = build_job
+    build_job
+
+    QueuedJobMaintenance.stubs(:preview).returns(
+      QueuedJobMaintenance::Preview.new(
+        job_class: "CanaryJob", queue_name: nil, matched: 2,
+        by_job_class: { "CanaryJob" => 2 }, by_queue: { "default" => 2 }, over_cap: false
+      )
+    )
+    # Claimed after the count, and after the ids were read: the re-filter is the
+    # only thing between it and a discard.
+    claimed_later.update_column(:locked_by_id, SecureRandom.uuid)
+
+    result = QueuedJobMaintenance.discard!(job_class: "CanaryJob", expected_count: 2, actor: "test")
+
+    assert_equal 1, result.affected
+    assert_nil claimed_later.reload.finished_at
+  end
+
   # === Preview ===
 
   test "preview counts without touching anything" do
