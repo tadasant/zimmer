@@ -122,7 +122,10 @@ module Mcp
         Use search_triggers to read a trigger's existing condition ids.
 
         **Trigger types:**
-        - **slack**: Triggered by Slack events (requires configuration with channel_id)
+        - **slack**: Triggered by Slack events (requires configuration with channel_id). Adding
+          `thread_ts` (a thread's parent timestamp, alongside its channel_id) scopes a `new_message`
+          or `bot_mention` condition to that thread's replies — for `bot_mention`, only replies that
+          @mention Zimmer, with no DMs and nothing else in the channel.
         - **schedule**: Triggered on a recurring or one-time schedule
         - **ao_event**: Triggered by an internal Zimmer event (requires configuration with event_name)
         - **github_label**: Triggered when a watched label is ADDED to a PR/issue in a watched repo
@@ -896,14 +899,26 @@ module Mcp
       # Dropping `event_type` is not a small mistake: the reader defaults to
       # "new_message", so a passive or @mention condition would silently start firing on
       # EVERY message in its channel.
+      #
+      # Dropping `thread_ts` from a thread-scoped bot_mention widens it too: from
+      # @mentions in ONE thread to @mentions anywhere in the channel plus every allowed
+      # DM. Keyed on the KEY's absence, so an explicit "" still clears it deliberately.
       def reject_widening_slack_configuration!(target, incoming, index)
-        return if target.event_type == "new_message"
-        return if incoming["event_type"].present?
+        if target.event_type != "new_message" && incoming["event_type"].blank?
+          raise ToolError, "conditions[#{index}] omits \"event_type\" from the configuration of " \
+                           "condition #{target.id}, which is currently \"#{target.event_type}\". " \
+                           "configuration replaces the condition's user-facing keys, so this would " \
+                           "reset it to \"new_message\" and fire on every message. Re-send event_type."
+        end
 
-        raise ToolError, "conditions[#{index}] omits \"event_type\" from the configuration of " \
-                         "condition #{target.id}, which is currently \"#{target.event_type}\". " \
-                         "configuration replaces the condition's user-facing keys, so this would " \
-                         "reset it to \"new_message\" and fire on every message. Re-send event_type."
+        return unless target.event_type == "bot_mention" && target.thread_scoped?
+        return if incoming.key?("thread_ts")
+
+        raise ToolError, "conditions[#{index}] omits \"thread_ts\" from the configuration of " \
+                         "condition #{target.id}, which currently watches only thread " \
+                         "#{target.thread_ts}. configuration replaces the condition's user-facing " \
+                         "keys, so this would widen it to @mentions anywhere in the channel plus " \
+                         "every allowed DM. Re-send thread_ts, or send it as \"\" to clear it deliberately."
       end
 
       # Dropping `exclude_labels` re-arms the gate for every issue that was opting out of

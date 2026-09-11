@@ -21,6 +21,9 @@
 # - Only processes messages from allowed users: the condition's own allowed_user_ids if
 #   set, else the SLACK_BOT_MENTION_ALLOWED_USER_IDS allow-list, else EVERYONE (see
 #   TriggerCondition#allow_all_users?). The bot's own messages never trigger anything.
+# - With thread_ts configured, none of the above: it watches that ONE thread's replies
+#   for @mentions and nothing else — no other thread, no top-level message, no DM
+#   (see #process_thread_mentions).
 #
 # For passive-listening conditions (see #process_passive_listen_condition):
 # - Same channel sweep and same per-channel/per-thread bookkeeping as bot_mention,
@@ -388,8 +391,13 @@ class SlackTriggerPollerJob < ApplicationJob
   # 1. Poll configured channel (if any) for @mentions from allowed users,
   #    OR poll all member channels if no specific channel is configured
   # 2. Poll DM channels with allowed users for any messages
+  #
+  # A thread-scoped condition (thread_ts configured) does neither: it watches that
+  # one thread and nothing else — see #process_thread_mentions.
   def process_bot_mention_condition(condition)
     bot_id = SlackService.bot_user_id
+
+    return process_thread_mentions(condition, bot_id: bot_id) if condition.thread_scoped?
 
     # Part 1: Poll channel(s) for @mentions
     if condition.channel_id.present?
@@ -404,6 +412,24 @@ class SlackTriggerPollerJob < ApplicationJob
     process_dm_messages(condition, bot_id: bot_id)
 
     condition.update!(last_polled_at: Time.current)
+  end
+
+  # Process a thread-scoped bot_mention condition: new replies in ONE thread that
+  # @mention the bot, from allowed users. No other thread, no top-level message,
+  # and no DM ever fires it — that is the point of scoping it.
+  #
+  # It polls exactly as a thread-scoped new_message does (conversations.replies,
+  # one cursor in last_message_ts, a first poll that only baselines) and filters
+  # through the same #mention_for? as every other mention path. The cursor
+  # advances past every reply fetched, mention or not, so the replies between
+  # mentions are never re-read.
+  def process_thread_mentions(condition, bot_id:)
+    replies = fetch_new_thread_replies(condition.channel_id, condition.thread_ts, condition.last_message_ts)
+
+    mentions = replies.select { |reply| mention_for?(condition, reply, bot_id) }
+    process_messages(condition, mentions, channel_id: condition.channel_id)
+
+    condition.mark_polled!(message_ts: replies.map(&:ts).max)
   end
 
   # Process a dm_message condition: every DM the bot receives from an allowed

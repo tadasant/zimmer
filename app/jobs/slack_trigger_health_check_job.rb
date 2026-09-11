@@ -59,8 +59,10 @@ class SlackTriggerHealthCheckJob < ApplicationJob
     # bot_mention, dm_message and the passive-listening event types fan out across
     # DMs and/or every member channel, each with its own per-source timestamp.
     # There is no single "newest message" to compare against, so staleness isn't
-    # meaningful.
-    return if TriggerCondition::ALL_CHANNEL_EVENT_TYPES.include?(condition.event_type)
+    # meaningful. A thread-scoped bot_mention is the exception: it polls one
+    # thread into last_message_ts exactly as a thread-scoped new_message does, so
+    # it is checked the same way.
+    return if condition.fans_out?
 
     channel_id = condition.channel_id
     return if channel_id.blank?

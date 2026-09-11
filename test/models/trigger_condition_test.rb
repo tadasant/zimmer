@@ -92,11 +92,36 @@ class TriggerConditionTest < ActiveSupport::TestCase
     assert_includes @slack_condition.errors[:configuration], "thread_ts requires a channel_id"
   end
 
-  test "thread_ts is rejected for bot_mention conditions" do
+  test "a bot_mention condition is valid with a thread_ts, and stops fanning out" do
+    @slack_condition.configuration["event_type"] = "bot_mention"
+    assert @slack_condition.fans_out?
+
+    @slack_condition.configuration["thread_ts"] = "1704000000.000000"
+    assert @slack_condition.valid?
+    assert @slack_condition.thread_scoped?
+    assert_not @slack_condition.fans_out?
+  end
+
+  test "a thread-scoped bot_mention condition requires a channel_id" do
+    @slack_condition.configuration = { "event_type" => "bot_mention", "thread_ts" => "1704000000.000000" }
+    assert_not @slack_condition.valid?
+    assert_includes @slack_condition.errors[:configuration], "thread_ts requires a channel_id"
+  end
+
+  test "a new_message condition never fans out, scoped or not" do
+    assert_not @slack_condition.fans_out?
+    @slack_condition.configuration["thread_ts"] = "1704000000.000000"
+    assert_not @slack_condition.fans_out?
+  end
+
+  test "a thread-scoped bot_mention describes its thread, and claims no DMs" do
     @slack_condition.configuration["event_type"] = "bot_mention"
     @slack_condition.configuration["thread_ts"] = "1704000000.000000"
-    assert_not @slack_condition.valid?
-    assert_includes @slack_condition.errors[:configuration], "thread_ts is not supported for bot_mention conditions"
+    assert_equal "Slack: @mention in thread 1704000000.000000 of #eng-ci", @slack_condition.description
+
+    @slack_condition.configuration.delete("channel_name")
+    assert_equal "Slack: @mention in thread 1704000000.000000 of ##{@slack_condition.channel_id}",
+                 @slack_condition.description
   end
 
   test "thread_ts is rejected for every passive-listening condition" do
