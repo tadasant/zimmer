@@ -78,6 +78,11 @@ AUTO_REQUIRED_SUPPORT_FILES = Dir[Rails.root.join("test/support/**/*.rb")]
 
 AUTO_REQUIRED_SUPPORT_FILES.each { |f| require f }
 
+# Snapshot the boot cache store before parallelize() forks its workers, so the
+# guard below can tell "the store this suite runs on" from "a store some test
+# swapped in and never put back". See test/support/cache_isolation_guard.rb.
+CacheIsolationGuard.capture!
+
 # Pre-install the AIR CLI and pre-warm the AirCatalogService cache once at test
 # boot, before parallelize() forks workers. Two reasons:
 #   1. 32 parallel workers would otherwise race to install on the same
@@ -252,6 +257,27 @@ module ActiveSupport
       BroadcastService.circuit_breaker_opened_at = nil
       BroadcastService.clear_published_circuit_open
     end
+
+    # Rails.cache is process-global, and the ~20 files that swap the test env's
+    # :null_store for a real MemoryStore restore it from an ivar their setup
+    # captured. When that setup raises before the capture, the teardown still runs
+    # and restores nil: a nil Rails.cache for the rest of the worker and a pile of
+    # NoMethodError in files that never touched the cache, with a blast radius that
+    # depends on --seed. So both edges are checked, and both put the boot store back.
+    #
+    # The teardown check names the test that leaked. This prepended setup catches a
+    # leak that check never saw, because a teardown that raised ahead of it stopped
+    # the chain. Declared after the other prepended setups so it runs before them,
+    # ahead of anything else that touches the cache. Neither check raises — see
+    # CacheIsolationGuard.check! for why.
+    setup(prepend: true) do
+      CacheIsolationGuard.check!(
+        self, "an earlier test in this worker swapped it out and did not restore it, " \
+              "and its teardown never got to say so (this test is the messenger, not the cause)."
+      )
+    end
+
+    teardown { CacheIsolationGuard.check!(self, "#{self.class.name}##{name} did not restore it.") }
 
     # Include test support helpers
     include MockHelpers

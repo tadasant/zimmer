@@ -317,6 +317,57 @@ rest of the worker. Frozen, that mutation is a `FrozenError` at the site that ca
 The rule that generalizes: **a cache on a class object is suite-wide mutable state.** If a test clears
 or replaces one, something has to put it back before the next test reads it.
 
+### A `setup` that raises leaves `Rails.cache` swapped out
+
+`Rails.cache` is the same kind of global, one level up. About twenty test files replace the test
+environment's `:null_store` with a real `MemoryStore`, because a store that agrees with everything
+cannot exercise a hysteresis streak, a cooldown or a heartbeat:
+
+```ruby
+setup do
+  @original_cache = Rails.cache
+  Rails.cache = ActiveSupport::Cache::MemoryStore.new
+end
+
+teardown { Rails.cache = @original_cache }
+```
+
+That pairing is correct right up until the `setup` raises *before* the capture line. Minitest runs the
+`teardown` anyway, `@original_cache` is `nil`, and `Rails.cache` is now `nil` — not for that file, for
+every test that draws a later slot in the same parallel worker.
+
+It happened on `main` in September 2026. [#1119](https://github.com/tadasant/zimmer/pull/1119) added
+`AlertService.stubs(:raise_alert)` near the top of a `setup`, ahead of the line that captures the cache;
+[#1121](https://github.com/tadasant/zimmer/pull/1121) deleted `AlertService`; each was green on its own
+branch and neither ran against the other's merge. CI's run of `main` came back with 87 errors. The tests
+that named the missing constant failed on it, which is honest. The rest were `NoMethodError` on `nil` —
+`Rails.cache.fetch` in `CostAnalytics`, `cache.read` in `GlobalRateLimitTracker` — in files with no
+connection to alerts, queues or the cache, picked out by `--seed`. [#1128](https://github.com/tadasant/zimmer/pull/1128) removed the dead
+references; what follows is what keeps the next one from spreading.
+
+`test/support/cache_isolation_guard.rb` snapshots the boot store before `parallelize` forks, and
+`ActiveSupport::TestCase` checks it on **both** edges of every test. The `teardown` check names the test
+that leaked. The prepended `setup` check exists because that is not enough on its own: ActiveSupport
+stops running `:teardown` callbacks at the first one that raises, and every teardown a test file or a
+later helper module declares runs before the shared one — so a teardown that raises after botching its
+restore takes the check down with it, and the leak has to be catchable from the far side too. Neither
+check raises; each records its failure on the test instead. A raise from the setup check would skip the
+test's own `setup`, capture and all, and send its teardown straight back to restoring `nil`. Both edges
+put the boot store back, which is what keeps one broken file to one broken file instead of a worker's
+worth of unrelated errors.
+
+The check reads the value Rails holds — `Rails.cache` is a plain `attr_accessor` — rather than calling
+the reader. That is what keeps it from flagging a mocha `Rails.stubs(:cache)`, which `BroadcastServiceTest`
+uses: mocha replaces the reader, not the value, and takes the stub off itself only after ActiveSupport's
+teardown callbacks have run.
+
+If you are writing the swap, capture the original **first**, before anything in the `setup` that can
+raise, and make the restore tolerate a `setup` that never got there:
+
+```ruby
+teardown { Rails.cache = @original_cache if @original_cache }
+```
+
 ### The browser suite has its own root cause: the moving target
 
 The system suite flakes for a different reason, and it has its own one-line answer.
