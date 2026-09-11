@@ -136,6 +136,13 @@ With `allowed_agent_roots` set, the connection is locked to those [agent roots](
   `[]`: on an unrestricted connection an explicit empty array is a valid request for no servers
   ([omitted vs `[]`](/air/agent-roots/#a-list-you-pass-replaces-the-roots-defaults)),
   but here it is a removal and is rejected unless the root has no defaults to begin with.
+- `start_session`'s `git_root`, `branch` and `subdirectory` are rejected outright — with or without an
+  allowed `agent_root` beside them. What this restriction fences is which repositories the connection
+  may spawn into, and those three name a repository and a tree within it directly, so a restricted
+  session's repository coordinates come from its agent root's catalog entry exactly. That closes the
+  [rootless path](#start_session-names-its-repository-with-agent_root-or-git_root) to a restricted
+  connection entirely. A root that should spawn against a different repository or branch is a root to
+  configure that way, not a per-call override.
 - `start_session`'s `plugins` is rejected outright, `[]` included, because a plugin bundles MCP
   servers of its own and those are added on top of `mcp_servers` — so naming one at launch reaches
   the servers the rule above locks out. Omit the parameter and the session takes the root's
@@ -636,6 +643,36 @@ its aim rather than only its actions.
 
 The same capability is `POST /api/v1/sessions/:id/message_parent` — see
 [the REST API](/extend/rest-api/#reporting-back-to-the-parent-that-started-you).
+
+### `start_session` names its repository with `agent_root` or `git_root`
+
+A session's target repository comes from one of two arguments, and **one of them is required**:
+
+- **`agent_root`** — a catalog [agent root](/air/agent-roots/). It carries the repository URL, branch
+  and subdirectory *and* the root's `default_mcp_servers`, `default_skills`, `default_hooks` and
+  `default_plugins`. Prefer it whenever a root covers the repository.
+- **`git_root`** — a clone URL or local path, for a repository no root covers: a fork, a scratch repo,
+  a one-off project. Optional `branch` and `subdirectory` go with it. This is the same rootless create
+  `POST /api/v1/sessions` and the new-session form accept.
+
+A `git_root` spawn inherits **no catalog defaults**: no MCP servers, no skills, no hooks, no plugins
+beyond what the call names, and an omitted `mcp_servers` means none rather than "fill these in later"
+— it is recorded as a [deliberate empty](/air/agent-roots/#a-list-you-pass-replaces-the-roots-defaults),
+so the heal that restores an accidentally-empty column never quietly attaches the servers of a catalog
+root whose URL happens to match. Its runtime and model resolve through the chain the whole app shares,
+minus the tier that isn't there: argument → *(no root)* → the global defaults the Settings page
+presents → the hardcoded default. That chain is one implementation
+(`Sessions::ResolveSpawnDefaults`) shared with [the REST
+endpoint](/extend/rest-api/#which-runtime-and-model-you-get), so the two spawn surfaces cannot drift.
+
+Passing both is allowed and means "this root's tooling against that repository": the `git_root` wins
+over the root's URL, and the root's other defaults still apply. Passing **neither** is refused with an
+error naming both arguments — before [#265](https://github.com/tadasant/zimmer/issues/265) it fell
+through to the model's validation and came back as `Git root can't be blank`, naming a field the tool's
+schema did not have.
+
+On a connection [restricted to specific agent roots](#restricting-what-a-connection-may-spawn-allowed_agent_roots),
+`git_root`, `branch` and `subdirectory` are all rejected, so the rootless path is closed there.
 
 ### `start_session` is only safe to retry if you name the attempt
 

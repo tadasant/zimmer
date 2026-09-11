@@ -71,6 +71,12 @@ survives to job start rather than being restored when the runtime config is rege
 that lets someone name the list sets it, including the mid-life ones (`change_mcp_servers`, `PATCH
 /api/v1/sessions/:id/mcp_servers`, and the session page's editor).
 
+MCP `start_session` sets it on a [rootless `git_root`
+spawn](/extend/mcp-server/#start_session-names-its-repository-with-agent_root-or-git_root) too, without
+the caller naming a list at all: with no agent root there are no defaults for an omitted `mcp_servers`
+to fall back to, so omitted *is* none — and recording that keeps the heal from attaching the defaults
+of a root whose URL happens to equal the `git_root` the caller passed.
+
 Two things are deliberately outside that rule:
 
 - **`Session.create_from_agent_root!`** (the dashboard quick prompt, the chat bubble, and

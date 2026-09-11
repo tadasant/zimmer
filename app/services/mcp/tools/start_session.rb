@@ -5,11 +5,18 @@ module Mcp
     # Mirrors POST /api/v1/sessions: create a session, resolve the agent root's
     # catalog defaults onto it, and queue the agent job when a prompt is given.
     #
+    # A session names its target repository either with `agent_root` (a catalog
+    # root, which brings its repository and its default artifacts with it) or with
+    # a bare `git_root` URL, which brings nothing — the same two ways POST
+    # /api/v1/sessions and the web form accept. One of them is required.
+    #
     # A restricted connection (allowed_agent_roots) may only spawn one of its
     # allowed roots, and must use that root's exact default MCP servers — the
     # same lock the decoupled server enforced from ALLOWED_AGENT_ROOTS. It may
     # not name `plugins` at all, because a plugin bundles servers of its own and
-    # would otherwise reach around that lock.
+    # would otherwise reach around that lock. For the same reason it may not name
+    # `git_root`, `branch` or `subdirectory`: those choose a repository, and
+    # choosing repositories is exactly what allowed_agent_roots decides.
     class StartSession < Tool
       include PrecedenceArgument
 
@@ -21,7 +28,21 @@ module Mcp
 
       PROMPT_DESC = "Initial prompt for the agent. If provided, the agent job is automatically queued. Omit for a clone-only session."
 
-      AGENT_ROOT_DESC = "Agent root name from get_configs. The API resolves git_root, branch, subdirectory, default_model, and other defaults from the agent root configuration. Always pass this so the session inherits the correct repository, model, and settings."
+      AGENT_ROOT_DESC = "Agent root name from get_configs. The API resolves git_root, branch, subdirectory, default_model, and other defaults from the agent root configuration. Prefer it over `git_root` whenever a catalog root covers the repository, so the session inherits the correct repository, model, and settings. Either this or `git_root` is required."
+
+      GIT_ROOT_DESC = <<~TEXT.strip
+        Repository to spawn against directly, as a clone URL ("https://github.com/owner/repo.git") or a local path — for a repository no catalog agent root covers (a fork, a scratch repo, a one-off). Either this or `agent_root` is required; a call naming neither is refused.
+
+        A `git_root` spawn inherits NO catalog defaults: it gets none of the MCP servers, skills, hooks or plugins a root would bring, so name the ones it needs. Its runtime and model resolve through the global defaults on the Settings page unless you pass `agent_runtime` / `config.model`.
+
+        Passing both `agent_root` and `git_root` is allowed and means "this root's tooling against that repository": the git_root wins over the root's URL, and the root's other defaults still apply.
+
+        Rejected on a connection restricted to specific agent roots — such a connection spawns only into the repositories its allowed roots name.
+      TEXT
+
+      BRANCH_DESC = "Git branch to check out. Defaults to the agent_root's default_branch, or \"main\" on a rootless `git_root` spawn. Rejected on a connection restricted to specific agent roots, which takes its branch from the allowed root's catalog entry."
+
+      SUBDIRECTORY_DESC = "Subdirectory within the repository the session should work in, for a monorepo. Defaults to the agent_root's subdirectory, or the repository root on a rootless `git_root` spawn. Rejected on a connection restricted to specific agent roots, which takes its subdirectory from the allowed root's catalog entry."
 
       TITLE_DESC = <<~TEXT.strip
         STRONGLY RECOMMENDED: Always set a title — treat it as effectively required. The title appears in the Zimmer web UI and push notifications, making sessions identifiable at a glance. Compose a short, descriptive title (under 70 characters) that captures what the session is doing (e.g. "Fix login redirect loop on mobile Safari", "Add dark mode toggle to settings page"). Only omit if you truly have zero context about the session purpose, which should be extremely rare.
@@ -89,6 +110,10 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         Spot/priority class for THIS session, overriding whatever its origin would give it. `priority` starts whenever it is ready; `spot` starts only while a Claude Code account is under both quota targets and a session slot is free, and otherwise waits and starts later (it is deferred, never cancelled). Omit this and the session inherits its parent's explicit class if there is one, and otherwise derives from its genesis — which for a spawn under a `slack` parent means priority. Pass "spot" when you are spawning long, unattended, low-urgency work (a big batch, a sweep, a backfill) that nobody is waiting on, so it does not compete with work a human is watching. Read the current policy with `get_spot_policy`.
       TEXT
 
+      # The three arguments that choose a repository and a tree within it. A
+      # restricted connection may name none of them; see enforce_no_repository_override!.
+      REPOSITORY_ARGS = %w[git_root branch subdirectory].freeze
+
       PRECEDENCE_DESC = PrecedenceDocs::START_SESSION
 
       PLACE_DESC = PrecedenceDocs::PLACE
@@ -113,6 +138,10 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         - If no prompt is provided, creates a clone-only session that can be started later with action_session
 
         **Agent Roots:** Use `agent_root` to specify which preconfigured agent root to use. The API resolves git_root, branch, subdirectory, default_model, and other defaults from the agent root configuration.
+
+        **Naming the target repository — `agent_root` OR `git_root`, and one of them is required.** Prefer `agent_root`: a catalog root carries its repository *and* its default MCP servers, skills, hooks and plugins. For a repository no root covers — a fork, a scratch repo, someone's one-off project — pass `git_root` (a clone URL or local path), optionally with `branch` and `subdirectory`. A `git_root` spawn inherits no catalog defaults at all, so it starts with no MCP servers, skills, hooks or plugins beyond what you name, and its runtime and model come from the global defaults on the Settings page unless you pass them. Pass both and the `git_root` wins over the root's URL while the root's other defaults still apply, which is how you run a root's tooling against a fork. A call that names neither is refused — it cannot be turned into a session.
+
+        On a connection restricted to specific agent roots, `git_root`, `branch` and `subdirectory` are rejected outright: that restriction is a fence around which repositories the connection may spawn into, and its repository coordinates come from the allowed root's catalog entry exactly.
 
         **Defaults from Agent Roots — a list you pass REPLACES the root's defaults, it is never merged with them.** The agent root defines `default_mcp_servers`, `default_skills`, `default_hooks`, `default_plugins`, and optionally a `default_goal`. For each of `mcp_servers`, `skills`, `plugins`, and `hooks` there are **three** distinct requests, not two:
 
@@ -151,6 +180,9 @@ On a connection restricted to specific agent roots this parameter is rejected ou
           agent_runtime: { type: "string", description: AGENT_RUNTIME_DESC },
           prompt: { type: "string", description: PROMPT_DESC },
           agent_root: { type: "string", description: AGENT_ROOT_DESC },
+          git_root: { type: "string", description: GIT_ROOT_DESC },
+          branch: { type: "string", description: BRANCH_DESC },
+          subdirectory: { type: "string", description: SUBDIRECTORY_DESC },
           title: { type: "string", description: TITLE_DESC },
           slug: { type: "string", description: SLUG_DESC },
           goal: { type: "string", description: GOAL_DESC },
@@ -177,6 +209,7 @@ On a connection restricted to specific agent roots this parameter is rejected ou
       def call(args)
         agent_root_name = args["agent_root"].presence
         enforce_root_constraints!(agent_root_name, args)
+        require_spawn_target!(agent_root_name, args)
 
         # Answered before any of the create work — the retry this exists for is a
         # caller that already got its session and does not know it, so the cheap
@@ -198,9 +231,8 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         # Recorded before save so the job starting moments later can tell a
         # deliberate "no MCP servers" from a column that landed empty by accident
         # and would otherwise be healed back to the root's defaults.
-        session.record_explicit_mcp_servers(session.mcp_servers) if explicit_list?(args, "mcp_servers")
-        apply_agent_root_defaults!(session, agent_root_name, args: args, explicit_runtime: args["agent_runtime"].present?) if agent_root_name
-        ensure_model!(session)
+        session.record_explicit_mcp_servers(session.mcp_servers) if deliberate_mcp_servers?(args, agent_root_name)
+        resolve_spawn_defaults!(session, agent_root_name, args)
 
         # The lookup above answers the sequential retry; this answers the
         # concurrent one, where the first call is still inside its INSERT when
@@ -231,12 +263,17 @@ On a connection restricted to specific agent roots this parameter is rejected ou
 
       private
 
-      # A restricted connection must name an allowed root AND take that root's
+      # A restricted connection must name an allowed root, take that root's
+      # repository coordinates as the catalog declares them, AND take that root's
       # MCP servers exactly — no additions, no removals. Both the direct route to
       # a server (`mcp_servers`) and the indirect one (`plugins`) are held to it.
       def enforce_root_constraints!(agent_root_name, args)
         return unless context.restricted?
 
+        # Before enforce_allowed_root!, so a restricted connection that passed a
+        # raw git_root is told that git_root is the problem rather than being sent
+        # off to add an agent_root that would not have helped.
+        enforce_no_repository_override!(args)
         enforce_allowed_root!(agent_root_name)
 
         root = AgentRootsConfig.find(agent_root_name)
@@ -249,8 +286,54 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         enforce_default_plugins!(root, args)
       end
 
+      # What `allowed_agent_roots` fences is which repositories — with which MCP
+      # servers — a connection may spawn into. Until `git_root` existed here,
+      # naming an allowed root settled that on its own, because a root was the only
+      # way to name a repository at all. `git_root` is a second way to name one, and
+      # `branch`/`subdirectory` move an allowed root's checkout to a tree its catalog
+      # entry does not point at, so on a restricted connection all three are refused
+      # outright — with or without an agent_root beside them. A restricted spawn's
+      # repository coordinates come from the allowed root's catalog entry, exactly,
+      # which is the answer this tool already gives for that root's MCP servers and
+      # plugins. A root that should spawn against a different repository or branch is
+      # a root to configure that way, not a per-call override.
+      def enforce_no_repository_override!(args)
+        named = REPOSITORY_ARGS.select { |key| args[key].present? }
+        return if named.empty?
+
+        raise ToolError, "#{named.map { |key| "\"#{key}\"" }.to_sentence} #{named.one? ? 'is' : 'are'} not allowed when this " \
+                         "connection is restricted to specific agent roots: the restriction is a fence around which " \
+                         "repositories this connection may spawn into, and a restricted session takes its repository, " \
+                         "branch and subdirectory from its agent root's catalog entry. Omit #{named.one? ? 'it' : 'them'} " \
+                         "and pass an allowed agent_root instead. Allowed agent roots: #{context.allowed_agent_roots.join(', ')}."
+      end
+
+      # The tool has two ways to name a target repository and needs one of them.
+      # Without this check a call that named neither fell through to Session's
+      # unconditional git_root presence validation and came back as a bare
+      # RecordInvalid naming a field the schema did not even have (#265).
+      def require_spawn_target!(agent_root_name, args)
+        return if agent_root_name.present? || args["git_root"].present?
+
+        raise ToolError, "Name a target repository: pass `agent_root` (a catalog root from get_configs, which brings " \
+                         "its repository and its default MCP servers, skills, hooks and plugins with it) or `git_root` " \
+                         "(a repository URL or local path to spawn against directly, with no catalog defaults). " \
+                         "Available agent roots: #{AgentRootsConfig.names.join(', ')}."
+      end
+
+      # A rootless spawn has no root defaults to fall back to, so an omitted
+      # mcp_servers is a session with no MCP servers — and that has to be recorded
+      # as deliberate. Otherwise McpServerBackfill reads the empty column as a
+      # failed catalog resolve and, if the git_root happens to match a catalog
+      # root's URL, hands the session that root's servers at job start — servers
+      # the caller never asked for, on a path whose whole premise is that no
+      # catalog entry applies.
+      def deliberate_mcp_servers?(args, agent_root_name)
+        explicit_list?(args, "mcp_servers") || agent_root_name.blank?
+      end
+
       # An omitted mcp_servers means "take the root's defaults" (that is what
-      # apply_agent_root_defaults! does), so it is only a deviation to check when
+      # Sessions::ResolveSpawnDefaults does), so it is only a deviation to check when
       # the caller actually named a list. This gate stays `key?` rather than the
       # `is_a?(Array)` used elsewhere: a restricted connection that sends an
       # explicit null already fails here, and loosening that would widen what a
@@ -295,6 +378,9 @@ On a connection restricted to specific agent roots this parameter is rejected ou
       def session_attributes(args)
         attrs = {}
         attrs[:agent_runtime] = args["agent_runtime"] if args["agent_runtime"].present?
+        attrs[:git_root] = args["git_root"] if args["git_root"].present?
+        attrs[:branch] = args["branch"] if args["branch"].present?
+        attrs[:subdirectory] = args["subdirectory"] if args["subdirectory"].present?
         attrs[:prompt] = args["prompt"] if args["prompt"].present?
         attrs[:title] = args["title"] if args["title"].present?
         attrs[:slug] = args["slug"] if args["slug"].present?
@@ -341,47 +427,33 @@ On a connection restricted to specific agent roots this parameter is rejected ou
         GoalsConfig.find(goal.to_s.strip)&.description || goal
       end
 
+      # The runtime, the model, and — when a root was named — the repository fields
+      # and catalog defaults, resolved through the chain this tool shares with
+      # POST /api/v1/sessions:
+      #
+      #   tool argument  →  agent root's declared value  →  AppSetting (the global
+      #   base default set on the Settings page)  →  the hardcoded default
+      #
+      # A rootless spawn has no root tier, so it falls straight through to the
+      # Settings-page defaults rather than to the column default — the same
+      # resolution the REST endpoint gives a bare `git_root`. It always leaves an
+      # explicit model in config, so the spawn never depends on a runtime-side one.
+      #
       # @param args [Hash] the raw tool arguments, needed to tell an omitted
       #   artifact list (take the root's defaults) from an explicit `[]` (take none).
-      def apply_agent_root_defaults!(session, agent_root_name, args:, explicit_runtime:)
-        root = AgentRootsConfig.find!(agent_root_name)
-
-        # The per-spawn override wins; otherwise the session adopts the root's
-        # declared runtime rather than the column default.
-        session.agent_runtime = root.default_runtime unless explicit_runtime
-        session.git_root = root.url if session.git_root.blank?
-        session.branch = root.default_branch || "main"
-        session.subdirectory = root.subdirectory if session.subdirectory.blank? && root.subdirectory.present?
-        # Only an OMITTED list falls back to the root's defaults. A `.blank?` test
-        # cannot tell omitted from explicitly-empty, so it overwrites `[]` with
-        # the defaults — which is how a caller asking for no MCP servers ends up
-        # holding whatever the root declares, SSH access included.
-        session.mcp_servers = root.default_mcp_servers || [] unless explicit_list?(args, "mcp_servers")
-        session.catalog_skills = root.default_skills || [] unless explicit_list?(args, "skills")
-        session.catalog_plugins = root.default_plugins || [] unless explicit_list?(args, "plugins")
-        session.catalog_hooks = root.default_hooks || [] unless explicit_list?(args, "hooks")
-        # `root.name`, not the caller's spelling — see Session.create_from_agent_root!.
-        session.metadata = (session.metadata || {}).merge("agent_root_key" => root.name)
-
-        return if session.config&.dig("model").present?
-
-        # A root's default_model is typically a claude_code model; applying it to a
-        # codex spawn would persist an invalid model, so self-heal to the global
-        # default for the resolved runtime.
-        model = root.default_model
-        model = AppSetting.current.resolved_default_model_for(session.agent_runtime) unless ModelCatalog.valid_model?(session.agent_runtime, model)
-        session.config = (session.config || {}).merge("model" => model)
-      end
-
-      # The model is always explicit in config so the spawn never depends on a
-      # runtime-side default. In practice apply_agent_root_defaults! has already
-      # filled it in: this tool has no git_root param, so every spawn it can
-      # complete names an agent_root (Session validates git_root presence, and
-      # the root is the only thing that supplies it).
-      def ensure_model!(session)
-        return if session.config&.dig("model").present?
-
-        session.config = (session.config || {}).merge("model" => ModelCatalog.default_for(session.agent_runtime))
+      def resolve_spawn_defaults!(session, agent_root_name, args)
+        Sessions::ResolveSpawnDefaults.call(
+          session,
+          agent_root_name: agent_root_name,
+          explicit_runtime: args["agent_runtime"].present?,
+          explicit_branch: args["branch"].present?,
+          explicit_lists: {
+            mcp_servers: explicit_list?(args, "mcp_servers"),
+            skills: explicit_list?(args, "skills"),
+            hooks: explicit_list?(args, "hooks"),
+            plugins: explicit_list?(args, "plugins")
+          }
+        )
       end
 
       # @param reused [Boolean] true when this call created nothing and is handing
