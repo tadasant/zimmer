@@ -118,6 +118,43 @@ traversal's own `seen` guards, which stop a cycle from hanging a render but do n
 An edge is a record *about* a delivery, never a precondition of it. If recording fails, the follow-up
 still lands and the failure is logged.
 
+### Removing an edge recorded in error
+
+An uncle edge is written as a *side effect* of a routine follow-up, from an `acting_session_id` the
+caller declares about itself and nothing verifies. One stale or mistyped id therefore attaches the
+wrong session as a senior — and because the hierarchy is the scope human messages are gathered over,
+it widens what context *both* sessions carry from then on. So removal is a first-class operation, on
+all three surfaces:
+
+| Surface | How |
+| --- | --- |
+| Web UI | The **×** on an "also senior" chip in the session-detail hierarchy panel. The chip is rendered once per session in the tree, so the edge removed is the *row's*, not the page's. |
+| MCP | `action_session` → `remove_uncle`, with `session_id` (the junior) and `uncle_session_id` (the senior). Optional `acting_session_id` is provenance. Not on the `self_session` surface. |
+| REST | `DELETE /api/v1/sessions/:id/uncle_links/:uncle_id`. 204 on success, 404 when there is no such edge. |
+
+All three call `Sessions::RemoveUncleEdge`, and the rules are its:
+
+- **Exactly one edge, named by direction.** The pair can be joined either way round — the inversion
+  rule above is what puts it there — so a request that names the pair backwards is **refused**, with
+  the direction that *does* exist spelled out, rather than deleting the opposite claim.
+- **Nothing else changes.** `parent_session_id` is untouched, no other edge is rewritten, and no
+  hierarchy is re-derived. Removing an edge can only narrow the graph, so none of the acyclicity
+  machinery above has an analogue here.
+- **A miss is an error, never a silent success.** An operator who believes a wrong edge is gone while
+  it is still widening two sessions' context is worse off than one who got an error.
+- **The removal is logged into both sessions' timelines**, naming both ids, when the edge was written,
+  what entry point wrote it, and who detached it — the mirror of how the write is logged, and for the
+  same reason: the change affects whose human messages each end's prompt carries.
+
+`remove_uncle` is deliberately **not** on the self-session surface. An uncle edge is a claim another
+session made about this one; letting a session detach its own seniors would let it shed context it was
+given, from the one surface every session has. And there is no *create* on any of these surfaces:
+writing an edge belongs to `Sessions::RecordUncleEdge`, which is where the acyclicity invariant lives.
+
+What removal cannot do is unsay what was already injected — every prompt built while the edge existed
+carried the other hierarchy's `elsewhere` entries. See
+[Limitations](/limitations/#an-uncle-edge-is-self-declared-so-a-session-can-attach-itself-as-another-sessions-senior).
+
 ### Genesis on every node
 
 Each node also carries its **genesis** — where that session's line of work came from — and the
@@ -470,6 +507,10 @@ session's detail page, with the current session marked and not linked to itself.
 messages, badged `this session` or `elsewhere`, with a link to the authoring session and a Slack
 permalink where there is one. An empty record renders an explicit empty state explaining what absence
 means, rather than showing nothing.
+
+The uncle pill is the one control on the panel: each senior it names carries a **×** that detaches
+that edge, because an edge is written as a side effect of a follow-up and the panel is where someone
+notices the wrong one. Everything else on the panel is read-only.
 
 A node carries an agent-root pill, the title, `#id · status`, the genesis pill and sometimes an uncle
 pill, which is more than fits a phone in one line. So a node wraps onto as many lines as it needs at
