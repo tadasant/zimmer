@@ -2163,19 +2163,31 @@ connection may create or update a trigger on an allowed root naming any servers 
 `Trigger#sync_mcp_servers!` stamps them onto every session that trigger spawns. So the lock holds
 at spawn and through the mid-life change actions, and not through a trigger.
 
-Nothing reaches this today — no shipped agent root declares `default_subagent_roots`, which is the
-only thing that makes Zimmer inject a restricted connection, and that injection is the only
-restricted connection the deployment creates for itself. It becomes live the moment a root declares
-one, because the injected URL passes no `tool_groups` and therefore carries the full surface,
-`action_trigger` included. The gap is noted in `ActionTrigger`'s own comment as a deliberate
-non-closure and is not tracked by an issue.
+This is reachable today. `catalog-management` resolves with `default_subagent_roots` —
+`["catalog-mgmt-configs", "catalog-mgmt-proctor", "catalog-mgmt-research", "catalog-mgmt-save"]`,
+computed by AIR from those roots' own `default_in_roots` rather than written in `roots.json` — and
+that is what makes `RuntimeConfigPostProcessor#inject_subagent_server!` write a restricted
+connection into every `catalog-management` session. The injected URL passes no `tool_groups`, so it
+carries the full surface, `action_trigger` included. The gap is noted in `ActionTrigger`'s own
+comment as a deliberate non-closure and is not tracked by an issue.
 
-### A restricted connection cannot fork or restart a session outside its roots, but can still resume one
+### A restricted connection cannot spawn from a session outside its roots, but can still resume one
 
-`allowed_agent_roots` fences `action_session`'s `fork` and `restart` against the session they name
-([#1118](https://github.com/tadasant/zimmer/issues/1118)): a fork copies the source session's
-repository and MCP servers onto a new row, and a restart runs that row's agent, so both are spawns
-in everything but name.
+`allowed_agent_roots` fences three `action_session` actions against the session they name
+([#1118](https://github.com/tadasant/zimmer/issues/1118)): `fork`, which copies the source session's
+repository and MCP servers onto a new row; `regenerate_status_summary`, which reaches the same
+`ForkSessionService` under another name and then dispatches an agent turn on what it creates; and
+`restart`, which runs a row's agent and re-clones the repository outright when the session never got
+a clone.
+
+The fence places a session by the agent root its row names (`metadata["agent_root_key"]`), and by
+nothing else. It deliberately does not use `Session#agent_root_key`, whose fallback arm infers a
+root from `git_root` + `subdirectory`: every root in this catalog shares one repository URL with an
+empty subdirectory, so that arm answers with the first of them for any session carrying no key —
+which is every fork, since `ForkSessionService` builds the fork's metadata fresh. A restricted
+connection therefore cannot fork or restart a fork, or any pre-`agent_root_key` session. That is a
+refusal it could not previously hit, and it is the direction a fence should err in: the alternative
+admits a fork of any root's session to a connection allowed only `zimmer`.
 
 Three other actions put an agent into a session's repository and are **not** fenced: `follow_up`
 (which also chooses the prompt), `start_now`, and `unarchive`. Each of them acts on a session that
@@ -2184,10 +2196,11 @@ but the agent that then runs is running somewhere the connection was fenced out 
 distinction is one of degree. They were left out deliberately rather than missed: fencing
 `follow_up` in particular would change how an orchestrating session may reach the sessions it did
 not spawn, which is a policy decision about fleet orchestration and not the hole #1118 reported.
+`archive` and `bulk_archive` are unfenced too, and they are destructive rather than spawning — they
+end another root's session and delete its clone.
 
-Nothing reaches either half today, for the same reason as the entry above: no shipped agent root
-declares `default_subagent_roots`, and that injection is the only restricted connection the
-deployment creates for itself. It becomes live the moment a root declares one.
+All of this is reachable today, by the route the entry above names: `catalog-management` resolves
+with `default_subagent_roots`, so its sessions carry a full-surface, root-restricted connection.
 
 ### Codex MCP credentials are a reverse-engineered format, written on every spawn
 
