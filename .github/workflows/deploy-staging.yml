@@ -471,8 +471,8 @@ jobs:
           # not set the secret.
           if [ -z "${STAGING_RAILS_MASTER_KEY:-}" ]; then
             echo "::warning::STAGING_RAILS_MASTER_KEY is unset, so config/credentials/staging.yml.enc stays encrypted."
-            echo "::warning::Staging will boot, but SecretsLoader serves nothing: Slack triggers and AlertService"
-            echo "::warning::go quiet, and every MCP server with a \${VAR} from mcp_secrets fails to start a session."
+            echo "::warning::Staging will boot, but SecretsLoader serves nothing: Slack triggers go quiet,"
+            echo "::warning::and every MCP server with a \${VAR} from mcp_secrets fails to start a session."
           fi
           # Observability preflight. Also non-fatal -- both initializers are hard
           # no-ops on an empty value, so staging boots fine without them. But an

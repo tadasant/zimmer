@@ -485,7 +485,7 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
   # unrecognized entry. ProcessLifecycleManager owns the emission.
   test "unclassified_api_error_text never alerts on its own" do
     setup_transcript_with_api_error("Your account has been placed in cool-down mode", error_type: "invalid_request")
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     create_service.unclassified_api_error_text("/tmp/test-clone")
   end

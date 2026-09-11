@@ -21,26 +21,29 @@ class ScheduleTriggerJob < ApplicationJob
   queue_as :triggers
 
   def perform
-    # Wrap the entire iteration in an AlertBatcher scope so that a catalog
-    # change affecting many triggers in one tick collapses into a single
-    # aggregated Slack message instead of one-alert-per-trigger.
-    AlertBatcher.with_batch do
-      TriggerCondition.schedule
-        .joins(:trigger)
-        .where(triggers: { status: "enabled" })
-        .includes(:trigger)
-        .find_each do |condition|
-        process_condition(condition)
-      rescue => e
-        Rails.logger.error "[ScheduleTriggerJob] Error processing condition #{condition.id}: #{e.message}"
-        AlertService.raise_alert(
-          "Schedule trigger error",
-          details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' (ID: #{condition.trigger_id}) failed.",
+    # A catalog change affecting many triggers in one tick raises the same
+    # failure once per trigger. Nothing here collapses that burst any more, and
+    # nothing needs to: GlitchTip groups the events into one issue and notifies
+    # at most once, and Grafana's notification policy groups by alertname over a
+    # 5-minute interval. See docs/operate/observability.md.
+    TriggerCondition.schedule
+      .joins(:trigger)
+      .where(triggers: { status: "enabled" })
+      .includes(:trigger)
+      .find_each do |condition|
+      process_condition(condition)
+    rescue => e
+      Rails.logger.error "[ScheduleTriggerJob] Error processing condition #{condition.id}: #{e.message}"
+      ErrorReporter.report_exception(
+        e,
+        context: {
+          title: "Schedule trigger error",
           source: "ScheduleTriggerJob",
-          dedup_key: "schedule_trigger_condition_#{condition.id}",
-          error: e
-        )
-      end
+          details: "Condition #{condition.id} on trigger '#{condition.trigger&.name}' (ID: #{condition.trigger_id}) failed.",
+          condition_id: condition.id,
+          trigger_id: condition.trigger_id
+        }
+      )
     end
   end
 
@@ -201,13 +204,16 @@ class ScheduleTriggerJob < ApplicationJob
 
     Rails.logger.error "[ScheduleTriggerJob] Failed to create session for condition #{condition.id} on trigger #{trigger_id} (#{trigger_name}): #{e.message}\n#{backtrace}"
 
-    AlertService.raise_alert(
-      "Schedule trigger session creation failed",
-      details: "Condition #{condition.id} on trigger '#{trigger_name}' (ID: #{trigger_id}) failed to create a session.\n\n" \
-               "#{retry_note}",
-      source: "ScheduleTriggerJob",
-      dedup_key: "schedule_trigger_session_#{trigger_id}",
-      error: e
+    ErrorReporter.report_exception(
+      e,
+      context: {
+        title: "Schedule trigger session creation failed",
+        source: "ScheduleTriggerJob",
+        details: "Condition #{condition.id} on trigger '#{trigger_name}' (ID: #{trigger_id}) failed to create a session.\n\n" \
+                 "#{retry_note}",
+        condition_id: condition.id,
+        trigger_id: trigger_id
+      }
     )
   end
 end

@@ -1663,10 +1663,10 @@ class ProcessLifecycleManager
 
     UnclassifiedFailureReporter.report(
       kind: "process exit",
-      # The runtime belongs in the summary because the summary IS the dedup key.
-      # Without it a routine failure on one runtime would hold the key for an
-      # hour and suppress a genuinely novel failure on another sharing its exit
-      # code.
+      # The runtime belongs in the summary because the summary is what separates
+      # one unknown failure mode from another. Without it a routine failure on one
+      # runtime reads identically to a genuinely novel failure on another that
+      # happens to share its exit code.
       summary: "#{runtime} session process died with #{error_msg} and no recovery classifier matched",
       source: "ProcessLifecycleManager#handle_exit",
       session: session,
@@ -1770,28 +1770,23 @@ class ProcessLifecycleManager
   def report_unretried_malformed_tool_call(source)
     runtime = session&.agent_runtime.presence || "unknown runtime"
 
+    # One emission, not two: StructuredLogger#error writes the ERROR record that
+    # pages through the Grafana rule AND routes the message to GlitchTip via
+    # ErrorReporter. The message carries no session id, so a fleet-wide wave is one
+    # GlitchTip issue rather than one per session — it is one failure mode.
     @logger.error(
-      "A malformed tool call outlived the retry budget — the failure is not stochastic",
-      runtime: runtime, source: source
-    )
-
-    AlertService.raise_alert(
       "Malformed tool call the retry ladder did not clear",
+      runtime: runtime,
+      source: source,
       details: [
         "A #{runtime} turn died on a tool call the CLI could not parse, and there was no retry " \
           "budget left to take another draw with (max #{ApiErrorRetryService::BUDGET.max}).",
-        "",
         "Zimmer retries this failure because an unparseable tool call is normally a sampling " \
           "artifact. One that outlives the ladder is not: something in this turn is " \
           "deterministically unserializable — most plausibly an oversized tool argument. The " \
           "session failed rather than looping.",
-        session ? "\n<#{AppUrl.base_url}/sessions/#{session.id}|View session #{session.id} in Zimmer>" : nil
-      ].compact.join("\n"),
-      source: source,
-      # Runtime only, like the unclassified-failure keys: a fleet-wide wave is one
-      # Slack message per window, not one per session. Shared across both call
-      # sites on purpose — it is one failure mode, not two.
-      dedup_key: "malformed_tool_call_unretried:#{runtime}"
+        session ? "#{AppUrl.base_url}/sessions/#{session.id}" : nil
+      ].compact.join(" ")
     )
   rescue => e
     @logger.error("Failed to report an unretried malformed tool call", error: e.message)

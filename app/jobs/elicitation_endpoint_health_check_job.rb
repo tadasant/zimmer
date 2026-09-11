@@ -23,8 +23,6 @@ class ElicitationEndpointHealthCheckJob < ApplicationJob
     total_limit: 1
   )
 
-  ALERT_DEDUP_KEY = "elicitation_endpoint_unreachable"
-
   def perform
     was_unreachable = ElicitationEndpoint.status&.dig("reachable") == false
     stored = ElicitationEndpoint.record(ElicitationEndpoint.probe)
@@ -36,20 +34,27 @@ class ElicitationEndpointHealthCheckJob < ApplicationJob
 
     # Warn on every failed tick, not just the transition: unlike a banner, nothing
     # else keeps saying this, and a gate that silently fails closed is exactly the
-    # kind of thing that stays broken for weeks.
+    # kind of thing that stays broken for weeks. .warn rather than .error because
+    # the transition below is the page, and an ERROR line on every tick would page
+    # once a minute for as long as the outage lasts.
     Rails.logger.warn("[ElicitationEndpointHealthCheckJob] elicitation endpoint unreachable at #{stored['url']}: #{stored['detail']}")
 
     return if was_unreachable
 
-    AlertService.raise_alert(
+    Rails.logger.error("[ElicitationEndpointHealthCheckJob] MCP approval gate unreachable at #{stored['url']}")
+    ErrorReporter.report_message(
       "MCP approval gate unreachable",
-      details: "MCP servers cannot reach #{stored['url']}, so every gated reveal fails closed and returns a redacted value with no error.",
-      source: "ElicitationEndpointHealthCheckJob",
-      dedup_key: ALERT_DEDUP_KEY,
-      # The probe's detail is the raw failure it hit ("Errno::ECONNREFUSED:
-      # Failed to open TCP connection to ..."), which is the diagnostic — carry
-      # it as the snippet rather than trailing it off the end of the prose.
-      error: stored["detail"]
+      level: :error,
+      context: {
+        source: "ElicitationEndpointHealthCheckJob",
+        details: "MCP servers cannot reach #{stored['url']}, so every gated reveal fails closed and returns a redacted value with no error.",
+        # The probe's detail is the raw failure it hit ("Errno::ECONNREFUSED:
+        # Failed to open TCP connection to ..."), which is the diagnostic — carry
+        # it through AlertSnippet rather than trailing it off the end of the prose,
+        # because it is raw probe output and AlertSnippet owns the redaction and
+        # clamping that needs.
+        probe_detail: AlertSnippet.build(stored["detail"].presence)
+      }
     )
   end
 end

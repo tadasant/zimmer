@@ -1757,7 +1757,7 @@ class TriggerTest < ActiveSupport::TestCase
     ServersConfig.stubs(:exists?).with("valid-server").returns(true)
     ServersConfig.stubs(:exists?).with("stale-server").returns(false)
     @trigger.update_column(:mcp_servers, [ "valid-server", "stale-server" ])
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     session = @trigger.create_session!(prompt: "Test prompt")
 
@@ -1784,7 +1784,7 @@ class TriggerTest < ActiveSupport::TestCase
     ServersConfig.stubs(:exists?).with("stale-a").returns(false)
     ServersConfig.stubs(:exists?).with("stale-b").returns(false)
     @trigger.update_column(:mcp_servers, [ "stale-a", "stale-b" ])
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     session = @trigger.create_session!(prompt: "Test prompt")
 
@@ -1837,7 +1837,7 @@ class TriggerTest < ActiveSupport::TestCase
       config.stubs(:exists?).returns(false)
     end
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     resolvable = @trigger.heal_catalog_references!
 
@@ -1863,7 +1863,7 @@ class TriggerTest < ActiveSupport::TestCase
     ServersConfig.stubs(:all).returns([ OpenStruct.new(name: "server-a") ])
     ServersConfig.stubs(:exists?).with("server-a").returns(true)
     ServersConfig.stubs(:exists?).with("gone-server").returns(false)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     resolvable = @trigger.heal_catalog_references!
 
@@ -1879,7 +1879,7 @@ class TriggerTest < ActiveSupport::TestCase
     ServersConfig.stubs(:exists?).with("keeper").returns(true)
     ServersConfig.stubs(:exists?).with("gone-server").returns(false)
 
-    AlertService.expects(:raise_alert).once
+    ErrorReporter.expects(:report_message).once
 
     3.times { @trigger.heal_catalog_references! }
 
@@ -1891,7 +1891,7 @@ class TriggerTest < ActiveSupport::TestCase
     ServersConfig.stubs(:exists?).with("gone-a").returns(false)
     ServersConfig.stubs(:exists?).with("still-here").returns(true)
 
-    AlertService.expects(:raise_alert).twice
+    ErrorReporter.expects(:report_message).twice
 
     @trigger.heal_catalog_references!
 
@@ -1908,7 +1908,7 @@ class TriggerTest < ActiveSupport::TestCase
   test "the bookkeeping clears when a reference resolves again, so a later loss announces again" do
     @trigger.update_column(:mcp_servers, [ "flapper" ])
     ServersConfig.stubs(:exists?).with("flapper").returns(false)
-    AlertService.expects(:raise_alert).twice
+    ErrorReporter.expects(:report_message).twice
 
     @trigger.heal_catalog_references!
     assert_equal [ "flapper" ], @trigger.reload.unresolved_catalog_references["mcp_servers"].keys
@@ -1931,7 +1931,7 @@ class TriggerTest < ActiveSupport::TestCase
     ServersConfig.stubs(:exists?).with("maybe-gone").returns(false)
     AirCatalogService.stubs(:degraded?).returns(true)
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     resolvable = @trigger.heal_catalog_references!
 
@@ -1946,7 +1946,7 @@ class TriggerTest < ActiveSupport::TestCase
     @trigger.update_column(:mcp_servers, [ "keeper", "gone-server" ])
     ServersConfig.stubs(:exists?).with("keeper").returns(true)
     ServersConfig.stubs(:exists?).with("gone-server").returns(false)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     logged = []
     Rails.logger.stubs(:warn).with { |line| logged << line.to_s; true }
@@ -1958,24 +1958,24 @@ class TriggerTest < ActiveSupport::TestCase
     assert_match(/KEPT on the trigger/, matching.first)
   end
 
-  # A second artifact going missing inside AlertService's one-hour dedup window
-  # used to be swallowed AND marked announced, so it was never reported at all.
-  test "a different set of unresolvable references gets a different dedup key" do
+  # The set that is unresolvable rides in the context, so a second artifact going
+  # missing is reported with what is broken NOW rather than repeating the first
+  # report's list.
+  test "a second unresolvable reference is reported with the whole current set" do
     @trigger.update_column(:mcp_servers, [ "gone-a", "still-here" ])
     ServersConfig.stubs(:exists?).with("gone-a").returns(false)
     ServersConfig.stubs(:exists?).with("still-here").returns(true)
 
-    keys = []
-    AlertService.stubs(:raise_alert).with { |_message, options| keys << options[:dedup_key]; true }
+    sets = []
+    ErrorReporter.stubs(:report_message).with { |_message, options| sets << options[:context][:unresolvable]; true }
 
     @trigger.heal_catalog_references!
     ServersConfig.stubs(:exists?).with("still-here").returns(false)
     @trigger.heal_catalog_references!
 
-    assert_equal 2, keys.size
-    assert_not_equal keys.first, keys.last, "a changed set must not reuse the throttled key"
-    assert_equal "trigger_stale_mcp_#{@trigger.id}_#{Digest::SHA256.hexdigest('gone-a')[0, 8]}", keys.first
-    assert_equal "trigger_stale_mcp_#{@trigger.id}_#{Digest::SHA256.hexdigest('gone-a,still-here')[0, 8]}", keys.last
+    assert_equal 2, sets.size
+    assert_equal "gone-a", sets.first
+    assert_equal "gone-a, still-here", sets.last
   end
 
   # The degraded guard suppresses the WRITE, and must not be read as "the name
@@ -1983,7 +1983,7 @@ class TriggerTest < ActiveSupport::TestCase
   test "a degraded catalog leaves an already-recorded reference recorded" do
     @trigger.update_column(:mcp_servers, [ "gone-server" ])
     ServersConfig.stubs(:exists?).with("gone-server").returns(false)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     @trigger.heal_catalog_references!
     recorded = @trigger.reload.unresolved_catalog_references
@@ -1999,7 +1999,7 @@ class TriggerTest < ActiveSupport::TestCase
   test "an empty catalog leaves an already-recorded reference recorded" do
     @trigger.update_column(:mcp_servers, [ "gone-server" ])
     ServersConfig.stubs(:exists?).with("gone-server").returns(false)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     @trigger.heal_catalog_references!
     recorded = @trigger.reload.unresolved_catalog_references
@@ -2020,7 +2020,7 @@ class TriggerTest < ActiveSupport::TestCase
       subdirectory: nil, default_mcp_servers: [ "root-default-server" ])
     AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     ServersConfig.stubs(:exists?).with("gone-server").returns(false)
     ServersConfig.stubs(:exists?).with("root-default-server").returns(true)
@@ -2036,7 +2036,7 @@ class TriggerTest < ActiveSupport::TestCase
     @trigger.update_column(:mcp_servers, [ "keeper", "gone-server" ])
     ServersConfig.stubs(:exists?).with("keeper").returns(true)
     ServersConfig.stubs(:exists?).with("gone-server").returns(false)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     assert_not @trigger.unresolved_catalog_reference?(:mcp_servers, "gone-server"),
       "nothing is known until a fire has looked"
@@ -2051,7 +2051,7 @@ class TriggerTest < ActiveSupport::TestCase
   test "the bookkeeping drops a name the operator has taken off the trigger" do
     @trigger.update_column(:mcp_servers, [ "gone-server" ])
     ServersConfig.stubs(:exists?).with("gone-server").returns(false)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     @trigger.heal_catalog_references!
     assert_equal [ "gone-server" ], @trigger.reload.unresolved_catalog_references["mcp_servers"].keys
@@ -2062,43 +2062,42 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal({}, @trigger.reload.unresolved_catalog_references)
   end
 
-  test "the unresolvable MCP server alert states its wording, source and dedup key" do
+  test "the unresolvable MCP server alert states its wording, source and context" do
     @trigger.update_column(:mcp_servers, [ "keeper", "gone-server" ])
     ServersConfig.stubs(:exists?).with("keeper").returns(true)
     ServersConfig.stubs(:exists?).with("gone-server").returns(false)
 
-    AlertService.expects(:raise_alert).with do |message, options|
+    ErrorReporter.expects(:report_message).with do |message, options|
       assert_equal "Trigger degraded: MCP server(s) missing from the catalog", message
-      assert_equal "Trigger#create_session!", options[:source]
-      # Keyed on the row AND the set, so a second artifact going missing inside
-      # AlertService's one-hour dedup window is not swallowed unretried.
-      digest = Digest::SHA256.hexdigest("gone-server")[0, 8]
-      assert_equal "trigger_stale_mcp_#{@trigger.id}_#{digest}", options[:dedup_key]
-      assert_includes options[:details], "Trigger *#{@trigger.name}* (ID: #{@trigger.id})"
-      assert_includes options[:details], "• Unresolvable: gone-server"
-      assert_includes options[:details], "• Still resolving: keeper"
+      assert_equal :error, options[:level]
+      assert_equal "Trigger#create_session!", options[:context][:source]
+      assert_equal @trigger.id, options[:context][:record_id]
+      assert_equal "gone-server", options[:context][:unresolvable]
+      assert_includes options[:context][:details], "Trigger #{@trigger.name} (ID: #{@trigger.id})"
+      assert_includes options[:context][:details], "• Unresolvable: gone-server"
+      assert_includes options[:context][:details], "• Still resolving: keeper"
       # The words that matter: an operator has to know the name is still there
       # to remap, and which of the two repairs is theirs to choose.
-      assert_includes options[:details], "KEPT on the trigger — nothing has been deleted"
-      assert_includes options[:details], "If the server was RENAMED"
-      assert_includes options[:details], "/triggers/#{@trigger.id}|View trigger in Zimmer>"
+      assert_includes options[:context][:details], "KEPT on the trigger — nothing has been deleted"
+      assert_includes options[:context][:details], "If the server was RENAMED"
+      assert_includes options[:context][:details], "/triggers/#{@trigger.id}"
       true
     end.once
 
     @trigger.heal_catalog_references!
   end
 
-  test "the hook and plugin alerts keep their derived titles and dedup keys" do
-    # `dedup_noun` for these two is derived from the noun rather than declared,
-    # and nothing else in the suite pins the strings it produces.
+  test "the hook and plugin alerts keep their derived titles" do
+    # The titles are derived from each reference's noun, and nothing else in the
+    # suite pins the strings that produces — they are what GlitchTip groups on.
     @trigger.update_column(:catalog_hooks, [ "gone-hook" ])
     @trigger.update_column(:catalog_plugins, [ "gone-plugin" ])
     HooksConfig.stubs(:exists?).with("gone-hook").returns(false)
     PluginsConfig.stubs(:exists?).with("gone-plugin").returns(false)
 
     raised = []
-    AlertService.stubs(:raise_alert).with do |message, options|
-      raised << [ message, options[:source], options[:dedup_key] ]
+    ErrorReporter.stubs(:report_message).with do |message, options|
+      raised << [ message, options[:context][:source], options[:context][:unresolvable] ]
       true
     end
 
@@ -2107,12 +2106,12 @@ class TriggerTest < ActiveSupport::TestCase
     assert_includes raised, [
       "Trigger degraded: catalog hook(s) missing from the catalog",
       "Trigger#create_session!",
-      "trigger_stale_hooks_#{@trigger.id}_#{Digest::SHA256.hexdigest('gone-hook')[0, 8]}"
+      "gone-hook"
     ]
     assert_includes raised, [
       "Trigger degraded: catalog plugin(s) missing from the catalog",
       "Trigger#create_session!",
-      "trigger_stale_plugins_#{@trigger.id}_#{Digest::SHA256.hexdigest('gone-plugin')[0, 8]}"
+      "gone-plugin"
     ]
     # Every kind is preserved, not only MCP servers — the policy lives in the
     # concern, so it is the same policy for all four declarations.
@@ -2136,12 +2135,11 @@ class TriggerTest < ActiveSupport::TestCase
     ServersConfig.stubs(:exists?).with("gone-server").returns(false)
     @trigger.update_column(:mcp_servers, [ "valid-server", "gone-server" ])
 
-    # Verify AlertService is called with expected arguments
-    AlertService.expects(:raise_alert).with(
+    ErrorReporter.expects(:report_message).with(
       "Trigger degraded: MCP server(s) missing from the catalog",
       has_entries(
-        source: "Trigger#create_session!",
-        dedup_key: "trigger_stale_mcp_#{@trigger.id}_#{Digest::SHA256.hexdigest('gone-server')[0, 8]}"
+        level: :error,
+        context: has_entries(source: "Trigger#create_session!", unresolvable: "gone-server")
       )
     ).once
 
@@ -2156,7 +2154,7 @@ class TriggerTest < ActiveSupport::TestCase
     )
     AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     # Set up trigger with stale servers
     ServersConfig.stubs(:exists?).with("keeper").returns(true)
@@ -2184,7 +2182,7 @@ class TriggerTest < ActiveSupport::TestCase
     mock_agent_root = OpenStruct.new(url: "https://github.com/test/repo", default_branch: "main", subdirectory: nil)
     AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     # `slack-workspace` was renamed to `slack-zimmer` in the catalog on 2026-09-03.
     ServersConfig.stubs(:exists?).with("keeper").returns(true)
@@ -2207,7 +2205,7 @@ class TriggerTest < ActiveSupport::TestCase
     AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
     AgentSessionJob.stubs(:enqueue_with_prompt)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     session = @trigger.create_session!(prompt: "First")
     session.update_column(:status, Session.statuses[:needs_input])
@@ -2387,7 +2385,7 @@ class TriggerTest < ActiveSupport::TestCase
     AgentRootsConfig.stubs(:all).returns([ successor ])
     AgentRootsConfig.stubs(:find!).with(new_root_name).returns(successor)
     AgentSessionJob.stubs(:enqueue_new_session)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     session = @trigger.create_session!(prompt: "Test prompt")
 
@@ -2435,12 +2433,12 @@ class TriggerTest < ActiveSupport::TestCase
     assert_match(/no successor could be identified/, error.message)
   end
 
-  test "create_session! heals stale agent root without paging #eng-alerts" do
+  test "create_session! heals stale agent root without paging #alerts" do
     # A found successor is matched on an exact git_root + subdirectory match, so
     # it is the SAME code location under a renamed catalog entry — the repoint
     # is impact-free and needs no human action. The heal is recorded via a
-    # .warn log (obs audit trail) but must NOT raise an AlertService alert,
-    # which would spam #eng-alerts on every recurrence (e.g. self-waking
+    # .warn log (obs audit trail) but must NOT report an alert,
+    # which would spam #alerts on every recurrence (e.g. self-waking
     # sessions whose one-time wake triggers are recreated each fire carrying a
     # legacy/renamed root name). The unhealable branch still raises
     # AgentRootNotFoundError (→ .error → page), which IS correct — see the
@@ -2466,8 +2464,8 @@ class TriggerTest < ActiveSupport::TestCase
     AgentRootsConfig.stubs(:find!).with(new_root_name).returns(successor)
     AgentSessionJob.stubs(:enqueue_new_session)
 
-    # Successful self-heal must be silent on #eng-alerts.
-    AlertService.expects(:raise_alert).never
+    # Successful self-heal must be silent on #alerts.
+    ErrorReporter.expects(:report_message).never
 
     session = @trigger.create_session!(prompt: "Test prompt")
 
@@ -2489,7 +2487,7 @@ class TriggerTest < ActiveSupport::TestCase
 
     AgentRootsConfig.stubs(:exists?).with("claude_code").returns(false)
     AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-600"))
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     session = assert_no_difference "Session.count" do
       trigger.create_session!(prompt: "Resume")
@@ -2562,7 +2560,7 @@ class TriggerTest < ActiveSupport::TestCase
     )
     AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     SkillsConfig.stubs(:exists?).with("valid-skill").returns(true)
     SkillsConfig.stubs(:exists?).with("stale-skill").returns(false)
@@ -2591,11 +2589,11 @@ class TriggerTest < ActiveSupport::TestCase
     SkillsConfig.stubs(:exists?).with("gone-skill").returns(false)
     @trigger.update_column(:catalog_skills, [ "valid-skill", "gone-skill" ])
 
-    AlertService.expects(:raise_alert).with(
+    ErrorReporter.expects(:report_message).with(
       "Trigger degraded: catalog skill(s) missing from the catalog",
       has_entries(
-        source: "Trigger#create_session!",
-        dedup_key: "trigger_stale_skills_#{@trigger.id}_#{Digest::SHA256.hexdigest('gone-skill')[0, 8]}"
+        level: :error,
+        context: has_entries(source: "Trigger#create_session!", unresolvable: "gone-skill")
       )
     ).once
 
@@ -2611,7 +2609,7 @@ class TriggerTest < ActiveSupport::TestCase
     )
     AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     HooksConfig.stubs(:exists?).with("valid-hook").returns(true)
     HooksConfig.stubs(:exists?).with("stale-hook").returns(false)
@@ -3099,7 +3097,7 @@ class TriggerTest < ActiveSupport::TestCase
     )
     AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
     AgentSessionJob.stubs(:enqueue_new_session)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     PluginsConfig.stubs(:exists?).with("valid-plugin").returns(true)
     PluginsConfig.stubs(:exists?).with("stale-plugin").returns(false)
@@ -4375,7 +4373,7 @@ class TriggerTest < ActiveSupport::TestCase
     message.update_column(:created_at, (Trigger::MISSED_FIRE_MIN_QUEUE_AGE + 1.hour).ago)
 
     raised = []
-    AlertService.stubs(:raise_alert).with { |title, **| raised << title; true }
+    ErrorReporter.stubs(:report_message).with { |title, **| raised << title; true }
 
     Trigger::MISSED_FIRE_ALERT_THRESHOLD.times { @trigger.create_session!(prompt: "Nightly") }
 
@@ -4388,7 +4386,7 @@ class TriggerTest < ActiveSupport::TestCase
     message.update_column(:created_at, (Trigger::MISSED_FIRE_MIN_QUEUE_AGE + 1.hour).ago)
 
     raised = []
-    AlertService.stubs(:raise_alert).with { |title, **| raised << title; true }
+    ErrorReporter.stubs(:report_message).with { |title, **| raised << title; true }
 
     @trigger.create_session!(prompt: "Nightly")
 
@@ -4401,7 +4399,7 @@ class TriggerTest < ActiveSupport::TestCase
     session.enqueued_messages.create!(content: "Queued", position: 1, status: "pending")
 
     raised = []
-    AlertService.stubs(:raise_alert).with { |title, **| raised << title; true }
+    ErrorReporter.stubs(:report_message).with { |title, **| raised << title; true }
 
     (Trigger::MISSED_FIRE_ALERT_THRESHOLD + 1).times { @trigger.create_session!(prompt: "Nightly") }
 

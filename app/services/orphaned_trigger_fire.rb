@@ -80,15 +80,15 @@
 # so a session that is genuinely restarted and fails again reports again.
 #
 # The stamp goes down **after** the report, not before. Stamping first would make
-# a Slack outage, or a deploy landing in the window, a permanent silent drop —
+# a reporting failure, or a deploy landing in the window, a permanent silent drop —
 # which is the exact bug this service exists to remove, reintroduced inside the
 # fix. The cost of the other order is that a job retried over a half-finished
-# report writes a second identical timeline line; the Slack side is covered by
-# the per-session `dedup_key` inside `AlertService::DEDUP_WINDOW`.
+# report writes a second identical timeline line; the reported side collapses into
+# one GlitchTip issue.
 class OrphanedTriggerFire
   # Written on the session when its orphaned fire has been reported. Doubles as
   # the in-app record: the row itself says the drop was announced, so the fact
-  # does not live only in a Slack channel.
+  # does not live only in an alert channel.
   REPORTED_AT_KEY = "orphaned_trigger_fire_reported_at"
 
   # The genesis kinds whose fire is CONSUMED by the session carrying it, so a
@@ -116,7 +116,8 @@ class OrphanedTriggerFire
   CONTEXT_BLOCK_URL_PATTERN = /^- \*\*URL:\*\*\s*(#{SUBJECT_URL_PATTERN})/
 
   # Raw runtime text carried by a failure, in the order a reader wants it. It
-  # travels as `error:`, never in `details:` — see #raise_alert.
+  # travels through AlertSnippet in a field of its own, never in the prose — see
+  # #report_orphaned_fire.
   RUNTIME_FAILURE_KEYS = %w[exit_status exception_message].freeze
 
   class << self
@@ -153,7 +154,7 @@ class OrphanedTriggerFire
     # in, which is why the only caller hands it a freshly loaded one.
     #
     # @param session [Session, nil] the failed trigger-originated session
-    # @return [Boolean] whether an alert was raised
+    # @return [Boolean] whether this call reported the drop
     def report!(session)
       return false if session.nil?
 
@@ -163,13 +164,13 @@ class OrphanedTriggerFire
 
       trigger = Trigger.find_by(id: session.metadata["trigger_id"])
       record_on_session(session, trigger)
-      alerted = raise_alert(session, trigger)
+      report_orphaned_fire(session, trigger)
 
       # Stamped AFTER the report, so a failure on the way here leaves the session
       # eligible rather than marked-as-reported over a message nobody got. See
       # "Noise budget" above for the trade this makes with a retried job.
       session.merge_metadata!(REPORTED_AT_KEY => Time.current.utc.iso8601)
-      alerted
+      true
     rescue => e
       Rails.logger.error(
         "[OrphanedTriggerFire] Could not report the orphaned fire on session #{session&.id}: " \
@@ -199,32 +200,36 @@ class OrphanedTriggerFire
       )
     end
 
-    # The raw runtime text goes through `error:`, not into `details:`, and that
-    # split is security-relevant rather than cosmetic.
+    # The raw runtime text goes through `AlertSnippet`, never into the prose, and
+    # that split is security-relevant rather than cosmetic.
     #
-    # `AlertService` runs `error:` through `AlertSnippet`, which owns redaction
-    # (14 secret shapes), clamping, UTF-8 coercion and fencing; `details:` is
-    # passed to Slack untouched. `exit_status` and `exception_message` are
-    # arbitrary runtime output — `AgentSessionJob` documents `AirPrepareError` as
-    # embedding `air prepare`'s full stderr, and `air prepare` is the step that
-    # resolves `.mcp.json`'s `${VAR}` credential substitutions, so that text can
-    # plausibly carry a secret VALUE and not only a variable name. This is the
-    # first path by which either field leaves the box, and a secret posted to
-    # `#eng-alerts` cannot be un-posted.
+    # `AlertSnippet` owns redaction (14 secret shapes), clamping and UTF-8
+    # coercion. `exit_status` and `exception_message` are arbitrary runtime output
+    # — `AgentSessionJob` documents `AirPrepareError` as embedding `air prepare`'s
+    # full stderr, and `air prepare` is the step that resolves `.mcp.json`'s
+    # `${VAR}` credential substitutions, so that text can plausibly carry a secret
+    # VALUE and not only a variable name. This is the first path by which either
+    # field leaves the box.
     #
-    # `UnclassifiedFailureReporter` makes the same call for the same reason, and
-    # `AlertService`'s own class comment states the convention: `details:` is for
-    # the prose a human needs on top of the snippet, not for a hand-copied
-    # `e.message`. What stays in `details:` is `Session#failure_summary`, a
-    # closed `case` over enumerated `failure_reason` values that never
-    # interpolates runtime output.
-    def raise_alert(session, trigger)
-      AlertService.raise_alert(
+    # `UnclassifiedFailureReporter` makes the same call for the same reason. What
+    # stays in the prose is `Session#failure_summary`, a closed `case` over
+    # enumerated `failure_reason` values that never interpolates runtime output.
+    def report_orphaned_fire(session, trigger)
+      details = alert_details(session, trigger)
+
+      Rails.logger.error(
+        "[OrphanedTriggerFire] Trigger session failed with its work undone: session #{session.id}"
+      )
+      ErrorReporter.report_message(
         "Trigger session failed with its work undone",
-        details: alert_details(session, trigger),
-        source: "OrphanedTriggerFire",
-        dedup_key: "orphaned_trigger_fire_session_#{session.id}",
-        error: runtime_failure_text(session)
+        level: :error,
+        context: {
+          source: "OrphanedTriggerFire",
+          details: details,
+          session_id: session.id,
+          trigger_id: trigger&.id,
+          runtime_failure: AlertSnippet.build(runtime_failure_text(session))
+        }
       )
     end
 
@@ -233,16 +238,16 @@ class OrphanedTriggerFire
       lines << "The fire from #{trigger_label(session, trigger)} is spent, and the session carrying " \
                "it has failed."
       lines << ""
-      lines << "*Subject:* #{subject_phrase(session)}"
-      lines << "*Why it failed:* #{failure_phrase(session)}"
+      lines << "Subject: #{subject_phrase(session)}"
+      lines << "Why it failed: #{failure_phrase(session)}"
       lines << ""
       lines << "No retry is coming. The event was consumed when the session was created — a " \
                "`github_label` item is recorded as seen, a Slack cursor has moved, an `ao_event` " \
                "wake is spent — and a `failed` session can be neither messaged nor woken. This work " \
                "item stays dropped until somebody re-dispatches it."
       lines << ""
-      lines << "<#{AppUrl.base_url}/sessions/#{session.id}|View session #{session.id} in Zimmer>"
-      lines << "<#{AppUrl.base_url}/triggers/#{trigger.id}|View trigger #{trigger.id} in Zimmer>" if trigger
+      lines << "Session: #{AppUrl.base_url}/sessions/#{session.id}"
+      lines << "Trigger: #{AppUrl.base_url}/triggers/#{trigger.id}" if trigger
       lines.join("\n")
     end
 

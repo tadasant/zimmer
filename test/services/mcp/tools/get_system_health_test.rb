@@ -217,7 +217,7 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
   end
 
   test "leads with queue recovery mode when it is on" do
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_message)
     AppSetting.delete_all
     GoodJob::Setting.delete_all
     QueueRecoveryMode.enter!(reason: "trigger stampede", actor: "test")

@@ -6172,7 +6172,7 @@ class AgentSessionJob < ApplicationJob
   # Zimmer's SecretsLoader doesn't carry. Both are deterministic, non-retryable, and
   # operator-fixable — nothing is broken system-side — so they are logged at WARN
   # and the session is failed here, rather than allowed to bubble to ActiveJob as
-  # a terminal job crash that pages #eng-alerts. Mirrors the oauth_required
+  # a terminal job crash that pages #alerts. Mirrors the oauth_required
   # graceful-fail path. Callers must `return` immediately afterwards.
   #
   # @param session [Session] the session to fail

@@ -222,11 +222,14 @@ class RefreshRuntimeAuthTokensJob < ApplicationJob
     details = "#{account.email}'s stored refresh token was rejected as spent, and the filesystem sync that would "       "replace it is being skipped because the worker's credentials file is corrupt. #{health.detail} "       "Nothing in Zimmer can move this account forward — re-authenticate it from /inference."
 
     Rails.logger.error "[RefreshRuntimeAuthTokens] Auth deadlock for #{account.email}: #{details}"
-    AlertService.raise_alert(
+    ErrorReporter.report_message(
       "Claude auth deadlocked: spent refresh token and a corrupt credentials file",
-      details: details,
-      source: "RefreshRuntimeAuthTokensJob",
-      dedup_key: "auth-deadlock:#{account.id}"
+      level: :error,
+      context: {
+        source: "RefreshRuntimeAuthTokensJob",
+        details: details,
+        account_id: account.id
+      }
     )
   rescue => e
     Rails.logger.error "[RefreshRuntimeAuthTokens] Could not escalate the auth deadlock for #{account.email}: #{e.message}"

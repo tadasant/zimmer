@@ -22,7 +22,7 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
     # Fixture sessions sitting in `waiting` are legitimate candidates for this
     # sweep, so move them out of its population rather than asserting around them.
     Session.where(status: :waiting).update_all(status: Session.statuses[:needs_input])
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
   end
 
   # A session that ran, went to sleep, and has been quiet since.
@@ -434,12 +434,12 @@ class StrandedSleepRescueTest < ActiveSupport::TestCase
 
   test "an alert failure does not make a completed rescue report as refused" do
     session = sleeping_session
-    AlertService.unstub(:raise_alert)
-    AlertService.stubs(:raise_alert).raises(StandardError, "slack is down")
+    ErrorReporter.unstub(:report_message)
+    ErrorReporter.stubs(:report_message).raises(StandardError, "glitchtip is down")
 
     result = StrandedSleepRescue.sweep!
 
-    assert_equal 1, result.rescued, "the turn was enqueued; a Slack failure must not misreport that"
+    assert_equal 1, result.rescued, "the turn was enqueued; a reporting failure must not misreport that"
     assert_equal "waiting", session.reload.status
   end
 
