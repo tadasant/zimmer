@@ -1710,6 +1710,18 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
       "a session with nothing wired gets a .env with no secrets in it"
   end
 
+  test "a .env write failure is logged and does not stop the prepare" do
+    SessionEnvFile.stubs(:write!).raises(Errno::EACCES, "denied")
+    @session.update!(mcp_servers: [], catalog_skills: [], catalog_hooks: [], catalog_plugins: [])
+    service = AirPrepareService.new(
+      session: @session, working_directory: @working_dir, file_system: @mock_fs
+    )
+
+    assert_nothing_raised { service.ensure_baseline_mcp_config! }
+    assert_includes service.injected_mcp_servers, "zimmer-self-session",
+      "the rest of the prepare ran after the .env write failed"
+  end
+
   test "the .env is written before AIR runs, so a failed prepare still leaves it scoped" do
     SecretsLoader.stubs(:all).returns("SLACK_BOT_TOKEN" => "value-for-SLACK_BOT_TOKEN")
     @session.update!(mcp_servers: [ "slack-workspace" ], catalog_skills: [], catalog_plugins: [])

@@ -12,24 +12,31 @@
 #     itself) can set a variable in a clone's `.env` — pointing a server at a
 #     different Zimmer with `ELICITATION_REQUEST_URL`, raising
 #     `PARALLEL_WORKERS`, giving a non-Zimmer project its own `SENTRY_DSN` — and
-#     several call sites document that as a supported override. This file is now
-#     rewritten on every runtime-config prepare rather than once at clone time,
-#     so those would be erased on the session's next turn if we regenerated the
-#     whole file. Foreign lines are copied through as RAW TEXT, never re-quoted:
-#     the dialect EnvFile parses does not unescape, so parsing a value and
-#     re-emitting it through #format_entry would double every backslash in it.
+#     several call sites document that as a supported override. This file is
+#     rewritten on every runtime-config prepare, so regenerating it whole would
+#     erase those on the session's next turn. Foreign lines are copied through as
+#     RAW TEXT, never re-quoted: the dialect EnvFile parses does not unescape, so
+#     parsing a value and re-emitting it through #format_entry would double every
+#     backslash in it.
 class SessionEnvFile
-  # Marks the start of the block this class owns. Everything from here to the end
-  # of the file is regenerated; anything above it is preserved.
-  MANAGED_HEADER = "# --- Zimmer-managed secrets (regenerated on every prepare; edits below are lost) ---"
+  # Marks the block this class owns. Ownership is by NAME, not by position: every
+  # line setting a name in the bundle is regenerated wherever it sits, and every
+  # other line is preserved wherever it sits — see #preserved_lines.
+  MANAGED_HEADER = "# --- Zimmer-managed secrets (regenerated on every prepare; edits to these keys are lost) ---"
 
-  Result = Struct.new(:key_names, :available_count, :scoped, keyword_init: true) do
+  # How many names a log line lists before it summarises the rest as a count.
+  SUMMARY_NAME_LIMIT = 20
+
+  Result = Struct.new(:key_names, :available_count, keyword_init: true) do
     # What goes in a log line: names, never values, and never so many of them
-    # that the line stops being readable.
+    # that the line stops being readable — `ZIMMER_SESSION_ENV_SCOPE=all` would
+    # otherwise put the whole bundle's names in every session's log.
     def summary
       return "no secrets" if key_names.empty?
 
-      key_names.join(", ")
+      listed = key_names.first(SUMMARY_NAME_LIMIT).join(", ")
+      extra = key_names.size - SUMMARY_NAME_LIMIT
+      extra.positive? ? "#{listed} (+#{extra} more)" : listed
     end
   end
 
@@ -57,14 +64,12 @@ class SessionEnvFile
       scoped = secrets.slice(*allowed)
 
       path = File.join(working_directory, EnvFile::FILENAME)
-      file_system.write(path, render(scoped, preserved_lines(path, file_system, secrets.keys)))
+      # `perm:` sets the mode on a file this call creates, so a new `.env` is never
+      # briefly world-readable under the umask; the chmod covers one that existed.
+      file_system.write(path, render(scoped, preserved_lines(path, file_system, secrets.keys)), perm: 0o600)
       file_system.chmod(0o600, path)
 
-      Result.new(
-        key_names: scoped.keys.sort,
-        available_count: secrets.size,
-        scoped: !SessionSecretScope.unscoped?
-      )
+      Result.new(key_names: scoped.keys.sort, available_count: secrets.size)
     end
 
     private

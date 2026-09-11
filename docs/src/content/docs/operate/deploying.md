@@ -671,6 +671,16 @@ names the 50 it imports by key and verdict and inserts nothing else. A pinned en
 been recorded live is skipped, and one it cannot find fails the run rather than letting it report
 `succeeded`. See [the appends the first import missed](/operate/gate-decisions/#the-appends-the-first-import-missed).
 
+`ScopeExistingCloneEnvFiles` is the shape a task takes when a change alters what the app writes to
+**disk** rather than to the database. Scoping a clone's `.env` to its session's artifacts
+([what reaches a session clone's `.env`](/operate/provisioning/#what-reaches-a-session-clones-env))
+applies from the next prepare, so a clone sitting idle, parked or archived would have kept the whole
+bundle until its session next ran. The task walks every session with a recorded clone, rewrites the
+`.env` of each one still on disk through the same `SessionEnvFile` the prepare path uses, and leaves
+clones without a `.env` alone. It is idempotent because the rewrite is a pure function of the
+session's selection, so a second pass writes the same bytes; its `stats` count the files it
+rewrote, the sessions it found with no `.env` on disk, and the ones that failed, by id.
+
 `RearmWakesBrickedByUnresolvableAgentRoot` is the other shape a one-time task takes: not an import
 but a **repair of live rows**, where selecting one row too many is as bad as selecting one too few.
 Two things follow from that. Its idempotency is structural rather than keyed — re-enabling a trigger

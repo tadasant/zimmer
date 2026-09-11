@@ -346,8 +346,8 @@ class PiRuntimeAdapter
   # does it. Nothing does: `SessionEnvFile` writes the clone's `.env` from
   # `SecretsLoader.all`, which reads Rails encrypted `mcp_secrets` ONLY — it never
   # consults SecretProviders — so a value that lives in the Parameter Store never
-  # lands in a session `.env`. Every other
-  # store-backed name reaches its consumer some other way (an MCP config's
+  # lands in a session `.env`. Every other store-backed name reaches its consumer
+  # some other way (an MCP config's
   # `${VAR}` is interpolated by Zimmer before the server is launched; `GH_TOKEN`
   # is published into the worker's own ENV by GhTokenProvisioner). Pi has neither
   # of those paths: it reads the variable out of its own process environment.

@@ -382,11 +382,11 @@ stdio MCP servers the CLI spawns inherit it.
 
 | Source | What it contributes |
 | --- | --- |
-| Every MCP server the session has wired — explicit, plugin-bundled and auto-injected (`Session#all_mcp_servers`) | every `${VAR}` in the catalog entry: `ServersConfig::Server#required_variables` + `#optional_variables` |
+| Every MCP server the session has selected — explicit and plugin-bundled (`Session#user_selected_mcp_servers`) | every `${VAR}` in the catalog entry: `ServersConfig::Server#required_variables` + `#optional_variables` |
 | Every catalog skill and hook the session carries | every `$VAR` / `${VAR}` that appears in the artifact's own files, **intersected** with the names Zimmer holds |
 | `ZIMMER_SESSION_ENV_EXTRA_KEYS` | the names it lists, same intersection |
 
-Two things are deliberately outside it. **References** are not scanned — they are prose Zimmer injects
+Three things are deliberately outside it. **Auto-injected Zimmer servers** do not count: the self-session server is injected into every session and authenticates with `${ZIMMER_PROD_API_KEY}`, a key to Zimmer's whole API, which Zimmer resolves straight into that entry's own header — counting it would hand the key to every clone's shell for no reason. **References** are not scanned — they are prose Zimmer injects
 for context, and the secrets references alone name three dozen credentials in passing, so scanning them
 would put most of the bundle back. And a name mentioned in prose **without a `$`** does not count:
 "set `GITHUB_PERSONAL_ACCESS_TOKEN`" is talking about the variable, `$GITHUB_PERSONAL_ACCESS_TOKEN` is
@@ -397,7 +397,9 @@ off `config/database.yml` and the image's master key, not off `mcp_secrets`; a s
 skills or hooks gets a `.env` with no secrets in it.
 
 The file is rewritten by `SessionEnvFile` on **every runtime-config prepare** — the session's next
-turn, a restart, a fork, an unarchive — not once when the clone is created. That is what keeps it in
+turn, a restart, a fork, an unarchive — and on the job-retry path that reuses a clone without
+preparing it. Clones that existed before scoping shipped were narrowed in place by the
+`ScopeExistingCloneEnvFiles` [post-deploy task](/operate/deploying/#one-time-post-deploy-tasks). That is what keeps it in
 step with [`Sessions::UpdateCatalogSelection`](/sessions/lifecycle/), which persists a new server list
 and deliberately regenerates nothing on the grounds that the next prepare will. Lines Zimmer does not
 manage are carried over verbatim, so an operator's `ELICITATION_REQUEST_URL` or `PARALLEL_WORKERS`
@@ -411,9 +413,8 @@ Smallest blast radius first:
    /api/v1/sessions/:id/mcp_servers`, or the `change_mcp_servers` MCP tool). The `.env` is rewritten on
    the session's next turn.
 2. **Fleet-wide, one variable** — `ZIMMER_SESSION_ENV_EXTRA_KEYS=A,B` in the deploy config.
-3. **Fleet-wide, everything** — `ZIMMER_SESSION_ENV_SCOPE=all` restores the pre-scoping behaviour
-   exactly: every clone gets the whole bundle again. One deploy-time variable, no code change, no shell
-   on the box.
+3. **Fleet-wide, everything** — `ZIMMER_SESSION_ENV_SCOPE=all`: every clone gets the whole bundle
+   again. One deploy-time variable, no code change, no shell on the box.
 
 A catalog Zimmer cannot read fails **closed** — fewer keys, not more. A broken catalog silently
 restoring the whole bundle is the failure mode this is built to avoid.

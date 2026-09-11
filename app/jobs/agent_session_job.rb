@@ -1256,6 +1256,11 @@ class AgentSessionJob < ApplicationJob
             )
           end
 
+          # This path spawns without a prepare, so it is the one place the scoped
+          # `.env` would otherwise never be written — a clone created before
+          # scoping would keep the whole bundle across every retry.
+          inject_secrets_to_env_file(session, working_directory, log_buffer)
+
           # Re-inject OAuth credentials before spawning into the reused clone.
           # The reused-clone path is taken after a job retry AND after the user
           # completes an OAuth flow for an oauth_required-failed session (which

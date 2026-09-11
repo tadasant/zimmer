@@ -44,7 +44,6 @@ class SessionEnvFileTest < ActiveSupport::TestCase
     assert_equal %w[SLACK_BOT_TOKEN], written_keys
     assert_equal %w[SLACK_BOT_TOKEN], result.key_names
     assert_equal BUNDLE.size, result.available_count
-    assert result.scoped
   end
 
   test "a narrowly-provisioned session never receives an unrelated credential" do
@@ -78,7 +77,7 @@ class SessionEnvFileTest < ActiveSupport::TestCase
   end
 
   # ---------------------------------------------------------------------------
-  # Rewriting: this now runs on every prepare, not once per clone
+  # Rewriting: this runs on every prepare
   # ---------------------------------------------------------------------------
 
   test "a rewrite drops a managed key the session no longer has a server for" do
@@ -133,6 +132,22 @@ class SessionEnvFileTest < ActiveSupport::TestCase
     write(session(mcp_servers: %w[slack-workspace]))
 
     assert_equal %w[SLACK_BOT_TOKEN], written_keys
+  end
+
+  test "a log summary lists names up to a limit and counts the rest" do
+    names = Array.new(SessionEnvFile::SUMMARY_NAME_LIMIT + 3) { |i| format("KEY_%02d", i) }
+    summary = SessionEnvFile::Result.new(key_names: names, available_count: names.size).summary
+
+    assert_includes summary, "KEY_00"
+    assert_not_includes summary, names.last
+    assert summary.end_with?("(+3 more)")
+  end
+
+  test "a new .env is created owner-read-write rather than under the umask" do
+    @file_system.expects(:write).with(@path, anything, perm: 0o600).once
+    @file_system.stubs(:chmod)
+
+    write(session(mcp_servers: %w[slack-workspace]))
   end
 
   # ---------------------------------------------------------------------------
