@@ -6,7 +6,7 @@
 
 <section class="main-content__body">
   <div class="flashes"><div class="flash flash-error"><%= @error_message %></div></div>
-  <p>Nothing was stored. The credential Zimmer already holds, if any, is unchanged.</p>
+  <p>This request stored nothing, and did not change any credential Zimmer already holds.</p>
   <p>
     <%= link_to "Back to X OAuth credentials", supervisor_x_oauth_credentials_path, class: "button", data: { turbo_prefetch: false } %>
   </p>

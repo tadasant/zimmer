@@ -20,7 +20,7 @@ require "digest"
 #      - When that is Zimmer's own callback (`hosted_redirect_uri`), the
 #        controller receives the code directly.
 #      - When it is anywhere else, such as the localhost URI the X app has
-#        registered today, nothing listens there: the operator pastes the URL
+#        registered, nothing listens there: the operator pastes the URL
 #        the browser landed on back into the panel.
 #   3. `complete!` exchanges that code (HTTP Basic client auth) for tokens and
 #      persists them onto an XOauthCredential row.

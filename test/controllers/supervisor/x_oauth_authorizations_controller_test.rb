@@ -294,6 +294,48 @@ module Supervisor
       assert_equal 0, XOauthCredential.count
     end
 
+    test "tokens X issued but Zimmer could not save are reported as that, not as a failed exchange" do
+      use_hosted_callback!
+      flow = start_flow
+      XOauthCredential.any_instance.stubs(:apply_token_response!).raises(ActiveRecord::RecordInvalid.new(XOauthCredential.new))
+
+      with_token_endpoint(code: 200, body: TOKEN_BODY) do
+        get supervisor_x_oauth_callback_path(state: flow.state, code: "the-code")
+      end
+
+      assert_response :bad_request
+      assert_match "X issued tokens, but Zimmer could not save them", response.body
+    end
+
+    # Administrate's flash partial renders the notice with html_safe, and the
+    # account key in it is operator-typed.
+    test "the success notice shows the account key as text, not markup" do
+      use_hosted_callback!
+      flow = start_flow(account_key: "<b>bold</b>")
+
+      with_token_endpoint(code: 200, body: TOKEN_BODY) do
+        get supervisor_x_oauth_callback_path(state: flow.state, code: "the-code")
+      end
+      # follow_redirect! would bypass AutoBasicAuth, so fetch the redirect directly.
+      get response.location
+      assert_response :success
+
+      assert_select ".flash b", count: 0
+      assert_match "&lt;b&gt;bold&lt;/b&gt;", response.body
+    end
+
+    test "the authorization code and a pasted redirect URL are filtered from logs" do
+      filter = ActiveSupport::ParameterFilter.new(Rails.application.config.filter_parameters)
+      filtered = filter.filter(
+        "code" => "the-code", "state" => "s", "status_code" => "200",
+        "redirect_response" => "http://localhost:8080/callback?state=s&code=the-code"
+      )
+
+      assert_equal "[FILTERED]", filtered["code"]
+      assert_equal "[FILTERED]", filtered["redirect_response"]
+      assert_equal "200", filtered["status_code"]
+    end
+
     # --- the paste-back ---
 
     test "complete finishes a flow from the pasted redirect URL" do

@@ -29,6 +29,15 @@ class XOauthPendingFlowTest < ActiveSupport::TestCase
     assert XOauthPendingFlow.exists?(second.id)
   end
 
+  test "start! trims the identity before replacing, so a stray space cannot leave two flows" do
+    first = start
+    second = start(access_token_env_var: " X_OAUTH_ACCESS_TOKEN ", account_key: " acct ")
+
+    assert_not XOauthPendingFlow.exists?(first.id)
+    assert_equal "X_OAUTH_ACCESS_TOKEN", second.access_token_env_var
+    assert_equal "acct", second.account_key
+  end
+
   test "start! leaves a flow for a different env var alone" do
     other = start(account_key: "other", access_token_env_var: "X_OTHER_TOKEN")
     start

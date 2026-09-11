@@ -27,12 +27,13 @@ module Supervisor
 
     # What a token exchange can raise on the way to X and back. The code is spent
     # by then either way, so each one ends the flow with a message rather than a 500.
+    # Timeout::Error covers Net::OpenTimeout, Net::ReadTimeout and Net::WriteTimeout.
     EXCHANGE_ERRORS = [
       XOauthBootstrap::ExchangeError,
-      ActiveRecord::RecordInvalid,
       JSON::ParserError,
-      Net::OpenTimeout,
-      Net::ReadTimeout,
+      Timeout::Error,
+      Net::HTTPBadResponse,
+      Net::ProtocolError,
       SocketError,
       SystemCallError,
       IOError,
@@ -134,7 +135,12 @@ module Supervisor
         "#{credential.access_token_env_var} is vended from this credential."
       redirect_to supervisor_x_oauth_credential_path(credential)
     rescue XOauthPendingFlow::ClaimError => e
-      render_error(e.message)
+      render_error("#{e.message} If an earlier attempt already succeeded, the credential page shows it.")
+    rescue ActiveRecord::RecordInvalid => e
+      # X issued tokens and complete! could not keep them. Say that, rather than
+      # blaming the exchange.
+      Rails.logger.warn "[XOauthAuthorizations] Tokens issued but not saved: #{e.message}"
+      render_error("X issued tokens, but Zimmer could not save them (#{e.message}). Start again.")
     rescue *EXCHANGE_ERRORS => e
       Rails.logger.warn "[XOauthAuthorizations] Token exchange failed: #{e.class}: #{e.message}"
       render_error("X did not exchange the authorization code for a token (#{e.class}: #{e.message}). The code is single-use, so start again.")
