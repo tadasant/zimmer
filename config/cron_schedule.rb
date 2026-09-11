@@ -331,15 +331,15 @@ module CronSchedule
     },
     # Hourly, off the top of the hour so it does not land with the other hourly
     # entries. The population it re-checks is measured in days, so the cadence
-    # bounds how long a dropped item waits rather than anything sharper.
+    # bounds how long a stranded row goes unreported rather than anything sharper.
     #
-    # Not in development: it spends GitHub search budget against the deployment's
-    # own repos, and a developer's database is full of `started` rows left over
-    # from testing whose issues it would go and look up.
-    work_backlog_stale_start_sweep: {
+    # Not in development: it spends GitHub API budget against the deployment's own
+    # repos, and a developer's database is full of `started` rows left over from
+    # testing whose issues it would go and look up.
+    work_backlog_liveness_sweep: {
       cron: "25 * * * *",
-      class: "WorkBacklogStaleStartSweepJob",
-      description: "Re-check started work-backlog rows whose session ended, and re-queue the ones it left with nothing to show",
+      class: "WorkBacklogLivenessSweepJob",
+      description: "Re-check backlog rows that left the queue, and record which have outlived the reason they left",
       environments: %i[production staging]
     },
     burn_rate_recompute: {

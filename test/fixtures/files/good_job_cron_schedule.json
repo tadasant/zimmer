@@ -175,10 +175,10 @@
       "class": "StrandedSleepSweepJob",
       "description": "Resume a session asleep in waiting on a wake-up that can never fire"
     },
-    "work_backlog_stale_start_sweep": {
+    "work_backlog_liveness_sweep": {
       "cron": "25 * * * *",
-      "class": "WorkBacklogStaleStartSweepJob",
-      "description": "Re-check started work-backlog rows whose session ended, and re-queue the ones it left with nothing to show"
+      "class": "WorkBacklogLivenessSweepJob",
+      "description": "Re-check backlog rows that left the queue, and record which have outlived the reason they left"
     },
     "burn_rate_recompute": {
       "cron": "*/20 * * * *",
@@ -427,10 +427,10 @@
       "class": "StrandedSleepSweepJob",
       "description": "Resume a session asleep in waiting on a wake-up that can never fire"
     },
-    "work_backlog_stale_start_sweep": {
+    "work_backlog_liveness_sweep": {
       "cron": "25 * * * *",
-      "class": "WorkBacklogStaleStartSweepJob",
-      "description": "Re-check started work-backlog rows whose session ended, and re-queue the ones it left with nothing to show"
+      "class": "WorkBacklogLivenessSweepJob",
+      "description": "Re-check backlog rows that left the queue, and record which have outlived the reason they left"
     },
     "burn_rate_recompute": {
       "cron": "*/20 * * * *",

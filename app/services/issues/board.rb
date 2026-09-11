@@ -15,8 +15,8 @@ module Issues
   #   parked    a started item whose session has stopped in `needs_input`: a
   #             person is what it is waiting on, usually over an open PR
   #   ended     a started item whose session archived or failed recently
-  #   stranded  a started item whose session ended without the work landing, and
-  #             which WorkBacklog::StaleStartSweep could not put back
+  #   stranded  a row that left the queue — started, or mechanically removed —
+  #             whose issue is still open and whose premise has expired
   #   loose     an open GitHub issue with no queued or CLAIMED backlog row —
   #             held, unrated, or simply not picked up yet
   #
@@ -107,19 +107,19 @@ module Issues
     end
 
     # Started items whose session ended a while ago and whose issue has not been
-    # seen closed — the population this page used to hide.
+    # seen closed — work that left the queue and went nowhere.
     #
-    # It hid it by omission rather than by error: such an issue is open, no live
-    # row claims it, so it rendered in "In GitHub, not on the queue" alongside
+    # The page hides it by omission rather than by error: such an issue is open,
+    # no live row claims it, so it renders in "In GitHub, not on the queue" beside
     # everything the gate has never rated. That reads as "not picked up yet",
     # which is the opposite of true — the fleet started it and dropped it — and
     # it is exactly the confusion that prompted "what's up with the rest of the
     # convergent issues, why aren't they getting scheduled?" on 2026-09-11.
     #
-    # WorkBacklog::StaleStartSweep re-queues the ones whose session left nothing
-    # behind, so a healthy fleet keeps this list short. What stays on it is what
-    # the sweep deliberately did not put back, and `liveness_state` on each row
-    # says which of those it is.
+    # WorkBacklog::LivenessSweep classifies these and writes `liveness_state` on
+    # each, but puts nothing back: telling a finished issue from one with a
+    # deliberate remainder needs a judgement per issue, which is not a cron job's
+    # to make. The state is the evidence a triager starts from.
     def stranded_rows
       @stranded_rows ||= started_rows(WorkBacklogItem.stranded)
     end

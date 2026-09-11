@@ -30,7 +30,6 @@ class WorkBacklogItemDashboard < Administrate::BaseDashboard
     removal_reason: Field::Text,
     liveness_state: Field::String,
     liveness_checked_at: Field::DateTime,
-    requeue_count: Field::Number,
     payload: Field::String.with_options(searchable: false),
     created_at: Field::DateTime,
     updated_at: Field::DateTime
@@ -77,7 +76,6 @@ class WorkBacklogItemDashboard < Administrate::BaseDashboard
     removal_reason
     liveness_state
     liveness_checked_at
-    requeue_count
     payload
     created_at
     updated_at

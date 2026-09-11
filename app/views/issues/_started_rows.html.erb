@@ -4,9 +4,9 @@
     there are none, and whether the sweep's verdict column is worth showing — so
     they share a partial and cannot drift apart in how they render a row.
 
-    `liveness` is off by default: on the first three lists WorkBacklog::StaleStartSweep
-    has nothing to say, because it only ever examines a row whose session has
-    ended and has stayed ended.
+    `liveness` is off by default: on the first three lists WorkBacklog::LivenessSweep
+    has nothing to say, because it only examines a row that has left the queue for
+    good — a session that ended, or a removal whose reason may have expired.
 
     Deliberately NOT narrowed by the filter bar — "what is the fleet working on"
     is a fixed question, and a repo filter that emptied this list would read as
@@ -58,7 +58,7 @@
                     <%= row.item.liveness_state.tr("_", " ") %>
                   </span>
                   <div class="text-[11px] text-gray-500 whitespace-nowrap">
-                    <%= time_ago_in_words(row.item.liveness_checked_at) %> ago<%= " · re-queued #{row.item.requeue_count}×" if row.item.requeue_count.positive? %>
+                    <%= time_ago_in_words(row.item.liveness_checked_at) %> ago
                   </div>
                 <% else %>
                   <span class="text-xs text-gray-400">not checked yet</span>

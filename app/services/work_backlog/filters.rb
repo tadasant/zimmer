@@ -29,9 +29,10 @@ module WorkBacklog
     # beside it, because a held item still holds its WIP slot. See
     # WorkBacklogItem.spot_held for why.
     #
-    # `stranded` is the population WorkBacklog::StaleStartSweep works on, and it
+    # `stranded` is the population WorkBacklog::LivenessSweep reports on, and it
     # is listable for the same reason the others are: an operator asking "why is
-    # this issue neither held nor queued" needs the rows, not a number.
+    # this issue neither held nor queued" needs the rows, not a number. It is the
+    # one that spans statuses — a stranded row may be `started` or `removed`.
     LIVE_STATUSES = {
       "in_flight" => :in_flight,
       "spot_held" => :spot_held,
