@@ -141,8 +141,11 @@ because there is no proxy to send them.
 Everything else is closed: `default-src 'none'`, `object-src 'none'`, `form-action 'none'`,
 `frame-ancestors 'self'`, and `'none'` for every directive above that nothing was declared for. A
 resource with no `csp` metadata gets inline script and style (a view with no inline script is not a
-view) plus `data:` images, and **no network of any kind** — which is at least as restrictive as the
-spec's stated default.
+view) plus `data:` images, and **nothing it can fetch, embed or submit to** — which is at least as
+restrictive as the spec's stated default. One channel survives that and is worth naming: no CSP
+directive prevents a sandboxed frame navigating *itself*, so a view can always carry what it holds
+out to another origin by changing its own `location`. See
+[limitations](/limitations/#mcp-apps-renders-only-for-remote-servers-and-only-for-servers-named-by-hand).
 
 `'unsafe-eval'` is never granted. `'self'` never appears: in a sandboxed document it is ambiguous
 across browsers, and the ambiguous reading is Zimmer's own origin. Each declared entry has to be a
@@ -186,7 +189,10 @@ Two rules narrow it:
   the operator's credentials.
 
 The connection is pinned to the one server the fragment came from, resolved from the transcript. No
-request parameter names a server, a tool or a resource that is not checked against it.
+request parameter names a server, a tool or a resource that is not checked against it. And
+`McpApps::RequestThrottle` caps how often one session's views may spend Zimmer's time — 60 a minute,
+counting proxied requests and agent messages in separate buckets — failing open, because the
+allowlist is the control that has to hold under every condition and this one is only a brake.
 
 ## Interactivity
 
@@ -232,6 +238,7 @@ The same two fields are visible on `/supervisor` under `AppSetting`.
 | The CSP | `app/services/mcp_apps/content_security_policy.rb` |
 | The View→Server proxy | `app/services/mcp_apps/proxy.rb` |
 | The View→Agent route | `app/services/mcp_apps/widget_message.rb` |
+| The ceiling on how often a view may ask for either | `app/services/mcp_apps/request_throttle.rb` |
 | The four endpoints | `app/controllers/mcp_apps_controller.rb` |
 | The browser-side broker | `app/javascript/controllers/mcp_app_host_controller.js` |
 

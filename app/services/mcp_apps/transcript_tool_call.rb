@@ -16,8 +16,8 @@ module McpApps
   # is a hint from the URL and is never trusted: the call found there has to carry
   # the `tool_call_id` that was asked for, or this resolves to nothing.
   class TranscriptToolCall
-    # How many transcript entries after the call to read looking for its result.
-    # A turn's worth of lines, not a transcript's.
+    # How many transcript entries to read, starting AT the call, looking for its
+    # result — so 39 after it. A turn's worth of lines, not a transcript's.
     WINDOW = 40
 
     attr_reader :session, :tool_call_id, :transcript_index
@@ -58,6 +58,14 @@ module McpApps
     #
     # @return [Hash, nil] nil when the call has no result in the transcript yet
     def result
+      return @result if defined?(@result)
+
+      @result = build_result
+    end
+
+    private
+
+    def build_result
       return nil if result_event.nil?
 
       content = Array(result_event[:output]).filter_map do |part|
@@ -72,8 +80,6 @@ module McpApps
       payload["structuredContent"] = structured if structured
       payload
     end
-
-    private
 
     def parsed_name
       return @parsed_name if defined?(@parsed_name)

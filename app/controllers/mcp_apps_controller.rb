@@ -18,6 +18,11 @@
 # is where the header it serves it under is built and argued for.
 class McpAppsController < ApplicationController
   before_action :load_session
+  # The cheapest gate first, and deliberately before the transcript is touched:
+  # locating the tool call parses a window of the session's transcript, and a
+  # deployment with MCP Apps switched off should not pay for that on a URL
+  # anyone can request. The answer is a 404 either way.
+  before_action :require_mcp_apps_enabled
   before_action :load_tool_call
   before_action :load_connection
 
@@ -74,7 +79,7 @@ class McpAppsController < ApplicationController
   # forwardable; this only carries the answer back in JSON-RPC's own shape, so the
   # broker in the browser can hand it to the view unchanged.
   def rpc
-    return throttled("tools/call") unless McpApps::RequestThrottle.allow?(@session, "rpc")
+    return throttled(params[:method_name].to_s) unless McpApps::RequestThrottle.allow?(@session, "rpc")
 
     result = McpApps::Proxy.new(@connection).call(params[:method_name].to_s, rpc_params)
 
@@ -113,17 +118,21 @@ class McpAppsController < ApplicationController
 
   # JSON-RPC's own shape, so the broker in the browser can hand the view an error
   # it understands rather than a transport failure it cannot explain.
-  def throttled(what)
+  def throttled(method_name)
     render json: {
       error: {
         code: McpApps::Proxy::INTERNAL_ERROR,
-        message: "This view is making #{what} requests faster than Zimmer will forward them."
+        message: "This view is making #{method_name.presence || 'requests'} calls faster than Zimmer will forward them."
       }
     }
   end
 
   def load_session
     @session = Session.find(params[:session_id])
+  end
+
+  def require_mcp_apps_enabled
+    head :not_found unless McpApps::Policy.enabled?
   end
 
   # The transcript is the authority for what this URL is about. A tool_call_id

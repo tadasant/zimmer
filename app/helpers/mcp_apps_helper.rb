@@ -17,10 +17,16 @@ module McpAppsHelper
   # tool-call id is not guaranteed to be a legal DOM id, so it is folded into one
   # the same way on both sides rather than interpolated raw.
   #
+  # The digest suffix is what makes the fold injective: without it `toolu.1` and
+  # `toolu:1` in one transcript would produce one id, and the second row's lazy
+  # frame would load into the first row's panel. No runtime writes such an id
+  # today, which is exactly the kind of assumption that stops being true quietly.
+  #
   # @param tool_call_id [String]
   # @return [String]
   def mcp_app_frame_id(tool_call_id)
-    "mcp_app_#{tool_call_id.to_s.gsub(/[^a-zA-Z0-9_-]/, '_')}"
+    id = tool_call_id.to_s
+    "mcp_app_#{id.gsub(/[^a-zA-Z0-9_-]/, '_')}_#{Digest::SHA256.hexdigest(id)[0, 8]}"
   end
 
   # `hostContext.styles.variables` — Zimmer's own palette, in the spec's

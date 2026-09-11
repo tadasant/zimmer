@@ -85,6 +85,10 @@ export default class extends Controller {
 
     const message = event.data
     if (!message || message.jsonrpc !== "2.0") return
+    // The frame is untrusted, so `method` is whatever it felt like sending. A
+    // number here would throw out of `startsWith` below, and the view would then
+    // wait forever for a reply this controller never got as far as writing.
+    if (message.method !== undefined && typeof message.method !== "string") return
 
     if (message.method && message.id !== undefined && message.id !== null) {
       this.handleRequest(message)

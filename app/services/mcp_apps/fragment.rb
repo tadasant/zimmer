@@ -51,8 +51,16 @@ module McpApps
 
       private
 
+      # Keyed on the server's URL as well as its name, for the same reason
+      # ToolIndex is: repointing a catalog entry at a different host must not
+      # keep serving the old host's HTML — and its CSP — as the new one's view.
       def cache_key(connection, uri)
-        [ "mcp_apps", "fragment", connection.server_name, Digest::SHA256.hexdigest(uri.to_s) ]
+        url = connection.server&.url.to_s
+        [
+          "mcp_apps", "fragment", connection.server_name,
+          Digest::SHA256.hexdigest(url)[0, 16],
+          Digest::SHA256.hexdigest(uri.to_s)
+        ]
       end
 
       def read(connection, uri)
@@ -64,6 +72,17 @@ module McpApps
 
         raise UnavailableError, "#{uri} returned no text content" if content.nil?
 
+        # The spec requires `text/html;profile=mcp-app`. Zimmer accepts any
+        # `text/html` — the profile parameter is young and servers are sloppy
+        # with it — but not a resource that says it is something else. A view is
+        # served into an iframe as HTML no matter what it claims, so a resource
+        # announcing a different type is either a server bug or an attempt to
+        # get something past a reader who trusted the label.
+        mime_type = content["mimeType"].to_s
+        if mime_type.present? && !mime_type.downcase.start_with?("text/html")
+          raise UnavailableError, "#{uri} is #{mime_type}, not text/html"
+        end
+
         html = content["text"]
         if html.bytesize > MAX_HTML_BYTES
           raise UnavailableError, "#{uri} is #{html.bytesize} bytes; the cap is #{MAX_HTML_BYTES}"
@@ -71,7 +90,7 @@ module McpApps
 
         {
           "html" => html,
-          "mimeType" => content["mimeType"],
+          "mimeType" => mime_type.presence,
           "csp" => csp_for(client, content, uri)
         }
       rescue Client::Error => e

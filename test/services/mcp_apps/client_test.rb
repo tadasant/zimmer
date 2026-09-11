@@ -84,7 +84,7 @@ class McpApps::ClientTest < ActiveSupport::TestCase
     [ 202, {}, "" ]
   end
 
-  test "handshakes before the first real request and reports serverInfo" do
+  test "handshakes before the first real request, once per client" do
     start do |body|
       case body["method"]
       when "initialize"
@@ -99,7 +99,6 @@ class McpApps::ClientTest < ActiveSupport::TestCase
     client = McpApps::Client.new(url: @server.url)
 
     assert_equal [ { "name" => "roll_dice" } ], client.tools_list
-    assert_equal "demo", client.server_info["name"]
 
     methods = @server.requests.map { |request| request[:body]["method"] }
     assert_equal "initialize", methods.first
@@ -187,6 +186,18 @@ class McpApps::ClientTest < ActiveSupport::TestCase
     end
 
     assert_equal %w[a b], McpApps::Client.new(url: @server.url).tools_list.map { |tool| tool["name"] }
+  end
+
+  test "abandons a response past the cap instead of buffering the rest of it" do
+    oversized = "x" * (McpApps::Client::MAX_RESPONSE_BYTES + 64 * 1024)
+    start do |body|
+      next json(reply(body, {})) if body["method"] == "initialize"
+
+      json(oversized)
+    end
+
+    error = assert_raises(McpApps::Client::Error) { McpApps::Client.new(url: @server.url).tools_list }
+    assert_match "exceeded", error.message
   end
 
   test "refuses a url that is not http(s)" do

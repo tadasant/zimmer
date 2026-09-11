@@ -126,7 +126,10 @@ module McpApps
     def normalize_origin(value)
       origin = value.to_s.strip
       return nil if origin.empty?
-      return nil unless ALLOWED_SCHEMES.any? { |scheme| origin.start_with?(scheme) }
+      # A URL scheme is case-insensitive, so `HTTPS://cdn.example.com` is a legal
+      # thing for a server to write — and dropping it silently renders the view
+      # blank rather than wrong, which is the harder failure to diagnose.
+      return nil unless ALLOWED_SCHEMES.any? { |scheme| origin.downcase.start_with?(scheme) }
       return nil if origin.match?(/[\s;,'"]/)
 
       host = origin.split("//", 2).last.to_s
