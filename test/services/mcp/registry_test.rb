@@ -35,12 +35,31 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
     names = Mcp::Registry.tools_for([ "self_session" ]).map(&:tool_name)
 
     assert_equal %w[get_session get_session_provenance get_configs action_session send_push_notification
-                    wake_me_up_later wake_me_up_when_session_changes_state].sort, names.sort
+                    wake_me_up_later wake_me_up_when_session_changes_state get_costs].sort, names.sort
   end
 
   test "self_session gets the restricted action_session variant" do
     klass = Mcp::Registry.tools_for([ "self_session" ]).find { |t| t.tool_name == "action_session" }
     assert_equal Mcp::Tools::SelfSessionActionSession, klass
+  end
+
+  # The reason get_costs is reachable from a session at all. The fleet report is
+  # the deployment's bill and a session has no business reading it; the override
+  # is hard-scoped to the caller, so what a session gets is its OWN spend.
+  test "self_session gets the self-scoped get_costs variant, never the fleet one" do
+    klass = Mcp::Registry.tools_for([ "self_session" ]).find { |t| t.tool_name == "get_costs" }
+    assert_equal Mcp::Tools::SelfSessionGetCosts, klass
+  end
+
+  test "the health group gets the fleet-wide get_costs, even alongside self_session" do
+    assert_equal Mcp::Tools::GetCosts,
+                 Mcp::Registry.tools_for([ "health" ]).find { |t| t.tool_name == "get_costs" }
+    assert_equal Mcp::Tools::GetCosts,
+                 Mcp::Registry.tools_for([ "health", "self_session" ]).find { |t| t.tool_name == "get_costs" }
+    # get_costs is read-only, so the readonly variant of its domain group carries
+    # it too — and domain membership still outranks the composite override.
+    assert_equal Mcp::Tools::GetCosts,
+                 Mcp::Registry.tools_for([ "health_readonly", "self_session" ]).find { |t| t.tool_name == "get_costs" }
   end
 
   test "the sessions group gets the unrestricted action_session, even alongside self_session" do

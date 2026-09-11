@@ -10,14 +10,19 @@
   renders as its own native calendar, which is both the best touch story
   available and no JavaScript at all.
 
-  locals: window (CostWindow)
+  locals: window (CostWindow), scope (CostScope)
+
+  The scope rides along on every link and is re-submitted as a hidden field by
+  the calendar form. Changing the window must not silently widen a page that has
+  been narrowed to one agent root — that is the same round-tripping problem the
+  window itself has, one object over.
 %>
 <div class="mb-6">
   <div class="border-b border-gray-200">
     <nav class="-mb-px flex gap-4 sm:gap-6 overflow-x-auto" aria-label="Window">
       <% CostWindow::PRESETS.each do |days, label| %>
         <% active = !window.custom? && window.preset_days == days %>
-        <%= link_to costs_path(days: days),
+        <%= link_to costs_path({ days: days }.merge(scope.to_params)),
             class: "whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium #{active ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}",
             "aria-current": (active ? "page" : nil) do %>
           <%= label %>
@@ -31,6 +36,9 @@
 
   <%= form_with url: costs_path, method: :get, data: { turbo: false },
         class: "mt-3 flex flex-wrap items-end gap-2 sm:gap-3" do |f| %>
+    <% scope.to_params.each do |key, value| %>
+      <%= hidden_field_tag key, value, id: "costs-scope-#{key}" %>
+    <% end %>
     <div class="min-w-0">
       <label for="costs-from" class="block text-xs font-medium text-gray-500 mb-1">From</label>
       <%= f.date_field :from, id: "costs-from", value: window.from_date,

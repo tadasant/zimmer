@@ -173,8 +173,24 @@ class McpControllerTest < ActionDispatch::IntegrationTest
     tools = rpc("tools/list", path: "/mcp?tool_groups=self_session")["result"]["tools"].map { |t| t["name"] }
 
     assert_equal %w[get_session get_session_provenance get_configs action_session send_push_notification
-                    wake_me_up_later wake_me_up_when_session_changes_state].sort, tools.sort
+                    wake_me_up_later wake_me_up_when_session_changes_state get_costs].sort, tools.sort
     refute_includes tools, "start_session"
+  end
+
+  # Same tool name, narrower contract. A session's self-session surface carries
+  # the self-scoped get_costs, so what `tools/list` advertises there must be the
+  # session-only schema rather than the fleet tool's.
+  test "the self_session get_costs advertises the self-scoped schema, not the fleet one" do
+    schema = rpc("tools/list", path: "/mcp?tool_groups=self_session")["result"]["tools"]
+      .find { |t| t["name"] == "get_costs" }["inputSchema"]
+
+    assert_equal %w[days from to session_id].sort, schema["properties"].keys.sort
+    refute_includes schema["properties"].keys, "agent_root"
+
+    fleet = rpc("tools/list", path: "/mcp?tool_groups=health")["result"]["tools"]
+      .find { |t| t["name"] == "get_costs" }["inputSchema"]
+
+    assert_includes fleet["properties"].keys, "agent_root"
   end
 
   test "tools/list readonly group drops write tools" do

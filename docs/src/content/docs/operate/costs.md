@@ -345,6 +345,43 @@ The daily-spend chart and the breakdown tables both reveal what is behind a figu
 Every figure a drilldown shows is precomputed in the same cached snapshot as the page — the
 per-day and per-root detail come from one extra grouped query each, not one query per bar.
 
+## Narrowing the whole page
+
+Opening a row says what that row is made of within the current page. **Narrowing** makes the
+whole page about it: the daily series, the model split, the token decomposition, the feature
+estimate and the experiment cohorts all recompute for one agent root, or one session.
+
+- Each **By agent root** row carries an *Only this* link, and each **Most expensive sessions**
+  row does too. They are `?agent_root=` and `?session_id=` on the same page — the two
+  arguments `get_costs` takes and `GET /api/v1/costs/records` filters by. The folded
+  `other (N)` row is several roots at once, so it gets no link: past `CostAnalytics::TOP_N`
+  a root is reachable by typing `?agent_root=` or by asking `get_costs`, not by clicking.
+  Beware the router's split identity while narrowing — see
+  [the limitation](/limitations/#the-router-roots-two-names-split-its-cost-and-filter-history).
+- A narrowed page says so in a banner and offers the way back. `CostScope`
+  (`app/services/cost_scope.rb`) is the object behind it, the parallel of `CostWindow`: the
+  window and the scope round-trip **together**, so changing the horizon keeps the root and
+  clicking into a root keeps the horizon. The re-scan button carries both as well.
+- `session_id` wins when both are given, which is what `get_costs` does with the same pair.
+  A `session_id` that is not digits is ignored rather than read as session 0.
+- The scope is part of the snapshot's **cache key**. Without that a narrowed page would read
+  the fleet's cached bundle back under the root's heading.
+
+Two things a narrowed page deliberately does *not* show the same way:
+
+- **Ad hoc spend.** Those are Zimmer's own calls, made outside any session, so they carry no
+  agent root: a root-scoped page excludes them rather than showing the fleet's. A
+  session-scoped page keeps the ad hoc calls made *about* that session — its generated title,
+  its push summaries — which is the column `GET /api/v1/costs/records?kind=adhoc&session_id=`
+  filters on.
+- **Burn rates.** They are current fleet rates over a fixed sample of recent sessions, not a
+  rollup of anything on the page, so they are not rendered under a heading that says one
+  agent root.
+- **The experimental-setting cohorts.** The cohorts themselves narrow, but the corpus they
+  are counted against does not — `ExperimentAnalytics` reads the deployment's whole tagging
+  history to say how many sessions carry each label. A one-session A/B comparison is not a
+  comparison anyway, so the panel is a fleet-page control.
+
 ## Per-session cost
 
 Each dashboard card and each session detail page carries the session's own total, in muted
@@ -621,6 +658,10 @@ flagged experimental needs nothing at all — it is picked up from
   one agent root or one session, and windowed by `days` or by an explicit `from`/`to`. Every
   report carries the context-feature split, always labelled as an estimate, and the
   experimental-setting cohorts, always labelled as observational.
+- **MCP, from inside a session:** the same tool name on the `self_session` surface every
+  session is given, as a composite override hard-scoped to the caller. A session can ask what
+  *it* cost; it cannot ask what the fleet cost, and `agent_root` is refused outright. See
+  [the MCP server](/extend/mcp-server/#get_costs).
 
 ## What the dollar figures are not
 

@@ -65,6 +65,34 @@ class Api::V1::CostsControllerTest < ActionDispatch::IntegrationTest
     assert_equal 1, JSON.parse(response.body).dig("totals", "api_calls")
   end
 
+  # The rollup endpoint scopes the same two ways the Costs page links on and
+  # `get_costs` takes, so all three surfaces answer the same question.
+  test "rollups can be scoped to one agent root or one session" do
+    usage(agent_root: "zimmer-router")
+    usage(agent_root: "issue-work-gate")
+
+    get "/api/v1/costs", params: { agent_root: "zimmer-router" }, headers: @headers
+    body = JSON.parse(response.body)
+
+    assert_response :success
+    assert_equal "zimmer-router", body["scope"]["agent_root"]
+    assert_nil body["scope"]["session_id"]
+    assert_equal 1, body["totals"]["api_calls"]
+    assert_equal [ "zimmer-router" ], body["by_agent_root"].map { |r| r["agent_root"] }
+
+    get "/api/v1/costs", params: { session_id: @session.id }, headers: @headers
+    scoped = JSON.parse(response.body)
+
+    assert_equal @session.id, scoped["scope"]["session_id"]
+    assert_equal 2, scoped["totals"]["api_calls"], "both rows belong to this session"
+
+    get "/api/v1/costs", headers: @headers
+    fleet = JSON.parse(response.body)
+
+    assert_nil fleet["scope"]["agent_root"]
+    assert_equal 2, fleet["totals"]["api_calls"]
+  end
+
   test "records returns rows with a per-row priced cost" do
     usage
 

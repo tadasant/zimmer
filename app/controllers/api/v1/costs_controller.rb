@@ -23,11 +23,16 @@ class Api::V1::CostsController < Api::BaseController
   # Query parameters:
   #   - days: window size (default 7, max 365). Ignored when from/to are given.
   #   - from, to: explicit ISO-8601 bounds
+  #   - agent_root, session_id: narrow every rollup to one slice, the same two
+  #     arguments `get_costs` takes and the Costs page links on. `session_id`
+  #     wins when both are given.
   def index
-    analytics = CostAnalytics.new(from: window_start, to: window_end)
+    scope = CostScope.from_params(params)
+    analytics = CostAnalytics.new(from: window_start, to: window_end, scope: scope)
 
     render json: {
       window: { from: analytics.from.iso8601, to: analytics.to.iso8601 },
+      scope: { agent_root: scope.agent_root, session_id: scope.session_id },
       pricing: pricing_json,
       # How much history is behind those figures. Returned with every rollup for
       # the same reason the rate table is: a total whose coverage is unknown is

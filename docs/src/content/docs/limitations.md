@@ -2553,6 +2553,11 @@ old rows, so `CostAnalytics#by_agent_root` reports router spend under both names
 `/costs`, in `get_costs`, and in `GET /api/v1/costs`. The sessions index's agent-root filter is a
 datalist over `AgentRootsConfig.all`, so it offers both entries with the history split between them.
 
+Narrowing the Costs page inherits the split rather than revealing it: *Only this* on a router row
+carries one of the two names, and the resulting page is honest about what it filtered on and silent
+about the other half sitting under the sibling name. Compare both rows before reading a router
+figure as the router's total.
+
 That is the deliberate price of not rewriting rows. Backfilling `token_usages` and
 `sessions.metadata` would collapse the two, but it would also erase the record of which name a
 session was actually created under, and the alias exists precisely so that record stays resolvable.
