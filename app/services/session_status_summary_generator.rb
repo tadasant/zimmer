@@ -636,9 +636,11 @@ class SessionStatusSummaryGenerator
   # was retrying: under sustained pressure the blurb was simply unreachable.
   #
   # A one-shot completion is not gated on any of that. It takes no account slot
-  # (`claude -p` runs against the ambient credentials, so it never asks
-  # `accounts.available`), copies no clone, boots no MCP server, and answers or
-  # fails in HEADLESS_TIMEOUT seconds. It costs roughly what a session title
+  # (`claude -p` runs on the current account's access token through
+  # ClaudeHeadlessCredentials and never asks `accounts.available`), copies no
+  # clone, boots no MCP server, and answers or fails in HEADLESS_TIMEOUT seconds.
+  # It does share the current account's quota, so a pool whose every account is
+  # exhausted answers "Not logged in" here too; that was always so. It costs roughly what a session title
   # costs — SessionTitleJob has run on this substrate all along.
   #
   # What it gives up is the fork's reach: it answers from the rendered

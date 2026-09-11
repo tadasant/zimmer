@@ -153,8 +153,11 @@ class McpOauthCredentialInjector
   # the Authorize button. Removing the entry leaves nothing to adopt.
   #
   # Every runtime, not just this session's: the credential row is runtime-agnostic
-  # and the stores are host-global, so a copy left in the other runtime's store
-  # resurrects the row the next time a session spawns there. Each runtime's key is
+  # and the Codex and Pi stores are host-global, so a copy left in another
+  # runtime's store resurrects the row the next time a session spawns there.
+  # Claude's store is this session's own directory, so for Claude the only copy
+  # this can reach is this session's — see the limitation on revocation and
+  # already-running sessions in docs/limitations.md. Each runtime's key is
   # asked of its own writer — Codex hashes its key differently from Claude (and
   # from the DB's), so a shared key would silently miss.
   #
@@ -171,6 +174,13 @@ class McpOauthCredentialInjector
     return [] if server_configs.empty?
 
     RuntimeRegistry.mcp_credential_writer_classes.flat_map do |writer_class|
+      # A session-scoped store belongs to one session of one runtime. Asking
+      # Claude's writer to delete from a Codex session's "Claude store" would
+      # only create an empty config dir for a session that never had one.
+      if writer_class.session_scoped_store? && writer_class != session.runtime.mcp_credential_writer_class
+        next []
+      end
+
       # `.for_session`, not `.new`: this instance HAS a session, and for Claude
       # Code the copy that matters is the one in that session's own store. Every
       # other runtime's `.for_session` is `.new`, so the loop is unchanged for

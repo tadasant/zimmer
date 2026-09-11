@@ -522,10 +522,11 @@ The reconciler runs in two places:
   Codex only: their stores are host-global. Claude Code's is per session, and a session-less sweep
   has no single file to read (`ClaudeMcpCredentialWriter.session_scoped_store?` is how it knows), so
   the injector's per-spawn pass is what captures a Claude session's rotation.
-  The cron has no session and therefore no runtime, so it reads **every** registered runtime's store
-  (`RuntimeRegistry.mcp_credential_writer_classes`). Reading only one is how a rotation performed on
-  another runtime got burned. Order does not matter: each store is compared against the row as it
-  stands after the previous one, so the newest pair wins whichever order they are read in.
+  The cron has no session and therefore no runtime, so it reads every registered runtime's
+  host-global store (`RuntimeRegistry.mcp_credential_writer_classes`, minus the session-scoped
+  ones). Reading only one is how a rotation performed on another runtime got burned. Order does not
+  matter: each store is compared against the row as it stands after the previous one, so the newest
+  pair wins whichever order they are read in.
 
 **Which key each store uses is the runtime's own**, and all three differ. Claude Code keys by the
 protocol-level `credential_key` (`server_name|hash`), because its `#credential_key_for` *is*

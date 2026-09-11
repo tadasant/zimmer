@@ -2330,18 +2330,21 @@ Zimmer automates OAuth on top of Claude Code's undocumented internal implementat
 is a fact about someone else's private code that can change without notice. Last verified against CLI
 `2.1.177` on 2026-06-14 — as of this writing, that's stale.
 
-1. Identity is container-local; tokens are shared. `~/.claude.json` (identity) vs
-   `~/.claude/.credentials.json` (tokens). Code that reads local identity to decide who owns shared
-   tokens *"gets a confidently wrong answer"* on the wrong container. This caused the 2026-06-11
-   cross-account contamination outage. Worked around with an owner-marker file, not fixed.
+1. The CLI keeps identity (`~/.claude.json`) and tokens (`~/.claude/.credentials.json`) in files
+   of different durability, and reading the local identity to decide who owned the shared tokens
+   *"gets a confidently wrong answer"* on the wrong container — the 2026-06-11 cross-account
+   contamination outage. Zimmer no longer reads or writes either file for a session's subscription
+   credential; the row is handed straight to the process. The fact stays on the list because the
+   login flow still captures both files out of a scratch directory.
 2. `oauthAccount` has two shapes across CLI versions (String vs Hash). Both must be handled.
 3. Hardcoded constants: token endpoint, the CLI's public client ID `9d1c250a-…`, authorize hosts,
    redirect URI, scopes, PKCE method. If any change, refresh and login break wholesale.
 4. Refresh tokens are single-use and rotate. The new pair must be persisted atomically or the account
    bricks.
 5. Rotating also kills the sibling access token, so a future `expiresAt` is *not* proof a token is
-   live. Zimmer's `token_expired?` still keys purely off `expiresAt`; the defense is the completeness
-   invariant, not expiry logic.
+   live. Zimmer's `token_expired?` still keys purely off `expiresAt`; what defends against it is
+   that only Zimmer rotates — a session is never handed the refresh token — plus the non-consuming
+   probe (`access_token_honored?`) before an account is admitted.
 6. A credential set without a refresh token is unrecoverable.
 7. The CLI refreshes tokens on its own, mid-session, when it holds a refresh token. Zimmer's
    answer is to never hand it one: a session gets an access token through `CLAUDE_CODE_OAUTH_TOKEN`
@@ -6358,13 +6361,16 @@ Three consequences to know:
   **Authenticate** the account from `/inference`, which writes the row, and the next spawn reads
   the new token out of it. `~/.claude/.credentials.json` may still exist on a worker as a fossil;
   nothing reads it, and its contents mean nothing.
-- **A spawn with no usable current account fails.** It used to fall back to the shared file.
-  `ClaudeSpawnEnv` now raises `MissingCredentialsError`, `ProcessLifecycleManager` reports a spawn
-  failure, and the session fails with `failure_reason: spawn_failed` and a log line naming the
-  account. Loud and correct — a session that cannot authenticate cannot work — but it is a failed
-  session rather than a parked one, because the park machinery needs a running session and this
-  happens before there is one. `AuthWarmupService` settles the pool at worker boot so the ordinary
-  deploy never reaches it.
+- **A spawn with no usable current account fails, and does not park.** It used to fall back to
+  the shared file. `ClaudeSpawnEnv` now raises `MissingCredentialsError`, `ProcessLifecycleManager`
+  refuses the spawn at `.warn`, and the session fails with `failure_reason: spawn_failed` and a
+  session-log line naming the account. Correct — a session that cannot authenticate cannot work —
+  but it is a **failed** session rather than a parked one, unlike a pool that drains mid-session,
+  which `AuthOutageParkService` puts to sleep and wakes when the pool recovers. The park machinery
+  is built around a turn that reached the runtime; this happens before there is a process, and a
+  first turn parked here would be resumed with a recovery prompt in place of the prompt it never
+  delivered. So the session has to be restarted by hand once an account is authenticated.
+  `AuthWarmupService` settles the pool at worker boot so the ordinary deploy never reaches it.
 - **A revoked MCP credential is not removed from other sessions' stores.** Revoking through
   `McpOauthCredentialInjector#delete_runtime_credentials` reaches the revoking session's own store,
   but a *different* session already running keeps its copy until it ends. New sessions get a fresh

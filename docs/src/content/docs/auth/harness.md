@@ -184,16 +184,23 @@ directories, so that window is one session's lifetime.
 ### When the pool cannot serve a token
 
 The spawn fails **closed**. `ClaudeSpawnEnv#apply_session_scoped_credentials` raises
-`MissingCredentialsError` when no account is current or the current one holds no access token, and
-`ProcessLifecycleManager` reports that as a spawn failure: the session fails with
-`failure_reason: spawn_failed` and an `.error` log line naming the account that came up empty.
+`MissingCredentialsError` when no account is current or the current one holds no access token.
+The adapters let it through unwrapped and `ProcessLifecycleManager` refuses the spawn: the session
+fails with `failure_reason: spawn_failed` and a session-log line naming the account that came up
+empty, and the worker log carries it at `.warn` rather than `.error` — an empty pool is a
+configuration state that is already red on `/health`'s Agent Authentication card and already
+alerted through the `account_needs_reauth` event when an account died, so paging once more per
+spawn attempt would be noise.
 
 It used to fall back to the shared file, and that was right while the file was a live rollback.
 Falling back now would point the child at a fossil and every turn would come back
 *Not logged in · Please run /login* with nothing in the log to say why. A session that cannot
-authenticate is a session that cannot work; failing its spawn is the honest outcome, and it is the
-same visible ending a drained pool already produces. `AuthWarmupService` settles a usable current
-account at worker boot so the ordinary case never reaches this.
+authenticate is a session that cannot work, and failing its spawn is the honest outcome. It is a
+**failed** session rather than a parked one, which differs from how a pool that drains mid-session
+is handled ([When the pool runs dry](#when-the-pool-runs-dry) parks into `waiting`): the park
+machinery is built around a turn that reached the runtime, and this happens before there is a
+process. `AuthWarmupService` settles a usable current account at worker boot so the ordinary
+deploy never reaches this.
 
 ### There is no rollback, and what recovery looks like instead
 

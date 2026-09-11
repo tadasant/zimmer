@@ -253,6 +253,19 @@ class ProcessLifecycleManager
         pid: @current_pid,
         stderr_log_path: @stderr_log_path
       )
+    rescue ClaudeSpawnEnv::MissingCredentialsError => e
+      # The pool has no Claude account holding a usable access token, so there
+      # is nothing to hand the child and the spawn cannot proceed (issue #618).
+      # A configuration state a human fixes from /inference, already on
+      # /health's Agent Authentication card and already alerted through the
+      # needs_reauth event when an account died — so it is reported at .warn.
+      # An .error here pages #alerts once per spawn attempt for as long as the
+      # pool stays empty, which is noise on top of a condition that is already
+      # loud where it matters.
+      @mutex.synchronize { @state = :idle }
+      add_log("Cannot spawn: #{e.message}", level: "error")
+      @logger.warn("Spawn refused: no usable Claude credential in the pool", error: e.message)
+      SpawnResult.new(success: false, error: e.message)
     rescue => e
       @mutex.synchronize { @state = :idle }
       add_log("Failed to spawn process: #{e.message}", level: "error")

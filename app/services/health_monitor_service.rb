@@ -764,9 +764,9 @@ class HealthMonitorService
     }
   end
 
-  # Agent-runtime authentication health: is the worker's shared Claude
-  # credentials file usable, and does the pool have an account that can serve a
-  # session?
+  # Agent-runtime authentication health: does the current Claude account hold a
+  # credential a session can be spawned with, and does the pool have an account
+  # that can serve one?
   #
   # A corrupt credentials file used to be invisible here. It logged 126 WARN
   # lines an hour and appeared on no surface at all, so the 2026-08-22 outage was
