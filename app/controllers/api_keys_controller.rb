@@ -70,13 +70,14 @@ class ApiKeysController < ApplicationController
     submitted[:name] if submitted.is_a?(ActionController::Parameters)
   end
 
-  # `api_key[grant]` from the form. Anything but a known grant becomes the
-  # widest one, so a tampered value cannot mint a key with a grant nothing
-  # honours — and the model refuses a value outside GRANTS regardless.
+  # `api_key[grant]` from the form; the full API when the form sent none, as a
+  # form from before the choice existed would. A value that is present but not
+  # a grant is passed through for the model to refuse: silently widening an
+  # unrecognised narrow choice to the whole API is the one wrong answer here.
   def submitted_grant
     submitted = params[:api_key]
     grant = submitted[:grant].to_s if submitted.is_a?(ActionController::Parameters)
-    ApiKey::GRANTS.include?(grant) ? grant : ApiKey::API_GRANT
+    grant.presence || ApiKey::API_GRANT
   end
 
   def render_create_error(messages)

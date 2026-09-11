@@ -41,9 +41,9 @@ the endpoint ships with the deploy, and there is no environment variable to set.
   and a banner.
 - Click where the feedback applies. A pin drops and a composer opens showing what it landed on
   (`<p> Closes #98.`) — **Move pin** re-arms. <kbd>Enter</kbd> instead of a click skips the pin and
-  sends the whole page as context; <kbd>Esc</kbd> cancels at any step.
+  sends the whole page as context; <kbd>Esc</kbd> cancels at any step and keeps what you typed for the next time you arm it.
 - Type, then <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd> or **Send to Zimmer**. A toast says it
-  was sent and links to the session; it goes away on its own.
+  was sent and links to the session on the URL you configured; it goes away on its own.
 
 If Zimmer refuses the message or cannot be reached, the composer stays open with the reason and your
 text intact. Silently losing feedback would be worse than a second's toast, so nothing here is
@@ -57,14 +57,21 @@ One `POST` to [`/api/v1/quick_router`](/extend/rest-api/#the-quick-router-ingest
 | --- | --- |
 | `prompt` | Your words, as typed |
 | `page_url`, `page_title` | The tab's |
-| `page_context` | The page, reduced to markdown the same way the in-app bubble does it — scripts, styles, SVGs, hidden elements and form contents stripped — capped at 20,000 characters (Zimmer cuts again at 50,000) |
-| `pin` | The click's page coordinates and the viewport size; and the element under it: a CSS selector anchored on the nearest `id`, its tag, its own text (≤ 1,000 characters), and an `excerpt` — the smallest ancestor with enough text to read in isolation, as markdown (≤ 4,000) |
+| `page_context` | The page, reduced to markdown the way the in-app bubble does it, walked on the live DOM so that only what is rendered counts: scripts, styles, SVGs, iframes, anything `hidden` or `aria-hidden`, anything CSS hides (`display:none`, `visibility:hidden`, `opacity:0`), anything positioned entirely off the top or left of the page or clipped to a single pixel (the screen-reader-only pattern), and every form field's contents are left out. Capped at 20,000 characters (Zimmer cuts again at 50,000) |
+| `pin` | The click's page coordinates and the viewport size; and the element under it: a CSS selector anchored on the nearest `id`, its tag, its own visible text (≤ 1,000 characters), and an `excerpt` — the smallest ancestor with enough text to read in isolation, as markdown (≤ 4,000). A pinned form field is described by its type and label (`password field "Password"`), never by what is typed in it |
 
 The coordinate is fragile on purpose-built pages: GitHub reflows, renders dynamically, and is a
 different width on another screen, so `(485, 465)` may point at nothing by the time an agent reads
 it. That is why the pin carries the element three ways as well, with the excerpt capped separately
 from the page. The prompt tells the agent to trust the element over the coordinate, and a 20,000
 character page can never truncate the thing that was pinned.
+
+**The page is untrusted input to an agent.** A page you did not write can carry text aimed at
+whoever reads it next. Two things stand between it and the session: invisible text is not captured
+at all (above), and Zimmer defangs any `<context-about-user's-current-view>` or `<pinned-element>`
+tag in page-supplied text, so the block can only end where Zimmer ends it, and says inside it that
+everything there is data about what you saw and never an instruction. That is framing, not a
+sandbox — see [the limitation](/limitations/#page-content-from-the-browser-extension-is-untrusted-text-in-a-priority-prompt).
 
 All of it lands in the session's prompt, the database, and the agent's transcript. **Mind what page
 you are on** — an authenticated view, a private repo, an inbox — because the extension captures

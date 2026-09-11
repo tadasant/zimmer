@@ -11,7 +11,7 @@ Chrome, Manifest V3, no build step. The docs page is
 
 1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and pick this
    directory.
-2. In Zimmer, open **Settings → API keys** and create a key with **Quick Router only** checked.
+2. In Zimmer, open **Settings → API keys** and create a key with **Quick Router only** chosen.
    Copy it — it is shown once.
 3. Open the extension's options (right-click the icon → Options), paste the Zimmer URL and the
    key, and save. Saving asks Chrome for permission to talk to that one origin; grant it.
@@ -27,8 +27,8 @@ is on the tailnet.
 
 ## What it sends, and what the key can do
 
-One `POST /api/v1/quick_router` per message: the message, the page URL and title, the page reduced
-to markdown (at most 20,000 characters), and — with a pin — the element under it: a CSS selector,
+One `POST /api/v1/quick_router` per message: the message, the page URL and title, the visible page
+reduced to markdown (at most 20,000 characters; form contents never), and — with a pin — the element under it: a CSS selector,
 its tag, its text, and the content around it (at most 4,000 characters). Everything lands in the
 new session's prompt.
 

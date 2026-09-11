@@ -55,9 +55,14 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
-  // Must run inside the click's user gesture, so it comes before any await.
+  // Must run inside the click's user gesture, so it comes before any other await.
   const granted = await chrome.permissions.request({ origins: [Settings.originPattern(baseUrl)] });
+  const previous = (await Settings.loadSettings()).baseUrl;
   await Settings.saveSettings({ baseUrl, apiKey });
+  // A changed URL should not leave the extension holding access to the old one.
+  if (previous && previous !== baseUrl) {
+    await chrome.permissions.remove({ origins: [Settings.originPattern(previous)] }).catch(() => {});
+  }
   baseUrlInput.value = baseUrl;
   pointKeysLinkAt(baseUrl);
   setStatus(granted ? `Saved. Configured for ${baseUrl}.` : `Saved, but without permission to reach ${baseUrl} the extension cannot send anything.`, granted);

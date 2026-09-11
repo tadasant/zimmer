@@ -75,7 +75,7 @@ async function submit(payload) {
 
   let body = {};
   try {
-    body = await response.json();
+    body = (await response.json()) || {};
   } catch {
     // A proxy error page is not JSON; the status code is the message then.
   }
@@ -86,5 +86,9 @@ async function submit(payload) {
     return { ok: false, error: `Zimmer refused it: ${detail}.${hint}` };
   }
 
-  return { ok: true, sessionId: body.session_id, sessionUrl: body.session_url };
+  // Linked on the URL this browser just reached, not the one Zimmer reports:
+  // the instance's configured base URL may be a name this browser cannot
+  // resolve, while `baseUrl` demonstrably works from here.
+  const sessionUrl = body.session_id ? `${baseUrl}/sessions/${body.session_id}` : body.session_url;
+  return { ok: true, sessionId: body.session_id, sessionUrl };
 }

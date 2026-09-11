@@ -32,7 +32,7 @@
     const rows = [];
     let separatorAdded = false;
     for (const row of table.querySelectorAll("tr")) {
-      const cells = Array.from(row.querySelectorAll("th, td")).map((c) => c.textContent.trim());
+      const cells = Array.from(row.querySelectorAll("th, td")).map((c) => inline(c));
       rows.push(`| ${cells.join(" | ")} |`);
       if (row.querySelector("th") && !separatorAdded) {
         rows.push(`| ${cells.map(() => "---").join(" | ")} |`);
@@ -42,22 +42,66 @@
     return rows.join("\n");
   }
 
+  // Elements that never contribute: machinery, our own UI, and form contents,
+  // which are the human's and not the page's.
+  const SKIPPED_TAGS = new Set(["script", "style", "link", "svg", "noscript", "template", "iframe", "textarea", "input", "select", "option"]);
+
+  // Walked on the live DOM rather than a clone so that visibility can be
+  // asked: an element hidden by CSS — display:none, off-screen, one pixel
+  // tall — is text a reader of the page never saw, and text a page could use
+  // to carry a payload the human did not. `checkVisibility` answers that on a
+  // live element; on a clone it would answer "hidden" for everything.
+  function skippedElement(node) {
+    if (node.id === HOST_ID) return true;
+    if (SKIPPED_TAGS.has(node.tagName.toLowerCase())) return true;
+    if (node.hidden || node.getAttribute("aria-hidden") === "true") return true;
+    if (!node.isConnected || typeof node.checkVisibility !== "function") return false;
+    // display:none, visibility:hidden, opacity:0, content-visibility:hidden.
+    if (!node.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return true;
+    return renderedOutOfSight(node);
+  }
+
+  // Rendered, but where no reader sees it: positioned entirely above or left
+  // of the page, or clipped to a pixel (the screen-reader-only pattern). Only
+  // positioned or clipped boxes qualify, so an ordinary zero-height container
+  // whose children overflow it visibly is still walked.
+  function renderedOutOfSight(node) {
+    const style = getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    const positioned = style.position === "absolute" || style.position === "fixed";
+    if (positioned && (rect.right + window.scrollX <= 0 || rect.bottom + window.scrollY <= 0)) return true;
+    const clipped = style.overflow === "hidden" || style.overflow === "clip" || style.clip !== "auto" || style.clipPath !== "none";
+    return clipped && (rect.width <= 1 || rect.height <= 1);
+  }
+
+  // `textContent` includes text from skipped descendants (a hidden span, a
+  // <style> inside a <p>); this is the text of what remains.
+  function visibleText(node) {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+    if (node.nodeType !== Node.ELEMENT_NODE || skippedElement(node)) return "";
+    let text = "";
+    for (const child of node.childNodes) text += visibleText(child);
+    return text;
+  }
+  const inline = (node) => visibleText(node).replace(/\s+/g, " ").trim();
+
   function htmlToMarkdown(element, maxLength) {
     const lines = [];
     let currentLength = 0;
+    const push = (line) => {
+      lines.push(line);
+      currentLength += line.length + 1;
+    };
 
     const walk = (node) => {
       if (currentLength > maxLength) return;
 
       if (node.nodeType === Node.TEXT_NODE) {
         const text = node.textContent.trim();
-        if (text) {
-          lines.push(text);
-          currentLength += text.length + 1;
-        }
+        if (text) push(text);
         return;
       }
-      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (node.nodeType !== Node.ELEMENT_NODE || skippedElement(node)) return;
 
       const tag = node.tagName.toLowerCase();
       switch (tag) {
@@ -67,50 +111,46 @@
         case "h4":
         case "h5":
         case "h6":
-          lines.push(`\n${"#".repeat(parseInt(tag[1], 10))} ${node.textContent.trim()}`);
+          push(`\n${"#".repeat(parseInt(tag[1], 10))} ${inline(node)}`);
           return;
         case "p":
-          lines.push(`\n${node.textContent.trim()}`);
+          push(`\n${inline(node)}`);
           return;
         case "a": {
           const href = node.getAttribute("href");
-          const text = node.textContent.trim();
-          if (href && text) lines.push(`[${text}](${href})`);
-          else if (text) lines.push(text);
+          const text = inline(node);
+          if (href && text) push(`[${text}](${href})`);
+          else if (text) push(text);
           return;
         }
         case "li":
-          lines.push(`- ${node.textContent.trim()}`);
+          push(`- ${inline(node)}`);
           return;
         case "strong":
         case "b":
-          lines.push(`**${node.textContent.trim()}**`);
+          push(`**${inline(node)}**`);
           return;
         case "em":
         case "i":
-          lines.push(`*${node.textContent.trim()}*`);
+          push(`*${inline(node)}*`);
           return;
         case "code":
-          lines.push(`\`${node.textContent.trim()}\``);
+          push(`\`${inline(node)}\``);
           return;
         case "pre":
-          lines.push(`\n\`\`\`\n${node.textContent.trim()}\n\`\`\``);
+          push(`\n\`\`\`\n${visibleText(node).trim()}\n\`\`\``);
           return;
         case "br":
-          lines.push("");
+          push("");
           return;
         case "hr":
-          lines.push("\n---");
+          push("\n---");
           return;
         case "img":
-          lines.push(`[${node.getAttribute("alt") || "image"}]`);
+          push(`[${node.getAttribute("alt") || "image"}]`);
           return;
         case "table":
-          lines.push(`\n${tableToMarkdown(node)}`);
-          return;
-        case "textarea":
-        case "input":
-          // A form's contents are the human's, not the page's.
+          push(`\n${tableToMarkdown(node)}`);
           return;
         default:
           for (const child of node.childNodes) walk(child);
@@ -126,15 +166,8 @@
     return result;
   }
 
-  function stripNoise(root) {
-    root.querySelectorAll(`script, style, link, svg, noscript, template, iframe, [hidden], [aria-hidden='true'], #${HOST_ID}`)
-      .forEach((el) => el.remove());
-    return root;
-  }
-
   function capturePageContext() {
-    const clone = document.body.cloneNode(true);
-    return htmlToMarkdown(stripNoise(clone), PAGE_CONTEXT_MAX);
+    return htmlToMarkdown(document.body || document.documentElement, PAGE_CONTEXT_MAX);
   }
 
   // ---- The pin: the element under the click, described three ways ----
@@ -163,12 +196,20 @@
     return parts.join(" > ").slice(0, PIN_SELECTOR_MAX);
   }
 
+  // What a form field is, never what is typed in it: a pinned password box
+  // must not send the password. Its label, placeholder or accessible name is
+  // how the agent tells one field from another.
+  function fieldDescription(element) {
+    const label = element.labels?.[0]?.textContent || element.getAttribute("aria-label") || element.placeholder || element.name || "";
+    return `${element.type || element.tagName.toLowerCase()} field${label ? ` "${label.trim()}"` : ""}`;
+  }
+
   function ownText(element) {
-    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-      return element.value || element.placeholder || "";
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+      return fieldDescription(element);
     }
     if (element instanceof HTMLImageElement) return element.alt || element.src || "";
-    return (element.innerText || element.textContent || "").trim().replace(/\s+/g, " ");
+    return inline(element);
   }
 
   // The smallest ancestor with enough text around the pin to read in isolation
@@ -177,14 +218,12 @@
     let node = element;
     let hops = 0;
     while (node && node !== document.body && hops < 6) {
-      const text = (node.innerText || node.textContent || "").trim();
-      if (text.length >= 120) break;
+      if (inline(node).length >= 120) break;
       node = node.parentElement;
       hops += 1;
     }
     if (!node || node === document.body) node = element;
-    const clone = node.cloneNode(true);
-    return htmlToMarkdown(stripNoise(clone), PIN_EXCERPT_MAX);
+    return htmlToMarkdown(node, PIN_EXCERPT_MAX);
   }
 
   function describePin(clientX, clientY, element) {
@@ -237,9 +276,10 @@
     @media (max-width: 480px) { .composer { right: 8px; left: 8px; bottom: 8px; width: auto; max-width: none; } }
   `;
 
-  const state = { host: null, root: null, overlay: null, banner: null, pinEl: null, composer: null, pin: null, draft: "" };
+  const state = { host: null, root: null, overlay: null, banner: null, pinEl: null, composer: null, pin: null, draft: "", toastTimer: null, sending: false };
 
   function mount() {
+    clearToast();
     if (state.host) return;
     const host = document.createElement("div");
     host.id = HOST_ID;
@@ -255,9 +295,19 @@
   }
 
   function unmount() {
+    clearToast();
     document.removeEventListener("keydown", onKeydown, true);
     state.host?.remove();
-    Object.assign(state, { host: null, root: null, overlay: null, banner: null, pinEl: null, composer: null, pin: null });
+    Object.assign(state, { host: null, root: null, overlay: null, banner: null, pinEl: null, composer: null, pin: null, sending: false });
+  }
+
+  // A toast's own timer must only ever remove the toast: re-arming during
+  // those seconds mounts a new overlay that the timer has no business tearing
+  // down.
+  function clearToast() {
+    if (state.toastTimer) clearTimeout(state.toastTimer);
+    state.toastTimer = null;
+    state.root?.querySelector(".toast")?.remove();
   }
 
   function el(tag, className, text) {
@@ -383,6 +433,7 @@
   }
 
   async function send() {
+    if (state.sending) return;
     const textarea = state.composer?.querySelector("textarea");
     const button = state.composer?.querySelector(".send");
     const prompt = (textarea?.value || "").trim();
@@ -391,24 +442,25 @@
       return;
     }
 
+    state.sending = true;
     button.disabled = true;
     button.textContent = "Sending…";
     state.composer.querySelector(".error")?.remove();
 
-    const payload = {
-      prompt,
-      page_url: location.href,
-      page_title: document.title,
-      page_context: capturePageContext(),
-      pin: state.pin
-    };
-
     let result;
     try {
+      const payload = {
+        prompt,
+        page_url: location.href,
+        page_title: document.title,
+        page_context: capturePageContext(),
+        pin: state.pin
+      };
       result = await chrome.runtime.sendMessage({ type: SUBMIT_MESSAGE, payload });
     } catch (error) {
-      result = { ok: false, error: `The extension's background worker did not answer (${error?.message || error}). Try again.` };
+      result = { ok: false, error: `The extension could not send this (${error?.message || error}). Try again.` };
     }
+    state.sending = false;
 
     if (!result?.ok) {
       showError(result?.error || "Zimmer did not accept the message.");
@@ -439,15 +491,23 @@
     dismiss.addEventListener("click", () => finish());
     node.append(dismiss);
     state.root.appendChild(node);
-    setTimeout(() => finish(), 8000);
+    state.toastTimer = setTimeout(() => finish(), 8000);
   }
 
+  // The toast was the last thing showing, so its end is the end — unless the
+  // human re-armed in the meantime, in which case only the toast goes.
   function finish() {
-    unmount();
+    if (state.overlay || state.composer) {
+      clearToast();
+    } else {
+      unmount();
+    }
   }
 
+  // Esc. The draft survives: Esc is also how the page's own dialogs close, and
+  // a paragraph of feedback is not something to lose to a reflex. Re-arming
+  // brings it back; sending clears it.
   function cancel() {
-    state.draft = "";
     unmount();
   }
 
