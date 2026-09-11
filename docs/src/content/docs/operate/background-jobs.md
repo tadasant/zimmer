@@ -1470,9 +1470,13 @@ flat. Nothing the queue gates measure moves, so the sweep just stops
 manager is failing to enqueue at all. GoodJob reschedules the next tick before it enqueues the
 current one, so an enqueue that raises on every tick produces no row and nothing that pages.
 
-`CronFreshness` reads the one fact both share: the newest job each key produced
-(`GoodJob::CronEntry.last_jobs_by_key`, one lateral join for every key), against when that key's own
-schedule says the next one was due.
+`CronFreshness` reads the one fact both share: the newest job each key produced, against when that
+key's own schedule says the next one was due. It is one lateral join for every key. It is not
+GoodJob's own `CronEntry.last_jobs_by_key`, which orders `cron_at DESC NULLS LAST`. The
+`(cron_key, cron_at)` index cannot serve that order, so Postgres sorts every retained row of every
+key: about 215 ms against fourteen days of rows (~320,000), on every `/health` refresh. Every cron
+tick sets `cron_at`, so the query drops the nulls, orders plain `DESC`, and each key becomes one
+backward index probe (about 1 ms for all 49).
 
 **The rule.** A key is behind once the tick it owes has been owed for longer than its grace:
 

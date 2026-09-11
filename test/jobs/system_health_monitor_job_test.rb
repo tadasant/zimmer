@@ -555,7 +555,7 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
 
   test "a cron freshness check that cannot read fails the job rather than reading as nothing stale" do
     schedule(:sweep)
-    GoodJob::CronEntry.stubs(:last_jobs_by_key).raises(ActiveRecord::StatementInvalid, "boom")
+    GoodJob::Setting.stubs(:cron_keys_enabled).raises(ActiveRecord::StatementInvalid, "boom")
 
     assert_raises(ActiveRecord::StatementInvalid) { SystemHealthMonitorJob.perform_now }
   end
