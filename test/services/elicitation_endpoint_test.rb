@@ -155,6 +155,14 @@ class ElicitationEndpointTest < ActiveSupport::TestCase
     ENV["API_KEYS"] = original
   end
 
+  test "loggable_url keeps a token's session id and drops its MAC" do
+    AppUrl.stubs(:base_url).returns("https://zimmer.example.com")
+
+    assert_equal "https://zimmer.example.com/api/v1/elicitations/session/886-…",
+      ElicitationEndpoint.loggable_url(ElicitationEndpoint.session_url(886))
+    assert_equal ElicitationEndpoint.url, ElicitationEndpoint.loggable_url(ElicitationEndpoint.url)
+  end
+
   test "probe treats any HTTP response as reachable" do
     # 401 is the expected answer for the probe's token and proves the request reached Rails.
     response = Net::HTTPUnauthorized.new("1.1", "401", "Unauthorized")

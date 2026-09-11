@@ -365,7 +365,8 @@ module CliSpawnEnv
 
       env_vars[key] = value
     end
-    @logger.info "Set ELICITATION_REQUEST_URL=#{env_vars['ELICITATION_REQUEST_URL']} (session #{@zimmer_session_id.presence || 'unknown'})"
+    @logger.info "Set ELICITATION_REQUEST_URL=#{ElicitationEndpoint.loggable_url(env_vars['ELICITATION_REQUEST_URL'])} " \
+      "(session #{@zimmer_session_id.presence || 'unknown'})"
     env_vars
   rescue => e
     @logger.warn "Failed to set elicitation env: #{e.message}"
