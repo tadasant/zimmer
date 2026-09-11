@@ -49,7 +49,7 @@ class ContextLengthRetryService
   # nudge, not a compaction command: the runtime compacts before answering it,
   # so the task continues in the same turn.
   SELF_COMPACTING_RESUME_PROMPT = AutomatedPrompts.system_recovery(
-    reason: "the conversation outgrew the model's context window and was compacted"
+    reason: "the conversation outgrew the model's context window, and resuming compacts it"
   )
 
   # Error patterns that indicate context length exceeded
@@ -111,10 +111,10 @@ class ContextLengthRetryService
   # The noun the shared respawn log sentences interpolate.
   def recovery_label = "context length compact"
 
-  # Does the runtime compact on its own when resumed? Asked of the adapter,
-  # tolerating one from an extension that predates the question.
+  # Does the runtime compact on its own when resumed? See
+  # RuntimeCliAdapter::ClassMethods#compacts_on_resume?.
   def runtime_compacts_on_resume?
-    cli_adapter.respond_to?(:compacts_on_resume?) && cli_adapter.compacts_on_resume?
+    cli_adapter.compacts_on_resume?
   end
 
   # The prompt this recovery resumes the runtime with.

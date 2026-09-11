@@ -38,9 +38,10 @@
 #                                                             :quota_exceeded -> rotation)
 #   unauthorized, 401              -> auth_recovery_needed?  (AuthRecoveryCoordinator)
 #
-# Anything else is unclassified, and an unclassified Codex exit is now news:
+# Anything else is unclassified, and an unclassified Codex exit is news:
 # #classifies_exits? is true, so it reaches UnclassifiedFailureReporter with
-# Codex's own message attached (#unclassified_error_text).
+# Codex's own message attached (#unclassified_error_text, or the terminal-error
+# backstop ProcessLifecycleManager asks on a failed exit).
 #
 # None of this reads stderr. Codex's stderr is its tracing log, full of WARN
 # lines that quote upstream errors mid-retry ("retrying sampling request (2/5)

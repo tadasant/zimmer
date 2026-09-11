@@ -75,27 +75,24 @@ class QuotaResetCheckerJob < ApplicationJob
   private
 
   # Codex accounts have no quota endpoint Zimmer probes. What they have is the
-  # reading Codex itself recorded when it refused the account — its rate-limit
-  # windows, with reset times, kept by ApiErrorRetryService as a snapshot at the
-  # moment the session hit the limit (see CodexTurnError#quota_reading). Once
-  # that reading's capped windows have reset, #windows_clear? says so and the
-  # account goes back in rotation.
+  # reading ApiErrorRetryService keeps every time Codex refuses one for quota
+  # (CodexTurnError#quota_reading): the refused windows marked `rejected`, with
+  # the reset times Codex recorded. Once those have passed, #windows_clear? says
+  # so and the account goes back in rotation.
   #
-  # An account with no such reading stays where it is. That is a refusal Codex
-  # recorded no reset time for — or a label written some other way — and
+  # The latest reading always describes the latest refusal, because every
+  # refusal writes one — including a refusal Codex recorded no reset time for,
+  # which is written as refused with no reset and so never reads as clear. An
+  # account in that state, or with no reading at all, stays where it is:
   # restoring it on a guess would put an account the backend just refused
   # straight back in front of the next session.
   #
-  # "Such a reading" means one from the refusal that wrote the label. An account
-  # restored once and refused again with no reading the second time still has
-  # the first refusal's reading as its latest, long since clear; without the
-  # check below it would be restored on the very next sweep, every time.
+  # Rescued per account, so one row that cannot be written does not stop the
+  # wake below from reaching every parked session.
   def restore_codex_accounts(logger)
     ClaudeAccount.quota_exceeded.for_runtime(CodexAuthProvider::RUNTIME).find_each do |account|
       snapshot = account.latest_snapshot
-      next unless snapshot && (snapshot.reset_5h || snapshot.reset_7d)
-      next unless reading_describes_label?(account, snapshot)
-      next unless snapshot.windows_clear?
+      next unless snapshot&.windows_clear?
 
       account.update!(status: :active)
       logger.info("Restored codex account to active",
@@ -103,26 +100,9 @@ class QuotaResetCheckerJob < ApplicationJob
         reading_taken_at: snapshot.created_at.iso8601,
         reset_5h: snapshot.reset_5h&.iso8601,
         reset_7d: snapshot.reset_7d&.iso8601)
+    rescue StandardError => e
+      logger.warn("Could not restore codex account", email: account.email, error: e.message)
     end
-  end
-
-  # How far a Codex reading may predate the rotation that labelled its account
-  # and still be that refusal's reading. ApiErrorRetryService keeps the reading
-  # and ProcessLifecycleManager rotates moments later — after validating the next
-  # account's tokens, which is a network round trip, not a quota window.
-  CODEX_READING_BEFORE_LABEL_SLACK = 10.minutes
-
-  # Whether `snapshot` was taken at the refusal that last labelled `account`,
-  # judged against the latest quota rotation away from it. A label no rotation
-  # wrote (QuotaSnapshotService marks an account from a reading that says its
-  # week is spent) is described by that reading, so it passes.
-  def reading_describes_label?(account, snapshot)
-    labelled_at = AccountRotationEvent
-      .where(rotated_from_id: account.id, reason: AccountRotationService::QUOTA_ROTATION_REASONS)
-      .maximum(:created_at)
-    return true if labelled_at.nil?
-
-    snapshot.created_at >= labelled_at - CODEX_READING_BEFORE_LABEL_SLACK
   end
 
   # Fetch a fresh quota snapshot for a non-current account using its stored

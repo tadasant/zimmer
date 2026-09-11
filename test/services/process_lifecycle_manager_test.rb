@@ -3680,6 +3680,7 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     def accounts = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME)
     def current_account = @current
     def refresh!(_account) = RuntimeAuthProvider::Result.new(ok: true, error: nil)
+    def refresh_proves_serviceable?(_account) = false
     def inject_for_session!(_session = nil, _working_directory = nil) = @inject
 
     def rotate_for_quota!(triggered_by: nil, reason: "quota_exceeded", expected_current_email: nil)
@@ -4150,9 +4151,8 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
   # The largest noise risk in the change. PiRetryStrategy classifies nothing, so
   # an ordinary Pi failure ALWAYS reaches the unclassified branch — that is its
   # documented design, not news. Paging on it would be a standing hourly alert
-  # for expected behavior. (Codex was the runtime this guarded until its
-  # classifiers could answer, #54; an unclassified Codex exit now pages — see
-  # CodexRecoveryEndToEndTest.)
+  # for expected behavior. (Codex classifies its exits from the error it records,
+  # #54, so an unclassified Codex exit does page — see CodexRecoveryEndToEndTest.)
   test "a runtime whose strategy classifies nothing logs but does not page" do
     @session.update!(agent_runtime: "pi")
     @mock_cli_adapter.stubs(:retry_strategy).returns(

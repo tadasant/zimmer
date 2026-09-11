@@ -23,6 +23,8 @@ class CodexTurnErrorTest < ActiveSupport::TestCase
     refresh_token_reused: :auth,
     refresh_token_expired: :auth,
     unauthorized_after_refresh: :auth,
+    stream_disconnected: :retryable,
+    connection_refused: :retryable,
     bad_request_400: :unclassified
   }.freeze
 
@@ -119,30 +121,56 @@ class CodexTurnErrorTest < ActiveSupport::TestCase
     assert_equal "line:7", CodexTurnError.new(message: "", info: "other", turn_id: nil, line: 7).id
   end
 
+  test "Codex's transport codes are retryable whether or not they carry a status" do
+    %w[http_connection_failed response_stream_connection_failed response_stream_disconnected].each do |code|
+      error = CodexTurnError.new(message: "x", info: { code => { "http_status_code" => nil } }, turn_id: "t", line: 1)
+      assert_equal :retryable, error.kind, code
+    end
+  end
+
   # --- quota reading -----------------------------------------------------------
 
-  test "a usage-limit refusal carries the windows Codex recorded with it" do
+  test "a usage-limit refusal carries the windows Codex recorded with it, refusing on the capped one" do
     error = CodexTurnError.terminal(codex_rollout(:usage_limit_with_windows))
     reading = error.quota_reading
 
     assert_in_delta 1.0, reading.utilization_5h
     assert_equal Time.zone.at(1789136947), reading.reset_5h
+    assert_equal "rejected", reading.status_5h
     assert_in_delta 0.425, reading.utilization_7d
     assert_equal Time.zone.at(1789533347), reading.reset_7d
-    # The weekly window has room, so the account is back when the capped
-    # five-hour window resets — not at the weekly rollover.
+    assert_nil reading.status_7d, "the weekly window has room, so it is not refusing"
+    # So the account is back when the capped five-hour window resets — not at the
+    # weekly rollover.
     assert_equal Time.zone.at(1789136947), reading.restores_at
   end
 
-  test "a refusal that came with no windows yields no reading" do
-    assert_nil CodexTurnError.terminal(codex_rollout(:usage_limit_without_windows)).quota_reading
+  test "a refusal that came with no windows is recorded as a refusal with no known reset" do
+    reading = CodexTurnError.terminal(codex_rollout(:usage_limit_without_windows)).quota_reading
+
+    assert_equal "rejected", reading.status_5h
+    assert_nil reading.reset_5h
+    assert_nil reading.restores_at
   end
 
-  test "a reading with no window at its cap does not explain the refusal, so it is not kept" do
-    limits = { "primary" => { "used_percent" => 97.0, "window_minutes" => 300, "resets_at" => 1_789_136_947 } }
+  test "the reading is the failed turn's own, never an earlier turn's" do
+    # A refusal with windows, then — after a resume onto another account — a refusal
+    # without any. The second turn's reading must not inherit the first's windows,
+    # which describe a different account and may already have reset.
+    rollout = codex_rollout(:usage_limit_with_windows) + codex_rollout(:usage_limit_without_windows).lines.drop(1).join
+    reading = CodexTurnError.terminal(rollout).quota_reading
 
-    assert_nil CodexTurnError.new(message: "", info: "usage_limit_exceeded", turn_id: "t", line: 1,
+    assert_nil reading.reset_5h
+    assert_nil reading.restores_at
+  end
+
+  test "a reading with no window at its cap does not explain the refusal, so no reset is trusted" do
+    limits = { "primary" => { "used_percent" => 97.0, "window_minutes" => 300, "resets_at" => 1_789_136_947 } }
+    reading = CodexTurnError.new(message: "", info: "usage_limit_exceeded", turn_id: "t", line: 1,
       rate_limits: limits).quota_reading
+
+    assert_equal "rejected", reading.status_5h
+    assert_nil reading.reset_5h
   end
 
   test "a capped window with no reset time is not evidence of when the account returns" do
@@ -150,9 +178,24 @@ class CodexTurnErrorTest < ActiveSupport::TestCase
       "primary" => { "used_percent" => 100.0, "window_minutes" => 300, "resets_at" => nil },
       "secondary" => { "used_percent" => 10.0, "window_minutes" => 10080, "resets_at" => 1_789_533_347 }
     }
-
-    assert_nil CodexTurnError.new(message: "", info: "usage_limit_exceeded", turn_id: "t", line: 1,
+    reading = CodexTurnError.new(message: "", info: "usage_limit_exceeded", turn_id: "t", line: 1,
       rate_limits: limits).quota_reading
+
+    assert_nil reading.restores_at
+  end
+
+  test "only a quota refusal has a reading" do
+    assert_nil CodexTurnError.terminal(codex_rollout(:server_500)).quota_reading
+  end
+
+  test "a reading that has reset reads as clear, and one with no known reset never does" do
+    reset = CodexTurnError.new(message: "", info: "usage_limit_exceeded", turn_id: "t", line: 1,
+      rate_limits: { "primary" => { "used_percent" => 100.0, "resets_at" => 1.minute.ago.to_i } }).quota_reading
+    unknown = CodexTurnError.terminal(codex_rollout(:usage_limit_without_windows)).quota_reading
+    account = claude_accounts(:codex_primary)
+
+    assert QuotaSnapshotService.save_snapshot(account, reset, trigger: "usage_limit").windows_clear?
+    assert_not QuotaSnapshotService.save_snapshot(account, unknown, trigger: "usage_limit").windows_clear?
   end
 
   test "the reading answers the fields QuotaSnapshotService saves" do

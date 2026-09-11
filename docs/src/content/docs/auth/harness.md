@@ -550,18 +550,22 @@ failed turn (see [Agent harness](/extend/agent-harness/#codex-classifies-by-the-
   `ApiErrorRetryService` keeps that as a `usage_limit` quota snapshot against the account the
   process ran as (primary window in the five-hour columns, secondary in the weekly ones), and
   `QuotaResetCheckerJob` restores the account once `windows_clear?` says its capped windows have
-  reset. It is only kept when it explains the refusal — a window at its cap, with a reset time — and
-  the restore ignores a reading older than the rotation that labelled the account. The same reading
-  gives a Codex quota park its "resumes at" estimate.
+  reset. The capped windows are marked `rejected`; a refusal the reading does not explain (no window
+  at its cap, or a capped window with no reset time, or no windows at all) is written as a refusal
+  with no reset, which never reads as clear. Every refusal writes one, so the newest snapshot — the
+  one the sweep and the `/inference` heal both read — always describes the newest refusal, and the
+  same reading gives a Codex quota park its "resumes at" estimate.
 - **`unauthorized`** — "Your access token could not be refreshed because your refresh token has
   expired / was revoked / was already used" — and a 401 go to `AuthRecoveryCoordinator`. When the
-  pool has not moved under the session, the coordinator refreshes the account first. For Codex a
-  refresh that succeeds proves the account serves (`CodexAuthProvider#refresh_proves_serviceable?`:
-  Codex reports quota with its own code, so this one is only about the credential), so the session
-  is **re-seeded** with it instead of being rotated away from a working account — the usual cause
+  pool has not moved under the session, the coordinator refreshes the account first. For a Codex
+  OAuth account a refresh that succeeds proves the account serves
+  (`CodexAuthProvider#refresh_proves_serviceable?`: Codex reports quota with its own code, so this
+  one is only about the credential), so the session is **re-seeded** with it instead of being
+  rotated away from a working account — the usual cause
   is a Codex process losing the single-use-refresh-token race to another refresher. That happens
   once per incident; failing the same way again rotates. A refresh that fails condemns or strikes
-  the account as usual and rotates.
+  the account as usual and rotates, and an API-key account — whose "refresh" is a no-op that
+  proves nothing — rotates straight away.
 
 A Codex account marked `quota_exceeded` by a refusal that left no reading stays marked until someone
 re-activates it — see [Known limitations](/limitations/#a-codex-quota-refusal-with-no-rate-limit-reading-is-never-restored-automatically).

@@ -1495,8 +1495,8 @@ That is no longer for want of a signature. Driven against a simulated localhost 
 the failure in its transcript as an assistant message with `stopReason: "error"` and an
 `errorMessage` led by the HTTP status. All four look the same, and nothing reaches stderr.
 
-What is missing is the recovery. The three recovery services no longer have to be Claude-shaped —
-Codex reaches them through `TranscriptSource#records_turn_errors?` (the services ask the runtime's
+What is missing is the recovery. The three recovery services are not Claude-shaped any more than a
+runtime makes them — Codex reaches them through `TranscriptSource#records_turn_errors?` (the services ask the runtime's
 own record of how its turn ended instead of scanning for Claude's `isApiErrorMessage` envelope) and
 `RuntimeCliAdapter.compacts_on_resume?` (compaction resumes with the recovery nudge instead of
 `/compact`) — but Pi answers neither yet, and `AuthRecoveryService` re-writes the active account's
@@ -1563,8 +1563,8 @@ for the backstop to see and the only state check that catches it is the empty-tu
 [Spawning](/sessions/spawning/)), which covers the first turn of a session and not a later one. And `PiRetryStrategy` classifies
 nothing, so every ordinary Pi failure is by construction an exit no classifier matched; it answers
 `classifies_exits? => false` and gets the loud log without a page, because paging on a runtime's
-designed-for path is how a channel gets ignored. Codex was in the same position until its
-classifiers learned to read the code Codex records on a failed turn (#54); it now pages, and its
+designed-for path is how a channel gets ignored. Codex classifies its exits from the code it
+records on a failed turn (#54), so an unclassified Codex exit does page, and its
 `terminal_api_error` answers from that same record.
 
 Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
@@ -1975,40 +1975,47 @@ the fake refused the WebSocket upgrade. A Codex release that renames a code, or 
 reports a failure under a code the fake never produced, turns a recoverable exit into an
 unclassified one.
 
-That is now loud rather than silent: `classifies_exits?` is `true` for Codex, so an exit none of
-its classifiers claims fails the session **and** raises `UnclassifiedFailureReporter` with Codex's
-own message attached. Before, every ordinary Codex failure took that branch by design, so it logged
-and did not page. The new alert surface is intended; a burst of it after a Codex upgrade means the
-table in `CodexTurnError` needs a new row.
+That is loud rather than silent: `classifies_exits?` is `true` for Codex, so an exit none of its
+classifiers claims fails the session **and** raises `UnclassifiedFailureReporter` with Codex's own
+message attached. A burst of those after a Codex upgrade means the table in `CodexTurnError` needs a
+new row. A failed exit whose turn error some recovery already acted on — its replacement died before
+writing a turn of its own — fails the session naming that error, without a page.
 
 What the classifiers deliberately do not cover:
 
 - **An `other` code with no HTTP status in its prose** (a raw 400 body, "Error running remote
-  compact task", …) is unclassified. The one exception is a raw 400 whose body names the API's
-  `"code": "context_length_exceeded"`, which routes to compaction.
+  compact task", …) is unclassified. Two exceptions: a raw 400 whose body names the API's
+  `"code": "context_length_exceeded"` routes to compaction, and "stream disconnected before
+  completion: …" — how Codex words a stream that closed early or a connection that was refused —
+  is retried.
+- **Codex's other structured codes** — `sandbox_error`, `bad_request`, `session_budget_exceeded`,
+  `cyber_policy`, `thread_rollback_failed` and the rest of the enum in the binary — are unclassified.
+  None of them is a condition a respawn fixes, so failing and paging is the honest answer.
 - **`usage_not_included`** ("To use Codex with your ChatGPT plan, upgrade to Plus") shares
   `usage_limit_exceeded` with a spent quota, so it rotates like one. It carries no rate-limit
-  reading, so the account is not restored automatically — which is right, because waiting does not
-  fix it.
+  reading, so it is recorded as a refusal with no reset and the account is not restored
+  automatically — which is right, because waiting does not fix it.
 - **A 429 that is really an exhausted API-key quota** reads as `response_too_many_failed_attempts`
   with status 429 — the same as a transient rate limit — so it is retried six times with backoff
   before the session fails.
-- **Codex 429s do not count toward `GlobalRateLimitTracker`.** That tracker is the fleet's measure of
-  pressure on the Anthropic API and every Claude session's backoff reads it; an OpenAI rate limit
-  says nothing about it.
+- **Codex 429s do not count toward `GlobalRateLimitTracker`, and Codex backoff does not read it.**
+  That tracker is the fleet's measure of pressure on the Anthropic API and every Claude session's
+  backoff reads it; an OpenAI rate limit says nothing about it, and nor does Anthropic pressure say
+  anything about a Codex retry.
 - **Nothing reads Codex's stderr for these classifiers.** It is Codex's tracing log, full of WARN
   lines quoting upstream errors Codex went on to retry past. Only the failed-resume signature
   (`no rollout found`) is still a stderr match.
 
 ### A Codex quota refusal with no rate-limit reading is never restored automatically
 
-🟡 `QuotaResetCheckerJob` restores a `quota_exceeded` Codex account on the reading Codex recorded
-when it refused the account — the `x-codex-primary-*` / `x-codex-secondary-*` windows it writes on a
-`token_count` record, kept as a `usage_limit` quota snapshot. A refusal that came with no windows,
-or with a capped window and no reset time, leaves no such reading, and the account stays
-`quota_exceeded` until someone re-activates it on `/inference`. So does an account whose latest
-reading predates the rotation that labelled it (by more than ten minutes): that reading is an older
-refusal's, and restoring on it would put an account the backend just refused back in rotation.
+🟡 `QuotaResetCheckerJob` restores a `quota_exceeded` Codex account on the reading kept when Codex
+refused it — the `x-codex-primary-*` / `x-codex-secondary-*` windows Codex writes on the failed
+turn's `token_count` record, kept as a `usage_limit` quota snapshot with the capped windows marked
+`rejected`. Every refusal writes one, so the newest snapshot always describes the newest refusal.
+A refusal that came with no windows, with no window at its cap, or with a capped window and no reset
+time is written as a refusal of the five-hour window with no reset: it never reads as clear, so
+neither the sweep nor the `/inference` heal restores the account, and it stays `quota_exceeded`
+until someone re-activates it on `/inference`.
 
 Codex's primary window is stored in the snapshot's five-hour columns and its secondary window in the
 weekly ones. The restore predicate (`windows_clear?`) reads reset times and counters, not window

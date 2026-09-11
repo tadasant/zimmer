@@ -462,6 +462,18 @@ class ProcessLifecycleManager
         return handle_signal_death(status, working_dir)
       end
 
+      # A runtime that records how each turn ended (TranscriptSource#records_turn_errors?
+      # — Codex, which exits 1 on every failure) names the error on a failed exit as
+      # well as on a completed one. An error no branch above claimed is either one
+      # nothing recognizes — handle_terminal_api_error fails the session with the
+      # runtime's own words and pages — or one a recovery already acted on, whose
+      # replacement died before writing a turn of its own: a dead turn, failed and
+      # named, but not an unknown failure mode worth a page. Asked only of those
+      # runtimes, so a Claude non-zero exit keeps the unclassified path below.
+      if RecordedTurnError.supported?(session) && (terminal_error = unhandled_terminal_api_error(working_dir))
+        return handle_terminal_api_error(terminal_error)
+      end
+
       # General failure case — the unclassified branch.
       #
       # Every check above is a pattern match against the runtime's own prose or

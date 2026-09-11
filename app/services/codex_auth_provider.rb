@@ -82,8 +82,11 @@ class CodexAuthProvider < RuntimeAuthProvider
   # process losing the single-use-token race to another refresher (Zimmer's own
   # sweep, or another session's CLI) rather than a dead account. A refresh that
   # succeeds, and so writes the new pair to auth.json, is what resolves it.
-  def refresh_proves_serviceable?
-    true
+  #
+  # Not for an API-key account: #refresh! succeeds on one without doing anything,
+  # so it proves nothing, and a rejected key is a reason to rotate.
+  def refresh_proves_serviceable?(account)
+    !account.codex_api_key_account?
   end
 
   # Refresh the account's tokens via OpenAI's OAuth endpoint. API-key accounts

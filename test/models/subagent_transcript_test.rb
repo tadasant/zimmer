@@ -35,8 +35,8 @@ class SubagentTranscriptTest < ActiveSupport::TestCase
     assert other_subagent.valid?
   end
 
-  # #54: the normalizer used to be ClaudeTranscriptNormalizer unconditionally, so a
-  # Codex-shaped line rendered as nothing (or worse, as a Claude line it resembled).
+  # #54: the normalizer is the parent session's runtime's; a Codex-shaped line read
+  # by ClaudeTranscriptNormalizer renders as nothing.
   test "open_transcript_events normalizes with the parent session's runtime" do
     @session.update!(agent_runtime: "codex")
     codex_line = {
