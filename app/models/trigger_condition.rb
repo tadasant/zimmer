@@ -211,7 +211,7 @@ class TriggerCondition < ApplicationRecord
   # The deployment-wide allow-list for bot_mention and passive-listening conditions: a comma-separated
   # list of Slack user IDs in SLACK_BOT_MENTION_ALLOWED_USER_IDS, resolved from
   # encrypted credentials first and process ENV second (the same order
-  # SlackService#slack_bot_token and AlertService#channel_id use).
+  # SlackService#slack_bot_token and SlackService#alert_channel_id use).
   #
   # Blank or unset means EVERYONE, not nobody. An unconfigured Zimmer lets any
   # workspace member @mention or DM the bot; a deployment narrows it by setting

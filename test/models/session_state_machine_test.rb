@@ -278,10 +278,11 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.update!(status: :running)
     session.enqueued_messages.create!(content: "add the onion back", position: 1, status: "pending")
 
-    AlertService.expects(:raise_alert).with do |title, options|
-      title == "Queued messages stranded by an archive" &&
-        options[:details].include?("add the onion back") &&
-        options[:dedup_key] == "stranded_enqueued_messages_#{session.id}"
+    ErrorReporter.expects(:report_message).with do |message, options|
+      message == "Queued messages stranded by an archive" &&
+        options[:level] == :error &&
+        options[:context][:details].include?("add the onion back") &&
+        options[:context][:session_id] == session.id
     end
 
     session.archive!
@@ -303,7 +304,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       origin: "automated_pr_merged"
     )
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     session.archive_forced = true
     session.archive!
@@ -321,7 +322,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.update!(status: :running)
     session.enqueued_messages.create!(content: "Backstop wake. Re-poll child #10493", position: 1, status: "pending")
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     session.archive_forced = true
     session.archive!
@@ -334,7 +335,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session = sessions(:waiting)
     session.update!(status: :running)
     message = session.enqueued_messages.create!(content: "stale nudge", position: 1, status: "pending")
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     entries = capture_log_entries do
       session.archive_actor = "session #10502 via the MCP API (bulk)"
@@ -367,8 +368,8 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       origin: "automated_pr_merged"
     )
 
-    AlertService.expects(:raise_alert).with do |title, options|
-      title == "Queued messages stranded by an archive" && options[:details].include?("has been merged")
+    ErrorReporter.expects(:report_message).with do |message, options|
+      message == "Queued messages stranded by an archive" && options[:context][:details].include?("has been merged")
     end
 
     session.archive_actor = "Zimmer's stale-session sweep (untouched for 7 days)"
@@ -386,7 +387,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       status: "pending",
       origin: "automated_pr_merged"
     )
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     session.archive_forced = true
     session.archive!
@@ -410,9 +411,9 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       origin: "automated_merge_conflict"
     )
 
-    AlertService.expects(:raise_alert).with do |title, options|
-      title == "Queued messages stranded by an archive" &&
-        options[:details].include?("merge conflicts on your PR")
+    ErrorReporter.expects(:report_message).with do |message, options|
+      message == "Queued messages stranded by an archive" &&
+        options[:context][:details].include?("merge conflicts on your PR")
     end
 
     session.archive!
@@ -431,7 +432,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     )
     session.enqueued_messages.create!(content: "add the onion back", position: 2, status: "pending")
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     entries = capture_log_entries do
       session.archive_forced = true
@@ -461,11 +462,11 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     )
     session.enqueued_messages.create!(content: "add the onion back", position: 2, status: "pending")
 
-    AlertService.expects(:raise_alert).with do |title, options|
-      title == "Queued messages stranded by an archive" &&
-        options[:details].include?("add the onion back") &&
-        options[:details].include?("has been merged") &&
-        options[:details].include?("2 message(s) still queued")
+    ErrorReporter.expects(:report_message).with do |message, options|
+      message == "Queued messages stranded by an archive" &&
+        options[:context][:details].include?("add the onion back") &&
+        options[:context][:details].include?("has been merged") &&
+        options[:context][:details].include?("2 message(s) still queued")
     end
 
     session.archive_actor = "Zimmer's stale-session sweep (untouched for 7 days)"
@@ -491,7 +492,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       origin: "automated_recovery_nudge"
     )
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     session.archive_actor = "the status-summary fork cleanup"
     session.archive!
@@ -509,7 +510,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       status: "pending",
       origin: "automated_recovery_nudge"
     )
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     entries = capture_log_entries do
       session.archive_actor = "the status-summary fork cleanup"
@@ -539,7 +540,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       status: "pending",
       origin: "automated_recovery_nudge"
     )
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     session.archive!
 
@@ -564,12 +565,12 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     )
     session.enqueued_messages.create!(content: "add the onion back", position: 2, status: "pending")
 
-    AlertService.expects(:raise_alert).with do |title, options|
-      title == "Queued messages stranded by an archive" &&
-        options[:details].include?("add the onion back") &&
-        options[:details].exclude?("AUTOMATED SYSTEM MESSAGE") &&
-        options[:details].include?("1 message(s) still queued") &&
-        options[:details].include?("1 automated recovery nudge")
+    ErrorReporter.expects(:report_message).with do |message, options|
+      message == "Queued messages stranded by an archive" &&
+        options[:context][:details].include?("add the onion back") &&
+        options[:context][:details].exclude?("AUTOMATED SYSTEM MESSAGE") &&
+        options[:context][:details].include?("1 message(s) still queued") &&
+        options[:context][:details].include?("1 automated recovery nudge")
     end
 
     session.archive_actor = "Zimmer's stale-session sweep (untouched for 7 days)"
@@ -593,7 +594,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
       origin: "automated_recovery_nudge"
     )
     session.enqueued_messages.create!(content: "add the onion back", position: 2, status: "pending")
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     entries = capture_log_entries do
       session.archive_actor = "Zimmer's stale-session sweep (untouched for 7 days)"
@@ -698,7 +699,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.update!(status: :running)
     session.enqueued_messages.create!(content: "and now the other half", position: 1, status: "pending")
     EnqueuedMessageDrainJob.stubs(:set).raises(StandardError, "good_job is on fire")
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_exception)
 
     session.pause!
 
@@ -3276,40 +3277,45 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     run_deferred_commit_callbacks_inline
 
     alerted = []
-    AlertService.stubs(:raise_alert).with do |title, opts|
-      alerted << [ title, opts[:source], opts[:dedup_key] ]
+    ErrorReporter.stubs(:report_exception).with do |error, **opts|
+      alerted << [ opts[:context][:title], opts[:context][:source], error, opts[:context][:session_id] ]
       true
-    end.returns(true)
+    end
 
     session.pause!
 
     assert_equal :needs_input, session.status.to_sym,
       "the transition must still complete — swallowing is the whole point"
-    cleanup = alerted.find { |_title, source, _key| source == "SessionStateMachine#cleanup_running_job" }
+    cleanup = alerted.find { |_title, source, _error, _id| source == "SessionStateMachine#cleanup_running_job" }
     assert cleanup, "expected cleanup_running_job to page, got: #{alerted.inspect}"
     assert_equal "Session state-machine side effect failed", cleanup[0]
-    assert_equal "session_state_machine_side_effect_cleanup_running_job", cleanup[2]
+    assert_equal "database is unhappy", cleanup[2].message,
+      "the exception itself is reported, so GlitchTip gets its backtrace"
+    assert_equal session.id, cleanup[3]
   end
 
-  # The dedup key must key on the callback, not the session: a sick database
-  # hits this for every session in flight and must collapse to one alert.
-  test "the alert dedup key is per-callback, not per-session" do
+  # Grouping is by exception and stack (GlitchTip's default), not by session: a sick
+  # database hits this for every session in flight and must collapse into one issue.
+  # The session id rides in the context instead.
+  test "the side-effect report identifies the callback and carries the session in context" do
     run_deferred_commit_callbacks_inline
-    keys = []
-    AlertService.stubs(:raise_alert).with do |_title, opts|
-      keys << opts[:dedup_key]
+    reported = []
+    ErrorReporter.stubs(:report_exception).with do |_error, **opts|
+      reported << [ opts[:context][:source], opts[:context][:session_id] ]
       true
-    end.returns(true)
+    end
 
-    [ sessions(:running), sessions(:active_session) ].each do |session|
+    sessions_under_test = [ sessions(:running), sessions(:active_session) ]
+    sessions_under_test.each do |session|
       session.update!(status: :running, running_job_id: "job-#{session.id}")
       session.stubs(:update_column).raises(StandardError, "database is unhappy")
       session.pause!
     end
 
-    cleanup_keys = keys.select { |k| k == "session_state_machine_side_effect_cleanup_running_job" }
-    assert_equal 2, cleanup_keys.size
-    assert_equal 1, cleanup_keys.uniq.size
+    cleanup = reported.select { |source, _id| source == "SessionStateMachine#cleanup_running_job" }
+    assert_equal 2, cleanup.size
+    assert_equal sessions_under_test.map(&:id).sort, cleanup.map(&:last).sort,
+      "each report names its own session, so one issue still tells you how many are affected"
   end
 
   # The other half of the split. Push delivery is best-effort by construction and
@@ -3321,7 +3327,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
     run_deferred_commit_callbacks_inline
     SendPushNotificationJob.stubs(:perform_later).raises(StandardError, "queue is down")
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     session.fail!
 
@@ -3336,21 +3342,21 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     session.update!(status: :running, running_job_id: "job-123")
     session.stubs(:update_column).raises(StandardError, "database is unhappy")
     Rails.logger.stubs(:error).raises(StandardError, "logger is broken")
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_exception)
 
     assert_nothing_raised { session.pause! }
     assert_equal :needs_input, session.status.to_sym
   end
 
-  # An alert that cannot be posted must not become a second way for the
-  # transition to blow up. This covers the AlertService half; the test above
-  # covers the logger half.
-  test "a broken AlertService cannot wedge a transition" do
+  # A report that cannot be sent must not become a second way for the transition to
+  # blow up. This covers the ErrorReporter half; the test above covers the logger
+  # half.
+  test "a broken ErrorReporter cannot wedge a transition" do
     session = sessions(:running)
     session.update!(status: :running, running_job_id: "job-123")
     session.stubs(:update_column).raises(StandardError, "database is unhappy")
     run_deferred_commit_callbacks_inline
-    AlertService.stubs(:raise_alert).raises(StandardError, "slack is on fire")
+    ErrorReporter.stubs(:report_exception).raises(StandardError, "glitchtip is on fire")
 
     assert_nothing_raised { session.pause! }
     assert_equal :needs_input, session.status.to_sym
@@ -3398,7 +3404,7 @@ class SessionStateMachineTest < ActiveSupport::TestCase
 
     # Four ERROR records is what #924 cost, and three of the callbacks that
     # produced them page. None of them may fire.
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
 
     log_output = StringIO.new
     original_logger = Rails.logger

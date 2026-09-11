@@ -24,7 +24,7 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
 
   test "job does nothing when Slack is not configured" do
     SlackService.stubs(:configured?).returns(false)
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     assert_nothing_raised do
       SlackTriggerHealthCheckJob.perform_now
@@ -37,13 +37,27 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
       .with(@condition.channel_id, limit: SlackTriggerHealthCheckJob::HISTORY_SCAN_LIMIT)
       .returns([ OpenStruct.new(ts: STALLED_TS, thread_ts: nil) ])
 
-    AlertService.expects(:raise_alert).once.with do |title, opts|
-      title == "Slack trigger feed stalled" &&
-        opts[:dedup_key] == "slack_trigger_stalled_#{@condition.id}" &&
-        opts[:source] == "SlackTriggerHealthCheckJob"
+    # Both halves of the page: the ERROR record (which is what trips the Grafana
+    # rule — this detector has no other log line at all) and the GlitchTip event.
+    reports = []
+    entries = nil
+    ErrorReporter.stub(:report_message, ->(message, context: {}, level: :error) {
+      reports << [ message, context, level ]
+    }) do
+      entries = capture_log_entries { SlackTriggerHealthCheckJob.new.send(:check_condition, @condition) }
     end
 
-    SlackTriggerHealthCheckJob.new.send(:check_condition, @condition)
+    assert_equal 1, reports.size
+    message, context, level = reports.first
+    assert_equal "Slack trigger feed stalled", message
+    assert_equal :error, level
+    assert_equal "SlackTriggerHealthCheckJob", context[:source]
+    assert_equal @condition.id, context[:condition_id]
+    assert_equal @condition.trigger_id, context[:trigger_id]
+
+    errors = entries.select { |severity, _message| severity == "ERROR" }
+    assert_equal 1, errors.size, "a stalled feed must emit exactly one ERROR record — that is the page"
+    assert_match(/Slack trigger feed stalled/, errors.first.last)
   end
 
   test "does not alert when the condition is caught up" do
@@ -53,7 +67,7 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
       .with(@condition.channel_id, limit: SlackTriggerHealthCheckJob::HISTORY_SCAN_LIMIT)
       .returns([ OpenStruct.new(ts: @condition.last_message_ts, thread_ts: nil) ])
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     SlackTriggerHealthCheckJob.new.send(:check_condition, @condition)
   end
@@ -64,7 +78,7 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
       .with(@condition.channel_id, limit: SlackTriggerHealthCheckJob::HISTORY_SCAN_LIMIT)
       .returns([ OpenStruct.new(ts: recent_ts, thread_ts: nil) ])
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     SlackTriggerHealthCheckJob.new.send(:check_condition, @condition)
   end
@@ -75,7 +89,7 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
 
     # No baseline → nothing to fall behind on; Slack should not even be queried
     SlackService.expects(:get_channel_history).never
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     SlackTriggerHealthCheckJob.new.send(:check_condition, @condition)
   end
@@ -86,7 +100,7 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
 
     SlackService.expects(:get_channel_history).never
     SlackService.expects(:get_thread_replies).never
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     SlackTriggerHealthCheckJob.new.send(:check_condition, condition)
   end
@@ -103,9 +117,9 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
       .returns([ OpenStruct.new(ts: STALLED_TS, thread_ts: "1704000000.000000") ])
     SlackService.expects(:get_channel_history).never
 
-    AlertService.expects(:raise_alert).once.with do |title, opts|
-      title == "Slack trigger feed stalled" &&
-        opts[:details].include?("thread 1704000000.000000")
+    ErrorReporter.expects(:report_message).once.with do |message, opts|
+      message == "Slack trigger feed stalled" &&
+        opts[:context][:details].include?("thread 1704000000.000000")
     end
 
     SlackTriggerHealthCheckJob.new.send(:check_condition, condition)
@@ -118,7 +132,7 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
 
     SlackService.expects(:get_channel_history).never
     SlackService.expects(:get_thread_replies).never
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     SlackTriggerHealthCheckJob.new.send(:check_condition, condition)
   end
@@ -129,7 +143,7 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
 
     SlackService.expects(:get_channel_history).never
     SlackService.expects(:get_thread_replies).never
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     %w[passive_listen_thread passive_listen_channel].each do |event_type|
       condition.configuration["event_type"] = event_type
@@ -151,7 +165,7 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
       .with(@condition.channel_id, limit: SlackTriggerHealthCheckJob::HISTORY_SCAN_LIMIT)
       .returns(messages)
 
-    AlertService.expects(:raise_alert).once
+    ErrorReporter.expects(:report_message).once
 
     SlackTriggerHealthCheckJob.new.send(:check_condition, @condition)
   end
@@ -170,9 +184,9 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
     # Thread-scoped conditions must not use channel-history polling
     SlackService.expects(:get_channel_history).never
 
-    AlertService.expects(:raise_alert).once.with do |title, opts|
-      title == "Slack trigger feed stalled" &&
-        opts[:details].include?("thread 1704000000.000000")
+    ErrorReporter.expects(:report_message).once.with do |message, opts|
+      message == "Slack trigger feed stalled" &&
+        opts[:context][:details].include?("thread 1704000000.000000")
     end
 
     SlackTriggerHealthCheckJob.new.send(:check_condition, @condition)
@@ -181,7 +195,7 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
   test "a Slack API error checking one condition does not raise (logged at info, self-resolves)" do
     SlackService.stubs(:configured?).returns(true)
     SlackService.stubs(:get_channel_history).raises(SlackService::ApiError.new("channel_not_found"))
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     assert_nothing_raised do
       SlackTriggerHealthCheckJob.new.perform

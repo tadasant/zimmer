@@ -222,45 +222,42 @@ class CleanupStaleTriggersJob < ApplicationJob
 
     return Lapsed.new(destroyed: 0, parked: 0) if candidate_ids.empty?
 
-    # Batched, because the failure this whole change is about produces a WAVE.
-    # A stalled `triggers` queue leaves every wake due during the stall
-    # undelivered at once, so the first pass after it recovers can park dozens —
-    # and an un-batched alert per trigger would be dozens of Slack messages about
-    # one incident. AlertBatcher collapses them, exactly as AoEventTriggerJob
-    # wraps its own fan-out.
-    AlertBatcher.with_batch do
-      Trigger.where(id: candidate_ids).where.not(status: "failed").includes(:trigger_conditions).find_each do |trigger|
-        # The ground insists that EVERY condition on the trigger be a lapsed
-        # one-time schedule, not just the one that made it a candidate. If the
-        # trigger carries any other kind of condition (recurring schedule, slack,
-        # an `ao_event`), leave it alone — those keep the trigger legitimate.
-        next unless all_conditions_stale_one_time_schedules?(trigger, now)
+    # The failure this whole change is about produces a WAVE: a stalled `triggers`
+    # queue leaves every wake due during the stall undelivered at once, so the
+    # first pass after it recovers can park dozens. Each park is its own ERROR
+    # record naming its own trigger; the obs pipeline is what collapses them into
+    # one page (GlitchTip groups them into one issue, Grafana groups by alertname).
+    Trigger.where(id: candidate_ids).where.not(status: "failed").includes(:trigger_conditions).find_each do |trigger|
+      # The ground insists that EVERY condition on the trigger be a lapsed
+      # one-time schedule, not just the one that made it a candidate. If the
+      # trigger carries any other kind of condition (recurring schedule, slack,
+      # an `ao_event`), leave it alone — those keep the trigger legitimate.
+      next unless all_conditions_stale_one_time_schedules?(trigger, now)
 
-        trigger_id = trigger.id
+      trigger_id = trigger.id
 
-        # Parking is only ever right for a trigger that was ARMED and did not
-        # fire. A `disabled` one did not fire because the user switched it off —
-        # #schedule_due? returns false for any non-enabled trigger — so nothing
-        # failed, nobody is asleep on it, and parking it `failed` with an alert
-        # saying a wake never fired would be a lie about the user's own action.
-        # It falls through to the destroy below as ordinary residue.
-        if trigger.enabled? && undelivered_wake?(trigger)
-          next if parked_ids.size >= MAX_PARKS_PER_SWEEP
+      # Parking is only ever right for a trigger that was ARMED and did not
+      # fire. A `disabled` one did not fire because the user switched it off —
+      # #schedule_due? returns false for any non-enabled trigger — so nothing
+      # failed, nobody is asleep on it, and parking it `failed` with an alert
+      # saying a wake never fired would be a lie about the user's own action.
+      # It falls through to the destroy below as ordinary residue.
+      if trigger.enabled? && undelivered_wake?(trigger)
+        next if parked_ids.size >= MAX_PARKS_PER_SWEEP
 
-          park_undelivered_wake(trigger)
-          parked_ids << trigger_id
-          next
-        end
-
-        trigger.destroy!
-        destroyed_ids << trigger_id
-        Rails.logger.info "[CleanupStaleTriggersJob] Destroyed lapsed one-time trigger #{trigger_id} — " \
-          "it fired already, or was disabled, and its scheduled_at(s) are all > " \
-          "#{STALE_SCHEDULE_THRESHOLD.inspect} in the past"
-      rescue => e
-        Rails.logger.error "[CleanupStaleTriggersJob] Failed to collect lapsed one-time trigger " \
-          "#{trigger.id}: #{e.class}: #{e.message}"
+        park_undelivered_wake(trigger)
+        parked_ids << trigger_id
+        next
       end
+
+      trigger.destroy!
+      destroyed_ids << trigger_id
+      Rails.logger.info "[CleanupStaleTriggersJob] Destroyed lapsed one-time trigger #{trigger_id} — " \
+        "it fired already, or was disabled, and its scheduled_at(s) are all > " \
+        "#{STALE_SCHEDULE_THRESHOLD.inspect} in the past"
+    rescue => e
+      Rails.logger.error "[CleanupStaleTriggersJob] Failed to collect lapsed one-time trigger " \
+        "#{trigger.id}: #{e.class}: #{e.message}"
     end
 
     if parked_ids.size >= MAX_PARKS_PER_SWEEP
@@ -304,7 +301,9 @@ class CleanupStaleTriggersJob < ApplicationJob
       return
     end
 
-    Rails.logger.warn "[CleanupStaleTriggersJob] Parked undelivered one-time wake #{trigger.id} as " \
+    # .error, not .warn: this line IS the page — a wake that was owed and never
+    # delivered is exactly the silence this sweep exists to surface.
+    Rails.logger.error "[CleanupStaleTriggersJob] Parked undelivered one-time wake #{trigger.id} as " \
       "failed — scheduled for #{scheduled}, never fired (requester session " \
       "#{trigger.last_session_id || 'none'})"
 
@@ -316,14 +315,18 @@ class CleanupStaleTriggersJob < ApplicationJob
         "This wake had no requester session recorded, so nothing is asleep on it."
       end
 
-    AlertService.raise_alert(
+    ErrorReporter.report_message(
       "A one-time wake never fired",
-      details: "Trigger '#{trigger.name}' (ID: #{trigger.id}) was scheduled for #{scheduled} and " \
-               "never fired. It has been marked *failed* and left in place at " \
-               "#{trigger_url(trigger.id)} so it stays visible and can be re-armed.\n\n" \
-               "#{requester_note}",
-      source: "CleanupStaleTriggersJob",
-      dedup_key: "undelivered_wake_#{trigger.id}"
+      level: :error,
+      context: {
+        source: "CleanupStaleTriggersJob",
+        details: "Trigger '#{trigger.name}' (ID: #{trigger.id}) was scheduled for #{scheduled} and " \
+                 "never fired. It has been marked `failed` and left in place at " \
+                 "#{trigger_url(trigger.id)} so it stays visible and can be re-armed.\n\n" \
+                 "#{requester_note}",
+        trigger_id: trigger.id,
+        requester_session_id: trigger.last_session_id
+      }
     )
   rescue => e
     Rails.logger.error "[CleanupStaleTriggersJob] Could not report parked wake #{trigger.id}: " \

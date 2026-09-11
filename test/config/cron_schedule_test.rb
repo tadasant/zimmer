@@ -26,10 +26,11 @@ class CronScheduleTest < ActiveSupport::TestCase
   # omission is only legitimate when the reason is about staging itself -- a resource
   # staging does not have, or a signal that would be production's rather than staging's own.
   #
-  # "It pages #eng-alerts" is not one of those reasons, and the schedule never treated it as
-  # one: staging schedules GithubTriggerHealthCheckJob, SystemHealthMonitorJob,
-  # ElicitationEndpointHealthCheckJob and both trigger pollers, all of which page that
-  # channel, tagged [staging] by AlertService#tagged_title (tadasant/zimmer#686).
+  # "It pages #alerts" is not one of those reasons, and the schedule never treated it as one:
+  # staging schedules GithubTriggerHealthCheckJob, SystemHealthMonitorJob,
+  # ElicitationEndpointHealthCheckJob and both trigger pollers. On staging none of them reaches
+  # the channel at all -- staging reports into a GlitchTip project with no recipient, and the
+  # Grafana rule on Zimmer's error logs subtracts staging (tadasant/zimmer#686).
   #
   # Adding a row back is a conscious decision, not a way to silence the test below.
   NOT_ON_STAGING = {}.freeze

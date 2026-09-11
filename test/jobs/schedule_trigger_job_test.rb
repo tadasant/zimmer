@@ -172,7 +172,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
 
     # Stub create_session! to raise an error (e.g. invalid MCP server)
     Trigger.any_instance.stubs(:create_session!).raises(ActiveRecord::RecordInvalid.new(@trigger))
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
 
     assert_nil @condition.last_triggered_at
 
@@ -182,21 +182,23 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     assert_not_nil @condition.last_triggered_at, "last_triggered_at should be advanced even when session creation fails"
   end
 
-  test "raises exactly one alert when session creation fails" do
+  test "reports exactly one alert when session creation fails" do
     make_due!
 
     Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("mcp_servers contains invalid server(s): agent-orchestrator-pulse-directory-management"))
 
-    alert_titles = []
-    AlertService.stubs(:raise_alert).with { |title, **_kwargs| alert_titles << title; true }
+    reported = []
+    ErrorReporter.stubs(:report_exception).with { |_error, **kwargs| reported << kwargs[:context]; true }
 
     ScheduleTriggerJob.perform_now
 
-    assert_equal [ "Schedule trigger session creation failed" ], alert_titles,
-      "Expected exactly one alert from the inner rescue, not a duplicate from the outer rescue"
+    assert_equal 1, reported.size,
+      "Expected exactly one report from the inner rescue, not a duplicate from the outer rescue"
+    assert_match(/failed to create a session/, reported.first[:details])
+    assert_equal "ScheduleTriggerJob", reported.first[:source]
   end
 
-  test "alert carries the exception itself, so the snippet has class, message and frames" do
+  test "the report carries the exception itself, so GlitchTip gets class, message and frames" do
     make_due!
 
     boom = StandardError.new("agent root not found in catalog")
@@ -204,17 +206,17 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     Trigger.any_instance.stubs(:create_session!).raises(boom)
 
     captured_error = nil
-    AlertService.stubs(:raise_alert).with do |_title, **kwargs|
-      captured_error = kwargs[:error]
+    ErrorReporter.stubs(:report_exception).with do |error, **_kwargs|
+      captured_error = error
       true
     end
 
     ScheduleTriggerJob.perform_now
 
-    assert_not_nil captured_error, "the rescued exception should be passed as error:"
+    assert_same boom, captured_error, "the rescued exception itself should be reported"
     snippet = AlertSnippet.build(captured_error)
-    assert_includes snippet, "StandardError", "snippet should include the exception class"
-    assert_includes snippet, "agent root not found in catalog", "snippet should include the exception message"
+    assert_includes snippet, "StandardError", "the exception carries its class"
+    assert_includes snippet, "agent root not found in catalog", "the exception carries its message"
     assert_includes snippet, "trigger.rb:42", "snippet should include backtrace frames"
   end
 
@@ -301,7 +303,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     @trigger.update!(reuse_session: true, resuscitate_archived: true, last_session_id: never_ran.id)
     make_due!
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
     UnarchiveSessionService.expects(:call).never
 
     assert_difference("Session.count", 1) do
@@ -330,7 +332,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     one_time_condition.update!(last_triggered_at: nil)
 
     Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("agent root not found"))
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
 
     assert_equal "enabled", trigger.status
 
@@ -359,7 +361,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
 
     # One alert per attempted fire, so the alert count IS the retry count.
     alert_count = 0
-    AlertService.stubs(:raise_alert).with { |_title, **_kwargs| alert_count += 1; true }
+    ErrorReporter.stubs(:report_exception).with { |_error, **_kwargs| alert_count += 1; true }
 
     travel_to Time.zone.parse("2026-04-15 19:00:00 UTC") do
       ScheduleTriggerJob.perform_now
@@ -380,7 +382,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     one_time_condition.update!(last_triggered_at: nil)
 
     Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("transient blip"))
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
 
     travel_to Time.zone.parse("2026-04-15 19:00:00 UTC") do
       ScheduleTriggerJob.perform_now
@@ -427,8 +429,8 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     Trigger.any_instance.stubs(:destroy!).raises(StandardError.new("auto-delete blew up"))
 
     captured_details = nil
-    AlertService.stubs(:raise_alert).with do |_title, **kwargs|
-      captured_details = kwargs[:details]
+    ErrorReporter.stubs(:report_exception).with do |_error, **kwargs|
+      captured_details = kwargs[:context][:details]
       true
     end
 
@@ -482,7 +484,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     one_time_condition.update!(last_triggered_at: nil)
 
     Trigger.any_instance.stubs(:hold_wake_group!).raises(StandardError.new("hold blew up"))
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
 
     travel_to Time.zone.parse("2026-04-15 19:00:00 UTC") do
       ScheduleTriggerJob.perform_now
@@ -515,8 +517,8 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("agent root not found"))
 
     captured_details = nil
-    AlertService.stubs(:raise_alert).with do |_title, **kwargs|
-      captured_details = kwargs[:details]
+    ErrorReporter.stubs(:report_exception).with do |_error, **kwargs|
+      captured_details = kwargs[:context][:details]
       true
     end
 
@@ -632,7 +634,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     )
 
     Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("boom"))
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
 
     travel_to Time.zone.parse("2026-04-15 19:00:00 UTC") do
       ScheduleTriggerJob.perform_now
@@ -687,7 +689,7 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     make_due!
 
     Trigger.any_instance.stubs(:create_session!).raises(StandardError.new("persistent error"))
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
 
     # First run: should advance last_triggered_at
     ScheduleTriggerJob.perform_now

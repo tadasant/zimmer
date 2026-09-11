@@ -75,7 +75,7 @@ class SystemEventTriggerJobTest < ActiveJob::TestCase
     wake_trigger
     AppSetting.current.update!(quota_pool_available: true)
     Trigger.any_instance.stubs(:create_session!).raises(StandardError, "boom")
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
 
     SystemEventTriggerJob.perform_now("quota_available")
 
@@ -169,7 +169,7 @@ class SystemEventTriggerJobTest < ActiveJob::TestCase
     # real rather than by a stub, so the first trigger still takes the skip path.
     raising = wake_trigger
     raising.update_columns(agent_root_name: "definitely-not-a-real-agent-root")
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
 
     assert_no_difference -> { Session.count } do
       SystemEventTriggerJob.perform_now("quota_available")
@@ -223,7 +223,7 @@ class SystemEventTriggerJobTest < ActiveJob::TestCase
   test "a fire that raises alerts and leaves the trigger enabled" do
     trigger = wake_trigger
     Trigger.any_instance.stubs(:create_session!).raises(StandardError, "boom")
-    AlertService.expects(:raise_alert).once
+    ErrorReporter.expects(:report_exception).once
 
     SystemEventTriggerJob.perform_now("quota_available")
 

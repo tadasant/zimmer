@@ -217,14 +217,10 @@ class StrandedSleepRescue
       rescued = 0
       abandoned = 0
       refused = 0
-      # Deliberately NOT wrapped in AlertBatcher, unlike the trigger jobs. Their
-      # alerts have no per-subject key worth keeping; these do —
-      # `stranded_sleep_<id>` is what stops the same session being announced every
-      # hour it stays stuck. AlertBatcher::aggregate_dedup_key marks only the
-      # digest of the aggregate, so batching would leave every member key unmarked
-      # and re-announce a session the next time it landed in a different grouping.
-      # A pass is capped at MAX_ACTIONS_PER_SWEEP anyway, so the noise batching
-      # would save is five messages; the dedup it would cost is an hour of them.
+      # One ERROR record per session, each naming its own session id. A pass is
+      # capped at MAX_ACTIONS_PER_SWEEP, and the obs pipeline collapses the burst:
+      # GlitchTip groups them into one issue, Grafana groups by alertname over a
+      # 5-minute interval.
       batch.each do |session|
         case repair!(session, logger)
         when :rescued then rescued += 1
@@ -413,25 +409,23 @@ class StrandedSleepRescue
         return :refused
       end
 
-      logger.warn("Resumed a session asleep on a wake that could never fire",
-        session_id: session.id, rescue_attempt: count + 1)
-
       # Outside the counted region on purpose. The turn is enqueued and the
-      # budget is spent; a Slack failure here must not make the sweep report
-      # `:refused` for a session it demonstrably resumed, because that log line
-      # is the only observability this has.
+      # budget is spent; a reporting failure here must not make the sweep report
+      # `:refused` for a session it demonstrably resumed.
+      #
+      # StructuredLogger#error is the whole emission: it writes the ERROR record
+      # that pages through the Grafana rule AND routes to GlitchTip through
+      # ErrorReporter. A second explicit report here would open a second issue for
+      # the same event.
       begin
-        AlertService.raise_alert(
-          "A sleeping session had no wake-up left",
+        logger.error("A sleeping session had no wake-up left",
+          session_id: session.id, rescue_attempt: count + 1,
           details: "Session #{session.id} was in `waiting` with no trigger that could ever fire, and " \
                    "Zimmer resumed it (rescue #{count + 1} of #{MAX_RESCUES}). Its wake set was " \
                    "consumed, deleted, or left watching a session that will never transition again " \
-                   "— see https://github.com/tadasant/zimmer/issues/855.",
-          source: "StrandedSleepRescue",
-          dedup_key: "stranded_sleep_#{session.id}"
-        )
+                   "— see https://github.com/tadasant/zimmer/issues/855.")
       rescue StandardError => e
-        logger.warn("Resumed a stranded session but could not alert about it",
+        logger.warn("Resumed a stranded session but could not report it",
           session_id: session.id, error: "#{e.class}: #{e.message}")
       end
 
@@ -541,17 +535,12 @@ class StrandedSleepRescue
                  "sleep with no wake-up that could fire. Zimmer has stopped resuming it; a human " \
                  "needs to look at why its wake-ups are not sticking."
       )
-      logger.warn("Gave up on a repeatedly-stranded session", session_id: session.id, rescues: count)
-
-      AlertService.raise_alert(
-        "A session keeps falling asleep with no wake-up",
+      logger.error("A session keeps falling asleep with no wake-up",
+        session_id: session.id, rescues: count,
         details: "Session #{session.id} has been resumed #{count} times by Zimmer's stranded-sleep " \
                  "sweep and has gone straight back to `waiting` with nothing armed every time. " \
                  "Zimmer has stopped resuming it. Restart it by hand once the reason its wake-ups " \
-                 "are not sticking is understood.",
-        source: "StrandedSleepRescue",
-        dedup_key: "stranded_sleep_abandoned_#{session.id}"
-      )
+                 "are not sticking is understood.")
 
       :abandoned
     rescue StandardError => e

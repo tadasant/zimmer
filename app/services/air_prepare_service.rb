@@ -25,7 +25,7 @@ class AirPrepareService
   # the resolved AIR catalog. Distinct from AirPrepareError so AgentSessionJob can
   # treat an unresolvable root as a graceful session failure (logged at WARN)
   # rather than letting an unhandled error bubble to ActiveJob and page
-  # #eng-alerts. The two causes are (1) a freshly-merged root whose definition
+  # #alerts. The two causes are (1) a freshly-merged root whose definition
   # hasn't propagated to this worker's AIR github cache yet — a self-resolving
   # propagation race, since CatalogRefreshJob runs `air update` only every 15 min
   # — and (2) a genuinely bad root name. Neither is broken-system behavior, so
@@ -40,7 +40,7 @@ class AirPrepareService
   # SecretsLoader does not carry — not broken-system behavior. Retrying never
   # helps and nothing is wrong server-side, so AgentSessionJob fails the session
   # gracefully at WARN rather than letting an unhandled error bubble to
-  # ActiveJob and page #eng-alerts. The fix is always operator-side: add the
+  # ActiveJob and page #alerts. The fix is always operator-side: add the
   # variable to Zimmer's `mcp_secrets` credentials, or stop selecting that server.
   # Carries the offending variable names so the failure message can tell the
   # operator exactly which secret to provision.
@@ -700,21 +700,26 @@ class AirPrepareService
     )
   end
 
-  # Surface a dropped stale skill the same way the trigger self-heal does: a
-  # deduped #eng-alerts notice so the stale stored config is still visible even
-  # though it's no longer fatal. Dedup is per-session so a retrying prepare
-  # doesn't spam the channel.
+  # Surface a dropped stale skill the same way the trigger self-heal does, so the
+  # stale stored config is still visible even though it's no longer fatal.
   def alert_stale_skills_dropped(stale, valid)
-    AlertService.raise_alert(
+    details = "Session #{session.id} referenced catalog skill(s) that no longer exist in the catalog:\n" \
+              "• Removed: #{stale.join(', ')}\n" \
+              "• Remaining: #{valid.empty? ? '(none)' : valid.join(', ')}\n\n" \
+              "The stale reference(s) were dropped so `air prepare` could proceed. " \
+              "The session started with the remaining skills.\n\n" \
+              "#{AppUrl.base_url}/sessions/#{session.id}"
+
+    Rails.logger.error("[AirPrepareService] Session self-healed: stale catalog skill(s) removed — #{details}")
+    ErrorReporter.report_message(
       "Session self-healed: stale catalog skill(s) removed",
-      details: "Session *#{session.id}* referenced catalog skill(s) that no longer exist in the catalog:\n" \
-               "• Removed: #{stale.join(', ')}\n" \
-               "• Remaining: #{valid.empty? ? '(none)' : valid.join(', ')}\n\n" \
-               "The stale reference(s) were dropped so `air prepare` could proceed. " \
-               "The session started with the remaining skills.\n\n" \
-               "<#{AppUrl.base_url}/sessions/#{session.id}|View session in Zimmer>",
-      source: "AirPrepareService#run_air_prepare!",
-      dedup_key: "session_stale_skills_#{session.id}"
+      level: :error,
+      context: {
+        source: "AirPrepareService#run_air_prepare!",
+        details: details,
+        session_id: session.id,
+        removed: stale.join(", ")
+      }
     )
   end
 
@@ -740,7 +745,7 @@ class AirPrepareService
   # bounded `air update`) and retry rather than failing. If the root is still
   # absent after a fresh catalog, it's a genuinely bad name — we raise
   # RootResolutionError (a graceful, non-paging failure) so AgentSessionJob can
-  # fail the session cleanly instead of letting it page #eng-alerts.
+  # fail the session cleanly instead of letting it page #alerts.
   #
   # An unresolved ${VAR} gets the same graceful treatment via
   # SecretResolutionError, but without the refresh-and-retry dance: a missing
@@ -787,7 +792,7 @@ class AirPrepareService
       # An unresolved ${VAR} is deterministic and operator-fixable: the selected
       # MCP server needs a secret Zimmer doesn't carry. Retrying and refreshing the
       # catalog are both pointless, so raise straight away — gracefully, so the
-      # job layer fails the session instead of crashing and paging #eng-alerts.
+      # job layer fails the session instead of crashing and paging #alerts.
       if unresolved_variables.any?
         Rails.logger.warn(
           "[AirPrepareService] AIR prepare could not resolve required variable(s) " \

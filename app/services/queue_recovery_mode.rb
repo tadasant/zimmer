@@ -217,10 +217,8 @@ class QueueRecoveryMode
     #
     # @param actor [String, nil] who asked
     # @param exit_reason [Symbol] :manual or :expired
-    # @param defer_alert [Boolean] hand the Slack post to a job instead of posting
-    #   inline -- set by the web-request backstop, which must not block on Slack
     # @return [Status] the snapshot after exiting
-    def exit!(actor: nil, exit_reason: :manual, defer_alert: false)
+    def exit!(actor: nil, exit_reason: :manual)
       before = status
       stuck = HALTED_QUEUES.reject { |queue| unpause(queue) }
 
@@ -230,7 +228,7 @@ class QueueRecoveryMode
         # the exit on every backstop tick. Clearing it here would strand the queue
         # paused with nothing left that would ever lift it.
         log(:error, "exit incomplete, still paused: #{stuck.join(',')}", before)
-        alert_stuck(before, stuck: stuck, defer_alert: defer_alert)
+        alert_stuck(before, stuck: stuck)
         return status
       end
 
@@ -241,7 +239,7 @@ class QueueRecoveryMode
       # already off is a no-op an operator does not need paged about.
       if before.entered_at.present?
         log(:info, "exited (#{EXIT_REASONS.fetch(exit_reason, exit_reason)})", before)
-        alert_exited(before, exit_reason: exit_reason, actor: actor, defer_alert: defer_alert)
+        alert_exited(before, exit_reason: exit_reason, actor: actor)
       end
       snapshot
     end
@@ -251,14 +249,14 @@ class QueueRecoveryMode
     # Keyed off the stored metadata rather than `status.active?` so it fires exactly
     # on the state that needs fixing: metadata present, window elapsed, queues still
     # paused.
-    def expire_if_due!(defer_alert: false)
+    def expire_if_due!
       stored = stored_metadata
       return false if stored["entered_at"].blank?
 
       expires_at = parse_time(stored["expires_at"])
       return false if expires_at.nil? || expires_at.future?
 
-      exit!(actor: "auto-expiry", exit_reason: :expired, defer_alert: defer_alert)
+      exit!(actor: "auto-expiry", exit_reason: :expired)
       # False when an unpause failed and the metadata is still standing, so a caller
       # that reports "resumed" only says so when it is true.
       stored_metadata["entered_at"].blank?
@@ -365,69 +363,82 @@ class QueueRecoveryMode
       deliver_alert(
         extended ? "Queue recovery mode extended" : "Queue recovery mode ENTERED",
         details: [
-          "Background job execution is halted on: *#{HALTED_QUEUES.join(", ")}*.",
+          "Background job execution is halted on: #{HALTED_QUEUES.join(", ")}.",
           "The `#{LIVE_QUEUES.join(", ")}` queue is still running, so sessions can be started and can run.",
-          "Auto-exit at *#{snapshot.expires_at&.iso8601}* (in #{humanized_minutes(snapshot.expires_in)}).",
+          "Auto-exit at #{snapshot.expires_at&.iso8601} (in #{humanized_minutes(snapshot.expires_in)}).",
           snapshot.reason.present? ? "Reason: #{snapshot.reason}" : nil,
           snapshot.entered_by.present? ? "Entered by: #{snapshot.entered_by}" : nil
         ].compact.join("\n"),
-        # Keyed by the window, not by the incident. A fresh key per entry so a second
-        # incident inside AlertService::DEDUP_WINDOW is never swallowed -- and the
-        # expiry time is in the key so an *extension* pages too, rather than
-        # colliding with the original entry (which deliberately keeps entered_at).
-        dedup_key: "queue_recovery_mode_entered:#{snapshot.entered_at&.iso8601}:#{snapshot.expires_at&.iso8601}",
-        defer_alert: false
+        context: {
+          entered_at: snapshot.entered_at&.iso8601,
+          expires_at: snapshot.expires_at&.iso8601
+        }
       )
     end
 
-    # The queues resumed but Zimmer could not confirm it. This is the one condition
-    # here that no timer resolves on its own, so it pages every backstop tick that
-    # retries -- keyed by the stuck set, not by a timestamp, so it repeats until the
-    # set changes rather than going quiet after one hour.
-    def alert_stuck(before, stuck:, defer_alert:)
+    # The queues resumed but Zimmer could not confirm it -- the one condition here
+    # that no timer resolves on its own.
+    #
+    # `log_only: true`, and that is the whole difference from the other three. This
+    # runs on every retried exit, including the web backstop's, which reconciles at
+    # most every RECOVERY_MODE_RECONCILE_INTERVAL on an ordinary page load: a stuck
+    # set can therefore reach here twice a minute for as long as it lasts. The ERROR
+    # record is what pages, and Grafana collapses those into one notification per
+    # group interval; a GlitchTip event per retry would buy nothing on top of that
+    # (the issue is notified once either way) and would put thousands of events
+    # behind one issue. The line above this call already logs the same fact with the
+    # structured queue context, so `deliver_alert` here is the human-readable half.
+    def alert_stuck(before, stuck:)
       deliver_alert(
         "Queue recovery mode could NOT resume #{stuck.join(", ")}",
         details: [
-          "Exiting queue recovery mode failed to unpause: *#{stuck.join(", ")}*.",
+          "Exiting queue recovery mode failed to unpause: #{stuck.join(", ")}.",
           "Those queues are still halted and jobs on them are not running. Zimmer will keep retrying " \
           "on each backstop tick; if it does not clear, unpause them by hand in the GoodJob dashboard at `/jobs`.",
           before.entered_at.present? ? "Halted since: #{before.entered_at.iso8601}" : nil
         ].compact.join("\n"),
-        dedup_key: "queue_recovery_mode_stuck:#{stuck.sort.join(',')}",
-        defer_alert: defer_alert
+        context: { stuck_queues: stuck.sort.join(",") },
+        log_only: true
       )
     end
 
-    def alert_exited(before, exit_reason:, actor:, defer_alert:)
+    def alert_exited(before, exit_reason:, actor:)
       expired = exit_reason == :expired
 
       deliver_alert(
         expired ? "Queue recovery mode auto-exited (TTL)" : "Queue recovery mode exited",
         details: [
-          "Background job execution resumed on: *#{HALTED_QUEUES.join(", ")}*.",
+          "Background job execution resumed on: #{HALTED_QUEUES.join(", ")}.",
           expired ? "This was the TTL backstop, not an operator — the queue backlog is now draining unattended." : nil,
           before.entered_at.present? ? "Halted since: #{before.entered_at.iso8601}" : nil,
           before.reason.present? ? "Reason given on entry: #{before.reason}" : nil,
           actor.present? ? "Exited by: #{actor}" : nil
         ].compact.join("\n"),
-        dedup_key: "queue_recovery_mode_exited:#{before.entered_at&.iso8601}",
-        defer_alert: defer_alert
+        context: { entered_at: before.entered_at&.iso8601, exit_reason: exit_reason.to_s, actor: actor }
       )
     end
 
-    # AlertService posts to Slack synchronously, and SlackService is allowed 5s
-    # connect + 10s read with three backing-off retries -- fine on a worker thread,
-    # not fine on the web request that happened to be the one to notice the TTL had
-    # elapsed. `defer_alert` hands that post to a job instead. It is safe to enqueue:
-    # `exit!` unpauses before it alerts, so `default` is running again by now. If the
-    # enqueue itself fails, say so and carry on -- the resume already happened, and a
-    # missing alert must not look like a failed exit.
-    def deliver_alert(title, details:, dedup_key:, defer_alert:)
-      if defer_alert
-        QueueRecoveryModeAlertJob.perform_later(title, details, dedup_key)
-      else
-        AlertService.raise_alert(title, details: details, source: name, dedup_key: dedup_key)
-      end
+    # Emitted inline, including from the web-request backstop: the ERROR record is
+    # local and ErrorReporter hands its event to the Sentry SDK's background worker,
+    # so neither blocks the request the way a synchronous Slack post would have.
+    #
+    # Every one of these is an ERROR record because every one of them is a page:
+    # halting the background queues, failing to resume them, and resuming them again
+    # are each worth a human's attention, and each fires at most once per transition.
+    # If emitting fails, say so and carry on -- the transition already happened, and
+    # a missing alert must not look like a failed exit.
+    # @param log_only [Boolean] emit the ERROR record (which is the page) but no
+    #   GlitchTip event. For a condition that re-reports on every retry rather than
+    #   once per transition -- see alert_stuck.
+    def deliver_alert(title, details:, context: {}, log_only: false)
+      Rails.logger.error("[queue_recovery_mode] #{title}: #{details.tr("\n", " ")}")
+      return if log_only
+
+      ErrorReporter.report_message(
+        title,
+        level: :error,
+        context: { source: name, details: details }.merge(context)
+      )
     rescue StandardError => e
       Rails.logger.error("[queue_recovery_mode] could not deliver alert #{title.inspect}: #{e.message}")
     end

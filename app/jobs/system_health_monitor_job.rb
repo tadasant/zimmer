@@ -11,8 +11,9 @@
 # the on-demand health report — nothing paged on it — so a real backlog collapse
 # (the SlackTriggerPollerJob thread-starvation incident) grew for ~5 hours before
 # anyone noticed. This job closes that gap: it re-evaluates system health on a
-# cron and raises an operational alert to #eng-alerts (via AlertService) when the
-# backlog is critical.
+# cron and reports an operational alert through the obs pipeline (an ERROR log
+# record, which pages via Grafana, plus a GlitchTip event) when the backlog is
+# critical.
 #
 # Queue placement — deliberately NOT `default`: a queue-backlog monitor must never
 # run on the queue it is watching, or the very backlog it exists to report would
@@ -32,9 +33,10 @@
 #    consecutive checks before we alert, so a brief burst that drains on its own
 #    (e.g. a short spike of SessionTitleJobs) never pages. A single healthy check
 #    resets the streak.
-# 2. AlertService dedup — raise_alert suppresses duplicate alerts sharing a
-#    dedup_key for AlertService::DEDUP_WINDOW (1 hour), so an incident that stays
-#    critical for hours pages at most once per hour rather than every run.
+# 2. Notification grouping in the obs pipeline — Grafana groups by alertname over
+#    a 5-minute interval and re-pages every 4 hours, and a GlitchTip issue notifies
+#    at most once, so an incident that stays critical for hours does not page every
+#    run. Nothing in this process throttles any more.
 class SystemHealthMonitorJob < ApplicationJob
   queue_as :pollers
 
@@ -56,19 +58,6 @@ class SystemHealthMonitorJob < ApplicationJob
   # silently reset the streak, but not so long that a stale count lingers for ever.
   STREAK_CACHE_KEY = "system_health_monitor:consecutive_critical_queue"
   STREAK_TTL = 1.hour
-
-  # Stable dedup key so a backlog-critical alert collapses onto one throttled entry
-  # (one page per AlertService::DEDUP_WINDOW), rather than a fresh page each time the
-  # depth number changes.
-  #
-  # Qualified by the status's `code`, so the two critical shapes throttle
-  # SEPARATELY. They are different incidents wanting different responses — one lane
-  # starving is not the worker going quiet across several — and on one shared key the
-  # first to fire silences the other for the rest of the window. A starved-`inference`
-  # page at 10:00 must not swallow a cross-lane stall at 10:15. Within a shape the key
-  # is still stable, including per lane, so a lane that stays starved for hours pages
-  # once an hour and not once a tick.
-  ALERT_DEDUP_KEY = "system_health_queue_backlog_critical"
 
   def perform
     system_health = HealthMonitorService.new.system_health
@@ -93,29 +82,36 @@ class SystemHealthMonitorJob < ApplicationJob
 
     depth = system_health[:queue_depth]
 
-    # .warn (not .error): a queue backlog is an operational condition a human
-    # should look at, but it is not necessarily a broken-system fault, and the
-    # human-facing page is delivered by AlertService below — logging at .error
-    # would additionally trip the "any Zimmer ERROR → critical" Grafana rule on top of
-    # the Slack page (double-alerting). See CLAUDE.md logging philosophy.
+    # .error, because this line IS the page: it is what trips the "any non-staging
+    # Zimmer ERROR record" Grafana rule. Nothing else here pages — a GlitchTip issue
+    # notifies at most once, ever — so demoting it to .warn takes this alert to
+    # zero.
     # Quote the gate's own message rather than rebuilding it: it names WHICH of the
     # two critical shapes fired — a single starved lane, or no lane picking work up
     # at all — and that is the first thing the responder needs.
-    Rails.logger.warn(
+    Rails.logger.error(
       "[SystemHealthMonitorJob] #{system_health[:status].message} " \
-      "(#{depth} ready job(s), for #{streak} consecutive check(s)); alerting #eng-alerts."
+      "(#{depth} ready job(s), for #{streak} consecutive check(s))"
     )
 
-    AlertService.raise_alert(
+    # The title varies by shape (a wedged lane is not a backlog), so GlitchTip
+    # groups the two incidents separately — which is what the two dedup keys used
+    # to buy. The exact code, including which lane is starved, rides in context.
+    ErrorReporter.report_message(
       alert_title(system_health[:status]),
-      details: build_details(system_health),
-      source: "SystemHealthMonitorJob",
-      dedup_key: alert_dedup_key(system_health[:status])
+      level: :error,
+      context: {
+        source: "SystemHealthMonitorJob",
+        details: build_details(system_health),
+        status_code: system_health[:status].code.presence,
+        queue_depth: depth,
+        consecutive_checks: streak
+      }
     )
   end
 
-  # A wedged lane is not a backlog, and the Slack header is the one line a human on
-  # a phone reads before deciding whether to open the thread. "Queue backlog
+  # A wedged lane is not a backlog, and the title is the one line a human on a phone
+  # reads before deciding whether to open the page. "Queue backlog
   # critical" over a page whose body says the worker is holding a full pool on work
   # that will not finish sends the responder looking for the wrong thing.
   #
@@ -135,13 +131,6 @@ class SystemHealthMonitorJob < ApplicationJob
     else
       "Queue backlog critical"
     end
-  end
-
-  # Falls back to the bare key for a critical status carrying no code, so a future
-  # backlog shape that forgets one throttles like the old single-key behaviour rather
-  # than paging every tick.
-  def alert_dedup_key(status)
-    [ ALERT_DEDUP_KEY, status.code.presence ].compact.join(":")
   end
 
   # Compact, actionable alert body: how deep, what the depth is made of, whether

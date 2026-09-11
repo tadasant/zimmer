@@ -401,7 +401,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
   test "prepare! drops a stale/renamed skill id not in the catalog and prepares with the survivors" do
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     captured_cmd = nil
     stub_air_subprocess(proc { |*args, **opts|
@@ -429,11 +429,14 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
   test "prepare! emits a session self-heal alert when it drops a stale skill id" do
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
 
-    AlertService.expects(:raise_alert).with(
+    ErrorReporter.expects(:report_message).with(
       "Session self-healed: stale catalog skill(s) removed",
       has_entries(
-        source: "AirPrepareService#run_air_prepare!",
-        dedup_key: "session_stale_skills_#{@session.id}"
+        level: :error,
+        context: has_entries(
+          source: "AirPrepareService#run_air_prepare!",
+          session_id: @session.id
+        )
       )
     ).once
 
@@ -451,7 +454,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
   test "prepare! does not alert or drop when every requested skill exists in the catalog" do
     @session.update_column(:catalog_skills, [ "zimmer-run-tests" ])
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     captured_cmd = nil
     stub_air_subprocess(proc { |*args, **opts|
@@ -475,7 +478,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     # requested set intact and let `air prepare` resolve the catalog itself.
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
     SkillsConfig.stubs(:all).returns([])
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     captured_cmd = nil
     stub_air_subprocess(proc { |*args, **opts|
@@ -500,7 +503,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
   test "prepare! persists the pruned skill list so the drop happens once" do
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     stub_air_subprocess(proc { |*args, **opts|
       [ "", "", stub(success?: true, exitstatus: 0) ]
@@ -520,7 +523,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
   test "prepare! only alerts once across repeated prepares of the same stale session" do
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
 
-    AlertService.expects(:raise_alert).once
+    ErrorReporter.expects(:report_message).once
 
     stub_air_subprocess(proc { |*args, **opts|
       [ "", "", stub(success?: true, exitstatus: 0) ]
@@ -542,7 +545,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     # it permanently. The in-memory scrub still runs so `air prepare` survives.
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
     AirCatalogService.stubs(:degraded?).returns(true)
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     captured_cmd = nil
     stub_air_subprocess(proc { |*args, **opts|
@@ -564,7 +567,7 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
   test "prepare! still drops the stale id when persisting the pruned list fails" do
     @session.update_column(:catalog_skills, [ "zimmer-run-tests", "renamed-away-skill" ])
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
     Session.any_instance.stubs(:update_column).raises(ActiveRecord::StatementInvalid, "boom")
 
     captured_cmd = nil

@@ -2116,12 +2116,13 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert warned.call(ran.reload), "a swept session that ran and recorded nothing must still be warned about"
   end
 
-  # 2026-08-29: the stranded-queue alert dedups per session on purpose, so a
-  # sweep that catches N sessions with queues posted N separate pages in one
-  # tick — and every page in `#alerts` spawns its own triage session. The sweep
+  # 2026-08-29: a sweep that catches N sessions with queues emits N reports in one
+  # tick, and every page in `#alerts` spawns its own triage session. The sweep
   # archives without consulting Sessions::ArchiveGuard, so those strands are
-  # unforced and must stay loud; what they must not be is N messages.
-  test "archive_old_sessions collapses a burst of stranded-queue alerts into one page" do
+  # unforced and must stay loud — each naming its own session — while the
+  # collapsing into ONE page happens downstream: every report carries the same
+  # message, which is what GlitchTip groups on and what Grafana groups by.
+  test "archive_old_sessions reports each stranded queue under one shared message" do
     stale = 2.times.map do |i|
       session = Session.create!(
         prompt: "Stale session #{i}",
@@ -2135,26 +2136,21 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
       session
     end
 
-    # The environment gate is off in `test` and is covered by AlertServiceTest;
-    # this is about how many messages one sweep produces. `emit` is what
-    # AlertBatcher calls on flush, so counting it counts Slack posts.
-    AlertService.stubs(:enabled?).returns(true)
     emitted = []
-    # `once` is the assertion — one sweep owes the operator one page, not one
-    # per session — so the count is enforced by Mocha at teardown rather than by
-    # the capture, which is only here to let the body be inspected below.
-    AlertService.expects(:emit).once.with do |title, options|
-      emitted << [ title, options[:details] ]
+    ErrorReporter.stubs(:report_message).with do |message, options|
+      emitted << [ message, options[:context][:details], options[:context][:session_id] ]
       true
-    end.returns(true)
+    end
 
     @service.archive_old_sessions(older_than: 7.days)
 
-    title, details = emitted.last
-    assert_equal "Queued messages stranded by an archive (\u00d72)", title
+    assert_equal 2, emitted.size, "each stranded queue is its own report — none is summarized away"
+    assert_equal [ "Queued messages stranded by an archive" ], emitted.map(&:first).uniq,
+      "one shared message is what collapses the burst into a single page downstream"
     stale.each do |session|
-      assert_includes details, "Session #{session.id} was archived",
-        "the aggregate still names every session it collapsed"
+      report = emitted.find { |_message, _details, session_id| session_id == session.id }
+      assert report, "every swept session with a queue is named by a report of its own"
+      assert_includes report[1], "Session #{session.id} was archived"
       assert_equal "undelivered", session.enqueued_messages.sole.status
     end
   end

@@ -8,9 +8,9 @@ class EgressHealthCheckJobTest < ActiveJob::TestCase
     @original_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
     Rails.cache.delete(EgressHealthCheck::CACHE_KEY)
-    # AlertService posts to Slack (an external boundary) — stub it off by default
-    # so tests never reach out; the paging test sets its own expectation.
-    AlertService.stubs(:raise_alert)
+    # Stub the GlitchTip seam off by default so no test depends on it; the paging
+    # test sets its own expectation.
+    ErrorReporter.stubs(:report_message)
   end
 
   teardown do
@@ -48,12 +48,14 @@ class EgressHealthCheckJobTest < ActiveJob::TestCase
     assert_not EgressHealthCheck.degraded?
   end
 
-  test "pages #eng-alerts once on the healthy->degraded transition, then stays quiet" do
-    AlertService.unstub(:raise_alert)
+  test "pages once on the healthy->degraded transition, then stays quiet" do
+    ErrorReporter.unstub(:report_message)
     # Exactly one page across all three ticks: none on streak 1, one when the
     # threshold is crossed, none on the steady-state degraded tick.
-    AlertService.expects(:raise_alert).once.with do |title, opts|
-      title == "Network egress degraded" && opts[:dedup_key] == EgressHealthCheckJob::ALERT_DEDUP_KEY
+    ErrorReporter.expects(:report_message).once.with do |message, opts|
+      message == "Network egress degraded" &&
+        opts[:level] == :error &&
+        opts[:context][:source] == "EgressHealthCheckJob"
     end
 
     EgressHealthCheckJob.perform_now(check: check(healthy: false)) # streak 1 -> ok
@@ -61,20 +63,16 @@ class EgressHealthCheckJobTest < ActiveJob::TestCase
     EgressHealthCheckJob.perform_now(check: check(healthy: false)) # still degraded (no page)
   end
 
-  test "warns exactly once on the transition into degraded, not every tick" do
+  test "logs at ERROR exactly once on the transition into degraded, not every tick" do
     EgressHealthCheckJob.perform_now(check: check(healthy: false)) # streak 1, still ok
 
-    io = StringIO.new
-    original_logger = Rails.logger
-    Rails.logger = ActiveSupport::Logger.new(io)
-    begin
-      EgressHealthCheckJob.perform_now(check: check(healthy: false)) # streak 2 -> degraded (warns once)
+    entries = capture_log_entries do
+      EgressHealthCheckJob.perform_now(check: check(healthy: false)) # streak 2 -> degraded (pages)
       EgressHealthCheckJob.perform_now(check: check(healthy: false)) # still degraded (stays quiet)
-    ensure
-      Rails.logger = original_logger
     end
 
-    assert_equal 1, io.string.scan(/network egress degraded/).size,
-      "must warn once on the healthy->degraded transition, not on every degraded tick"
+    degraded = entries.select { |severity, message| severity == "ERROR" && message.include?("network egress degraded") }
+    assert_equal 1, degraded.size,
+      "the ERROR record is the page: one on the healthy->degraded transition, none on later degraded ticks"
   end
 end

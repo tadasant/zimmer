@@ -296,7 +296,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     # that tick used to come back as new.
     labelled = [ item(number: 7, labels: [ "ready to merge" ]) ]
 
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
     GithubTriggerPollerJob.any_instance.stubs(:write_state).raises(RuntimeError, "the state write was lost")
     stub_search(label: labelled) do
       assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
@@ -426,7 +426,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
   test "a search failure alerts and leaves the condition's state untouched" do
     before = @label_condition.github_seen_items
 
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
     GithubSearchService.stub(:search_issues, ->(*, **) { raise GithubSearchService::SearchError, "upstream refused the search" }) do
       assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
     end
@@ -445,12 +445,11 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     # touch the condition's seen-set.
     BoundedSubprocess.stubs(:run).returns([ "", "", nil ])
 
-    # The gh failure rides on error: (rendered into the alert's log snippet)
-    # rather than being hand-copied into details.
+    # The gh failure rides as the reported exception, so GlitchTip gets its class,
+    # message and backtrace rather than a hand-copied string.
     snippets = []
-    AlertService.stubs(:raise_alert).with do |*args, **kwargs|
-      opts = kwargs.empty? ? (args.last.is_a?(Hash) ? args.last : {}) : kwargs
-      snippets << AlertSnippet.build(opts[:error]).to_s
+    ErrorReporter.stubs(:report_exception).with do |error, **_kwargs|
+      snippets << AlertSnippet.build(error).to_s
       true
     end
 
@@ -469,10 +468,12 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     # Production 2026-08-10, condition 352: GitHub's search index timed out once, the
     # search refused the short read (correctly — see the service test), and the refusal
     # paged a human at 23:14 for a failure that had already healed by the next tick. The
-    # refusal stays; the page goes. Both routes to #eng-alerts must be silent: AlertService,
-    # and a plain Rails.logger.error line (which pages on its own via the Grafana rule).
+    # refusal stays; the page goes. Both routes to #alerts must be silent: the
+    # GlitchTip report, and a plain Rails.logger.error line (which pages on its own
+    # via the Grafana rule).
     before = @label_condition.github_seen_items
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
+    ErrorReporter.expects(:report_message).never
     Rails.logger.expects(:error).never
 
     incomplete = lambda do |query, **_opts|
@@ -501,7 +502,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
   test "skips the tick without searching or alerting when gh is not authenticated" do
     stub_preflight(GithubSearchService::PREFLIGHT_UNCONFIGURED, "no github.com credential is configured")
     GithubSearchService.expects(:search_issues).never
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
 
     before_label = @label_condition.github_seen_items
     before_issue = @issue_condition.github_last_issue_at
@@ -537,7 +538,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     stub_preflight(GithubSearchService::PREFLIGHT_UNKNOWN,
                    "Get \"https://api.github.com/\": Service Unavailable")
     GithubSearchService.expects(:search_issues).never
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
 
     logged = capture_warns { GithubTriggerPollerJob.perform_now }
     line = logged.sole
@@ -587,7 +588,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
       GithubSearchService::PREFLIGHT_REJECTED,
       GithubSearchService::PREFLIGHT_UNKNOWN ].each do |state|
       stub_preflight(state, "detail")
-      AlertService.expects(:raise_alert).never
+      ErrorReporter.expects(:report_exception).never
 
       GithubTriggerPollerJob.perform_now
     end
@@ -721,10 +722,11 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
 
     @label_condition.update_column(:configuration, @label_condition.configuration.except("seen_items"))
 
-    AlertService.expects(:raise_alert).with do |title, options|
-      title == "GitHub trigger baseline was reset" &&
-        options[:details].include?("tadasant/zimmer#3:ready to merge") &&
-        options[:dedup_key] == "github_trigger_baseline_reset_#{@label_condition.id}"
+    ErrorReporter.expects(:report_message).with do |message, options|
+      message == "GitHub trigger baseline was reset" &&
+        options[:level] == :error &&
+        options[:context][:details].include?("tadasant/zimmer#3:ready to merge") &&
+        options[:context][:condition_id] == @label_condition.id
     end
 
     stub_search(label: [ item(number: 3, labels: [ "ready to merge" ]) ]) do
@@ -736,7 +738,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
 
   test "a first-ever baseline is silent — there is nothing to have lost" do
     un_baseline!(@label_condition)
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
 
     stub_search(label: [ item(number: 3, labels: [ "ready to merge" ]) ]) do
       assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
@@ -1165,7 +1167,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     a = item(number: 50, pr: false, created_at: "2026-07-12T09:00:00Z")
     b = item(number: 51, pr: false, created_at: "2026-07-12T09:00:05Z")
 
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
     GithubTriggerPollerJob.any_instance.stubs(:write_new_issue_state)
       .raises(RuntimeError, "the state write was lost")
     stub_search(issue: [ a, b ]) do
@@ -1196,7 +1198,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     a = item(number: 50, pr: false, created_at: "2026-07-12T09:00:00Z")
     b = item(number: 51, pr: false, created_at: "2026-07-12T09:00:05Z")
 
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
     Trigger.any_instance.stubs(:interpolate_prompt)
       .returns("triage this issue").then.raises(RuntimeError, "the prompt template blew up")
     GithubTriggerPollerJob.any_instance.stubs(:write_new_issue_state)
@@ -1518,11 +1520,11 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
   end
 
   test "a poll of both condition types never reaches the alert path, on first poll or steady state" do
-    # If any condition raises, perform's rescue calls AlertService.raise_alert. Asserting it
+    # If any condition raises, perform's rescue reports it. Asserting it
     # is never called is what turns a swallowed exception into a test failure instead of
     # silence. Both conditions start un-baselined, so the first perform exercises the
     # baseline branches and the second the steady-state ones.
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
 
     un_baseline!(@label_condition)
     un_baseline!(@issue_condition)
@@ -1619,7 +1621,7 @@ class GithubTriggerPollerJobHeartbeatTest < ActiveJob::TestCase
     # nothing was actually polled. If "perform returned" counted as liveness, a total
     # GitHub outage would keep the heartbeat fresh and the health check would sit
     # silent through exactly the incident it exists to catch.
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
     GithubSearchService.stub(:search_issues, ->(*, **) { raise GithubSearchService::SearchError, "502" }) do
       GithubTriggerPollerJob.perform_now
     end
@@ -1630,7 +1632,7 @@ class GithubTriggerPollerJobHeartbeatTest < ActiveJob::TestCase
   test "a poll where only some conditions fail still records the heartbeat" do
     # A single broken condition pages on its own via the per-condition alert; it must
     # not also trip the stall alarm, because the poller itself is demonstrably alive.
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
     fake = lambda do |query, **_opts|
       raise GithubSearchService::SearchError, "502" if query.start_with?("is:issue ")
       [ item(number: 1, labels: [ "ready to merge" ]) ]
@@ -1712,11 +1714,16 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
     GithubSearchService.stub(:search_issues, fake) { GithubTriggerPollerJob.perform_now }
   end
 
-  # Titles of the alerts raised while the block runs.
+  # Titles of the alerts raised while the block runs. An exception report carries
+  # its title in the context; a message report IS its title.
   def capture_alerts
     titles = []
-    AlertService.stubs(:raise_alert).with do |*args, **_kwargs|
-      titles << args.first
+    ErrorReporter.stubs(:report_exception).with do |_error, **kwargs|
+      titles << kwargs[:context][:title]
+      true
+    end
+    ErrorReporter.stubs(:report_message).with do |message, **_kwargs|
+      titles << message
       true
     end
     yield
@@ -1824,7 +1831,7 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
       [ "", "gh: Bad credentials (HTTP 401)", fake_process_status(exitstatus: 1) ],
       [ gh_payload([ 7 ]), "", fake_process_status(exitstatus: 0) ]
     )
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
 
     assert_difference "Session.count", 1 do
       GithubTriggerPollerJob.perform_now
@@ -1848,8 +1855,8 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
     BoundedSubprocess.stubs(:run).returns(failed, ok, failed, ok, ok)
 
     alerted = []
-    AlertService.stubs(:raise_alert).with do |title, **kwargs|
-      alerted << [ title, kwargs[:error]&.message ]
+    ErrorReporter.stubs(:report_exception).with do |error, **kwargs|
+      alerted << [ kwargs[:context][:title], error&.message ]
       true
     end
 
@@ -1873,8 +1880,8 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
     BoundedSubprocess.stubs(:run).returns([ "", "gh: Bad credentials (HTTP 401)", fake_process_status(exitstatus: 1) ])
 
     alerted = []
-    AlertService.stubs(:raise_alert).with do |title, **kwargs|
-      alerted << [ title, kwargs[:error]&.message ]
+    ErrorReporter.stubs(:report_exception).with do |error, **kwargs|
+      alerted << [ kwargs[:context][:title], error&.message ]
       true
     end
 
@@ -1935,8 +1942,12 @@ class GithubTriggerPollerJobRateLimitTest < ActiveJob::TestCase
 
   def capture_alerts
     titles = []
-    AlertService.stubs(:raise_alert).with do |*args, **_kwargs|
-      titles << args.first
+    ErrorReporter.stubs(:report_exception).with do |_error, **kwargs|
+      titles << kwargs[:context][:title]
+      true
+    end
+    ErrorReporter.stubs(:report_message).with do |message, **_kwargs|
+      titles << message
       true
     end
     yield
@@ -1944,9 +1955,10 @@ class GithubTriggerPollerJobRateLimitTest < ActiveJob::TestCase
   end
 
   test "a secondary rate limit is skipped with a WARN instead of paging" do
-    # The defect, directly. Nothing in this tick should reach AlertService, and nothing
+    # The defect, directly. Nothing in this tick should reach GlitchTip, and nothing
     # should be written at ERROR — an ERROR line pages #alerts by itself.
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
+    ErrorReporter.expects(:report_message).never
 
     warns = capture_warns { poll }
 
@@ -1966,7 +1978,7 @@ class GithubTriggerPollerJobRateLimitTest < ActiveJob::TestCase
                     :>, 1, "this test is only meaningful with more than one condition to skip"
 
     BoundedSubprocess.expects(:run).once.returns([ "", SECONDARY_RATE_LIMIT, fake_process_status(exitstatus: 1) ])
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
 
     warns = capture_warns { GithubTriggerPollerJob.perform_now }
 
@@ -2027,7 +2039,7 @@ class GithubTriggerPollerJobRateLimitTest < ActiveJob::TestCase
 
       []
     end
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
 
     warns = capture_log_entries do
       GithubSearchService.stub(:search_issues, fake) { GithubTriggerPollerJob.perform_now }
@@ -2060,7 +2072,7 @@ class GithubTriggerPollerJobRateLimitTest < ActiveJob::TestCase
     # failed read would page for a Redis blip on the very first rate limit, which is the
     # noise this whole path exists to remove.
     Rails.cache.stubs(:read).raises(Redis::BaseConnectionError, "connection refused")
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
 
     warns = capture_warns { (GithubTriggerPollerJob::CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT + 1).times { poll } }
 
@@ -2075,7 +2087,7 @@ class GithubTriggerPollerJobRateLimitTest < ActiveJob::TestCase
     # .never, not a permissive stub: a retry would spend the very quota that ran out, so
     # "did not sleep" is part of what this test is for.
     GithubSearchService.expects(:sleep).never
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
 
     before = @label_condition.github_seen_items
 

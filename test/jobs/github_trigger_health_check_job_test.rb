@@ -37,7 +37,7 @@ class GithubTriggerHealthCheckJobTest < ActiveJob::TestCase
     # expected gap must not page every 5 minutes — and must not be seeded either, or the
     # seed would age into a page for a poller that was never supposed to be running.
     GithubSearchService.stubs(:configured?).returns(false)
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     assert_nothing_raised { GithubTriggerHealthCheckJob.perform_now }
     assert_nil heartbeat, "an unconfigured host must not be given a baseline"
@@ -54,8 +54,8 @@ class GithubTriggerHealthCheckJobTest < ActiveJob::TestCase
     GithubSearchService.stubs(:configured?).returns(false)
     write_heartbeat(50.minutes.ago)
 
-    AlertService.expects(:raise_alert).once.with do |title, _opts|
-      title == "GitHub trigger polling stalled"
+    ErrorReporter.expects(:report_message).once.with do |message, _opts|
+      message == "GitHub trigger polling stalled"
     end
 
     GithubTriggerHealthCheckJob.perform_now
@@ -65,7 +65,7 @@ class GithubTriggerHealthCheckJobTest < ActiveJob::TestCase
     # With nothing to poll the poller returns early every tick and never heartbeats;
     # that silence is correct, not a stall.
     Trigger.with_github_conditions.destroy_all
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     write_heartbeat(2.hours.ago)
     assert_nothing_raised { GithubTriggerHealthCheckJob.perform_now }
@@ -74,14 +74,14 @@ class GithubTriggerHealthCheckJobTest < ActiveJob::TestCase
   # ── Staleness ──────────────────────────────────────────────────────────────
 
   test "does not alert while the poller is heartbeating normally" do
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     write_heartbeat(1.minute.ago)
     GithubTriggerHealthCheckJob.perform_now
   end
 
   test "does not alert just under the staleness threshold" do
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     write_heartbeat((GithubTriggerHealthCheckJob::STALE_THRESHOLD - 1.minute).ago)
     GithubTriggerHealthCheckJob.perform_now
@@ -94,24 +94,29 @@ class GithubTriggerHealthCheckJobTest < ActiveJob::TestCase
     stalled_since = 50.minutes.ago
     write_heartbeat(stalled_since)
 
-    AlertService.expects(:raise_alert).once.with do |title, opts|
-      title == "GitHub trigger polling stalled" &&
-        opts[:source] == "GithubTriggerHealthCheckJob" &&
-        opts[:dedup_key] == GithubTriggerHealthCheckJob::ALERT_DEDUP_KEY &&
-        opts[:details].include?("50 minutes")
+    ErrorReporter.expects(:report_message).once.with do |message, opts|
+      message == "GitHub trigger polling stalled" &&
+        opts[:level] == :error &&
+        opts[:context][:source] == "GithubTriggerHealthCheckJob" &&
+        opts[:context][:details].include?("50 minutes")
     end
 
-    GithubTriggerHealthCheckJob.perform_now
+    entries = capture_log_entries { GithubTriggerHealthCheckJob.perform_now }
+
+    errors = entries.select { |severity, _message| severity == "ERROR" }
+    assert_equal 1, errors.size, "the stall emits the ERROR record that pages"
+    assert_match(/No successful GitHub trigger poll/, errors.first.last)
   end
 
-  test "a stalled poller pages under one stable dedup key, so an outage does not spam" do
-    # AlertService throttles a repeated dedup_key to one message per DEDUP_WINDOW (1h).
-    # What this job must guarantee is that every run of one outage reuses the SAME key
-    # rather than minting a fresh one as the age climbs — otherwise the throttle never
-    # engages and a multi-hour outage pages every run.
-    keys = []
-    AlertService.expects(:raise_alert).twice.with do |_title, opts|
-      keys << opts[:dedup_key]
+  test "a stalled poller reports one stable message, so an outage does not spam" do
+    # Grouping is done downstream now: GlitchTip groups by message and notifies at most
+    # once per issue, and Grafana groups by alertname. What this job must guarantee is
+    # that every run of one outage reports the SAME message rather than minting a fresh
+    # one as the age climbs (the age rides in the context, which does not group) —
+    # otherwise a multi-hour outage opens a new issue on every run.
+    messages = []
+    ErrorReporter.expects(:report_message).twice.with do |message, _opts|
+      messages << message
       true
     end
 
@@ -120,7 +125,7 @@ class GithubTriggerHealthCheckJobTest < ActiveJob::TestCase
     write_heartbeat(90.minutes.ago)
     GithubTriggerHealthCheckJob.perform_now
 
-    assert_equal 1, keys.uniq.size, "an ongoing stall must reuse one dedup key so AlertService can throttle it"
+    assert_equal 1, messages.uniq.size, "an ongoing stall must report one message, so GlitchTip groups it"
   end
 
   # ── Baseline handling ──────────────────────────────────────────────────────
@@ -128,7 +133,7 @@ class GithubTriggerHealthCheckJobTest < ActiveJob::TestCase
   test "seeds a baseline instead of alerting when no heartbeat exists yet" do
     # A fresh boot or a cache flush leaves an absence we cannot date; paging on it would
     # be a false alarm. Seed so the NEXT check has a real reference point.
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
     assert_nil heartbeat
 
     GithubTriggerHealthCheckJob.perform_now
@@ -142,7 +147,7 @@ class GithubTriggerHealthCheckJobTest < ActiveJob::TestCase
     # stays dead, the seed itself ages past the threshold and the next check pages.
     # Exactly one alert across both runs proves the seeding run stayed quiet AND the
     # aged-seed run fired.
-    AlertService.expects(:raise_alert).once
+    ErrorReporter.expects(:report_message).once
 
     GithubTriggerHealthCheckJob.perform_now # no heartbeat -> seeds "now", stays quiet
 
@@ -152,7 +157,7 @@ class GithubTriggerHealthCheckJobTest < ActiveJob::TestCase
   end
 
   test "reseeds rather than crashing on an unparseable heartbeat" do
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
     Rails.cache.write(GithubTriggerPollerJob::HEARTBEAT_CACHE_KEY, "not-a-timestamp")
 
     assert_nothing_raised { GithubTriggerHealthCheckJob.perform_now }
