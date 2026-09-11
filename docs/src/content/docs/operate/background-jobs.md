@@ -64,6 +64,7 @@ From `config.good_job.cron`:
 | 5m | `CleanupExpiredElicitationsJob` | Expire elicitations + clear stranded blocks (leaving a banner that says the round-trip was lost) |
 | 5m | `ElicitationEndpointHealthCheckJob` | Alert when MCP servers cannot reach the approval endpoint (production and staging only — see below) |
 | 5m | `CleanupRuntimeLoginAttemptsJob` | Reap abandoned login attempts |
+| 1h | `ConsoleLoginTokenReaperJob` | Delete [console login tokens](/auth/overview/#the-agent-login-primitive-console-login-tokens) more than 30 days past their expiry, whatever their status. Nothing in the exchange waits on it — an expired, consumed or revoked row refuses on its own — it only bounds the table, and keeps consumed rows for a month as the audit trail of who logged in |
 | 5m | `SpotCeilingSweepJob` | Apply the spot policy to sessions that are already running: pause every running spot session while a quota window has no room for it, and resume them (5 a sweep, highest precedence first) once the fleet is back under the curve with 5 points of the window to spare — along with any session parked there by `action_session`'s `pause_into_spot_queue`. Priority sessions are never paused. See [Spot and priority](/sessions/spot-and-priority/#the-budget-is-a-ceiling). |
 | 5m | `SpotHoldSweepJob` | Repair the spot gate's re-check ladder: find held spot sessions whose `spot_hold_retry_at` passed more than 10 minutes ago with no `AgentSessionJob` still queued for them, and put them back on the ladder (10 a sweep, spread over 3 minutes) carrying the turn they were holding. A hold is kept alive by exactly one delayed job, so without this a single lost job strands the session in `waiting` forever. See [Spot and priority](/sessions/spot-and-priority/#a-hold-that-loses-its-re-check). |
 | 5m | `StalledStartSweepJob` | Re-enqueue the first turn of a session that has been sitting in `waiting` with no `AgentSessionJob` behind it: never started (no `session_id`), carrying a prompt, quiet for more than `StalledSessionStart::GRACE` (10 minutes) by both `created_at` and `updated_at`, no unfinished job in GoodJob (an anti-join, so a session whose job is merely late is never even loaded), and none of the markers that mean "asleep on purpose" (a spot hold, a ceiling pause, an auth park, `paused_by`, an armed wake). A session that has never run carries no marker at all, so until this existed no sweep looked at it and a lost start job stranded the row forever — production session 10426 sat there for three days. Two cases are **failed** instead of started, because a `failed` row is on the dashboard with a reason on it and a `waiting` one is on nobody's list: a session stalled longer than `MAX_STALL_AGE` (1 day), whose turn is stale rather than late, and one past `MAX_RESTARTS` (3). Bounded at `MAX_ACTIONS_PER_SWEEP` (10) a pass. Production and staging only — the repair starts a session. See [Lifecycle](/sessions/lifecycle/#who-else-moves-sessions-around). |
@@ -1708,7 +1709,7 @@ never pages.
 fails closed when the cache is unavailable, and an overloaded instance is exactly when the cache is
 least trustworthy — a lock on the escape hatch is worse than an unthrottled two-row write.
 
-On `/health`, **entering and extending are behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-three-surfaces) and resuming deliberately is not.** That asymmetry is the load-bearing part: halting the
+On `/health`, **entering and extending are behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-four-surfaces) and resuming deliberately is not.** That asymmetry is the load-bearing part: halting the
 demand-side queues is the destructive direction and the one an agent session must not be able to
 take on its own, while the way *out* of a halt has to work on the first try — including on a
 deployment that never set `SUPERVISOR_PASSWORD`, where the realm refuses everything else. Same
@@ -1795,7 +1796,7 @@ who was not reading the transcript it happened in.
 | REST | `GET /api/v1/health/queued_jobs` | `POST /api/v1/health/discard_queued_jobs` | `POST /api/v1/health/reschedule_queued_jobs` |
 | `/health` | the Queued Job Maintenance panel | its Discard button | its Reschedule control |
 
-On `/health` **both actions are behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-three-surfaces)**, via
+On `/health` **both actions are behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-four-surfaces)**, via
 `HealthController::OPERATOR_GATED_ACTIONS`. That is load-bearing and not decoration: a bulk discard
 is exactly the destructive-action-reachable-anonymously shape of
 [#312](https://github.com/tadasant/zimmer/issues/312), and an agent session's shell can reach this

@@ -939,6 +939,33 @@ unthrottled. `GET /health` is unaffected. See
 [the limitation](/limitations/#the-only-rate-limit-is-on-the-health-endpoints-and-it-needs-a-real-cache).
 :::
 
+## Console login tokens
+
+Four routes that sit **outside** this API on purpose — no `/api/v1` prefix, no API key, no MCP
+tool. They are the [agent-login primitive](/auth/overview/#the-agent-login-primitive-console-login-tokens)
+([#220](https://github.com/tadasant/zimmer/issues/220)): a single-use, short-lived, revocable token
+an automated actor exchanges once for a web-console session cookie. An API key is what every agent
+session holds, so a route here that minted console sessions would let the fleet's shared key issue
+itself a login. All four answer `403 {"error": "Forbidden"}` naming `CONSOLE_LOGIN_ENABLED` unless
+that variable is the literal `true`, and that check runs before any credential is read.
+
+| Method | Path | Auth | Notes |
+| --- | --- | --- | --- |
+| `POST` | `/console_login_tokens` | operator realm (HTTP Basic, `SUPERVISOR_PASSWORD`) | `principal` (required, ≤100 chars, no control characters), `ttl_seconds` (default 300, clamped 10–900), `session_ttl_seconds` (default 900, clamped 60–3600); a non-integer → 422. → `201 {token, console_login_token}` with `Cache-Control: no-store`. `token` is `zlt_<id>.<secret>` and appears here and nowhere else; the row holds its SHA-256 |
+| `POST` | `/console_login_tokens/:id/revoke` | operator realm | Idempotent. → `200 {console_login_token, revoked}`, `revoked` true only for the call that changed the row; false again afterwards and for a consumed row. Unknown id → 404 |
+| `POST` | `/console_login` | the token, in the **body** (JSON or form field `token`) | → `200 {console_login: {token_id, principal, role, expires_at}}` plus `Set-Cookie: zimmer_console_session` (`HttpOnly`, `SameSite=Lax`, `Secure` outside local, `Max-Age` = the row's `session_ttl_seconds`). One conditional `UPDATE` from `active` to `consumed`, so a race gets one 200 and one 409. Refusals set no cookie: `401 reason: invalid` (malformed, unknown id, wrong secret — one answer for all three), `401 reason: expired`, `409 reason: consumed`, `409 reason: revoked`. A token in the query string → `400`, unread, and it stays live |
+| `GET` | `/console_login` | the cookie | → `200 {console_login}` for a live session, `401` otherwise. The only reader of the cookie today — see [the limitation](/limitations/#console-login-tokens-issue-a-session-that-nothing-gates-on-yet) |
+
+```bash
+# Mint (from the job that holds the operator credential), exchange (from the actor), confirm.
+TOKEN=$(curl -s -u "supervisor:$SUPERVISOR_PASSWORD" -H 'Content-Type: application/json' \
+  -d '{"principal":"ci-playwright","ttl_seconds":120}' "$HOST/console_login_tokens" | jq -r .token)
+curl -s -c cookies.txt -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\"}" "$HOST/console_login"
+curl -s -b cookies.txt "$HOST/console_login"     # 200 {"console_login":{…}}
+curl -s -H 'Content-Type: application/json' -d "{\"token\":\"$TOKEN\"}" "$HOST/console_login"
+# 409 {"error":"Conflict","reason":"consumed",…} — the tripwire: revoke the id, alarm, mint afresh
+```
+
 ## Costs
 
 `GET /api/v1/costs` → rollups over a window: `totals`, `cost_breakdown` (by kind of token),

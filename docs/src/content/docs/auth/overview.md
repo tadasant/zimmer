@@ -12,7 +12,8 @@ which is most of the battle.
 flowchart TB
     subgraph none["1 · Human → Zimmer: NOTHING (except the operator realm)"]
         W["Web UI · /inference · /settings · /jobs<br/>NO AUTH OF ANY KIND"]
-        SUP["/supervisor admin panel<br/>+ the mutating POST /health/* actions<br/>+ /settings/api_keys<br/>HTTP Basic vs ENV['SUPERVISOR_PASSWORD']<br/>fails closed when unset"]
+        SUP["/supervisor admin panel<br/>+ the mutating POST /health/* actions<br/>+ /settings/api_keys<br/>+ POST /console_login_tokens (mint · revoke)<br/>HTTP Basic vs ENV['SUPERVISOR_PASSWORD']<br/>fails closed when unset"]
+        CL["POST /console_login (exchange) · GET /console_login<br/>single-use token in the body → console session cookie<br/>403 unless CONSOLE_LOGIN_ENABLED=true<br/>the cookie gates nothing yet"]
     end
     subgraph api["2 · Client → REST API"]
         A["X-API-Key header (or Bearer on /mcp)<br/>vs api_keys rows: API_KEYS entries + minted keys<br/>named, revocable, unscoped"]
@@ -26,6 +27,8 @@ flowchart TB
 
     U["You"] --> W
     U --> SUP
+    SUP -. mints a token .-> CL
+    CI["CI job · post-deploy session"] -. exchanges it .-> CL
     C["Script / MCP self-session"] --> A
     W --> H
     SUP --> H
@@ -37,7 +40,10 @@ flowchart TB
 ## 1. Human → Zimmer: there is no authentication (except the operator realm)
 
 This is not a simplification. `ApplicationController` has no `before_action` for auth, no session
-auth, no Devise, no OmniAuth. There are no login routes. There is no `User` model in the auth path.
+auth, no Devise, no OmniAuth. There is no `User` model in the auth path. The one login route that
+exists, `POST /console_login`, is the [agent-login primitive](#the-agent-login-primitive-console-login-tokens)
+below: it is off unless a deployment opts in, it is for automated actors rather than people, and
+the cookie it issues gates nothing today.
 
 Everything is open to anyone who can reach the host:
 
@@ -45,9 +51,9 @@ Everything is open to anyone who can reach the host:
 - `/settings`, `/inference` (including the OAuth login flow),
 - the GoodJob dashboard at `/jobs`.
 
-### The exception: the operator realm, in front of three surfaces
+### The exception: the operator realm, in front of four surfaces
 
-Three surfaces are where "anyone who reaches the host" is too generous, and they share one HTTP Basic
+Four surfaces are where "anyone who reaches the host" is too generous, and they share one HTTP Basic
 realm — `OperatorHttpBasicAuth` (`app/controllers/concerns/operator_http_basic_auth.rb`):
 
 ```ruby
@@ -67,6 +73,12 @@ consent flow runs, so minting an X credential takes the operator credential on e
 
 **The API keys page, `/settings/api_keys`**, all of it, reads included, because it creates and
 revokes the credential the REST API and MCP endpoint take. See [managing keys](#managing-keys).
+
+**Minting and revoking console login tokens, `POST /console_login_tokens`** and
+`POST /console_login_tokens/:id/revoke`, because they issue the credential the
+[agent-login primitive](#the-agent-login-primitive-console-login-tokens) exchanges for a console
+session. Closed altogether unless `CONSOLE_LOGIN_ENABLED` is `true`, and that check runs first, so a
+deployment that never opted in does not even challenge.
 
 **The mutating `POST /health/*` actions** — `cleanup_processes`, `retry_sessions`, `archive_old`,
 `enter_queue_recovery_mode` and `run_post_deploy_tasks` — because they terminate processes, rewrite
@@ -136,6 +148,121 @@ token-bearing dashboards — but it is one credential in front of one panel, not
 Tracked in [#43](https://github.com/tadasant/zimmer/issues/43).
 :::
 
+### The agent-login primitive: console login tokens
+
+An automated actor sometimes needs to drive Zimmer's own web UI — a Playwright run in CI
+([#162](https://github.com/tadasant/zimmer/issues/162)), a post-deploy agent session checking a page
+it just changed. Today there is nothing to authenticate to. When a gate is put in front of the UI
+there will be, and the wrong answer is a standing admin credential in a job log or a transcript.
+[#220](https://github.com/tadasant/zimmer/issues/220) lands the right answer ahead of the gate: a
+**short-lived, single-use, revocable** login token, exchanged once for a session cookie. What leaks
+is dead within minutes and cannot be replayed.
+
+**It is off unless you opt in.** Every endpoint below answers `403` naming `CONSOLE_LOGIN_ENABLED`
+until that variable is the literal `true`, and nothing sets it by default in any environment,
+including the shipped provisioning. That check runs before any credential is read, so a closed
+deployment neither challenges for the operator password nor reveals whether a token exists.
+
+Two stages, two credentials:
+
+```mermaid
+sequenceDiagram
+    participant CI as CI job (holds SUPERVISOR_PASSWORD)
+    participant Z as Zimmer
+    participant A as Playwright / agent session
+    CI->>Z: POST /console_login_tokens {principal, ttl_seconds, session_ttl_seconds}<br/>HTTP Basic, operator realm
+    Z-->>CI: 201 {token: "zlt_<id>.<secret>", …} — shown once; the row holds SHA-256(secret)
+    CI->>A: hand the token over (env var, never a URL)
+    A->>Z: POST /console_login {token} — in the body
+    Note over Z: one UPDATE … WHERE status = 'active' AND expires_at > now → consumed
+    Z-->>A: 200 + Set-Cookie zimmer_console_session (HttpOnly · SameSite=Lax · Max-Age = session_ttl_seconds)
+    A->>Z: GET /console_login (with the cookie)
+    Z-->>A: 200 {principal, role, expires_at}
+    A->>Z: POST /console_login {the same token}
+    Z-->>A: 409 reason: consumed — no cookie. The tripwire.
+```
+
+**Mint** — `POST /console_login_tokens`, behind the [operator realm](#the-exception-the-operator-realm-in-front-of-four-surfaces).
+The operator credential and not an API key, for the reason `/settings/api_keys` gives: every agent
+session holds an API key, and `SUPERVISOR_PASSWORD` is the one credential `CliSpawnEnv` keeps out of
+them, so this is the surface the fleet's shared key cannot use to issue itself a login. The body is
+JSON (or a form): `principal` (required — who the login is for; it goes in the log and the cookie),
+`ttl_seconds` (the mint-to-exchange window, default 300, clamped to 10–900) and
+`session_ttl_seconds` (the session's lifetime, default 900, clamped to 60–3600). The `201` carries
+the plaintext `token` once, with `Cache-Control: no-store`; the `console_login_tokens` row holds a
+SHA-256 digest and never the secret, in the same shape as `api_keys`. The wire form is
+`zlt_<id>.<secret>`: the id finds the row, the secret is compared in constant time.
+
+```bash
+curl -s -u "supervisor:$SUPERVISOR_PASSWORD" -H 'Content-Type: application/json' \
+  -d '{"principal":"ci-playwright","ttl_seconds":120,"session_ttl_seconds":900}' \
+  "$BASE_URL/console_login_tokens"
+# {"token":"zlt_12.7f3a…","console_login_token":{"id":12,"principal":"ci-playwright","role":"console","status":"active","expires_at":"…","session_ttl_seconds":900,…}}
+```
+
+**Exchange** — `POST /console_login`, no credential but the token, **in the request body**. One
+presented in the query string is refused with a `400` before it is looked at, and stays live: a URL
+is written to access logs and forwarded in `Referer`, a body is not. The exchange is one conditional
+`UPDATE … WHERE status = 'active' AND expires_at > now`, from `active` to `consumed`, so two
+requests racing on one token get one `200` and one `409` — there is no window in which both succeed.
+On success the response sets `zimmer_console_session` and answers `200` with what the cookie
+carries. On any refusal there is **no cookie**, and the status and `reason` say which kind:
+
+| Status | `reason` | Meaning |
+| --- | --- | --- |
+| `401` | `invalid` | Malformed, no such id, or a secret that does not match. One answer for all three, so a guess at an id learns nothing |
+| `401` | `expired` | The secret matched, the token was never used, and its window closed |
+| `409` | `consumed` | Already exchanged. **The tripwire** — see below |
+| `409` | `revoked` | Revoked before it was exchanged |
+
+The row-state reasons are only ever told to a caller holding the right secret.
+
+**The session** is an encrypted cookie, separate from the Rails session cookie that carries the
+flash and the CSRF token: `HttpOnly`, `SameSite=Lax`, `Secure` outside a local (development or test)
+deployment on plain HTTP, `Max-Age` equal to the row's `session_ttl_seconds`. The same instant is
+embedded in the signed payload, so a client that edits `Max-Age` on the wire gets a cookie the jar
+refuses. The cookie carries the row's `principal` and `role` — the authority is **baked into the
+row at mint** and nothing about how the token is presented can change it — and the row's id, for
+the log. The one role is `console`: the web UI, and nothing behind the operator realm. A console
+session never satisfies `OperatorHttpBasicAuth`, so an actor holding one cannot mint another. The
+session outlives the token's own window (a 60-second token can issue a 15-minute session) and
+outlives a later revoke of the token, which is a no-op on a consumed row by design.
+
+`GET /console_login` reads the cookie back — `200 {console_login: {token_id, principal, role,
+expires_at}}` or `401` — and is how an actor confirms its exchange took before it drives the UI.
+
+**Revoke** — `POST /console_login_tokens/:id/revoke`, behind the operator realm. Idempotent: `200`
+with `revoked: true` for the call that changed the row, `false` after that and for a consumed row,
+`404` for an id that was never minted.
+
+**A failed exchange is a signal, not a retry.** Single-use is not only about blast radius. An actor
+that just minted a token, has not used it, and gets `409 consumed` back has learned that someone
+else presented it first — or that the flow is broken. Either way the move is: do not retry the same
+token; revoke the id, alarm, mint a fresh one, try once more, and stop on a second failure. A
+replayable token works for the thief and the legitimate actor alike and produces no signal at all.
+Every refusal is logged at WARN with the row's id, so it ships to obs:
+
+```text
+[console_login] minted token id=12 for "ci-playwright" from 100.64.0.7 expires_at=… session_ttl_seconds=900
+[console_login] exchanged token id=12 for "ci-playwright" from 100.64.0.9; session expires_at=…
+[console_login] refused exchange of token id=12 ("ci-playwright", status=consumed) from 100.64.0.11: consumed
+```
+
+**What it does not do yet, honestly.** No controller gates on the cookie: the web UI has no login,
+so an exchanged session authorizes exactly what the perimeter already grants, and `GET /console_login`
+is the only reader. `ConsoleSession` (`app/controllers/concerns/console_session.rb`) is what a UI
+gate includes when one exists. Until then the primitive is proof that the flow works end to end,
+behind a flag nobody has to set. The residual gap once it is used in anger: a consumed token is
+dead, a revoked-unconsumed token is dead, and a leaked mint is bounded by the mint-to-exchange
+window and then by the session TTL, which is why both are short and clamped. No CSRF check on the
+exchange, and none is needed: the request carries no cookie of consequence, and the only thing a
+cross-site POST could do is log the presenting browser in as the token's principal, which anyone
+holding a token can do directly. Rows are reaped 30 days after they expire by
+[`ConsoleLoginTokenReaperJob`](/operate/background-jobs/); until then `/supervisor/console_login_tokens`
+lists who was minted a login and whether it was exchanged, read-only. There is no REST `/api/v1`
+route and no MCP tool for any of this, on purpose. See
+[the limitation](/limitations/#console-login-tokens-issue-a-session-that-nothing-gates-on-yet).
+
 ### There is no per-user authorization in `SessionsController`, and that is the design
 
 Sessions have no owner column and there is no principal to compare one against, so there is nothing
@@ -191,7 +318,7 @@ agent's reach. From there you can:
   that a revoked `API_KEYS` entry stays revoked while the key is still in the variable.
 - **Restore** a revoked key, if you revoked the wrong one. It authenticates again at once.
 
-The page sits behind the [operator realm](#the-exception-the-operator-realm-in-front-of-three-surfaces),
+The page sits behind the [operator realm](#the-exception-the-operator-realm-in-front-of-four-surfaces),
 and it has no REST or MCP sibling, on purpose. Agent sessions hold an API key and not the operator
 credential. If an API key could mint keys it would issue itself new credentials, and if it could
 revoke them any session could cut every other session off by revoking the key they share. With
@@ -294,7 +421,7 @@ Security relies on database access controls."*
 Combined with an Administrate panel that renders those columns as *editable* resources, database
 access controls are close to the only control — and what stands between the panel and them is one
 shared HTTP Basic password, not a database grant. That realm [fails
-closed](#the-exception-the-operator-realm-in-front-of-three-surfaces), so an unconfigured deployment has no
+closed](#the-exception-the-operator-realm-in-front-of-four-surfaces), so an unconfigured deployment has no
 panel at all; a configured one has exactly one credential in front of the plaintext.
 :::
 
@@ -352,8 +479,9 @@ provider would have rotated the single-use refresh token, and only then would th
 | Var | Used for |
 | --- | --- |
 | `API_KEYS` | REST API and MCP auth (comma-separated). Each entry gets a named row the first time it is used, and can be revoked on `/settings/api_keys`. Minted keys live only in the database. |
-| `SUPERVISOR_PASSWORD` | The operator HTTP Basic realm: `/supervisor`, `/settings/api_keys`, and the mutating `POST /health/*` actions. Unset or blank means **all three are closed**, not open. |
+| `SUPERVISOR_PASSWORD` | The operator HTTP Basic realm: `/supervisor`, `/settings/api_keys`, the mutating `POST /health/*` actions, and minting and revoking console login tokens. Unset or blank means **all four are closed**, not open. |
 | `SUPERVISOR_USERNAME` | Optional; defaults to `supervisor`. |
+| `CONSOLE_LOGIN_ENABLED` | The [agent-login primitive](#the-agent-login-primitive-console-login-tokens). Unset by default everywhere; only the literal `true` opens `POST /console_login_tokens`, `POST /console_login` and their siblings. Not a secret, so it is not cleared from agent sessions' environments — a session that can see it still needs the operator credential to mint. |
 | `APP_HOST` | The MCP OAuth **redirect URI**. Defaults to `localhost:3000`, and picks `http` iff the host string contains "localhost". |
 | `RAILS_MASTER_KEY` | Unlocks Rails credentials (`mcp_oauth_clients`, `mcp_secrets`) |
 | `X_OAUTH_CLIENT_ID` / `_SECRET` | X/Twitter token vending |
