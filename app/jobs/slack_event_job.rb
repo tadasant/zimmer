@@ -30,10 +30,11 @@ class SlackEventJob < ApplicationJob
   # singleton poller on `pollers`.
   queue_as :triggers
 
-  # Slack sends `app_mention` alongside `message` for an @mention when an app subscribes to both.
-  # Both are accepted — an app subscribed only to app_mention still gets its mentions — and the
-  # claim on channel + ts makes the pair fire once.
-  EVENT_TYPES = %w[message app_mention].freeze
+  # `message` only. Slack also sends `app_mention` for an @mention, but it carries no
+  # channel_type, so a mention in a group DM — which the poller never reads — would look like one
+  # in a channel. Every mention also arrives as a `message` event, which does carry it, so an
+  # app_mention delivery is acknowledged and ignored.
+  EVENT_TYPES = %w[message].freeze
 
   SERVED_EVENT_TYPES = %w[new_message bot_mention dm_message].freeze
 
@@ -97,11 +98,13 @@ class SlackEventJob < ApplicationJob
 
   private
 
+  # A message event, or nil for anything this job does not fire on. A message with no
+  # channel_type is not guessed at: which condition shapes it could match depends on it.
   def slack_message(event)
     return nil unless event.is_a?(Hash)
     return nil unless EVENT_TYPES.include?(event["type"])
     return nil if event["hidden"] || IGNORED_SUBTYPES.include?(event["subtype"])
-    return nil if event["channel"].blank? || event["ts"].blank?
+    return nil if event["channel"].blank? || event["ts"].blank? || event["channel_type"].blank?
 
     bot_name = event.dig("bot_profile", "name")
 
@@ -115,8 +118,7 @@ class SlackEventJob < ApplicationJob
       subtype: event["subtype"].presence,
       bot_profile: (BotProfile.new(bot_name) if bot_name.present?),
       channel: event["channel"].to_s,
-      # app_mention carries no channel_type; it is never delivered for a DM.
-      channel_type: event["channel_type"].presence || "channel"
+      channel_type: event["channel_type"].to_s
     )
   end
 
@@ -188,27 +190,45 @@ class SlackEventJob < ApplicationJob
 
   # Fire +condition+ for +message+, or fold it into the session its burst already started.
   #
-  # The group lock makes the decision and the fire one step for everything in that group: a
-  # burst's second message waits here until its first has committed a session, then finds it.
+  # Every Slack API call this needs — the permalink, the author's name, the channel's — is made
+  # here, before the transaction, so a rate-limited Slack holds no transaction, no pooled
+  # connection and no lock while it retries.
+  #
+  # Inside, the trigger's spawn lock comes first (Trigger.lock_spawn_for_transaction!). The
+  # `triggers` queue runs several of these at once, and the lock makes each fire of one trigger
+  # see what the previous one committed: a burst's second message finds the first one's session
+  # to fold into, and skip_if_pending_session sees a session another delivery just spawned.
   def deliver(condition, message)
     trigger = condition.trigger
     window = trigger.effective_coalesce_window_seconds
     group_key = coalescing_group_key(message, message.channel) if window.positive?
     dm = direct_message?(message)
 
+    rendered = render_slack_fire(condition, [ message ], channel_id: message.channel, dm: dm)
+    fold_note = if group_key
+      folded_messages_note(
+        [ message ],
+        permalinks: { message => rendered.head_permalink },
+        channel_name: dm ? "this DM" : "##{rendered.channel_name}",
+        window: window,
+        follow_up: true
+      )
+    end
+
     ActiveRecord::Base.transaction do
+      Trigger.lock_spawn_for_transaction!(trigger.id)
+
       if group_key
-        TriggerEventClaim.lock_group!(condition, group_key)
         group = TriggerEventClaim.open_group(condition, group_key, message.ts, window)
         target = Session.find_by(id: group.session_id) if group
 
         if target && foldable?(target)
-          fold_into_session(condition, message, group: group, session: target, dm: dm, window: window)
+          fold_into_session(condition, message, group: group, session: target, dm: dm, rendered: rendered, note: fold_note)
           next
         end
       end
 
-      fire_slack_event(condition, message, channel_id: message.channel, dm: dm, via: "webhook")
+      fire_slack_event(condition, message, channel_id: message.channel, dm: dm, via: "webhook", rendered: rendered)
     end
   end
 
@@ -225,24 +245,13 @@ class SlackEventJob < ApplicationJob
   # the queue is the one sanctioned way to hand it something new. It drains at the next turn
   # boundary, or at once if the session is idle, and Sessions::ArchiveGuard refuses to archive a
   # session over a message still in it — so the session cannot finish without reading this.
-  def fold_into_session(condition, message, group:, session:, dm:, window:)
-    channel_id = message.channel
+  def fold_into_session(condition, message, group:, session:, dm:, rendered:, note:)
     won = TriggerEventClaim.claim!(
-      condition, [ TriggerEventClaim.slack_event_key(channel_id, message.ts) ],
+      condition, [ TriggerEventClaim.slack_event_key(message.channel, message.ts) ],
       via: "webhook", group_key: group.group_key, anchor_ts: group.anchor_ts, session_id: session.id
     )
-    # A redelivery, or the app_mention twin of a message already folded.
+    # A redelivery, or a message the poller already fired.
     return if won.empty?
-
-    permalink = get_message_permalink(channel_id, message.ts)
-    channel_name = dm ? "DM" : (condition.channel_name.presence || resolve_channel_name(channel_id))
-    note = folded_messages_note(
-      [ message ],
-      permalinks: { message => permalink },
-      channel_name: dm ? "this DM" : "##{channel_name}",
-      window: window,
-      follow_up: true
-    )
 
     session.lock!
     session.enqueued_messages.create!(
@@ -256,13 +265,17 @@ class SlackEventJob < ApplicationJob
       slack_user_id: message.user,
       content: message.text.to_s,
       entry_point: dm ? "slack.dm" : "slack.channel_message",
-      slack_channel: channel_name,
-      slack_permalink: permalink,
+      slack_channel: rendered.channel_name,
+      slack_permalink: rendered.head_permalink,
       occurred_at: slack_ts_to_time(message.ts)
     )
 
     Rails.logger.info "[SlackEventJob] Folded message #{message.ts} into session #{session.id} for trigger " \
                       "#{condition.trigger_id}: same author as the message that opened the group at #{group.anchor_ts}, " \
-                      "within #{window}s"
+                      "within #{rendered_window(condition)}s"
+  end
+
+  def rendered_window(condition)
+    condition.trigger.effective_coalesce_window_seconds
   end
 end

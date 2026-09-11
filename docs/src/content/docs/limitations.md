@@ -4470,8 +4470,8 @@ minute, against GitHub's search API. There is no GitHub webhook ingress.
 Slack has one. `POST /webhooks/slack` takes Slack Events API deliveries and fires Slack triggers from
 them a second or two after the message is posted, instead of at the next poll — see
 [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery). It is off by default, and
-switching it on in production does nothing yet: Slack has to reach the endpoint from the public
-internet, and Zimmer's tailnet posture offers no public ingress. Until something does — a scoped
+switching it on in production changes nothing on its own: Slack has to reach the endpoint from the
+public internet, and Zimmer's tailnet posture offers no public ingress. Until something does — a scoped
 public route, a tunnel, or a relay into the tailnet — the endpoint works only where the app is
 publicly reachable, or locally with a signed request.
 
@@ -4488,6 +4488,10 @@ What the webhook does not cover yet:
 - **A burst the webhook coalesces reaches the session in pieces.** The first message spawns the
   session; the rest arrive as queued messages, which the session reads after its first turn rather
   than in its first prompt.
+- **A burst split between the two paths can become two sessions.** When Slack drops part of a burst
+  and the poller fires the rest, or delivers a later message before an earlier one, the parts
+  coalesce separately. Nothing fires twice and nothing is lost, but the one-session-per-burst
+  promise holds only for a burst that arrives by one path, in order.
 - **There is no screen for it.** Whether deliveries are arriving, and which path fired each message,
   is in the `webhook_deliveries` and `trigger_event_claims` tables, which nothing in the UI or the
   API reads yet.

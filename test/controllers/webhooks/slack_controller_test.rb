@@ -124,6 +124,19 @@ class Webhooks::SlackControllerTest < ActionDispatch::IntegrationTest
     assert_equal 0, WebhookDelivery.count
   end
 
+  test "Rails never parses the body into params, signed or not" do
+    deliver(new_message(text: "parsed only after the signature checks out"))
+
+    assert_response :ok
+    assert_equal({}, request.request_parameters)
+
+    ENV.delete("SLACK_TRIGGER_INGEST_MODE")
+    deliver("{not json")
+
+    assert_response :not_found
+    assert_equal({}, request.request_parameters)
+  end
+
   test "a body over the size cap is refused before it is verified" do
     Webhooks::SlackSignature.expects(:verify).never
 
@@ -199,7 +212,7 @@ class Webhooks::SlackControllerTest < ActionDispatch::IntegrationTest
     assert_equal 1, WebhookDelivery.where(delivery_id: "Ev0REDELIVER").count
   end
 
-  test "the same message under two event ids (message + app_mention) fires once" do
+  test "an app_mention delivery is acknowledged and ignored, so a mention fires once, from its message event" do
     event = slack_event(ts: "1756500000.000100")
 
     assert_difference -> { Session.count }, 1 do

@@ -26,9 +26,6 @@ class TriggerEventClaim < ApplicationRecord
   # past both, and rows are one per FIRED message (roughly one per session), so it costs little.
   RETENTION = 30.days
 
-  # Advisory-lock namespace for .lock_group!. "TEGC" in ASCII: trigger event group coalesce.
-  GROUP_LOCK_NAMESPACE = 0x5445_4743
-
   belongs_to :trigger_condition
   belongs_to :session, optional: true
 
@@ -72,7 +69,12 @@ class TriggerEventClaim < ApplicationRecord
   # opened within +window+ seconds before it, and holding a session to fold into.
   #
   # Anchored on the message that opened the group, never chained off the latest one, so a group
-  # spans at most the window — the same rule the poller follows.
+  # spans at most the window — the same rule the poller follows. Only earlier anchors count, so a
+  # message Slack delivers before an earlier one opens a group of its own.
+  #
+  # Two deliveries of one burst race each other here, so the caller asks under the trigger's
+  # spawn lock (Trigger.lock_spawn_for_transaction!): the second waits for the first to commit its
+  # session, then finds it.
   def self.open_group(condition, group_key, ts, window)
     return nil if group_key.blank? || !window.to_i.positive?
 
@@ -82,17 +84,5 @@ class TriggerEventClaim < ApplicationRecord
       .where.not(session_id: nil)
       .order(anchor_ts: :desc)
       .first
-  end
-
-  # Serialize every decision about one (condition, group) until the caller's transaction ends.
-  #
-  # Two messages of one burst arrive on two requests a fraction of a second apart. Without this
-  # both would look for an open group, both would find none, and both would spawn — the exact
-  # fan-out coalescing exists to stop. With it the second waits for the first to commit its
-  # session, then finds the group and folds into it.
-  def self.lock_group!(condition, group_key)
-    connection.select_value(
-      sanitize_sql_array([ "SELECT pg_advisory_xact_lock(?, hashtext(?))", GROUP_LOCK_NAMESPACE, "#{condition.id}:#{group_key}" ])
-    )
   end
 end
