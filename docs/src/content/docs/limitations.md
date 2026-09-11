@@ -5618,10 +5618,11 @@ health: it runs `docker ps -a` per host and skips any host where a container is 
 boots accessories with, covers a crash or a daemon restart. A container that is stopped and stays
 stopped is covered by nothing — no health check, and a deploy that only *boots* skips right over it.
 
-A session cannot repair that itself: no host Docker socket is mounted into the worker — the only
-daemon a session can reach is the worker's own [nested one](/operate/nested-docker/), which cannot
-see host accessories ([#409](https://github.com/tadasant/zimmer/issues/409)) — and there is no root.
-So the only signal is a session reporting that `bin/agent-dev` found no Postgres.
+A session cannot repair that itself: no host Docker socket is mounted into the worker, so the only
+daemon it can reach is the worker's own [nested one](/operate/nested-docker/) — which cannot see host
+accessories — and with nested Docker off, none at all
+([#409](https://github.com/tadasant/zimmer/issues/409)). There is no root either. So the only signal
+is a session reporting that `bin/agent-dev` found no Postgres.
 
 **Staging closes this**: `deploy-staging.yml` runs `kamal accessory reboot devdb -d staging` after
 `accessory boot all`, so re-running the deploy is the recovery path. `reboot` is registry login +
