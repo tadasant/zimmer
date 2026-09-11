@@ -267,6 +267,7 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
 
     assert_includes output, "- **Admitted by the starvation lane:** This turn was admitted by the starvation lane"
     assert_includes output, "held it 127 times over 5 days"
+    assert_includes output, "It runs to its end"
   end
 
   test "a spot session held before its next turn says so, and says the prompt survives" do

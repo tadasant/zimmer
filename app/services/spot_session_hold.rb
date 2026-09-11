@@ -367,18 +367,24 @@ class SpotSessionHold
       start.present? ? now - start : nil
     end
 
-    # Whether the ladder is older than the starvation lane's ceiling. Nil
-    # ceiling means the lane is off, so nothing is ever starved by its measure.
+    # Whether the ladder is older than the starvation lane's ceiling AND is one
+    # the lane overrides. A `fleet_at_cap` ladder is never starved by this
+    # measure however old it is: the lane does not reach it, and a surface that
+    # counted it would promise an admission that never comes. Nil ceiling means
+    # the lane is off, so nothing is ever starved by its measure.
     def starved?(ceiling:, now: Time.current)
-      return false if ceiling.nil?
+      return false if ceiling.nil? || !lane_applies?
 
       waited = waiting_for(now: now)
       waited.present? && waited >= ceiling
     end
 
+    # Whether the starvation lane can admit this hold at all — only a quota
+    # ceiling, never the fleet cap. See the class comment.
+    def lane_applies? = reason == UTILIZATION_REASON
+
     # "Waiting since", said out loud — with the count, because the count is the
-    # one number that tells a session held twice from one held 127 times, and
-    # it used to live only in the metadata.
+    # one number that tells a session held twice from one held 127 times.
     def waiting_sentence(now: Time.current)
       start = since || held_at
       return nil if start.blank?
@@ -445,12 +451,19 @@ class SpotSessionHold
   StarvationAdmission = Data.define(:admitted_at, :after_holds, :after_seconds) do
     include ActionView::Helpers::DateHelper
 
-    def sentence(now: Time.current)
+    # @param running [Boolean] whether the admitted turn is still in flight. The
+    #   marker outlives the turn until the session next meets the gate, so a
+    #   session at rest reads the admission in the past tense.
+    def sentence(running:, now: Time.current)
       when_clause = admitted_at.present? ? "#{distance_of_time_in_words(now, admitted_at)} ago (#{admitted_at.utc.iso8601})" : "at an unrecorded time"
+      outcome = if running
+        "It runs to its end without being paused by the budget ceiling; the session's next turn meets the gate again."
+      else
+        "That turn has ended; the session's next turn meets the gate again."
+      end
       "This turn was admitted by the starvation lane #{when_clause}, not by the spot gate: the gate had " \
         "held it #{after_holds} #{'time'.pluralize(after_holds)} over " \
-        "#{ActiveSupport::Duration.build(after_seconds).inspect}, past the age ceiling. It runs to its " \
-        "end without being paused by the budget ceiling; the session's next turn meets the gate again."
+        "#{distance_of_time_in_words(0, after_seconds)}, past the age ceiling. #{outcome}"
     end
   end
 
@@ -575,16 +588,10 @@ class SpotSessionHold
       )
     end
 
-    # Whether this session's current or last turn came through the starvation
-    # lane rather than the ordinary gate. Read off the row, not through #held?,
-    # so it answers for the running turn the marker was written for.
-    def starvation_admitted?(session)
-      (session.metadata || {})[STARVATION_ADMITTED_AT].present?
-    end
-
-    # The admission, read back for the session page and `get_session`. Nil when
-    # this session was never admitted by the lane (or has been through the gate
-    # since).
+    # The admission, read back for the session page and `get_session`. Read off
+    # the row rather than through #held?, so it answers for the turn the marker
+    # was written for. Nil when this session was never admitted by the lane (or
+    # has been through the gate since).
     def starvation_admission_for(session)
       metadata = session.metadata || {}
       return nil if metadata[STARVATION_ADMITTED_AT].blank?
@@ -685,11 +692,18 @@ class SpotSessionHold
     # written before HELD_SINCE existed carries only HELD_AT, and the next rung
     # carries the older of the two forward (#hold!), so the population is
     # complete within one re-check of the deploy.
+    #
+    # Utilization holds only, the same narrowing as Record#lane_applies?: a
+    # `fleet_at_cap` ladder waits without bound by design, and counting it here
+    # would report sessions "admitted by the starvation lane" that it never
+    # admits.
     def starved_sessions(ceiling: AppSetting.current.spot_starvation_age_ceiling, now: Time.current)
       return held_sessions.none if ceiling.nil?
 
-      held_sessions.where("COALESCE(metadata->>?, metadata->>?) <= ?",
-                          HELD_SINCE, HELD_AT, (now - ceiling).utc.iso8601)
+      held_sessions
+        .where("metadata->>? = ?", HELD_REASON, UTILIZATION_REASON)
+        .where("COALESCE(metadata->>?, metadata->>?) <= ?",
+               HELD_SINCE, HELD_AT, (now - ceiling).utc.iso8601)
     end
 
     def starved_count(ceiling: AppSetting.current.spot_starvation_age_ceiling, now: Time.current)
@@ -1129,39 +1143,63 @@ class SpotSessionHold
       return false if record.nil? || !record.starved?(ceiling: ceiling)
       return false if resuming && scheduled_turn_at(session.metadata || {})
 
-      occupants = starvation_lane_occupants(excluding: session.id)
-      if occupants.size >= STARVATION_LANE_WIDTH
-        Rails.logger.info("[SpotSessionHold] Session #{session.id} is past the #{ceiling.inspect} starvation " \
-                          "ceiling but the lane is occupied (#{occupants.join(', ')}); holding it again")
-        return false
+      # The occupancy read and the marker write are one critical section, under
+      # an advisory lock, because the lane's width is the whole bound: two
+      # re-checks performing at once — every re-check whose time passed during a
+      # deploy becomes ready in the same instant — would both read an empty lane
+      # and both admit. The lock is transaction-scoped and named, the same shape
+      # SessionCardOrder uses; nothing else waits on it.
+      admitted = Session.transaction do
+        Session.connection.execute(
+          Session.sanitize_sql_array([ "SELECT pg_advisory_xact_lock(hashtext(?))", "spot_starvation_lane" ])
+        )
+        occupants = starvation_lane_occupants(excluding: session.id)
+        if occupants.size >= STARVATION_LANE_WIDTH
+          Rails.logger.info("[SpotSessionHold] Session #{session.id} is past the #{ceiling.inspect} starvation " \
+                            "ceiling but the lane is occupied (#{occupants.join(', ')}); holding it again")
+          next false
+        end
+
+        session.merge_metadata!(
+          {
+            STARVATION_ADMITTED_AT => Time.current.utc.iso8601,
+            STARVATION_ADMITTED_AFTER_HOLDS => record.count,
+            STARVATION_ADMITTED_AFTER_SECONDS => record.waiting_for.to_i
+          },
+          METADATA_KEYS
+        )
+        true
       end
+      return false unless admitted
 
-      waited = record.waiting_for.to_i
-      session.merge_metadata!(
-        {
-          STARVATION_ADMITTED_AT => Time.current.utc.iso8601,
-          STARVATION_ADMITTED_AFTER_HOLDS => record.count,
-          STARVATION_ADMITTED_AFTER_SECONDS => waited
-        },
-        METADATA_KEYS
-      )
-
-      message = "Spot session admitted by the starvation lane, not by the gate: it had been held " \
-                "#{record.count} #{'time'.pluralize(record.count)} over " \
-                "#{ActiveSupport::Duration.build(waited).inspect}, past the #{ceiling.inspect} " \
-                "age ceiling, and no other starvation-admitted spot session had a turn in flight. " \
-                "The gate itself still says: #{decision.detail} This turn runs to its end and is not " \
-                "paused by the budget ceiling; the session's next turn meets the gate again."
-      log_buffer&.add(message, level: "warning")
-      session.logs.create!(level: "warning", content: message) if log_buffer.nil?
-      Rails.logger.warn("[SpotSessionHold] Session #{session.id} admitted by the starvation lane after " \
-                        "#{record.count} holds over #{waited}s (#{decision.reason})")
+      # Past this point the admission has happened and the answer is true
+      # whatever the logging does: falling back to #hold! here would re-arm a
+      # ladder the merge above has already cleared, at count 1.
+      note_starvation_admission(session, record, decision, ceiling, log_buffer)
       true
     rescue ActiveRecord::ActiveRecordError => e
       # The lane is an exception; when it cannot be worked out, the rule stands.
       Rails.logger.warn("[SpotSessionHold] Could not evaluate the starvation lane for session #{session.id} " \
                         "(#{e.class}: #{e.message}); holding it")
       false
+    end
+
+    # The admission, said in the session's own timeline and in the Rails log.
+    # Never raises: the admission it describes has already been written.
+    def note_starvation_admission(session, record, decision, ceiling, log_buffer)
+      waited = ActionController::Base.helpers.distance_of_time_in_words(0, record.waiting_for.to_i)
+      message = "Spot session admitted by the starvation lane, not by the gate: it had been held " \
+                "#{record.count} #{'time'.pluralize(record.count)} over #{waited}, past the " \
+                "#{ceiling.inspect} age ceiling, and no other starvation-admitted spot session had a turn " \
+                "in flight. The gate itself still says: #{decision.detail} This turn runs to its end and " \
+                "is not paused by the budget ceiling; the session's next turn meets the gate again."
+      log_buffer&.add(message, level: "warning")
+      session.logs.create!(level: "warning", content: message) if log_buffer.nil?
+      Rails.logger.warn("[SpotSessionHold] Session #{session.id} admitted by the starvation lane after " \
+                        "#{record.count} holds over #{record.waiting_for.to_i}s (#{decision.reason})")
+    rescue StandardError => e
+      Rails.logger.warn("[SpotSessionHold] Could not record the starvation admission for session " \
+                        "#{session.id} (#{e.class}: #{e.message}); the admission stands")
     end
 
     def hold!(session, decision, follow_up_prompt:, log_buffer:, images:, files:)
@@ -1203,8 +1241,10 @@ class SpotSessionHold
       delay = retry_delay(decision, count)
       retry_at = Time.current + delay
       # The first rung's stamp, carried across every later one. A ladder written
-      # before HELD_SINCE existed has only its latest HELD_AT to offer, which
-      # under-reads its age by at most one re-check interval.
+      # before HELD_SINCE existed starts its clock at its last rung before the
+      # deploy — the wait before that is not on the record anywhere the gate
+      # can trust: `created_at` would let a Restart (which clears the ladder)
+      # walk straight into the lane.
       since = metadata[HELD_SINCE].presence || metadata[HELD_AT].presence || Time.current.utc.iso8601
 
       # The deferred turn, in the shape it has to come back out of jsonb in. The

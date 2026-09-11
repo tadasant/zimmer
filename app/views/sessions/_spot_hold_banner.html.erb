@@ -139,10 +139,13 @@
           </p>
         <% end %>
         <%# How long, and how many times — the two numbers that tell a session
-            held twice from one held 127 times, and that used to live only in the
-            metadata. A wait past the starvation age ceiling is named as such, with
-            what the lane does about it, in the same words `get_session` uses. %>
-        <% if !paused_mid_run && hold&.waiting_sentence %>
+            held twice from one held 127 times. A wait past the starvation age
+            ceiling is named as such, with what the lane does about it, in the same
+            words `get_session` uses. Withheld once the gate no longer owns this
+            wait — a promoted session, or one an auth-outage park has superseded —
+            because every clause below promises something the lane will do, and
+            the lane does not reach either. %>
+        <% if !paused_mid_run && !promoted && !superseded_by_park && hold&.waiting_sentence %>
           <% ceiling = AppSetting.current.spot_starvation_age_ceiling %>
           <% starved = hold.starved?(ceiling: ceiling) %>
           <p class="mt-1 text-xs <%= starved ? "font-medium text-amber-900" : "text-amber-700" %>" data-spot-hold-waiting>
@@ -150,6 +153,9 @@
             <% if starved %>
               That is past the <%= ceiling.inspect %> starvation age ceiling: the starvation lane admits it
               at its next re-check, as soon as no other starvation-admitted spot session has a turn in flight.
+            <% elsif !hold.lane_applies? %>
+              It is held for a free session slot, which the starvation lane does not override: priority work
+              is meant to crowd spot work out, and the hold clears as soon as any running session ends.
             <% elsif ceiling.nil? %>
               The starvation lane is off, so nothing bounds this wait.
             <% else %>

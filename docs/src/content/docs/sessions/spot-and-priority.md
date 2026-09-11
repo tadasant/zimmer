@@ -1047,7 +1047,9 @@ first line. A fleet merely ahead of the curve is throttled at the door and never
 
 Priority sessions are never paused, on any reading. Nor are Codex or Pi sessions (they spend
 nothing against a Claude window — every pause and preemption path filters on
-`agent_runtime = 'claude_code'`) or status-summary forks (Zimmer's own seconds-long bookkeeping).
+`agent_runtime = 'claude_code'`) or status-summary forks (Zimmer's own seconds-long bookkeeping). Nor
+is a turn the [starvation lane](#a-hold-has-an-age-ceiling-the-starvation-lane) admitted: it was let
+past a window the gate said was spent, so pausing it would undo the admission on the next tick.
 
 ### What a pause does
 

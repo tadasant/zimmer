@@ -106,18 +106,41 @@ class SpotSessionHoldStarvationTest < ActiveSupport::TestCase
     session.reload
     refute SpotSessionHold.held?(session), "the hold record goes with the admission"
     assert_nil session.metadata[SpotSessionHold::HELD_COUNT]
-    assert SpotSessionHold.starvation_admitted?(session)
+    assert SpotSessionHold.starvation_admission_for(session)
     admission = SpotSessionHold.starvation_admission_for(session)
     assert_equal 127, admission.after_holds
     assert_in_delta 5.days.to_i, admission.after_seconds, 60
     assert_in_delta Time.current, admission.admitted_at, 5
-    assert_match(/admitted by the starvation lane/, admission.sentence)
-    assert_match(/127 times/, admission.sentence)
+    assert_match(/admitted by the starvation lane/, admission.sentence(running: true))
+    assert_match(/127 times over 5 days.*It runs to its end/, admission.sentence(running: true))
+    assert_match(/That turn has ended/, admission.sentence(running: false))
     log = session.logs.where(level: "warning").last
     assert log, "the admission must be readable in the session's own timeline"
     assert_match(/admitted by the starvation lane, not by the gate/, log.content)
-    assert_match(/127 times/, log.content)
+    assert_match(/127 times over 5 days/, log.content)
     assert_match(/24 hours/, log.content)
+  end
+
+  # The incident's production shape: the session is at rest, its re-check fires
+  # (the retry stamp is now in the past) carrying the deferred prompt, and the
+  # gate still says no. This is the turn the lane admits.
+  test "a resume whose re-check has fired is admitted with its prompt" do
+    session = held_session(since: 3.days.ago, count: 73, status: :needs_input)
+    session.merge_metadata!(SpotSessionHold::HELD_RETRY_AT => 1.minute.ago.utc.iso8601,
+                            SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_RESUME,
+                            SpotSessionHold::HELD_PROMPT => "continue")
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      assert_no_enqueued_jobs(only: AgentSessionJob) do
+        refute SpotSessionHold.hold_if_needed(session, follow_up_prompt: "continue")
+      end
+    end
+
+    session.reload
+    admission = SpotSessionHold.starvation_admission_for(session)
+    assert_equal 73, admission.after_holds
+    assert_nil session.metadata[SpotSessionHold::HELD_PROMPT], "the hold record, prompt included, goes with the admission"
+    assert_equal 0, session.enqueued_messages.count, "the prompt runs now rather than queueing"
   end
 
   test "a session held for less than the ceiling is held again" do
@@ -132,7 +155,7 @@ class SpotSessionHoldStarvationTest < ActiveSupport::TestCase
     session.reload
     assert SpotSessionHold.held?(session)
     assert_equal 28, session.metadata[SpotSessionHold::HELD_COUNT]
-    refute SpotSessionHold.starvation_admitted?(session)
+    assert_nil SpotSessionHold.starvation_admission_for(session)
   end
 
   test "the lane is one session wide" do
@@ -164,7 +187,7 @@ class SpotSessionHoldStarvationTest < ActiveSupport::TestCase
     SpotGateService.stub(:evaluate, held_decision) do
       refute SpotSessionHold.hold_if_needed(session)
     end
-    assert SpotSessionHold.starvation_admitted?(session.reload)
+    assert SpotSessionHold.starvation_admission_for(session.reload)
     assert finished.reload.needs_input? && asleep.reload.waiting?
   end
 
@@ -181,12 +204,12 @@ class SpotSessionHoldStarvationTest < ActiveSupport::TestCase
     end
 
     session.reload
-    refute SpotSessionHold.starvation_admitted?(session)
+    assert_nil SpotSessionHold.starvation_admission_for(session)
     assert_equal 127, session.metadata[SpotSessionHold::HELD_COUNT], "not a new rung either"
     assert_equal 1, session.enqueued_messages.count, "the prompt waits behind the scheduled re-check"
   end
 
-  test "the lane never overrides the fleet cap" do
+  test "the lane never overrides the fleet cap, and the surfaces do not count a fleet-cap hold as starved" do
     session = held_session(since: 5.days.ago, count: 127, reason: "fleet_at_cap")
 
     SpotGateService.stub(:evaluate, fleet_cap_decision) do
@@ -195,7 +218,25 @@ class SpotSessionHoldStarvationTest < ActiveSupport::TestCase
       end
     end
 
-    refute SpotSessionHold.starvation_admitted?(session.reload)
+    assert_nil SpotSessionHold.starvation_admission_for(session.reload)
+    record = SpotSessionHold.record_for(session)
+    refute record.starved?(ceiling: 24.hours), "a surface that called this starved would promise an admission that never comes"
+    refute record.lane_applies?
+    assert_equal 0, SpotSessionHold.starved_count
+  end
+
+  test "the occupancy read leaves the asking session out and ignores a marker-carrier whose only job is scheduled" do
+    asker = build_session(status: :waiting,
+      metadata: { SpotSessionHold::STARVATION_ADMITTED_AT => 1.minute.ago.utc.iso8601 })
+    put_on_a_worker(asker)
+    scheduled = build_session(status: :waiting,
+      metadata: { SpotSessionHold::STARVATION_ADMITTED_AT => 3.hours.ago.utc.iso8601 })
+    GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
+      job_class: "AgentSessionJob", serialized_params: { "arguments" => [ scheduled.id ] },
+      scheduled_at: 20.minutes.from_now)
+
+    assert_equal [ asker.id ], SpotSessionHold.starvation_lane_occupants
+    assert_empty SpotSessionHold.starvation_lane_occupants(excluding: asker.id)
   end
 
   test "a ceiling of zero turns the lane off" do
@@ -207,7 +248,7 @@ class SpotSessionHoldStarvationTest < ActiveSupport::TestCase
     end
 
     assert SpotSessionHold.held?(session.reload)
-    refute SpotSessionHold.starvation_admitted?(session)
+    assert_nil SpotSessionHold.starvation_admission_for(session)
     assert_equal 0, SpotSessionHold.starved_count
   end
 
@@ -236,7 +277,7 @@ class SpotSessionHoldStarvationTest < ActiveSupport::TestCase
     SpotGateService.stub(:evaluate, allowed_decision) do
       refute SpotSessionHold.hold_if_needed(session, follow_up_prompt: "continue")
     end
-    refute SpotSessionHold.starvation_admitted?(session.reload),
+    assert_nil SpotSessionHold.starvation_admission_for(session.reload),
       "the marker exempts a turn from the pause sweep, so it must not outlive the turn it was written for"
 
     session.update!(status: :waiting,
@@ -245,7 +286,7 @@ class SpotSessionHoldStarvationTest < ActiveSupport::TestCase
       assert SpotSessionHold.hold_if_needed(session, follow_up_prompt: "continue")
     end
     session.reload
-    refute SpotSessionHold.starvation_admitted?(session)
+    assert_nil SpotSessionHold.starvation_admission_for(session)
     assert_equal 1, session.metadata[SpotSessionHold::HELD_COUNT]
     assert_in_delta Time.current, SpotSessionHold.record_for(session).since, 5
   end
@@ -336,5 +377,84 @@ class SpotSessionHoldStarvationTest < ActiveSupport::TestCase
       fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0,
       pool_capacity: nil
     )
+  end
+end
+
+# The lane is exactly one wide, and that has to hold when two re-checks perform
+# in the same instant — every re-check whose time passed during a deploy becomes
+# ready at once. The occupancy read and the marker write are one critical
+# section under an advisory lock; without it both would read an empty lane and
+# both admit.
+#
+# Its own class, off the transactional fixture, because the race needs two real
+# connections: under `use_transactional_tests` every thread shares one locked
+# connection, the two transactions nest, and nothing is concurrent.
+class SpotSessionHoldStarvationLaneRaceTest < ActiveSupport::TestCase
+  self.use_transactional_tests = false
+
+  setup do
+    AppSetting.editable.update!(spot_gating_enabled: false, spot_starvation_age_ceiling_hours: 24)
+    @sessions = []
+  end
+
+  teardown do
+    ids = @sessions.map(&:id)
+    GoodJob::Job.where("serialized_params -> 'arguments' ->> 0 IN (?)", ids.map(&:to_s)).delete_all
+    Session.where(id: ids).destroy_all
+  end
+
+  def starved_session(since:, count:)
+    @sessions << Session.create!(
+      git_root: "https://github.com/t/r.git", prompt: "work", genesis: SessionGenesis::GITHUB_ISSUE,
+      status: :waiting, agent_runtime: "claude_code",
+      metadata: {
+        SpotSessionHold::HELD_AT => 30.minutes.ago.utc.iso8601,
+        SpotSessionHold::HELD_SINCE => since.utc.iso8601,
+        SpotSessionHold::HELD_REASON => "at_utilization_limit",
+        SpotSessionHold::HELD_DETAIL => "held",
+        SpotSessionHold::HELD_RETRY_AT => 1.minute.ago.utc.iso8601,
+        SpotSessionHold::HELD_COUNT => count,
+        SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+      }
+    )
+    @sessions.last
+  end
+
+  test "two starved sessions admitted concurrently take the lane one at a time" do
+    first = starved_session(since: 5.days.ago, count: 127)
+    second = starved_session(since: 4.days.ago, count: 100)
+    decision = SpotGateService::Decision.new(
+      allowed: false, reason: "at_utilization_limit", detail: "Holding spot sessions: budget spent.",
+      five_hour: nil, weekly: nil, active_sessions: 3, awaiting_sessions: 0, fleet_cap: 10,
+      accounts_read: 2, pool_size: 2, fleet_burn_usd_per_minute: 0.0, candidate_burn_usd_per_minute: 0.0,
+      pool_capacity: nil
+    )
+    # Each admitted session is put on a worker BEFORE its gate check, as it is
+    # in production (the re-check job holds the turn while the gate runs), so
+    # the first to land its marker is in flight when the second reads the lane.
+    [ first, second ].each do |session|
+      GoodJob::Job.create!(active_job_id: SecureRandom.uuid, queue_name: "agents",
+        job_class: "AgentSessionJob", serialized_params: { "arguments" => [ session.id ] },
+        scheduled_at: 2.minutes.ago, performed_at: 1.minute.ago)
+    end
+
+    results = {}
+    SpotGateService.stub(:evaluate, decision) do
+      barrier = Queue.new
+      threads = [ first, second ].map do |session|
+        Thread.new do
+          ActiveRecord::Base.connection_pool.with_connection do
+            barrier.pop
+            results[session.id] = SpotSessionHold.hold_if_needed(session)
+          end
+        end
+      end
+      2.times { barrier << true }
+      threads.each(&:join)
+    end
+
+    admitted = [ first, second ].count { |session| !results.fetch(session.id) }
+    assert_equal 1, admitted, "exactly one of two concurrent starved sessions gets the lane (results: #{results})"
+    assert_equal 1, [ first, second ].count { |session| SpotSessionHold.starvation_admission_for(session.reload) }
   end
 end

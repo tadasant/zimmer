@@ -629,7 +629,12 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     AppSetting.editable.update!(spot_starvation_age_ceiling_hours: 24)
     held_spot_session(retry_at: 20.minutes.from_now)
     starved = held_spot_session(retry_at: 20.minutes.from_now)
-    starved.merge_metadata!(SpotSessionHold::HELD_SINCE => 3.days.ago.utc.iso8601)
+    # A utilization hold: the fixture's `fleet_at_cap` one is never starved by
+    # the lane's measure, however old, and must not be counted.
+    starved.merge_metadata!(SpotSessionHold::HELD_SINCE => 3.days.ago.utc.iso8601,
+                            SpotSessionHold::HELD_REASON => "at_utilization_limit")
+    aged_fleet_cap = held_spot_session(retry_at: 20.minutes.from_now)
+    aged_fleet_cap.merge_metadata!(SpotSessionHold::HELD_SINCE => 4.days.ago.utc.iso8601)
     occupant = Session.create!(git_root: "https://github.com/t/r.git", prompt: "admitted", status: :running,
                                genesis: SessionGenesis::GITHUB_ISSUE, agent_runtime: "claude_code",
                                metadata: { SpotSessionHold::STARVATION_ADMITTED_AT => 5.minutes.ago.utc.iso8601 })
@@ -637,9 +642,9 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     get inference_url
 
     assert_response :success
-    assert_select "#spot-held-count", "2"
+    assert_select "#spot-held-count", "3"
     assert_select "#spot-starved-count", "1"
-    assert_select "#spot-gate-starvation-decision", text: /oldest has been waiting 3 days/
+    assert_select "#spot-gate-starvation-decision", text: /oldest has been waiting 4 days/
     assert_select "#spot-gate-starvation-decision", text: /1 has waited past the 24 hours age ceiling/
     assert_select "#spot-gate-starvation-decision", text: /running session ##{occupant.id}/
     assert_select "input#app_setting_spot_starvation_age_ceiling_hours[value=?]", "24"
