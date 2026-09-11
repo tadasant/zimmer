@@ -14,6 +14,33 @@
 # because an unreaped child holds its pid as a zombie until someone waits on it.
 # See #process_running?.
 #
+# NOTHING IS SIGNALLED THAT CANNOT BE SHOWN TO BE THE PROCESS WE MEANT (#365)
+# -------------------------------------------------------------------------
+# A bare pid is not an address. Zimmer's Kamal roles each have their own PID
+# namespace, so a pid recorded by one container names nothing, or something else,
+# in another; and within one namespace the OS recycles pids, so a pid that named
+# our agent an hour ago can name any process of the same user today. `ps` agrees
+# with signal 0 on both, and neither tells you *which* process holds the number.
+#
+# So before the first signal, #establish_provenance compares the pid against the
+# identity `AgentProcessLiveness` recorded when it was spawned (boot id, PID
+# namespace, start time — read from the session unless the caller passes one):
+#
+#   * recorded in another boot or namespace => :unverifiable. Nothing is sent, and
+#     the answer is "we cannot tell", never :already_dead — a process we cannot
+#     see is not one we handled.
+#   * same namespace, different start time  => :recycled. Nothing is sent: the
+#     process we spawned is gone, and the pid now belongs to a stranger.
+#   * same namespace, pid absent            => :already_dead, as before.
+#   * same namespace, same start time       => the ladder below runs.
+#
+# A pid with no recorded identity (a caller that found it by scanning the host, a
+# session spawned before identities were recorded, a host with no `/proc`) cannot
+# be traced back to its spawn. It is pinned instead: the start time of whatever
+# holds the pid when termination begins. Either way the start time is re-checked
+# before every signal (#send_signal), so a pid that changes hands mid-ladder is
+# never signalled again and its group is never swept.
+#
 # Usage:
 #   service = ProcessTerminationService.new(
 #     process_pid: 12345,
@@ -22,7 +49,8 @@
 #   )
 #   result = service.terminate
 #   result.success?         # => true/false
-#   result.status           # => :terminated, :already_dead, :zombie, :permission_denied, :error
+#   result.status           # => :terminated, :already_dead, :zombie_reaped, :recycled,
+#                           #    :unverifiable, :permission_denied, :error
 #   result.message          # => human-readable message
 #
 class ProcessTerminationService
@@ -61,18 +89,26 @@ class ProcessTerminationService
 
   attr_reader :process_pid, :process_manager, :log_buffer, :session
 
-  # Structured result for termination operations
+  # Structured result for termination operations.
+  #
+  # `success?` means "the process the caller meant is no longer running", which is
+  # why :recycled counts and :unverifiable does not: a recycled pid proves our
+  # process exited, while a pid in a namespace we cannot see proves nothing.
   TerminationResult = Struct.new(:status, :message, keyword_init: true) do
     def success?
-      [ :terminated, :already_dead, :zombie_reaped ].include?(status)
+      [ :terminated, :already_dead, :zombie_reaped, :recycled ].include?(status)
     end
   end
 
-  def initialize(process_pid:, process_manager: nil, log_buffer: nil, session: nil)
+  # @param identity [Hash, nil] the `process_identity` recorded when `process_pid`
+  #   was spawned (see AgentProcessLiveness.identity_for). Defaults to the one
+  #   recorded on `session`. Ignored when it names a different pid.
+  def initialize(process_pid:, process_manager: nil, log_buffer: nil, session: nil, identity: nil)
     @process_pid = process_pid
     @process_manager = process_manager || SystemProcessManager.new
     @log_buffer = log_buffer
     @session = session
+    @identity = identity
     @logger = StructuredLogger.new({
       process_pid: process_pid,
       session_id: session&.id,
@@ -85,6 +121,12 @@ class ProcessTerminationService
   def terminate
     unless process_pid
       return TerminationResult.new(status: :already_dead, message: "No process ID provided")
+    end
+
+    if (refusal = provenance_refusal)
+      add_log(refusal.message, level: refusal.status == :unverifiable ? "warning" : "info")
+      @logger.info("Termination not attempted", status: refusal.status)
+      return refusal
     end
 
     # Get process info for diagnostics
@@ -188,6 +230,118 @@ class ProcessTerminationService
 
   private
 
+  # The result to return WITHOUT signalling anything, or nil when the ladder may run.
+  # See "Nothing is signalled that cannot be shown to be the process we meant" above.
+  # @return [TerminationResult, nil]
+  def provenance_refusal
+    case establish_provenance
+    when :foreign
+      TerminationResult.new(
+        status: :unverifiable,
+        message: "Process #{process_pid} was recorded in another PID namespace or boot " \
+                 "(#{@identity_scope}), so it cannot be seen or signalled from here — " \
+                 "whether it is still running is unknown. Nothing was signalled."
+      )
+    when :recycled
+      TerminationResult.new(
+        status: :recycled,
+        message: "PID #{process_pid} now belongs to a different process than the one that was " \
+                 "spawned (start time differs), so that process is gone. Nothing was signalled."
+      )
+    when :gone
+      # Deliberately no group sweep, for the same reason as the :already_dead branch
+      # in #terminate: we never observed this pid alive.
+      TerminationResult.new(status: :already_dead, message: "Process #{process_pid} not found")
+    end
+  end
+
+  # Decide whether `process_pid` is the process the caller meant, and pin the start
+  # time every later signal is checked against.
+  #
+  # @return [Symbol]
+  #   :verified — the recorded identity matches the process holding the pid now
+  #   :pinned   — nothing recorded to match; pinned to the process holding it now
+  #   :unpinned — nothing recorded, and nothing here to pin (no `/proc`, or no such
+  #               process in it); the ladder runs as it always has
+  #   :foreign  — recorded in another boot or PID namespace
+  #   :recycled — recorded here, but the pid is held by a later process
+  #   :gone     — recorded here, and nothing holds the pid
+  def establish_provenance
+    identity = recorded_identity
+
+    case AgentProcessLiveness.locality(identity)
+    when :foreign
+      @identity_scope = identity.values_at("boot_id", "pid_namespace").join(" ")
+      return :foreign
+    when :local
+      snapshot = process_snapshot
+      return :gone if snapshot.nil?
+      return :recycled unless snapshot[:started_at_ticks].to_s == identity["started_at_ticks"].to_s
+
+      @pinned_start_ticks = identity["started_at_ticks"].to_s
+      return :verified
+    end
+
+    ticks = process_snapshot&.dig(:started_at_ticks)
+    return :unpinned if ticks.blank?
+
+    @pinned_start_ticks = ticks.to_s
+    :pinned
+  end
+
+  # The identity recorded for THIS pid, or nil. An identity for a different pid —
+  # the session has moved on to a newer process — says nothing about this one.
+  def recorded_identity
+    identity = @identity || (@session && AgentProcessLiveness.recorded_identity(@session))
+    return nil unless identity.is_a?(Hash) && identity["pid"].to_i == process_pid.to_i
+
+    identity
+  end
+
+  # State and start time of whatever holds the pid right now, from one `/proc` read.
+  # @return [Hash, nil] nil when nothing holds it, or there is no `/proc`
+  def process_snapshot
+    AgentProcessLiveness.process_snapshot(process_pid)
+  end
+
+  # Deliver `signal` to `target` — the pid, or `-pid` for its process group — only
+  # while the pid still names the process this service set out to end. Raising
+  # ESRCH lets every caller's existing "no such process" handling take over.
+  def send_signal(signal, target)
+    raise Errno::ESRCH, "PID #{process_pid} now belongs to a different process" if pid_reassigned?
+
+    @process_manager.kill(signal, target)
+  end
+
+  # Has the pid been handed to a different process since its start time was pinned?
+  # An absent pid is not "reassigned": a leader that exited can still have a live
+  # group to sweep, and a pid cannot be reallocated while its group has members.
+  # Sticky once true, because the process we meant can never come back.
+  def pid_reassigned?
+    return true if @pid_reassigned
+    return false unless @pinned_start_ticks
+
+    note_reassignment(process_snapshot)
+  end
+
+  # Liveness of a pinned process that is not our child, read from `/proc` rather
+  # than signal 0: absent, a zombie, or a different start time all mean the
+  # process we meant is no longer running.
+  def pinned_process_running?
+    snapshot = process_snapshot
+    return false if snapshot.nil? || note_reassignment(snapshot)
+
+    snapshot[:state] != AgentProcessLiveness::ZOMBIE_STATE
+  end
+
+  # @param snapshot [Hash, nil] AgentProcessLiveness.process_snapshot for the pid
+  # @return [Boolean] whether it shows the pid held by a process other than the pinned one
+  def note_reassignment(snapshot)
+    ticks = snapshot&.dig(:started_at_ticks)
+    @pid_reassigned = true if ticks.present? && ticks.to_s != @pinned_start_ticks
+    @pid_reassigned || false
+  end
+
   # Try multiple termination strategies in sequence
   #
   # Each step waits on a truthful liveness check (see #process_running?), so a
@@ -235,7 +389,7 @@ class ProcessTerminationService
   # @param signal [String] signal to send
   # @return [TerminationResult, nil] result if terminal, nil to continue
   def try_signal_process_group(signal)
-    @process_manager.kill(signal, -process_pid)
+    send_signal(signal, -process_pid)
     wait_for_termination
     return nil if process_running?
 
@@ -254,7 +408,7 @@ class ProcessTerminationService
   # @param signal [String] signal to send
   # @return [TerminationResult, nil] result if terminal, nil to continue
   def try_signal_individual(signal)
-    @process_manager.kill(signal, process_pid)
+    send_signal(signal, process_pid)
     wait_for_termination
     return nil if process_running?
 
@@ -286,7 +440,7 @@ class ProcessTerminationService
 
     # Try process group first
     begin
-      @process_manager.kill("KILL", -process_pid)
+      send_signal("KILL", -process_pid)
       wait_for_termination(timeout: KILL_GRACE_SECONDS)
       unless process_running?
         reap_process
@@ -298,7 +452,7 @@ class ProcessTerminationService
 
     # Try individual process
     begin
-      @process_manager.kill("KILL", process_pid)
+      send_signal("KILL", process_pid)
       wait_for_termination(timeout: KILL_GRACE_SECONDS)
       unless process_running?
         reap_process
@@ -317,10 +471,24 @@ class ProcessTerminationService
   # return the result untouched. A failed sweep never downgrades a termination
   # that worked — the leader is dead either way, and the result callers act on
   # is about the leader.
+  # A pid handed to another process mid-ladder is the one exception: our process is
+  # gone, but `-pid` may now name the newcomer's group, so there is no sweep and
+  # the result says what happened.
+  #
   # @param result [TerminationResult, nil]
-  # @return [TerminationResult, nil] the same result
+  # @return [TerminationResult, nil] the same result, or :recycled
   def finish(result)
-    sweep_process_group if result&.success?
+    return result unless result&.success?
+
+    if @pid_reassigned
+      return TerminationResult.new(
+        status: :recycled,
+        message: "Process #{process_pid} exited and its PID was reassigned mid-termination; " \
+                 "the new holder was not signalled"
+      )
+    end
+
+    sweep_process_group
     result
   end
 
@@ -370,7 +538,7 @@ class ProcessTerminationService
       "Process group #{process_pid} still has members after SIGTERM; sweeping with SIGKILL",
       level: "info"
     )
-    @process_manager.kill("KILL", -process_pid)
+    send_signal("KILL", -process_pid)
 
     confirm_deadline = monotonic_now + KILL_GRACE_SECONDS
     while process_group_alive?
@@ -402,8 +570,12 @@ class ProcessTerminationService
   # where signalling it would be suicide: a pid that somehow matches OUR process
   # group would put the SIGKILL through this Ruby process (and every GoodJob
   # thread in it).
+  #
+  # And once the pid is held by a process other than the one we pinned, `-pid`
+  # names that process's group if it leads one, so there is nothing of ours to sweep.
   def sweepable_process_group?
     return false unless process_pid.is_a?(Integer) && process_pid > 1
+    return false if pid_reassigned?
 
     process_pid != Process.getpgid(Process.pid)
   rescue SystemCallError
@@ -451,7 +623,7 @@ class ProcessTerminationService
     result
   rescue Errno::ECHILD
     # Not our child, or somebody else already collected it. Either way `wait`
-    # cannot answer the liveness question — the caller falls back to signal 0.
+    # cannot answer the liveness question — see #process_running? for what does.
     NOT_OUR_CHILD
   rescue SystemCallError => e
     add_log("Error reaping process #{process_pid}: #{e.message}", level: "debug")
@@ -469,8 +641,10 @@ class ProcessTerminationService
   # A non-blocking wait answers it correctly and reaps as a side effect:
   #   - a result  => the child had exited; it is now collected and truly gone
   #   - nil       => it is our child and it has NOT exited; still running
-  #   - ECHILD    => waiting cannot answer; fall back to signal 0, which is the
-  #                  right (and only) answer for a process we did not spawn
+  #   - ECHILD    => waiting cannot answer. For a pinned process (see
+  #                  #establish_provenance) `/proc` answers instead: present, not a
+  #                  zombie, and the same start time. Only an unpinned pid — no
+  #                  `/proc` to read — falls back to signal 0.
   #
   # Once reaped, the pid is released back to the OS and could be recycled, so the
   # answer is memoized rather than re-probed with signal 0.
@@ -479,7 +653,7 @@ class ProcessTerminationService
 
     case reap_process
     when NOT_OUR_CHILD
-      @process_manager.running?(process_pid)
+      @pinned_start_ticks ? pinned_process_running? : @process_manager.running?(process_pid)
     when nil
       true
     else

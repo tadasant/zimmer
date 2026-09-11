@@ -777,6 +777,204 @@ class ProcessTerminationServiceTest < ActiveSupport::TestCase
     pidfile&.close!
   end
 
+  # === Provenance (#365) ===
+  #
+  # A pid is only signalled once it is shown to be the process that was spawned:
+  # same boot, same PID namespace, same start time as the identity recorded at spawn.
+  # The kernel will not recycle a pid on demand, so a recycled pid is modelled the
+  # way it looks from here — a live process whose start time is not the one on
+  # record — and a foreign namespace the same way, by recording one we are not in.
+
+  def require_procfs
+    skip("requires Linux /proc") unless File.exist?("/proc/self/ns/pid")
+  end
+
+  def create_session
+    Session.create!(
+      prompt: "Test prompt",
+      agent_runtime: "claude_code",
+      status: :running,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      session_id: SecureRandom.uuid
+    )
+  end
+
+  # A live `sleep` that is NOT our child — the shape of a pid this service is asked
+  # to end after a worker restart, and of a stranger that inherited a recycled pid.
+  # Double-forked: the shell we spawn exits at once and the sleep is reparented.
+  # @return [Integer] the orphan's pid; the caller force_cleanups it
+  def spawn_orphan_sleeper
+    pidfile = Tempfile.new("zimmer-orphan-pid")
+    manager = SystemProcessManager.new
+    parent_pid = manager.spawn("sh", "-c", %(sh -c 'sleep 60' & echo $! > #{pidfile.path}))
+
+    orphan_pid = nil
+    wait_until(5.0) do
+      orphan_pid = File.read(pidfile.path).strip.to_i
+      orphan_pid.positive? && real_process_alive?(orphan_pid)
+    end
+    manager.wait(parent_pid)
+    assert real_process_alive?(orphan_pid), "test setup: orphan was never running"
+    assert_raises(Errno::ECHILD) { Process.wait2(orphan_pid, Process::WNOHANG) }
+    orphan_pid
+  ensure
+    pidfile&.close!
+  end
+
+  def record_identity(session, pid, **overrides)
+    session.record_agent_process!(pid)
+    identity = session.reload.metadata[AgentProcessLiveness::IDENTITY_KEY]
+    assert identity["started_at_ticks"].present?, "test setup: no start time was recorded"
+    session.merge_metadata!(AgentProcessLiveness::IDENTITY_KEY => identity.merge(overrides.stringify_keys))
+    session.reload
+  end
+
+  test "terminate never signals a pid whose start time is not the one recorded for it" do
+    require_procfs
+    stranger = spawn_orphan_sleeper
+    session = create_session
+    # The session recorded an EARLIER process under this number: same kernel, same
+    # namespace, an older start time. What holds the pid now is somebody else.
+    recorded = AgentProcessLiveness.process_snapshot(stranger)[:started_at_ticks].to_i - 1
+    record_identity(session, stranger, started_at_ticks: recorded.to_s)
+
+    result = ProcessTerminationService.new(
+      process_pid: stranger, process_manager: SystemProcessManager.new, session: session
+    ).terminate
+
+    assert_equal :recycled, result.status, result.message
+    assert result.success?, "the process that was spawned is provably gone"
+    assert real_process_alive?(stranger), "a recycled pid's new holder must not be signalled"
+    assert session.logs.where("content LIKE ?", "%Nothing was signalled%").exists?
+  ensure
+    force_cleanup(stranger)
+  end
+
+  test "terminate neither signals nor reports already_dead for a pid recorded in another namespace or boot" do
+    require_procfs
+
+    {
+      "another PID namespace" => { pid_namespace: "pid:[1]" },
+      "another boot" => { boot_id: SecureRandom.uuid }
+    }.each do |label, overrides|
+      stranger = spawn_orphan_sleeper
+      session = create_session
+      record_identity(session, stranger, **overrides)
+
+      result = ProcessTerminationService.new(
+        process_pid: stranger, process_manager: SystemProcessManager.new, session: session
+      ).terminate
+
+      assert_equal :unverifiable, result.status, "#{label}: #{result.message}"
+      assert_not result.success?, "#{label}: a process we cannot see is not one we handled"
+      assert real_process_alive?(stranger), "#{label}: the pid means something else here and must not be signalled"
+      assert session.logs.where(level: "warning").where("content LIKE ?", "%cannot be seen or signalled%").exists?,
+        "#{label}: the refusal must say why"
+    ensure
+      force_cleanup(stranger)
+    end
+  end
+
+  test "terminate kills a real non-child whose recorded identity matches, without reading a zombie as alive" do
+    require_procfs
+    target = spawn_orphan_sleeper
+    session = create_session
+    record_identity(session, target)
+
+    result = ProcessTerminationService.new(
+      process_pid: target, process_manager: SystemProcessManager.new, session: session
+    ).terminate
+
+    assert_equal :terminated, result.status, result.message
+    wait_until(2.0) { !real_process_alive?(target) }
+    assert_not real_process_alive?(target)
+  ensure
+    force_cleanup(target)
+  end
+
+  test "terminate pins a non-child with no recorded identity and kills it" do
+    require_procfs
+    target = spawn_orphan_sleeper
+    service = ProcessTerminationService.new(process_pid: target, process_manager: SystemProcessManager.new)
+
+    result = service.terminate
+
+    assert_equal :terminated, result.status, result.message
+    assert_predicate service.instance_variable_get(:@pinned_start_ticks), :present?,
+      "with nothing recorded, the process holding the pid at the start is what gets pinned"
+    wait_until(2.0) { !real_process_alive?(target) }
+    assert_not real_process_alive?(target)
+  ensure
+    force_cleanup(target)
+  end
+
+  test "terminate reports already_dead without sending any signal when the recorded process is gone" do
+    require_procfs
+    manager = SystemProcessManager.new
+    pid = manager.spawn("sleep", "60", pgroup: true)
+    session = create_session
+    record_identity(session, pid)
+    Process.kill("KILL", pid)
+    Process.wait(pid) # killed and reaped: nothing holds the pid now
+
+    result = ProcessTerminationService.new(
+      process_pid: pid, process_manager: @mock_process_manager, session: session
+    ).terminate
+
+    assert_equal :already_dead, result.status, result.message
+    assert_empty @mock_process_manager.killed_processes, "a pid nobody holds is never signalled"
+  ensure
+    force_cleanup(pid)
+  end
+
+  test "an identity recorded for a different pid does not gate this one" do
+    require_procfs
+    target = spawn_orphan_sleeper
+    session = create_session
+    record_identity(session, target, pid: target + 1, pid_namespace: "pid:[1]")
+
+    result = ProcessTerminationService.new(
+      process_pid: target, process_manager: SystemProcessManager.new, session: session
+    ).terminate
+
+    assert_equal :terminated, result.status, "an identity about another pid says nothing about this one"
+  ensure
+    force_cleanup(target)
+  end
+
+  test "a pid handed to another process mid-ladder is not signalled again and its group is not swept" do
+    require_procfs
+    pid = @mock_process_manager.spawn("test-command")
+    # Not our child, so liveness is read from the pinned start time, not from wait.
+    @mock_process_manager.wait_hook = ->(_pid, _flags) { raise Errno::ECHILD }
+
+    term_sent = false
+    @mock_process_manager.kill_hook = ->(signal, _target) { term_sent = true if signal == "TERM" }
+
+    identity = {
+      "pid" => pid,
+      "boot_id" => AgentProcessLiveness.boot_id,
+      "pid_namespace" => AgentProcessLiveness.pid_namespace,
+      "started_at_ticks" => "100"
+    }
+    service = create_service_with_existing_process(
+      pid: pid, process_manager: @mock_process_manager, identity: identity
+    )
+    # Our process is there until the SIGTERM lands; the next read finds the number
+    # held by a process that started later.
+    service.define_singleton_method(:process_snapshot) do
+      { state: "S", started_at_ticks: term_sent ? "200" : "100" }
+    end
+
+    result = service.terminate
+
+    assert_equal :recycled, result.status, result.message
+    assert result.success?
+    assert_equal [ { signal: "TERM", pid: -pid } ], @mock_process_manager.killed_processes.reject { |k| k[:signal] == 0 },
+      "after the pid changed hands, nothing else may be sent to it or its group"
+  end
+
   test "terminate logs debug info when process owned by current user" do
     pid = @mock_process_manager.spawn("test-command")
 
