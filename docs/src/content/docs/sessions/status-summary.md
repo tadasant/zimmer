@@ -854,6 +854,33 @@ It only archives. The stranded `pending` claim on the source's summary record is
 `pending?` treats a claim past `PENDING_TIMEOUT` as debris, and the repair sweep names exactly that
 case — so the sweep writes no summary, re-forks nothing, and queues nothing onto the `inference` lane.
 
+### A fork whose turn went missing after it was dispatched
+
+The sweep above is keyed to a fork that was **never** dispatched, and the clause that makes it safe —
+nothing in flight, so no `running_job_id` and no `pending_follow_up_prompt` — is the clause that makes
+it blind to the other half. `Session#deliver_follow_up!` writes both before it returns and nothing
+clears them when the job it enqueued is lost, so a fork whose summary turn vanished under it reads as
+"the prompt did arrive, something is coming" forever. It sits in `waiting` holding a repository clone,
+and `sleep` fires no hook, so no harvest is ever enqueued for it.
+
+`StrandedSleepRescue` is what reaches it: a fork in that state is `waiting`, has a runtime session id,
+carries none of the dormant markers, has nothing queued and no wake that can fire — the sweep's whole
+predicate. What it must not do is *resume* it. `AgentSessionJob` refuses any turn a fork is handed
+that is not the summary request, so the nudge is a turn that cannot run: session 16994 was resumed at
+22:40:16, refused at 22:40:17, and the ERROR record in between paged `#alerts` about a fork behaving
+exactly as designed ([#1168](https://github.com/tadasant/zimmer/issues/1168)).
+
+So the sweep enqueues `SessionStatusSummaryHarvestJob` directly, which is the disposal that refusal
+reaches anyway — `AgentSessionJob` does the same thing for a fork it refuses in `waiting`, for the
+same reason. The harvest publishes whatever answer the fork gave, marks the record failed when it gave
+none, and archives the fork; the source's own claim is `StatusSummaryBackstopJob`'s, which re-forks
+past `PENDING_TIMEOUT`. The sweep counts it `harvested` rather than `rescued`, and spends the same
+`MAX_RESCUES` budget a rescue does: the harvest is a job that swallows its own archive failure, so a
+fork it cannot archive would otherwise be re-enqueued every `GRACE` forever, silently. After three
+harvests with the fork still in `waiting` the sweep stamps it abandoned and alerts — that page is for
+a disposal that is not working while a repository clone sits behind it, which is a defect, not a fork
+resting as designed.
+
 ### A pause is not proof that the fork answered
 
 `AuthOutageParkService` parks a session that has run out of login pool by scheduling a wake and
