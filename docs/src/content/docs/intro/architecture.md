@@ -182,7 +182,9 @@ what the three are, and [Adding an agent harness](/extend/agent-harness/) for th
 
 A thin seam on top of that: `Zimmer::Extension` lets optional behavior override the CLI adapter,
 supply a print-inference backend, or contribute spawn environment variables — without core
-naming it. None is registered today — `BUILTIN_EXTENSION_CLASSES` is empty, and the one that used
-to ship (`mcp_tool_search`) became a first-class setting while the Docker image was still excluding
-`app/extensions/*/`. That exclusion is gone, so a registered extension governs a deployed container
-like any other code. See [Extensions](/extend/extensions/).
+naming it. `BUILTIN_EXTENSION_CLASSES` names one — `PtyTransportExtension` — whose code is
+deliberately not in this repository, so in this build the name resolves to nothing and every seam
+falls back to native. The one that used to ship (`mcp_tool_search`) became a first-class setting
+while the Docker image was still excluding `app/extensions/*/`. That exclusion is gone, so an
+extension that *is* in the tree governs a deployed container like any other code. See
+[Extensions](/extend/extensions/).

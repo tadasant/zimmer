@@ -30,9 +30,24 @@
 # rather than appending to them -- restating it here would override the durable
 # volume list in config/deploy.yml, and the next entry added there would silently
 # reach staging only.
+#
+# The third entry is the `pty_transport` extension, whose code deliberately does not
+# live in this repository -- it depends on internal-only techniques we do not publish --
+# so it is delivered to the host from the private companion repo and mounted over the
+# directory Zeitwerk would have loaded it from. ExtensionRegistry names the class
+# (BUILTIN_EXTENSION_CLASSES) and resolves it with safe_constantize, so this mount is
+# the only difference between a container that has the extension and one that does not.
+#
+# Mount the extension's OWN subdirectory, never /rails/app/extensions: mounting the
+# parent would replace the in-image tree, hiding app/extensions/CLAUDE.md and the
+# app/extensions/image_canary/ that scripts/assert-extensions-shipped.sh exists to find.
+# A missing or empty host directory is INERT, so this is safe to carry before anything
+# populates it. The prose is in docs/operate/deploying.md ("An extension can also arrive
+# from outside the image").
 volumes:
   - /opt/zimmer/catalog:/rails/catalog:ro
   - /opt/zimmer/credentials:/rails/config/credentials:ro
+  - /opt/zimmer/extensions/pty_transport:/rails/app/extensions/pty_transport:ro
 
 # init: true, the durable volume list, and the worker's cmd/proxy live in
 # config/deploy.yml -- they are identical in both destinations, and a list written

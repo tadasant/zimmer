@@ -81,6 +81,35 @@ class Zimmer::ExtensionRegistryTest < ActiveSupport::TestCase
     refute_includes ids, "definitely_not_a_real_extension_constant"
   end
 
+  # BUILTIN_EXTENSION_CLASSES names PtyTransportExtension, whose code lives outside this
+  # repository and reaches production as a bind mount. The skip above is therefore the
+  # path THIS build takes at boot rather than a hypothetical about a deleted directory,
+  # and the two tests below pin both halves of it: boot does not raise, and nothing
+  # registers, so every seam stays native. An extension vendored into this repo is a
+  # deliberate change to make these fail, not an accident to work around.
+  test "the real built-in list registers nothing in this checkout" do
+    Zimmer::ExtensionRegistry.reset!
+    assert_nothing_raised { Zimmer::ExtensionRegistry.register_builtins! }
+
+    assert_empty Zimmer::ExtensionRegistry.all,
+      "No extension's code ships in this repository, so register_builtins! must register " \
+      "nothing here. A registration means an extension directory was added without " \
+      "updating this test."
+  end
+
+  test "every built-in class name is absent from this repository by design" do
+    builtins = Zimmer::ExtensionRegistry::BUILTIN_EXTENSION_CLASSES
+
+    # Pins the test's own premise: against an empty list every assertion below is
+    # vacuously true, so emptying the constant would silently retire this test.
+    refute_empty builtins, "BUILTIN_EXTENSION_CLASSES is empty, so this test proves nothing."
+
+    assert_equal builtins, builtins.reject { |name| name.safe_constantize },
+      "A built-in name resolves here. That is fine in itself, but it means this build no " \
+      "longer falls back to native for that seam -- check the docs claim in " \
+      "docs/src/content/docs/extend/extensions.md before changing this."
+  end
+
   test "enabled filters to extensions whose persisted state is on" do
     Zimmer::ExtensionRegistry.register(FakeExtA.new)
     Zimmer::ExtensionRegistry.register(FakeExtB.new)

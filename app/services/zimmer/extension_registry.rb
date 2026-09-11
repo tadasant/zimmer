@@ -25,13 +25,23 @@ module Zimmer
     # removed extension directory is skipped rather than raising. Order is the
     # resolution order for first-wins hooks (cli_adapter_override, print backend).
     #
-    # No built-in extensions are registered today, and this list is the whole of
-    # registration -- an app/extensions/<id>/ directory that is not named here
-    # does nothing, however present it is. Directories ship in the image (see
-    # .dockerignore and scripts/assert-extensions-shipped.sh), so a class named
-    # here resolves in a deployed container and an operator turns it on from
-    # Settings -> Experimental, default off.
-    BUILTIN_EXTENSION_CLASSES = [].freeze
+    # This list is the whole of registration -- an app/extensions/<id>/ directory
+    # that is not named here does nothing, however present it is. Directories ship
+    # in the image (see .dockerignore and scripts/assert-extensions-shipped.sh), so
+    # a class named here resolves in a deployed container and an operator turns it
+    # on from Settings -> Experimental, default off.
+    #
+    # PtyTransportExtension (id `pty_transport`) fulfils headless inference by
+    # driving the interactive Claude TUI in a pseudo-terminal instead of `claude -p`,
+    # which is what lets ClaudePrintRunner::Result carry `usage`. Its code is NOT in
+    # this repository and is not meant to be: it depends on internal-only techniques
+    # we do not publish (see Zimmer::Extension's own docstring). In production it
+    # arrives as a read-only bind mount over app/extensions/pty_transport/ (see
+    # config/deploy.production.yml); everywhere else -- this checkout, CI, and any
+    # standalone install -- the name resolves to nothing, register_builtins! skips
+    # it, and every seam stays native. Naming an absent class here is the documented
+    # removability mechanism, not an oversight.
+    BUILTIN_EXTENSION_CLASSES = %w[PtyTransportExtension].freeze
 
     @mutex = Mutex.new
     @extensions = {}

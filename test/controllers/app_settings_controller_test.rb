@@ -3,9 +3,10 @@
 require "test_helper"
 
 class AppSettingsControllerTest < ActionDispatch::IntegrationTest
-  # The extensions param is handled generically off the registry, and Zimmer
-  # ships no built-in extension today, so these register a fake one. That is the
-  # honest test of the handler: it must key on whatever is registered.
+  # The extensions param is handled generically off the registry, and no extension's
+  # CODE ships in this repository -- the one name in BUILTIN_EXTENSION_CLASSES resolves
+  # to nothing here -- so these register a fake one. That is the honest test of the
+  # handler: it must key on whatever is registered.
   class FakeSettingsExtension < Zimmer::Extension
     def id = "fake_experiment"
     def title = "Fake experiment"

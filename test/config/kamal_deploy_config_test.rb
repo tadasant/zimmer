@@ -97,6 +97,28 @@ class KamalDeployConfigTest < ActiveSupport::TestCase
     end
   end
 
+  # The `pty_transport` extension's code is deliberately absent from this repository, so
+  # production is the only place it exists: artifacts-sync-prod puts it on the host and
+  # this mount is what makes Zeitwerk (and therefore BUILTIN_EXTENSION_CLASSES'
+  # safe_constantize) find it. An empty host directory is inert, so the mount is correct
+  # here whether or not anything has populated it.
+  test "production bind-mounts the private extension over its own subdirectory" do
+    %w[web worker].each do |role|
+      volumes = kamal_volumes("production", role)
+
+      assert_includes volumes, "/opt/zimmer/extensions/pty_transport:/rails/app/extensions/pty_transport:ro",
+        "production/#{role} cannot load an extension whose code is not in this repo."
+
+      # Mounting the PARENT would shadow the in-image app/extensions/CLAUDE.md and
+      # app/extensions/image_canary/ -- and the canary is the thing
+      # scripts/assert-extensions-shipped.sh looks for, so the image guardrail would go
+      # on passing while the tree it protects was hidden at runtime.
+      assert_empty volumes.grep(%r{:/rails/app/extensions/?(:|\z)}),
+        "production/#{role} mounts over all of app/extensions/, hiding the image canary " \
+        "and CLAUDE.md. Mount the extension's own subdirectory instead."
+    end
+  end
+
   test "staging mounts nothing from /opt/zimmer" do
     %w[web worker].each do |role|
       assert_empty kamal_volumes("staging", role).grep(%r{\A/opt/zimmer}),

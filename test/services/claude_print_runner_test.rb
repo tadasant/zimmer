@@ -7,9 +7,10 @@ require "test_helper"
 # exactly one place, so these tests pin that decision.
 #
 # The seam is tested against a FAKE extension registered into the registry rather
-# than any concrete (deletable) extension like pty_transport — so this file keeps
-# passing even in an OSS build with the PTY extension removed. PTY-specific
-# selection is covered in test/extensions/pty_transport/.
+# than any concrete extension. It has to be: pty_transport's code is deliberately
+# not in this repository, so there is nothing here to instantiate and no sibling
+# test directory for it. PTY-specific selection is covered alongside the extension
+# itself, in the private repo that carries it.
 class ClaudePrintRunnerTest < ActiveSupport::TestCase
   # A minimal backend + extension exercising the print-runner seam. The backend
   # only needs to be identifiable; it never actually runs here.
@@ -106,6 +107,26 @@ class ClaudePrintRunnerTest < ActiveSupport::TestCase
     assert_same pm, runner.instance_variable_get(:@process_manager)
     assert_equal "haiku", runner.instance_variable_get(:@model)
     assert_equal "/fake/claude", runner.instance_variable_get(:@claude_binary)
+  end
+
+  # Everything above drives a FAKE extension, which proves the seam works but says
+  # nothing about what this build actually resolves at boot. BUILTIN_EXTENSION_CLASSES
+  # names PtyTransportExtension, whose code is deliberately not in this repository, so
+  # the answer here has to be native -- and that is the property the whole withheld-code
+  # arrangement rests on. Registering the real built-ins is what makes this a boot-level
+  # assertion rather than a restatement of the fake-extension tests.
+  #
+  # What it pins is the DEFAULT POSTURE, not the absence of an extension: enablement is
+  # the safety property, so vendoring PtyTransportExtension into app/extensions/ would
+  # leave this green (default_enabled? is false). The absence is pinned in
+  # extension_registry_test.rb, which is the test that fails on such a directory.
+  test "the real built-in registry leaves print inference on the native backend" do
+    Zimmer::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.register_builtins!
+
+    refute ClaudePrintRunner.pty_enabled?,
+      "No extension's code ships in this repository, so nothing can provide a backend."
+    assert_instance_of NativeClaudePrintRunner, ClaudePrintRunner.build
   end
 
   test "forwards the model and binary to the extension backend" do
