@@ -118,6 +118,9 @@ session's start job is enqueued, so by the time anything spawns the agent, `reso
 The foreign keys never block cleanup elsewhere: deleting a session deletes its run, and deleting a
 trigger keeps the run and clears its `trigger_id`.
 
+Runs are listed at `/supervisor/workflow_runs`, index and show only — the panel has no form and no
+Delete button, because a run refuses both.
+
 ## Running one from a trigger
 
 `WorkflowRunner.call(trigger:, payload:)` is the whole path:
@@ -234,7 +237,6 @@ and each is open to revisiting:
   Alongside it, `LegacyTemplateWorkflow` and a `Trigger#fire!` refactor, so every firing site goes
   through `WorkflowRunner` and template triggers become one quarantined workflow.
 - **Phase 2** — a `/workflows` index and show page, a template/workflow toggle on the trigger form,
-  and `POST /workflows/:id/runs` for parameterized manual runs. `workflow_runs` has no `/supervisor`
-  panel either, so until then a run is visible only from a Rails console.
+  and `POST /workflows/:id/runs` for parameterized manual runs.
 - **Phase 3** — reuse semantics for workflow triggers, and retiring the template path if no template
   triggers remain.
