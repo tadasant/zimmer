@@ -1308,9 +1308,10 @@ module Mcp
       # also be a general lineage-editing API — it could ADD an edge, going round
       # `RecordUncleEdge` and the acyclicity invariant that lives there.
       #
-      # Both failure kinds become ToolError, as everywhere else on this surface,
-      # but they are caught separately so the distinction survives into anything
-      # that later wants to branch on it.
+      # Both failure kinds become ToolError, as everywhere else on this surface —
+      # `NotFound` is a subclass, and MCP has no status code to spend the
+      # distinction on. The service keeps them apart for the REST surface, which
+      # does (404 vs 422).
       def remove_uncle(session, args)
         outcome = Sessions::RemoveUncleEdge.call(
           junior: session,
@@ -1332,7 +1333,7 @@ module Mcp
           "changed: spawn parents are untouched and no other lineage edge was rewritten. Both timelines record " \
           "the removal."
         ].join("\n")
-      rescue Sessions::RemoveUncleEdge::NotFound, Sessions::RemoveUncleEdge::Error => e
+      rescue Sessions::RemoveUncleEdge::Error => e
         raise ToolError, e.message
       end
 

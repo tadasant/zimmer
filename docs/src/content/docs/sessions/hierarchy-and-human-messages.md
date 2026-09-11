@@ -128,7 +128,7 @@ all three surfaces:
 
 | Surface | How |
 | --- | --- |
-| Web UI | The **×** on an "also senior" chip in the session-detail hierarchy panel. The chip is rendered once per session in the tree, so the edge removed is the *row's*, not the page's. |
+| Web UI | The **×** on an "also senior" chip in the session-detail hierarchy panel. The chip is rendered once per session in the tree, so the edge removed is the *row's*, not the page's. A chip is drawn only when the senior is itself a rendered node, so a hierarchy cut by `MAX_DEPTH` / `MAX_NODES` can hold an edge this control cannot name — reach for MCP or REST for that one. |
 | MCP | `action_session` → `remove_uncle`, with `session_id` (the junior) and `uncle_session_id` (the senior). Optional `acting_session_id` is provenance. Not on the `self_session` surface. |
 | REST | `DELETE /api/v1/sessions/:id/uncle_links/:uncle_id`. 204 on success, 404 when there is no such edge. |
 
@@ -147,9 +147,12 @@ All three call `Sessions::RemoveUncleEdge`, and the rules are its:
   same reason: the change affects whose human messages each end's prompt carries.
 
 `remove_uncle` is deliberately **not** on the self-session surface. An uncle edge is a claim another
-session made about this one; letting a session detach its own seniors would let it shed context it was
-given, from the one surface every session has. And there is no *create* on any of these surfaces:
-writing an edge belongs to `Sessions::RecordUncleEdge`, which is where the acyclicity invariant lives.
+session made about this one, and a session shedding its own seniors is shedding context it was given —
+so the action is kept off the one server *every* session carries. Read that as narrowing the surface
+rather than as a guarantee: a session holding the full `sessions` tool group can still name itself as
+the junior, exactly as it can already drive any other session's lifecycle. And there is no *create* on
+any of these surfaces: writing an edge belongs to `Sessions::RecordUncleEdge`, which is where the
+acyclicity invariant lives.
 
 What removal cannot do is unsay what was already injected — every prompt built while the edge existed
 carried the other hierarchy's `elsewhere` entries. See
