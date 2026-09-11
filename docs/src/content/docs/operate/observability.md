@@ -38,8 +38,9 @@ That table is about what the **app** ships. Host telemetry — CPU, memory, disk
 droplet's, not the app's, and it has its own two paths: DigitalOcean's metrics agent (`var.monitoring`,
 on by default, readable in DO's console) and an optional Prometheus `node_exporter` on the tailnet
 (`var.node_exporter_enabled`, off by default). Both are
-[Terraform variables](/operate/provisioning/#terraform-variables) and both land only on a droplet
-Terraform creates.
+[Terraform variables](/operate/provisioning/#terraform-variables), and Terraform gives both only to a
+droplet it creates. An existing droplet has to get DigitalOcean's agent from a
+[deploy-time converge](/limitations/#terraform-gives-the-digitalocean-metrics-agent-only-to-a-droplet-it-creates).
 
 Zimmer's failures live in GoodJob background jobs and the session lifecycle, not in HTTP
 requests, so that is what the log exporter is shaped around. It ships two kinds of record:

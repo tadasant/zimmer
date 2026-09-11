@@ -14,6 +14,8 @@ require "test_helper"
 # plan first. These assertions fail the build if the two ever come apart.
 class DropletMonitoringTest < ActiveSupport::TestCase
   MAIN_TF = Rails.root.join("infra/terraform/main.tf")
+  STAGING_TFVARS = Rails.root.join("infra/terraform/staging.tfvars.example")
+  DEPLOY_STAGING = Rails.root.join(".github/workflows/deploy-staging.yml")
 
   test "the droplet asks for the DigitalOcean metrics agent" do
     assert_match(/^\s*monitoring\s*=\s*var\.monitoring\s*$/, droplet,
@@ -34,10 +36,39 @@ class DropletMonitoringTest < ActiveSupport::TestCase
       are `-auto-approve`, so no human sees that plan.
 
       A new droplet gets the agent on create, which `ignore_changes` does not affect. An
-      existing one only gets it from a rebuild; see tadasant/zimmer#651.
+      existing one gets it from a deploy-time converge instead; see docs limitations and
+      tadasant/zimmer#651.
 
       ignore_changes = [#{ignore_changes.join(", ")}]
     MSG
+  end
+
+  # Staging has no do-agent converge step, and the docs say why: every staging droplet is
+  # created by this module (`Teardown staging` destroys it, `Deploy staging` creates the
+  # next), so the create-time attribute reaches all of them. That holds only while staging
+  # keeps var.monitoring on. Turning it off would ship staging droplets with no agent and
+  # nothing to install one.
+  test "staging never turns monitoring off, so its droplets need no converge" do
+    # Any assignment but a literal `true` (a trailing comment allowed).
+    assigned = File.readlines(STAGING_TFVARS).grep(/^\s*monitoring\s*=(?!\s*true\s*(#.*)?$)/)
+    assert_empty assigned, <<~MSG
+      staging.tfvars.example turns `monitoring` off. `Deploy staging` copies that file
+      verbatim, and a -var-file value beats TF_VAR_*, so this decides whether a staging
+      droplet gets DigitalOcean's metrics agent at creation.
+
+      Staging has no deploy-time do-agent converge because every staging droplet gets the
+      agent at creation. With it off, that no longer holds: either drop the assignment or
+      give staging a converge step, and update docs limitations ("Terraform gives the
+      DigitalOcean metrics agent only to a droplet it creates").
+
+      #{assigned.join}
+    MSG
+
+    workflow = File.read(DEPLOY_STAGING)
+    refute_match(/TF_VAR_monitoring\b|-var[\s=]+["']?monitoring\s*=/, workflow,
+      "deploy-staging.yml overrides var.monitoring. Staging's droplets were the ones that " \
+      "needed no do-agent converge because the module default gave them the agent at " \
+      "creation; see docs limitations before changing that.")
   end
 
   test "user_data stays under ignore_changes alongside it" do
