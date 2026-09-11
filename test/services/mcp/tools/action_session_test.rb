@@ -1941,4 +1941,115 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_includes error.message, "Session has no session_id"
     assert session.reload.archived?, "a loud failure must leave the session in trash"
   end
+
+  # --- remove_uncle (#299) ----------------------------------------------------
+
+  # `follow_up` writes uncle edges as a side effect from a self-declared
+  # `acting_session_id` nothing verifies, so the tool that writes them owes a way
+  # to unwrite one. These tests pin the direction rule and the two error shapes,
+  # since the service's own tests cover the graph semantics.
+  def uncle_pair
+    junior = sessions(:needs_input)
+    uncle = sessions(:waiting)
+    SessionUncleLink.where(session_id: [ junior.id, uncle.id ]).or(
+      SessionUncleLink.where(uncle_session_id: [ junior.id, uncle.id ])
+    ).delete_all
+    SessionUncleLink.create!(session: junior, uncle_session: uncle, source: "mcp:action_session.follow_up")
+    [ junior, uncle ]
+  end
+
+  test "remove_uncle detaches the edge and reports what it removed" do
+    junior, uncle = uncle_pair
+
+    output = @tool.call("action" => "remove_uncle", "session_id" => junior.id, "uncle_session_id" => uncle.id)
+
+    assert_not SessionUncleLink.exists?(session_id: junior.id, uncle_session_id: uncle.id)
+    assert_includes output, "## Uncle Edge Removed"
+    assert_includes output, "- **Junior session:** ##{junior.id}"
+    assert_includes output, "- **Detached senior:** ##{uncle.id}"
+    assert_includes output, "mcp:action_session.follow_up"
+  end
+
+  test "remove_uncle requires uncle_session_id" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "remove_uncle", "session_id" => sessions(:needs_input).id)
+    end
+
+    assert_match(/uncle_session_id is required/, error.message)
+  end
+
+  test "remove_uncle requires session_id" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "remove_uncle", "uncle_session_id" => sessions(:waiting).id)
+    end
+
+    assert_match(/"session_id" parameter is required/, error.message)
+  end
+
+  # Not a silent success. An agent told "done" about an edge that still widens two
+  # sessions' context has been misinformed in the way #299 is about.
+  test "remove_uncle errors when there is no such edge" do
+    junior, uncle = uncle_pair
+    SessionUncleLink.delete_all
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "remove_uncle", "session_id" => junior.id, "uncle_session_id" => uncle.id)
+    end
+
+    assert_match(/No uncle edge/, error.message)
+  end
+
+  # The pair is joined, but the other way round — which RecordUncleEdge's
+  # inversion rule makes an ordinary state. The error has to say so rather than
+  # remove the claim the caller did not name.
+  test "remove_uncle refuses the inverted direction and names the one that exists" do
+    junior, uncle = uncle_pair
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "remove_uncle", "session_id" => uncle.id, "uncle_session_id" => junior.id)
+    end
+
+    assert_match(/points the other way/, error.message)
+    assert SessionUncleLink.exists?(session_id: junior.id, uncle_session_id: uncle.id)
+  end
+
+  test "remove_uncle records the declared acting session on both timelines" do
+    junior, uncle = uncle_pair
+    actor = sessions(:running)
+
+    @tool.call("action" => "remove_uncle", "session_id" => junior.id,
+               "uncle_session_id" => uncle.id, "acting_session_id" => actor.id)
+
+    [ junior, uncle ].each do |session|
+      log = session.logs.reload.where("content LIKE ?", "%Uncle edge removed%").last
+      assert_not_nil log, "session ##{session.id} has no record of the removal"
+      assert_includes log.content, "session ##{actor.id} via the MCP API"
+      assert_includes log.content, "mcp:action_session.remove_uncle"
+    end
+  end
+
+  test "remove_uncle with no declared actor says so rather than inventing one" do
+    junior, uncle = uncle_pair
+
+    @tool.call("action" => "remove_uncle", "session_id" => junior.id, "uncle_session_id" => uncle.id)
+
+    log = junior.logs.reload.where("content LIKE ?", "%Uncle edge removed%").last
+    assert_includes log.content, "an undeclared MCP API caller"
+  end
+
+  # The self-session server is pointed at the session itself and exposes only
+  # self-management. An uncle edge is a claim ANOTHER session made about this one,
+  # so letting a session detach its own seniors would let it shed the context it
+  # was given — from the one surface where every session has a server.
+  test "the self-session surface does not expose remove_uncle" do
+    assert_not_includes Mcp::Tools::SelfSessionActionSession::ACTIONS, "remove_uncle"
+
+    self_tool = Mcp::Tools::SelfSessionActionSession.new(context: Mcp::Context.new(tool_groups: "self_session"))
+    error = assert_raises(Mcp::ToolError) do
+      self_tool.call("action" => "remove_uncle", "session_id" => sessions(:needs_input).id,
+                     "uncle_session_id" => sessions(:waiting).id)
+    end
+
+    assert_match(/Unknown action/, error.message)
+  end
 end

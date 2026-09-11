@@ -332,6 +332,20 @@ tell an agent archiving it from a human clicking Trash. Set it whenever an agent
 including archiving itself; an archive that declares nothing is logged as one. See
 [the archive line](/sessions/lifecycle/#the-archive-line-names-who-did-it).
 
+**`remove_uncle` is the way back out of an edge recorded in error.** Because an uncle edge is written
+as a *side effect* of a follow-up from an unverified `acting_session_id`, one stale or mistyped id
+attaches the wrong session as a senior and permanently widens what context both ends carry. The action
+takes `session_id` (the junior) and `uncle_session_id` (the senior), removes exactly that one edge, and
+records the removal on both timelines — `acting_session_id` names you as the remover, again as
+provenance only. Direction matters: naming the pair the wrong way round is refused with the direction
+that *does* exist, rather than deleting the opposite claim, since the inversion rule makes both
+directions ordinary. A non-existent edge is an error, not a silent success. It is **not** on the
+`self_session` surface — an uncle edge is a claim another session made about this one, and a session
+detaching its own seniors would be shedding context it was given. There is no companion that *writes*
+an edge: that belongs to the queue/interrupt path, which is where the acyclicity invariant lives. See
+[Removing an edge recorded in
+error](/sessions/hierarchy-and-human-messages/#removing-an-edge-recorded-in-error).
+
 `action_health`'s three destructive actions (`cleanup_processes`, `retry_sessions`, `archive_old`)
 share a 30-second cooldown with `Api::V1::HealthController` and the `/health` web dashboard — the
 same `HealthActionCooldown` object, bucketed by a digest of the connection's API key. Switching

@@ -18,7 +18,7 @@ module Mcp
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
-      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "start_now", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "change_precedence", "pause_into_spot_queue", "change_category", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "set_visibility", "bulk_archive"'
+      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "start_now", "archive", "unarchive", "change_mcp_servers", "change_model", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "change_precedence", "pause_into_spot_queue", "change_category", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "set_visibility", "remove_uncle", "bulk_archive"'
 
       SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free, and then in precedence order). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares. Demoting to "spot" without also passing "precedence" or "place" leaves the session wherever its existing rank puts it, which is usually the bottom — pass one of them when you mean it to be worked on soon, and "place": "top_of_spot" when you mean it to be worked on first.'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
@@ -43,7 +43,13 @@ module Mcp
       # "this session followed up that one".
       FOLLOW_UP_EDGE_SOURCE = "mcp:action_session.follow_up"
 
-      ACTING_SESSION_ID_DESC = 'Optional for "follow_up" and "archive". On "archive" it is provenance and nothing else: the archived session\'s timeline names you as the actor, so a human reading it later can tell an agent archiving that session from a human clicking Trash. Set it whenever an agent session drives an archive — including archiving yourself. On "follow_up", if you are an agent session sending this follow-up to ANOTHER session, set this to your own session ID. Zimmer records a lineage edge marking you as a senior ("uncle") of the target session, on the assumption that a session which inspected another and decided to redirect it holds information that session does not. That edge widens the target\'s hierarchy to include yours, so the human messages recorded in your hierarchy become visible to it as context. Omit it if a human is driving this call, or if you are messaging yourself — Zimmer cannot tell who is calling, so an omitted value records no edge, and an undeclared archive is logged as exactly that.'
+      # The mirror: the entry point written into both sessions' timelines when an
+      # edge is detached here.
+      REMOVE_UNCLE_SOURCE = "mcp:action_session.remove_uncle"
+
+      UNCLE_SESSION_ID_DESC = 'Required for "remove_uncle". The ID or slug of the session to DETACH as an additional senior ("uncle") of "session_id". Direction is the whole content of an uncle edge, so it matters which way round you name the pair: "session_id" is the junior — the session whose hierarchy grew when the edge was written — and this is the senior. Naming them the wrong way round is an error that says so, and names the direction that does exist, rather than removing the opposite claim.'
+
+      ACTING_SESSION_ID_DESC = 'Optional for "follow_up", "archive" and "remove_uncle". On "archive" and "remove_uncle" it is provenance and nothing else: the timeline of the session you acted on names you as the actor, so a human reading it later can tell an agent archiving that session from a human clicking Trash, or an agent detaching a lineage edge from a human clicking the × on the hierarchy panel. Set it whenever an agent session drives an archive or a removal — including archiving yourself. On "follow_up", if you are an agent session sending this follow-up to ANOTHER session, set this to your own session ID. Zimmer records a lineage edge marking you as a senior ("uncle") of the target session, on the assumption that a session which inspected another and decided to redirect it holds information that session does not. That edge widens the target\'s hierarchy to include yours, so the human messages recorded in your hierarchy become visible to it as context. Omit it if a human is driving this call, or if you are messaging yourself — Zimmer cannot tell who is calling, so an omitted value records no edge, and an undeclared archive is logged as exactly that.'
 
       VISIBILITY_DESC = 'Required for "set_visibility". One of "visible", "hidden", or "snoozed". Board visibility is a SECOND axis, completely orthogonal to status: it decides whether the session\'s card is on the human\'s dashboard and has no effect on scheduling or execution whatsoever.'
 
@@ -85,6 +91,7 @@ module Mcp
         update_title
         toggle_favorite
         set_visibility
+        remove_uncle
         bulk_archive
       ].freeze
 
@@ -157,6 +164,7 @@ module Mcp
         - **update_title**: Update the title of a session (requires "title")
         - **toggle_favorite**: Toggle favorite status on a session
         - **set_visibility**: Set a session's BOARD VISIBILITY — whether its card is on the human's dashboard (requires "visibility": "visible", "hidden" or "snoozed"; "snoozed" also requires "snoozed_until", with an optional "timezone"). **This is a visual-organization device and nothing else.** It does not start, stop, pause, sleep, wake, reorder or reschedule anything, no scheduler reads it, and a snoozed session runs exactly when it would have run had nobody touched it. Use it when a human asks you to tidy their board; never use it to try to stop or defer work — `pause`, `pause_into_spot_queue` and `change_precedence` are the actions that do that. A snooze ends by itself: once "snoozed_until" passes the session is back on the board with nothing having been written to it.
+        - **remove_uncle**: Detach a session recorded as an additional senior ("uncle") of this one (requires "uncle_session_id"). An uncle edge is written as a SIDE EFFECT of a follow-up or an interrupt, from an `acting_session_id` the caller declares about itself and nothing verifies — so one stale or mistyped id permanently attaches the wrong session as a senior, and because the hierarchy is the scope human messages are gathered over, it permanently widens what context both sessions carry. This is the way back. "session_id" is the JUNIOR (the session whose hierarchy grew) and "uncle_session_id" is the senior being detached; naming the pair the wrong way round is refused with the direction that does exist, rather than removing the opposite claim. It removes exactly that one edge — `parent_session_id` is never touched, no other edge is rewritten — and is recorded on BOTH sessions' timelines with when the edge was written, what entry point wrote it, and who removed it. A non-existent edge is an error rather than a silent success.
         - **bulk_archive**: Archive multiple sessions at once (requires "session_ids", no session_id needed). Sessions with queued messages, or with an agent turn in flight, are reported as errors and left alone unless "force" is set for the batch.
 
         **Interrupting vs queuing a follow_up.** Interrupting is opt-in, and worth reaching for more often than the default suggests. Send with "force_immediate": true whenever the prompt would redirect the agent: a correction, a constraint it does not know about, information that makes its current approach wrong. An agent twenty minutes into the wrong approach cannot see a queued message until it finishes, so the message that would have saved the work arrives after the work is wasted. The cost of interrupting is bounded: the in-flight turn is terminated (an uncommitted tool call is lost, files already written stay written) and the agent picks up from the same conversation with your prompt as the next turn. Queue when the prompt only adds to what the agent is already doing.
@@ -167,6 +175,7 @@ module Mcp
         - Provide additional instructions to an agent
         - Control session lifecycle (pause, restart, fork, refresh)
         - Organize sessions (archive, unarchive, bulk_archive, toggle_favorite, set_visibility, update_notes, update_title, change_category, toggle_push_notifications)
+        - Undo a lineage edge written from a wrong acting_session_id (remove_uncle)
         - Tidy a human's dashboard without touching their work (set_visibility)
         - Reconfigure session capabilities (MCP servers, skills, hooks, plugins, model, context window)
         - Set or clear a session's goal
@@ -208,6 +217,7 @@ module Mcp
           visibility: { type: "string", enum: SessionVisibility::VISIBILITIES, description: VISIBILITY_DESC },
           snoozed_until: { type: "string", description: SNOOZED_UNTIL_DESC },
           timezone: { type: "string", description: TIMEZONE_DESC },
+          uncle_session_id: { type: [ "number", "string" ], description: UNCLE_SESSION_ID_DESC },
           acting_session_id: { type: [ "number", "string" ], description: ACTING_SESSION_ID_DESC }
         },
         required: [ "action" ]
@@ -264,6 +274,7 @@ module Mcp
         when "update_title" then update_title(find_session(args["session_id"]), args)
         when "toggle_favorite" then toggle_favorite(find_session(args["session_id"]))
         when "set_visibility" then set_visibility(find_session(args["session_id"]), args)
+        when "remove_uncle" then remove_uncle(find_session(args["session_id"]), args)
         when "bulk_archive" then bulk_archive(args)
         end
       end
@@ -1282,6 +1293,58 @@ module Mcp
         ].compact.join("\n")
       rescue Sessions::SetVisibility::Error => e
         raise ToolError, e.message
+      end
+
+      # Detach a mistaken uncle edge — the only action on this tool that UNDOES
+      # something `follow_up` did as a side effect, which is why it exists at all.
+      #
+      # Spelled `remove_uncle` rather than a `set_lineage`-style setter because
+      # the vocabulary here splits on whether a field has a value to set:
+      # `change_*` / `set_*` / `update_*` write one, and there is no value to
+      # write here. An uncle edge is a row that is present or absent, one of many
+      # a session can carry, so the thing a caller wants is `remove`, in the
+      # `toggle_favorite` / `bulk_archive` family of verbs that name an operation
+      # instead of a field. A `set_lineage` taking the whole senior list would
+      # also be a general lineage-editing API — it could ADD an edge, going round
+      # `RecordUncleEdge` and the acyclicity invariant that lives there.
+      #
+      # Both failure kinds become ToolError, as everywhere else on this surface —
+      # `NotFound` is a subclass, and MCP has no status code to spend the
+      # distinction on. The service keeps them apart for the REST surface, which
+      # does (404 vs 422).
+      def remove_uncle(session, args)
+        outcome = Sessions::RemoveUncleEdge.call(
+          junior: session,
+          uncle_session_id: args["uncle_session_id"],
+          actor: removal_actor_phrase(args),
+          source: REMOVE_UNCLE_SOURCE
+        )
+
+        [
+          "## Uncle Edge Removed",
+          "",
+          "- **Junior session:** ##{outcome.junior_id} (#{session.title})",
+          "- **Detached senior:** ##{outcome.uncle_id}",
+          "- **Edge was recorded:** #{outcome.recorded_at ? outcome.recorded_at.utc.iso8601 : 'at an unknown time'}" \
+            " by #{outcome.edge_source.presence || 'an unrecorded entry point'}",
+          "",
+          "Session ##{outcome.uncle_id} is no longer an additional senior of ##{outcome.junior_id}, so neither " \
+          "session's hierarchy pulls in the other's human messages through this edge any more. Nothing else " \
+          "changed: spawn parents are untouched and no other lineage edge was rewritten. Both timelines record " \
+          "the removal."
+        ].join("\n")
+      rescue Sessions::RemoveUncleEdge::Error => e
+        raise ToolError, e.message
+      end
+
+      # How the timelines will name whoever detached the edge. Self-declared for
+      # the same reason `archive_actor_phrase` is: the API key is shared by the
+      # whole fleet, so nothing about the request identifies a session.
+      def removal_actor_phrase(args)
+        declared = args["acting_session_id"].to_s.strip[/\A\d+\z/]
+        return "an undeclared #{mcp_surface_name} caller" if declared.nil?
+
+        "session ##{declared} via the #{mcp_surface_name}"
       end
 
       def bulk_archive(args)
