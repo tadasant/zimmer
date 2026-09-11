@@ -1040,6 +1040,7 @@ module Mcp
           raise ToolError, "Category ##{category_id} not found" unless category
         end
 
+        session.category_change_source = CategoryFeedbackEvent::MCP
         session.update!(category_id: category&.id)
 
         [

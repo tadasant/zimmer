@@ -88,6 +88,7 @@ export default defineConfig({
             { label: "The Status summary", slug: "sessions/status-summary" },
             { label: "Spot and priority", slug: "sessions/spot-and-priority" },
             { label: "Board visibility", slug: "sessions/board-visibility" },
+            { label: "Auto-categorization", slug: "sessions/categorization" },
             { label: "Booting the app inside a session", slug: "sessions/dev-server" },
             { label: "Running tests inside a session", slug: "sessions/running-tests" },
           ],

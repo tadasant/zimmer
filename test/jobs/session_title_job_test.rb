@@ -91,7 +91,7 @@ class SessionTitleJobTest < ActiveJob::TestCase
 
     assert_equal "haiku", captured[:opts][:model]
     assert_equal false, captured[:opts][:single_line]
-    assert_equal SessionTitleJob::INFERENCE_TIMEOUT, captured[:opts][:timeout]
+    assert_equal CategorizationService::INFERENCE_TIMEOUT, captured[:opts][:timeout]
     assert_equal "User Authentication System", @session.reload.title
   end
 
@@ -257,6 +257,92 @@ class SessionTitleJobTest < ActiveJob::TestCase
     assert_includes captured_prompt, CHAT_BUBBLE_HUMAN_PROMPT
     refute_includes captured_prompt, "page dump"
     assert_equal bugs.id, @session.reload.category_id
+  end
+
+  # === The feedback corpus (tadasant/zimmer#16) ===============================
+
+  test "an auto-assignment records the answer and the context the model saw" do
+    bugs = Category.create!(name: "Bugs", description: "Defects and regressions to fix")
+    @session.update!(category_id: nil, prompt: "Fix the crash on login", transcript: nil)
+    @mock_inference_service.expects(:generate).returns("CATEGORY: Bugs")
+
+    assert_difference "CategoryFeedbackEvent.count", 1 do
+      @job.perform(@session.id)
+    end
+
+    event = CategoryFeedbackEvent.last
+    assert_equal CategoryFeedbackEvent::AUTO_ASSIGNED, event.kind
+    assert_equal bugs.id, event.auto_category_id
+    assert_equal "Fix the crash on login", event.context_snapshot
+    assert_equal "prompt", event.context_source
+    assert_equal "CATEGORY: Bugs", event.raw_answer
+    assert_equal CategorizationService::DEFAULT_MODEL, event.model
+    assert_equal CategorizationService::PROMPT_VERSION, event.prompt_version
+    assert_equal bugs.id, @session.reload.category_id
+  end
+
+  test "the categorizer's own write is not recorded as a correction of itself" do
+    Category.create!(name: "Bugs", description: "Defects and regressions to fix")
+    @session.update!(category_id: nil, prompt: "Fix the crash on login", transcript: nil)
+    @mock_inference_service.expects(:generate).returns("CATEGORY: Bugs")
+
+    @job.perform(@session.id)
+
+    assert_equal 0, CategoryFeedbackEvent.corrections.count
+    assert_equal [ "Auto-assigned to category \"Bugs\"" ],
+      @session.logs.where("content LIKE ?", "%categor%").pluck(:content)
+  end
+
+  test "a decline is recorded as feedback too" do
+    Category.create!(name: "Bugs", description: "Defects and regressions to fix")
+    @session.update!(category_id: nil, prompt: "Write a haiku about autumn", transcript: nil)
+    @mock_inference_service.expects(:generate).returns("CATEGORY: NONE")
+
+    @job.perform(@session.id)
+
+    event = CategoryFeedbackEvent.last
+    assert_equal CategoryFeedbackEvent::UNCATEGORIZED, event.kind
+    assert_nil event.auto_category_id
+    assert_equal "Write a haiku about autumn", event.context_snapshot
+    assert_nil @session.reload.category_id
+  end
+
+  test "the answer is recorded even when a manual category lands mid-flight" do
+    bugs = Category.create!(name: "Bugs", description: "Defects and regressions to fix")
+    research = Category.create!(name: "Research", description: "Spikes")
+    @session.update!(category_id: nil, prompt: "Fix the crash on login", transcript: nil)
+    @mock_inference_service.expects(:generate).with do |*|
+      Session.where(id: @session.id).update_all(category_id: research.id)
+      true
+    end.returns("CATEGORY: Bugs")
+
+    @job.perform(@session.id)
+
+    assert_equal research.id, @session.reload.category_id
+    assert_equal bugs.id, CategoryFeedbackEvent.last.auto_category_id
+  end
+
+  test "a failure to record feedback never costs the session its category" do
+    bugs = Category.create!(name: "Bugs", description: "Defects and regressions to fix")
+    @session.update!(category_id: nil, prompt: "Fix the crash on login", transcript: nil)
+    @mock_inference_service.expects(:generate).returns("CATEGORY: Bugs")
+    CategoryFeedbackEvent.stubs(:create!).raises(ActiveRecord::StatementInvalid, "disk full")
+
+    @job.perform(@session.id)
+
+    assert_equal bugs.id, @session.reload.category_id
+  end
+
+  test "the operator's model override is what the job runs on" do
+    AppSetting.delete_all
+    AppSetting.create!(category_inference_model: "sonnet")
+    Category.create!(name: "Bugs", description: "Defects and regressions to fix")
+    @session.update!(category_id: nil, prompt: "Fix the crash on login", transcript: nil)
+    @mock_inference_service.expects(:generate).with(anything, has_entry(model: "sonnet")).returns("CATEGORY: Bugs")
+
+    @job.perform(@session.id)
+
+    assert_equal "sonnet", CategoryFeedbackEvent.last.model
   end
 
   test "keeps titling from the prompt when there is no original_prompt" do

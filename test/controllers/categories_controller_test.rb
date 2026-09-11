@@ -33,6 +33,28 @@ class CategoriesControllerTest < ActionDispatch::IntegrationTest
     assert_select "[data-category-count-id='#{category.id}']", text: "0"
   end
 
+  # The description is the auto-categorizer's signal, so it has to be settable
+  # the moment the category exists (tadasant/zimmer#16).
+  test "create accepts a description" do
+    post categories_url, params: { name: "Docs", description: "Changes to the docs site" }, as: :turbo_stream
+
+    assert_response :success
+    assert_equal "Changes to the docs site", Category.last.description
+  end
+
+  test "create echoes the description in JSON" do
+    post categories_url, params: { name: "Docs", description: "Changes to the docs site" }, as: :json
+
+    assert_response :created
+    assert_equal "Changes to the docs site", response.parsed_body["description"]
+  end
+
+  test "create without a description stores NULL" do
+    post categories_url, params: { name: "Docs", description: "  " }, as: :turbo_stream
+
+    assert_nil Category.last.description
+  end
+
   test "create strips surrounding whitespace from the name" do
     post categories_url, params: { name: "  backlog  " }, as: :turbo_stream
     assert_response :success

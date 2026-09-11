@@ -9,6 +9,7 @@ class Session < ApplicationRecord
   include SessionGenesisClassification
   include SessionPrecedence
   include SessionCardOrder
+  include SessionCategorization
   include SessionVisibility
   include RunningTurns
   include CatalogArtifactReferences

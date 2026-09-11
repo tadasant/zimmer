@@ -1078,8 +1078,10 @@ class Api::V1::SessionsController < Api::BaseController
         render_api_error("Not Found", "Category ##{category_id} not found", status: :not_found)
         return
       end
+      @session.category_change_source = CategoryFeedbackEvent::API
       @session.update!(category_id: category.id)
     else
+      @session.category_change_source = CategoryFeedbackEvent::API
       @session.update!(category_id: nil)
     end
 
@@ -1123,6 +1125,7 @@ class Api::V1::SessionsController < Api::BaseController
     order = Session.reorder_cards!(
       params[:ids],
       category_id: category&.id,
+      source: CategoryFeedbackEvent::API,
       moved_session_id: moved&.id
     )
 
