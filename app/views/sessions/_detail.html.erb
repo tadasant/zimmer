@@ -143,6 +143,7 @@
         <%= render "sessions/auth_outage_banner", agent_session: @session %>
         <% waiting_reason = SessionWaitingReason.for(@session) %>
         <%= render "sessions/spot_hold_banner", agent_session: @session, waiting_reason: waiting_reason %>
+        <%= render "sessions/spot_starvation_admission", agent_session: @session %>
         <%= render "sessions/queued_turn_banner", agent_session: @session, waiting_reason: waiting_reason %>
         <%= render "sessions/mcp_oauth_reconnect_banner", agent_session: @session %>
         <%= render "sessions/failure_details", agent_session: @session %>

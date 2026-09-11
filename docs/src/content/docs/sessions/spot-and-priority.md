@@ -728,6 +728,73 @@ what the hold banner already says.
 Refusing instead would mean the gate silently deletes work: a `github_issue` trigger that fires once
 during a busy afternoon would never run at all.
 
+### A hold has an age ceiling: the starvation lane
+
+"Deferred, never cancelled" has a failure mode in which the two are the same thing. Every rung of
+the ladder above is correct, and none of them reads the clock: a session held under a window that
+stays over its ceiling is held again at the next rung, and the next, for as long as the window stays
+there. Session 8526 was held **127 times over five days** at zero output, every hold correct, and
+ran only because a router promoted it by hand ([#693](https://github.com/tadasant/zimmer/issues/693)).
+On 2026-09-10 the fleet's own nightly janitor missed three nights the same way, 73 holds deep, with
+33 sessions held behind the same spent weekly budget — and the backlog's `started` counter did not
+move for four days, because every one of the twenty sessions it counted as in flight was one the
+gate was refusing.
+
+Nothing surfaced any of it. `waiting` is what a session asleep on a wake looks like too, there was
+no transcript to read, no alert fires when every individual decision is right, and `spot_hold_count`
+— the one number that told a session held twice from one held 127 times — lived in the metadata,
+where nothing read it.
+
+So a hold now carries **`spot_hold_since`**, the first rung's stamp, kept across every later rung
+(`spot_hold_at` is rewritten on each). And a utilization hold that has aged past the operator's
+**starvation age ceiling** is *admitted* rather than re-armed. That is a hole in the budget ceiling
+the gate exists to enforce, and it is bounded three ways so that it stays a trickle rather than a
+bypass:
+
+- **One at a time.** The lane is one session wide. A starved session is admitted only while no
+  *other* starvation-admitted spot session has a turn in flight — `running`, or `waiting` with its
+  turn on a worker or queued for one. However many sessions are past the ceiling, the budget carries
+  at most one extra session's burn: the same "a session is not infinitely divisible" argument the
+  pacing waiver rests on. The worst case is one spot session running continuously; at the fleet's
+  ~$0.04/min that is ~$400 a week, against a weekly priority reserve two orders of magnitude larger.
+  If the lane cannot be read, it is treated as occupied — a monitoring gap admits nothing.
+- **Only the quota ceilings, never the fleet cap.** A `fleet_at_cap` hold is priority work crowding
+  spot work out of a finite worker pool, which is the intent, and it clears the moment any session
+  finishes. The lane overrides `at_utilization_limit` alone — both the pacing curve and a spent
+  budget.
+- **One turn.** The admission is for the turn that was refused. The next turn the session takes
+  meets the gate again and, if held, starts a fresh ladder with a fresh clock.
+
+The [ceiling sweep](#the-budget-is-a-ceiling) leaves a starvation-admitted turn alone. Without that
+the `spot_budget` ceiling — the one that produced both incidents — would pause the admitted turn on
+its next tick, and the lane would admit nothing.
+
+The ceiling is a number on the spot policy card on `/inference` and a `starvation_age_ceiling_hours`
+argument to `action_spot_policy`'s `set_gating`: **24 hours** by default, **0 turns the lane off**,
+which restores the unbounded wait. Every change is recorded on the same audit line as the rest of
+the policy.
+
+It is legible, because a session that ran past the gate has to be distinguishable from one the gate
+let through:
+
+- The admission is written on the session — `spot_starvation_admitted_at`, after how many holds, and
+  after how long — into the session's own log as a warning line that quotes what the gate still
+  said, and into the Rails log.
+- The session's page shows an **Admitted by the starvation lane** box for as long as the session
+  carries the record, and `get_session` prints the same sentence, so a session running while
+  `get_spot_policy` says "held" explains itself rather than looking like a gate that leaked.
+- The hold banner and `get_session` now say how long a held session has waited on its ladder and
+  how many holds that is, and where that stands against the ceiling.
+- The spot policy card and `get_spot_policy` print, beside the held count, how many held sessions
+  are past the ceiling, how long the oldest has waited, and which session (if any) the lane is
+  running — whether or not anyone is starved, because "none, and the lane is free" is the answer to
+  "is anything waiting without bound".
+
+What the lane does *not* do: it does not change a session's class, its precedence, or the gate's
+answer for anyone else. `/inference` still says "a spot session starting right now would be held"
+while the lane is admitting one, and that is the honest answer — the lane is an exception for one
+named session, recorded as one.
+
 ### A hold that loses its re-check
 
 The ladder above is a chain of single delayed jobs, and until 2026-08-31 it had no redundancy
@@ -1634,6 +1701,9 @@ control that combines with the others, and each persists exactly as pressing **A
 | Read why one session was paused mid-run, and what resumes it | Banner on the session page | `get_session` |
 | Read which of a hold, a pause and an auth-outage park is why a session is waiting | Ranked banners on the session page | `get_session` |
 | Toggle gating, set the two priority reserves, set the max sessions at once | `/inference` | `action_spot_policy` (`set_gating`) |
+| Set the starvation age ceiling, or turn the starvation lane off with 0 | `/inference` spot gate form | `action_spot_policy` (`set_gating`, `starvation_age_ceiling_hours`) |
+| Read how many held sessions are past the age ceiling, how long the oldest has waited, and which session the lane is running | Spot gate card on `/inference` | `get_spot_policy` |
+| Read how long one held session has waited and how many holds that is, and that a running session was admitted by the lane | Hold banner and **Admitted by the starvation lane** box on the session page | `get_session` |
 | Read the backlog top-up ceiling, stretch and cooldown, and where the fleet sits against them | Backlog top-up card on `/inference` | `get_spot_policy` |
 | Set the backlog top-up ceiling, stretch and cooldown | Backlog top-up card on `/inference` | `action_spot_policy` (`set_top_up`) |
 | One-click promote a genesis (non-trigger kinds only) | `/inference` | `action_spot_policy` (`promote_genesis` / `demote_genesis`) |

@@ -137,6 +137,32 @@
         </span>
       </label>
 
+      <%# The one bound on how long a hold lasts, and the one hole in the budget
+          ceiling — so it sits by itself under the controls that define the
+          ceiling, with the cost said in the same breath. Full width, like the
+          preemption switch, because the sentence does not fit a third of a
+          column. %>
+      <div class="mt-4">
+        <label for="app_setting_spot_starvation_age_ceiling_hours" class="block text-sm font-medium text-gray-700 mb-2">
+          Starvation age ceiling (hours)
+        </label>
+        <input type="number"
+               name="app_setting[spot_starvation_age_ceiling_hours]"
+               id="app_setting_spot_starvation_age_ceiling_hours"
+               value="<%= @app_setting.spot_starvation_age_ceiling_hours %>"
+               min="0" max="<%= AppSetting::MAX_SPOT_STARVATION_AGE_CEILING_HOURS %>" step="1"
+               class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:w-48 sm:text-sm border-gray-300 rounded-md px-3 py-2 border">
+        <p class="mt-1 text-xs text-gray-500" id="spot-starvation-ceiling-help">
+          <span class="font-medium text-gray-900">How long a spot session may be held before a turn.</span>
+          A session the gate has refused for longer than this is admitted by the
+          <strong>starvation lane</strong>: one session at a time, past the quota ceilings only (never
+          past the limit above), for that one turn — and written on the session as admitted by the lane,
+          not by the gate. The lane leaves at most one extra session's burn running over the line.
+          <strong>0 turns it off</strong>, which restores the unbounded wait: a session was once held
+          127 times over five days under a gate that was right every time.
+        </p>
+      </div>
+
       <p class="mt-3 text-xs text-gray-500">
         You set the reserve as a percentage; the dollar figure beside it is derived from what each
         window is estimated to be worth — see the capacity model above. Every figure is an
@@ -217,6 +243,17 @@
         <strong id="spot-held-count"><%= @spot_held_count %></strong><% if @spot_overdue_hold_count.positive? %>,
         <strong id="spot-overdue-hold-count"><%= @spot_overdue_hold_count %></strong> of them overdue for a re-check<% end %>.
         <%= @spot_hold_explanation.sessions_held %>
+      </p>
+
+      <%# The starvation lane, beside the population it bounds — and rendered
+          whether or not anyone is past the ceiling, because "none, and the lane
+          is free" is the answer to "is anything waiting without bound", which
+          nothing used to answer. A held session was invisible precisely because
+          every rung of its ladder was correct (tadasant/zimmer#693). %>
+      <p class="mt-2 text-sm <%= @spot_starvation.starved_count.positive? || @spot_starvation.off? ? "text-amber-800" : "text-gray-600" %>" id="spot-gate-starvation-decision">
+        Spot sessions past the starvation age ceiling:
+        <strong id="spot-starved-count"><%= @spot_starvation.starved_count %></strong>.
+        <%= @spot_hold_explanation.sessions_starved %>
       </p>
 
       <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4 text-sm">

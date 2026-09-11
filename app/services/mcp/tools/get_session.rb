@@ -237,6 +237,20 @@ module Mcp
         ]
       end
 
+      # Where a hold stands against the starvation age ceiling, in the words the
+      # session page uses.
+      def starvation_clause(hold)
+        ceiling = AppSetting.current.spot_starvation_age_ceiling
+        if ceiling.nil?
+          "The starvation lane is off, so nothing bounds this wait."
+        elsif hold.starved?(ceiling: ceiling)
+          "That is past the #{ceiling.inspect} starvation age ceiling: the starvation lane admits it at its " \
+            "next re-check, as soon as no other starvation-admitted spot session has a turn in flight."
+        else
+          "The starvation lane admits it once it has waited #{ceiling.inspect}, if the gate is still holding it then."
+        end
+      end
+
       # A mechanism still on the row that is NOT the current reason. Named rather
       # than dropped — the record is real, and a caller comparing metadata against
       # this output must not conclude the renderer missed it — but named as
@@ -335,7 +349,12 @@ module Mcp
           # drift (#423).
           ("- **Superseded by this session's class:** #{SpotSessionHold::PROMOTED_SENTENCE}" if promoted),
           "- **Hold re-check:** #{hold.recheck_sentence}",
-          "- **Holds so far:** #{hold.count}",
+          # The wait as a whole — since the FIRST rung, with the count — and where
+          # it stands against the starvation age ceiling. The count was the only
+          # thing that told a session held twice from one held 127 times, and
+          # nothing thresholded on it (tadasant/zimmer#693).
+          "- **Waiting:** #{hold.waiting_sentence || "#{hold.count} #{'hold'.pluralize(hold.count)} so far."} " \
+          "#{starvation_clause(hold)}",
           # The remedy is named only while it is still available. Telling an agent
           # to promote a session that IS priority is the advertised-remedy defect
           # this issue is about, restated one line lower down (#423).
@@ -522,6 +541,13 @@ module Mcp
         lines << "- **Scheduling class:** #{session.priority_class} (#{session.scheduling_class_source})"
         lines << "- **Precedence:** #{session.precedence}#{' — spot sessions start highest first' if session.spot?}"
         lines.concat(waiting_reason_lines(session))
+        # A turn the starvation lane admitted past the gate, while the session
+        # still carries the record of it. Said here rather than only in the
+        # session log, because an agent reading a session that is RUNNING while
+        # `get_spot_policy` says "held" would otherwise read the gate as leaking.
+        if (admission = SpotSessionHold.starvation_admission_for(session))
+          lines << "- **Admitted by the starvation lane:** #{admission.sentence}"
+        end
         # Board visibility, reported only when it is not the default. Stated with
         # the disclaimer attached, because the one way this field can do harm is an
         # agent reading "snoozed" as a reason not to act on the session.

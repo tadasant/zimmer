@@ -330,6 +330,47 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/proof-stalled-spot-hold-375.png")
   end
 
+  # The hold banner's waiting line at its longest — five days, 127 holds, past
+  # the ceiling, with the sentence about the lane under it — and the box a
+  # starvation-admitted session shows once it is running. Both carry ISO stamps,
+  # which are signature 4 (tadasant/zimmer#693).
+  test "a starved spot-hold banner and the starvation admission box do not overflow on a phone" do
+    AppSetting.editable.update!(spot_starvation_age_ceiling_hours: 24)
+    session = create_session(status: :waiting, scheduling_class: SessionGenesis::SPOT)
+    session.update!(metadata: (session.metadata || {}).merge(
+      SpotSessionHold::HELD_AT => 30.minutes.ago.utc.iso8601,
+      SpotSessionHold::HELD_SINCE => 5.days.ago.utc.iso8601,
+      SpotSessionHold::HELD_REASON => "at_utilization_limit",
+      SpotSessionHold::HELD_DETAIL => "Holding spot sessions: weekly window has spent its spot budget " \
+                                      "($0.00 of $18,950.11 left), averaged across all 7 accounts. Spot work " \
+                                      "resumes as the window's pacing curve catches up. Priority sessions are unaffected.",
+      SpotSessionHold::HELD_RETRY_AT => 30.minutes.from_now.utc.iso8601,
+      SpotSessionHold::HELD_COUNT => 127,
+      SpotSessionHold::HELD_TURN => SpotSessionHold::TURN_START
+    ))
+
+    visit session_path(session)
+    assert_text "Held for quota headroom"
+    assert_selector "[data-spot-hold-waiting]", text: /127 holds so far/
+    assert_selector "[data-spot-hold-waiting]", text: /past the 24 hours starvation age ceiling/
+
+    assert_no_horizontal_overflow("session detail with a starved spot-hold banner")
+    page.save_screenshot("tmp/screenshots/proof-starved-spot-hold-375.png")
+
+    admitted = create_session(status: :running, scheduling_class: SessionGenesis::SPOT)
+    admitted.update!(metadata: (admitted.metadata || {}).merge(
+      SpotSessionHold::STARVATION_ADMITTED_AT => 10.minutes.ago.utc.iso8601,
+      SpotSessionHold::STARVATION_ADMITTED_AFTER_HOLDS => 127,
+      SpotSessionHold::STARVATION_ADMITTED_AFTER_SECONDS => 5.days.to_i
+    ))
+
+    visit session_path(admitted)
+    assert_selector "[data-spot-starvation-admission]", text: /Admitted by the starvation lane/
+
+    assert_no_horizontal_overflow("session detail with a starvation admission box")
+    page.save_screenshot("tmp/screenshots/proof-starvation-admission-375.png")
+  end
+
   # The banner's fourth headline: a hold record the session's own class has
   # overtaken. It carries the longest prose the box can hold — the frozen gate
   # sentence, then the sentence that settles it — and it drops the button that
@@ -1015,6 +1056,11 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # so its geometry is not the geometry the knob row above measures.
     assert_selector "#app_setting_spot_preemption_enabled", visible: :all
     assert_selector "#spot-gate-preempted-decision"
+    # The starvation age ceiling field and the line that reports the lane — a
+    # full-width number input under the grid, and a sentence that names a session
+    # id and a duration (tadasant/zimmer#693).
+    assert_selector "#app_setting_spot_starvation_age_ceiling_hours"
+    assert_selector "#spot-gate-starvation-decision"
 
     assert_no_horizontal_overflow("inference")
 

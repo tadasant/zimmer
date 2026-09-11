@@ -137,6 +137,21 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
     assert setting.spot_gating_enabled, "the gate is untouched"
   end
 
+  test "the starvation age ceiling is written by the spot policy form, and zero is a real value" do
+    AppSetting.editable.update!(spot_starvation_age_ceiling_hours: 24)
+
+    patch spot_policy_path, params: { app_setting: { spot_starvation_age_ceiling_hours: "48" } }
+    assert_equal 48, AppSetting.current.spot_starvation_age_ceiling_hours
+
+    patch spot_policy_path, params: { app_setting: { spot_starvation_age_ceiling_hours: "0" } }
+    assert_equal 0, AppSetting.current.spot_starvation_age_ceiling_hours
+    assert_nil AppSetting.current.spot_starvation_age_ceiling
+
+    patch spot_policy_path, params: { app_setting: { spot_starvation_age_ceiling_hours: "-1" } }
+    assert_equal 0, AppSetting.current.spot_starvation_age_ceiling_hours, "an out-of-range value is refused"
+    assert_match(/not saved/, flash[:alert])
+  end
+
   # A hand-built PATCH that omits the key must leave the column as it was rather
   # than casting nil into a NOT NULL column — the same rule every other field on
   # this form follows.
