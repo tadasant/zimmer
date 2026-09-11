@@ -216,6 +216,14 @@ class AuthRecoveryService
   def auth_error_detected?(working_directory)
     return false unless working_directory
 
+    # A runtime that records the error its turn ended on (Codex) is asked that:
+    # the record is terminal by construction, and its kind already reads the
+    # structured code before any prose.
+    if records_turn_errors?
+      @turn_error = unhandled_turn_error(working_directory)
+      return @turn_error&.kind == :auth
+    end
+
     transcript_path = find_transcript_path(working_directory)
     return false unless transcript_path
     return false unless file_system.exists?(transcript_path)
@@ -375,6 +383,7 @@ class AuthRecoveryService
   # session riding genuine rotations, which is exactly what must not be charged.
   def record_attempt!(working_directory, retry_attempt, charge_budget)
     updates = { "auth_error_last_checked_line" => get_transcript_line_count(working_directory) }
+      .merge(RecordedTurnError.handled_attributes(@turn_error))
 
     if charge_budget
       updates["auth_recovery_count"] = retry_attempt
@@ -489,7 +498,8 @@ class AuthRecoveryService
   def advance_checked_line(working_directory)
     with_db_retry do
       session.merge_metadata!(
-        "auth_error_last_checked_line" => get_transcript_line_count(working_directory)
+        { "auth_error_last_checked_line" => get_transcript_line_count(working_directory) }
+          .merge(RecordedTurnError.handled_attributes(@turn_error))
       )
     end
   rescue => e

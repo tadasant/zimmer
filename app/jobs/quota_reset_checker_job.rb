@@ -2,9 +2,11 @@
 
 # Periodic job that checks if quota-exceeded accounts can be restored to active.
 #
-# Probes each exceeded account for a fresh reading and restores the ones whose
-# windows have cleared, per ClaudeAccountQuotaSnapshot#windows_clear?. Runs every
-# 15 minutes in production.
+# Probes each exceeded Claude Code account for a fresh reading and restores the
+# ones whose windows have cleared, per ClaudeAccountQuotaSnapshot#windows_clear?.
+# Exceeded Codex accounts are restored on the same predicate, read from the
+# reading Codex recorded when it refused them (#restore_codex_accounts). Runs
+# every 15 minutes in production.
 #
 # Restoring accounts is only half the job: sessions parked by
 # AuthOutageParkService because the pool had nothing usable are dormant in
@@ -44,8 +46,7 @@ class QuotaResetCheckerJob < ApplicationJob
   def perform
     logger = StructuredLogger.new({ service: "QuotaResetCheckerJob" })
 
-    # Scoped to Claude Code: this job probes Anthropic's quota API via snapshots,
-    # which doesn't apply to other runtimes (Codex has no Anthropic quota window).
+    # Claude Code accounts are probed: Anthropic's quota API gives a fresh reading.
     ClaudeAccount.quota_exceeded.for_runtime(ClaudeAuthProvider::RUNTIME).find_each do |account|
       snapshot = fetch_fresh_snapshot(account, logger) || account.latest_snapshot
       next unless snapshot
@@ -61,8 +62,10 @@ class QuotaResetCheckerJob < ApplicationJob
       end
     end
 
+    restore_codex_accounts(logger)
+
     # Order matters: restore the accounts first, then look at the pool. The edge
-    # this fires on is the one the loop above just created.
+    # this fires on is the one the loops above just created.
     QuotaAvailabilityMonitor.check!(logger: logger)
 
     resumed = AuthOutageParkService.wake_parked_sessions!(logger: logger)
@@ -70,6 +73,37 @@ class QuotaResetCheckerJob < ApplicationJob
   end
 
   private
+
+  # Codex accounts have no quota endpoint Zimmer probes. What they have is the
+  # reading ApiErrorRetryService keeps every time Codex refuses one for quota
+  # (CodexTurnError#quota_reading): the refused windows marked `rejected`, with
+  # the reset times Codex recorded. Once those have passed, #windows_clear? says
+  # so and the account goes back in rotation.
+  #
+  # The latest reading always describes the latest refusal, because every
+  # refusal writes one — including a refusal Codex recorded no reset time for,
+  # which is written as refused with no reset and so never reads as clear. An
+  # account in that state, or with no reading at all, stays where it is:
+  # restoring it on a guess would put an account the backend just refused
+  # straight back in front of the next session.
+  #
+  # Rescued per account, so one row that cannot be written does not stop the
+  # wake below from reaching every parked session.
+  def restore_codex_accounts(logger)
+    ClaudeAccount.quota_exceeded.for_runtime(CodexAuthProvider::RUNTIME).find_each do |account|
+      snapshot = account.latest_snapshot
+      next unless snapshot&.windows_clear?
+
+      account.update!(status: :active)
+      logger.info("Restored codex account to active",
+        email: account.email,
+        reading_taken_at: snapshot.created_at.iso8601,
+        reset_5h: snapshot.reset_5h&.iso8601,
+        reset_7d: snapshot.reset_7d&.iso8601)
+    rescue StandardError => e
+      logger.warn("Could not restore codex account", email: account.email, error: e.message)
+    end
+  end
 
   # Fetch a fresh quota snapshot for a non-current account using its stored
   # OAuth token. Returns nil if the token is unavailable, expired without a

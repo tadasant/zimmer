@@ -376,6 +376,30 @@ module RespawnScaffold
     end.join(" ")
   end
 
+  # --- The runtime's own record of how its turn ended ---------------------------
+  #
+  # A runtime whose transcript records each turn's error in structured form
+  # (TranscriptSource#records_turn_errors? — Codex) is asked for that instead of
+  # having its transcript scanned for Claude's `isApiErrorMessage` envelope,
+  # which it does not write. See RecordedTurnError.
+
+  # @return [Boolean] whether this session's runtime records turn errors
+  def records_turn_errors?
+    transcript_source.records_turn_errors?
+  end
+
+  # The recorded error the latest turn ended on, unless a recovery path already
+  # acted on it. Answers nil on a read failure, per this module's error policy.
+  #
+  # @param working_directory [String] the cwd the runtime was spawned from
+  # @return [Object, nil] see TranscriptSource#terminal_turn_error
+  def unhandled_turn_error(working_directory)
+    RecordedTurnError.unhandled(session: session, working_directory: working_directory, file_system: file_system)
+  rescue => e
+    @logger.error("Error reading the recorded turn error", error: e.message)
+    nil
+  end
+
   # The transcript's current line count, which is how these services remember
   # which lines they have already judged: the marker they store is a line number,
   # so the same error entry is not re-detected after the re-spawn.

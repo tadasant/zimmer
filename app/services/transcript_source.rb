@@ -248,6 +248,36 @@ class TranscriptSource
     raise NotImplementedError, "#{self.class}#rotates_transcript_files?"
   end
 
+  # Does this runtime's transcript record, in structured form, the error each
+  # turn ended on?
+  #
+  # When it does, the recovery services ask #terminal_turn_error which recovery
+  # path a dead turn belongs to, instead of pattern-matching the transcript
+  # themselves. The default is no: Claude Code's API-error envelope is read by
+  # the recovery services directly (they predate this seam), and Pi's is read by
+  # PiRetryStrategy for the failure backstop only.
+  #
+  # @return [Boolean]
+  def records_turn_errors?
+    false
+  end
+
+  # The error the runtime recorded for the turn it most recently finished, read
+  # from the session's transcript — or nil when that turn did not end on one, or
+  # the transcript cannot be found.
+  #
+  # The returned object answers #id (stable per failed turn), #kind (one of
+  # :context_length, :quota, :auth, :retryable, :unclassified), #recognized?,
+  # #message and #rate_limited?, and may answer #quota_reading. See
+  # CodexTurnError for the one implementation.
+  #
+  # @param session [Session]
+  # @param working_directory [String, nil] the cwd the runtime was spawned from
+  # @return [Object, nil]
+  def terminal_turn_error(session:, working_directory:)
+    nil
+  end
+
   protected
 
   attr_reader :file_system

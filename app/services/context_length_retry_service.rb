@@ -1,3 +1,5 @@
+require "automated_prompts"
+
 # Service for handling context length errors with automatic /compact command
 #
 # When Claude Code CLI encounters a "prompt is too long" error (context length
@@ -41,6 +43,14 @@ class ContextLengthRetryService
   # `check_session_status` is told which prompt the respawn will carry, and a
   # literal repeated in two places is the way those two drift apart.
   COMPACT_PROMPT = "/compact"
+
+  # The prompt that resumes a runtime that compacts by itself on resume (see
+  # RuntimeCliAdapter::ClassMethods#compacts_on_resume?). It is the recovery
+  # nudge, not a compaction command: the runtime compacts before answering it,
+  # so the task continues in the same turn.
+  SELF_COMPACTING_RESUME_PROMPT = AutomatedPrompts.system_recovery(
+    reason: "the conversation outgrew the model's context window, and resuming compacts it"
+  )
 
   # Error patterns that indicate context length exceeded
   # These patterns match various Claude API error messages for context overflow
@@ -89,26 +99,8 @@ class ContextLengthRetryService
     )
     log_buffer.flush
 
-    # Get current transcript line count to mark as processed
-    # This prevents re-detecting the same error message after /compact completes
-    transcript_line_count = get_transcript_line_count(working_directory)
-
-    # Record retry attempt in metadata and mark that we need continuation after /compact
-    # The pending_compact_continuation flag tells ProcessLifecycleManager to
-    # automatically continue with a follow-up prompt after /compact completes
-    # instead of transitioning to needs_input
-    #
-    # Also record the current transcript line count so that subsequent checks
-    # for context length errors in the transcript skip already-processed lines
     with_db_retry do
-      BUDGET.record!(
-        session,
-        attempt: retry_attempt,
-        extra: {
-          "pending_compact_continuation" => true,
-          "context_length_last_checked_line" => transcript_line_count
-        }
-      )
+      BUDGET.record!(session, attempt: retry_attempt, extra: recovery_markers(working_directory))
     end
 
     spawn_and_verify_recovery(working_directory, retry_attempt)
@@ -118,6 +110,34 @@ class ContextLengthRetryService
 
   # The noun the shared respawn log sentences interpolate.
   def recovery_label = "context length compact"
+
+  # Does the runtime compact on its own when resumed? See
+  # RuntimeCliAdapter::ClassMethods#compacts_on_resume?.
+  def runtime_compacts_on_resume?
+    cli_adapter.compacts_on_resume?
+  end
+
+  # The prompt this recovery resumes the runtime with.
+  def recovery_prompt
+    runtime_compacts_on_resume? ? SELF_COMPACTING_RESUME_PROMPT : COMPACT_PROMPT
+  end
+
+  # What an attempt writes beside its budget, so the error it answers is not
+  # re-detected after the respawn, and so the respawn's completion is continued
+  # when there is a continuation to owe.
+  #
+  # `pending_compact_continuation` tells ProcessLifecycleManager to follow a
+  # finished `/compact` turn with "Continue with the previous task" instead of
+  # parking. A runtime that compacts on resume has no such second turn to owe —
+  # the recovery prompt is already the continuation — so it is not set there.
+  #
+  # The line count is the Claude-envelope scan position; the recorded turn
+  # error's id is the same marker for a runtime that records turn errors.
+  def recovery_markers(working_directory)
+    markers = { "context_length_last_checked_line" => get_transcript_line_count(working_directory) }
+    markers["pending_compact_continuation"] = true unless runtime_compacts_on_resume?
+    markers.merge(RecordedTurnError.handled_attributes(@turn_error))
+  end
 
   # Check if stderr or transcript contains a context length error pattern
   #
@@ -132,6 +152,14 @@ class ContextLengthRetryService
   # @param working_directory [String] Working directory for locating transcript
   # @return [Boolean] true if context length error was detected
   def context_length_error_detected?(stderr_log_path, working_directory = nil)
+    # A runtime that records the error each turn ended on is asked that and
+    # nothing else — its stderr is not Claude's, and its transcript carries no
+    # isApiErrorMessage envelope for the scans below to find.
+    if records_turn_errors?
+      @turn_error = unhandled_turn_error(working_directory)
+      return @turn_error&.kind == :context_length
+    end
+
     # Check stderr first (original behavior)
     return true if context_length_error_in_stderr?(stderr_log_path)
 
@@ -300,10 +328,16 @@ class ContextLengthRetryService
     # prevent the race where a user sends a follow-up prompt between
     # attempt_recovery and here — the last opportunity to abort before spawning a
     # "/compact" process that would race with it.
-    respawn_and_verify(working_directory, retry_attempt, resume_prompt: COMPACT_PROMPT) do
-      add_log("Sending /compact command to reduce context size", level: "info")
+    prompt = recovery_prompt
 
-      resume_for_recovery(working_directory, prompt: COMPACT_PROMPT)
+    respawn_and_verify(working_directory, retry_attempt, resume_prompt: prompt) do
+      if runtime_compacts_on_resume?
+        add_log("Resuming so the runtime compacts the conversation before it continues", level: "info")
+      else
+        add_log("Sending /compact command to reduce context size", level: "info")
+      end
+
+      resume_for_recovery(working_directory, prompt: prompt)
     end
   end
 
@@ -334,23 +368,12 @@ class ContextLengthRetryService
       level: "warning"
     )
 
-    # Get current transcript line count to mark as processed
-    transcript_line_count = get_transcript_line_count(working_directory)
-
-    # Record retry attempt in metadata and preserve the pending_compact_continuation flag
-    # The flag must be preserved through retries so that when /compact eventually succeeds,
-    # ProcessLifecycleManager knows to automatically continue with the user's task
-    #
-    # Also update the transcript line count to prevent re-detecting old errors
+    # The same markers as the first attempt: the pending continuation must survive
+    # retries so that when /compact eventually succeeds ProcessLifecycleManager
+    # still continues the user's task, and the scan position must move past the
+    # error this loop is already answering.
     with_db_retry do
-      BUDGET.record!(
-        session,
-        attempt: retry_attempt,
-        extra: {
-          "pending_compact_continuation" => true,
-          "context_length_last_checked_line" => transcript_line_count
-        }
-      )
+      BUDGET.record!(session, attempt: retry_attempt, extra: recovery_markers(working_directory))
     end
 
     spawn_and_verify_recovery(working_directory, retry_attempt)

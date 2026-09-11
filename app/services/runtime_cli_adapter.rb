@@ -161,6 +161,19 @@ module RuntimeCliAdapter
       name
     end
 
+    # Does this runtime compact an overflowing conversation by itself when the
+    # session is resumed after a context-length failure?
+    #
+    # ContextLengthRetryService asks. When false (the default, and Claude Code's
+    # answer) it resumes with the runtime's `/compact` command and continues the
+    # task in a second turn once that completes. When true it resumes with the
+    # recovery nudge alone, because the runtime compacts before answering it.
+    #
+    # @return [Boolean]
+    def compacts_on_resume?
+      false
+    end
+
     # Refuse to spawn without a working directory. Process.spawn would otherwise
     # reject a nil chdir deep inside the C call with "no implicit conversion of nil
     # into String", which tells an operator nothing about which argument was nil.
@@ -188,6 +201,11 @@ module RuntimeCliAdapter
   # @see ClassMethods#validate_working_dir!
   def validate_working_dir!(working_dir)
     self.class.validate_working_dir!(working_dir)
+  end
+
+  # @see ClassMethods#compacts_on_resume?
+  def compacts_on_resume?
+    self.class.compacts_on_resume?
   end
 
   # Tool identifiers the runtime must refuse to invoke. Override for runtimes

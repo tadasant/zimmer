@@ -49,6 +49,9 @@ require "digest"
 #                       token is serviceable but the process reported an auth
 #                       failure. The process was holding an older token, so keep
 #                       the account and hand the next process the current one.
+#                       Also, once per incident, for a runtime whose auth failure
+#                       is only ever about the credential (Codex): a refresh that
+#                       succeeds proves the account can serve.
 #   :rotated            Nobody else moved the pool and the current account
 #                       cannot serve. Rotate to a different account.
 #   :rotation_in_flight The lock was held for longer than a rotation takes.
@@ -99,6 +102,9 @@ class AuthRecoveryCoordinator
   CREDENTIAL_MODE_KEY = "auth_session_scoped_credentials"
   CREDENTIAL_FINGERPRINT_KEY = "auth_access_token_fingerprint"
   SESSION_SCOPED_SETTING_KEY = "session_scoped_credentials"
+  # When #reseed_refreshed_current last re-seeded this session's identity, so it
+  # does so at most once per incident.
+  RESEEDED_AT_KEY = "auth_refresh_reseeded_at"
 
   # What the coordinator decided. `account` is the identity selected for the
   # next spawn for outcomes that resolved to one; nil for the two park outcomes.
@@ -266,7 +272,9 @@ class AuthRecoveryCoordinator
       plan = reseed_serviceable_current(current, working_directory)
       return plan if plan
     else
-      classify_outgoing!(current)
+      refreshed = classify_outgoing!(current)
+      plan = reseed_refreshed_current(current, working_directory) if refreshed
+      return plan if plan
     end
 
     result = auth_provider.rotate_for_quota!(
@@ -386,6 +394,45 @@ class AuthRecoveryCoordinator
     nil
   end
 
+  # A runtime whose auth failure is only ever about the credential
+  # (RuntimeAuthProvider#refresh_proves_serviceable? — Codex OAuth) has just had
+  # that credential refreshed successfully by #classify_outgoing!, which also
+  # wrote the new pair where the runtime reads it. The failed process was holding
+  # an older copy; the account itself can serve. Re-seed it rather than rotating
+  # away from a healthy account, which in a pool of one would park the session
+  # telling a human to re-authenticate an account that needs nothing.
+  #
+  # Once per incident. A process that fails the same way after a fresh refresh
+  # is being refused for something a refresh does not fix, and the next attempt
+  # rotates.
+  #
+  # @return [Plan, nil] a :reseeded plan, or nil to fall through to rotation
+  def reseed_refreshed_current(current, working_directory)
+    return nil unless auth_provider.refresh_proves_serviceable?(current)
+    return nil if reseeded_this_incident?
+
+    account = inject(working_directory)
+    return nil unless account && account.id == current.id
+
+    session&.merge_metadata!(RESEEDED_AT_KEY => Time.current.iso8601)
+    self.class.record_identity!(session, account)
+    @logger.info("Re-seeded the current identity after a successful refresh", account: account.email)
+    Plan.new(
+      outcome: :reseeded,
+      account: account,
+      detail: "refreshed #{account.email}'s credentials, which the runtime's copy had fallen behind, and re-seeded them"
+    )
+  end
+
+  def reseeded_this_incident?
+    raw = session&.metadata&.dig(RESEEDED_AT_KEY)
+    return false if raw.blank?
+
+    Time.iso8601(raw.to_s) > AuthRecoveryService::CONSECUTIVE_WINDOW.ago
+  rescue ArgumentError
+    false
+  end
+
   def probe_access_token(account)
     QuotaCheckService.check_with_token(account.claude_access_token)
   end
@@ -432,9 +479,12 @@ class AuthRecoveryCoordinator
   # needs_reauth (refresh_token! does this), which rotate! then leaves alone; a
   # successful or merely transient refresh leaves it to be marked quota_exceeded.
   # Best effort — a network blip must not block the rotation.
+  #
+  # @return [Boolean] whether the refresh succeeded, which is what
+  #   #reseed_refreshed_current decides on
   def classify_outgoing!(account)
     result = auth_provider.refresh!(account)
-    return if result.ok?
+    return true if result.ok?
 
     # A lost single-use-token race no longer reaches here as :needs_reauth.
     # ClaudeAccount#refresh_token! serializes on the row and, before condemning
@@ -447,8 +497,10 @@ class AuthRecoveryCoordinator
     else
       @logger.info("Outgoing account's token refresh failed transiently", account: account.email)
     end
+    false
   rescue => e
     @logger.info("Could not classify the outgoing account before rotating", error: e.message)
+    false
   end
 
   def inject(working_directory)
