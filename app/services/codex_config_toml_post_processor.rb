@@ -137,7 +137,8 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
     entry["env_vars"] = forwarded | [ OPERATOR_SSH_KEY_PATH_VAR ]
   end
 
-  # Give every stdio server McpStartupTimeout's budget.
+  # Give every stdio server its MCP startup budget: what its catalog entry
+  # declares, or McpStartupTimeout's default when it declares nothing.
   #
   # Claude gets it from `MCP_TIMEOUT` on the agent process, which reaches every
   # server Claude spawns. Codex has no such variable: it reads a per-server
@@ -154,30 +155,43 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
   # production droplet. The margin is under 2x, on the runtime where running out
   # of it means the server is dropped rather than merely slow.
   #
-  # Only stdio entries. An HTTP entry is a request to a server that is already
-  # running — for the auto-injected Zimmer entries, this very process — so it has
-  # no cold start to absorb, and widening the budget there would only lengthen
-  # the wait before a genuinely unreachable URL is reported.
+  # Codex is one of the two runtimes that can act on a per-server value at all —
+  # its key is already per-server, so an entry's declared budget is written to
+  # that entry and nowhere else. A fast server declaring 15 fails fast here even
+  # when a slow one beside it declares 300; on Claude neither can
+  # ([#113](https://github.com/tadasant/zimmer/issues/113)).
   #
-  # An entry that already names a timeout keeps it, under either spelling. A
-  # `mcp.json` catalog entry cannot express one — AIR's server schema has no such
-  # field — so in practice this preserves a timeout a repo wrote into its own
-  # checked-in `.codex/config.toml`, which AIR merges around rather than
-  # replaces.
+  # The DEFAULT is written to stdio entries only. An HTTP entry is a request to a
+  # server that is already running — for the auto-injected Zimmer entries, this
+  # very process — so it has no cold start to absorb, and widening the budget
+  # there would only lengthen the wait before a genuinely unreachable URL is
+  # reported. A DECLARED value is honored on an HTTP entry too: the argument
+  # above is about what Zimmer should assume, and a catalog that names a number
+  # has stopped leaving it to Zimmer. A remote server whose OAuth leg is slow is
+  # the case the issue names.
+  #
+  # An entry that already names a timeout keeps it, under either spelling — a
+  # value a repo wrote into its own checked-in `.codex/config.toml`, which AIR
+  # merges around rather than replaces. That is a different source from the
+  # catalog field, and the local file wins, matching every other local-wins
+  # precedence in this pipeline.
   def apply_startup_timeouts!(servers)
     timed = servers.filter_map do |name, entry|
       next unless entry.is_a?(Hash)
-      next if entry["command"].blank?
       next if entry[STARTUP_TIMEOUT_KEY].present? || entry[DEPRECATED_STARTUP_TIMEOUT_KEY].present?
 
-      entry[STARTUP_TIMEOUT_KEY] = McpStartupTimeout::SECONDS
-      name
+      declared = McpStartupTimeout.declared_seconds(name)
+      # No cold start to absorb, and nothing declared: leave it to Codex.
+      next if declared.nil? && entry["command"].blank?
+
+      entry[STARTUP_TIMEOUT_KEY] = declared || McpStartupTimeout::SECONDS
+      "#{name}=#{entry[STARTUP_TIMEOUT_KEY]}s#{' (catalog)' if declared}"
     end
 
     return if timed.empty?
 
-    Rails.logger.info "[#{self.class.name}] Set #{STARTUP_TIMEOUT_KEY}=#{McpStartupTimeout::SECONDS} " \
-      "on #{timed.size} stdio MCP server(s): #{timed.join(', ')}."
+    Rails.logger.info "[#{self.class.name}] Set #{STARTUP_TIMEOUT_KEY} on #{timed.size} " \
+      "MCP server(s): #{timed.join(', ')}."
   end
 
   # Memoized across the entries of one post_process! run (the provisioner is idempotent

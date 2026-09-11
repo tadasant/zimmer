@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # Tests for PiMcpConfigPostProcessor — the one runtime post-processor that has to
 # WRITE the server table rather than merely adjust it.
@@ -201,6 +202,59 @@ class PiMcpConfigPostProcessorTest < ActiveSupport::TestCase
       config.dig("mcpServers", "leftover", "requestTimeoutMs")
   end
 
+  # ---------------------------------------------------------------------------
+  # A per-server budget the catalog declares (#113)
+  # ---------------------------------------------------------------------------
+
+  test "a seeded server gets the budget its catalog entry declares, in this key's milliseconds" do
+    declare_in_catalog("playwright-custom" => 15)
+
+    process!
+
+    assert_equal 15_000, config.dig("mcpServers", "playwright-custom", "requestTimeoutMs"),
+      "Pi's key is already per-entry, so a fast server can fail fast here even when a slow one sits beside it"
+  end
+
+  test "a declared budget reaches an http entry, which gets none by default" do
+    declare_in_catalog("acme-http" => 300)
+    @mock_fs.write(config_path, JSON.generate(
+      "mcpServers" => {
+        "acme-http" => { "type" => "http", "url" => "https://acme.example.com/mcp" },
+        "quiet-http" => { "type" => "http", "url" => "https://quiet.example.com/mcp" }
+      }
+    ))
+
+    process!
+
+    servers = config["mcpServers"]
+    assert_equal 300_000, servers.dig("acme-http", "requestTimeoutMs")
+    assert_nil servers.dig("quiet-http", "requestTimeoutMs")
+    assert_nil servers.dig("zimmer-self-session", "requestTimeoutMs")
+  end
+
+  test "an unusable declared value falls back to the shared default" do
+    declare_in_catalog("playwright-custom" => 900)
+
+    process!
+
+    assert_equal McpStartupTimeout::MILLISECONDS,
+      config.dig("mcpServers", "playwright-custom", "requestTimeoutMs"),
+      "900s is above the ceiling, so it is ignored rather than honored"
+  end
+
+  test "a request timeout already in the file wins over the catalog's" do
+    declare_in_catalog("explicit" => 30)
+    @mock_fs.write(config_path, JSON.generate(
+      "mcpServers" => {
+        "explicit" => { "type" => "stdio", "command" => "node", "requestTimeoutMs" => 9_000 }
+      }
+    ))
+
+    process!
+
+    assert_equal 9_000, config.dig("mcpServers", "explicit", "requestTimeoutMs")
+  end
+
   # One budget, three spellings. A change to Claude's millisecond constant that
   # did not reach Pi would leave the third runtime on its client's own default.
   test "Pi's budget is the same one Claude gets from MCP_TIMEOUT" do
@@ -211,6 +265,19 @@ class PiMcpConfigPostProcessorTest < ActiveSupport::TestCase
   end
 
   private
+
+  # Put per-server budgets into the catalog ServersConfig reads — which is both
+  # what seeding reads and what the budget step reads, since `.find` is `.all.find`.
+  def declare_in_catalog(budgets)
+    declared = budgets.map do |name, seconds|
+      ServersConfig::Server.new(name, {
+        "type" => "stdio", "command" => "npx", "args" => [ "-y", "@acme/mcp" ],
+        McpStartupTimeout::CATALOG_KEY => seconds
+      })
+    end
+    others = ServersConfig.all.reject { |server| budgets.key?(server.name) }
+    ServersConfig.stubs(:all).returns(others + declared)
+  end
 
   def processor
     @processor ||= PiMcpConfigPostProcessor.new(

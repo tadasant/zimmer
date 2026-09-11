@@ -33,6 +33,7 @@ From `mcp.json`:
 | `oauth` | remote servers that need an OAuth flow |
 | `default_in_roots` | which roots get it by default |
 | `unavailable` | a standing declaration that this entry cannot work here, and why |
+| `startup_timeout_sec` | how long a runtime should wait for *this* server to start |
 
 `env` and `headers` values may contain `${VAR}` placeholders.
 
@@ -68,6 +69,43 @@ passes every local check and is unusable anyway, and no amount of probing infers
 Do **not** encode availability in `description` instead. Prose like `⚠️ NOT USABLE YET` is invisible
 to every check, cannot be acted on, and goes stale silently — which is exactly what this field
 replaced.
+
+### `startup_timeout_sec`: how long this server gets to start
+
+Every MCP server gets [three minutes](#timeouts-and-caching) to start and answer `initialize`. That
+one number is simultaneously too generous and too strict: a fast local server that hangs holds a
+session for three minutes before anything says so, while a big `npx` cold start or a remote server
+doing OAuth may need more. An entry can name its own budget instead
+([#113](https://github.com/tadasant/zimmer/issues/113)).
+
+```json
+"acme-fast": {
+  "type": "stdio",
+  "command": "node",
+  "args": ["/opt/acme/server.js"],
+  "startup_timeout_sec": 20
+}
+```
+
+- **Type:** integer seconds, between 5 and 600 inclusive. The bounds are Claude Code's own
+  `startupTimeoutSec` bounds, reused rather than invented. A value outside them, a string (`"20"`),
+  or a fraction is **ignored** and logged, and the server falls back to the flat default — the
+  value is written in another repository, so Zimmer saying so in the session log is the only way
+  its author finds out that nothing happened.
+- **Absent** means the flat default, which is what every entry in the catalog means today: nothing
+  declares one yet. Declaring actual values is the catalog's own follow-up, not Zimmer's.
+- **Two runtimes can act on it per server, and one cannot.** Codex writes it into that server's
+  `[mcp_servers.*]` table and Pi into that server's `.mcp.json` entry, so a fast server fails fast
+  beside a slow one. Claude's `MCP_TIMEOUT` is a property of the agent process, so Zimmer hands it
+  the **largest** budget any of the session's servers asks for and never less than the default:
+  a slow server still gets its room, and fast-fail for one server among many is not achievable
+  there. See [Timeouts and caching](#timeouts-and-caching).
+- **Default only.** A timeout a repo already wrote into its own checked-in `.codex/config.toml` or
+  `.mcp.json` wins over the catalog's, the same way every other local value does.
+- **It reaches a runtime only because Zimmer writes it.** AIR validates the entry (its server
+  schema sets no `additionalProperties: false`) and `air resolve` returns the field verbatim, but
+  neither the Claude nor the Codex adapter copies it into a runtime config — both translate a fixed
+  field list. The field is Zimmer's to read, exactly like `unavailable`.
 
 The formal schema is published by AIR at
 [`pulsemcp.github.io/air/schemas/mcp.schema.json`](https://pulsemcp.github.io/air/schemas/mcp.schema.json)
@@ -361,9 +399,10 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
 
 ## Timeouts and caching
 
-- **Three minutes to start**, for every MCP server, on all three runtimes. The budget is one
-  number — `McpStartupTimeout::SECONDS` — written in each runtime's own idiom, because they share
-  no mechanism. Claude reads `MCP_TIMEOUT=180000` off the agent process's environment
+- **Three minutes to start** by default, for every MCP server, on all three runtimes — unless the
+  catalog entry declares its own [`startup_timeout_sec`](#startup_timeout_sec-how-long-this-server-gets-to-start).
+  The default is one number — `McpStartupTimeout::SECONDS` — written in each runtime's own idiom,
+  because they share no mechanism. Claude reads `MCP_TIMEOUT=180000` off the agent process's environment
   (`ClaudeSpawnEnv#configure_mcp_env`), which reaches every server it spawns. Codex has no such
   variable: it reads `startup_timeout_sec` out of each `[mcp_servers.*]` table, so
   `CodexConfigTomlPostProcessor` writes `startup_timeout_sec = 180` onto every **stdio** entry.
@@ -407,11 +446,23 @@ Tracked in [#63](https://github.com/tadasant/zimmer/issues/63).
   same way as the startup one: a slow tool is recoverable, a tool killed mid-flight is not.
 - A config entry that already carries `startup_timeout_sec` (or the deprecated
   `startup_timeout_ms` Codex folds into the same field), or `requestTimeoutMs` on Pi, keeps its own
-  value. A `mcp.json` catalog entry cannot express one — AIR's server schema has no such field —
-  so what this preserves in practice is a timeout a repo wrote into its own checked-in
-  `.codex/config.toml` or `.mcp.json`, which AIR merges around rather than replaces.
-- One flat number for every server is the coarse answer; per-server configurability is tracked in
-  [#113](https://github.com/tadasant/zimmer/issues/113).
+  value — a timeout a repo wrote into its own checked-in `.codex/config.toml` or `.mcp.json`, which
+  AIR merges around rather than replaces. That is a different source from the catalog field below,
+  and the local file wins over it.
+- **A catalog entry can declare its own budget**, and where it does, that is what the server gets:
+  `"startup_timeout_sec": 20` on the entry. Codex and Pi both spell the timeout per server already,
+  so the declared value goes to that server and nothing else — a fast server failing fast beside a
+  slow one is achievable on both. **Claude cannot do that**, and the reason is measured rather than
+  read off a doc: against CLI 2.1.268, a `.mcp.json` entry carrying Claude's own `startupTimeoutSec`
+  key times out at `MCP_TIMEOUT` (60.6s with `MCP_TIMEOUT=60000` and `startupTimeoutSec: 6`), and a
+  `mcpServers` table in project or user `settings.json` registers no server at all. So on Claude,
+  Zimmer sets `MCP_TIMEOUT` to the **largest** budget any of the session's servers asks for, floored
+  at the default: no server is given less room than its entry asks for, and none of them fails fast
+  ([#113](https://github.com/tadasant/zimmer/issues/113)).
+- The **default** still reaches stdio entries only, on Codex and Pi. A **declared** value is written
+  to remote entries too — that argument is about what Zimmer should assume for a server it knows
+  nothing about, and an entry naming a number has stopped leaving it to Zimmer. A remote server
+  whose OAuth leg is slow is the case that pays for.
 - Every server whose `command` is `npx` gets `NPM_CONFIG_CACHE` written into **its own `env` table**
   by `RuntimeConfigPostProcessor`, pointing at the clone's `.npm-cache`. So `npx` MCP servers in
   *different* sessions never fight over a shared cache. The match is exact: `sh -c "npx …"`, an

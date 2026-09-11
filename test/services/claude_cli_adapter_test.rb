@@ -1887,6 +1887,51 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     refute env_vars.key?("MCP_TIMEOUT"), "MCP_TIMEOUT should not be set by default"
   end
 
+  # --- The per-server budget, collapsed to one number (#113) ---------------
+  #
+  # `MCP_TIMEOUT` is a property of the Claude process, not of a server, so the
+  # per-server budgets a catalog declares have to become a single value at spawn
+  # time. Measured against the installed CLI (2.1.268), nothing per-server
+  # reaches it: a `.mcp.json` entry carrying Claude's own `startupTimeoutSec`
+  # times out at `MCP_TIMEOUT`, not at the entry's value. The collapse is a max,
+  # so no server is handed less room than its entry asks for.
+
+  test "spawn_process raises MCP_TIMEOUT to the longest budget the session's servers declare" do
+    write_mcp_json("fast" => {}, "slow" => {})
+    stub_catalog_budgets("fast" => 15, "slow" => 420)
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir, has_mcp: true)
+
+    assert_equal "420000", @mock_process_manager.spawned_processes.first[:env]["MCP_TIMEOUT"]
+  end
+
+  test "spawn_process never drops MCP_TIMEOUT below the flat default" do
+    write_mcp_json("fast" => {})
+    stub_catalog_budgets("fast" => 15)
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir, has_mcp: true)
+
+    assert_equal "180000", @mock_process_manager.spawned_processes.first[:env]["MCP_TIMEOUT"],
+      "one value covers every server at once, so shortening it for the fast one shortens it for all"
+  end
+
+  test "spawn_process uses the flat default when no server declares a budget" do
+    write_mcp_json("quiet" => {})
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir, has_mcp: true)
+
+    assert_equal "180000", @mock_process_manager.spawned_processes.first[:env]["MCP_TIMEOUT"]
+  end
+
+  test "spawn_process falls back to the flat default when .mcp.json cannot be read" do
+    File.write(File.join(@test_dir, ".mcp.json"), "{ not json")
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir, has_mcp: true)
+
+    assert_equal "180000", @mock_process_manager.spawned_processes.first[:env]["MCP_TIMEOUT"],
+      "a malformed config costs the per-server budgets, not the session"
+  end
+
   test "execute passes has_mcp true when mcp_config_path is provided" do
     @adapter.execute(
       prompt: "test",
@@ -2913,5 +2958,28 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_includes command, "-p"
     assert_includes command, "--input-format"
     assert_includes command, "stream-json"
+  end
+
+  private
+
+  # The `.mcp.json` the post-processor would have written before the spawn —
+  # the file the adapter reads the session's server names out of.
+  def write_mcp_json(servers)
+    entries = servers.transform_values do |entry|
+      { "command" => "npx", "args" => [ "-y", "@acme/mcp" ] }.merge(entry)
+    end
+    File.write(File.join(@test_dir, ".mcp.json"), JSON.generate("mcpServers" => entries))
+  end
+
+  # Put per-server budgets into the catalog. `.find` is `.all.find`, so this one
+  # seam is the whole catalog as far as McpStartupTimeout is concerned.
+  def stub_catalog_budgets(budgets)
+    declared = budgets.map do |name, seconds|
+      ServersConfig::Server.new(name, {
+        "type" => "stdio", "command" => "npx", McpStartupTimeout::CATALOG_KEY => seconds
+      })
+    end
+    others = ServersConfig.all.reject { |server| budgets.key?(server.name) }
+    ServersConfig.stubs(:all).returns(others + declared)
   end
 end

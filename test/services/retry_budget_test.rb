@@ -97,6 +97,9 @@ class RetryBudgetTest < ActiveSupport::TestCase
     assert_equal 30.minutes.to_i, RetryBudget::EMPTY_TURN.reset_after
     assert RetryBudget::EMPTY_TURN.reset_after > McpStartupTimeout::SECONDS,
       "the window has to clear the whole startup dead zone or it manufactures a restart loop"
+    assert RetryBudget::EMPTY_TURN.reset_after > McpStartupTimeout::MAX_SECONDS,
+      "a catalog entry can declare a budget longer than the default (#113), and the dead zone " \
+      "grows with it — the window has to clear the longest one a catalog is allowed to ask for"
   end
 
   # The negative half of #727: a session-id conflict that repeats inside one turn
