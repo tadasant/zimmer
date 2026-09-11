@@ -20,6 +20,10 @@ class TriggerDashboard < Administrate::BaseDashboard
     unresolved_catalog_references: Field::String.with_options(searchable: false),
     goal: Field::Text,
     prompt_template: Field::Text,
+    # The registered workflow (#18) this trigger runs instead of a template —
+    # blank for a template trigger, and exactly one of the two is set. Shown, not
+    # editable: no surface sets it yet.
+    workflow_id: Field::String,
     # How the sessions this trigger spawns are scheduled. `scheduling_class` is
     # stamped onto each new session; blank means Trigger#default_scheduling_class
     # decides. Both are read by the spot gate, not by this panel.
