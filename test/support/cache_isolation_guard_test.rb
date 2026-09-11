@@ -9,7 +9,7 @@ require "mocha/minitest"
 # The regression this exists for is #1119 meeting #1121 — a `setup` that raised
 # on a deleted constant before capturing the original store, a `teardown` that
 # restored nil anyway, and a run of NoMethodError-on-nil errors in files that
-# never touched the cache. The point of the guard is that the same mistake now costs one failing
+# never touched the cache. With the guard, the same mistake costs one failing
 # file with the leak named in the message. See test/support/cache_isolation_guard.rb.
 class CacheIsolationGuardTest < ActiveSupport::TestCase
   test "the boot store was captured, otherwise every check below is vacuous" do
@@ -65,6 +65,7 @@ class CacheIsolationGuardTest < ActiveSupport::TestCase
     end
 
     messages = result.failures.map(&:message)
+    assert_equal 2, messages.size, "the setup's own error and the leak, nothing else — the body never runs"
     assert messages.any? { |m| m.include?("uninitialized constant AlertService") }, "the real cause is still reported"
     leak = messages.find { |m| m.include?("Rails.cache was left as nil") }
     assert leak, "the nil restore is caught, not passed on to the next test"
@@ -108,9 +109,9 @@ class CacheIsolationGuardTest < ActiveSupport::TestCase
   # Runs `body` as a single test through the whole ActiveSupport::TestCase
   # callback chain and hands back its Minitest result.
   #
-  # The subclass is removed from Minitest's runnable list immediately: a class
-  # created mid-run is otherwise a real test case that the suite may try to run
-  # again on its own, and this one fails on purpose.
+  # The subclass is removed from Minitest's runnable list immediately. The run in
+  # progress works from a copy of that list, but anything that walks it later
+  # would otherwise find a test case that fails on purpose.
   def run_probe(&body)
     run_probe_class { define_method(:test_probe, &body) }
   end

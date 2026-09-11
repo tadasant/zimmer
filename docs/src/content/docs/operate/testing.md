@@ -347,14 +347,14 @@ references; what follows is what keeps the next one from spreading.
 
 `test/support/cache_isolation_guard.rb` snapshots the boot store before `parallelize` forks, and
 `ActiveSupport::TestCase` checks it on **both** edges of every test. The `teardown` check names the test
-that leaked. The prepended `setup` check exists because that is not enough on its own: ActiveSupport stops running
-`:teardown` callbacks at the first one that raises, and every teardown a test file or a later helper
-module declares runs before the shared one — so a teardown that raises after botching its restore takes
-the check down with it, and the leak has to be catchable from the far side too. That check records its
-failure rather than raising, so the test's own `setup` still runs; a raise there would skip the capture
-and send its teardown straight back to restoring `nil`. Both edges put the
-boot store back, which is what keeps one broken file to one broken file instead of a worker's worth of
-unrelated errors.
+that leaked. The prepended `setup` check exists because that is not enough on its own: ActiveSupport
+stops running `:teardown` callbacks at the first one that raises, and every teardown a test file or a
+later helper module declares runs before the shared one — so a teardown that raises after botching its
+restore takes the check down with it, and the leak has to be catchable from the far side too. Neither
+check raises; each records its failure on the test instead. A raise from the setup check would skip the
+test's own `setup`, capture and all, and send its teardown straight back to restoring `nil`. Both edges
+put the boot store back, which is what keeps one broken file to one broken file instead of a worker's
+worth of unrelated errors.
 
 The check reads the value Rails holds — `Rails.cache` is a plain `attr_accessor` — rather than calling
 the reader. That is what keeps it from flagging a mocha `Rails.stubs(:cache)`, which `BroadcastServiceTest`
