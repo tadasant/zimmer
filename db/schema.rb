@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_11_150000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_11_160000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -929,6 +929,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_150000) do
     t.datetime "updated_at", null: false
     t.index ["access_token_env_var"], name: "index_x_oauth_credentials_on_access_token_env_var", unique: true
     t.index ["account_key"], name: "index_x_oauth_credentials_on_account_key", unique: true
+  end
+
+  create_table "x_oauth_pending_flows", force: :cascade do |t|
+    t.string "access_token_env_var", null: false
+    t.string "account_key", null: false
+    t.string "code_verifier", null: false
+    t.datetime "created_at", null: false
+    t.datetime "expires_at", null: false
+    t.string "redirect_uri", null: false
+    t.string "state", null: false
+    t.datetime "updated_at", null: false
+    t.index ["access_token_env_var"], name: "index_x_oauth_pending_flows_on_access_token_env_var"
+    t.index ["expires_at"], name: "index_x_oauth_pending_flows_on_expires_at"
+    t.index ["state"], name: "index_x_oauth_pending_flows_on_state", unique: true
   end
 
   add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_from_id", on_delete: :nullify

@@ -1,0 +1,13 @@
+<% content_for(:title) { "X authorization failed" } %>
+
+<header class="main-content__header">
+  <h1 class="main-content__page-title"><%= content_for(:title) %></h1>
+</header>
+
+<section class="main-content__body">
+  <div class="flashes"><div class="flash flash-error"><%= @error_message %></div></div>
+  <p>Nothing was stored. The credential Zimmer already holds, if any, is unchanged.</p>
+  <p>
+    <%= link_to "Back to X OAuth credentials", supervisor_x_oauth_credentials_path, class: "button", data: { turbo_prefetch: false } %>
+  </p>
+</section>

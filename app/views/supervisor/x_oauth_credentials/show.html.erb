@@ -1,0 +1,16 @@
+<%# Administrate's show page, plus the button that re-runs X's consent for this credential (#852). %>
+<% content_for(:before_main) do %>
+  <section class="main-content__body">
+    <p>
+      X rotates this credential's refresh token single-use. If the chain breaks (a last refresh error
+      starting "permanent", or no refresh token left), consenting on X again mints a new one onto this row.
+    </p>
+    <%= button_to "Re-authorize with X",
+      supervisor_x_oauth_authorization_path,
+      params: { account_key: page.resource.account_key, access_token_env_var: page.resource.access_token_env_var },
+      class: "button",
+      form: { data: { turbo: false } } %>
+  </section>
+<% end %>
+
+<%= render template: "administrate/application/show", locals: { page: page } %>

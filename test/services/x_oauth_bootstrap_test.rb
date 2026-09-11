@@ -73,6 +73,26 @@ class XOauthBootstrapTest < ActiveSupport::TestCase
     end
   end
 
+  # --- hosted callback ---
+
+  test "hosted_redirect_uri is the Supervisor callback on APP_HOST, https off localhost" do
+    with_env("APP_HOST", "zimmer.example.com") do
+      assert_equal "https://zimmer.example.com/supervisor/x_oauth/callback", XOauthBootstrap.hosted_redirect_uri
+    end
+    with_env("APP_HOST", "localhost:3000") do
+      assert_equal "http://localhost:3000/supervisor/x_oauth/callback", XOauthBootstrap.hosted_redirect_uri
+    end
+  end
+
+  test "only the exact hosted callback completes without a paste" do
+    with_env("APP_HOST", "zimmer.example.com") do
+      assert_not XOauthBootstrap.manual_completion_required?("https://zimmer.example.com/supervisor/x_oauth/callback")
+      assert XOauthBootstrap.manual_completion_required?(XOauthBootstrap::DEFAULT_REDIRECT_URI)
+      assert XOauthBootstrap.manual_completion_required?("https://zimmer.example.com/supervisor/x_oauth/callback/")
+      assert XOauthBootstrap.manual_completion_required?("http://zimmer.example.com/supervisor/x_oauth/callback")
+    end
+  end
+
   test "verifier and state are unpadded base64url of the right length" do
     assert_equal 43, XOauthBootstrap.generate_verifier.length # 32 bytes
     assert_equal 22, XOauthBootstrap.generate_state.length     # 16 bytes
@@ -146,8 +166,8 @@ class XOauthBootstrapTest < ActiveSupport::TestCase
   # --- HTTP timeouts (#732) ---
 
   # exchange_code shares XOauthCredential's bounded POST rather than repeating
-  # the Net::HTTP block, so the operator running `x_oauth:complete` gets the same
-  # bound the cron path has, from one implementation.
+  # the Net::HTTP block, so the Supervisor consent callback gets the same bound
+  # the cron path has, from one implementation.
   test "the code exchange bounds both connect and read at TOKEN_REQUEST_TIMEOUT" do
     with_token_endpoint(code: 200, body: { access_token: "acc", refresh_token: "ref", expires_in: 7200 }) do
       XOauthBootstrap.complete!(account_key: "a", env_var: "X_OAUTH_ACCESS_TOKEN", code: "c",

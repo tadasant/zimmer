@@ -4,18 +4,24 @@ require "securerandom"
 require "base64"
 require "digest"
 
-# One-time OAuth 2.0 (Authorization Code + PKCE) bootstrap for minting the
-# durable X (Twitter) refresh token that XOauthCredential then rotates.
+# OAuth 2.0 (Authorization Code + PKCE) consent for minting the durable X
+# (Twitter) refresh token that XOauthCredential then rotates.
 #
 # X offers no non-interactive way to obtain a user-context token — a human must
-# authorize in a browser once. Zimmer runs headless on a remote worker, so the
-# loopback-callback flow the x-twitter server's `oauth-setup` command uses does
-# not work here (nothing listens on the human's localhost). Instead this is a
-# copy-the-code flow:
+# authorize in a browser. It is not one-time, either: X rotates refresh tokens
+# single-use and expires them, so a broken chain (a reused token, a double
+# exchange, expiry) means consenting again.
+#
+# The flow runs from the Supervisor panel (Supervisor::XOauthAuthorizationsController),
+# with the state between its two legs in XOauthPendingFlow:
 #
 #   1. `authorize_url` builds the consent URL (PKCE S256, bookmark.write scope).
-#   2. The human opens it, authorizes, and — because nothing listens on the
-#      redirect URI — copies the `code` param out of the redirect URL bar.
+#   2. The operator authorizes on X, which redirects to the redirect URI.
+#      - When that is Zimmer's own callback (`hosted_redirect_uri`), the
+#        controller receives the code directly.
+#      - When it is anywhere else, such as the localhost URI the X app has
+#        registered today, nothing listens there: the operator pastes the URL
+#        the browser landed on back into the panel.
 #   3. `complete!` exchanges that code (HTTP Basic client auth) for tokens and
 #      persists them onto an XOauthCredential row.
 #
@@ -23,9 +29,9 @@ require "digest"
 # — X rejects the consent request outright if it does not match, and the token
 # exchange must then present the identical value. The ao-x-mcp-server app has
 # http://localhost:8080/callback registered (used to mint the read-only seed),
-# which is why that is the fallback. Registering a different one is the
+# which is why that is the fallback. Registering the hosted callback is the
 # operator's step on X's developer portal; once registered, set
-# X_OAUTH_REDIRECT_URI so both call sites here use it.
+# X_OAUTH_REDIRECT_URI to it and the flow finishes without a paste.
 class XOauthBootstrap
   SCOPES = XOauthCredential::OAUTH_SCOPES
   REDIRECT_URI_ENV = "X_OAUTH_REDIRECT_URI"
@@ -39,6 +45,24 @@ class XOauthBootstrap
   # consent request.
   def self.default_redirect_uri
     ENV.fetch(REDIRECT_URI_ENV, DEFAULT_REDIRECT_URI)
+  end
+
+  # The callback Zimmer itself serves, built from APP_HOST on the same rule as
+  # McpOauthService#build_redirect_uri: http when the host names localhost,
+  # https otherwise. This is the value to register on the X app and to put in
+  # X_OAUTH_REDIRECT_URI.
+  def self.hosted_redirect_uri
+    host = ENV.fetch("APP_HOST") { "localhost:3000" }
+    scheme = host.include?("localhost") ? "http" : "https"
+    "#{scheme}://#{host}#{Rails.application.routes.url_helpers.supervisor_x_oauth_callback_path}"
+  end
+
+  # Whether a flow sent to this redirect URI has to be finished by pasting the
+  # redirect URL back. An exact comparison, as in McpOauthService: only a
+  # redirect that is byte-for-byte the callback Zimmer serves can finish on its
+  # own, and anything else lands where Zimmer never sees it.
+  def self.manual_completion_required?(redirect_uri)
+    redirect_uri != hosted_redirect_uri
   end
 
   # PKCE code_verifier: 32 random bytes, base64url (no padding).
