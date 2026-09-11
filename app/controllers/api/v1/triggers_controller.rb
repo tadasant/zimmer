@@ -169,9 +169,11 @@ class Api::V1::TriggersController < Api::BaseController
   #   - variables: Optional hash of prompt-template variables to interpolate.
   #     Only Trigger::USER_INPUT_VARIABLES are read ({{link}}, {{text}},
   #     {{author}}, {{channel}}, {{event}}, {{repo}}, {{number}}, {{title}},
-  #     {{labels}}); any other key is ignored, and a variable the template names
-  #     but the caller omits interpolates as an empty string. {{time}} and
-  #     {{date}} fill themselves in.
+  #     {{labels}}, {{channel_id}}, {{message_ts}}, {{thread_ts}},
+  #     {{author_id}}); any other key is ignored, and a variable the template
+  #     names but the caller omits interpolates as an empty string, as does a
+  #     Slack ID that is not in Slack's ID format. {{time}} and {{date}} fill
+  #     themselves in.
   def invoke
     variables = invoke_variables
 

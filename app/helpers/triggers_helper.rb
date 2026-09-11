@@ -10,7 +10,11 @@ module TriggersHelper
     "repo" => "e.g. tadasant/zimmer",
     "number" => "e.g. 177",
     "title" => "e.g. Fix the flaky poller test",
-    "labels" => "e.g. ready to merge"
+    "labels" => "e.g. ready to merge",
+    "channel_id" => "e.g. C0A6BF8T45R",
+    "message_ts" => "e.g. 1704067300.000100",
+    "thread_ts" => "e.g. 1704067000.000100",
+    "author_id" => "e.g. U0123ABCD"
   }.freeze
 
   def variable_placeholder(variable_name)

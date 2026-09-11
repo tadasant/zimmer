@@ -241,7 +241,17 @@ module Mcp
             description: "Trigger type. Required for create."
           },
           agent_root_name: { type: "string", description: "Agent root name. Required for create." },
-          prompt_template: { type: "string", description: "Prompt template. Required for create." },
+          prompt_template: {
+            type: "string",
+            description: "Prompt template. Required for create. Placeholders: {{link}}, {{text}}, {{author}}, " \
+                         "{{channel}}, {{time}}, {{date}}, {{event}}; for GitHub conditions {{repo}}, {{number}}, " \
+                         "{{title}}, {{labels}}; for Slack conditions {{channel_id}}, {{message_ts}}, {{thread_ts}} " \
+                         "(the thread to reply into) and {{author_id}}. When a Slack condition fires, those four come " \
+                         "from Slack's own fields, never from message text; an invoke takes them from its caller. " \
+                         "Either way they render empty unless they are in Slack's ID format. Write any " \
+                         "placeholder as {{name|untrusted}} to render it fenced off as outside input. See " \
+                         "https://docs.zimmer.tadasant.com/sessions/triggers/#prompt-template-variables"
+          },
           status: { type: "string", enum: STATUSES, description: "Trigger status." },
           goal: { type: "string", description: "Goal for triggered sessions." },
           reuse_session: { type: "boolean", description: "Whether to reuse existing sessions." },
@@ -321,7 +331,8 @@ module Mcp
             description: "For the \"invoke\" action: values for the prompt template's placeholders. " \
                          "Recognized keys are #{Trigger::USER_INPUT_VARIABLES.join(', ')} — anything else is " \
                          "ignored, and a placeholder the template names but this omits interpolates as an " \
-                         "empty string. {{time}} and {{date}} fill themselves in."
+                         "empty string. {{time}} and {{date}} fill themselves in. channel_id, message_ts, " \
+                         "thread_ts and author_id interpolate as an empty string unless they are in Slack's ID format."
           },
           configuration: {
             type: "object",

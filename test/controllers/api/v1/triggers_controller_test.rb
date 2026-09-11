@@ -788,6 +788,19 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Labels: bug, ready to merge", Session.last.prompt
   end
 
+  test "invoke accepts the Slack identifiers as variables" do
+    stub_session_creation
+    trigger = triggers(:enabled_slack_trigger)
+    trigger.update!(prompt_template: "Reply in {{channel_id}} under {{thread_ts}}")
+
+    post invoke_api_v1_trigger_path(trigger),
+      params: { variables: { channel_id: "C0A6BF8T45R", thread_ts: "1704067000.000100" } },
+      headers: @headers
+
+    assert_response :created
+    assert_equal "Reply in C0A6BF8T45R under 1704067000.000100", Session.last.prompt
+  end
+
   test "invoke without variables leaves the template's placeholders empty" do
     stub_session_creation
 
