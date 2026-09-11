@@ -482,6 +482,11 @@ channel, and every mention also arrives as a `message` event.
 rows after 30 — far past the few minutes it takes the poller to see a message the webhook already
 fired.
 
+Both tables are listed read-only in `/supervisor`. `/supervisor/webhook_deliveries` is every delivery
+that verified, newest last, so it answers "is Slack delivering at all". `/supervisor/trigger_event_claims`
+records which path fired each message: while both paths run, a `poll` claim on a message Slack should
+have delivered is a delivery the webhook missed.
+
 ### `schedule`
 
 Either recurring (`interval` + `unit`, or `time` + `day_of_week` + `timezone`) or one-time

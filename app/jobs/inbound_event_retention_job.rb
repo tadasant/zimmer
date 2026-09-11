@@ -6,10 +6,13 @@
 #
 # Idempotent — a run with nothing expired deletes nothing — and batched, so a backlog after a
 # long gap drains a slice at a time instead of in one statement.
+#
+# On `default`, not `maintenance`: it is a daily run of indexed deletes that returns its thread in
+# well under a second, not the minutes-long work that lane exists to keep off `default`.
 class InboundEventRetentionJob < ApplicationJob
   include SingletonSweep
 
-  queue_as :maintenance
+  queue_as :default
 
   BATCH_SIZE = 5_000
 
