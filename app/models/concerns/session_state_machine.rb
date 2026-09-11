@@ -1341,15 +1341,16 @@ module SessionStateMachine
   # and the only trace was a log line nobody reads.
   #
   # `alert: true` marks the failures that leave persistent state inconsistent
-  # with nothing else to reconcile them; those page #eng-alerts. `alert: false`
+  # with nothing else to reconcile them; those page #alerts. `alert: false`
   # marks the ones that are cosmetic, best-effort by design, or already covered
   # by a reconciling sweep — those stay log-only, because a second alert path to
   # an event that already self-heals is just noise. Each call site says which it
   # is and why.
   #
-  # The dedup key is the operation, NOT the session: a systemic failure (a sick
+  # Grouping is by exception and stack, which is GlitchTip's default and is what
+  # the operation-keyed dedup key it replaces was after: a systemic failure (a sick
   # database, a dead Redis) hits this callback for every session in flight and
-  # must collapse into one alert per AlertService::DEDUP_WINDOW, not thousands.
+  # collapses into one issue, not thousands. The session id rides in context.
   #
   # ONE failure is not swallowed: an error that left the connection inside a
   # transaction Postgres has aborted. Swallowing exists to let a transition finish
@@ -1362,7 +1363,7 @@ module SessionStateMachine
   #
   # @param operation [Symbol] the callback that failed — pass `__method__`
   # @param error [Exception] the swallowed error
-  # @param alert [Boolean] whether this failure also pages #eng-alerts
+  # @param alert [Boolean] whether this failure also pages #alerts
   def report_swallowed_side_effect(operation, error, alert:)
     if DatabaseTransactionState.aborted_by?(error)
       # Logged before the raise, not instead of it. Whether anything upstream
@@ -1382,31 +1383,33 @@ module SessionStateMachine
       )
       return unless alert
 
-      # Post AFTER the transaction commits. AASM runs `after` callbacks inside the
-      # transition's own transaction, and AlertService posts to Slack synchronously
-      # (5s connect / 10s read). Alerting inline would hold a transaction open on
-      # this row for a network round trip during precisely the incident — a sick
-      # database — where that hurts most. after_all_transactions_commit runs the
-      # block immediately when no transaction is open, so nothing is deferred that
-      # doesn't need to be.
+      # Reported AFTER the transaction commits. AASM runs `after` callbacks inside
+      # the transition's own transaction, and the claim this event makes — "the
+      # transition completed with this side effect missing" — is only true once the
+      # transition has actually committed. The ERROR line above is unconditional, so
+      # a rolled-back transition still leaves a record; what is deferred is the
+      # structured event. after_all_transactions_commit runs the block immediately
+      # when no transaction is open, so nothing is deferred that doesn't need to be.
+      #
+      # The exception object itself, not a hand-copied `e.message`: the backtrace is
+      # the high-signal part and it is sitting right here at the rescue.
       session_id = id
       ActiveRecord.after_all_transactions_commit do
-        AlertService.raise_alert(
-          "Session state-machine side effect failed",
-          details: "`#{operation}` raised during a state transition and was swallowed, so the " \
-                   "transition completed with this side effect missing.\n\n" \
-                   "*Session:* #{session_id}\n\n" \
-                   "<#{AppUrl.base_url}/sessions/#{session_id}|View session in Zimmer>",
-          source: "SessionStateMachine##{operation}",
-          dedup_key: "session_state_machine_side_effect_#{operation}",
-          # The exception itself, not a hand-copied `e.message`: the backtrace is
-          # the high-signal part and it is sitting right here at the rescue.
-          error: error
+        ErrorReporter.report_exception(
+          error,
+          context: {
+            title: "Session state-machine side effect failed",
+            source: "SessionStateMachine##{operation}",
+            details: "`#{operation}` raised during a state transition and was swallowed, so the " \
+                     "transition completed with this side effect missing.",
+            session_id: session_id,
+            session_url: "#{AppUrl.base_url}/sessions/#{session_id}"
+          }
         )
-      rescue => alert_error
+      rescue => reporting_error
         # Runs post-commit, outside the outer rescue's reach.
         Rails.logger.error(
-          "[SessionStateMachine] Failed to alert on swallowed side effect #{operation}: #{alert_error.message}"
+          "[SessionStateMachine] Failed to report swallowed side effect #{operation}: #{reporting_error.message}"
         )
       end
     rescue => reporting_error
@@ -1707,17 +1710,21 @@ module SessionStateMachine
   # but because the guard already put them in front of the caller and the caller
   # accepted the loss; there is no user left to discover it from.
   #
-  # The dedup key is per session, which bounds repeats for one session — an
-  # archive, unarchive and re-archive pages once — and deliberately does NOT
-  # collapse across sessions: a sweep that archives N sessions with queues has
-  # lost N distinct messages, and one alert standing in for all of them is the
-  # summary that hides the other N-1. HealthMonitorService#archive_old_sessions
-  # is the sweep that could make that plural; a queue on a session untouched for
-  # seven days is rare enough that the honest count is worth its noise.
+  # One report per stranded session, deliberately NOT collapsed across sessions in
+  # this process: a sweep that archives N sessions with queues has lost N distinct
+  # messages, and one alert standing in for all of them is the summary that hides
+  # the other N-1. Every one of them is an ERROR record with its own session id, and
+  # the page they add up to is collapsed one layer further out — Grafana groups by
+  # alertname over a 5-minute interval, GlitchTip into one issue.
+  # HealthMonitorService#archive_old_sessions is the sweep that could make this
+  # plural.
   #
-  # Posted after commit, for the reason report_swallowed_side_effect explains:
-  # AlertService talks to Slack synchronously, and an AASM `after` callback runs
-  # inside the transition's own transaction.
+  # Reported after the transition commits. Not for latency — ErrorReporter makes no
+  # network round trip — but because an AASM `after` callback runs inside the
+  # transition's own transaction, and a page saying N messages were stranded by an
+  # archive that then rolled back is a page about something that did not happen.
+  # after_all_transactions_commit runs the block immediately when no transaction is
+  # open, so nothing is deferred that does not need to be.
   def alert_on_stranded_enqueued_messages(stranded, suppressed: 0)
     # Guarded here rather than at the call site, so nothing can build a
     # zero-count page — the same self-guarding shape stranded_enqueued_messages_clause has.
@@ -1740,18 +1747,29 @@ module SessionStateMachine
         ""
       end
 
+    details = "Session #{session_id} was archived with #{count} message(s) still queued. They were " \
+              "never delivered and are now marked `undelivered`; whoever queued them was told they " \
+              "would be sent. Nobody was shown them before they were discarded: this archive " \
+              "answered no refusal from Sessions::ArchiveGuard.\n\n#{previews}#{footnote}\n\n" \
+              "#{AppUrl.base_url}/sessions/#{session_id}"
+
     ActiveRecord.after_all_transactions_commit do
-      AlertService.raise_alert(
+      Rails.logger.error(
+        "[SessionStateMachine] Queued messages stranded by an archive: session #{session_id}, " \
+        "#{count} message(s)"
+      )
+      ErrorReporter.report_message(
         "Queued messages stranded by an archive",
-        details: "Session #{session_id} was archived with #{count} message(s) still queued. They were " \
-                 "never delivered and are now marked `undelivered`; whoever queued them was told they " \
-                 "would be sent. Nobody was shown them before they were discarded: this archive " \
-                 "answered no refusal from Sessions::ArchiveGuard.\n\n#{previews}#{footnote}\n\n" \
-                 "<#{AppUrl.base_url}/sessions/#{session_id}|View session in Zimmer>",
-        source: "SessionStateMachine#strand_pending_enqueued_messages",
-        dedup_key: "stranded_enqueued_messages_#{session_id}"
+        level: :error,
+        context: {
+          source: "SessionStateMachine#strand_pending_enqueued_messages",
+          details: details,
+          session_id: session_id,
+          stranded_count: count
+        }
       )
     rescue => e
+      # Runs post-commit, outside the outer rescue's reach.
       Rails.logger.error(
         "[SessionStateMachine] Failed to alert on stranded messages for session #{session_id}: #{e.message}"
       )

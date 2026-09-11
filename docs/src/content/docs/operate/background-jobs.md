@@ -130,7 +130,7 @@ bin/rails runner 'puts JSON.pretty_generate(CronSchedule::ENVIRONMENTS.to_h { |e
 | --- | --- |
 | `production` | everything |
 | `staging` | everything production does. `NOT_ON_STAGING` in `test/config/cron_schedule_test.rb` is the seam for an exception, and it is empty |
-| `development` | a deliberate subset: nothing that spends money or quota, nothing that reaps the deployed droplet's disk. Paging is not the criterion — `AlertService::ALERTING_ENVIRONMENTS` is `production` and `staging`, so a monitor scheduled in development cannot reach `#eng-alerts` anyway |
+| `development` | a deliberate subset: nothing that spends money or quota, nothing that reaps the deployed droplet's disk. Paging is not the criterion — `ErrorReporter` is a no-op without a DSN and `config/initializers/sentry.rb` enables only `production` and `staging`, so a monitor scheduled in development cannot reach `#alerts` anyway |
 | `test` | nothing. The suite does not run GoodJob's cron; a sweep firing mid-test would be a source of flakes |
 
 :::note[Why staging has no omissions]
@@ -141,15 +141,14 @@ exercises — and an omission is only legitimate when its reason is about stagin
 what the job happens to do.
 
 The one reason ever offered for holding `EgressHealthCheckJob` and `SlackTriggerHealthCheckJob` back
-— they page `#eng-alerts`, and a staging copy would double-page on production's own signals — is not
-that kind of reason, and the rest of the table does not follow it. Staging already pages that
-channel from `GithubTriggerHealthCheckJob` (written to mirror the Slack canary),
-`SystemHealthMonitorJob`, `ElicitationEndpointHealthCheckJob` and both trigger pollers. Every alert
-carries a `[staging]` title tag, an `*Environment:*` context line and a distinct posting bot, and
-staging runs on its own droplet with its own Postgres accessory and its own Redis — so what it
-reports is its own signal, not a second copy of production's. (If that channel is the wrong destination for staging noise, the fix
-is staging's `ENG_ALERTS_SLACK_CHANNEL_ID`, which is one value in `staging.yml.enc` — see
-[Limitations](/limitations/#rails_master_key-is-optional-on-staging-and-silently-degrades-when-absent).)
+— they page `#alerts`, and a staging copy would double-page on production's own signals — is not
+that kind of reason, and it no longer describes what staging does: **staging does not reach the
+Slack channel at all.** Both halves of the alerting path exclude it. Staging's
+`SENTRY_DSN_BACKEND` points at the `zimmer-backend-staging` GlitchTip project, which has no Slack
+recipient (the obs provisioner strips one off it on every deploy), and the Grafana rule on Zimmer's
+error logs computes `all` minus `staging`, so a staging ERROR record is counted and alerted on by
+nothing. Staging's alerts are debugging material, visible in GlitchTip and in VictoriaLogs, and
+they page nobody.
 
 Neither job is idle there. Staging schedules `SlackTriggerPollerJob`, and a poller with no canary is
 the gap `SlackTriggerHealthCheckJob` exists to close; with no enabled Slack trigger on staging the
@@ -1043,7 +1042,7 @@ Three rules keep it quiet:
   saw it is not this session's merge event, and wakes nobody.
 - **Once per PR.** `custom_metadata["github_pull_request_merged_notified"]` records which PRs have
   been announced. A session with three PRs is told about each one as it lands, and only then.
-- **No debounce, unlike merge conflicts.** The two-poll confirmation in
+- **No debounce, unlike merge conflicts.** The two-reading confirmation in
   `Github::MergeConflictEvaluator` exists because GitHub's `mergeable` field returns transient
   conflicting readings. `mergedAt` has no such failure mode: a PR with a merge timestamp is merged,
   and stays merged.
@@ -1091,18 +1090,85 @@ whenever `Session#unresolved_pr_urls` is non-empty:
   backoff exists to relieve. The bound keeps that population proportional to a week of fleet
   throughput rather than to all of time.
 
-Only the pass's own gate is capped. The comment and merge-conflict evaluators keep their own keys
-inside the pass and ride the full curve — see
+The two evaluators that keep their own gate inside the pass used to ride the full curve regardless,
+which quietly made the cap a half-measure: a session past 24 hours of no user activity was *polled*
+every 30 minutes while its merge conflicts were *evaluated* once a day. The merge-conflict gate now
+inherits the pass's own ceiling, so it is never slower than the pass that has already decided the
+session is due. That costs no rate limit at all — `Github::MergeConflictEvaluator` takes no `gh`
+calls of its own and reads the snapshot the pass already fetched.
+
+`Github::CommentEvaluator` deliberately still rides the full curve, because it *does* spend `gh api`
+calls, so speeding it up for every idle PR-holding session in the fleet is a rate-limit decision
+rather than a free one — see
 [Limitations](/limitations/#a-parked-session-can-hear-about-its-merged-pr-up-to-half-an-hour-late).
+
+### The conflict debounce is a duration, not a poll count
+
+`Github::MergeConflictEvaluator` notifies a session only after a PR has read `CONFLICTING` **twice**.
+The first reading records the PR as *suspected*; a later one promotes it to *confirmed* and enqueues
+the notice; any clean reading clears both. That exists because GitHub recomputes mergeability
+lazily and returns transient readings in the minute after a push — without it, one stale reading
+spends a session's turn nudging it to resolve conflicts on a PR that is already clean (sessions 7235
+and 3889).
+
+The gap between those two readings was "two consecutive gated polls", which is two minutes only if
+whatever supplies the cadence actually ticks every two minutes. For the population this notice
+exists for it did not: an idle session holding a PR is capped at 30 minutes, and the evaluator's own
+gate stretched to 24 hours. So the confirming reading was half an hour to a day away, and a single
+clean reading anywhere in that gap reset the streak to zero — which is how a PR open since
+2026-09-06 went five days with a merge conflict its session was never told about, until a human
+found the stalled PR and typed "fix merge conflict" into the session by hand
+([#1123](https://github.com/tadasant/zimmer/issues/1123)).
+
+Two changes make the debounce mean what it always claimed:
+
+- **The gap is measured in seconds.** `MIN_CONFIRMATION_GAP_SECONDS` (120) is checked against a
+  timestamp stored in the suspected marker — `{ pr_url => "2026-09-11T02:28:00Z" }` rather than
+  `{ pr_url => true }` — so the interval holds at any cadence. A reading that arrives too soon
+  leaves the marker **exactly** as it is rather than re-stamping it; re-stamping would restart the
+  debounce on every poll and a fast-polled PR would never confirm at all.
+- **A suspicion buys its session the cadence the debounce needs.** While
+  `Github::MergeConflictEvaluator.fresh_suspicion?` holds, `Github::PrPollPass` caps that session at
+  `MERGE_CONFLICT_INTERVAL_SECONDS`, ahead of every other ceiling including the 7-day idle bound. So
+  the confirming reading lands about two minutes after the first rather than whenever the curve next
+  allows.
+
+The fast cadence is **not free**, and it is bounded at both ends. The ceiling makes the whole pass
+due every two minutes, and a pass fetches every tracked PR (`gh pr view`) and CI for every open one
+(`gh pr checks`) — not only the suspected PR. Usually that costs one extra pass, because a suspicion
+resolves on the very next gated evaluation, confirmed or cleared. The worst case is a suspicion that
+nothing resolves — a PR whose snapshot never comes back (deleted, or a repo the token cannot read) —
+and `SUSPICION_FAST_POLL_WINDOW` (30 minutes) stops honouring it after that: about fifteen extra
+passes, once, rather than a session pinned at two-minute polling forever. Past the window the
+suspicion is still *confirmable*, just not privileged: later, rather than never.
+
+This **narrows** the #1123 failure rather than closing it. A stale `MERGEABLE` on the confirming
+reading still clears the marker, and the session drops back to its 30-minute ceiling until the next
+conflicting reading starts another suspicion. What is gone is the day-long gap that gave a stale
+reading a whole day's worth of chances to land — see
+[Limitations](/limitations/#a-parked-session-can-hear-about-its-merged-pr-up-to-half-an-hour-late).
+
+A suspected marker written before this change holds `true` and carries no timestamp. Those confirm
+on the next conflicting reading — they were written by an earlier gated poll, so the reading in
+front of them genuinely is the second one — but they do **not** grant the fast cadence, because an
+unknown age must not buy an unbounded poll rate.
 
 ## A conflict notice is re-read when it comes off the queue, not when it was written
 
 `AutomatedSessionMessage` sends a poller's notice immediately only when the session is parked in
 `needs_input`. A session that is mid-turn, or asleep in `waiting` on the `open-pr` skill's bounded
 self-wake, gets the notice *queued* instead — and the row then sits until that session's next turn
-boundary. Two things stretch that gap: the merge-conflict poller's own two-poll debounce holds the
-notice back by at least one poll interval before it is written, and the queue holds it for however
-long the session takes to reach a boundary. Neither end is bounded by anything the poller can see.
+boundary. Two things stretch that gap: the merge-conflict poller's own debounce holds the notice
+back by at least `MIN_CONFIRMATION_GAP_SECONDS` before it is written, and the queue holds it for
+however long the session takes to reach a boundary. Neither end is bounded by anything the poller
+can see.
+
+(A queued notice does always have *something* coming back for it, even on a session at rest in
+`waiting` with no wake armed: `EnqueuedMessage`'s `after_create_commit` hook schedules
+`EnqueuedMessageDrainJob` for either resting state. That is the invariant, and it is owned there
+rather than in `AutomatedSessionMessage` — see
+[A session does not idle on its own queue](/sessions/lifecycle/#a-session-does-not-idle-on-its-own-queue)
+if you are tempted to read the queueing branch as "it waits behind the current turn".)
 
 Merge conflicts un-resolve in exactly that window. A session that rebases onto the base branch,
 fixes the conflicts and force-pushes has made the notice false before anybody reads it, which is
@@ -1471,6 +1537,8 @@ that isn't happening. Zimmer's own metadata (who, why, when it auto-exits) lives
 **Jobs are frozen, not discarded.** Enqueue keeps working and cron keeps ticking; only execution
 stops. Everything waiting drains when the mode is lifted. The periodic jobs that would otherwise
 pile up are already singletons (`total_limit: 1`), so at most one of each poller can be waiting.
+If the backlog itself is the thing that has to go, that is
+[queued job maintenance](#queued-job-maintenance) below, not this.
 
 **It always ends.** Every entry carries a TTL — 60 minutes by default, clamped to 5 minutes–4 hours;
 re-entering extends it. Two independent paths act on that TTL, because each covers the other's
@@ -1501,10 +1569,103 @@ take on its own, while the way *out* of a halt has to work on the first try — 
 deployment that never set `SUPERVISOR_PASSWORD`, where the realm refuses everything else. Same
 reasoning as the cooldown exemption above, one layer up.
 
+## Queued job maintenance
+
+Halting the queues buys time; it does not remove the backlog. `QueuedJobMaintenance` is the third
+cleanup lever, beside disabling the stampeding Trigger and archiving the runaway sessions: **discard
+or reschedule the already-enqueued rows, scoped by job class and/or queue.**
+
+It exists because the other two were reachable from every surface and this one was not. An agent
+session started to work a queue incident could disable the trigger and archive the sessions, and
+then hit a wall on the ~494 already-enqueued `GitHubPullRequestPollerJob` rows behind
+[#329](https://github.com/tadasant/zimmer/issues/329) — its only options were to ask a human to
+click through GoodJob's own dashboard at `/jobs`, or to lift recovery mode and let the backlog drain
+unchanged, which is the state it entered recovery mode to avoid
+([#335](https://github.com/tadasant/zimmer/issues/335)).
+
+### Discard is not recoverable; reschedule is
+
+**A discard ends the job.** It writes `finished_at` and a `GoodJob::Job::DiscardJobError` onto the
+row, the work never runs, and nothing brings it back. For a poller tick that is exactly right — the
+next tick does the same work. For anything carrying state it is not.
+
+**Reschedule is the reversible sibling.** It only moves `scheduled_at`, so the work still happens,
+later, and another call moves it back. Reach for it unless you are certain the work is disposable.
+The receipt says which you got: `recoverable` is `true` for a reschedule and `false` for a discard.
+
+### What is eligible
+
+Only rows that are **unfinished, unstarted and unclaimed** — `finished_at IS NULL AND performed_at
+IS NULL AND locked_by_id IS NULL`. Four consequences worth stating, because a bulk destructive op on
+`good_jobs` with an over-broad predicate strands live sessions and fails silently:
+
+| Population | Eligible? | Why |
+| --- | --- | --- |
+| Waiting, not yet claimed | **yes** | this is the backlog |
+| Future-dated (`scheduled_at` ahead) | **yes** | backlog that has not come due; it still piles up |
+| Currently executing | no | `performed_at` is set. GoodJob resets it on retry, so waiting retries stay eligible |
+| Claimed by a worker, not yet started | no | `locked_by_id` is set |
+| Finished, succeeded or already discarded | no | history is never rewritten |
+| Anything on `agents` | **never** | see below |
+
+**The `agents` queue is refused outright**, by name and again in the predicate. Two populations live
+there and neither is backlog: an unfinished `AgentSessionJob` row *is* a live session — discarding it
+strands the session with a job nothing will run — and `QueueRecoveryModeExpiryJob` is the cron
+backstop that lifts a halt when its TTL elapses, so discarding it during an incident would remove the
+guarantee that the halt ends. Both are refused by class as well, so moving either onto another queue
+does not quietly make it discardable. To act on a runaway session, archive or kill the session.
+
+`auth` is deliberately *not* protected: `RuntimeLoginJob` runs only when a human presses a button, so
+it is not a source of backlog, and a discarded one costs a second click rather than a stranded session.
+
+### Three guards before anything is written
+
+1. **A scope is required.** A call that names neither a `job_class` nor a `queue_name` is refused.
+   There is no "discard everything".
+2. **A count confirmation.** The caller states how many rows it expects to affect, and a mismatch
+   refuses and writes nothing. The refusal is also the preview: it names the real count and the
+   per-class breakdown, so the recovery is one retry. On `/health` this is the count rendered beside
+   the button — a page opened ten minutes ago names a number that no longer matches, and the click
+   is refused rather than acting on a set the operator never saw.
+3. **A hard cap** of 2,000 rows per call, checked before the count so an over-cap scope cannot be
+   confirmed into. A bigger backlog goes in several calls, each stating its own count.
+
+Every refusal happens before the first row is written, which is what "no partial action" means. What
+is *not* transactional is the write itself: rows are discarded one at a time, so a row a worker
+claims mid-call is skipped and reported in `skipped` rather than aborting the rest.
+
+### It reports what it did, by class
+
+The receipt carries `by_job_class` and `by_queue`, so an operator reading a transcript back knows
+*what* was thrown away and not only how much. A mutating call also raises a Slack alert naming the
+count and the classes — the same reasoning as the recovery-mode alerts: a bulk write against
+`good_jobs` should be legible to somebody who was not reading the transcript it happened in.
+
+### Surfaces
+
+| Surface | Read | Discard | Reschedule |
+| --- | --- | --- | --- |
+| MCP `action_health` | `preview_queued_jobs` | `discard_queued_jobs` | `reschedule_queued_jobs` |
+| REST | `GET /api/v1/health/queued_jobs` | `POST /api/v1/health/discard_queued_jobs` | `POST /api/v1/health/reschedule_queued_jobs` |
+| `/health` | the Queued Job Maintenance panel | its Discard button | its Reschedule control |
+
+On `/health` **both actions are behind the [operator realm](/auth/overview/#the-exception-the-operator-realm-in-front-of-two-surfaces)**, via
+`HealthController::OPERATOR_GATED_ACTIONS`. That is load-bearing and not decoration: a bulk discard
+is exactly the destructive-action-reachable-anonymously shape of
+[#312](https://github.com/tadasant/zimmer/issues/312), and an agent session's shell can reach this
+app from the production host.
+
+None of the three is behind the shared `HealthActionCooldown`, for the reason the recovery-mode pair
+is exempt plus one of their own: the cooldown fails closed when the cache is unavailable, and an
+overloaded instance is exactly when the cache is least trustworthy — so it would lock the third
+cleanup lever during the incident it exists for. And they carry a stronger throttle than a timer:
+a mistaken repeat of the same call is refused by the count confirmation, because the scope now holds
+zero rows.
+
 ## Trigger-poll liveness
 
-Both trigger pollers alert `#eng-alerts` (via `AlertService`) from a per-condition `rescue` when a
-poll **raises**. That only covers failures noisy enough to throw. It does not cover a poller that
+Both trigger pollers report from a per-condition `rescue` when a poll **raises** — an ERROR log
+record, which pages, plus a GlitchTip event. That only covers failures noisy enough to throw. It does not cover a poller that
 stops running at all — and with `total_limit: 1`, one wedged tick is enough: while it holds the only
 slot, every subsequent minute's enqueue is a silent no-op.
 
@@ -1532,9 +1693,10 @@ merge gate) quietly stop firing. Two mechanisms close that:
   the poller absorbs; see below.
 - **A liveness check.** `GithubTriggerPollerJob` stamps a Redis heartbeat
   (`HEARTBEAT_CACHE_KEY`) on every sweep that processes at least one condition successfully.
-  `GithubTriggerHealthCheckJob` reads it every 5 minutes and pages `#eng-alerts` when it is older
-  than `STALE_THRESHOLD` (15m), under one stable dedup key so a long outage notifies about once an
-  hour rather than every run. This is the GitHub counterpart to `SlackTriggerHealthCheckJob`.
+  `GithubTriggerHealthCheckJob` reads it every 5 minutes and pages `#alerts` when it is older
+  than `STALE_THRESHOLD` (15m). It reports the same message every run, so a long outage is one
+  GlitchTip issue and one Grafana alert group rather than a notification per run. This is the GitHub
+  counterpart to `SlackTriggerHealthCheckJob`.
 
 The heartbeat's bar is *"at least one condition came back clean"*, not *"`perform` returned"*: the
 per-condition `rescue` swallows errors so one bad condition can't abort the sweep, which means
@@ -1673,12 +1835,12 @@ sums a *subset* of `ready_count` over a *subset* of the lanes — so between the
 firings, never add one. The wedged-lane and nothing-is-executing branches are deliberately *not*
 narrowings: they exist to fire on shapes the depth thresholds call healthy.
 
-The page also throttles the two shapes separately. `SystemHealthMonitorJob` qualifies its
-`ALERT_DEDUP_KEY` with the status's `code` (`backlog_lane:<queue>` or `backlog_cross_lane`), because
-they are different incidents wanting different responses: on one shared key a starved-`inference`
-page at 10:00 would silence a cross-lane stall at 10:15 for the rest of `AlertService::DEDUP_WINDOW`.
-Within a shape the key is still stable, so a lane that stays starved for hours pages once an hour
-rather than once a tick.
+The page also keeps the shapes apart. `SystemHealthMonitorJob` titles them separately — "Queue
+backlog critical", "Queue lane wedged", "Nothing is executing" — because they are different
+incidents wanting different responses, and the title is what GlitchTip groups on and what a human on
+a phone reads first. The exact status `code` (`backlog_lane:<queue>` or `backlog_cross_lane`) rides
+in the report's context. A lane that stays starved for hours does not page once a tick: Grafana's
+notification policy groups by `alertname` over five minutes and re-pages every four hours.
 
 A stall confined to a single lane is left to the starved-lane branch, judged on that lane's own
 terms, which is the point of the overrides: an `agents` lane 150 deep and three hours old with every
@@ -2129,30 +2291,74 @@ The banner is display only. It does not raise an alert or change the breaker's b
 
 ## Alerts
 
-`AlertService` has a `DEDUP_WINDOW = 1.hour` — a genuinely new instance of the same alert inside an
-hour is swallowed. `AlertBatcher` truncates aggregated bodies at `MAX_AGGREGATED_DETAILS_CHARS =
-2700`.
+**Zimmer has one alerting path, and it is the obs pipeline.** A job or service that needs to
+page a human emits two things at the same site:
+
+1. **An ERROR log record.** That is what pages. `config/initializers/otel_logs_exporter.rb`
+   ships every WARN/ERROR/FATAL `Rails.logger` line over OTLP, and the Grafana rule
+   `zimmer_backend_log_errors` fires on any ERROR/FATAL record from Zimmer outside staging,
+   into the `#alerts` Slack webhook.
+2. **A GlitchTip event**, through `ErrorReporter` — `report_exception` where a rescued
+   exception exists (it carries the backtrace), `report_message(level: :error)` for a
+   synthetic condition that has no exception to report.
+
+```ruby
+rescue => e
+  Rails.logger.error "[SlackTriggerPollerJob] Error processing condition #{condition.id}: #{e.message}"
+  ErrorReporter.report_exception(
+    e,
+    context: {
+      title: "Slack trigger poller error",
+      source: "SlackTriggerPollerJob",
+      details: "Condition #{condition.id} on trigger 'anomaly-review' (ID: 7) failed.",
+      condition_id: condition.id
+    }
+  )
+end
+```
+
+`StructuredLogger#error` does **both halves in one call** — it writes the record and routes to
+`ErrorReporter` (reporting the exception when the context carries one under `:exception` or an
+Exception-valued `:error`, and the message otherwise). At a site that already holds a
+`StructuredLogger`, that one call is the whole emission; adding an explicit `ErrorReporter`
+call beside it opens a second GlitchTip issue for one event.
+
+There is no in-process throttle and no batcher. Both jobs are done a layer out:
+
+- **GlitchTip** groups events into issues — by exception and stack for `report_exception`, by
+  the message for `report_message` — and notifies **at most once per issue, ever**
+  (`provision-glitchtip-alerts.py` in `tadasant-internal`'s `obs/` sets `quantity=1`,
+  `timespan_minutes=10`, and the alert task excludes issues it has already notified for).
+- **Grafana** groups by `alertname` with a 5-minute `group_interval` and re-pages on a
+  4-hour `repeat_interval` while a condition lasts.
+
+Two consequences worth internalising before you add an alert:
+
+- **The ERROR record is the repeating page.** A GlitchTip issue speaks once; the log rule
+  speaks again every repeat interval. So a condition that must keep paging while it lasts has
+  to log at ERROR — demoting one of these lines to WARN takes that alert to zero.
+- **Message granularity decides grouping.** Keep ids out of the message and in the context
+  when a burst should collapse into one page (a sweep that strands N queues, a catalog change
+  that degrades N triggers); put the distinguishing value in the message only where two
+  incidents genuinely want separate issues — `SystemHealthMonitorJob`'s three titles are the
+  worked example, and `WorkerWedgeAlert` names the host.
 
 ### The log snippet
 
-Pass the rescued exception as `error:` and the alert carries an excerpt of the real failure into
-Slack, rendered as a fenced code block:
+Where the diagnostic is raw runtime text rather than an exception — agent stderr, a probe's
+failure string, a metadata blob — it goes through `AlertSnippet` into its own context field,
+never pasted into the prose:
 
 ```ruby
-AlertService.raise_alert(
-  "Slack trigger poller error",
-  details: "Condition 42 on trigger 'anomaly-review' (ID: 7) failed.",
-  source: "SlackTriggerPollerJob",
-  dedup_key: "slack_trigger_condition_42",
-  error: e
+ErrorReporter.report_message(
+  "Unclassified failure: process exit",
+  level: :error,
+  context: { source: source, details: details, unmatched_output: AlertSnippet.build(output) }
 )
 ```
 
-`AlertSnippet` builds it. `details:` is for the prose a human needs on top of the failure — not for
-a hand-copied `e.message`, which carries strictly less than the backtrace sitting right there at the
-rescue site. A raw log or stderr blob works too (`error: stored["detail"]`).
-
-What it does with the exception:
+`AlertSnippet` is what makes that safe, and it is the reason the split is a rule rather than a
+preference:
 
 - **Keeps the frames worth reading.** The first `APP_FRAME_LIMIT` (8) app-owned frames, plus the top
   `TOP_FRAME_LIMIT` (2) frames — usually vendored, and where the raise actually happened. Everything
@@ -2160,104 +2366,30 @@ What it does with the exception:
   stripped from paths.
 - **Follows the cause chain**, up to `CAUSE_LIMIT` (2) — an adapter error wrapping a connection
   error is frequently the whole story.
-- **Bounds the result** at `MAX_CHARS` (1200), well inside Slack's 3000-character section limit. A
-  blob that overruns keeps its head *and* its tail, with the elided character count between them —
-  the end of a log is often where the failure is.
+- **Bounds the result** at `MAX_CHARS` (1200). A blob that overruns keeps its head *and* its tail,
+  with the elided character count between them — the end of a log is often where the failure is.
 - **Redacts secret shapes** — Slack (bot and app-level), GitHub, Anthropic, OpenAI and Google keys,
   AWS key ids, JWTs, PEM private-key blocks, `Authorization` headers, URL passwords, and
-  `token=`/`secret=` assignments — before anything is posted.
+  `token=`/`secret=` assignments — before anything leaves the process.
 - **Never raises.** Raw stderr can end mid-multibyte-character (`BoundedSubprocess` kills the process
-  group on deadline), and `raise_alert` wraps everything in a blanket rescue — so a snippet that
-  raised would not degrade the alert, it would delete it. Input is scrubbed to valid UTF-8, and a
-  render that fails anyway degrades to `(log snippet unavailable: <class>)`.
-
-Inside an `AlertBatcher` aggregate the occurrence list wins over the snippets. Each occurrence gets
-`MAX_AGGREGATED_DETAILS_CHARS / N` minus a reserve for its own prose, capped at `MAX_BATCHED_CHARS`
-(500); past roughly fifteen occurrences the share is worth less than the line it would displace and
-snippets drop out entirely. Naming *which* triggers were affected is the reason the batcher exists,
-so a snippet must never push the tail of that list off the end of a truncated message.
-
-The snippet reaches the `text:` field as well as the blocks, because block-blind consumers (push
-notifications, the `slack-workspace` MCP server) only ever see `text:`. When both must be trimmed,
-the prose is trimmed and the snippet is kept whole.
-
-:::caution[Snippets must never reach a dedup key]
-Snippet content varies per occurrence — line numbers, timestamps, object addresses. The dedup key is
-derived from title + source only (and, for an aggregate, from the set of per-event dedup keys). If
-snippet text leaked into either, the hourly throttle would stop throttling and one wedged poller
-would fill `#eng-alerts` once per tick.
-:::
+  group on deadline). Input is scrubbed to valid UTF-8, and a render that fails anyway degrades to
+  `(log snippet unavailable: <class>)`.
 
 ### Who is allowed to page
 
-**`AlertService::ALERTING_ENVIRONMENTS` is `production` and `staging`.** Zimmer's two deployed
-environments page; a process running as anything else does not, however completely it is credentialed
-— the same boundary `config/initializers/sentry.rb` draws for the production error DSN. The check
-happens twice: at `raise_alert`, so a gated alert is never accumulated into an `AlertBatcher` flush
-that would drop it, and at `post_to_slack`, the one place every path into Slack passes through
-(`AlertBatcher`'s flush calls `emit` directly and never sees the first check). Either way the caller
-gets `false`, and the alert is logged at `warn` with its title, source, environment, and a truncated
-body — so a developer exercising alerting sees what would have been sent and why it wasn't, rather
-than silence.
+The same gate `config/initializers/sentry.rb` draws, and nothing else: `ErrorReporter` is a hard
+no-op unless the Sentry SDK is initialized (`SENTRY_DSN_BACKEND` present), and the SDK's
+`enabled_environments` is `production` and `staging`, so any other `Rails.env` drops the event at
+the client — DSN present or not. `CliSpawnEnv#clear_inherited_env_vars` strips `SENTRY_DSN_BACKEND`
+from every agent shell as well, so a `RAILS_ENV=test bin/rails` command inside an agent's clone has
+no DSN to send with in the first place.
 
-`ALERTS_ENABLED` overrides in both directions: `true` on an instance that should page anyway, `false`
-to mute one that otherwise would. Anything unrecognized is treated as unset — garbage must not read as
-*yes, page production*. Set it as deploy environment configuration, never in `mcp_secrets`: secret-store
-values are copied into every agent clone's `.env`, so an opt-in stored there would travel with the
-clones. `CliSpawnEnv#clear_inherited_env_vars` strips it from spawned agents for the same reason, so
-the opt-in stays with the instance it was declared on.
-
-The gate reads the environment and nothing else — deliberately not the dedup cache, which is
-best-effort by construction. `suppressed?` and `mark_sent` swallow their own failures, as does
-`ElicitationEndpoint.record`; when the cache is unreachable, every suppressor falls open at once and
-one incident becomes a message per tick. A throttle that fails open is not a containment boundary. See
-[the credential-scope limitation](/limitations/#every-agent-session-clone-carries-the-slack-bot-token-and-the-alert-channel-id)
-for the part of this that a code change cannot close.
-
-Every message is tagged with its environment — header, context block, and the `text:` fallback —
-production included, so that a channel of tagged messages has no ambiguous member. Tagging only the
-non-production ones would make an untagged message mean either "from production" or "from a build that
-predates the tag". The tag is applied at render time, so dedup keys and `AlertBatcher`'s
-`(title, source)` grouping stay keyed on the alert itself.
-
-### When an alert is a DM instead of a channel post
-
-`AlertService.dm_operator` sends to one person rather than to `#eng-alerts`. It shares the
-environment gate, the Block Kit rendering and the cache-backed suppression with `raise_alert` — what
-differs is the destination (`OPERATOR_SLACK_USER_ID`, opened with `conversations.open`, which needs
-the bot's `im:write` scope) and the clock.
-
-Reach for it only where a channel post would be the wrong shape: a condition that stays broken until
-one specific human acts, that no amount of retrying will clear. A channel alert is a feed entry you
-scroll past; a DM is a nag, and nags spend attention.
-
-Two consequences of being a nag:
-
-- **A much longer window.** `OPERATOR_DM_DEDUP_WINDOW` is 12 hours against `DEDUP_WINDOW`'s 1, and
-  the dedup key is caller-owned and required rather than derived from title + source — so two broken
-  subjects are two DMs, not one collapsed one. The caller may call `clear_dm_suppression` when the
-  condition resolves so a recurrence is not swallowed by the suppression its first occurrence wrote
-  — but it should clear on the *narrowest* signal that the problem is actually fixed, not on any
-  signal that it currently looks fixed.
-- **No `AlertBatcher`.** The batcher collapses same-thread bursts of the same alert, which is a
-  channel concern. A DM is already throttled per subject.
-
-Unset `OPERATOR_SLACK_USER_ID` means the DM is logged and dropped, exactly like an unconfigured
-channel. And `dm_operator` swallows every error it can raise and returns `false` — its callers are
-auth and status-transition paths whose job is to keep the account pool running, and a Slack outage
-must not strand one of them.
-
-**`dm_operator` currently has no callers, and that is deliberate.** Its one caller was the
-`needs_reauth` alert, which is now [a Trigger that spawns an agent](/auth/harness/#a-dead-account-tells-you-so)
-holding the Slack MCP server. The swallow-and-return-`false` shape above is exactly why: three
-different failures — an unset `OPERATOR_SLACK_USER_ID`, a bot without `im:write`, a stuck dedup key
-— all degraded to one `.warn` line and a `false`, and `missing_configuration_details` (the boot-time
-health check) never looked at `operator_user_id` at all. So a deployment could report itself fully
-configured while every operator DM it ever sent was dropped. A notification path that cannot fail
-loudly is one you cannot tell from a working one.
-
-The helper is kept because the shape is still right for the next condition that genuinely needs it.
-Anything reaching for it should account for that failure mode first.
+That matters because agent sessions run *inside* the production container and inherit its
+environment. The log half is gated the same way from the other end: the vmalert recording rule
+behind the Grafana alert counts records by `deployment.environment`, and subtracts staging from
+`all` — so a record that is not stamped as staging pages, and a process outside the deployed
+environments never ships one, because the OTLP exporter is itself a no-op without
+`OTEL_LOGS_EXPORTER_ENDPOINT`.
 
 ### Why the elicitation probe doesn't run in development
 

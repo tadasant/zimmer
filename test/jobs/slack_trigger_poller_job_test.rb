@@ -1426,8 +1426,8 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     end
   end
 
-  # The self-trigger loop: Zimmer posts to Slack with this same token (AlertService),
-  # and an unrestricted bot_mention condition with no channel configured polls EVERY
+  # The self-trigger loop: Zimmer posts to Slack with this same token, and an
+  # unrestricted bot_mention condition with no channel configured polls EVERY
   # channel the bot is in. Its own message must never fire it, allow-list or not.
   test "the bot's own message never fires the condition, even when everyone is allowed" do
     condition = stub_bot_mention_condition(allowed_user_ids: nil)
@@ -1630,7 +1630,7 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     SlackService.stubs(:get_message_permalink).returns("https://slack.com/msg/passive")
     SlackService.stubs(:get_user_name).returns("Test User")
     SlackService.stubs(:get_channel).returns(OpenStruct.new(name: "general"))
-    AlertService.stubs(:channel_id).returns("C_ALERTS")
+    SlackService.stubs(:alert_channel_id).returns("C_ALERTS")
     SlackService.stubs(:list_member_channels).returns(
       [ OpenStruct.new(id: PASSIVE_CHANNEL, name: "general", is_member: true) ]
     )
@@ -2086,15 +2086,15 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     end
   end
 
-  test "channel condition does not count Zimmer's own alert posts as engagement" do
+  test "channel condition does not count alert-channel posts as engagement" do
     condition = stub_passive_listening(event_type: "passive_listen_channel")
-    AlertService.stubs(:channel_id).returns(PASSIVE_CHANNEL)
+    SlackService.stubs(:alert_channel_id).returns(PASSIVE_CHANNEL)
 
     condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(3.hours) }
     condition.save!
 
-    # AlertService posts with the same token, so an alert looks exactly like any
-    # other message from Zimmer — but it is a feed, not a conversation.
+    # A page in the alert channel looks exactly like any other message from a bot
+    # — but it is a feed, not a conversation.
     SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([
       OpenStruct.new(ts: passive_ts(30.minutes), text: "ALERT: poller error", user: "U_BOT_123", bot_id: "B_ZIMMER", thread_ts: nil, reply_count: 0)
     ])
@@ -2513,22 +2513,22 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     job.stubs(:process_condition)
        .raises(SlackService::TransientError, "Network error communicating with Slack: timeout")
 
-    # Not a per-condition defect, so no alert — and the sweep stops rather than
+    # Not a per-condition defect, so no report — and the sweep stops rather than
     # grinding every remaining condition into the same wall.
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_exception).never
     job.expects(:retry_job).with(wait: 30)
 
     job.perform_now
   end
 
-  test "a non-transient condition error still alerts and does not defer" do
+  test "a non-transient condition error still reports and does not defer" do
     SlackService.stubs(:configured?).returns(true)
 
     job = SlackTriggerPollerJob.new
     job.stubs(:process_condition).raises(StandardError, "bad condition")
 
     job.expects(:retry_job).never
-    AlertService.expects(:raise_alert).at_least_once
+    ErrorReporter.expects(:report_exception).at_least_once
 
     job.perform_now
   end
@@ -2559,12 +2559,14 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal 30, job.send(:deferral_delay, unspecified), "a nil retry_after must not blow up"
   end
 
-  test "stops deferring and alerts once MAX_DEFERRALS is spent" do
+  test "stops deferring and reports once MAX_DEFERRALS is spent" do
     job = SlackTriggerPollerJob.new
     job.instance_variable_set(:@deferrals, SlackTriggerPollerJob::MAX_DEFERRALS)
 
     job.expects(:retry_job).never
-    AlertService.expects(:raise_alert).once
+    ErrorReporter.expects(:report_message).with(
+      "Slack trigger poller deferred repeatedly", has_entries(level: :error)
+    ).once
 
     job.send(:defer_poll, SlackService::TransientError.new("still down"))
   end
@@ -2696,9 +2698,9 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     SlackService.stubs(:get_thread_replies).raises(production_rate_limit)
 
     job = SlackTriggerPollerJob.new
-    # Slack is throttling us, not misbehaving: no alert, and the poll comes back in
+    # Slack is throttling us, not misbehaving: no report, and the poll comes back in
     # 30s (the backoff floor, which outlives Slack's own 10s Retry-After).
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
     job.expects(:retry_job).with(wait: 30)
 
     lines = capture_log_lines { job.perform_now }
@@ -2754,7 +2756,7 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     job.instance_variable_set(:@deferrals, SlackTriggerPollerJob::MAX_DEFERRALS)
 
     job.expects(:retry_job).never
-    AlertService.expects(:raise_alert).once
+    ErrorReporter.expects(:report_message).once
 
     lines = capture_log_lines { job.send(:defer_poll, production_rate_limit) }
 

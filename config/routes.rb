@@ -84,9 +84,12 @@ Rails.application.routes.draw do
     resources :session_status_summaries, except: [ :new, :create ]
     # No create or edit: an edge is a record that one session actually queued or
     # interrupted another, written only by Sessions::RecordUncleEdge, which is
-    # where the acyclicity invariant lives. Destroy is offered because the edge
-    # is self-declared and unverified, so a mistaken one needs a way out until
-    # there is a first-class detach (issue #299).
+    # where the acyclicity invariant lives. Destroy stays as the raw operator view
+    # of the table — the product surfaces for detaching one are the hierarchy
+    # panel's ×, `action_session` → `remove_uncle`, and
+    # DELETE /api/v1/sessions/:id/uncle_links/:uncle_id, all of which go through
+    # Sessions::RemoveUncleEdge and record the removal on both timelines. This one
+    # does not, which is why it is the escape hatch rather than the way.
     resources :session_uncle_links, only: [ :index, :show, :destroy ]
     resources :subagent_transcripts
     # Read-only: a chunk is one slice of an append-only transcript, and editing one
@@ -156,6 +159,8 @@ Rails.application.routes.draw do
           get :search
           post :refresh_all
           post :bulk_archive
+          # Persist the top-to-bottom order of one dashboard section's cards.
+          post :reorder
         end
 
         member do
@@ -192,6 +197,13 @@ Rails.application.routes.draw do
             post :interrupt
           end
         end
+
+        # Detach an uncle edge recorded in error (#299). DELETE only: edges are
+        # WRITTEN as a side effect of a queue/interrupt, by Sessions::RecordUncleEdge,
+        # which is where the acyclicity invariant lives — a create here would be a
+        # way round it. `:session_id` is the junior and `:uncle_id` the senior;
+        # direction is the whole content of the edge, so both are in the path.
+        resources :uncle_links, only: [ :destroy ], param: :uncle_id
       end
 
       # The gate decision ledger: what `pr-merge-gate` and `issue-work-gate` rated,
@@ -275,6 +287,12 @@ Rails.application.routes.draw do
         # Re-arm and kick the one-time post-deploy tasks. Their status is already
         # in the health report this endpoint's #show returns.
         post :run_post_deploy_tasks
+        # The third cleanup lever for a runaway queue (QueuedJobMaintenance): read
+        # the eligible backlog, then discard or reschedule it by class/queue. GET
+        # for the read because it is one, POST for the two that write.
+        get :queued_jobs
+        post :discard_queued_jobs
+        post :reschedule_queued_jobs
       end
 
       # Transcript archive download and status
@@ -302,6 +320,11 @@ Rails.application.routes.draw do
   post "health/enter_queue_recovery_mode", to: "health#enter_queue_recovery_mode", as: :enter_queue_recovery_mode_health
   post "health/exit_queue_recovery_mode", to: "health#exit_queue_recovery_mode", as: :exit_queue_recovery_mode_health
   post "health/run_post_deploy_tasks", to: "health#run_post_deploy_tasks", as: :run_post_deploy_tasks_health
+  # Queued job maintenance (QueuedJobMaintenance). Both write, so both are behind the
+  # operator realm in HealthController::OPERATOR_GATED_ACTIONS — the read is the panel
+  # the dashboard GET already renders, so it needs no route of its own.
+  post "health/discard_queued_jobs", to: "health#discard_queued_jobs", as: :discard_queued_jobs_health
+  post "health/reschedule_queued_jobs", to: "health#reschedule_queued_jobs", as: :reschedule_queued_jobs_health
 
   # Polled by every page for the "live updates paused" banner. Deliberately plain
   # HTTP: the condition it reports is the broadcast circuit breaker being open,
@@ -534,6 +557,9 @@ Rails.application.routes.draw do
     end
     collection do
       post :bulk_archive
+      # Persist a drag-and-drop reordering of one dashboard section's cards.
+      # Accepts the section's new top-to-bottom order of session ids.
+      post :reorder
       post :refresh_all
       post :refresh_category
       post :refresh_starred
@@ -550,6 +576,12 @@ Rails.application.routes.draw do
         post :interrupt
       end
     end
+
+    # The hierarchy panel's detach control on an "also senior" chip (#299). Same
+    # shape as the REST twin: `:session_id` is the junior, `:uncle_id` the senior.
+    # Destroy only — a human has no way to WRITE an uncle edge from the browser
+    # and this does not give them one.
+    resources :uncle_links, only: [ :destroy ], param: :uncle_id
   end
 
   # Organizational categories for the sessions dashboard.

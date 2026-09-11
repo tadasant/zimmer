@@ -8,6 +8,7 @@ class Session < ApplicationRecord
   include JsonbDualWrite
   include SessionGenesisClassification
   include SessionPrecedence
+  include SessionCardOrder
   include SessionVisibility
   include RunningTurns
   include CatalogArtifactReferences
@@ -815,7 +816,7 @@ class Session < ApplicationRecord
   validates :heartbeat_interval_seconds, numericality: { only_integer: true, greater_than_or_equal_to: HEARTBEAT_MIN_INTERVAL_SECONDS, less_than_or_equal_to: HEARTBEAT_MAX_INTERVAL_SECONDS }
   # The catalog-artifact columns. Each declaration registers the pair of
   # validators CatalogArtifactReferences defines — see the concern.
-  catalog_reference :mcp_servers,     config: ServersConfig, noun: "server", alert_noun: "MCP server",     dedup_noun: "mcp"
+  catalog_reference :mcp_servers,     config: ServersConfig, noun: "server", alert_noun: "MCP server"
   catalog_reference :catalog_skills,  config: SkillsConfig,  noun: "skill",  alert_noun: "catalog skill"
   catalog_reference :catalog_hooks,   config: HooksConfig,   noun: "hook",   alert_noun: "catalog hook"
   catalog_reference :catalog_plugins, config: PluginsConfig, noun: "plugin", alert_noun: "catalog plugin"

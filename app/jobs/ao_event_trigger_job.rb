@@ -116,101 +116,100 @@ class AoEventTriggerJob < ApplicationJob
       .where("trigger_conditions.configuration @> ?", { event_name: event_name }.to_json)
       .includes(:trigger)
 
-    # Wrap the fan-out in an AlertBatcher scope so catalog issues affecting
-    # many triggers collapse to one aggregated Slack message.
-    AlertBatcher.with_batch do
-      conditions.find_each do |condition|
-        trigger = condition.trigger
-        scoped = condition.session_scoped_ao_event?
+    # A catalog issue affecting many triggers raises the same failure once per
+    # trigger. The obs pipeline is what collapses that burst: GlitchTip groups the
+    # events into one issue, Grafana groups by alertname over a 5-minute interval.
+    conditions.find_each do |condition|
+      trigger = condition.trigger
+      scoped = condition.session_scoped_ao_event?
 
-        # Every reason not to fire this condition for this subject — scoping, the
-        # one-shot guard, autonomy, loop prevention — lives on the subject.
-        if (skip = subject.skip(condition))
-          Rails.logger.public_send(skip.level, "[AoEventTriggerJob] Skipping #{event_name} for #{subject}: #{skip.message}")
+      # Every reason not to fire this condition for this subject — scoping, the
+      # one-shot guard, autonomy, loop prevention — lives on the subject.
+      if (skip = subject.skip(condition))
+        Rails.logger.public_send(skip.level, "[AoEventTriggerJob] Skipping #{event_name} for #{subject}: #{skip.message}")
+        next
+      end
+
+      # Flipped once the fire has actually delivered. Everything past that
+      # point is cleanup, and a failure there must not be advertised as
+      # re-armable — re-firing would duplicate the session that already exists.
+      delivered = false
+
+      begin
+        prompt = trigger.interpolate_prompt(
+          event: subject.label(event_name)
+        )
+        result_session = trigger.create_session!(prompt: prompt)
+
+        # A burst-suppressed fire delivered nothing, so it must not consume the
+        # condition: advancing last_triggered_at would spend a session-scoped
+        # condition's one-shot guard, and the auto-delete below would destroy a
+        # wake trigger that never woke anything.
+        if trigger.last_fire_burst_suppressed?
+          Rails.logger.info "[AoEventTriggerJob] Trigger #{trigger.id} is burst-suppressed for #{subject} #{event_name} — no session created, condition left unfired"
           next
         end
 
-        # Flipped once the fire has actually delivered. Everything past that
-        # point is cleanup, and a failure there must not be advertised as
-        # re-armable — re-firing would duplicate the session that already exists.
-        delivered = false
-
-        begin
-          prompt = trigger.interpolate_prompt(
-            event: subject.label(event_name)
-          )
-          result_session = trigger.create_session!(prompt: prompt)
-
-          # A burst-suppressed fire delivered nothing, so it must not consume the
-          # condition: advancing last_triggered_at would spend a session-scoped
-          # condition's one-shot guard, and the auto-delete below would destroy a
-          # wake trigger that never woke anything.
-          if trigger.last_fire_burst_suppressed?
-            Rails.logger.info "[AoEventTriggerJob] Trigger #{trigger.id} is burst-suppressed for #{subject} #{event_name} — no session created, condition left unfired"
-            next
-          end
-
-          # A dedup-skipped fire delivered nothing either, so it must not consume
-          # the condition. For a SESSION-SCOPED condition last_triggered_at is the
-          # one-shot guard: spending it here would lose that wake permanently
-          # because a session the trigger spawned earlier happened to still be
-          # pending. Leave the condition unfired, as the burst path does.
-          if trigger.last_fire_skipped_for_pending_session?
-            Rails.logger.info "[AoEventTriggerJob] Trigger #{trigger.id} skipped #{subject} #{event_name} — session #{trigger.last_fire_pending_session.id} is still pending; condition left unfired"
-            next
-          end
-
-          delivered = true
-          condition.update!(last_triggered_at: Time.current)
-          if result_session
-            Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for #{subject} #{event_name}, created/reused session #{result_session.id}"
-          else
-            # Burst suppression and dedup both skipped above, so nil here means a
-            # one-time reuse trigger whose target session is gone. Not an error.
-            Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for #{subject} #{event_name}, but no session was created (no reusable target session)"
-          end
-
-          # One-time wake-up triggers (only session-scoped ao_events and/or
-          # one-time schedules) hand their whole group over to the requester
-          # after firing: held now, retired by the requester's own state machine
-          # when the woken turn comes to rest. This used to be a destroy right
-          # here, which voided the group before the woken turn had run — see
-          # Trigger#hold_wake_group! and tadasant/zimmer#569. Mirrors
-          # ScheduleTriggerJob.
-          #
-          # CRITICAL: only hand the group over when the wake was actually
-          # delivered or queued. If #follow_up_session! did neither, the wake was
-          # silently dropped — marking the group held would put it on a turn that
-          # is not going to run, and the requester's next rest would retire wakes
-          # that never delivered anything. Leave them untouched so they can
-          # deliver when their watched events transition (or the deadline
-          # backstop fires).
-          #
-          # A pure wake never reaches this for the `enqueue_messages: false`
-          # reason: #follow_up_session! bypasses that flag for wakes by design.
-          # What DOES reach it is a requester in a state no branch of that method
-          # delivers to. So the log names the outcome rather than a cause.
-          if trigger.one_time_reuse_trigger?
-            if trigger.last_follow_up_dropped?
-              Rails.logger.info "[AoEventTriggerJob] Trigger #{trigger.id} fired but the prompt was neither delivered nor queued — leaving its wake group alone"
-            else
-              trigger_id = trigger.id
-              requester_id = trigger.last_session_id
-              sibling_count = trigger.hold_wake_group!
-              Rails.logger.info "[AoEventTriggerJob] One-time trigger #{trigger_id} held after firing, plus #{sibling_count} sibling wake-up trigger(s), for requester session #{requester_id} — retired when its turn comes to rest"
-            end
-          end
-        rescue => e
-          handle_fire_failure(
-            condition: condition,
-            trigger: trigger,
-            scoped: scoped,
-            subject: subject,
-            event_name: event_name,
-            delivered: delivered,
-            error: e
-          )
+        # A dedup-skipped fire delivered nothing either, so it must not consume
+        # the condition. For a SESSION-SCOPED condition last_triggered_at is the
+        # one-shot guard: spending it here would lose that wake permanently
+        # because a session the trigger spawned earlier happened to still be
+        # pending. Leave the condition unfired, as the burst path does.
+        if trigger.last_fire_skipped_for_pending_session?
+          Rails.logger.info "[AoEventTriggerJob] Trigger #{trigger.id} skipped #{subject} #{event_name} — session #{trigger.last_fire_pending_session.id} is still pending; condition left unfired"
+          next
         end
+
+        delivered = true
+        condition.update!(last_triggered_at: Time.current)
+        if result_session
+          Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for #{subject} #{event_name}, created/reused session #{result_session.id}"
+        else
+          # Burst suppression and dedup both skipped above, so nil here means a
+          # one-time reuse trigger whose target session is gone. Not an error.
+          Rails.logger.info "[AoEventTriggerJob] Fired trigger #{trigger.id} for #{subject} #{event_name}, but no session was created (no reusable target session)"
+        end
+
+        # One-time wake-up triggers (only session-scoped ao_events and/or
+        # one-time schedules) hand their whole group over to the requester
+        # after firing: held now, retired by the requester's own state machine
+        # when the woken turn comes to rest. This used to be a destroy right
+        # here, which voided the group before the woken turn had run — see
+        # Trigger#hold_wake_group! and tadasant/zimmer#569. Mirrors
+        # ScheduleTriggerJob.
+        #
+        # CRITICAL: only hand the group over when the wake was actually
+        # delivered or queued. If #follow_up_session! did neither, the wake was
+        # silently dropped — marking the group held would put it on a turn that
+        # is not going to run, and the requester's next rest would retire wakes
+        # that never delivered anything. Leave them untouched so they can
+        # deliver when their watched events transition (or the deadline
+        # backstop fires).
+        #
+        # A pure wake never reaches this for the `enqueue_messages: false`
+        # reason: #follow_up_session! bypasses that flag for wakes by design.
+        # What DOES reach it is a requester in a state no branch of that method
+        # delivers to. So the log names the outcome rather than a cause.
+        if trigger.one_time_reuse_trigger?
+          if trigger.last_follow_up_dropped?
+            Rails.logger.info "[AoEventTriggerJob] Trigger #{trigger.id} fired but the prompt was neither delivered nor queued — leaving its wake group alone"
+          else
+            trigger_id = trigger.id
+            requester_id = trigger.last_session_id
+            sibling_count = trigger.hold_wake_group!
+            Rails.logger.info "[AoEventTriggerJob] One-time trigger #{trigger_id} held after firing, plus #{sibling_count} sibling wake-up trigger(s), for requester session #{requester_id} — retired when its turn comes to rest"
+          end
+        end
+      rescue => e
+        handle_fire_failure(
+          condition: condition,
+          trigger: trigger,
+          scoped: scoped,
+          subject: subject,
+          event_name: event_name,
+          delivered: delivered,
+          error: e
+        )
       end
     end
   end
@@ -242,8 +241,8 @@ class AoEventTriggerJob < ApplicationJob
   # ao_event sharing a trigger with anything else is not a shape Zimmer's own
   # wake tools create.
   #
-  # The whole body is rescued because parking and alerting can raise — Slack is a
-  # network call — and there is no outer per-condition rescue around the
+  # The whole body is rescued because parking and reporting can raise, and there
+  # is no outer per-condition rescue around the
   # find_each fan-out here the way there is in ScheduleTriggerJob#perform. A
   # raise escaping this method would abort the remaining conditions and drop
   # OTHER triggers' wakes, turning one lost wake into several.
@@ -306,13 +305,17 @@ class AoEventTriggerJob < ApplicationJob
       )
     end
 
-    AlertService.raise_alert(
-      "State-change wake failed to fire",
-      details: "Condition #{condition.id} on trigger '#{trigger_name}' (ID: #{trigger_id}) failed to " \
-               "fire for #{event_name} on #{subject}.\n\n#{retry_note}",
-      source: "AoEventTriggerJob",
-      dedup_key: "ao_event_trigger_#{trigger_id}",
-      error: error
+    ErrorReporter.report_exception(
+      error,
+      context: {
+        title: "State-change wake failed to fire",
+        source: "AoEventTriggerJob",
+        details: "Condition #{condition.id} on trigger '#{trigger_name}' (ID: #{trigger_id}) failed to " \
+                 "fire for #{event_name} on #{subject}.\n\n#{retry_note}",
+        condition_id: condition.id,
+        trigger_id: trigger_id,
+        event_name: event_name
+      }
     )
   rescue => handler_error
     # Last resort, and deliberately the one thing here that cannot raise: the

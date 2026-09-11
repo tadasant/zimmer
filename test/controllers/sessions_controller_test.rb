@@ -5715,10 +5715,15 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     Log.delete_all
     Session.delete_all
 
-    # Create sessions in specific order
+    # Created oldest-first, as a real board fills up. That matters for the unfavorited
+    # pair: they render in the category grid, where a card nobody has dragged sits where
+    # it arrived (SessionCardOrder) — which is newest-first for every session Zimmer
+    # creates, because it stamps created_at at creation. Inserting a row with an older
+    # created_at than one already on the board is a thing only a test can do, and it
+    # would land on top here; the ordering this test is about is unaffected either way.
     old_favorited = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Old Favorited", created_at: 2.days.ago, favorited: true)
-    new_unfavorited = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "New Unfavorited", created_at: 1.hour.ago, favorited: false)
     old_unfavorited = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Old Unfavorited", created_at: 1.day.ago, favorited: false)
+    new_unfavorited = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "New Unfavorited", created_at: 1.hour.ago, favorited: false)
     new_favorited = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "New Favorited", created_at: 1.minute.ago, favorited: true)
 
     get root_url(every_status_params)

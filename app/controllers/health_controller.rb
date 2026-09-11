@@ -45,6 +45,8 @@ class HealthController < ApplicationController
     archive_old
     enter_queue_recovery_mode
     run_post_deploy_tasks
+    discard_queued_jobs
+    reschedule_queued_jobs
   ].freeze
 
   before_action :authenticate_operator, only: OPERATOR_GATED_ACTIONS
@@ -225,6 +227,66 @@ class HealthController < ApplicationController
     end
   end
 
+  # POST /health/discard_queued_jobs
+  #
+  # The third cleanup lever for a runaway queue, on the surface a human reaches
+  # for during an incident, so they are not sent to GoodJob's own dashboard
+  # mid-incident (#335). NOT RECOVERABLE — see QueuedJobMaintenance.
+  #
+  # Gated by OPERATOR_GATED_ACTIONS above. That is the load-bearing half of #312:
+  # the destructive `/health` actions used to be anonymous while their REST and
+  # MCP siblings required a key, and an agent session's shell can reach this app.
+  # A bulk discard must not be a `curl` away.
+  #
+  # `expected_count` comes from the hidden field the panel renders beside each
+  # row, which is the count confirmation doing real work rather than ceremony: a
+  # page rendered ten minutes ago names a count that no longer matches, and the
+  # click is refused instead of discarding a set the operator never saw.
+  def discard_queued_jobs
+    result = QueuedJobMaintenance.discard!(
+      job_class: params[:job_class],
+      queue_name: params[:queue_name],
+      expected_count: params[:expected_count],
+      reason: params[:reason],
+      actor: "web UI"
+    )
+
+    respond_to do |format|
+      format.html do
+        flash[:notice] = "Discarded #{result.affected} queued job#{'s' unless result.affected == 1} " \
+          "(#{queued_job_breakdown(result)}). Not recoverable."
+        redirect_to health_dashboard_path
+      end
+      format.json { render json: result.as_json }
+    end
+  rescue QueuedJobMaintenance::Refused => e
+    render_maintenance_refusal(e)
+  end
+
+  # POST /health/reschedule_queued_jobs
+  #
+  # The reversible sibling. Same gate, same count confirmation.
+  def reschedule_queued_jobs
+    result = QueuedJobMaintenance.reschedule!(
+      job_class: params[:job_class],
+      queue_name: params[:queue_name],
+      expected_count: params[:expected_count],
+      scheduled_at: params[:delay_minutes].presence&.to_i&.minutes&.from_now,
+      actor: "web UI"
+    )
+
+    respond_to do |format|
+      format.html do
+        flash[:notice] = "Rescheduled #{result.affected} queued job#{'s' unless result.affected == 1} " \
+          "(#{queued_job_breakdown(result)}) to #{result.scheduled_at&.utc&.strftime("%H:%M UTC")}."
+        redirect_to health_dashboard_path
+      end
+      format.json { render json: result.as_json }
+    end
+  rescue QueuedJobMaintenance::Refused => e
+    render_maintenance_refusal(e)
+  end
+
   def export_diagnostics
     @health_service = HealthMonitorService.new
     @health_report = @health_service.full_health_report
@@ -275,6 +337,28 @@ class HealthController < ApplicationController
     else
       flash[:notice] = parts.join(". ")
     end
+  end
+
+  # A refusal is the normal, expected answer here — a count that moved between the
+  # render and the click is the count confirmation working — so it lands as a
+  # flash on the page the operator is already on, with the service's own message,
+  # which names the real count they can retry with.
+  def render_maintenance_refusal(error)
+    respond_to do |format|
+      format.html do
+        flash[:alert] = error.message
+        redirect_to health_dashboard_path
+      end
+      format.json { render json: { error: "Refused", message: error.message }, status: :unprocessable_entity }
+    end
+  end
+
+  # "GitHubPullRequestPollerJob 494" — the per-class audit in the flash, so what
+  # was thrown away is on screen and not only in the log.
+  def queued_job_breakdown(result)
+    return "nothing" if result.by_job_class.blank?
+
+    result.by_job_class.map { |klass, count| "#{klass} #{count}" }.join(", ")
   end
 
   # Minutes from the form, converted to a Duration. Blank means the default;

@@ -353,28 +353,35 @@ class EnqueuedMessageDrainJob < ApplicationJob
     )
   end
 
-  # Posted AFTER any open transaction commits, for a sharper version of the reason
-  # SessionStateMachine#report_swallowed_side_effect gives: AlertService talks to
-  # Slack synchronously (5s connect / 10s read), and this method is reached from
-  # give_up, whose caller may be inside EnqueuedMessageProcessorService's
-  # transaction on a failed delivery. Alerting inline would pin that transaction —
-  # and the `lock!` it holds on this session's row — across a network round trip,
-  # blocking any concurrent interrupt on the one session already in trouble.
-  # after_all_transactions_commit runs the block immediately when no transaction
-  # is open, which is the ordinary case here, so nothing is deferred that does not
-  # need to be. (This job opens no transaction and takes no advisory lock of its
-  # own — see the class header.)
+  # Reported AFTER any open transaction commits. This method is reached from give_up,
+  # whose caller may be inside EnqueuedMessageProcessorService's transaction on a
+  # failed delivery, and a page saying a queue is undeliverable is a page about
+  # persisted state — it must not go out for a transaction that then rolled back.
+  # after_all_transactions_commit runs the block immediately when no transaction is
+  # open, which is the ordinary case here, so nothing is deferred that does not need
+  # to be. (This job opens no transaction and takes no advisory lock of its own —
+  # see the class header.)
   def alert_on_undeliverable_queue(session_id, count, status)
+    details = "Session #{session_id} is at rest (#{status}) with #{count} message(s) still queued. " \
+              "#{MAX_ATTEMPTS} attempts to deliver them failed, so the session is sitting idle on work " \
+              "it was given. The messages are still `pending` and will go out on the next turn the " \
+              "session takes — but nothing is going to give it one on its own.\n\n" \
+              "#{AppUrl.base_url}/sessions/#{session_id}"
+
     ActiveRecord.after_all_transactions_commit do
-      AlertService.raise_alert(
+      Rails.logger.error(
+        "[EnqueuedMessageDrainJob] Session idle with an undeliverable queued message: " \
+        "session #{session_id} (#{status}), #{count} message(s)"
+      )
+      ErrorReporter.report_message(
         "Session idle with an undeliverable queued message",
-        details: "Session #{session_id} is at rest (#{status}) with #{count} message(s) still queued. " \
-                 "#{MAX_ATTEMPTS} attempts to deliver them failed, so the session is sitting idle on work " \
-                 "it was given. The messages are still `pending` and will go out on the next turn the " \
-                 "session takes — but nothing is going to give it one on its own.\n\n" \
-                 "<#{AppUrl.base_url}/sessions/#{session_id}|View session in Zimmer>",
-        source: "EnqueuedMessageDrainJob",
-        dedup_key: "undeliverable_enqueued_messages_#{session_id}"
+        level: :error,
+        context: {
+          source: "EnqueuedMessageDrainJob",
+          details: details,
+          session_id: session_id,
+          queued_count: count
+        }
       )
     rescue => e
       # The block outlives give_up's own rescue, so it needs its own.

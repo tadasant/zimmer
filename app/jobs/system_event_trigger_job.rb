@@ -59,9 +59,7 @@ class SystemEventTriggerJob < ApplicationJob
     end
 
     handled = 0
-    AlertBatcher.with_batch do
-      conditions.find_each { |condition| handled += 1 if fire(condition, event_name) }
-    end
+    conditions.find_each { |condition| handled += 1 if fire(condition, event_name) }
 
     # Nobody acted on the event. For `quota_available` that means the parked
     # sessions it exists to wake are still parked, so put the edge back rather
@@ -113,14 +111,18 @@ class SystemEventTriggerJob < ApplicationJob
       "#{e.message}\n#{e.backtrace&.first(5)&.join("\n")}"
     )
 
-    AlertService.raise_alert(
-      "System-event trigger failed to fire",
-      details: "Condition #{condition.id} on trigger '#{trigger&.name}' (ID: #{trigger&.id}) failed " \
-               "to fire for #{event_name}. This is a broadcast (recurring) condition: it stays " \
-               "enabled and will fire on the next matching event.",
-      source: "SystemEventTriggerJob",
-      dedup_key: "system_event_trigger_#{trigger&.id}",
-      error: e
+    ErrorReporter.report_exception(
+      e,
+      context: {
+        title: "System-event trigger failed to fire",
+        source: "SystemEventTriggerJob",
+        details: "Condition #{condition.id} on trigger '#{trigger&.name}' (ID: #{trigger&.id}) failed " \
+                 "to fire for #{event_name}. This is a broadcast (recurring) condition: it stays " \
+                 "enabled and will fire on the next matching event.",
+        condition_id: condition.id,
+        trigger_id: trigger&.id,
+        event_name: event_name
+      }
     )
     false
   rescue => handler_error

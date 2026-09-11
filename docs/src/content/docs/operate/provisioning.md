@@ -20,12 +20,21 @@ Terraform only provisions the **host**. The app image, its env, and the data sto
 | `manage_project` | still `false`. Remote state fixes the case where Terraform *created* the project, but a **pre-existing** one (both envs have one) still 409s on its account-unique name. Turning it on needs a one-time `terraform import` first; a DO Project is just a console folder, so it isn't worth the failure mode. |
 | `admin_ssh_pubkeys` | Operator/tooling public keys cloud-init authorizes for `root`, on top of the Kamal deploy key. Per environment, and the environments are **[deliberately not the same](/operate/ssh-access/#who-is-authorized-where)** — do not reconcile them. `[]` by default, and it is the one non-secret variable that does **not** come from the committed tfvars: staging reads it from the [`ADMIN_SSH_PUBKEYS` Actions variable](/operate/ssh-access/#operator-keys), because `staging.tfvars.example` is public and copied verbatim onto the runner, so a key there would authorize that key on every fork's droplet. It rides cloud-init, so a key added [reaches only a rebuilt box](/operate/ssh-access/#adding-a-key-does-not-touch-a-running-droplet). |
 | `ssh_key_fingerprints` | DigitalOcean-registered keys. **Leave it empty.** It is `ForceNew` on `digitalocean_droplet`, so adding a key makes the deploy workflow's auto-approved `terraform apply` *destroy and recreate the droplet* — skipping the tailnet-node reap that only runs behind `recreate_droplet`, which lands the replacement as `zimmer-<env>-1` and breaks the hostname the deploy resolves. Use `admin_ssh_pubkeys`: it rides cloud-init, which is under `ignore_changes`, so it can never force-replace the box. |
+| `monitoring` | `true`. DigitalOcean's own metrics agent — host CPU, memory, disk and load history, and the only metrics DO's resource alert policies can evaluate. A variable so a downstream copy of the module can decline it; **create-time only** either way, because the attribute is `ForceNew` and sits in `ignore_changes` (see [Known limitations](/limitations/#the-digitalocean-metrics-agent-reaches-only-a-droplet-terraform-creates-never-one-that-exists)). |
+| `node_exporter_enabled` | `false`. Opt into a pinned Prometheus [`node_exporter`](https://github.com/prometheus/node_exporter) as a systemd unit, serving `/metrics` on the droplet's **tailnet address only**, port `9100`. Off, the rendered cloud-config carries no trace of it. For a deployment that scrapes host metrics into its own monitoring plane and wants the conventional `node_*` names. It rides cloud-init, so it [reaches only a rebuilt droplet](/limitations/#node_exporter-is-opt-in-and-reaches-only-a-rebuilt-droplet). |
 | `managed_db_cluster_name` | `""` for staging (Kamal runs a throwaway Postgres accessory); set for production |
 | `app_required_backends` | Client backends the database must be able to serve. Not a free parameter — it is what `ConnectionBudget.required_backends` derives (see [the connection budget](/operate/deploying/#the-database-connection-budget)), and a test fails if the two drift. A `lifecycle.postcondition` on the managed cluster fails the plan when its plan slug cannot serve it. |
 
-`ssh_key_fingerprints` is not the only `ForceNew` attribute on the droplet. `monitoring` — hardcoded
-`true`, so not a variable — is the other, and it is handled by sitting in `ignore_changes` rather than
-by a warning: see [Known limitations](/limitations/#the-digitalocean-metrics-agent-reaches-only-a-droplet-terraform-creates-never-one-that-exists).
+`ssh_key_fingerprints` is not the only `ForceNew` attribute on the droplet. `monitoring` is the other,
+and it is handled by sitting in `ignore_changes` rather than by a warning: see
+[Known limitations](/limitations/#the-digitalocean-metrics-agent-reaches-only-a-droplet-terraform-creates-never-one-that-exists).
+Being a variable does not make it any less create-time only — `ignore_changes` suppresses the diff, so
+flipping it against a running droplet changes nothing on the box.
+
+`node_exporter_enabled` has the same shape for a different reason: it is delivered through cloud-init,
+and `user_data` is under `ignore_changes` too. **Flipping it on a live droplet produces no plan diff and
+installs nothing.** A rebuild is what applies it — `recreate_droplet: true` on the staging deploy, or an
+explicit `terraform taint digitalocean_droplet.zimmer`.
 
 **Secrets** (as `TF_VAR_*`):
 
@@ -400,6 +409,12 @@ private infrastructure, out of scope for these docs.
 
 The droplet joins the tailnet with `--hostname zimmer` (or `zimmer-staging`) and `--ssh`. MagicDNS then
 gives you `http://zimmer`.
+
+**The ACL is the only thing bounding who may scrape host metrics.** With
+[`node_exporter_enabled`](#terraform-variables) on, `:9100` serves node_exporter with no TLS and no
+auth, exactly as `:80` serves the app — so any peer the ACL lets reach this node can read host
+telemetry from it. If that matters for your tailnet, scope it there; nothing in the Terraform module
+does.
 
 :::caution[Tag naming drifts across the docs and the code]
 `docs/PROVISIONING.md` said `tag:zimmer-ci`. `deploy-staging.yml` and the README say `tag:ci`. The

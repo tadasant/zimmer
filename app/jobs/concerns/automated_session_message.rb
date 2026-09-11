@@ -5,9 +5,27 @@
 # Every poller that notices a GitHub state change worth telling a session about
 # (a merge conflict appearing, a PR merging) has the same delivery problem: the
 # session may be parked in needs_input, where the message should wake it now, or
-# mid-turn in running/waiting, where it has to wait its turn behind whatever the
-# agent is already doing. This is that one decision, made in one place, so a new
+# it may not be able to take a prompt this instant, in which case the notice goes
+# into the durable queue. This is that one decision, made in one place, so a new
 # automated message is a prompt and a call rather than a second delivery path.
+#
+# WHAT THE `else` BRANCH RELIES ON, stated because reading it as "waits behind the
+# current turn" is wrong for half of what lands there, and that misreading is what
+# tadasant/zimmer#1123 was filed about. Queueing is safe for a session MID-TURN,
+# which has a turn boundary coming. It is NOT self-evidently safe for a session at
+# REST in `waiting` — asleep on an `open-pr` self-wake, or with that wake budget
+# spent — because nothing about that state produces a next turn on its own.
+#
+# What makes it safe is not this branch: it is EnqueuedMessage's after_create_commit
+# hook, which schedules EnqueuedMessageDrainJob for any session that is already idle
+# by Session#idle_for_queued_delivery? — BOTH resting states, not just needs_input
+# (#566). That job re-reads the session under its own rules and either delivers the
+# message or names the population of `waiting` that genuinely cannot take one, each
+# of which has something else coming that ends in a turn boundary.
+#
+# So the invariant is "a queued notice always has something coming back for it", and
+# it is owned over there. Do not weaken this branch on the assumption that a `waiting`
+# session will get around to its queue by itself.
 #
 module AutomatedSessionMessage
   extend ActiveSupport::Concern
@@ -72,8 +90,11 @@ module AutomatedSessionMessage
     Rails.logger.info "[#{self.class.name}] Sent immediate automated message to session #{session.id} (#{event_description})"
   end
 
-  # Queue prompt as an enqueued message for later processing
-  # Used when session is running or waiting
+  # Queue the prompt as an enqueued message for later processing.
+  #
+  # Used for every session that is not parked in needs_input — mid-turn, or at rest
+  # in `waiting`. EnqueuedMessage's after_create_commit hook is what guarantees
+  # something comes back for the row in the second case; see the class comment.
   def enqueue_prompt_for_later(session, prompt, event_description, origin)
     max_position = session.enqueued_messages.maximum(:position) || 0
     next_position = max_position + 1

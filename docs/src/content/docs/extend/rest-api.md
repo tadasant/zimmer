@@ -157,6 +157,7 @@ and the model refuses to write one, answering `422`.
 | `PATCH` | `/sessions/:id/notes` | `session_notes` ≤ 50,000; empty string clears |
 | `PATCH` | `/sessions/:id/heartbeat` | `enabled` and/or `interval_seconds` (30–86,400, default 60); omit either to leave it unchanged |
 | `PATCH` | `/sessions/:id/set_category` | `category_id`; blank or omitted clears. Unknown id → 404 |
+| `POST` | `/sessions/reorder` | `ids` — one dashboard section's cards, top to bottom — plus `category_id` (omit, null, or `"uncategorized"` for the Uncategorized bucket) and an optional `session_id` (id or slug) naming the one card that moved. → `{category_id, session_ids}`, the section's full order. Unknown category or session → 404. See [Card order](#card-order) |
 | `POST` | `/sessions/:id/toggle_favorite` | favorited sessions sort to the top of the dashboard |
 | `PATCH` | `/sessions/:id/visibility` | `visibility` (`visible` \| `hidden` \| `snoozed`), plus `snoozed_until` and `timezone` for a snooze. **Board visibility only** — see [Board visibility](#board-visibility). It changes what the dashboard draws and nothing else: no session is started, stopped, slept, woken or reordered. Unknown value, missing or past-dated `snoozed_until` → 422 |
 | `GET` | `/sessions/:id/transcript` | `format=text` → `text/plain`, else `{transcript_text}` |
@@ -606,6 +607,31 @@ senior — are in [Hierarchy and human
 messages](/sessions/hierarchy-and-human-messages/#the-rules-including-inversion), and the provenance
 consequences are in [Limitations](/limitations/).
 
+### Removing an uncle edge
+
+```
+DELETE /api/v1/sessions/:id/uncle_links/:uncle_id
+```
+
+Detaches `:uncle_id` as an additional senior of `:id`. Both ends are in the path because direction is
+the whole content of an uncle edge: `:id` is the **junior** — the session whose hierarchy grew when
+the edge was written — and `:uncle_id` the senior. Either may be an id or a slug.
+
+Optional body param `acting_session_id` is recorded on both timelines as the actor, self-declared for
+the same reason it is on `follow_up`. Omitting it logs "an undeclared REST API caller".
+
+- `204 No Content` — the edge is gone, and both sessions' timelines record when it was written, what
+  entry point wrote it, and who detached it.
+- `404 Not Found` — there is no such edge. Never a 204: a caller told an edge is gone while it is
+  still widening two sessions' context has been misinformed. When the pair *is* joined the other way
+  round, the message says so and names how to remove that one — the edge the caller did not name is
+  left alone.
+
+There is no `POST`, `GET` or `PATCH` on this resource. Edges are written by
+`Sessions::RecordUncleEdge`, as a side effect of a queue or interrupt, which is where the acyclicity
+invariant lives — a create here would be a way round it. The same removal is on
+[`action_session` → `remove_uncle`](/extend/mcp-server/) and on the session-detail hierarchy panel.
+
 There is no way to *clear* a goal through `follow_up` — a blank one means "leave it", not "remove
 it". Use `PATCH /sessions/:id` with `goal: ""` for that. (The HTML endpoint behind the web follow-up
 form reads a blank goal as a clear and an *absent* one as "leave it", a distinction the JSON API does
@@ -862,6 +888,18 @@ the cooldown fails closed. Entering answers 503 `Queue recovery mode unavailable
 `config.good_job.enable_pauses` is off, rather than reporting a halt GoodJob would ignore. See
 [Queue recovery mode](/operate/background-jobs/#queue-recovery-mode).
 
+`GET /health/queued_jobs` (`job_class` and/or `queue_name`) →
+`{scope, matched, by_job_class, by_queue, over_cap, max_per_call}` ·
+`POST /health/discard_queued_jobs` · `POST /health/reschedule_queued_jobs` (`delay_minutes`,
+clamped 0–10080) — the third cleanup lever for a runaway queue. All three require a scope
+(`job_class`, `queue_name`, or both) and the two `POST`s require `expected_count`; a mismatch, an
+unscoped call, a scope over the 2,000-row cap, or the protected `agents` queue answers
+`422 {"error": "Refused"}` with a message naming the real count and the per-class breakdown, having
+changed nothing. A discard is **not recoverable**; a reschedule is its reversible sibling, and the
+response says which with a `recoverable` boolean. Only unfinished, unstarted, unclaimed rows are
+eligible. Not behind the cooldown, for the same reason as the three above. See
+[Queued job maintenance](/operate/background-jobs/#queued-job-maintenance).
+
 Two health endpoints sit **outside** this API — no `/api/v1` prefix, no API key, because a load
 balancer and a deploy gate have neither: `GET /up` (200 if the process booted) and `GET /up/deep`
 (200 only if the database, the cache and Redis each answered a real round trip; `503` with a
@@ -869,7 +907,7 @@ balancer and a deploy gate have neither: `GET /up` (200 if the process booted) a
 limited. See [Deploying](/operate/deploying/#up-is-a-liveness-ping-updeep-is-the-health-check).
 
 :::caution[The only rate limit in the API lives here]
-The three `POST`s share `HealthActionCooldown::COOLDOWN = 30.seconds` — and share it with the MCP
+The three maintenance `POST`s (`cleanup_processes`, `retry_sessions`, `archive_old`) share `HealthActionCooldown::COOLDOWN = 30.seconds` — and share it with the MCP
 `action_health` tool and the `/health` web dashboard — keyed in `Rails.cache` as
 `health_api_rate_limit:<action>:<digest>`, where `<digest>` is a SHA-256 of the presented
 `X-API-Key`. The cooldown is therefore per action **and** per key — your cleanup does not throttle
@@ -986,6 +1024,37 @@ rather than as a row — so it is not in the category list the call returns.
 curl -X POST "$BASE_URL/categories/reorder" \
   -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
   -d '{"ids": [5, "uncategorized", 3, 8]}'
+```
+
+### Card order
+
+`POST /sessions/reorder` is the other half: where each *card* sits inside one section. It is what
+the dashboard's drag-and-drop posts, and it writes `sessions.sort_order`. See
+[Card order is yours to set](/sessions/lifecycle/#card-order-is-yours-to-set-and-it-stays-set) for
+the model.
+
+`ids` is one section's cards, top to bottom — normally one **page** of it, since sections paginate
+at 50 — and `category_id` names the section (omit it, send `null`, or send `"uncategorized"` for the
+Uncategorized bucket; an unknown id → 404). Ids that are not in that section are ignored, and an
+index in `ids` is never read as a position, so a card you do not name never moves.
+
+What the call does depends on `session_id`:
+
+- **With `session_id`** (an id or slug; unknown → 404), only that card moves. It goes immediately
+  above the card after it in `ids`, or immediately below the card before it when it is last — the
+  rest of `ids` is context. If the card is in another category it is moved into this one first, in
+  the same transaction, so one call persists the category change and the placement. This is what a
+  drag sends.
+- **Without it**, the cards named in `ids` are rearranged among the slots they already hold, in the
+  order given.
+
+The response is `{category_id, session_ids}` — the section's full order after the write, not just
+the page you sent.
+
+```bash
+curl -X POST "$BASE_URL/sessions/reorder" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"ids": [41, 17, 92], "category_id": 5, "session_id": 17}'
 ```
 
 ## Work backlog

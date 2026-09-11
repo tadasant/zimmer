@@ -272,7 +272,7 @@ class EnqueuedMessageDrainJobTest < ActiveJob::TestCase
     )
     message.update!(origin: "automated_merge_conflict")
     GithubPullRequestMergeability.stubs(:read).returns(:mergeable)
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     assert_no_enqueued_jobs(only: EnqueuedMessageDrainJob) do
       EnqueuedMessageDrainJob.perform_now(session.id)
@@ -315,7 +315,7 @@ class EnqueuedMessageDrainJobTest < ActiveJob::TestCase
   test "gives up after the attempt limit rather than retrying forever" do
     session, = idle_session_with_queued_message
     EnqueuedMessageProcessorService.any_instance.stubs(:process_next_message).returns(false)
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_message)
 
     EnqueuedMessageDrainJob::MAX_ATTEMPTS.times { EnqueuedMessageDrainJob.perform_now(session.id) }
 
@@ -337,9 +337,10 @@ class EnqueuedMessageDrainJobTest < ActiveJob::TestCase
         .merge(EnqueuedMessageDrainJob::ATTEMPTS_KEY => EnqueuedMessageDrainJob::MAX_ATTEMPTS - 1)
     )
 
-    AlertService.expects(:raise_alert).with do |title, options|
-      title == "Session idle with an undeliverable queued message" &&
-        options[:dedup_key] == "undeliverable_enqueued_messages_#{session.id}"
+    ErrorReporter.expects(:report_message).with do |message, options|
+      message == "Session idle with an undeliverable queued message" &&
+        options[:level] == :error &&
+        options[:context][:session_id] == session.id
     end
 
     EnqueuedMessageDrainJob.perform_now(session.id)
@@ -351,7 +352,7 @@ class EnqueuedMessageDrainJobTest < ActiveJob::TestCase
   test "leaves the undeliverable messages pending rather than retiring them" do
     session, message = idle_session_with_queued_message
     EnqueuedMessageProcessorService.any_instance.stubs(:process_next_message).returns(false)
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_message)
 
     EnqueuedMessageDrainJob::MAX_ATTEMPTS.times { EnqueuedMessageDrainJob.perform_now(session.id) }
 
@@ -363,7 +364,7 @@ class EnqueuedMessageDrainJobTest < ActiveJob::TestCase
   test "a broken alert service cannot take the job down with it" do
     session, = idle_session_with_queued_message
     EnqueuedMessageProcessorService.any_instance.stubs(:process_next_message).returns(false)
-    AlertService.stubs(:raise_alert).raises(StandardError, "slack is on fire")
+    ErrorReporter.stubs(:report_message).raises(StandardError, "glitchtip is on fire")
     session.update!(
       metadata: (session.metadata || {})
         .merge(EnqueuedMessageDrainJob::ATTEMPTS_KEY => EnqueuedMessageDrainJob::MAX_ATTEMPTS - 1)

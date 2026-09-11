@@ -7,7 +7,7 @@ class QueueRecoveryModeExpiryJobTest < ActiveSupport::TestCase
   setup do
     AppSetting.delete_all
     GoodJob::Setting.delete_all
-    AlertService.stubs(:raise_alert).returns(true)
+    ErrorReporter.stubs(:report_message)
   end
 
   teardown do

@@ -23,7 +23,7 @@ class ElicitationEndpointHealthCheckJobTest < ActiveSupport::TestCase
 
   test "records a healthy probe and raises no alert" do
     ElicitationEndpoint.stubs(:probe).returns(probe_result(reachable: true, detail: "HTTP 404"))
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
 
     ElicitationEndpointHealthCheckJob.new.perform
 
@@ -33,22 +33,26 @@ class ElicitationEndpointHealthCheckJobTest < ActiveSupport::TestCase
   test "alerts on the transition into unreachable" do
     ElicitationEndpoint.stubs(:probe).returns(probe_result(reachable: false, detail: "SocketError: no such host"))
 
-    AlertService.expects(:raise_alert).with do |title, opts|
-      title == "MCP approval gate unreachable" &&
-        opts[:dedup_key] == ElicitationEndpointHealthCheckJob::ALERT_DEDUP_KEY &&
-        # The probe's raw failure is carried as the log snippet, not as prose.
-        opts[:error].include?("SocketError: no such host")
+    ErrorReporter.expects(:report_message).with do |message, opts|
+      message == "MCP approval gate unreachable" &&
+        opts[:level] == :error &&
+        opts[:context][:source] == "ElicitationEndpointHealthCheckJob" &&
+        # The probe's raw failure rides as a redacted snippet, not as prose.
+        opts[:context][:probe_detail].include?("SocketError: no such host")
     end
 
-    ElicitationEndpointHealthCheckJob.new.perform
+    entries = capture_log_entries { ElicitationEndpointHealthCheckJob.new.perform }
 
     assert ElicitationEndpoint.unreachable?
+    errors = entries.select { |severity, _message| severity == "ERROR" }
+    assert_equal 1, errors.size, "the transition emits the ERROR record that pages"
+    assert_match(/MCP approval gate unreachable/, errors.first.last)
   end
 
   test "does not re-alert while it stays unreachable" do
     ElicitationEndpoint.stubs(:probe).returns(probe_result(reachable: false))
 
-    AlertService.expects(:raise_alert).once
+    ErrorReporter.expects(:report_message).once
     ElicitationEndpointHealthCheckJob.new.perform
     ElicitationEndpointHealthCheckJob.new.perform
   end
@@ -58,7 +62,7 @@ class ElicitationEndpointHealthCheckJobTest < ActiveSupport::TestCase
     assert ElicitationEndpoint.unreachable?
 
     ElicitationEndpoint.stubs(:probe).returns(probe_result(reachable: true, detail: "HTTP 404"))
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_message)
 
     ElicitationEndpointHealthCheckJob.new.perform
 

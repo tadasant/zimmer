@@ -17,10 +17,6 @@ class EgressHealthCheckJob < ApplicationJob
     total_limit: 1
   )
 
-  # Stable dedup key so a sustained outage pages #eng-alerts at most once per
-  # AlertService::DEDUP_WINDOW rather than on every healthy->degraded flap.
-  ALERT_DEDUP_KEY = "network_egress_degraded"
-
   # @param check [EgressHealthCheck] injectable for tests (drive the real record/
   #   cache path with a fake DNS boundary) — the default runs the real probe.
   def perform(check: EgressHealthCheck.new)
@@ -33,16 +29,18 @@ class EgressHealthCheckJob < ApplicationJob
     if now_degraded && !was_degraded
       # The banner goes up now, but a banner is passive — page a human too so an
       # unattended outage (the exact "silently broke for hours" failure mode this
-      # exists to close) reaches someone even with no Zimmer tab open. Won't
-      # self-resolve without infra action, so warn once on the transition;
-      # steady-state degraded ticks stay quiet (banner + AlertService dedup are
-      # the ongoing signal) to avoid per-minute noise.
-      Rails.logger.warn("[EgressHealthCheckJob] network egress degraded: #{stored["detail"]}")
-      AlertService.raise_alert(
+      # exists to close) reaches someone even with no Zimmer tab open. .error, not
+      # .warn: the ERROR record is what pages. Won't self-resolve without infra
+      # action, so it fires once on the transition; steady-state degraded ticks stay
+      # quiet (the banner is the ongoing signal) to avoid per-minute noise.
+      Rails.logger.error("[EgressHealthCheckJob] network egress degraded: #{stored["detail"]}")
+      ErrorReporter.report_message(
         "Network egress degraded",
-        details: "The worker's primary DNS resolver can't resolve public hostnames — new agent logins and sessions will fail. #{stored["detail"]}",
-        source: "EgressHealthCheckJob",
-        dedup_key: ALERT_DEDUP_KEY
+        level: :error,
+        context: {
+          source: "EgressHealthCheckJob",
+          details: "The worker's primary DNS resolver can't resolve public hostnames — new agent logins and sessions will fail. #{stored["detail"]}"
+        }
       )
     elsif was_degraded && !now_degraded
       Rails.logger.info("[EgressHealthCheckJob] network egress recovered: #{stored["detail"]}")

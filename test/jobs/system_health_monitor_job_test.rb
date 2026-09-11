@@ -66,17 +66,17 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
   end
 
   # Runs the block's backlog through two consecutive critical checks (the
-  # hysteresis) and hands back the dedup key the page went out under, leaving the
+  # hysteresis) and hands back the status code the page went out under, leaving the
   # table and the streak clean for the next scenario.
-  def dedup_key_for
+  def status_code_for
     GoodJob::Job.delete_all
     Rails.cache.delete(SystemHealthMonitorJob::STREAK_CACHE_KEY)
     yield
 
     captured = nil
-    AlertService.stubs(:raise_alert).with { |_title, opts| captured = opts[:dedup_key]; true }
+    ErrorReporter.stubs(:report_message).with { |_message, opts| captured = opts[:context][:status_code]; true }
     2.times { SystemHealthMonitorJob.perform_now }
-    AlertService.unstub(:raise_alert)
+    ErrorReporter.unstub(:report_message)
 
     captured
   end
@@ -96,14 +96,14 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
   end
 
   test "does not alert when the queue is healthy" do
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
     SystemHealthMonitorJob.perform_now
   end
 
   test "does not alert on the first critical check (hysteresis: needs a confirming check)" do
     make_queue_critical
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
     SystemHealthMonitorJob.perform_now
 
     assert_equal 1, Rails.cache.read(SystemHealthMonitorJob::STREAK_CACHE_KEY)
@@ -113,46 +113,52 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     make_queue_critical
 
     # First check builds the streak but stays quiet.
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
     SystemHealthMonitorJob.perform_now
 
-    # Second consecutive critical check pages, with the stable source + dedup key.
-    AlertService.expects(:raise_alert).once.with do |title, opts|
-      title == "Queue backlog critical" &&
-        opts[:source] == "SystemHealthMonitorJob" &&
-        opts[:dedup_key] == "#{SystemHealthMonitorJob::ALERT_DEDUP_KEY}:backlog_lane:default" &&
-        opts[:details].to_s.include?("Ready (waiting on a worker):")
+    # Second consecutive critical check pages: the ERROR record (which is what trips
+    # the Grafana rule) plus the GlitchTip event.
+    ErrorReporter.expects(:report_message).once.with do |message, opts|
+      message == "Queue backlog critical" &&
+        opts[:level] == :error &&
+        opts[:context][:source] == "SystemHealthMonitorJob" &&
+        opts[:context][:status_code] == "backlog_lane:default" &&
+        opts[:context][:details].to_s.include?("Ready (waiting on a worker):")
     end
-    SystemHealthMonitorJob.perform_now
+    entries = capture_log_entries { SystemHealthMonitorJob.perform_now }
+
+    errors = entries.select { |severity, _message| severity == "ERROR" }
+    assert_equal 1, errors.size,
+      "the page is the ERROR record — logging this at .warn would take the alert to zero"
+    assert_match(/SystemHealthMonitorJob/, errors.first.last)
   end
 
   # The two critical shapes are different incidents with different responses, so
-  # they must not share a throttle: on one key, whichever fires first silences the
-  # other for the whole of AlertService::DEDUP_WINDOW. A starved-`inference` page at
-  # 10:00 swallowing a cross-lane stall at 10:15 is the failure this pins.
-  test "a starved lane and a cross-lane stall throttle on separate dedup keys" do
-    lane_key = dedup_key_for do
+  # they must stay distinguishable in the page: a starved-`inference` page at 10:00
+  # read as a cross-lane stall at 10:15 sends the responder the wrong way.
+  test "a starved lane and a cross-lane stall report separate status codes" do
+    lane_key = status_code_for do
       enqueue_lane_jobs("inference", 160, waiting_for: 70.minutes)
     end
 
-    cross_lane_key = dedup_key_for do
+    cross_lane_key = status_code_for do
       enqueue_lane_jobs("default", 60, waiting_for: 30.minutes)
       enqueue_lane_jobs("pollers", 30, waiting_for: 30.minutes)
       enqueue_lane_jobs("triggers", 25, waiting_for: 30.minutes)
     end
 
-    assert_equal "#{SystemHealthMonitorJob::ALERT_DEDUP_KEY}:backlog_lane:inference", lane_key
-    assert_equal "#{SystemHealthMonitorJob::ALERT_DEDUP_KEY}:backlog_cross_lane", cross_lane_key
+    assert_equal "backlog_lane:inference", lane_key
+    assert_equal "backlog_cross_lane", cross_lane_key
     refute_equal lane_key, cross_lane_key
   end
 
-  # Two lanes starving at once are two problems, so they page separately too.
-  test "two starved lanes throttle on separate dedup keys" do
-    inference_key = dedup_key_for do
+  # Two lanes starving at once are two problems, so they say which lane.
+  test "two starved lanes report separate status codes" do
+    inference_key = status_code_for do
       enqueue_lane_jobs("inference", 160, waiting_for: 70.minutes)
     end
 
-    maintenance_key = dedup_key_for do
+    maintenance_key = status_code_for do
       enqueue_lane_jobs("maintenance", 120, waiting_for: 70.minutes)
     end
 
@@ -162,7 +168,7 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
   test "a healthy check between criticals resets the streak (no premature alert)" do
     make_queue_critical
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
     SystemHealthMonitorJob.perform_now # streak -> 1
 
     # Drain the backlog: the next check is healthy and must reset the streak.
@@ -173,7 +179,7 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     # Backlog returns: a single critical check must NOT immediately alert — the
     # streak has to rebuild from scratch.
     make_queue_critical
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
     SystemHealthMonitorJob.perform_now # streak -> 1 again, still quiet
     assert_equal 1, Rails.cache.read(SystemHealthMonitorJob::STREAK_CACHE_KEY)
   end
@@ -189,8 +195,8 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     SystemHealthMonitorJob.perform_now # streak -> 1
 
     details = ""
-    AlertService.expects(:raise_alert).once.with do |_title, opts|
-      details = opts[:details].to_s
+    ErrorReporter.expects(:report_message).once.with do |_message, opts|
+      details = opts[:context][:details].to_s
       true
     end
     SystemHealthMonitorJob.perform_now
@@ -215,8 +221,8 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     SystemHealthMonitorJob.perform_now # streak -> 1
 
     details = ""
-    AlertService.expects(:raise_alert).once.with do |_title, opts|
-      details = opts[:details].to_s
+    ErrorReporter.expects(:report_message).once.with do |_message, opts|
+      details = opts[:context][:details].to_s
       true
     end
     SystemHealthMonitorJob.perform_now
@@ -240,8 +246,8 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     SystemHealthMonitorJob.perform_now # streak -> 1
 
     details = ""
-    AlertService.expects(:raise_alert).once.with do |_title, opts|
-      details = opts[:details].to_s
+    ErrorReporter.expects(:report_message).once.with do |_message, opts|
+      details = opts[:context][:details].to_s
       true
     end
     SystemHealthMonitorJob.perform_now
@@ -265,8 +271,8 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     silent_reads = count_good_job_reads { SystemHealthMonitorJob.perform_now }
 
     details = ""
-    AlertService.expects(:raise_alert).once.with do |_title, opts|
-      details = opts[:details].to_s
+    ErrorReporter.expects(:report_message).once.with do |_message, opts|
+      details = opts[:context][:details].to_s
       true
     end
     alerting_reads = count_good_job_reads { SystemHealthMonitorJob.perform_now }
@@ -286,8 +292,8 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     SystemHealthMonitorJob.perform_now # streak -> 1
 
     details = ""
-    AlertService.expects(:raise_alert).once.with do |_title, opts|
-      details = opts[:details].to_s
+    ErrorReporter.expects(:report_message).once.with do |_message, opts|
+      details = opts[:context][:details].to_s
       true
     end
     SystemHealthMonitorJob.perform_now
@@ -323,33 +329,32 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     GoodJob::Job.insert_all(rows)
   end
 
-  test "a wedged lane pages under its own title and its own dedup key" do
+  test "a wedged lane pages under its own title and its own status code" do
     wedge_inference_lane
 
     SystemHealthMonitorJob.perform_now # streak -> 1
 
     title = nil
-    dedup = nil
+    code = nil
     details = ""
-    AlertService.expects(:raise_alert).once.with do |alert_title, opts|
-      title = alert_title
-      dedup = opts[:dedup_key]
-      details = opts[:details].to_s
+    ErrorReporter.expects(:report_message).once.with do |message, opts|
+      title = message
+      code = opts[:context][:status_code]
+      details = opts[:context][:details].to_s
       true
     end
     SystemHealthMonitorJob.perform_now
 
     assert_equal "Queue lane wedged", title
-    assert_equal "#{SystemHealthMonitorJob::ALERT_DEDUP_KEY}:wedged_lane:inference", dedup
+    assert_equal "wedged_lane:inference", code
     assert_includes details, "the inference lane is holding 2/2 threads"
     assert_includes details, "SessionStatusSummaryJob"
   end
 
   # "Queue backlog critical" over a page whose body says nothing is running at all
   # sends the responder looking for what is deep, when the answer is that nothing is
-  # executing. Its own code also keeps it off the backlog shapes\' dedup keys, so one
-  # cannot silence the other for the rest of AlertService::DEDUP_WINDOW.
-  test "nothing executing pages under its own title and its own dedup key" do
+  # executing. Its own code also keeps it distinguishable from the backlog shapes.
+  test "nothing executing pages under its own title and its own status code" do
     GoodJob::Process.insert_all([ { id: SecureRandom.uuid, state: { "hostname" => "test-worker" },
                                     created_at: Time.current, updated_at: Time.current } ])
     finished = 3.hours.ago
@@ -362,16 +367,16 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     SystemHealthMonitorJob.perform_now # streak -> 1
 
     title = nil
-    dedup = nil
-    AlertService.expects(:raise_alert).once.with do |alert_title, opts|
-      title = alert_title
-      dedup = opts[:dedup_key]
+    code = nil
+    ErrorReporter.expects(:report_message).once.with do |message, opts|
+      title = message
+      code = opts[:context][:status_code]
       true
     end
     SystemHealthMonitorJob.perform_now
 
     assert_equal "Nothing is executing", title
-    assert_equal "#{SystemHealthMonitorJob::ALERT_DEDUP_KEY}:#{HealthMonitorService::EXECUTION_STALL_CODE}", dedup
+    assert_equal HealthMonitorService::EXECUTION_STALL_CODE, code
   end
 
   # The two lines that make the next firing self-diagnosing: what the worker holds
@@ -383,8 +388,8 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     SystemHealthMonitorJob.perform_now # streak -> 1
 
     details = ""
-    AlertService.expects(:raise_alert).once.with do |_title, opts|
-      details = opts[:details].to_s
+    ErrorReporter.expects(:report_message).once.with do |_message, opts|
+      details = opts[:context][:details].to_s
       true
     end
     SystemHealthMonitorJob.perform_now
@@ -402,8 +407,8 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     SystemHealthMonitorJob.perform_now # streak -> 1
 
     title = nil
-    AlertService.expects(:raise_alert).once.with do |alert_title, _opts|
-      title = alert_title
+    ErrorReporter.expects(:report_message).once.with do |message, _opts|
+      title = message
       true
     end
     SystemHealthMonitorJob.perform_now
@@ -416,7 +421,7 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
     # a busy queue, not a stalled one.
     enqueue_ready_jobs(HealthMonitorService::QUEUE_DEPTH_CRITICAL_THRESHOLD + 50, waiting_for: 5.seconds)
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
     SystemHealthMonitorJob.perform_now
     SystemHealthMonitorJob.perform_now
 
@@ -432,7 +437,7 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
 
     assert_equal 106, GoodJob::Job.where(finished_at: nil).count
 
-    AlertService.expects(:raise_alert).never
+    ErrorReporter.expects(:report_message).never
     SystemHealthMonitorJob.perform_now
     SystemHealthMonitorJob.perform_now
   end
@@ -443,7 +448,7 @@ class SystemHealthMonitorJobTest < ActiveJob::TestCase
 
     SystemHealthMonitorJob.perform_now # streak -> 1
 
-    AlertService.expects(:raise_alert).once
+    ErrorReporter.expects(:report_message).once
     SystemHealthMonitorJob.perform_now
   end
 

@@ -220,7 +220,7 @@ class Trigger < ApplicationRecord
   # Only Trigger heals, and the heal no longer writes to these columns: it
   # filters at fire time and records what it could not resolve in
   # `unresolved_catalog_references`. See CatalogArtifactReferences.
-  catalog_reference :mcp_servers,     config: ServersConfig, noun: "server", alert_noun: "MCP server",     dedup_noun: "mcp"
+  catalog_reference :mcp_servers,     config: ServersConfig, noun: "server", alert_noun: "MCP server"
   catalog_reference :catalog_skills,  config: SkillsConfig,  noun: "skill",  alert_noun: "catalog skill"
   catalog_reference :catalog_hooks,   config: HooksConfig,   noun: "hook",   alert_noun: "catalog hook"
   catalog_reference :catalog_plugins, config: PluginsConfig, noun: "plugin", alert_noun: "catalog plugin"
@@ -1778,23 +1778,31 @@ class Trigger < ApplicationRecord
     stalled_since = session.enqueued_messages.pending.minimum(:created_at)
     return if stalled_since.blank? || stalled_since > MISSED_FIRE_MIN_QUEUE_AGE.ago
 
-    AlertService.raise_alert(
+    details = "Trigger '#{name}' (ID: #{id}) has had #{count} consecutive fires coalesced away since " \
+              "#{first_at.iso8601}. It reuses session #{session.id}, which has been holding an " \
+              "undelivered prompt since #{stalled_since.iso8601}.\n\n" \
+              "The scheduled work has not run for #{count} occurrence(s). Nothing is queued up behind " \
+              "this — the duplicate copies are deliberately not stacked — so the schedule resumes as " \
+              "soon as session #{session.id} takes a turn and drains its queue.\n\n" \
+              "Check that something WILL make it take one. A spot session held for quota headroom " \
+              "re-checks on its own; a session sitting in `waiting` for any other reason may need to " \
+              "be started by hand, because nothing sweeps a waiting session's queue.\n\n" \
+              "If that session is a spot session held for quota headroom, this is budget pacing rather " \
+              "than a failure: either let it drain, or make it priority to start it now. If it is stuck " \
+              "for any other reason, that is the thing to fix.\n\n" \
+              "Trigger: #{trigger_url(id)}"
+
+    Rails.logger.error("[Trigger#record_missed_fire!] #{details}")
+    ErrorReporter.report_message(
       "Recurring trigger is not reaching its session",
-      details: "Trigger '#{name}' (ID: #{id}) has had #{count} consecutive fires coalesced away since " \
-               "#{first_at.iso8601}. It reuses session #{session.id}, which has been holding an " \
-               "undelivered prompt since #{stalled_since.iso8601}.\n\n" \
-               "The scheduled work has not run for #{count} occurrence(s). Nothing is queued up behind " \
-               "this — the duplicate copies are deliberately not stacked — so the schedule resumes as " \
-               "soon as session #{session.id} takes a turn and drains its queue.\n\n" \
-               "Check that something WILL make it take one. A spot session held for quota headroom " \
-               "re-checks on its own; a session sitting in `waiting` for any other reason may need to " \
-               "be started by hand, because nothing sweeps a waiting session's queue.\n\n" \
-               "If that session is a spot session held for quota headroom, this is budget pacing rather " \
-               "than a failure: either let it drain, or make it priority to start it now. If it is stuck " \
-               "for any other reason, that is the thing to fix.\n\n" \
-               "Trigger: #{trigger_url(id)}",
-      source: "Trigger#record_missed_fire!",
-      dedup_key: "trigger_missed_fires_#{id}"
+      level: :error,
+      context: {
+        source: "Trigger#record_missed_fire!",
+        details: details,
+        trigger_id: id,
+        session_id: session.id,
+        missed_fire_count: count
+      }
     )
   end
 
@@ -2257,10 +2265,10 @@ class Trigger < ApplicationRecord
     if successor
       update_column(:agent_root_name, successor.name)
 
-      # Log-only, no #eng-alerts page: a found successor is matched on an exact
+      # Log-only, no #alerts page: a found successor is matched on an exact
       # git_root + subdirectory match (see find_agent_root_successor), so it is
       # the SAME code location under a new catalog name — repointing is
-      # impact-free and needs no human action. Paging #eng-alerts on every
+      # impact-free and needs no human action. Paging #alerts on every
       # successful heal is pure noise, and it recurs indefinitely for
       # self-waking sessions whose one-time wake triggers are recreated each
       # fire carrying a legacy/renamed root name. The .warn line is shipped to

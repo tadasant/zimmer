@@ -7,6 +7,7 @@ class SessionsController < ApplicationController
   include PendingMessageDelivery
   include SessionTranscriptLookup
   include SpeculativeRequest
+  include TurboFlash
 
   # Pattern for validating temporary session IDs used for pre-session image uploads
   TEMP_SESSION_ID_PATTERN = /\Atemp_[a-f0-9\-]+\z/
@@ -279,8 +280,9 @@ class SessionsController < ApplicationController
       return
     end
 
-    # Shared ordering: favorites first, then newest. Used by both the flat search
-    # results and every per-category window.
+    # The flat search results list: favorites first, then newest. A search replaces
+    # the category grid with one list nobody can drag, so the dragged order below has
+    # no meaning here.
     ordered = sessions.order(favorited: :desc, created_at: :desc)
 
     # When a search is active, render a single flat results list and skip the
@@ -291,6 +293,12 @@ class SessionsController < ApplicationController
       @any_sessions = @search_results.any?
       return
     end
+
+    # The category grid's own ordering: where the operator dragged each card. A card
+    # that arrived without being placed — created, or re-categorized — went on top of
+    # its section, and cards nothing has ever placed tie at the column default and fall
+    # back to newest-first. See SessionCardOrder.
+    carded = sessions.card_ordered
 
     # Per-category pagination. Each category section — including the "Uncategorized"
     # bucket — paginates its own sessions independently so paging one section never
@@ -313,11 +321,17 @@ class SessionsController < ApplicationController
     # current visibility scope is pinned (not just those on one global page — per-category
     # pagination has no single global page), and they are excluded from the per-category
     # windows below so each starred session appears exactly once, in the pinned group.
+    #
+    # The Starred group is NOT drag-orderable: it renders outside the drag-and-drop
+    # controller and its cards carry no handle, because a card's category placement is
+    # invisible while it is starred. So it keeps the newest-first ordering rather than
+    # the dragged one — a card dragged, then starred, is back where it was dragged to
+    # the moment it is unstarred, because starring does not disturb its sort_order.
     @pinned_sessions = ordered.where(favorited: true)
 
     # Everything else feeds the paginated category sections. Favorited sessions are
     # filtered out here because they render in the pinned group above.
-    unpinned = ordered.where(favorited: false)
+    unpinned = carded.where(favorited: false)
 
     # Uncategorized: every non-favorited session with a NULL category_id. Keeps its own
     # Kaminari window driven by the "uncategorized" sentinel key.
@@ -909,38 +923,8 @@ class SessionsController < ApplicationController
   end
   private :archive_remove_streams
 
-  # A turbo_stream that replaces the layout's single #flash container with one
-  # message. Actions that answer a Turbo request with a stream instead of a
-  # redirect use this to deliver what the redirect's flash used to carry; the
-  # message is never written to the real `flash`, so it does not also reappear
-  # on the next full page load.
-  def flash_stream(notice: nil, alert: nil)
-    messages = {}
-    messages["notice"] = notice if notice.present?
-    messages["alert"] = alert if alert.present?
-
-    turbo_stream.replace("flash", partial: "shared/flash", locals: { messages: messages })
-  end
-  private :flash_stream
-
-  # The dashboard's mutating actions used to redirect purely to carry a flash:
-  # every card they touch already re-renders itself over the
-  # `sessions_index_individual` and `session_<id>_status` broadcast channels, so
-  # the round trip through a full page render was the only reason the UI blinked.
-  # Turbo clients get `streams` (usually just the flash) applied in place;
-  # non-Turbo clients — and the controller tests that assert on them — still get
-  # the original redirect.
-  def respond_with_flash(notice: nil, alert: nil, location:, streams: [])
-    respond_to do |format|
-      format.turbo_stream do
-        render turbo_stream: streams + [ flash_stream(notice: notice, alert: alert) ]
-      end
-      format.html do
-        redirect_to location, notice: notice, alert: alert
-      end
-    end
-  end
-  private :respond_with_flash
+  # `flash_stream` and `respond_with_flash` — used by the actions below and by
+  # UncleLinksController — live in TurboFlash, included above.
 
   def unarchive
     @session = find_session
@@ -2122,6 +2106,40 @@ class SessionsController < ApplicationController
         format.json { render json: { success: true, session_id: @session.id, category_id: nil } }
       end
     end
+  end
+
+  # POST /sessions/reorder — persist the top-to-bottom order of one dashboard
+  # section's cards after a drag.
+  #
+  # The body is `{ ids: [...], category_id: "<id>"|"", session_id: "<id>" }`: the
+  # destination section's live DOM order, the section it is (empty or the
+  # "uncategorized" sentinel for the Uncategorized bucket), and the card that moved
+  # — so when the drag crossed sections, one request persists both the category
+  # change and the new position. `ids` is one PAGE of the section as the browser
+  # holds it, so its indices are never read as positions: the moved card is placed
+  # next to its neighbour in it and nothing else moves; see SessionCardOrder.
+  def reorder
+    category_id = params[:category_id].to_s.strip
+
+    if category_id.present? && category_id != Category::UNCATEGORIZED_SENTINEL
+      category = Category.find_by(id: category_id.to_i)
+      unless category
+        render json: { error: "Category ##{category_id} not found" }, status: :not_found
+        return
+      end
+    end
+
+    # By id or slug, and a miss is a 404 like every other session lookup, rather than
+    # a 2xx that quietly skipped the move.
+    moved = Session.locate!(params[:session_id]) if params[:session_id].present?
+
+    Session.reorder_cards!(
+      params[:ids],
+      category_id: category&.id,
+      moved_session_id: moved&.id
+    )
+
+    head :no_content
   end
 
   def toggle_push_notifications

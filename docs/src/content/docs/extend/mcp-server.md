@@ -332,6 +332,20 @@ tell an agent archiving it from a human clicking Trash. Set it whenever an agent
 including archiving itself; an archive that declares nothing is logged as one. See
 [the archive line](/sessions/lifecycle/#the-archive-line-names-who-did-it).
 
+**`remove_uncle` is the way back out of an edge recorded in error.** Because an uncle edge is written
+as a *side effect* of a follow-up from an unverified `acting_session_id`, one stale or mistyped id
+attaches the wrong session as a senior and permanently widens what context both ends carry. The action
+takes `session_id` (the junior) and `uncle_session_id` (the senior), removes exactly that one edge, and
+records the removal on both timelines — `acting_session_id` names you as the remover, again as
+provenance only. Direction matters: naming the pair the wrong way round is refused with the direction
+that *does* exist, rather than deleting the opposite claim, since the inversion rule makes both
+directions ordinary. A non-existent edge is an error, not a silent success. It is **not** on the
+`self_session` surface — an uncle edge is a claim another session made about this one, and a session
+detaching its own seniors would be shedding context it was given. There is no companion that *writes*
+an edge: that belongs to the queue/interrupt path, which is where the acyclicity invariant lives. See
+[Removing an edge recorded in
+error](/sessions/hierarchy-and-human-messages/#removing-an-edge-recorded-in-error).
+
 `action_health`'s three destructive actions (`cleanup_processes`, `retry_sessions`, `archive_old`)
 share a 30-second cooldown with `Api::V1::HealthController` and the `/health` web dashboard — the
 same `HealthActionCooldown` object, bucketed by a digest of the connection's API key. Switching
@@ -349,6 +363,18 @@ because a pending-job count means something completely different when the queues
 frozen. An agent session only gets these if its connection was given the `health` tool group; the
 curated `self_session` set does not include it. See
 [Queue recovery mode](/operate/background-jobs/#queue-recovery-mode).
+
+And the cleanup lever that goes with it: `preview_queued_jobs` counts the queued jobs a maintenance
+call would act on, and `discard_queued_jobs` / `reschedule_queued_jobs` act on them, scoped by
+`job_class` and/or `queue_name`. Before #335 this was the one queue-incident lever an agent could not
+drive — discarding the enqueued rows themselves meant GoodJob's HTML dashboard at `/jobs`, which an
+agent session has no browser for. A **discard is not recoverable**; reschedule is its reversible
+sibling. Both require an `expected_count` taken from the preview, and a mismatch refuses with the
+real count and the per-class breakdown rather than acting. The `agents` queue and the two job classes
+that live on it are refused outright: an unfinished `AgentSessionJob` row is a live session, not a
+backlog entry. Neither is throttled, and the receipt reports what it did by class so the action is
+auditable in the transcript. See
+[Queued job maintenance](/operate/background-jobs/#queued-job-maintenance).
 
 `get_system_health` also names the backlogged queues and job classes whenever ready work is waiting,
 plus each queue's own head-of-line age and the single longest-waiting job's lane and class, carrying

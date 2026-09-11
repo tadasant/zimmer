@@ -7,6 +7,12 @@
 # on the dashboard, but it is fed to the auto-categorization inference so new
 # sessions can be matched against a category's intent, not just its name.
 class Category < ApplicationRecord
+  # Prepended so it runs before the association's own nullify, while the sessions are
+  # still findable by category_id. A card's sort_order is its rank inside THIS
+  # category; carried into Uncategorized it would interleave at an arbitrary depth, so
+  # the orphans go on top of Uncategorized, in the order they had here, the way any
+  # other arriving card does. See SessionCardOrder.
+  before_destroy -> { Session.place_orphans_on_top_of_uncategorized!(id) }, prepend: true
   has_many :sessions, dependent: :nullify
 
   validates :name, presence: true, length: { maximum: 100 }, uniqueness: { case_sensitive: false }

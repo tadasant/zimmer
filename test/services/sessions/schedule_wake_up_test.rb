@@ -191,7 +191,7 @@ class Sessions::ScheduleWakeUpTest < ActiveSupport::TestCase
       "precondition: the wake is armed with a name that is not a catalog root"
     assert session.reload.waiting?
 
-    AlertService.stubs(:raise_alert)
+    ErrorReporter.stubs(:report_exception)
     AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-600"))
 
     travel_to 2.hours.from_now do

@@ -668,6 +668,30 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_title_not_clipped(find("#{list} a", text: LONG_TOKEN_TITLE, match: :first), "a linked node title")
     assert_title_not_clipped(find("#{list} span.font-semibold", text: LONG_TOKEN_TITLE), "the current node title")
 
+    # The uncle pill's detach control (#299) — the one control on this panel, and
+    # the SEVENTH thing on the widest row here. A button the reader cannot reach is
+    # exactly the failure this file exists for, and this row is where it would
+    # happen: the pill is the last thing rendered on the deepest node.
+    detach = "#{list} li[data-current] [data-uncle-edge='#{sibling.id}-#{current.id}'] button"
+    assert_selector detach
+    geometry = page.evaluate_script(<<~JS)
+      (function () {
+        const el = document.querySelector(#{detach.to_json});
+        const box = el.getBoundingClientRect();
+        return [Math.round(box.width), Math.round(box.right), document.documentElement.clientWidth];
+      })()
+    JS
+    width, right, limit = geometry
+    assert_operator width, :>=, 16, "the detach control is #{width}px wide — too small to tap"
+    assert_operator right, :<=, limit + 1,
+      "the detach control ends at #{right}px, past the #{limit}px viewport and out of reach"
+
+    # Its own shot, scrolled to the pill: the panel-wide capture above is cut off
+    # by the follow-up bar right about where the uncle row starts, so it proves the
+    # tree fits and shows nothing about the control.
+    scroll_into_center(find("#{list} li[data-current]"))
+    page.save_screenshot("tmp/screenshots/proof-uncle-detach-375.png")
+
     # And the laptop is unchanged: full 20px-per-level indent, nothing past the edge.
     page.driver.browser.manage.window.resize_to(1400, 900)
     visit session_path(current)
@@ -1058,6 +1082,31 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     page.execute_script("document.evaluate(\"//h3[text()='Process Health']\", document, null, 9, null).singleNodeValue.scrollIntoView()")
     page.save_screenshot("tmp/screenshots/health-outage-panels-375.png")
+  end
+
+  # The queued job maintenance panel (#335) is a row per (job class, queue) pair,
+  # and each row is the shape the skill warns about: an unbreakable 28-character
+  # class name on the left, and a three-control cluster on the right — a number
+  # field plus two buttons. On a laptop they sit on one line; below `sm:` the row
+  # has to stack, or the Discard button is the one that ends up off the edge.
+  test "the queued job maintenance panel does not overflow horizontally on a phone" do
+    now = Time.current
+    GoodJob::Job.insert_all(
+      %w[GitHubPullRequestPollerJob OutcomeAnalysisBatchPumpJob AbandonedStatusSummaryForkSweepJob].map do |job_class|
+        { queue_name: "pollers", job_class: job_class, created_at: now, updated_at: now, scheduled_at: now }
+      end
+    )
+
+    visit health_dashboard_path
+    assert_text "Queued Job Maintenance"
+    assert_text "GitHubPullRequestPollerJob"
+
+    assert_no_horizontal_overflow("health dashboard (queued job maintenance)")
+
+    # Captured as PR evidence — scrolled to the panel, since a viewport screenshot
+    # of a page this long otherwise shows only the header.
+    page.execute_script("document.evaluate(\"//h3[text()='Queued Job Maintenance']\", document, null, 9, null).singleNodeValue.scrollIntoView()")
+    page.save_screenshot("tmp/screenshots/health-queued-job-maintenance-375.png")
   end
 
   # The auth card grows a second line when the pool is recovering — every account
