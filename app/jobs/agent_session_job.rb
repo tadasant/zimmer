@@ -5859,8 +5859,7 @@ class AgentSessionJob < ApplicationJob
         end
         break unless process_running?(process_pid)
 
-        # One executor run per iteration, the way PeriodicCatalogRefresher wraps
-        # each tick. This thread is app-spawned, so nothing else checks its
+        # One executor run per iteration. This thread is app-spawned, so nothing else checks its
         # ActiveRecord connection back in or lets it participate in the load
         # interlock — and wrapping per iteration rather than around the whole loop
         # keeps both scoped to the work instead of to the length of the turn.

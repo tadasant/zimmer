@@ -936,8 +936,7 @@ and marked verified but with no type map — which the next thread to take that 
 on, casting its result. In production the victim was a GoodJob scheduler thread in the job-claim query
 ([#706](https://github.com/tadasant/zimmer/issues/706)). The mechanism is written out in full, against
 line numbers in the vendored gem, in the comment on `AgentSessionJob::LogStream`; the underlying Active
-Record race is [rails/rails#51780](https://github.com/rails/rails/issues/51780), still open. The same
-rule governs `PeriodicCatalogRefresher#stop!` in the web container.
+Record race is [rails/rails#51780](https://github.com/rails/rails/issues/51780), still open.
 
 Two consequences worth knowing. A thread that overruns its stop timeout is **abandoned rather than
 killed** — logged at `warn`, and left to finish on its own. And a stopped thread does not drain its

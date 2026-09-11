@@ -15,41 +15,28 @@ class CatalogsController < ApplicationController
   WORKER_REFRESH_TIMEOUT_SECONDS = Integer(ENV.fetch("CATALOG_REFRESH_WAIT_SECONDS", "90"))
 
   def refresh
-    # The AIR catalog cache (~/.air/cache) is per-process on-disk state. In
-    # production the web (Puma) and worker (GoodJob) run in separate containers
-    # with separate filesystems, so refreshing only this web process leaves the
-    # worker — where AirPrepareService runs `air prepare` during session
-    # creation — on a stale cache, which is why clicking the button used to feel
-    # ineffective. Refresh BOTH surfaces so one click leaves catalogs in sync for
-    # the next session:
-    #   1. this web process, which drives the catalog pickers rendered on the
-    #      New Session page, and
-    #   2. the worker process, which drives session preparation, via the same
-    #      CatalogRefreshJob the 15-minute cron runs.
-    web_error = refresh_web_process
+    # The refresh runs once, in the worker, as the same CatalogRefreshJob the
+    # 15-minute cron runs: it fetches the worker's ~/.air/cache — the one
+    # `air prepare` reads during session creation — and stores the result as the
+    # newest CatalogSnapshot. This web process does not fetch or resolve; it
+    # serves that snapshot, so once the job finishes it picks the snapshot up
+    # immediately rather than on its next TTL tick. Synced whatever the outcome:
+    # a failed refresh is recorded on the snapshot, and that is what puts the
+    # failure banner on the page this redirects to.
     worker_result = CatalogRefreshJob.perform_and_wait(timeout: WORKER_REFRESH_TIMEOUT_SECONDS)
+    AirCatalogService.sync_from_snapshot!
 
-    redirect_with_refresh_result(web_error, worker_result)
+    redirect_with_refresh_result(worker_result)
   end
 
   private
 
-  # Refresh this (web) process's cache and in-memory tree. Returns nil on success
-  # or the error message on failure.
-  def refresh_web_process
-    AirCatalogService.refresh!
-    nil
-  rescue AirCatalogService::CatalogError => e
-    e.message
-  end
-
-  def redirect_with_refresh_result(web_error, worker_result)
+  def redirect_with_refresh_result(worker_result)
     # Scrubbed for the same reason the banner's message is (#319): this flash is
     # `air update`'s own text, produced by a process holding AIR_GITHUB_TOKEN,
     # and redirect_back lands it on /sessions/new — which has no Rails-layer
-    # authentication (#312). The worker-side string gets the same treatment: it
-    # is the same subprocess run in the other container.
-    error = AirCatalogService.redact_secrets(web_error || normalize_worker_error(worker_result.error_message))
+    # authentication (#312).
+    error = AirCatalogService.redact_secrets(normalize_worker_error(worker_result.error_message))
 
     if error
       redirect_back(fallback_location: new_session_path,
@@ -66,10 +53,9 @@ class CatalogsController < ApplicationController
     end
   end
 
-  # GoodJob records a failed job's error as "ExceptionClass: message", whereas the
-  # web-process path surfaces the bare exception message. Strip the leading class
-  # prefix so both paths produce an identical "Catalog refresh failed: <message>"
-  # flash for the same underlying failure.
+  # GoodJob records a failed job's error as "ExceptionClass: message". Strip the
+  # leading class prefix so the flash reads "Catalog refresh failed: <message>",
+  # the same wording the failure banner uses.
   def normalize_worker_error(message)
     return message if message.nil?
 
