@@ -104,6 +104,15 @@
       "X-API-Key": "${ZIMMER_PROD_API_KEY}"
     }
   },
+  "zimmer-outcome-analyses": {
+    "title": "Zimmer Outcome Analyses",
+    "description": "Zimmer's native MCP server, scoped to starting and stopping Outcomes analyses: analyze one archived session, queue an Analyze All batch over a filter set, or stop a batch — plus the read-only session tools, including get_outcome_analysis to read the ledger, stats and batch progress. Every analysis is a full spot session, and outcome_analyses is an opt-in tool group, so this is the only catalog entry that can start one — the unscoped zimmer entry and zimmer-sessions can read analyses but not start them. Batches started here are capped at 3 concurrent analyses, one running batch at a time. Attach it deliberately; no root carries it by default.",
+    "type": "streamable-http",
+    "url": "https://zimmer.example.com/mcp?tool_groups=sessions_readonly,outcome_analyses",
+    "headers": {
+      "X-API-Key": "${ZIMMER_PROD_API_KEY}"
+    }
+  },
   "figma": {
     "title": "Figma",
     "description": "Figma design MCP server (hosted, streamable-http). OAuth via browser flow.",

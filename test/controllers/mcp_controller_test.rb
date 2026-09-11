@@ -169,6 +169,83 @@ class McpControllerTest < ActionDispatch::IntegrationTest
     assert_equal writer.id, WorkBacklogItem.find_by!(key: "zimmer#5").writing_session_id
   end
 
+  # The Outcomes pair, end to end through the endpoint: which connections list
+  # each tool, and that a call through JSON-RPC reaches the same services the
+  # web UI's buttons do.
+  test "get_outcome_analysis is on the session surfaces, and action_outcome_analysis only on the opt-in group" do
+    lists = {
+      "" => rpc("tools/list"),
+      "sessions" => rpc("tools/list", path: "/mcp?tool_groups=sessions"),
+      "sessions_readonly" => rpc("tools/list", path: "/mcp?tool_groups=sessions_readonly"),
+      "self_session" => rpc("tools/list", path: "/mcp?tool_groups=self_session"),
+      "sessions_readonly,outcome_analyses" => rpc("tools/list", path: "/mcp?tool_groups=sessions_readonly,outcome_analyses")
+    }.transform_values { |body| body["result"]["tools"].map { |t| t["name"] } }
+
+    %w[sessions sessions_readonly].push("").each { |groups| assert_includes lists[groups], "get_outcome_analysis" }
+    [ "", "sessions", "sessions_readonly", "self_session" ].each do |groups|
+      refute_includes lists[groups], "action_outcome_analysis", "#{groups.presence || 'unscoped'} must not start analyses"
+    end
+    refute_includes lists["self_session"], "get_outcome_analysis"
+    assert_includes lists["sessions_readonly,outcome_analyses"], "action_outcome_analysis"
+    assert_includes lists["sessions_readonly,outcome_analyses"], "get_outcome_analysis"
+
+    call = rpc("tools/call", { "name" => "action_outcome_analysis", "arguments" => { "action" => "cancel_batch", "batch_id" => 1 } },
+               path: "/mcp?tool_groups=sessions")
+    assert_equal(-32602, call["error"]["code"], "a sessions-scoped connection cannot call the write")
+  end
+
+  test "get_outcome_analysis reads a saved analysis tree through the endpoint" do
+    session = sessions(:archived)
+    OutcomeAnalyses::Save.call(session: session, root: {
+      "id" => "S0", "trigger" => { "kind" => "New", "source" => "user" }, "goal" => { "text" => "Ship", "kind" => "Action" },
+      "outcome" => { "kind" => "Failure", "explanation" => "It did not ship." }, "meta" => {}, "children" => []
+    })
+
+    body = rpc("tools/call", { "name" => "get_outcome_analysis", "arguments" => { "session_id" => session.id } },
+               path: "/mcp?tool_groups=sessions_readonly")
+
+    refute body["result"]["isError"], body.inspect
+    result = JSON.parse(body["result"]["content"].first["text"])
+    assert_equal "Failure", result["analysis"]["root_outcome"]
+    assert_equal "S0", result["analysis"]["root"]["id"]
+    assert_equal [ "S0" ], result["failed_segments"].map { |f| f["id"] }
+
+    stats = rpc("tools/call", { "name" => "get_outcome_analysis", "arguments" => { "view" => "stats", "group_by" => "agent_root" } },
+                path: "/mcp?tool_groups=sessions_readonly")
+    refute stats["result"]["isError"], stats.inspect
+    assert_operator JSON.parse(stats["result"]["content"].first["text"])["totals"]["failures"], :>=, 1
+  end
+
+  test "action_outcome_analysis starts a batch as the calling session and holds it to the agent cap" do
+    caller_session = sessions(:running)
+    Array.new(2) do |i|
+      Session.create!(title: "Target #{i}", prompt: "x", git_root: "https://github.com/tadasant/zimmer.git",
+                      status: :archived, archived_at: 1.day.ago, metadata: { "agent_root_key" => "zimmer" })
+    end
+    path = "/mcp?tool_groups=sessions_readonly,outcome_analyses&session_id=#{caller_session.id}"
+    args = { "action" => "analyze_all", "agent_root" => "zimmer", "expected_count" => 2 }
+
+    over = rpc("tools/call", { "name" => "action_outcome_analysis",
+                               "arguments" => args.merge("concurrency" => OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY + 1) }, path: path)
+    assert over["result"]["isError"], over.inspect
+    assert_match(/at most #{OutcomeAnalysisBatch::AGENT_MAX_CONCURRENCY} analyses at a time/, over["result"]["content"].first["text"])
+    assert_equal 0, OutcomeAnalysisBatch.count
+
+    body = rpc("tools/call", { "name" => "action_outcome_analysis", "arguments" => args.merge("concurrency" => 2) }, path: path)
+    refute body["result"]["isError"], body.inspect
+    batch = OutcomeAnalysisBatch.sole
+    assert_equal [ "mcp", caller_session.id, 2, 2 ], [ batch.started_via, batch.started_by_session_id, batch.concurrency, batch.total_count ]
+
+    again = rpc("tools/call", { "name" => "action_outcome_analysis", "arguments" => args }, path: path)
+    assert again["result"]["isError"], "a second MCP batch while the first runs is refused"
+    assert_match(/Batch ##{batch.id}, started over MCP, is still running/, again["result"]["content"].first["text"])
+
+    stop = rpc("tools/call", { "name" => "action_outcome_analysis", "arguments" => { "action" => "cancel_batch", "batch_id" => batch.id } },
+               path: path)
+    refute stop["result"]["isError"], stop.inspect
+    assert_equal OutcomeAnalysisBatch::CANCELED, batch.reload.status
+  end
+
   test "tools/list is scoped by tool_groups" do
     tools = rpc("tools/list", path: "/mcp?tool_groups=self_session")["result"]["tools"].map { |t| t["name"] }
 

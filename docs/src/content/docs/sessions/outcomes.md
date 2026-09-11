@@ -1,6 +1,6 @@
 ---
 title: Outcome analysis
-description: The Outcomes view — decomposing an archived transcript into Transcript Segments, classifying each Success or Failure, and reading the flamegraph. Plus the save API, the MCP tool, and the Analyze All queue.
+description: The Outcomes view — decomposing an archived transcript into Transcript Segments, classifying each Success or Failure, and reading the flamegraph. Plus the Analyze All queue, the save API, and the MCP tools that read, start and stop analyses.
 sidebar:
   order: 5
 ---
@@ -18,8 +18,9 @@ reproduction that never reproduced. Those failures are the signal, and a view th
 
 Analysis is a full agent session reading a full transcript. It is expensive, so **nothing in Zimmer
 triggers it implicitly** — no callback, no poller, no state transition. An analysis exists because
-someone clicked Analyze, started an Analyze All batch, or made an explicit API/MCP call. Opening the
-Outcomes page analyzes nothing.
+someone clicked Analyze, started an Analyze All batch, or called `action_outcome_analysis` on an MCP
+connection that was given that tool on purpose (see [Over MCP](#over-mcp)). Opening the Outcomes
+page, or reading an analysis over MCP, analyzes nothing.
 
 Only **archived** sessions are analyzable. A transcript that is still being written is not finished
 enough to have an outcome, and both write paths reject one.
@@ -110,6 +111,8 @@ in the same wave without the reconcile having proved the previous analysis lande
 The number you type is honored as typed. `100` really does try to keep a hundred analysis sessions in
 flight; nothing clamps it. What makes that survivable is that the batch is visible and stoppable —
 the ledger renders its live counts, and **Stop** marks it canceled so the pump stops spawning.
+That is the web form's contract. A batch an agent starts over MCP is held to a ceiling instead; see
+[Over MCP](#over-mcp).
 Cancel stops the *queue*, not the analyses already running: killing those would throw away work
 already paid for, and what a runaway batch needs stopped is the spawning.
 
@@ -128,6 +131,11 @@ result back. It is:
   [Spot and priority](/sessions/spot-and-priority/);
 - marked in `metadata` with the session it is analyzing, so a 400-session batch is identifiable and
   is kept out of the Outcomes ledger itself.
+
+Its genesis says where the request came from. A click on the Outcomes page is `web_ui`. An MCP
+request takes the genesis of the session that made it, the way a child session inherits its
+parent's line of work, or `api` when no session is calling. An MCP-requested analysis also carries
+`outcome_analysis_requested_via: "mcp"` and the requesting session's id in its `metadata`.
 
 All three artifact names are overridable per deployment with `OUTCOME_ANALYSIS_SKILL_ID`,
 `OUTCOME_ANALYSIS_MCP_SERVER`, and `OUTCOME_ANALYSIS_AGENT_ROOT`.
@@ -161,6 +169,63 @@ Both validate the whole tree before storing anything — id scheme, enum values,
 and length, nesting, and structural ceilings — and reject a malformed one with every problem named
 rather than storing it half-understood. A rejected save writes nothing, so retrying after a fix is
 safe.
+
+## Over MCP
+
+Two tools cover what the Outcomes pages do. They are scoped differently on purpose.
+
+**`get_outcome_analysis`** reads. It is in the `sessions` tool group and is read-only, so the
+unscoped `zimmer` server, `zimmer-sessions`, and any `sessions_readonly` connection all carry it.
+Its `view` argument picks one of four views:
+
+| View | Mirrors | Returns |
+| --- | --- | --- |
+| `analysis` (the default when `session_id` is given) | `/outcomes/:session_id` | the current analysis with its Segment tree, a flat list of every Failure Segment, and the superseded readings without their trees |
+| `ledger` (the default otherwise) | `/outcomes` | archived sessions matching the filters, 50 per page, each with its analysis's scalar columns, plus `total` / `analyzed` / `unanalyzed` counts |
+| `stats` | `/outcomes/stats` | totals, one row per `group_by` value, the failed-segment distribution, the ten most failure-heavy transcripts |
+| `batches` | the batch cards on `/outcomes` | recent batches with who started them and their live counts, or one batch with its failed items' errors, plus the MCP limits currently in force |
+
+The filters are the ledger's own, built into the same `LedgerFilters` struct. The one difference is
+that a value naming nothing, such as an unparseable date or an unknown runtime, is refused rather
+than dropped. Dropping `from` silently widens the set, and the web form's forgiveness is wrong for a
+caller that cannot see the page.
+
+**`action_outcome_analysis`** writes. Its actions `analyze`, `analyze_all` and `cancel_batch` do
+what the Analyze, Analyze All and Stop buttons do, and they call the same services. A batch started
+over MCP gets a batch row, a card on `/outcomes`, and a Stop button, like any other.
+
+It lives in the **opt-in `outcome_analyses` tool group**, which no unscoped connection carries, and
+`zimmer-outcome-analyses` (`?tool_groups=sessions_readonly,outcome_analyses`) is the one catalog
+entry that names it. No root attaches that entry by default, so a session can start an analysis
+only when someone gave it that server on purpose. That is how an agent-started analysis stays
+explicit. The group is not in `sessions` for a specific reason: analysis sessions are spawned with
+`zimmer-sessions`, and a write there would let an analysis start analyses. Neither tool is on the
+`self_session` surface injected into every session.
+
+Because nobody is watching the ledger when an agent calls it, the write has limits the web form does
+not:
+
+- **Concurrency is capped at 3** per batch, the web form's own default. Asking for more is refused,
+  not clamped, and the error says a human can start a wider batch from the page. The default over
+  MCP is 1.
+- **One MCP-started batch runs at a time**, so the cap cannot be multiplied by calling again. A
+  partial unique index on `outcome_analysis_batches` holds this, so two racing calls cannot both
+  win. Batches started from the web UI do not count.
+- **`analyze_all` requires `expected_count`**, the number of sessions the caller believes it is
+  queuing, which is `counts.unanalyzed` from the ledger view with the same filters. A batch of any
+  other size is refused, and nothing is created. It is the MCP half of the confirm dialog a human
+  sees: a filter left out or mistyped widens a batch silently, and stating the number catches that.
+- **At most 3 single `analyze` requests are in flight at once**, and a transcript that already has
+  an analysis in flight is refused. A loop of `analyze` calls would otherwise be a batch with no
+  Stop button.
+- Both analysis actions spawn under `general-agent`, so a connection fenced by `allowed_agent_roots`
+  has to be allowed that root.
+
+`cancel_batch` stops any running batch, including one a human started, because stopping only halts
+spawning. It refuses a batch that has already finished, instead of relabelling a completed batch as
+canceled.
+
+A batch an agent started shows **via MCP** on its card, with a link to the session that started it.
 
 ## Why the list pages stay fast
 
