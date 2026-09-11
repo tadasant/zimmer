@@ -205,7 +205,113 @@ class CsrfFailureLoggingTest < ActionDispatch::IntegrationTest
       "the attributable INFO line must come from the handler, not from anywhere else"
   end
 
+  # --- issue #23: the rate, not the record ------------------------------------------
+  #
+  # The INFO line above is per-record and never leaves the container. What #19 needed
+  # was for a *sustained* rate to reach the one pipeline that carries the URL, the verb
+  # and the user agent — and sentry-rails excludes InvalidAuthenticityToken by default,
+  # so GlitchTip saw none of the hours in which every write in the UI failed.
+  # config/initializers/sentry.rb removes that exclusion; CsrfRejectionMonitor is what
+  # keeps the un-excluded class from becoming a flood. These cases pin the controller
+  # end of that wiring: the real handler, the real request, the real monitor.
+
+  test "a storm of tokenless writes produces one report, and every request still gets its 422" do
+    reports = []
+    burst = CsrfRejectionMonitor::THRESHOLD * 3
+
+    with_memory_cache_mid_bucket do
+      capturing_reports(reports) do
+        burst.times do
+          patch mark_read_notification_path(notifications(:default_notification))
+          assert_response :unprocessable_entity
+        end
+      end
+    end
+
+    assert_equal 1, reports.size,
+      "#{burst} rejections must cost one GlitchTip event, not #{burst}"
+    assert_kind_of ActionController::InvalidAuthenticityToken, reports.sole[:exception]
+    assert_equal CsrfRejectionMonitor::THRESHOLD, reports.sole[:context][:csrf_rejections_in_window]
+    assert_equal "PATCH", reports.sole[:context][:request_method]
+    assert_equal mark_read_notification_path(notifications(:default_notification)),
+      reports.sole[:context][:path]
+  end
+
+  test "a quiet trickle of rejections still reports nothing" do
+    reports = []
+
+    with_memory_cache_mid_bucket do
+      capturing_reports(reports) do
+        (CsrfRejectionMonitor::THRESHOLD - 1).times do
+          post toggle_trigger_path(triggers(:enabled_slack_trigger))
+          assert_response :unprocessable_entity
+        end
+      end
+    end
+
+    assert_empty reports, "a stale form and a bot must stay as quiet as they were before #23"
+  end
+
+  test "the storm's WARN sits alongside the per-record INFO lines, once" do
+    entries = nil
+
+    with_memory_cache_mid_bucket do
+      capturing_reports([]) do
+        entries = capture_log_entries do
+          CsrfRejectionMonitor::THRESHOLD.times do
+            patch mark_read_notification_path(notifications(:default_notification))
+          end
+        end
+      end
+    end
+
+    infos = entries.select { |_severity, message| message.include?("CSRF verification failed 422") }
+    assert_equal CsrfRejectionMonitor::THRESHOLD, infos.size, "the per-record line is unchanged"
+    assert_equal [ "INFO" ], infos.map(&:first).uniq
+
+    warns = entries.select { |_severity, message| message.include?("CSRF rejection rate exceeded") }
+    assert_equal 1, warns.size
+    assert_equal "WARN", warns.first.first,
+      "WARN so it reaches VictoriaLogs; the production rule counts ERROR, so it must not page twice"
+
+    assert_empty entries.select { |severity, _message| %w[ERROR FATAL].include?(severity) },
+      "the rate report must not reintroduce the ERROR record #295 removed: #{entries.inspect}"
+  end
+
+  # The rate monitor sits inside the handler that renders the 422. A cache store that
+  # raises (rather than the swallowing one production configures) must cost the report,
+  # never the response — a monitoring bug that turned a client error into a 500 would
+  # page for the wrong reason and hide the storm underneath it.
+  test "a cache store that raises costs the report, not the response" do
+    exploding = Object.new
+    def exploding.increment(*) = raise("redis is on fire")
+
+    entries = Rails.stub(:cache, exploding) do
+      capture_log_entries do
+        patch mark_read_notification_path(notifications(:default_notification))
+      end
+    end
+
+    assert_response :unprocessable_entity
+    assert_includes csrf_line(entries), "PATCH", "the per-record INFO line survives too"
+  end
+
   private
+
+  # The monitor's buckets are wall-clock five-minute windows, so a burst that
+  # happened to straddle a boundary would split across two buckets. Parking the clock
+  # mid-bucket makes the counts deterministic.
+  def with_memory_cache_mid_bucket(&block)
+    travel_to Time.utc(2026, 9, 10, 12, 2, 30) do
+      Rails.stub(:cache, ActiveSupport::Cache::MemoryStore.new, &block)
+    end
+  end
+
+  def capturing_reports(sink, &block)
+    ErrorReporter.stub(:report_exception, ->(exc, context: {}, level: :error, fingerprint: nil) {
+      sink << { exception: exc, context: context, level: level, fingerprint: fingerprint }
+    }, &block)
+  end
 
   # rescue_handlers is a class_attribute, so assigning here defines the value on
   # ApplicationController and every descendant reading through it, and restoring it

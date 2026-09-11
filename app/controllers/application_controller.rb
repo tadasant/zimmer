@@ -46,7 +46,9 @@ class ApplicationController < ActionController::Base
   # ANY format on an ordinary browser page load, which is a forgotten view, not a
   # client asking for the wrong one. Handler lookup runs in reverse declaration
   # order, so the later, more specific declaration wins and re-raises — leaving that
-  # case exactly where it was: an ERROR record, and a page.
+  # case exactly where it was: an ERROR record, a page, and (because
+  # config/initializers/sentry.rb subtracts UnknownFormat from sentry-rails' inherited
+  # exclusions for exactly this subclass) a GlitchTip event.
   rescue_from ActionController::UnknownFormat, with: :unknown_format
   rescue_from ActionController::MissingExactTemplate do |exception|
     raise exception
@@ -125,9 +127,10 @@ class ApplicationController < ActionController::Base
   # exception message, and separates causes — Rails raises with either "Can't verify
   # CSRF token authenticity." (a missing or stale token, genuinely client-side) or
   # "HTTP Origin header (…) didn't match request.base_url (…)". The second is a
-  # *server* fault: a proxy that stopped forwarding X-Forwarded-Proto or Host breaks
-  # every write for every real user, which is what #19 was. Without the message the
-  # two are one indistinguishable line, and the second would be silently downgraded.
+  # *server* fault: an app whose computed scheme or host differs from the browser's
+  # breaks every write for every real user — #19 was `assume_ssl` on a plain-HTTP
+  # deploy. Without the message the two are one indistinguishable line, and the
+  # second would be silently downgraded.
   def invalid_authenticity_token(exception)
     Rails.logger.info(
       "CSRF verification failed 422: #{request.request_method} #{request.path} " \
@@ -136,6 +139,13 @@ class ApplicationController < ActionController::Base
       "user_agent=#{request.user_agent.to_s.inspect} " \
       "reason=#{exception.message.to_s.inspect}"
     )
+
+    # The line above is per-record and stays on container stdout. This is the rate:
+    # CsrfRejectionMonitor counts rejections in five-minute buckets and reports one
+    # GlitchTip event (and one WARN) per bucket once the count says the app is
+    # broken rather than a client is. It returns a symbol and never raises — the
+    # 422 below is owed to the client regardless. See issue #23.
+    CsrfRejectionMonitor.record(exception, request: request, session_cookie_present: session_cookie_present?)
 
     if request.format.json?
       render json: {
