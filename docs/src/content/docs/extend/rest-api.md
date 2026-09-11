@@ -862,6 +862,18 @@ the cooldown fails closed. Entering answers 503 `Queue recovery mode unavailable
 `config.good_job.enable_pauses` is off, rather than reporting a halt GoodJob would ignore. See
 [Queue recovery mode](/operate/background-jobs/#queue-recovery-mode).
 
+`GET /health/queued_jobs` (`job_class` and/or `queue_name`) →
+`{scope, matched, by_job_class, by_queue, over_cap, max_per_call}` ·
+`POST /health/discard_queued_jobs` · `POST /health/reschedule_queued_jobs` (`delay_minutes`,
+clamped 0–10080) — the third cleanup lever for a runaway queue. All three require a scope
+(`job_class`, `queue_name`, or both) and the two `POST`s require `expected_count`; a mismatch, an
+unscoped call, a scope over the 2,000-row cap, or the protected `agents` queue answers
+`422 {"error": "Refused"}` with a message naming the real count and the per-class breakdown, having
+changed nothing. A discard is **not recoverable**; a reschedule is its reversible sibling, and the
+response says which with a `recoverable` boolean. Only unfinished, unstarted, unclaimed rows are
+eligible. Not behind the cooldown, for the same reason as the three above. See
+[Queued job maintenance](/operate/background-jobs/#queued-job-maintenance).
+
 Two health endpoints sit **outside** this API — no `/api/v1` prefix, no API key, because a load
 balancer and a deploy gate have neither: `GET /up` (200 if the process booted) and `GET /up/deep`
 (200 only if the database, the cache and Redis each answered a real round trip; `503` with a
@@ -869,7 +881,7 @@ balancer and a deploy gate have neither: `GET /up` (200 if the process booted) a
 limited. See [Deploying](/operate/deploying/#up-is-a-liveness-ping-updeep-is-the-health-check).
 
 :::caution[The only rate limit in the API lives here]
-The three `POST`s share `HealthActionCooldown::COOLDOWN = 30.seconds` — and share it with the MCP
+The three maintenance `POST`s (`cleanup_processes`, `retry_sessions`, `archive_old`) share `HealthActionCooldown::COOLDOWN = 30.seconds` — and share it with the MCP
 `action_health` tool and the `/health` web dashboard — keyed in `Rails.cache` as
 `health_api_rate_limit:<action>:<digest>`, where `<digest>` is a SHA-256 of the presented
 `X-API-Key`. The cooldown is therefore per action **and** per key — your cleanup does not throttle
