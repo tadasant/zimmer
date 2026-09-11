@@ -93,6 +93,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_12_121000) do
     t.datetime "fleet_idle_since"
     t.integer "fleet_idle_threshold_minutes", default: 5, null: false
     t.jsonb "genesis_class_overrides", default: {}, null: false
+    t.jsonb "mcp_apps_allowed_servers", default: [], null: false
+    t.boolean "mcp_apps_enabled", default: false, null: false
     t.boolean "mcp_tool_search_enabled", default: true, null: false
     t.jsonb "queue_recovery_mode", default: {}, null: false
     t.boolean "quota_pool_available"

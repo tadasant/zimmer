@@ -83,6 +83,18 @@ class AppSetting < ApplicationRecord
   # an operator who wants the lane off has 0 for it.
   MAX_SPOT_STARVATION_AGE_CEILING_HOURS = 720
 
+  # Whether Zimmer renders MCP App (`ui://`) fragments in the session detail page
+  # at all. OFF is the default and is the only safe one: a fragment is HTML
+  # written by whoever runs the MCP server, executing in an operator's browser.
+  # See McpApps::Policy — the master switch alone renders nothing, because the
+  # per-server allowlist below ships empty too.
+  DEFAULT_MCP_APPS_ENABLED = false
+
+  # Which MCP servers are trusted to put a fragment on the page. Empty, and
+  # deliberately: opting a server in is a statement about who wrote it, and
+  # nothing but a human naming it can make that statement.
+  DEFAULT_MCP_APPS_ALLOWED_SERVERS = [].freeze
+
   # How few sessions the fleet has to be running before `no_sessions_in_progress`
   # counts it as idle enough to take more work. The count is sessions actually
   # `running` and nothing else, and the test is strictly BELOW this number — so 1
@@ -244,6 +256,19 @@ class AppSetting < ApplicationRecord
       DEFAULT_MCP_TOOL_SEARCH_ENABLED
     end
     alias_method :mcp_tool_search_enabled?, :mcp_tool_search_enabled
+
+    # No persisted row exists, so MCP Apps resolves to off with nothing opted in
+    # — the same answer a fresh row gives, and the only one a settings read that
+    # FAILED may give. A feature that renders third-party HTML must not turn
+    # itself on because the database was briefly unreadable.
+    def mcp_apps_enabled
+      DEFAULT_MCP_APPS_ENABLED
+    end
+    alias_method :mcp_apps_enabled?, :mcp_apps_enabled
+
+    def mcp_apps_allowed_servers
+      DEFAULT_MCP_APPS_ALLOWED_SERVERS
+    end
   end.new(default_runtime: nil, default_model: nil)
 
   validates :default_runtime,
