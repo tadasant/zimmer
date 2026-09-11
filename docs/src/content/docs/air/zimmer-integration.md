@@ -1,6 +1,6 @@
 ---
 title: How Zimmer consumes AIR
-description: The read path (AirCatalogService), the write path (AirPrepareService), the three cache layers, and the brittle stderr string-match that decides whether the catalog is healthy.
+description: The read path (AirCatalogService), the write path (AirPrepareService), the persisted CatalogSnapshot every process serves, and the brittle stderr string-match that decides whether the catalog is healthy.
 sidebar:
   order: 2
 ---
@@ -224,14 +224,17 @@ Two things still read the local disk, on purpose. `repo_root_for` wants a clone 
 of, which a snapshot cannot carry; its only caller, `WarmSkillsCacheJob`, runs on the worker.
 `air prepare` materializes skills from the local cache too, and a fork or unarchive runs it on the
 web container. So before every prepare, `AirPrepareService` asks
-`AirCatalogService.disk_cache_behind_snapshot?` and runs a bounded `air update` when this
-container's clones were fetched before the snapshot's. On the worker that check is a directory
-glob and nothing more.
+`AirCatalogService.disk_cache_behind_snapshot?` and runs an `air update` when this container's
+clones were fetched before the snapshot's, bounded by `CATALOG_CATCH_UP_TIMEOUT_SECONDS` (60s) —
+much shorter than `air prepare`'s own cap, because this one runs inside a web request. On the
+worker the check is a directory glob and nothing more.
 
 ## Last-known-good and degraded
 
 A failed refresh (a failed `air update` or a failed `air resolve`) stores nothing new. It writes
-its error, scrubbed of credentials, onto the newest snapshot as `failed_at` / `failure_message`.
+its error, scrubbed of credentials, onto the newest snapshot as `failed_at` / `failure_message` —
+unless that row was resolved *after* the failed attempt began, in which case another process
+succeeded while this one was failing and the row it wrote is fresh, so it is left alone.
 Every process that serves that row reports `degraded?` and `resolve_failure` from it on its next
 TTL tick, so the session form's failure banner and `get_configs` tell the truth in a web process
 that never resolves. The next successful refresh stores a fresh row, which clears it everywhere.

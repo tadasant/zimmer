@@ -1057,6 +1057,26 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_equal %w[update prepare], commands
   end
 
+  # The catch-up runs inside a web request (fork/unarchive), behind an edge proxy
+  # that cuts at ~100s and on 3 Puma threads, so it gets its own short bound
+  # rather than `air prepare`'s 600s (fresh-eyes review of #1150).
+  test "prepare! bounds the catch-up fetch far shorter than air prepare itself" do
+    AirCatalogService.stubs(:disk_cache_behind_snapshot?).returns(true)
+    bounds = {}
+    bounded = ->(command_array, timeout:, env: {}, cwd: nil) {
+      bounds[command_array[1]] = timeout
+      [ "", "", stub(success?: true, exitstatus: 0) ]
+    }
+
+    BoundedSubprocess.stub(:run, bounded) do
+      AirPrepareService.new(session: @session, working_directory: @working_dir, file_system: @mock_fs).prepare!
+    end
+
+    assert_equal AirPrepareService::CATALOG_CATCH_UP_TIMEOUT_SECONDS, bounds["update"]
+    assert_equal AirPrepareService::AIR_PREPARE_TIMEOUT_SECONDS, bounds["prepare"]
+    assert_operator bounds["update"], :<, bounds["prepare"]
+  end
+
   test "prepare! does not fetch when the provider cache is as fresh as the catalog snapshot" do
     AirCatalogService.stubs(:disk_cache_behind_snapshot?).returns(false)
     commands = []

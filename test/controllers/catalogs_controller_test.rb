@@ -57,6 +57,22 @@ class CatalogsControllerTest < ActionDispatch::IntegrationTest
     AirCatalogService.reset!
   end
 
+  # The job can succeed while producing no fresh catalog: a resolve that fails
+  # with a last-known-good tree to serve is served, not raised. The flash must
+  # not claim success while the page it redirects to renders the failure banner.
+  test "refresh reports a refresh that finished without producing a fresh catalog" do
+    CatalogRefreshJob.stubs(:perform_and_wait).returns(ok_result)
+    AirCatalogService.stubs(:sync_from_snapshot!).returns(true)
+    AirCatalogService.stubs(:degraded?).returns(true)
+    AirCatalogService.stubs(:resolve_failure).returns({ message: "air resolve exited 0 but dropped 2 references", at: Time.current })
+
+    post refresh_catalogs_path
+
+    assert_nil flash[:notice]
+    assert_match(/still the last one that resolved/, flash[:alert])
+    assert_match(/dropped 2 references/, flash[:alert])
+  end
+
   # #319: this flash is `air update`'s own text from a process holding
   # AIR_GITHUB_TOKEN, and redirect_back puts it on /sessions/new — the same
   # unauthenticated page as the catalog-failure banner.

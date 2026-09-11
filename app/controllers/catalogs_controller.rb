@@ -45,6 +45,15 @@ class CatalogsController < ApplicationController
       redirect_back(fallback_location: new_session_path,
                     alert: "Catalog refresh is still running in the background. " \
                            "Wait a moment and check the \"Updated … ago\" indicator before creating a session.")
+    elsif AirCatalogService.degraded?
+      # The job can finish without producing a fresh catalog: a resolve that
+      # fails while a last-known-good tree exists is served rather than raised,
+      # so the job succeeds. The failure is on the snapshot this process just
+      # synced, which is what renders the banner on the page we redirect to —
+      # so say the same thing in the flash instead of contradicting it.
+      redirect_back(fallback_location: new_session_path,
+                    alert: "Catalog refresh finished, but the catalog is still the last one that resolved: " \
+                           "#{AirCatalogService.resolve_failure&.dig(:message)}")
     else
       last_refreshed = AirCatalogService.last_refreshed_at
       timestamp = last_refreshed ? last_refreshed.strftime("%b %d, %Y %H:%M:%S %Z") : "just now"

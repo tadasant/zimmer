@@ -237,6 +237,7 @@ class AirCatalogService
     # the in-memory entry tree. This is the "pull latest catalog" operation
     # invoked by CatalogRefreshJob and the manual refresh endpoint.
     def refresh!
+      attempted_at = Time.current
       raise CatalogError, "air.json not found at #{air_json_path}" unless File.exist?(air_json_path)
 
       run_air_update!
@@ -246,7 +247,7 @@ class AirCatalogService
       # A refresh that dies before reload! never reaches load!'s rescue, so record
       # the failure here too — otherwise "Refresh catalogs" can fail while the
       # session form still shows a healthy catalog.
-      record_failure(e.message)
+      record_failure(e.message, attempted_at: attempted_at)
       raise
     end
 
@@ -410,8 +411,20 @@ class AirCatalogService
       true
     end
 
+    # A different newest row than the one this process is serving is almost
+    # always a straight supersede — store! prunes every other row, so the row
+    # this process wrote is gone precisely because something replaced it. That
+    # case is decided on identity, never on a timestamp from another container's
+    # clock.
+    #
+    # The timestamp guard is for the one case where identity says nothing:
+    # @snapshot_id is nil because this process resolved a tree it could not
+    # persist (a DB blip). It is then serving something strictly fresher than
+    # anything in the table, so it keeps it unless the table moves ahead of it.
     def newer_than_served?(header)
-      @entries.nil? || @last_known_good_at.nil? || header.resolved_at > @last_known_good_at
+      return true if @entries.nil? || @snapshot_id
+
+      @last_known_good_at.nil? || header.resolved_at > @last_known_good_at
     end
 
     # Serve a persisted snapshot's tree and the provenance that came with it.
@@ -455,6 +468,7 @@ class AirCatalogService
     # routable message) down to an empty catalog. Only re-raises when there is no
     # fallback at all (first-ever boot with a broken catalog).
     def load!
+      attempted_at = Time.current
       raise CatalogError, "air.json not found at #{air_json_path}" unless File.exist?(air_json_path)
 
       parsed = parse_resolve_output(run_air_resolve!)
@@ -465,7 +479,7 @@ class AirCatalogService
       # Recorded before serve_last_known_good!, which re-raises when there is no
       # fallback — the one path where degraded? never gets set and the pickers go
       # silently empty.
-      record_failure(e.message)
+      record_failure(e.message, attempted_at: attempted_at)
       serve_last_known_good!(e)
     end
 
@@ -487,9 +501,9 @@ class AirCatalogService
     # learns of it (mirror_snapshot_health). Inside the pin controller's
     # transaction that write rolls back with the pins, so a rejected pin does
     # not mark the fleet's catalog degraded.
-    def record_failure(message)
+    def record_failure(message, attempted_at: nil)
       @resolve_failure = { message: redact_secrets(message.to_s), at: Time.current }
-      CatalogSnapshot.record_failure!(@resolve_failure[:message], at: @resolve_failure[:at])
+      CatalogSnapshot.record_failure!(@resolve_failure[:message], at: @resolve_failure[:at], attempted_at: attempted_at)
     rescue => e
       Rails.logger.warn "[AirCatalogService] could not record the catalog failure on the snapshot: #{e.class}: #{e.message}"
     end
