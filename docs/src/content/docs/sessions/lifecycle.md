@@ -2316,7 +2316,11 @@ The state machine is not the only actor:
   due within `SCHEDULE_FIRE_SETTLE` is one the scheduler has not reached yet rather than one that
   was lost. `StrandedSleepRescue` resumes the session with a
   `SYSTEM_RECOVERY` nudge through the same `claim_system_recovery_turn!` door orphan cleanup
-  uses, and stops after three rescues rather than resuming forever. Production session 6412 sat
+  uses, and stops after three rescues rather than resuming forever. A status-summary fork found in
+  that population is disposed of rather than resumed — `AgentSessionJob` refuses a fork's turn
+  whatever it carries, so the sweep hands it to `SessionStatusSummaryHarvestJob` instead, which
+  is [the disposal that refusal reaches anyway](/sessions/status-summary/#a-fork-whose-turn-went-missing-after-it-was-dispatched)
+  ([#1168](https://github.com/tadasant/zimmer/issues/1168)). Production session 6412 sat
   in `waiting` for 38.7 hours before this existed
   ([#855](https://github.com/tadasant/zimmer/issues/855)). See
   [Background jobs](/operate/background-jobs/#the-cron-schedule).
