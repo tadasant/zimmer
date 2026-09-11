@@ -4300,6 +4300,12 @@ probe alike, and a condition with no matching items is indistinguishable from a 
 that each watched label still exists in each watched repo would need a different request shape
 (`gh api repos/{repo}/labels/{label}`), and is not done.
 
+It also cannot see a stalled `github_label` item that is still active. The label probe narrows to
+items not updated in the last three hours, because seen-set membership alone cannot tell a stall
+from a label added a minute ago — but `updated_at` moves on *any* activity (a comment, a push,
+another label), so an item that carries the watched label and keeps being worked on is excluded
+until it goes quiet for three hours. Both gaps fail quiet: they miss a stall, they never invent one.
+
 ### A `github_issue` trigger misses an issue indexed more than 30 minutes late
 
 GitHub's search index is eventually consistent and unordered. `GithubTriggerPollerJob` re-queries a

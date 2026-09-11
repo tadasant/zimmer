@@ -152,6 +152,21 @@ class GithubTriggerHealthCheckJobTest < ActiveJob::TestCase
     assert_match(/tadasant\/zimmer#41:ready to merge/, errors.first.last)
   end
 
+  test "a stalled item still being worked on is outside the probe until it goes quiet" do
+    # The documented blind spot, pinned so it stays a decision: `updated:<=` is enforced by
+    # GitHub, so an item with recent activity never reaches the comparison at all. Here the
+    # stub stands in for GitHub honouring the qualifier by returning nothing.
+    ErrorReporter.expects(:report_message).never
+
+    stub_search(label: []) do |queries|
+      GithubTriggerHealthCheckJob.perform_now
+      query, = queries.find { |q, _| q.start_with?("is:open ") }
+      cutoff = Time.iso8601(query[/updated:<=(\S+)/, 1])
+      assert_in_delta (Time.current - GithubTriggerHealthCheckJob::STALE_THRESHOLD).to_f, cutoff.to_f, 5,
+                      "the cutoff is exactly the threshold ago, so recent activity excludes an item"
+    end
+  end
+
   test "stays quiet when every labelled item is in the seen-set" do
     @label_condition.update!(configuration: @label_condition.configuration.merge(
       "seen_items" => [ "tadasant/zimmer#41:ready to merge" ]

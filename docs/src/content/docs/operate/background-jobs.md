@@ -1972,7 +1972,9 @@ trigger ids in the context.
     `updated:<=` the threshold ago: a label event moves `updated_at`, so every item returned has
     carried its label for at least that long, and any of them the seen-set does not hold is an item
     the poller has been shown on every tick for hours and never recorded. Keyed exactly as the poller
-    keys the seen-set — configured casing, one key per (item, watched label).
+    keys the seen-set — configured casing, one key per (item, watched label). Because `updated_at`
+    moves on *any* activity, a stalled item still being commented on or pushed to is not seen until
+    it has been quiet for the threshold.
 
   A trigger inside a burst it has already noticed, and a `skip_if_pending_session` trigger whose
   pending session still carries the intent, leave their items unrecorded *on purpose* so they fire
