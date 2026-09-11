@@ -157,6 +157,7 @@ and the model refuses to write one, answering `422`.
 | `PATCH` | `/sessions/:id/notes` | `session_notes` ≤ 50,000; empty string clears |
 | `PATCH` | `/sessions/:id/heartbeat` | `enabled` and/or `interval_seconds` (30–86,400, default 60); omit either to leave it unchanged |
 | `PATCH` | `/sessions/:id/set_category` | `category_id`; blank or omitted clears. Unknown id → 404 |
+| `POST` | `/sessions/reorder` | `ids` — one dashboard section's cards, top to bottom — plus `category_id` (omit, null, or `"uncategorized"` for the Uncategorized bucket) and an optional `session_id` (id or slug) naming the one card that moved. → `{category_id, session_ids}`, the section's full order. Unknown category or session → 404. See [Card order](#card-order) |
 | `POST` | `/sessions/:id/toggle_favorite` | favorited sessions sort to the top of the dashboard |
 | `PATCH` | `/sessions/:id/visibility` | `visibility` (`visible` \| `hidden` \| `snoozed`), plus `snoozed_until` and `timezone` for a snooze. **Board visibility only** — see [Board visibility](#board-visibility). It changes what the dashboard draws and nothing else: no session is started, stopped, slept, woken or reordered. Unknown value, missing or past-dated `snoozed_until` → 422 |
 | `GET` | `/sessions/:id/transcript` | `format=text` → `text/plain`, else `{transcript_text}` |
@@ -998,6 +999,37 @@ rather than as a row — so it is not in the category list the call returns.
 curl -X POST "$BASE_URL/categories/reorder" \
   -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
   -d '{"ids": [5, "uncategorized", 3, 8]}'
+```
+
+### Card order
+
+`POST /sessions/reorder` is the other half: where each *card* sits inside one section. It is what
+the dashboard's drag-and-drop posts, and it writes `sessions.sort_order`. See
+[Card order is yours to set](/sessions/lifecycle/#card-order-is-yours-to-set-and-it-stays-set) for
+the model.
+
+`ids` is one section's cards, top to bottom — normally one **page** of it, since sections paginate
+at 50 — and `category_id` names the section (omit it, send `null`, or send `"uncategorized"` for the
+Uncategorized bucket; an unknown id → 404). Ids that are not in that section are ignored, and an
+index in `ids` is never read as a position, so a card you do not name never moves.
+
+What the call does depends on `session_id`:
+
+- **With `session_id`** (an id or slug; unknown → 404), only that card moves. It goes immediately
+  above the card after it in `ids`, or immediately below the card before it when it is last — the
+  rest of `ids` is context. If the card is in another category it is moved into this one first, in
+  the same transaction, so one call persists the category change and the placement. This is what a
+  drag sends.
+- **Without it**, the cards named in `ids` are rearranged among the slots they already hold, in the
+  order given.
+
+The response is `{category_id, session_ids}` — the section's full order after the write, not just
+the page you sent.
+
+```bash
+curl -X POST "$BASE_URL/sessions/reorder" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"ids": [41, 17, 92], "category_id": 5, "session_id": 17}'
 ```
 
 ## Work backlog

@@ -2393,6 +2393,53 @@ search, and replaces the grid with a flat result list.
 The equivalent for an agent is `quick_search_sessions`, whose `status` argument takes one status
 or an array of them.
 
+### Card order is yours to set, and it stays set
+
+Inside a section, cards are ordered by where you dragged them — `sessions.sort_order` ascending.
+A card nobody has placed sits where it arrived, which is newest-first: every session Zimmer creates
+is stamped as it is created. Grab a card by the grip bar at the top of it and drop
+it where you want it, in its own section or in another one. The drop POSTs the section's order to
+`POST /sessions/reorder`, naming the card you moved, so it survives a reload, a trip into a session
+and back, and paging the section.
+
+How that is stored (`SessionCardOrder`):
+
+- **A drag moves one card, next to its neighbour.** The server puts the moved card immediately
+  above the card that is now below it (or immediately below the card above it, if you dropped it
+  last) and moves nothing else. It never reads a card's index in the posted list as its position:
+  sections paginate at 50 independently, and the browser's copy of a page can hold cards the server
+  would render elsewhere — a new session a broadcast prepended onto page 2, say. Anchoring on the
+  neighbour means a drag on page 2 cannot renumber page 1, and a card you did not touch stays put —
+  including one the status filter is hiding, and a favorited card rendered up in **Starred**.
+- **An arrival goes on top.** A new session, a card the auto-categorizer or `set_category` moves,
+  and the cards of a deleted category all take one below their new section's lowest `sort_order`,
+  so they appear at the top the way a new session always has, and nobody else's row is rewritten to
+  make room. Rows nothing has ever placed tie at the column default `0` and fall back to
+  `created_at DESC`. Note what "on top" means once you have arranged a section by hand: a new
+  session outranks the card you dragged to the top, because the alternative — inserting it by
+  `created_at` into an order you chose — has no defined answer.
+- **A drag rewrites what moved, not the section.** The section's existing values are handed back out
+  along the new order, so only the cards whose rank changed are written — dragging a card from 40th
+  to 1st writes 41 rows, not the thousands of archived sessions sharing its section. The exception
+  is a section whose values tie — one nobody has reordered, or one where two sessions arrived in the
+  same instant and read the same minimum — which is renumbered once on its next drag. Drags that
+  touch the same section, including both ends of a cross-section drag, are serialized with an
+  advisory lock; creating a session takes no lock, which is why that tie can happen at all.
+- **The order is global, not yours.** Zimmer is a single circle of trust with no `User` model, so
+  there is no principal to hang a per-viewer order on — the position lives on the session row, the
+  same way `position` lives on the category. Everyone sees the board you arranged.
+- **Starred cards are not drag-orderable, and lose nothing by it.** A favorited card floats out of
+  its section into the pinned group, which sits outside the drag-and-drop controller and carries no
+  grip bar — its category placement is invisible while it is starred. Starring does not touch
+  `sort_order`, so unstarring puts the card back where it was.
+
+A cross-section drag is one write, not two: the moved card's category change and its placement land
+in the same transaction. Right-clicking a card's grip bar opens the same move as a menu, which puts
+the card at the top of the page of that section you have open.
+
+The equivalents for an agent are `manage_categories`' `reorder_sessions` action over MCP and
+`POST /api/v1/sessions/reorder` over REST.
+
 ## Manual refresh
 
 The dashboard's refresh controls are the human counterpart to those background actors. There
