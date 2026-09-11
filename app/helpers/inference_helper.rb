@@ -13,6 +13,107 @@ module InferenceHelper
     end
   end
 
+  # Why no account in this runtime's pool can serve a session, or nil when one
+  # can.
+  #
+  # The predicate is ClaudeAccount.any_serviceable_for? — the SAME one the park
+  # decision, AuthRecoveryCoordinator and /health's auth card ask, deliberately.
+  # A page with a second opinion about whether the pool is dry is how an operator
+  # came to read "1 Active" while every session on the instance was parking
+  # (#239); the banner exists to end that, so it must not introduce a fresh way
+  # to disagree.
+  #
+  # No network call: every input is a column or a reading already on file.
+  #
+  # @return [DryPool, nil]
+  def dry_pool(runtime, accounts, snapshots)
+    return nil if accounts.empty?
+    return nil if ClaudeAccount.any_serviceable_for?(runtime)
+
+    DryPool.new(runtime: runtime, reasons: dry_pool_reasons(accounts, snapshots))
+  end
+
+  # The banner's contents: what is wrong with each account, and therefore what
+  # would fix it. `reasons` maps a reason key to how many accounts are in it, in
+  # the order the keys are declared.
+  # Why an account cannot serve, in the order the banner reports them.
+  DRY_POOL_REASON_LABELS = {
+    refused: "refused by Anthropic",
+    needs_reauth: "waiting on re-authentication",
+    no_credentials: "never authenticated",
+    quota_exceeded: "out of quota",
+    other: "unavailable"
+  }.freeze
+
+  DryPool = Struct.new(:runtime, :reasons, keyword_init: true) do
+    # "1 refused by Anthropic, 2 out of quota" — the whole pool, accounted for.
+    def breakdown
+      reasons.map { |reason, count| "#{count} #{DRY_POOL_REASON_LABELS.fetch(reason)}" }.join(", ")
+    end
+
+    # Only a quota wall clears itself. Anything else is waiting on the human
+    # reading this, so say which it is rather than leaving them to infer it from
+    # the counts.
+    def recovery
+      if reasons.keys == [ :quota_exceeded ]
+        "Sessions will park and resume on their own when a window resets."
+      else
+        "Sessions will park until an account recovers. Authenticate one below — a stored credential " \
+          "Anthropic refuses cannot be repaired by switching to it."
+      end
+    end
+  end
+
+  # Why one account cannot serve, most specific first. An account can be in more
+  # than one of these states at once (a refused token on a quota-exceeded row),
+  # and the banner reports the one that has to be fixed first.
+  def dry_pool_reasons(accounts, snapshots)
+    counts = Hash.new(0)
+
+    accounts.each do |account|
+      counts[dry_pool_reason(account, snapshots[account.id])] += 1
+    end
+
+    DRY_POOL_REASON_LABELS.keys.filter_map { |reason| [ reason, counts[reason] ] if counts[reason].positive? }.to_h
+  end
+
+  def dry_pool_reason(account, snapshot)
+    return :no_credentials unless account.has_valid_config?
+    return :needs_reauth if account.needs_reauth?
+    return :refused if account.credential_rejected?
+
+    account.effective_status(snapshot) == "quota_exceeded" ? :quota_exceeded : :other
+  end
+
+  # The credential line on an account card: what Zimmer actually knows about the
+  # credentials in this row.
+  #
+  # Replaces a two-state reading of `has_valid_config?` that said "Credentials
+  # stored. Re-authenticate to replace them." over an account whose token was
+  # answering 401 on every request — the sentence that made the 2026-07-31 outage
+  # so hard to diagnose from the page (#239). Storage is not usability, so the
+  # card now reports the evidence: ClaudeAccount#credential_state.
+  #
+  # Codex has no non-consuming probe, so a Codex row never carries a verdict and
+  # gets the honest two-state copy rather than a permanent "unverified".
+  #
+  # @return [Array(String, String)] the sentence and the Tailwind text colour
+  def credential_state_line(account)
+    return [ "Credentials stored. Re-authenticate to replace them.", "text-gray-500" ] if account.codex? && account.has_valid_config?
+
+    case account.credential_state
+    when :none
+      [ "No credentials yet — authenticate to start serving sessions.", "text-gray-500" ]
+    when :rejected
+      [ "Anthropic refused these credentials #{time_ago_in_words(account.credential_rejected_at)} ago — " \
+        "re-authenticate to replace them.", "text-red-600" ]
+    when :verified
+      [ "Credentials verified against Anthropic #{time_ago_in_words(account.credential_verified_at)} ago.", "text-gray-500" ]
+    else
+      [ "Credentials stored, not yet checked against Anthropic.", "text-amber-600" ]
+    end
+  end
+
   # One side of a rotation-history row. A deleted account keeps its email —
   # preserved on the event itself — and is labelled as deleted, so the row reads
   # as "the pool moved off an account that no longer exists" rather than as the

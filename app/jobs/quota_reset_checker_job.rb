@@ -108,6 +108,11 @@ class QuotaResetCheckerJob < ApplicationJob
       end
     end
 
+    # The verdict this probe reached, after the one refresh it is allowed. See
+    # ClaudeAccount#record_credential_probe! — nothing is recorded when Anthropic
+    # could not be reached.
+    account.record_credential_probe!(result)
+
     unless result.success?
       logger.warn("Quota check failed, using stale snapshot",
         email: account.email, error: result.error_message)

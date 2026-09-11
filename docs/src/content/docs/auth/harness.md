@@ -800,10 +800,12 @@ token Anthropic actually honours. The probe is `QuotaCheckService#check_with_tok
 candidates that may be skipped without spending a single-use refresh token. A candidate Anthropic
 *refuses* is refreshed once and probed again — a stale access token is the one refusal a refresh can
 fix — so the single-use token is spent only where it might help, never on a candidate whose
-credentials already work. `ClaudeLoginDriver#capture!` applies the same probe through
-`QuotaCheckService.token_rejected?`, because a login that produces a complete-looking token pair is
-another way an unusable account enters the pool. The probe's model is the catalog's Haiku, sent as its
-Messages API id; see [Models](/sessions/runtimes/#models).
+credentials already work — and spent at most once per recorded refusal rather than once per spawn, so
+a pool whose only account has a live refresh endpoint and a dead subscription does not burn a
+single-use token every time a session starts. `ClaudeLoginDriver#capture!` applies the same probe and
+refuses the login on `QuotaCheckService::Result#rejected?`, because a login that produces a
+complete-looking token pair is another way an unusable account enters the pool. The probe's model is
+the catalog's Haiku, sent as its Messages API id; see [Models](/sessions/runtimes/#models).
 
 The probe answers three ways, and only one of them condemns an account: Anthropic honoured the token,
 Anthropic answered and refused it, or **the probe never got an answer** (timeout, DNS failure, 5xx).
@@ -814,6 +816,61 @@ A successful probe is a live quota reading, so it is recorded as a snapshot rath
 boolean. That is what lets bootstrap refuse an account whose weekly window is spent but which nothing
 has ever probed — the case stored evidence cannot cover — and it leaves rotation with evidence about
 an account that has never been current.
+
+### Stored is not verified
+
+A credential Zimmer is holding is in one of four states, and `ClaudeAccount#credential_state` is the
+one place that says which:
+
+| State | What it means | What the card says |
+| --- | --- | --- |
+| `:none` | `oauth_config` is empty | *"No credentials yet — authenticate to start serving sessions."* |
+| `:unverified` | stored, and nothing has presented them to Anthropic since they were written | *"Credentials stored, not yet checked against Anthropic."* |
+| `:verified` | Anthropic answered a probe of **this** access token and served it | *"Credentials verified against Anthropic 4 minutes ago."* |
+| `:rejected` | Anthropic answered a probe of this access token and refused it | *"Anthropic refused these credentials 4 minutes ago — re-authenticate to replace them."*, plus a red **Token refused** chip |
+
+The state is derived from two timestamps on the account row, `credential_verified_at` and
+`credential_rejected_at`, and the later one wins. They are written by
+`ClaudeAccount#record_credential_probe!` from probes Zimmer **already takes** — bootstrap's candidate
+probe, rotation's snapshot, the 15-minute `ClaudeUsageSamplerJob` sweep, the reset checker, a
+`/inference` refresh, the switch validation, and the login capture. Nothing here adds a network call,
+nothing polls on render, and nothing spends a single-use refresh token
+([#242](https://github.com/tadasant/zimmer/issues/242)).
+
+Two rules keep the verdict honest:
+
+- **An unreachable Anthropic records nothing.** Same asymmetry as the promotion probe above: a
+  timeout, a DNS failure or a 5xx is evidence about the network, not the credential.
+- **The verdict is about the token, not the account.** Writing a different access token — a refresh,
+  a human re-auth, a filesystem sync — clears both timestamps and the row falls back to
+  `:unverified`. So a refusal cannot outlive the credential it was about: the account whose refresh
+  repairs it is back in the pool on the next save, with nobody probing anything.
+
+`has_valid_config?` is unchanged, and deliberately so. It answers *"is there anything stored"*, which
+is what the Codex provider's filesystem adoption, rotation's current-account branch and the two rake
+listings are actually asking. What changed is that the UI stopped reading it as *"these credentials
+work"* — the sentence *"Credentials stored. Re-authenticate to replace them."* sat over an account
+answering 401 for the whole of the 2026-07-31 outage, and is what made it so hard to diagnose from the
+page ([#239](https://github.com/tadasant/zimmer/issues/239)).
+
+A recorded refusal is also a reason for `ensure_active_account!` to stop short-circuiting: the current
+account no longer keeps its place on `has_valid_config?` alone, and a row Anthropic has refused falls
+through to the bootstrap path, which re-probes candidates and promotes one that works. The recorded
+verdict decides nothing on its own — the fresh probe does — so an account that started working again
+is promoted straight back.
+
+### When nothing can serve, the page says so first
+
+When no account in a runtime's pool can serve a session, `/inference` opens with a red banner naming
+the pool, accounting for every account in it (*"1 refused by Anthropic, 2 out of quota"*) and saying
+what clears it: a quota wall lifts itself, anything else is waiting on the human reading the page. It
+is re-rendered by the refresh actions along with the cards, since a refresh is exactly when the answer
+changes.
+
+The predicate is `ClaudeAccount.any_serviceable_for?` — the same one the park decision, the recovery
+coordinator and `/health`'s auth card ask, not a second opinion. See [One predicate for "is the pool
+drained"](#one-predicate-for-is-the-pool-drained). Before this, the page reported *"1 Active"* while
+zero accounts could serve a session.
 
 ### What `/inference` reports for the pool
 
@@ -1124,6 +1181,13 @@ own readings, not on their labels.
 **counts**. An account with no reading is taken at its label, which is every Codex account, so for a
 pool with no snapshots this reduces exactly to `.available`.
 
+One account is dropped whatever its label and whatever its windows say: one whose stored access token
+Anthropic has **answered and refused** (`credential_rejected?`, see [Stored is not
+verified](#stored-is-not-verified)). That row is the 2026-07-31 state — `active`, credentials stored,
+counted by every "is the pool dry" surface, and a 401 on every request made with it. Only an answered
+refusal drops it, and the verdict retires the moment a different token is written, so neither an
+Anthropic blip nor a repaired account can strand the pool here.
+
 **Only a reading the label has not already answered.** The reading has to be *newer than the account
 row's last write*, or the column stands. A label written after the newest reading was written by
 something that knew more than the reading does — a runtime-observed quota refusal whose follow-up
@@ -1138,6 +1202,7 @@ Three callers ask it, and they are the three that must not disagree:
 | `AuthRecoveryCoordinator#park_reason_for_pool` | whether an outage is `QUOTA_EXHAUSTED` ("wait for the reset") or `AUTH_UNRECOVERABLE` ("a human must re-authenticate") |
 | `AuthOutageParkService.pool_confirmed_empty?` | whether an undelivered turn may be parked at all |
 | `HealthMonitorService#auth_health` | the `serviceable_accounts` figure on the health report and the `/health` card |
+| `InferenceHelper#dry_pool` | whether `/inference` opens with the dry-pool banner |
 
 That last row is why this exists. On 2026-08-23 the parking decision concluded at 02:06Z that the
 pool was empty and put four sessions to sleep, while `auth_health` reported *"3 Claude accounts
@@ -1149,7 +1214,9 @@ different questions and the gap between them is itself the diagnostic. `availabl
 column: what a session can be spawned on this minute, since every path that picks an account reads
 it. `serviceable_accounts` is the predicate above: what the park decision sees. Reporting only the
 column is the contradiction described here; reporting only the evidence would be its mirror image, a
-healthy card over a pool nothing can spawn against. Together, `0 available / 3 serviceable` says
+healthy card over a pool nothing can spawn against. A third figure, `refused_credential_accounts`,
+says how many of them hold a credential Anthropic has refused — the same distinction `/inference`'s
+banner draws, carried to the card and, through the same report, to `get_system_health`. Together, `0 available / 3 serviceable` says
 precisely what is happening — the pool is recovering and the reset checker has not caught up — and
 the card degrades to `warning` in that state rather than claiming health.
 

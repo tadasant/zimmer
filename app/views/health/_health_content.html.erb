@@ -392,6 +392,13 @@
           <dt class="font-medium text-gray-500">Awaiting re-authentication</dt>
           <dd class="mt-1 <%= auth[:needs_reauth_accounts].to_i.positive? ? 'text-red-600' : 'text-gray-900' %>"><%= auth[:needs_reauth_accounts] || "—" %></dd>
         </div>
+        <%# An account can be `active`, hold credentials, and still be refused by
+            Anthropic on every request — the state that took the instance down on
+            2026-07-31 while this card reported it available. %>
+        <div>
+          <dt class="font-medium text-gray-500">Credentials Anthropic refuses</dt>
+          <dd class="mt-1 <%= auth[:refused_credential_accounts].to_i.positive? ? 'text-red-600' : 'text-gray-900' %>"><%= auth[:refused_credential_accounts] || "—" %></dd>
+        </div>
       </dl>
       <% if auth[:repair_outlook].present? %>
         <p class="mt-3 text-sm <%= auth[:repair_outlook][:outcome] == :healed ? 'text-yellow-700' : 'text-red-600' %>">

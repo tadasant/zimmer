@@ -385,11 +385,16 @@ class AuthRecoveryCoordinator
   end
 
   def probe_access_token(account)
-    QuotaCheckService.check_with_token(account.claude_access_token)
+    QuotaCheckService.check_with_token(account.claude_access_token).tap do |probe|
+      # Recovery is the path most likely to be looking at a dead credential, and
+      # the operator reading /inference afterwards is the one who has to act on
+      # it. Recording the verdict here is free — the probe has already happened.
+      account.record_credential_probe!(probe)
+    end
   end
 
   def access_token_refused?(probe)
-    !probe.success? && !probe.unreachable?
+    probe.rejected?
   end
 
   def session_scoped_claude?

@@ -154,6 +154,12 @@ class ClaudeUsageSamplerJob < ApplicationJob
     end
 
     result = QuotaCheckService.check_with_token(token)
+    # This sweep is the pool's most regular probe — the serving account every
+    # tick, each spare as its reading goes stale — so it is also the most regular
+    # source of truth about whether a stored token still works. Recording costs
+    # nothing beyond the probe already taken; an unreachable Anthropic records
+    # nothing at all. See ClaudeAccount#record_credential_probe!.
+    account.record_credential_probe!(result)
     unless result.success?
       Rails.logger.info("[ClaudeUsageSamplerJob] Quota probe failed for #{account.email}: #{result.error_message}")
       return false
