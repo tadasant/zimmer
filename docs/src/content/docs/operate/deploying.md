@@ -1668,9 +1668,9 @@ a droplet that already exists is a replace, not an update, and both environments
 `-auto-approve`. Ignoring it keeps a routine `apply` from destroying the host over a metrics agent.
 The trade is that Terraform never gives the agent to an existing droplet, and DigitalOcean offers no
 API action to enable it, so an existing droplet has to get it from a deploy-time converge step. That
-step belongs in the production deploy, in the companion repository. Staging needs none, because every
-staging droplet is created by this module. See
-[Known limitations](/limitations/#terraform-gives-the-digitalocean-metrics-agent-only-to-a-droplet-it-creates).
+step belongs in the production deploy, in the companion repository. Staging needs none, because no
+staging droplet in state predates `monitoring` and each new one is created with it set. See
+[Known limitations](/limitations/#terraform-cannot-give-the-digitalocean-metrics-agent-to-a-droplet-that-already-exists).
 
 `ignore_changes = [user_data]` now gates a second create-time-only feature the same way.
 `var.node_exporter_enabled` puts a tailnet-bound Prometheus `node_exporter` in cloud-init, so setting

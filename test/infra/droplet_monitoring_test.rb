@@ -43,32 +43,34 @@ class DropletMonitoringTest < ActiveSupport::TestCase
     MSG
   end
 
-  # Staging has no do-agent converge step, and the docs say why: every staging droplet is
-  # created by this module (`Teardown staging` destroys it, `Deploy staging` creates the
-  # next), so the create-time attribute reaches all of them. That holds only while staging
+  # Staging has no do-agent converge step, and the docs say why: no staging droplet in
+  # state predates `monitoring`, and `Deploy staging` creates each new one through this
+  # module, so the create-time attribute reaches all of them. That holds only while staging
   # keeps var.monitoring on. Turning it off would ship staging droplets with no agent and
   # nothing to install one.
   test "staging never turns monitoring off, so its droplets need no converge" do
     # Any assignment but a literal `true` (a trailing comment allowed).
     assigned = File.readlines(STAGING_TFVARS).grep(/^\s*monitoring\s*=(?!\s*true\s*(#.*)?$)/)
     assert_empty assigned, <<~MSG
-      staging.tfvars.example turns `monitoring` off. `Deploy staging` copies that file
-      verbatim, and a -var-file value beats TF_VAR_*, so this decides whether a staging
-      droplet gets DigitalOcean's metrics agent at creation.
+      staging.tfvars.example assigns `monitoring` something other than a literal `true`.
+      `Deploy staging` copies that file verbatim, and a -var-file value beats TF_VAR_*,
+      so this decides whether a staging droplet gets DigitalOcean's metrics agent at
+      creation.
 
       Staging has no deploy-time do-agent converge because every staging droplet gets the
       agent at creation. With it off, that no longer holds: either drop the assignment or
-      give staging a converge step, and update docs limitations ("Terraform gives the
-      DigitalOcean metrics agent only to a droplet it creates").
+      give staging a converge step, and update docs limitations ("Terraform cannot give
+      the DigitalOcean metrics agent to a droplet that already exists").
 
       #{assigned.join}
     MSG
 
-    workflow = File.read(DEPLOY_STAGING)
+    # Comment lines dropped, so a note that names the variable is not an override.
+    workflow = File.readlines(DEPLOY_STAGING).grep_v(/^\s*#/).join
     refute_match(/TF_VAR_monitoring\b|-var[\s=]+["']?monitoring\s*=/, workflow,
-      "deploy-staging.yml overrides var.monitoring. Staging's droplets were the ones that " \
-      "needed no do-agent converge because the module default gave them the agent at " \
-      "creation; see docs limitations before changing that.")
+      "deploy-staging.yml overrides var.monitoring. Staging's droplets need no do-agent " \
+      "converge only because the module default gives them the agent at creation; see " \
+      "docs limitations before changing that.")
   end
 
   test "user_data stays under ignore_changes alongside it" do
