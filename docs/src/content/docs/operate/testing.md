@@ -83,12 +83,18 @@ container entrypoint — not something to do inside a CI change.
 
 ## What CI does not run
 
-The Playwright scripts under `test/e2e/*.js` (`account_rotation`, `chat_bubble`, `joystick_menu`,
-`skills_catalog`) are **not** run in CI — the AO parent never ran them either. They are standalone
-runners that need a Playwright browser the runner is not provisioned for, and
-`account_rotation_test.js` drives the real Claude Code binary against a mock Anthropic server. The
-`test-system` job covers the overlapping UI through the Ruby browser suite. Tracked in
-[#162](https://github.com/tadasant/zimmer/issues/162).
+The Playwright scripts under `test/e2e/*.js` (`account_rotation`, `browser_extension`,
+`chat_bubble`, `joystick_menu`, `skills_catalog`) are **not** run in CI — the AO parent never ran
+them either. They are standalone runners that need a Playwright browser the runner is not
+provisioned for, and `account_rotation_test.js` drives the real Claude Code binary against a mock
+Anthropic server. The `test-system` job covers the overlapping UI through the Ruby browser suite.
+Tracked in [#162](https://github.com/tadasant/zimmer/issues/162).
+
+`browser_extension_test.js` is the one proof of the
+[browser extension](/extend/browser-extension/) as a whole: it loads the real unpacked extension
+into a full Chromium (`channel: 'chromium'` — the headless shell cannot load extensions), arms it
+on a real page, drops a pin, sends, and reads the session back. It needs a running server and a
+Quick Router key: `BASE_URL=http://localhost:3000 QUICK_ROUTER_KEY=zmr_… node test/e2e/browser_extension_test.js`.
 
 ## The migrations are replayed, in their own job
 

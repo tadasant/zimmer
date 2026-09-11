@@ -69,6 +69,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_12_120000) do
 
   create_table "api_keys", force: :cascade do |t|
     t.datetime "created_at", null: false
+    t.string "grant", default: "api", null: false
     t.datetime "last_used_at"
     t.string "name", null: false
     t.datetime "revoked_at"
