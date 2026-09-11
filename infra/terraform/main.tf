@@ -69,6 +69,56 @@ variable "droplet_size" {
   description = "Droplet size slug."
 }
 
+variable "monitoring" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    Whether the droplet asks for DigitalOcean's own metrics agent (CPU / memory / disk /
+    load history, and the only metrics DO's resource alert policies can evaluate). Free,
+    and ON by default -- every droplet this module creates has had it since #441.
+
+    A variable rather than a hardcode so a downstream copy of this module can turn it off
+    without forking the file, NOT because flipping it is cheap: the attribute is ForceNew
+    in the provider and sits in the droplet's `ignore_changes`, so it is CREATE-TIME ONLY.
+    Setting it false against a running droplet produces no plan diff and changes nothing
+    on the box; it takes effect on the next droplet creation. See the resource below.
+  EOT
+}
+
+variable "node_exporter_enabled" {
+  type        = bool
+  default     = false
+  description = <<-EOT
+    Install Prometheus' node_exporter on the droplet, as a systemd unit serving
+    /metrics on the TAILNET address only, port 9100. Opt-in: with `false` the rendered
+    cloud-config carries no trace of the exporter, so an existing consumer that does not
+    set this gets exactly the droplet it got before.
+
+    For a deployment that already runs a Prometheus-style scraper on the tailnet and
+    wants the conventional `node_*` metric names (node_cpu_seconds_total,
+    node_memory_MemAvailable_bytes, node_filesystem_avail_bytes, node_load1) rather than
+    the `system.cpu.*` shape an OpenTelemetry hostmetrics receiver would emit. DO's own
+    agent (var.monitoring) answers the same questions inside DO's console; this one
+    answers them to your own monitoring plane.
+
+    NO FIREWALL CHANGE, and none is wanted: cloud-init binds the exporter to the
+    droplet's 100.x tailnet address, never 0.0.0.0, so :9100 is reachable from tailnet
+    peers and from nowhere else. The DO firewall in this module still admits exactly one
+    inbound rule (UDP 41641). The scraper must therefore be on the tailnet.
+
+    TAKES EFFECT ON THE NEXT DROPLET CREATION, not on a running box. It is delivered
+    through cloud-init, which renders once at first boot, and user_data is under
+    `ignore_changes` on the droplet -- so flipping this to true produces no plan diff
+    and nothing reaches a live droplet. A rebuild (`recreate_droplet: true`, or
+    `terraform taint digitalocean_droplet.zimmer`) is what applies it. Installing it on
+    an existing droplet is a by-hand step over Tailscale SSH.
+
+    The version is pinned in cloud-init.yaml.tftpl and checksum-verified, deliberately:
+    node_exporter reshapes collectors between minor releases, which moves metric
+    cardinality under whatever is scraping it.
+  EOT
+}
+
 variable "manage_project" {
   type        = bool
   default     = false
@@ -299,8 +349,8 @@ resource "digitalocean_droplet" "zimmer" {
   tags     = ["zimmer", "zimmer-${var.environment}"]
 
   # DigitalOcean's metrics agent (CPU / memory / disk / load history, and the only
-  # metrics DO's own resource alert policies can evaluate). Free, and installed on
-  # every droplet this module creates.
+  # metrics DO's own resource alert policies can evaluate). Free, and `var.monitoring`
+  # defaults to true, so every droplet this module creates gets it.
   #
   # Create-time only. The attribute is `ForceNew` in the provider (every version in
   # the 2.x line, including the `~> 2.43` pinned above), and DigitalOcean exposes no
@@ -310,7 +360,7 @@ resource "digitalocean_droplet" "zimmer" {
   # a metrics agent. An existing droplet gets the agent from a rebuild, or from DO's
   # install script run as root on the box -- which this deployment has no clean path
   # to. See docs limitations, and tadasant/zimmer#651.
-  monitoring = true
+  monitoring = var.monitoring
 
   # Pin the droplet into the managed cluster's VPC (production) so its private_host
   # is routable; null (staging) lets DigitalOcean pick the region default.
@@ -361,6 +411,7 @@ resource "digitalocean_droplet" "zimmer" {
     ssh_host_ed25519_key     = var.ssh_host_ed25519_key
     ssh_host_ed25519_key_pub = var.ssh_host_ed25519_key_pub
     domain                   = var.domain
+    node_exporter_enabled    = var.node_exporter_enabled
   })
 }
 
