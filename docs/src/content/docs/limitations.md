@@ -1582,32 +1582,74 @@ provider key the (nonexistent) pool cannot vouch for, so the cheap path is the c
 here. But it is reached by a predicate that means "the pool is empty" being asked of a
 runtime that has no pool, rather than by anything that knows Pi does not pool credentials.
 
-### Pi reports a failed model call but cannot retry one
+### Pi retries a transient provider failure; auth and context length are terminal
 
-🟡 `PiRetryStrategy` returns `false` from `context_length_error?`, `api_error_for_retry?` and
-`auth_recovery_needed?`, so a Pi session gets no context-length compaction retry, no
-API-error retry, and no auth recovery — everything the Claude path does to keep a session
-alive, a Pi session does without.
+🟡 A Pi session now gets the API-error backoff a Claude session gets, and does not get
+compaction recovery or auth recovery — because for Pi those two have nothing to recover
+*into*, not because nothing detects them.
 
-That is no longer for want of a signature. Driven against a simulated localhost LLM at 401,
-429, 500 and a 400 `context_length_exceeded`, `pi 0.84.4` exited **0** every time and recorded
-the failure in its transcript as an assistant message with `stopReason: "error"` and an
-`errorMessage` led by the HTTP status. All four look the same, and nothing reaches stderr.
+Pi records a failed model call as an assistant message with `stopReason: "error"` and an
+`errorMessage` carrying the provider's own words, and **the process exits 0 either way**.
+`PiTurnError` classifies that record and `PiTranscriptSource#records_turn_errors?` is `true`, so
+`ApiErrorRetryService` reaches it through the same `RecordedTurnError` seam Codex uses. What each
+failure gets, characterized against the real `pi 0.84.4` binary driven by a local provider stub:
 
-What is missing is the recovery. The three recovery services are not Claude-shaped any more than a
-runtime makes them — Codex reaches them through `TranscriptSource#records_turn_errors?` (the services ask the runtime's
-own record of how its turn ended instead of scanning for Claude's `isApiErrorMessage` envelope) and
-`RuntimeCliAdapter.compacts_on_resume?` (compaction resumes with the recovery nudge instead of
-`/compact`) — but Pi answers neither yet, and `AuthRecoveryService` re-writes the active account's
-credentials while `PiAuthProvider` pools no accounts to re-write. Tracked in
-[#856](https://github.com/tadasant/zimmer/issues/856).
+| Backend said | Pi recorded | Zimmer does |
+| --- | --- | --- |
+| 500 / 502 / 503 | `500: {…}`, `502 <html>…`, `503: {…}` | backoff retry, up to 6 |
+| 429 rate limit or `insufficient_quota` | `429: {…}` | backoff retry, up to 6 |
+| 408 timeout | `408: {…}` | backoff retry, up to 6 |
+| stream closed mid-response | `terminated` | backoff retry, up to 6 |
+| connection refused, non-HTTP reply, early socket close | `Connection error.` | backoff retry, up to 6 |
+| 401 / 402 / 403 | `401: {…}` / `402: {…}` / `403: {…}` | fail, naming the provider — no page |
+| any other 4xx, context-window refusals among them | `400: {…}` | fail, naming the provider — no page |
+| no HTTP status, and no transport wording Zimmer knows | whatever Pi wrote | fail, **and page** |
 
-`PiRetryStrategy#terminal_api_error` covers the worst of it: a turn whose last conversational
-entry is one of those errors is failed with the provider's own wording instead of being
-parked in `needs_input` as "Process exited successfully" — which is what happened before,
-because a provider error is an exit 0 and took the success branch. `classifies_exits?` stays
-`false`, so that failure is loud in the session log without raising a standing
-unclassified-exit page.
+**The status decides, not the error body — and that is a deliberate consequence of which
+provider Pi actually talks to.** The characterization above drove an OpenAI-dialect stub, but
+every Pi model `ModelCatalog` offers is an `openrouter/*` id, and OpenRouter words its bodies
+differently: its context-window refusal carries a numeric `"code":400` rather than
+`"code":"context_length_exceeded"`, and it uses 402 for an exhausted balance. A classifier keyed
+on one provider's strings would misroute the provider Zimmer ships — and, because
+`classifies_exits?` is now `true`, would turn every unmemorized shape into a page. So `PiTurnError`
+classifies on the HTTP status, which is Pi's own framing and provider-independent, and consults the
+body for exactly one refinement: naming a 400 as a context-window refusal when it happens to say
+so. A 4xx Zimmer cannot name more precisely still fails quietly, because Zimmer *read a status* —
+it understands the shape well enough that failing is not an unknown failure mode, even when the
+sub-reason is out of reach.
+
+The cost of that choice, stated plainly: a genuine bad-request bug (a 400 Pi should never have
+sent) fails the session quietly instead of paging. The thing that still pages is a turn error with
+no readable status and no transport wording Zimmer knows — a genuinely novel shape, which is what
+the alert is for.
+
+**Context length is terminal because Pi has no compaction to trigger.** It has no `/compact`
+command, and — unlike Codex — it does not compact on a plain resume either
+(`RuntimeCliAdapter.compacts_on_resume?` is `false` for Pi). Resuming a session that died on a
+context-length 400 wrote no `{"type":"compaction"}` record and re-sent the same conversation with
+one more user message appended, failing identically: routing it to a retry would spend the budget
+making the prompt longer. `PiTurnError` gives it the kind `:context_length_terminal`, which no
+recovery service looks for.
+
+**Auth is terminal because there is no pool.** `PiAuthProvider` pools no accounts by design — Pi
+resolves a provider API key from the session environment per request — so `AuthRecoveryService` has
+no credential to rewrite and nothing to rotate to. A 401 is a fact about the key the session was
+handed, so it fails naming the provider's own wording rather than parking a human in front of a
+pool that does not exist. That cell of [#856](https://github.com/tadasant/zimmer/issues/856) is
+closed as "terminal by design", not implemented.
+
+**Quota is a gap rather than a decision.** A Pi `insufficient_quota` 429 takes the same bounded
+backoff as a rate limit and then fails, and an OpenRouter 402 (balance exhausted) fails
+immediately, because an exhausted balance does not refill on a backoff. A Claude or Codex quota
+wall instead rotates, or parks and is woken by `QuotaResetCheckerJob`. There is no Pi account pool
+to rotate through and no Pi quota snapshot to wake on, so a bounded failure is the best available
+answer — but it is worse than the budget pacing the other two runtimes get, and it is the one cell
+of [#856](https://github.com/tadasant/zimmer/issues/856) that is genuinely unfinished rather than
+decided.
+
+`classifies_exits?` is now `true` for Pi, so an exit no classifier claims pages instead of only
+logging. That is the point of the classification: the ordinary Pi failures are accounted for, so
+what is left is genuinely news.
 
 `failed_resume_recovery_needed?` is a different case and is *correctly* `false`: Pi's
 `--session-id` creates a missing session rather than exiting non-zero, so the Codex "no
@@ -1659,12 +1701,13 @@ Two gaps remain inside that, deliberately. A stale classifier still costs a **fa
 than the recovery it should have got: the held-session-id row above is one of those — Claude reports
 that refusal with exit 1 and writes nothing to the transcript at all, so no terminal API error exists
 for the backstop to see and the only state check that catches it is the empty-turn restart (see
-[Spawning](/sessions/spawning/)), which covers the first turn of a session and not a later one. And `PiRetryStrategy` classifies
-nothing, so every ordinary Pi failure is by construction an exit no classifier matched; it answers
-`classifies_exits? => false` and gets the loud log without a page, because paging on a runtime's
-designed-for path is how a channel gets ignored. Codex classifies its exits from the code it
-records on a failed turn (#54), so an unclassified Codex exit does page, and its
-`terminal_api_error` answers from that same record.
+[Spawning](/sessions/spawning/)), which covers the first turn of a session and not a later one. The
+second gap is that `runtime_classifies_exits?` — the guard that withholds the page from a runtime
+whose strategy classifies nothing, because paging on a runtime's designed-for path is how a channel
+gets ignored — now has no runtime answering `false`. Claude, Codex (#54) and Pi (#856) all classify
+their exits from evidence the runtime itself records, so an unclassified exit on any of the three
+pages. The guard stays for the next runtime to land before its failures are characterized, which is
+the state both Codex and Pi were in.
 
 Tracked in [#53](https://github.com/tadasant/zimmer/issues/53).
 

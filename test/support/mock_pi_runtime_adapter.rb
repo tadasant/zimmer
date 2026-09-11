@@ -27,6 +27,14 @@ class MockPiRuntimeAdapter
     PiRuntimeAdapter.cli_label
   end
 
+  # Pi does not compact on a plain resume — it compacts on its own token-driven
+  # schedule and wrote no compaction record when a failed session was resumed.
+  # Delegated rather than inherited so the double cannot drift from the real
+  # adapter if that ever changes. See PiTurnError.
+  def self.compacts_on_resume?
+    PiRuntimeAdapter.compacts_on_resume?
+  end
+
   attr_accessor :execute_hook, :resume_hook
   attr_reader :executed_commands, :resumed_sessions
   attr_accessor :process_manager, :file_system, :zimmer_session_id

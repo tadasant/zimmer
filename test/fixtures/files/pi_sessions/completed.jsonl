@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"11111111-2222-3333-4444-555555555555","timestamp":"2026-09-11T20:34:12.541Z","cwd":"/workspace/clone"}
+{"type":"model_change","id":"1e449c04","parentId":null,"timestamp":"2026-09-11T20:34:12.735Z","provider":"sim","modelId":"sim-model"}
+{"type":"thinking_level_change","id":"b4bf704e","parentId":"1e449c04","timestamp":"2026-09-11T20:34:12.736Z","thinkingLevel":"off"}
+{"type":"message","id":"44a7a6aa","parentId":"b4bf704e","timestamp":"2026-09-11T20:34:12.767Z","message":{"role":"user","content":[{"type":"text","text":"say hi"}],"timestamp":1789158852763}}
+{"type":"message","id":"a72ff343","parentId":"44a7a6aa","timestamp":"2026-09-11T20:34:12.940Z","message":{"role":"assistant","content":[{"type":"text","text":"Hello from the sim."}],"api":"openai-completions","provider":"sim","model":"sim-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1789158852840,"responseId":"chatcmpl-sim","rawStopReason":"stop"}}

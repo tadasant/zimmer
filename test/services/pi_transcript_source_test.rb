@@ -106,6 +106,42 @@ class PiTranscriptSourceTest < ActiveSupport::TestCase
     assert_equal [], @source.mcp_log_paths(working_directory: @working_directory)
   end
 
+  # === The recorded-turn-error seam ===
+  #
+  # This is what every recovery service dispatches on. A source that stopped
+  # answering `true` would silently turn every Pi retry back into a failed
+  # session, with nothing else failing to say so.
+
+  test "Pi records the error each turn ended on" do
+    assert @source.records_turn_errors?
+  end
+
+  test "the terminal turn error is read from the located transcript" do
+    session = build_session(SESSION_ID)
+    File.write(File.join(@sessions, "2026-09-11T20-34-16-693Z_#{SESSION_ID}.jsonl"),
+      pi_session_for(:server_500, SESSION_ID))
+
+    error = @source.terminal_turn_error(session: session, working_directory: @working_directory)
+
+    assert_instance_of PiTurnError, error
+    assert_equal :retryable, error.kind
+  end
+
+  test "a completed turn has no terminal turn error" do
+    session = build_session(SESSION_ID)
+    File.write(File.join(@sessions, "2026-09-11T20-34-16-693Z_#{SESSION_ID}.jsonl"),
+      pi_session_for(:completed, SESSION_ID))
+
+    assert_nil @source.terminal_turn_error(session: session, working_directory: @working_directory)
+  end
+
+  test "no locatable transcript is nil rather than a raise" do
+    session = build_session(SecureRandom.uuid)
+
+    assert_nil @source.terminal_turn_error(session: session, working_directory: @working_directory)
+    assert_nil @source.terminal_turn_error(session: session, working_directory: nil)
+  end
+
   private
 
   def build_session(session_id)

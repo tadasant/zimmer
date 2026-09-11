@@ -476,8 +476,10 @@ class ProcessLifecycleManager
       end
 
       # A runtime that records how each turn ended (TranscriptSource#records_turn_errors?
-      # — Codex, which exits 1 on every failure) names the error on a failed exit as
-      # well as on a completed one. An error no branch above claimed is either one
+      # — Codex and Pi) names the error on a failed exit as well as on a completed
+      # one. Only Codex reaches here by its own convention: it exits 1 on every
+      # failure, where a Pi provider error exits 0 and is claimed on the
+      # completed-turn door. A Pi exit that lands here is Pi's own failure. An error no branch above claimed is either one
       # nothing recognizes — handle_terminal_api_error fails the session with the
       # runtime's own words and pages — or one a recovery already acted on, whose
       # replacement died before writing a turn of its own: a dead turn, failed and
@@ -1675,9 +1677,12 @@ class ProcessLifecycleManager
   def report_unclassified_exit(error_msg, working_dir)
     runtime = session&.agent_runtime.presence || "unknown runtime"
 
-    # A runtime whose strategy classifies nothing (Pi, today) reaches this
-    # branch on EVERY ordinary failure. Paging on its designed-for path would be
-    # a standing hourly alert for expected behavior, so it logs and stops.
+    # A runtime whose strategy classifies nothing reaches this branch on EVERY
+    # ordinary failure. Paging on its designed-for path would be a standing
+    # hourly alert for expected behavior, so it logs and stops. No shipped
+    # runtime is in that state — Claude, Codex and Pi all classify their exits
+    # from evidence the runtime records — so this is the guard for the next one
+    # to land before its failures are characterized.
     unless runtime_classifies_exits?
       @logger.warn(
         "Unclassified process exit on a runtime with no exit classifiers — logging without alerting",
@@ -1876,8 +1881,8 @@ class ProcessLifecycleManager
   end
 
   # The runtime's own unmatched error prose, if its retry strategy can produce
-  # one. Strategies that cannot (Pi, whose provider errors are not classified
-  # yet) return nil and the alert carries stderr alone.
+  # one. A strategy that does not answer the question, or that recognized the
+  # error after all, returns nil and the alert carries stderr alone.
   def unclassified_runtime_error_text(working_dir)
     return nil unless retry_strategy.respond_to?(:unclassified_error_text)
 

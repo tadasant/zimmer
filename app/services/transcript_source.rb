@@ -253,9 +253,9 @@ class TranscriptSource
   #
   # When it does, the recovery services ask #terminal_turn_error which recovery
   # path a dead turn belongs to, instead of pattern-matching the transcript
-  # themselves. The default is no: Claude Code's API-error envelope is read by
-  # the recovery services directly (they predate this seam), and Pi's is read by
-  # PiRetryStrategy for the failure backstop only.
+  # themselves. Codex and Pi both answer yes. The default is no, which is
+  # Claude Code's answer: its API-error envelope is read by the recovery services
+  # directly, because they predate this seam.
   #
   # @return [Boolean]
   def records_turn_errors?
@@ -266,10 +266,18 @@ class TranscriptSource
   # from the session's transcript — or nil when that turn did not end on one, or
   # the transcript cannot be found.
   #
-  # The returned object answers #id (stable per failed turn), #kind (one of
-  # :context_length, :quota, :auth, :retryable, :unclassified), #recognized?,
-  # #message and #rate_limited?, and may answer #quota_reading. See
-  # CodexTurnError for the one implementation.
+  # The returned object answers #id (stable per failed turn), #kind, #recognized?,
+  # #message, #http_status and #rate_limited?, and may answer #quota_reading.
+  #
+  # #kind names the recovery path that owns the error, and the vocabulary is the
+  # runtime's own rather than a fixed enum: a service matches the kinds it can act
+  # on and ignores the rest, so a runtime with no recovery for a condition names
+  # it something no service looks for instead of lying. CodexTurnError answers
+  # :context_length, :quota, :auth, :retryable and :unclassified; PiTurnError
+  # answers :retryable, :unclassified and three `_terminal` kinds that are
+  # deliberate dead ends. #recognized? is the one answer every implementation
+  # must agree on: false means "no page-worthy classifier knew this", and it is
+  # what decides whether a dead turn reaches UnclassifiedFailureReporter.
   #
   # @param session [Session]
   # @param working_directory [String, nil] the cwd the runtime was spawned from
