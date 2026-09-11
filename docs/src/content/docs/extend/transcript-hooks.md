@@ -318,6 +318,15 @@ The hook correlates a comment-posting command (`gh pr comment`, `gh issue commen
 a `gh api` write to a comments endpoint) with the permalink that command printed, and writes an
 `AgentPostedGithubComment` row keyed by comment rather than by session.
 
+A comment posted through a **GitHub MCP server** has no command to correlate, so the tool's own name
+is the evidence: a `mcp__<server>__<tool>` call whose tool half is one of `MCP_COMMENT_POST_TOOLS` is
+a post, and the id is read from the `html_url` of the single JSON object its result carries — never
+from a free-text scan, and never from a JSON array, which is the shape of a listing. That tier is
+the sibling of `GithubPrUrlHook`'s `create_pull_request` one above, and it is held tighter for the
+same reason: an MCP tool name is a convention across servers Zimmer has not seen, not one program
+whose output it can predict. A server that answers in prose, or with a thread, records nothing —
+the direction that costs a comment its suppression rather than costing a human their reply.
+
 It reads only the results of commands it recognizes as posting — an agent that *reads* a comment gets
 that comment's own `html_url` back, and recording that would suppress a human comment. Same principle
 as `GithubPrUrlHook`, and since [#870](https://github.com/tadasant/zimmer/issues/870) the same

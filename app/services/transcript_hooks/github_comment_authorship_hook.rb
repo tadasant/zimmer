@@ -17,7 +17,14 @@
 # reads the id out of the result of a *posting* command and writes an
 # AgentPostedGithubComment row.
 #
-# Only results of posting commands are scanned, mirroring GithubPrUrlHook's
+# A comment posted through a GitHub MCP server is the same correlation without a
+# command to read: there is no shell line, so the tool's own name is what says the
+# call posted (MCP_COMMENT_POST_TOOLS), and its result is read as the JSON of the
+# resource it created. GithubPrUrlHook covers `create_pull_request` the same way
+# (#971); leaving this one uncovered left an agent's comment looking exactly like a
+# human's, which is #214.
+#
+# Only results of posting calls are scanned, mirroring GithubPrUrlHook's
 # `gh pr create` correlation. Scanning every tool result would misfire on the
 # common case of an agent *reading* a comment (`gh api .../issues/comments/<id>`
 # returns a body containing that comment's own `html_url`) — which would suppress
@@ -27,10 +34,11 @@
 # quotes, so a read that merely names one — `grep -rn "gh pr comment" docs/` over
 # this very file — is not a post (#870).
 #
-# The residual gap is a comment posted by a route this pattern doesn't recognize
-# (a Python script, an MCP GitHub tool). Those are not recorded and can still be
-# routed back; see docs/src/content/docs/limitations.md. Widening the pattern is
-# how a new posting route gets covered.
+# The residual gap is a comment posted by a route none of the three recognizes — a
+# Python script, a `curl`, an MCP server whose posting tool is not on the list.
+# Those are not recorded and can still be routed back; see
+# docs/src/content/docs/limitations.md. Widening the patterns is how a new posting
+# route gets covered.
 #
 # Registered by default via config/initializers/transcript_hooks.rb.
 class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
@@ -128,6 +136,51 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   # the key, the quotes and a comma on the same line — which is what makes this the
   # post's own output in a result that also carries another command's (#901, #urls_from).
   COMMENT_URL_LINE_PATTERNS = COMMENT_URL_PATTERNS.transform_values { |pattern| /\A#{pattern.source}\z/ }.freeze
+
+  # MCP tools that post a comment on a pull request or an issue.
+  #
+  # This is the route no amount of command parsing can see: a session holding a
+  # GitHub MCP server posts a comment as a structured tool call, with no shell
+  # command to classify — the same blind spot GithubPrUrlHook closed for
+  # `create_pull_request` (#971). Left uncovered, such a comment gets no
+  # AgentPostedGithubComment row, so it is indistinguishable from a human's and is
+  # handed straight back to a session as "GitHub Comment Response Required" (#214).
+  #
+  # Named whole and matched at the END of the tool name, the rule
+  # MCP_PR_CREATE_TOOL_PATTERN uses: `mcp__<server>__<tool>`, and a prefix match
+  # would read `create_pull_request_review_comment` as `create_pull_request_review`
+  # — harmless here, since both post, but the discipline is what keeps a *reading*
+  # tool (`get_issue_comments`, `list_pull_request_reviews`) out of a list whose
+  # false positive silences a human's comment for every session, permanently.
+  #
+  # This is the extension point for a new server: add the tool it posts with. What
+  # a name on this list buys is bounded by #urls_from — an MCP result vouches for
+  # the `html_url` of the single JSON object it answered with, and for nothing else
+  # it printed — so a tool that answers with a whole thread records nothing rather
+  # than every comment in it.
+  #
+  # A name on the list is therefore not by itself coverage. The two pending-review
+  # entries are the case in point: github-mcp-server acknowledges them in prose,
+  # which records nothing, and the call that publishes the review
+  # (`submit_pending_pull_request_review`) answers with a `#pullrequestreview-N` url,
+  # which is not a comment permalink. They are listed because a server that does
+  # answer with the created comment should be read, not because that route is known
+  # to be closed — see docs/src/content/docs/limitations.md.
+  #
+  # Pi sessions reach none of this: Pi calls every MCP server through one proxy tool
+  # rather than by name, so a Pi transcript has no `mcp__<server>__<tool>` to key on
+  # (TranscriptHooks::PiToolCallParser#structured_tool_calls), the same way
+  # GithubPrUrlHook's MCP create tier does not reach them.
+  MCP_COMMENT_POST_TOOLS = %w[
+    add_issue_comment
+    create_issue_comment
+    add_comment_to_pending_review
+    add_pull_request_review_comment_to_pending_review
+    create_pull_request_review_comment
+    create_pull_request_review
+    create_and_submit_pull_request_review
+  ].freeze
+  MCP_COMMENT_POST_TOOL_PATTERN = /\Amcp__.+__(?:#{Regexp.union(MCP_COMMENT_POST_TOOLS).source})\z/
 
   # The two ways a session reaches GitHub from a shell. Counted over the segments'
   # #unquoted views, so a `gh` a command merely quotes does not count, and loosely —
@@ -259,6 +312,7 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
   # gives up every recording in the call. That call lists PRs, not comments, so nothing
   # it printed is somebody else's comment.
   def urls_from(text, post)
+    return created_html_url(text) if post[:kind] == :mcp
     return html_urls_from_json(text) if post[:kind] == :api
     return permalinks_anywhere(text) if post[:scan] == :whole_result
 
@@ -283,6 +337,23 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
       stripped = line.strip
       stripped if COMMENT_URL_LINE_PATTERNS.any? { |_comment_type, pattern| pattern.match?(stripped) }
     end.uniq
+  end
+
+  # The `html_url` of the ONE JSON object a result carries, and nothing else: the MCP
+  # tier's reading.
+  #
+  # Narrower than #html_urls_from_json, which also reads an array. An array is the
+  # shape of a listing, and `mcp__<server>__<tool>` is a convention matched across
+  # servers Zimmer has never seen rather than one program whose output it can
+  # predict — so a posting tool that answers with a thread records nothing instead
+  # of every comment in it. Same asymmetry GithubPrUrlHook#urls_from_mcp_pr_create_results
+  # draws for the same reason: the MCP tier is held tighter than the shell ones
+  # because what it is reading is unverified.
+  def created_html_url(text)
+    parsed = JSON.parse(text)
+    parsed.is_a?(Hash) ? Array(parsed["html_url"]) : []
+  rescue JSON::ParserError
+    []
   end
 
   # The `html_url` of a `gh api` response. Returns [] when the output is not a JSON
@@ -320,11 +391,32 @@ class TranscriptHooks::GithubCommentAuthorshipHook < TranscriptHooks::BaseHook
 
   # The tool calls that posted a comment, mapped to how they posted it and to what
   # their result vouches for.
+  #
+  # Two routes reach here: a shell command (#posting_call) and an MCP tool call
+  # (#mcp_posting_calls). They cannot collide — a call is one or the other — so the
+  # merge order is immaterial.
+  #
   # @return [Hash{String => Hash}] call id => the Hash #posting_call returns
   def posting_calls
-    parser.shell_calls.each_with_object({}) do |call, acc|
+    parser.shell_calls.each_with_object(mcp_posting_calls) do |call, acc|
       post = posting_call(call[:command])
       acc[call[:id]] = post if post
+    end
+  end
+
+  # The MCP comment-posting calls in this transcript, keyed by tool-call id.
+  #
+  # There is no per-segment classification to do and no shell to read: the tool's
+  # own name says what the call did. What its result vouches for is the narrowest
+  # reading available — the created resource's own `html_url` (see #urls_from and
+  # MCP_COMMENT_POST_TOOLS).
+  #
+  # @return [Hash{String => Hash}] call id => { kind: :mcp }
+  def mcp_posting_calls
+    parser.structured_tool_calls.each_with_object({}) do |call, acc|
+      next unless call[:name].match?(MCP_COMMENT_POST_TOOL_PATTERN)
+
+      acc[call[:id]] = { kind: :mcp }
     end
   end
 

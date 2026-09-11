@@ -567,4 +567,158 @@ class TranscriptHooks::GithubCommentAuthorshipHookTest < ActiveSupport::TestCase
 
     assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
   end
+
+  # --- MCP GitHub servers (#214) ----------------------------------------------
+
+  def claude_mcp_transcript(name:, input:, output:, is_error: false)
+    <<~JSONL
+      {"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_mcp","name":#{name.to_json},"input":#{input.to_json}}]}}
+      {"type":"user","message":{"content":[{"tool_use_id":"toolu_mcp","type":"tool_result","content":#{output.to_json},"is_error":#{is_error}}]}}
+    JSONL
+  end
+
+  test "records a comment posted through a GitHub MCP server" do
+    # No shell command exists for this post, so nothing the command patterns can read
+    # sees it. Before this was covered, the comment was indistinguishable from a
+    # human's and came straight back to a session as human input.
+    output = { "id" => 5145406778, "html_url" => POSTED_URL }.to_json
+
+    run_hook(claude_mcp_transcript(
+      name: "mcp__github__add_issue_comment",
+      input: { "owner" => "tadasant", "repo" => "tadasant-internal", "issue_number" => 281, "body" => "done" },
+      output: output
+    ))
+
+    record = AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 5145406778)
+    assert_not_nil record, "a comment posted through an MCP server is still this session's"
+    assert_equal @session.id, record.session_id
+    assert_equal "https://github.com/tadasant/tadasant-internal/pull/281", record.pr_url
+  end
+
+  test "records an inline review comment posted through a GitHub MCP server" do
+    # A server that answers a pending-review add with the created comment. This pins the
+    # wiring rather than claiming coverage of github-mcp-server's own flow, which
+    # acknowledges in prose and publishes through a tool whose url is a review, not a
+    # comment — see the note on MCP_COMMENT_POST_TOOLS.
+    output = { "id" => 999, "html_url" => "https://github.com/owner/repo/pull/7#discussion_r999" }.to_json
+
+    run_hook(claude_mcp_transcript(
+      name: "mcp__gh-server__add_comment_to_pending_review",
+      input: { "owner" => "owner", "repo" => "repo", "pullNumber" => 7, "body" => "nit" },
+      output: output
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "review", comment_id: 999)
+  end
+
+  test "does NOT record comments an MCP read tool listed" do
+    # The failure that must not happen: `get_issue_comments` returns the whole thread,
+    # the human's comment included. Recording those would silence them for every
+    # session, permanently.
+    output = [
+      { "id" => 50, "html_url" => HUMAN_COMMENT_URL },
+      { "id" => 100, "html_url" => AGENT_COMMENT_URL }
+    ].to_json
+
+    run_hook(claude_mcp_transcript(
+      name: "mcp__github__get_issue_comments",
+      input: { "owner" => "tadasant", "repo" => "tadasant-internal", "issue_number" => 281 },
+      output: output
+    ))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 50)
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+  end
+
+  test "does NOT record a permalink an MCP post merely quoted in its body" do
+    # An agent replying to a human quotes the human's permalink, and a server that
+    # echoes the created comment echoes its body with it. Only the created resource's
+    # own html_url counts.
+    output = {
+      "id" => 100,
+      "html_url" => AGENT_COMMENT_URL,
+      "body" => "[CC Says] answering #{HUMAN_COMMENT_URL}"
+    }.to_json
+
+    run_hook(claude_mcp_transcript(
+      name: "mcp__github__add_issue_comment",
+      input: { "owner" => "tadasant", "repo" => "tadasant-internal", "issue_number" => 281, "body" => "..." },
+      output: output
+    ))
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 50),
+      "the human comment the reply quoted is not one this session posted"
+  end
+
+  test "does NOT record anything for a failed MCP post" do
+    output = { "id" => 100, "html_url" => AGENT_COMMENT_URL }.to_json
+
+    run_hook(claude_mcp_transcript(
+      name: "mcp__github__add_issue_comment",
+      input: { "owner" => "tadasant", "repo" => "tadasant-internal", "issue_number" => 281, "body" => "..." },
+      output: output,
+      is_error: true
+    ))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+  end
+
+  test "does NOT record an MCP post that answered with a whole thread" do
+    # A JSON array is the shape of a listing, and an MCP server is a convention rather
+    # than a program whose output Zimmer can predict — so a posting tool that answers
+    # with the thread records nothing rather than every comment in it, the human's
+    # included.
+    output = [
+      { "id" => 50, "html_url" => HUMAN_COMMENT_URL },
+      { "id" => 100, "html_url" => AGENT_COMMENT_URL }
+    ].to_json
+
+    run_hook(claude_mcp_transcript(
+      name: "mcp__github__add_issue_comment",
+      input: { "owner" => "tadasant", "repo" => "tadasant-internal", "issue_number" => 281, "body" => "..." },
+      output: output
+    ))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 50)
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+  end
+
+  test "does NOT record a non-JSON MCP result" do
+    # A server that answers in prose tells us nothing we can pin to the created
+    # resource, and free-text scanning is what silences a human. A lost recording is
+    # the safe direction.
+    run_hook(claude_mcp_transcript(
+      name: "mcp__github__add_issue_comment",
+      input: { "owner" => "tadasant", "repo" => "tadasant-internal", "issue_number" => 281, "body" => "..." },
+      output: "Posted a comment: #{AGENT_COMMENT_URL}"
+    ))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+  end
+
+  test "does NOT record for an MCP tool whose name merely starts with a posting tool" do
+    output = { "id" => 100, "html_url" => AGENT_COMMENT_URL }.to_json
+
+    run_hook(claude_mcp_transcript(
+      name: "mcp__github__add_issue_comment_reaction",
+      input: { "owner" => "tadasant", "repo" => "tadasant-internal" },
+      output: output
+    ))
+
+    assert_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+  end
+
+  test "records an MCP post in a Codex transcript" do
+    @session.update!(agent_runtime: "codex")
+    output = { "id" => 100, "html_url" => AGENT_COMMENT_URL }.to_json
+    transcript = <<~JSONL
+      {"type":"response_item","payload":{"type":"function_call","call_id":"call_1","name":"mcp__github__add_issue_comment","arguments":"{}"}}
+      {"type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":#{output.to_json}}}
+    JSONL
+
+    run_hook(transcript)
+
+    assert_not_nil AgentPostedGithubComment.posted_by_agent(comment_type: "pr", comment_id: 100)
+  end
 end

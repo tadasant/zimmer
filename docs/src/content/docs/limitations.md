@@ -3587,20 +3587,36 @@ same transaction. Two narrow cases remain, and both are deliberate:
 
 The dedup across fires — the thing the setting is mostly for — is unaffected by either.
 
-### Agent-posted comments are only recognized when a known command posted them
+### Agent-posted comments are only recognized when a known posting route posted them
 
 `TranscriptHooks::GithubCommentAuthorshipHook` is what keeps Zimmer from routing its own agents'
-GitHub comments back to agents, and it works by recognizing the *command* that posted the comment:
-`gh pr comment`, `gh issue comment`, `gh pr review`, and `gh api` writes to a comments endpoint. A
-comment posted any other way — a Python script, an MCP GitHub tool, `curl` — leaves no
-`AgentPostedGithubComment` row, so it still looks exactly like a human comment and can still wake a
-session. The `[CC Says]` marker remains a second line of defence for those, with the weakness that
-put it here: an agent can forget it.
+GitHub comments back to agents, and it works by recognizing the *route* that posted the comment:
+the commands `gh pr comment`, `gh issue comment`, `gh pr review` and `gh api` writes to a comments
+endpoint, plus an MCP tool call whose name ends in one of `MCP_COMMENT_POST_TOOLS`. A comment posted
+any other way — a Python script, a `curl`, an MCP server whose posting tool is named something not
+on that list — leaves no `AgentPostedGithubComment` row, so it still looks exactly like a human
+comment and can still wake a session. The `[CC Says]` marker remains a second line of defence for
+those, with the weakness that put it here: an agent can forget it.
 
 Deliberately narrow rather than scanning every tool result: an agent that merely *reads* a comment
 gets that comment's own `html_url` back, and treating that as a post would silence a human. Covering
-a new posting route means adding its pattern to `DIRECT_POST_PATTERNS`, or teaching
-`gh_api_post?` the shape.
+a new posting route means adding its pattern to `DIRECT_POST_PATTERNS`, its tool name to
+`MCP_COMMENT_POST_TOOLS`, or teaching `gh_api_post?` the shape.
+
+The MCP tier is narrower than the shell ones in what a result may vouch for: only the `html_url` of
+the single JSON *object* the call answered with, never a free-text scan and never a JSON array,
+which is the shape of a listing. So a server that answers in prose, or with a whole thread, records
+nothing — a lost recording costs one comment its suppression, while a wrong one costs a human their
+reply, permanently and fleet-wide.
+
+Two things that tier does not reach. The pending-review tools on the list
+(`add_comment_to_pending_review` and its longer spelling) are covered only as far as the server
+answers with a permalink-bearing object; `github-mcp-server` acknowledges them in prose, and the
+call that publishes the review (`submit_pending_pull_request_review`) answers with a
+`#pullrequestreview-N` url, which is not a comment permalink and matches nothing — so that route
+still records nothing today. And a **Pi** session cannot reach the tier at all: Pi calls every MCP
+server through one proxy tool rather than by name, so there is no `mcp__<server>__<tool>` in its
+transcript to key on (the same reason `GithubPrUrlHook`'s MCP create tier skips Pi).
 
 The recognition reads what a command segment *runs*, not what it quotes
 ([#870](https://github.com/tadasant/zimmer/issues/870)), so `grep -rn "gh pr comment" docs/` over
@@ -3651,6 +3667,33 @@ outside it by construction.
 
 The same recognition gap sets the cost of the 60-second `ATTRIBUTION_GRACE_SECONDS` hold-down: every
 human comment waits up to a minute longer (on top of the 30-second poll) before it wakes a session.
+
+### A comment on a merged or closed PR no longer reaches the session
+
+`Github::CommentEvaluator` drops a tracked PR the poll pass read as `merged` or `closed` before it
+asks either comment endpoint, so a comment posted after the merge does not wake the session that
+opened the PR — not a human's either. That is the deliberate half of the
+[#214](https://github.com/tadasant/zimmer/issues/214) fix: a terminal PR's thread is where Zimmer's
+own automation and an agent's own notes land, every session's `gh` authenticates as the human, and
+the prompt the poller builds asks the agent to reply on GitHub — so a comment there is much more
+likely to start a self-reply loop than to be a human waiting for an answer.
+
+What a human loses is one route to a session, not the session: the web follow-up form, `POST
+/api/v1/sessions/:id/enqueued_messages` and MCP `action_session` all reach a live session directly
+and do not care whether a PR is open. Nothing announces the drop on GitHub, though — no 👀, no
+reply — so a human commenting on a merged PR and expecting an agent gets silence. The skip is
+logged at `info` naming the PR and the session.
+
+`closed` is skipped on the same footing as `merged`, and the argument is weaker there: a PR closed
+without merging can be reopened, and "reopen this and do X" is a comment a human plausibly leaves on
+one. Two consequences follow. While the PR sits closed its comments are never fetched, so none of
+them reaches the session; and if it is reopened, the next pass sees the whole backlog at once — all
+of it after `github_pr_tracking_started_at`, which does not move — and enqueues a follow-up per
+comment in one burst rather than one at a time. Both are the cost of the issue asking for
+merged *and* closed; narrowing the skip to `merged` alone is the change to make if the closed case
+turns out to matter more than the loop it prevents.
+
+A PR the pass could not *read* is still polled: only a positive terminal reading stops it.
 
 ### A failed repo visibility lookup drops the comment
 
