@@ -83,7 +83,7 @@ module OperatorHttpBasicAuth
     refuse_operator(realm_configured: false)
   end
 
-  # Constant-time comparison, mirroring Api::BaseController#authenticate_api_key.
+  # Constant-time comparison, the same primitive ApiKey.authenticate uses for API_KEYS entries.
   # `secure_compare` (as opposed to `fixed_length_secure_compare`) digests both sides first,
   # so it tolerates unequal lengths without leaking them.
   def secure_compare(given, expected)

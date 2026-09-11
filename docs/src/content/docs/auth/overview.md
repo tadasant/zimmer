@@ -182,7 +182,9 @@ What it still isn't:
 
 `/settings/api_keys` (linked from Settings) lists every key by name, with where it came from, its
 fingerprint, and when it was last used. It marks the key this deployment gives its own agent
-sessions. From there you can:
+sessions' Zimmer MCP servers, but that is not the only entry agents hold: `CliSpawnEnv` does not
+clear `API_KEYS`, so every session's environment carries all of them. Only a minted key is out of an
+agent's reach. From there you can:
 
 - **Create** a named key. Copy it from the page, because it is not shown again.
 - **Revoke** a key. It is refused from the next request on. Revoking is a timestamp, not a delete, so
