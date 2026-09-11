@@ -169,31 +169,43 @@ class PiMcpConfigPostProcessor < RuntimeConfigPostProcessor
   # which exists and would be one line shorter. The global covers HTTP entries
   # too, and those are the ones deliberately left out below.
   #
-  # Only entries with a `command`, exactly as on Codex. The adapter has three
-  # transports — `command`, `url` and `socket` — and the other two both reach a
-  # server that is already running (for the auto-injected Zimmer entries, this
-  # very process), so neither has a cold start to absorb and a wider budget
-  # there would only delay reporting an endpoint that is simply unreachable.
+  # The DEFAULT reaches entries with a `command` only, exactly as on Codex. The
+  # adapter has three transports — `command`, `url` and `socket` — and the other
+  # two both reach a server that is already running (for the auto-injected Zimmer
+  # entries, this very process), so neither has a cold start to absorb and a
+  # wider budget there would only delay reporting an endpoint that is simply
+  # unreachable. A value the catalog DECLARES is written to any transport: that
+  # argument is about what Zimmer should assume, and an entry naming a number has
+  # stopped leaving it to Zimmer.
+  #
+  # The per-server value is the catalog's `startup_timeout_sec`
+  # ([#113](https://github.com/tadasant/zimmer/issues/113)), converted to this
+  # key's milliseconds. Pi is one of the two runtimes that can act on one at all —
+  # like Codex's, this key is already per-entry, so a fast server declaring 15s
+  # fails fast beside a slow one declaring 300s. On Claude neither can.
   #
   # An entry that already names one keeps it, including a `0`, which the adapter
   # reads as "use the SDK default" — an explicit opt-out is still the operator's
-  # call. A `mcp.json` catalog entry cannot express one (AIR's server schema has
-  # no such field), so what this preserves is a value a repo wrote into its own
-  # checked-in `.mcp.json`, which seeding merges around rather than replaces.
+  # call. That is a value a repo wrote into its own checked-in `.mcp.json`, which
+  # seeding merges around rather than replaces; the catalog field is a different
+  # source, and the local file wins.
   def apply_startup_timeouts!(servers)
     timed = servers.filter_map do |name, entry|
       next unless entry.is_a?(Hash)
-      next if entry["command"].blank?
       next if entry[REQUEST_TIMEOUT_KEY].present?
 
-      entry[REQUEST_TIMEOUT_KEY] = McpStartupTimeout::MILLISECONDS
-      name
+      declared = McpStartupTimeout.declared_seconds(name)
+      # No cold start to absorb, and nothing declared: leave it to the SDK default.
+      next if declared.nil? && entry["command"].blank?
+
+      entry[REQUEST_TIMEOUT_KEY] = (declared || McpStartupTimeout::SECONDS) * 1000
+      "#{name}=#{entry[REQUEST_TIMEOUT_KEY]}ms#{' (catalog)' if declared}"
     end
 
     return if timed.empty?
 
-    Rails.logger.info "[#{self.class.name}] Set #{REQUEST_TIMEOUT_KEY}=#{McpStartupTimeout::MILLISECONDS} " \
-      "on #{timed.size} stdio MCP server(s): #{timed.join(', ')}."
+    Rails.logger.info "[#{self.class.name}] Set #{REQUEST_TIMEOUT_KEY} on #{timed.size} " \
+      "MCP server(s): #{timed.join(', ')}."
   end
 
   def warn_unusable(server, reason)

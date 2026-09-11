@@ -1919,11 +1919,13 @@ tarball store, comes with it. So the packages `bin/preinstall-mcp-packages` warm
 `~/.npm` at build time are not read by any MCP server, and the first launch in a fresh clone fetches
 every one of them from the registry.
 
-All three runtimes have room to absorb it — three minutes, from `MCP_TIMEOUT=180000` on Claude,
-`startup_timeout_sec = 180` on every Codex stdio entry
+All three runtimes have room to absorb it — three minutes by default, from `MCP_TIMEOUT=180000` on
+Claude, `startup_timeout_sec = 180` on every Codex stdio entry
 ([#702](https://github.com/tadasant/zimmer/issues/702)) and `"requestTimeoutMs": 180000` on every
 Pi one ([#844](https://github.com/tadasant/zimmer/issues/844)) — so the cost is a delay rather than
-a dropped server. The price of the wider budget is that a genuinely hung server holds the handshake
+a dropped server. A catalog entry that declares its own `startup_timeout_sec` moves its own budget
+([MCP servers](/air/mcp-servers/#startup_timeout_sec-how-long-this-server-gets-to-start)); on Claude
+that can only lengthen the one budget the whole process shares, never shorten one server's. The price of the wider budget is that a genuinely hung server holds the handshake
 for three minutes instead of Codex's 30-second default or Pi's 60-second one, and on Pi it also
 raises the ceiling on every tool call, because the adapter's one `requestTimeoutMs` covers the
 whole connection rather than just its opening.

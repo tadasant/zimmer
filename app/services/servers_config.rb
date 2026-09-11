@@ -29,6 +29,7 @@ class ServersConfig
       @headers = config["headers"] || {}
       @oauth = config["oauth"] || {}
       @unavailable = config["unavailable"]
+      @startup_timeout_sec = config[McpStartupTimeout::CATALOG_KEY]
     end
 
     def remote?
@@ -73,6 +74,28 @@ class ServersConfig
     end
 
     def declared_unavailable? = !unavailable_reason.nil?
+
+    # How long a runtime should wait for THIS server to start and answer
+    # `initialize`, in seconds, when the catalog entry says so — nil when it does
+    # not, which is when McpStartupTimeout's flat default applies.
+    #
+    # The field is `"startup_timeout_sec": <int>` on the server entry
+    # ([#113](https://github.com/tadasant/zimmer/issues/113)). A fast local server
+    # can ask to fail fast instead of holding a session for three minutes; a big
+    # npx cold start or a remote server doing OAuth can ask for more room.
+    #
+    # Validated rather than passed through, for the same reason
+    # #unavailable_reason is normalized: the value is written in another
+    # repository, and this one is a number Zimmer hands to a runtime. Bounds and
+    # the ignore-and-log rule live in McpStartupTimeout, which is also where the
+    # default it falls back to is stated.
+    #
+    # @return [Integer, nil] seconds
+    def startup_timeout_seconds
+      return @startup_timeout_seconds if defined?(@startup_timeout_seconds)
+
+      @startup_timeout_seconds = McpStartupTimeout.normalize(@startup_timeout_sec, server_name: name)
+    end
 
     # Statically-configured OAuth client id for this server, taken from the
     # catalog `oauth` block. Present for servers that require a pre-registered
@@ -161,7 +184,12 @@ class ServersConfig
         # because McpServerOptions already publishes an `unavailable` that is a
         # boolean. Two hashes describing one server must not use one key for two
         # types.
-        unavailable_reason: unavailable_reason
+        unavailable_reason: unavailable_reason,
+        # The catalog's own declared startup budget, or nil when it declares
+        # nothing and McpStartupTimeout::SECONDS applies. Reported rather than
+        # resolved to an effective number: nil here is "the catalog is silent",
+        # which is a different fact from "the catalog asked for 180".
+        startup_timeout_sec: startup_timeout_seconds
       }
 
       if stdio?

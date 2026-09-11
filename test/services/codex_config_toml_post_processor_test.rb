@@ -836,6 +836,77 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
     assert_equal McpStartupTimeout::SECONDS, servers.dig("context7", "startup_timeout_sec")
   end
 
+  # ---------------------------------------------------------------------------
+  # A per-server budget the catalog declares (#113)
+  # ---------------------------------------------------------------------------
+
+  test "post_process! gives a Codex stdio server the budget its catalog entry declares" do
+    declare_in_catalog("context7" => 15, "slow-one" => 420)
+    write_config(
+      "context7" => { "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ] },
+      "slow-one" => { "command" => "npx", "args" => [ "-y", "@acme/slow" ] },
+      "not-npx" => { "command" => "/usr/local/bin/thing", "args" => [ "--serve" ] }
+    )
+
+    build_processor.post_process!
+
+    servers = read_config["mcp_servers"]
+
+    assert_equal 15, servers.dig("context7", "startup_timeout_sec"),
+      "a fast server that declares 15s fails fast rather than holding the session for three minutes"
+    assert_equal 420, servers.dig("slow-one", "startup_timeout_sec"),
+      "and a slow one beside it still gets its own, longer budget"
+    assert_equal McpStartupTimeout::SECONDS, servers.dig("not-npx", "startup_timeout_sec"),
+      "a server that declares nothing is untouched by either of them"
+  end
+
+  test "post_process! writes a declared budget onto an http server, which gets none by default" do
+    declare_in_catalog("acme-http" => 300)
+    write_config(
+      "acme-http" => { "url" => "https://acme.example.com/mcp", "http_headers" => {} },
+      "quiet-http" => { "url" => "https://quiet.example.com/mcp", "http_headers" => {} }
+    )
+
+    build_processor.post_process!
+
+    servers = read_config["mcp_servers"]
+
+    assert_equal 300, servers.dig("acme-http", "startup_timeout_sec"),
+      "a remote server whose OAuth leg is slow can ask for room; the catalog has stopped leaving it to Zimmer"
+    assert_nil servers.dig("quiet-http", "startup_timeout_sec"),
+      "an http entry that declares nothing still gets none — it has no cold start to absorb"
+    assert_nil servers.dig(SELF_SESSION_SERVER, "startup_timeout_sec")
+  end
+
+  test "post_process! falls back to the default when the catalog declares an unusable value" do
+    declare_in_catalog("context7" => 2, "not-npx" => "90")
+    write_config(
+      "context7" => { "command" => "npx", "args" => [ "-y", "@upstash/context7-mcp@latest" ] },
+      "not-npx" => { "command" => "/usr/local/bin/thing", "args" => [ "--serve" ] }
+    )
+
+    build_processor.post_process!
+
+    servers = read_config["mcp_servers"]
+
+    assert_equal McpStartupTimeout::SECONDS, servers.dig("context7", "startup_timeout_sec"),
+      "2s is below the floor, so it is ignored rather than honored"
+    assert_equal McpStartupTimeout::SECONDS, servers.dig("not-npx", "startup_timeout_sec"),
+      "a string is a catalog typo, not an intent Zimmer can act on"
+  end
+
+  test "post_process! prefers a timeout already in the config over the catalog's" do
+    declare_in_catalog("explicit-sec" => 30)
+    write_config(
+      "explicit-sec" => { "command" => "npx", "args" => [ "-y", "@acme/mcp" ], "startup_timeout_sec" => 12 }
+    )
+
+    build_processor.post_process!
+
+    assert_equal 12, read_config.dig("mcp_servers", "explicit-sec", "startup_timeout_sec"),
+      "a value the repo wrote into its own checked-in config wins, as every other local value does here"
+  end
+
   # The point of McpStartupTimeout: one budget, two spellings. A change to
   # Claude's millisecond constant that did not reach Codex would put the runtime
   # with the shorter default back on the shorter budget.
@@ -849,6 +920,19 @@ class CodexConfigTomlPostProcessorTest < ActiveSupport::TestCase
   end
 
   private
+
+  # Put per-server budgets into the catalog ServersConfig reads. `.find` is
+  # `.all.find`, so this one seam is the whole catalog as far as the processor
+  # is concerned.
+  def declare_in_catalog(budgets)
+    declared = budgets.map do |name, seconds|
+      ServersConfig::Server.new(name, {
+        "type" => "stdio", "command" => "npx", McpStartupTimeout::CATALOG_KEY => seconds
+      })
+    end
+    others = ServersConfig.all.reject { |server| budgets.key?(server.name) }
+    ServersConfig.stubs(:all).returns(others + declared)
+  end
 
   def build_processor
     CodexConfigTomlPostProcessor.new(
