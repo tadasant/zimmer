@@ -1389,8 +1389,10 @@ Most short jobs run on `default`. Six kinds of work are deliberately isolated:
   Periodic auth work — `RefreshRuntimeAuthTokensJob`, `RefreshMcpOauthTokensJob` — deliberately stays
   on `default`. Nobody is waiting on it, and it is exactly the bulk character this lane exists to
   escape.
-- **`:inference`** — `SessionTitleJob`, `SessionStatusSummaryJob`, and the `needs_input` shape of
-  `SendPushNotificationJob`. These shell out to a runtime CLI for 15–90 seconds. The lane has two
+- **`:inference`** — `SessionTitleJob`, `SessionStatusSummaryJob`, `CategorizationReplayJob`, and
+  the `needs_input` shape of `SendPushNotificationJob`. These shell out to a runtime CLI for 15–90
+  seconds. A replay is one call per correction, at most 50, and only runs when an operator presses
+  the button ([Auto-categorization](/sessions/categorization/#checking-whether-it-helped)). The lane has two
   threads; excess work remains one queued row per request and drains as a worker becomes free.
   Deterministic notification types stay on `default` because they do no inference.
 - **`:maintenance`** — package and bundle installs, deploy recovery, transcript archiving, token

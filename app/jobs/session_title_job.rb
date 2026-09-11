@@ -13,10 +13,17 @@
 #   for them together in one combined prompt and parse a labeled response. That
 #   halves the inference calls versus titling and categorizing separately.
 #
-# Backend: HeadlessInferenceService (a runtime-neutral one-shot completion). The
-# call runs against a small, cheap model (Haiku) — title/category inference is
-# high-volume and low-stakes, and Haiku matches the larger models here once it
-# has transcript context.
+# Backend: HeadlessInferenceService (a runtime-neutral one-shot completion),
+# reached through CategorizationService — which owns the prompt, the model
+# choice, the response parsing and the answer matching. This job owns the
+# session: which context to feed the categorizer, and what to write when the
+# answer comes back. That split is what lets a context be SCORED without being
+# APPLIED, which is what replay needs (tadasant/zimmer#16).
+#
+# The call runs against a small, cheap model (Haiku by default) — title/category
+# inference is high-volume and low-stakes, and Haiku matches the larger models
+# here once it has transcript context. The operator can override the model and
+# add category guidance from the settings page without a deploy.
 #
 # Edge cases that must hold:
 # - A manually-set title is never overwritten (we only title when the title is
@@ -33,23 +40,21 @@
 #   prompt (Session#human_prompt, not the composed one the runtime got); a
 #   blank/NONE/unmatched category answer leaves the session Uncategorized with
 #   an info-level timeline note and Rails log explaining why.
+# - EVERY category outcome is recorded to CategoryFeedbackEvent, the assign and
+#   the decline alike, together with the exact context string the model saw. A
+#   decline is a different failure from a mis-sort — a pile of them means the
+#   categories under-cover the work — and both are only legible if they are
+#   written down before a human can overwrite them.
 class SessionTitleJob < ApplicationJob
   include DatabaseRetry
-  # A title can block for INFERENCE_TIMEOUT seconds. A dedicated scheduler is
-  # the backpressure: excess work stays queued once, instead of being claimed,
-  # rejected by a perform-limit advisory lock, and re-enqueued on every retry.
+  # A title can block for CategorizationService::INFERENCE_TIMEOUT seconds. A
+  # dedicated scheduler is the backpressure: excess work stays queued once,
+  # instead of being claimed, rejected by a perform-limit advisory lock, and
+  # re-enqueued on every retry.
   queue_as :inference
 
   # Don't retry if session is not found
   discard_on ActiveRecord::RecordNotFound
-
-  # Timeout for the headless inference call, in seconds.
-  INFERENCE_TIMEOUT = 30
-
-  # Title/category inference is high-volume and low-stakes; run it on a small,
-  # cheap model. Haiku matches the larger models on this task once it has
-  # transcript context (matches ModelCatalog's "haiku" id for claude_code).
-  INFERENCE_MODEL = "haiku"
 
   # Per-message truncation when formatting the transcript for the prompt.
   MAX_MESSAGE_CHARS = 500
@@ -63,12 +68,20 @@ class SessionTitleJob < ApplicationJob
   # not to the composed prompt — see #prompt_context.
   MAX_PROMPT_CHARS = 1500
 
-  # Allow injection of inference service for testing
+  # Allow injection of inference service for testing. The categorizer is built
+  # around whatever is set here, so a test that swaps the backend swaps it for
+  # both halves of the combined call.
   attr_accessor :inference_service
 
   def initialize(*args)
     super
     @inference_service ||= HeadlessInferenceService.new
+  end
+
+  # The categorizer this job drives. One per job run, so the settings it reads
+  # (model, guidance) are read once and the whole run agrees with itself.
+  def categorizer
+    @categorizer ||= CategorizationService.new(inference_service: @inference_service)
   end
 
   def perform(session_id)
@@ -146,20 +159,13 @@ class SessionTitleJob < ApplicationJob
   def infer_from_context(session, want_title:, context:, context_source:)
     return if context.blank?
 
-    candidates = want_category_after_load?(session) ? category_candidates : []
+    candidates = want_category_after_load?(session) ? CategorizationService.candidates : []
     return unless want_title || candidates.any?
 
-    raw = @inference_service.generate(
-      combined_prompt(context, want_title: want_title, candidates: candidates),
-      timeout: INFERENCE_TIMEOUT,
-      model: INFERENCE_MODEL,
-      single_line: false
-    )
-
-    title, choice = parse_response(raw, want_title: want_title, want_category: candidates.any?)
+    result = categorizer.infer(context: context, want_title: want_title, candidates: candidates)
 
     if want_title
-      title = title.presence
+      title = result.title.presence
       title_source = context_source == "transcript" ? "transcript" : "prompt_fallback"
       if title.blank?
         title = generate_title_from_prompt(session.human_prompt)
@@ -168,20 +174,50 @@ class SessionTitleJob < ApplicationJob
       apply_title(session, title&.truncate(100, omission: ""), title_source)
     end
 
-    if candidates.any?
-      category = match_category(choice, candidates)
-      category ? assign_category(session, category) : record_uncategorized(session, choice)
+    return if candidates.none?
+
+    # Written BEFORE the session write, so the model's answer and the context it
+    # came from exist even if the assignment below is skipped (a manual category
+    # landed mid-flight) or a human overwrites it a second later.
+    #
+    # Only when the backend actually answered. A timeout or a non-zero exit has
+    # not declined anything, and filing it as a decline would make the decline
+    # rate a measure of inference availability — the same rule replay follows.
+    if result.answered?
+      record_feedback_event(
+        session,
+        category: result.category,
+        raw_answer: result.raw,
+        context: context,
+        context_source: context_source,
+        title_requested: want_title,
+        candidates: candidates
+      )
     end
+
+    result.category ? assign_category(session, result.category) : record_uncategorized(session, result.choice)
+  end
+
+  # The corpus write. Best-effort inside CategoryFeedbackEvent itself, so a
+  # failure here can never cost the operator the title or the category.
+  def record_feedback_event(session, category:, raw_answer:, context:, context_source:, title_requested:, candidates:)
+    CategoryFeedbackEvent.record_inference_outcome!(
+      session: session,
+      category: category,
+      raw_answer: raw_answer,
+      context: context,
+      context_source: context_source,
+      title_requested: title_requested,
+      model: categorizer.model,
+      prompt_version: CategorizationService::PROMPT_VERSION,
+      candidates: candidates
+    )
   end
 
   # category_needed? is checked at enqueue and again here against the freshest
   # state; this guards the actual write path against a category set in between.
   def want_category_after_load?(session)
     session.category_id.blank? && session.prompt.present?
-  end
-
-  def category_candidates
-    Category.ordered.where(is_frozen: false).to_a
   end
 
   # The formatted early-conversation transcript, or nil when there isn't one yet.
@@ -211,70 +247,6 @@ class SessionTitleJob < ApplicationJob
       content = content.truncate(MAX_MESSAGE_CHARS, omission: "...") if content.length > MAX_MESSAGE_CHARS
       "#{role}: #{content}"
     end.join("\n\n").truncate(MAX_CONTEXT_CHARS, omission: "...")
-  end
-
-  # Builds the combined prompt requesting only the fields needed. The response
-  # is a labeled, multi-line format the caller parses (single_line: false).
-  def combined_prompt(context, want_title:, candidates:)
-    want_category = candidates.any?
-
-    tasks = []
-    tasks << "- TITLE: a concise title (max 6 words, descriptive, action verbs, no quotes or formatting)." if want_title
-    if want_category
-      category_lines = candidates.map do |category|
-        description = category.description.presence
-        description ? "- #{category.name}: #{description}" : "- #{category.name}"
-      end.join("\n")
-      tasks << <<~CATEGORY.strip
-        - CATEGORY: the single best-fitting category from this list, or NONE. Do your best to place the session in a category — match on the meaning conveyed by each name AND its description (a name may be a short abbreviation, e.g. "Zimmer"), not just literal keyword overlap. But only commit to a category when you are reasonably confident it fits. If no category clearly fits, or your confidence is low, answer NONE so the session is left Uncategorized rather than mis-sorted. When in doubt, prefer NONE.
-
-        Available categories (formatted "name: description"):
-        #{category_lines}
-      CATEGORY
-    end
-
-    response_lines = []
-    response_lines << "TITLE: <title>" if want_title
-    response_lines << "CATEGORY: <exact category name or NONE>" if want_category
-
-    <<~PROMPT
-      You are summarizing a coding-agent session.
-
-      The session context:
-      #{context}
-
-      Produce the following:
-      #{tasks.join("\n\n")}
-
-      Respond in EXACTLY this format and nothing else:
-      #{response_lines.join("\n")}
-    PROMPT
-  end
-
-  # Parses the labeled response. Tolerates the model omitting a label when only
-  # one field was requested (then the whole answer is that field's value).
-  def parse_response(raw, want_title:, want_category:)
-    text = raw.to_s
-    title = nil
-    choice = nil
-
-    text.each_line do |line|
-      if (m = line.match(/\A\s*title\s*:\s*(.+?)\s*\z/i))
-        title ||= m[1]
-      elsif (m = line.match(/\A\s*category\s*:\s*(.+?)\s*\z/i))
-        choice ||= m[1]
-      end
-    end
-
-    # If the model ignored the label and only one field was requested, treat the
-    # first non-empty line as that field's value.
-    if want_title ^ want_category
-      first = text.strip.lines.map(&:strip).find(&:present?)
-      title ||= first if want_title
-      choice ||= first if want_category
-    end
-
-    [ title, choice ]
   end
 
   # --- Title persistence -------------------------------------------------------
@@ -343,6 +315,10 @@ class SessionTitleJob < ApplicationJob
       session.reload
       return if session.category_id.present?
 
+      # Names this write as the categorizer's own, so Session's category-change
+      # hook records the auto path's timeline note (below) rather than filing it
+      # as a human correction of itself.
+      session.category_change_source = SessionCategorization::CATEGORY_CHANGE_BY_INFERENCE
       session.update!(category_id: category.id)
     end
 
@@ -364,7 +340,7 @@ class SessionTitleJob < ApplicationJob
       if choice.blank?
         [ "Left uncategorized (inference returned no answer)",
           "left session #{session.id} uncategorized: inference returned no answer" ]
-      elsif normalize_answer(choice) == "none"
+      elsif categorizer.normalize_answer(choice) == "none"
         [ "Left uncategorized (inference returned NONE — no category fit)",
           "left session #{session.id} uncategorized: inference returned NONE" ]
       else
@@ -377,42 +353,6 @@ class SessionTitleJob < ApplicationJob
     with_db_retry do
       session.logs.create!(content: content, level: "info")
     end
-  end
-
-  # Resolves the inference's answer to one of the candidate categories without
-  # ever coercing a malformed answer into the WRONG category:
-  # 1. Exact (case-insensitive, punctuation-trimmed) match against a name.
-  # 2. Failing that, if the answer wraps exactly one category name as a whole
-  #    token (e.g. "The category is Zimmer." or "**Bugs**"), match it. When the
-  #    answer mentions several candidate names it's ambiguous, so we decline.
-  # Anything else (including "NONE") leaves the session Uncategorized.
-  def match_category(choice, candidates)
-    return nil if choice.blank?
-
-    normalized = normalize_answer(choice)
-    return nil if normalized == "none"
-
-    exact = candidates.find { |category| category.name.strip.downcase == normalized }
-    return exact if exact
-
-    token_matches = candidates.select { |category| answer_mentions_name?(normalized, category.name) }
-    token_matches.first if token_matches.size == 1
-  end
-
-  # Lower-cases, strips whitespace, and trims surrounding non-alphanumeric
-  # characters (quotes, markdown asterisks, list dashes, trailing periods).
-  def normalize_answer(choice)
-    choice.strip.downcase.gsub(/\A[^[:alnum:]]+|[^[:alnum:]]+\z/, "")
-  end
-
-  # True when the category name appears as a whole token within the answer,
-  # using alphanumeric word boundaries so "ao" matches in "the category is ao"
-  # but not inside "chaos".
-  def answer_mentions_name?(answer, name)
-    needle = name.strip.downcase
-    return false if needle.blank?
-
-    answer.match?(/(?<![[:alnum:]])#{Regexp.escape(needle)}(?![[:alnum:]])/)
   end
 
   # --- Transcript normalization ------------------------------------------------

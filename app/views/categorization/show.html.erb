@@ -1,0 +1,205 @@
+<%# The categorization tuning loop (tadasant/zimmer#16).
+
+    Three things on one page, in the order an operator uses them: the knobs, the
+    corpus of corrections those knobs are judged against, and the replay that
+    does the judging. Before this page existed every knob here could be turned
+    and none of them could be evaluated. %>
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div class="mb-8">
+      <div class="flex items-center mb-4">
+        <%= link_to settings_path, class: "text-gray-500 hover:text-gray-700 mr-4" do %>
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+          </svg>
+        <% end %>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">Categorization</h1>
+      </div>
+      <p class="text-sm text-gray-600">
+        New sessions are auto-sorted into categories by one cheap inference over the first few
+        minutes of the transcript. Tune it here, then replay your own corrections to see whether
+        the change helped.
+      </p>
+    </div>
+
+    <div class="space-y-6">
+      <%# --- The primary lever, and the one nobody knew was a lever ------------- %>
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Category descriptions</h2>
+          <p class="mt-1 text-sm text-gray-500">
+            Each category's description <strong>is</strong> the classification signal — it is fed to
+            the inference verbatim, so the model matches a session against a category's intent
+            rather than its name. This is the first thing to change when sessions land in the
+            wrong place. Edit one from the pencil on its section header on the dashboard.
+          </p>
+        </div>
+        <div class="px-4 py-5 sm:px-6">
+          <% if @candidates.any? %>
+            <dl class="space-y-4">
+              <% @candidates.each do |category| %>
+                <div>
+                  <dt class="text-sm font-medium text-gray-900"><%= category.name %></dt>
+                  <dd class="mt-0.5 text-sm <%= category.description.present? ? "text-gray-600" : "text-amber-700" %>">
+                    <%= category.description.presence || "No description — the model has only the name to go on." %>
+                  </dd>
+                </div>
+              <% end %>
+            </dl>
+          <% else %>
+            <p class="text-sm text-gray-500">
+              No categories to sort into yet. Frozen categories are never auto-assignment targets,
+              so a board of frozen categories reads as none here.
+            </p>
+          <% end %>
+        </div>
+      </div>
+
+      <%# --- The two knobs this page owns -------------------------------------- %>
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Guidance and model</h2>
+          <p class="mt-1 text-sm text-gray-500">
+            Guidance is placed inside the category task only, between the built-in instruction and
+            the category list. You cannot edit or remove the built-in text around it, including the
+            instruction to answer NONE when in doubt. The same call also writes the session's title,
+            so keep guidance about categories: something like "answer with only the name" can cost
+            sessions their generated title.
+          </p>
+        </div>
+        <div class="px-4 py-5 sm:px-6">
+          <%= form_with url: categorization_path, method: :patch, data: { turbo: false } do %>
+            <div class="space-y-4">
+              <div>
+                <label for="app_setting_category_guidance" class="block text-sm font-medium text-gray-700 mb-1">
+                  Category guidance <span class="text-gray-400 font-normal">(optional)</span>
+                </label>
+                <textarea name="app_setting[category_guidance]" id="app_setting_category_guidance"
+                          rows="5" maxlength="<%= AppSetting::MAX_CATEGORY_GUIDANCE_CHARS %>"
+                          placeholder="e.g. A session that only opens a PR against the docs site belongs in Docs, even when the change it documents is a bug fix."
+                          class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 resize-y"><%= @setting.category_guidance %></textarea>
+                <p class="mt-1 text-xs text-gray-500">
+                  Max <%= AppSetting::MAX_CATEGORY_GUIDANCE_CHARS %> characters. Leave blank for no extra guidance.
+                </p>
+              </div>
+
+              <div>
+                <label for="app_setting_category_inference_model" class="block text-sm font-medium text-gray-700 mb-1">Model</label>
+                <select name="app_setting[category_inference_model]" id="app_setting_category_inference_model"
+                        class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+                  <option value="">Default (<%= CategorizationService::DEFAULT_MODEL %>)</option>
+                  <% @model_options.each do |model_id| %>
+                    <option value="<%= model_id %>" <%= "selected" if @setting.category_inference_model == model_id %>><%= model_id %></option>
+                  <% end %>
+                </select>
+                <p class="mt-1 text-xs text-gray-500">
+                  Currently running on <span class="font-mono"><%= @resolved_model %></span>.
+                  Titling runs on the same call, so this moves both.
+                </p>
+              </div>
+            </div>
+
+            <div class="mt-5">
+              <%= submit_tag "Save", class: "inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 cursor-pointer" %>
+            </div>
+          <% end %>
+        </div>
+      </div>
+
+      <%# --- The corpus and the score ------------------------------------------ %>
+      <div id="replay" class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <div class="sm:flex sm:items-start sm:justify-between sm:gap-4">
+            <div class="min-w-0">
+              <h2 class="text-lg font-medium text-gray-900">Corrections and replay</h2>
+              <p class="mt-1 text-sm text-gray-500">
+                Every time you move a session the categorizer had already ruled on, Zimmer keeps the
+                context the model saw, the answer it gave, and the answer you gave instead. Replay
+                re-asks the current config those same questions. It writes to no session.
+              </p>
+            </div>
+            <div class="mt-3 sm:mt-0 flex-shrink-0">
+              <%= button_to "Replay last #{@replay_limit}", categorization_replay_path,
+                    params: { limit: @replay_limit },
+                    form: { data: { turbo: false } },
+                    class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" %>
+            </div>
+          </div>
+        </div>
+
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <dl class="grid grid-cols-2 gap-4 sm:grid-cols-3">
+            <div>
+              <dt class="text-xs font-medium text-gray-500">Corrections</dt>
+              <dd class="mt-0.5 text-lg font-semibold text-gray-900"><%= @scorecard.total %></dd>
+            </div>
+            <div>
+              <dt class="text-xs font-medium text-gray-500">Replay agrees</dt>
+              <dd class="mt-0.5 text-lg font-semibold text-gray-900">
+                <% if @scorecard.accuracy_pct %>
+                  <%= @scorecard.accuracy_pct %><span class="text-sm font-normal text-gray-500">% of <%= @scorecard.replayed %></span>
+                <% else %>
+                  <span class="text-sm font-normal text-gray-500">Not replayed yet</span>
+                <% end %>
+              </dd>
+            </div>
+            <div class="col-span-2 sm:col-span-1">
+              <dt class="text-xs font-medium text-gray-500">Declined to categorize</dt>
+              <dd class="mt-0.5 text-lg font-semibold text-gray-900">
+                <% if @decline_rate %>
+                  <%= @decline_rate[:declined] %><span class="text-sm font-normal text-gray-500">/<%= @decline_rate[:sampled] %> recent</span>
+                <% else %>
+                  <span class="text-sm font-normal text-gray-500">—</span>
+                <% end %>
+              </dd>
+            </div>
+          </dl>
+          <p class="mt-3 text-xs text-gray-500">
+            A high decline rate is a different problem from a wrong answer: it means the categories
+            under-cover the work, so the fix is a new category rather than a sharper description.
+          </p>
+        </div>
+
+        <div class="px-4 py-5 sm:px-6">
+          <% if @corrections.any? %>
+            <ul class="divide-y divide-gray-200">
+              <% @corrections.each do |event| %>
+                <li class="py-3 first:pt-0 last:pb-0">
+                  <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                    <span class="text-gray-500 line-through"><%= event.auto_label %></span>
+                    <span class="text-gray-400" aria-hidden="true">&rarr;</span>
+                    <span class="font-medium text-gray-900"><%= event.corrected_label %></span>
+                    <% verdict = event.replay_correct? %>
+                    <% unless verdict.nil? %>
+                      <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium <%= verdict ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800" %>">
+                        replay: <%= event.replay_label %>
+                      </span>
+                    <% end %>
+                  </div>
+                  <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
+                    <% if event.session_id %>
+                      <%= link_to "Session ##{event.session_id}", session_path(event.session_id), class: "text-indigo-600 hover:text-indigo-800" %>
+                    <% else %>
+                      <span>Session deleted</span>
+                    <% end %>
+                    <span aria-hidden="true">&middot;</span>
+                    <span><%= event.context_source.presence || "unknown" %> context</span>
+                    <span aria-hidden="true">&middot;</span>
+                    <span class="font-mono"><%= event.model.presence || "—" %></span>
+                    <span aria-hidden="true">&middot;</span>
+                    <span><%= time_ago_in_words(event.created_at) %> ago</span>
+                  </div>
+                </li>
+              <% end %>
+            </ul>
+          <% else %>
+            <p class="text-sm text-gray-500">
+              No corrections recorded yet. Drag a mis-sorted session into the right category on the
+              dashboard and it will show up here — that drag is the only labelled data Zimmer has.
+            </p>
+          <% end %>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

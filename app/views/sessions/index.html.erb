@@ -803,9 +803,9 @@
           write — and both survive a reload. %>
       <div data-controller="category-dnd category-edit"
            data-category-dnd-reorder-cards-url-value="<%= reorder_sessions_path %>"
-           data-category-dnd-create-url-value="<%= categories_path %>"
            data-category-dnd-reorder-url-value="<%= reorder_categories_path %>"
-           data-category-edit-update-url-template-value="<%= category_path("__ID__") %>">
+           data-category-edit-update-url-template-value="<%= category_path("__ID__") %>"
+           data-category-edit-create-url-value="<%= categories_path %>">
         <%# The Sortable "sections" target: each child <section> is a draggable unit
             grabbed by its .category-drag-handle, and a reorder POSTs the new
             top-to-bottom id order so the stacking survives reload. Uncategorized and
@@ -830,7 +830,7 @@
           </div>
           <div class="relative flex justify-end">
             <button type="button"
-                    data-action="category-dnd#addCategory"
+                    data-action="category-edit#openCreate"
                     class="inline-flex items-center gap-1 rounded-full border border-gray-300 bg-white px-3 py-1 text-sm font-medium text-gray-600 shadow-sm hover:bg-gray-50 hover:text-indigo-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
                     title="Add category">
               <svg class="h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -857,7 +857,7 @@
           <div class="absolute inset-0 bg-black/40" data-action="click->category-edit#close"></div>
           <div class="relative bg-white rounded-lg shadow-xl w-full max-w-md p-6">
             <div class="flex items-center justify-between mb-4">
-              <h3 class="text-lg font-semibold text-gray-900">Edit category</h3>
+              <h3 class="text-lg font-semibold text-gray-900" data-category-edit-target="title">Edit category</h3>
               <button type="button" class="text-gray-400 hover:text-gray-600" data-action="category-edit#close" aria-label="Close">
                 <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
                   <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -882,7 +882,7 @@
                           placeholder="What belongs in this category? Used to auto-sort new sessions."
                           class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 resize-y focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"></textarea>
               </div>
-              <div class="mb-4">
+              <div class="mb-4" data-category-edit-target="frozenField">
                 <label class="flex items-start gap-2 cursor-pointer">
                   <input type="checkbox" id="category-edit-frozen"
                          data-category-edit-target="frozenInput"

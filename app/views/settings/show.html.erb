@@ -89,6 +89,25 @@
         </div>
       </div>
 
+      <%# Categorization tuning lives on its own page: the useful part of it is a
+          table of corrections and a replay score, which does not fit beside a
+          dropdown. See CategorizationController. %>
+      <div class="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h2 class="text-lg font-medium text-gray-900">Categorization</h2>
+          <p class="mt-1 text-sm text-gray-500">
+            How new sessions are auto-sorted into categories — the guidance the inference gets, the
+            model it runs on, and a replay of your own corrections against the current config.
+          </p>
+        </div>
+        <div class="px-4 py-5 sm:px-6">
+          <%= link_to categorization_path,
+                class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
+            Tune categorization
+          <% end %>
+        </div>
+      </div>
+
       <!-- Experimental Section -->
       <div id="experimental-settings" class="bg-white shadow-sm rounded-lg border border-gray-200">
         <div class="px-4 py-5 sm:px-6 border-b border-gray-200">

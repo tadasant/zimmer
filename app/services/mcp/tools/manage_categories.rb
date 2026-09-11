@@ -7,8 +7,18 @@ module Mcp
     # "set_session_category" and "reorder_sessions" actions. Normalization,
     # uniqueness and the Uncategorized sentinel all live in the Category model,
     # and card positions in SessionCardOrder, so every write path stays canonical.
+    #
+    # The last three actions mirror CategorizationController — the tuning loop
+    # from tadasant/zimmer#16. They are here rather than on a tool of their own
+    # because the lever an operator reaches for first is a category DESCRIPTION,
+    # which this tool already owns: reading the score and sharpening a
+    # description are one task, and splitting them across two tools would make an
+    # agent hold half the loop.
     class ManageCategories < Tool
-      ACTIONS = %w[list create update delete reorder set_session_category reorder_sessions].freeze
+      ACTIONS = %w[
+        list create update delete reorder set_session_category reorder_sessions
+        tuning set_tuning replay
+      ].freeze
 
       tool_name "manage_categories"
 
@@ -24,6 +34,9 @@ module Mcp
         - **delete**: Delete a category (requires "category_id"). Sessions in it fall back to Uncategorized.
         - **reorder**: Set the top-to-bottom order of categories (requires "ids" — an array of category IDs). Categories omitted keep their existing position. Include the string "uncategorized" to position the Uncategorized section.
         - **set_session_category**: Assign a session to a category (requires "session_id"; "category_id" to assign, or omit/null to clear to Uncategorized).
+        - **tuning**: Show the categorization tuning state — the guidance preamble, the model, the category descriptions the inference actually sees, the recent corrections and the last replay score.
+        - **set_tuning**: Set the guidance preamble ("guidance") and/or the inference model ("inference_model"). Either may be null/"" to clear.
+        - **replay**: Re-run categorization against the stored context of the most recent corrections ("limit", default 10, max 50) and record what the CURRENT config answers. Writes no session — it is a dry run, and its verdicts show up under "tuning".
         - **reorder_sessions**: Set the top-to-bottom order of session cards inside one section (requires "session_ids"; "category_id" names the section, omit/null for Uncategorized). The dashboard shows a section 50 cards at a time, so a partial list is fine: the sessions you name are dealt back into the slots they already hold, in your order, and sessions you omit keep their positions. Pass "session_id" to move ONE card instead, as the dashboard's drag does: it is placed immediately above the session after it in "session_ids" (or below the one before it, if it is last), nothing else moves, and if it is in another section it is moved into this one first.
 
         **Note:** All freeze state uses "is_frozen".
@@ -66,6 +79,18 @@ module Mcp
             type: "array",
             items: { type: "number" },
             description: 'Required for "reorder_sessions". New top-to-bottom order of numeric session IDs within the section named by "category_id". Sessions omitted keep their positions; IDs not in that section are ignored.'
+          },
+          guidance: {
+            type: [ "string", "null" ],
+            description: 'For "set_tuning". Extra guidance placed inside the category task only, delimited and introduced as being about the CATEGORY choice (max 2000 chars). It cannot edit or remove the fixed instruction, the title task, the response format or "when in doubt, prefer NONE". The same model call also writes the title, so keep it about categories. Pass null or "" to clear.'
+          },
+          inference_model: {
+            type: [ "string", "null" ],
+            description: 'For "set_tuning". Model id the categorization inference runs on. Must be a Claude Code model id. Pass null or "" to fall back to the default.'
+          },
+          limit: {
+            type: "number",
+            description: 'For "replay" and "tuning". How many of the most recent corrections to replay or list (default 10 for replay, capped at 50).'
           }
         },
         required: [ "action" ]
@@ -82,6 +107,9 @@ module Mcp
         when "reorder" then reorder(args)
         when "set_session_category" then set_session_category(args)
         when "reorder_sessions" then reorder_sessions(args)
+        when "tuning" then tuning(args)
+        when "set_tuning" then set_tuning(args)
+        when "replay" then replay(args)
         else
           raise ToolError, "Unknown action \"#{action}\". Valid actions: #{ACTIONS.join(', ')}"
         end
@@ -154,8 +182,10 @@ module Mcp
         if category_id
           category = Category.find_by(id: category_id)
           raise ToolError, "Category ##{category_id} not found" unless category
+          session.category_change_source = CategoryFeedbackEvent::MCP
           session.update!(category_id: category.id)
         else
+          session.category_change_source = CategoryFeedbackEvent::MCP
           session.update!(category_id: nil)
         end
 
@@ -182,13 +212,107 @@ module Mcp
         end
 
         moved = args["session_id"].presence && find_session(args["session_id"]).id
-        order = Session.reorder_cards!(ids, category_id: category&.id, moved_session_id: moved)
+        order = Session.reorder_cards!(
+          ids,
+          category_id: category&.id,
+          moved_session_id: moved,
+          source: CategoryFeedbackEvent::MCP
+        )
 
         [
           "## Session Cards Reordered",
           "",
           "- **Section:** #{category&.name || 'Uncategorized'}",
           "- **Order (top to bottom):** #{order.join(', ')}"
+        ].join("\n")
+      end
+
+      # --- The tuning loop (tadasant/zimmer#16) ---------------------------------
+
+      def tuning(args)
+        limit = CategorizationReplayJob.clamp_limit(args["limit"].presence || CategoryFeedbackEvent::DEFAULT_CORPUS_LIMIT)
+        service = CategorizationService.new
+        corrections = CategoryFeedbackEvent.eval_corpus(limit: limit).without_bodies.to_a
+        scorecard = CategoryFeedbackEvent.scorecard(corrections)
+        declines = CategoryFeedbackEvent.decline_rate
+
+        lines = [
+          "## Categorization Tuning",
+          "",
+          "- **Model:** #{service.model}#{' (default)' if AppSetting.current.category_inference_model.blank?}",
+          "- **Guidance:** #{service.guidance || '(none)'}",
+          "- **Corrections recorded (shown):** #{scorecard.total}",
+          "- **Replay agrees:** #{scorecard.accuracy_pct ? "#{scorecard.accuracy_pct}% of #{scorecard.replayed} scored" : 'not replayed yet'}",
+          "- **Declined to categorize:** #{declines ? "#{declines[:declined]} of the last #{declines[:sampled]} outcomes" : 'no outcomes recorded yet'}"
+        ]
+
+        lines += [ "", "### Candidate categories (what the inference sees)", "" ]
+        candidates = CategorizationService.candidates
+        if candidates.empty?
+          lines << "- (none — every category is frozen, or there are none)"
+        else
+          candidates.each do |category|
+            lines << "- **#{category.name}:** #{category.description.presence || '(no description — matched on name alone)'}"
+          end
+        end
+
+        lines += [ "", "### Recent corrections", "" ]
+        if corrections.empty?
+          lines << "- (none yet — a correction is recorded when you move a session the categorizer already ruled on)"
+        else
+          corrections.each do |event|
+            verdict = event.replay_correct?
+            mark = verdict.nil? ? "not replayed" : (verdict ? "replay agrees" : "replay still says #{event.replay_label}")
+            lines << "- Session #{event.session_id || '(deleted)'}: #{event.auto_label} -> #{event.corrected_label} (#{mark})"
+          end
+        end
+
+        lines.join("\n")
+      end
+
+      def set_tuning(args)
+        unless args.key?("guidance") || args.key?("inference_model")
+          raise ToolError, '"set_tuning" needs at least one of "guidance" or "inference_model".'
+        end
+
+        setting = AppSetting.editable
+        setting.category_guidance = args["guidance"].to_s.strip.presence if args.key?("guidance")
+        setting.category_inference_model = args["inference_model"].to_s.strip.presence if args.key?("inference_model")
+
+        unless setting.save
+          raise ToolError, "Could not save: #{setting.errors.full_messages.join(', ')}"
+        end
+
+        [
+          "## Categorization Tuning Updated",
+          "",
+          "- **Model:** #{CategorizationService.new.model}",
+          "- **Guidance:** #{setting.category_guidance || '(none)'}",
+          "",
+          'Run the "replay" action to score the change against the recorded corrections.'
+        ].join("\n")
+      end
+
+      def replay(args)
+        limit = CategorizationReplayJob.clamp_limit(args["limit"].presence || CategorizationReplayJob::DEFAULT_LIMIT)
+        size = CategoryFeedbackEvent.eval_corpus(limit: limit).pluck(:id).size
+        raise ToolError, "No corrections have been recorded yet, so there is nothing to replay." if size.zero?
+
+        unless CategorizationReplayJob.enqueue(limit)
+          return [
+            "## Categorization Replay Not Queued",
+            "",
+            "A replay is already queued or running. Read its scores with the \"tuning\" action once it finishes."
+          ].join("\n")
+        end
+
+        [
+          "## Categorization Replay Queued",
+          "",
+          "- **Corrections queued:** #{size}",
+          "- **Writes:** none to any session — only the replay verdict on each correction row",
+          "",
+          'Read the scores back with the "tuning" action once the job has run.'
         ].join("\n")
       end
 

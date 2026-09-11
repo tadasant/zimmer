@@ -1,7 +1,13 @@
 import { Controller } from "@hotwired/stimulus"
 import { csrfHeaders } from "lib/csrf"
 
-// Edit a category's name, description and frozen state from a modal on the dashboard.
+// Create a category, and edit an existing one's name, description and frozen state,
+// from one modal on the dashboard.
+//
+// Create goes through the same modal as edit rather than a `window.prompt` for the
+// name alone. The description IS the auto-categorization signal, so a create flow that
+// could not set one meant every new category started life being matched on its name
+// (tadasant/zimmer#16).
 //
 // Each category section's Edit (pencil) button carries the category's id, name,
 // description and frozen flag as action params. Clicking it opens a single shared modal
@@ -13,8 +19,25 @@ import { csrfHeaders } from "lib/csrf"
 // freshly-saved values rather than the stale ones. The description is not shown on the
 // dashboard, so nothing else updates visually.
 export default class extends Controller {
-  static targets = ["modal", "nameInput", "descriptionInput", "frozenInput", "error", "submit"]
-  static values = { updateUrlTemplate: String }
+  static targets = ["modal", "nameInput", "descriptionInput", "frozenInput", "error", "submit", "title", "frozenField"]
+  static values = { updateUrlTemplate: String, createUrl: String }
+
+  // Open the modal empty, in create mode. `currentId` stays null, which is what
+  // #submit branches on.
+  openCreate(event) {
+    if (event) event.preventDefault()
+    this.currentId = null
+    this.nameInputTarget.value = ""
+    this.descriptionInputTarget.value = ""
+    this.frozenInputTarget.checked = false
+    // Freezing a category you are creating this second is not a thing anyone means
+    // to do, and the control invites a misreading of what freeze does.
+    if (this.hasFrozenFieldTarget) this.frozenFieldTarget.classList.add("hidden")
+    if (this.hasTitleTarget) this.titleTarget.textContent = "New category"
+    this.hideError()
+    this.modalTarget.classList.remove("hidden")
+    this.nameInputTarget.focus()
+  }
 
   open(event) {
     const { id, name, description, frozen } = event.params
@@ -26,6 +49,8 @@ export default class extends Controller {
     // `frozen` arrives already coerced to a Boolean by Stimulus (the attribute holds
     // "true"/"false"); default to unchecked when the param is absent.
     this.frozenInputTarget.checked = frozen === true
+    if (this.hasFrozenFieldTarget) this.frozenFieldTarget.classList.remove("hidden")
+    if (this.hasTitleTarget) this.titleTarget.textContent = "Edit category"
     this.hideError()
     this.modalTarget.classList.remove("hidden")
     this.nameInputTarget.focus()
@@ -48,7 +73,6 @@ export default class extends Controller {
 
   submit(event) {
     event.preventDefault()
-    if (this.currentId == null) return
 
     const name = this.nameInputTarget.value.trim()
     if (!name) {
@@ -57,6 +81,21 @@ export default class extends Controller {
     }
 
     this.submitTarget.disabled = true
+
+    if (this.currentId == null) {
+      this.createCategory(name, this.descriptionInputTarget.value)
+        .then((html) => {
+          if (html) window.Turbo.renderStreamMessage(html)
+          this.close()
+        })
+        .catch((error) => {
+          this.showError(error.message)
+        })
+        .finally(() => {
+          this.submitTarget.disabled = false
+        })
+      return
+    }
 
     this.patchCategory(this.currentId, {
       name,
@@ -101,6 +140,23 @@ export default class extends Controller {
       .finally(() => {
         button.disabled = false
       })
+  }
+
+  // POST /categories. Answers a Turbo Stream that appends the new (empty) section,
+  // which becomes a drop target via the dnd controller's listTargetConnected.
+  createCategory(name, description) {
+    return fetch(this.createUrlValue, {
+      method: "POST",
+      headers: csrfHeaders({ Accept: "text/vnd.turbo-stream.html" }),
+      body: JSON.stringify({ name, description })
+    }).then((response) => {
+      if (!response.ok) {
+        return response.json().then((data) => {
+          throw new Error(data.error || `HTTP ${response.status}`)
+        })
+      }
+      return response.text()
+    })
   }
 
   // Shared PATCH /categories/:id helper. Resolves to the parsed JSON on success and

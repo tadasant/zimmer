@@ -41,6 +41,11 @@ class AppSettingDashboard < Administrate::BaseDashboard
     fleet_idle_since: Field::DateTime,
     fleet_idle_event_fired_at: Field::DateTime,
     uncategorized_position: Field::Number,
+    # The two categorization knobs. CategorizationController is the purpose-built
+    # surface for these; the guidance is APPENDED to the fixed category task, never
+    # a replacement for it.
+    category_guidance: Field::Text,
+    category_inference_model: Field::String,
     created_at: Field::DateTime,
     updated_at: Field::DateTime
   }.freeze

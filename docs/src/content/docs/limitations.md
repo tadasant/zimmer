@@ -6720,6 +6720,27 @@ small and short-lived where the held pile was neither — but the general form o
 [#1103](https://github.com/tadasant/zimmer/issues/1103), "a session that has never taken a turn
 should perhaps not hold a WIP slot at all, whatever the reason", is not closed.
 
+## Categorization replay does not tell you when it is done
+
+**Replay** on `/settings/categorization` enqueues `CategorizationReplayJob` and redirects straight
+back. The page does not update itself as the verdicts land. You reload it, and each correction's
+verdict chip appears once its row has been scored. A batch of 10 on a free `inference` lane takes
+well under a minute. Behind a backlog of title jobs it can take longer, and nothing on the page
+says it is still queued.
+
+Two related edges:
+
+- **The corpus table has no retention.** Every categorization attempt that gets an answer adds
+  one row with up to 8 KB of context, compressed by TOAST. A session placed first time
+  contributes one row. A session left Uncategorized is retried on each pause, so it contributes
+  one per attempt until it's placed. That's still small next to `logs`. Nothing prunes it yet,
+  on purpose: the rows are the eval corpus, and they are meant to outlive the sessions they came
+  from.
+- **A replay verdict is from the config at the time it ran.** Edit a description after replaying
+  and the chips still show the old verdicts until you replay again. `replay_prompt_version` and
+  `replay_model` on each row say which config produced it, and `/supervisor/category_feedback_events`
+  shows both.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

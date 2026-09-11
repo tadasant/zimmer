@@ -1,10 +1,17 @@
 # Manages organizational categories used to group session cards on the dashboard.
 class CategoriesController < ApplicationController
-  # Create a new category from a name (prompted for via the "+" button on the
-  # dashboard divider). Responds with a Turbo Stream that appends the new, empty
-  # category section so it becomes an immediate drop target without a full reload.
+  # Create a new category from the "+ New category" button on the dashboard
+  # divider, which opens the same modal the pencil does. Responds with a Turbo
+  # Stream that appends the new, empty category section so it becomes an
+  # immediate drop target without a full reload.
+  #
+  # The description is accepted HERE, at create time, and not only on a later
+  # edit. That description is the auto-categorizer's classification signal, so a
+  # create path that dropped it meant every new category spent its first sessions
+  # being matched on its name alone — and nothing ever told the operator that the
+  # field they never saw was the one that mattered (tadasant/zimmer#16).
   def create
-    @category = Category.new(name: params[:name])
+    @category = Category.new(name: params[:name], description: params[:description])
 
     if @category.save
       respond_to do |format|
@@ -19,7 +26,7 @@ class CategoriesController < ApplicationController
             locals: { category: @category, sessions: Session.none.page(1) }
           )
         end
-        format.json { render json: { success: true, id: @category.id, name: @category.name }, status: :created }
+        format.json { render json: { success: true, id: @category.id, name: @category.name, description: @category.description }, status: :created }
         format.html { redirect_back fallback_location: root_path, notice: "Category \"#{@category.name}\" created" }
       end
     else

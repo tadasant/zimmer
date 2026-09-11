@@ -2088,6 +2088,10 @@ class SessionsController < ApplicationController
         end
         return
       end
+      # Named so the change is recorded as a human correction of whatever the
+      # categorizer answered, rather than as an anonymous UPDATE — see
+      # SessionCategorization.
+      @session.category_change_source = CategoryFeedbackEvent::WEB_UI
       @session.update!(category_id: category.id)
       respond_to do |format|
         format.turbo_stream { render turbo_stream: flash_stream(notice: "Moved to \"#{category.name}\".") }
@@ -2095,6 +2099,7 @@ class SessionsController < ApplicationController
         format.json { render json: { success: true, session_id: @session.id, category_id: category.id } }
       end
     else
+      @session.category_change_source = CategoryFeedbackEvent::WEB_UI
       @session.update!(category_id: nil)
       respond_to do |format|
         format.turbo_stream { render turbo_stream: flash_stream(notice: "Moved to Uncategorized.") }
@@ -2132,7 +2137,8 @@ class SessionsController < ApplicationController
     Session.reorder_cards!(
       params[:ids],
       category_id: category&.id,
-      moved_session_id: moved&.id
+      moved_session_id: moved&.id,
+      source: CategoryFeedbackEvent::WEB_UI
     )
 
     head :no_content
