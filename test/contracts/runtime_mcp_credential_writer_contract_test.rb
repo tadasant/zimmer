@@ -26,15 +26,23 @@ class RuntimeMcpCredentialWriterContractTest < ActiveSupport::TestCase
 
     # `.for_session` is part of the contract, not a Claude-only extra: callers
     # that hold a session build through it rather than `.new`, so a writer that
-    # omitted it would only fail at spawn time.
+    # omitted it would only fail at spawn time. A writer whose store is per
+    # session (`.session_scoped_store?`) has no instance to answer for a
+    # session-less caller, and answers nil rather than a writer pointed at
+    # nothing (issue #618); a host-global one answers the same instance either way.
     test "#{klass}.for_session returns an instance of the writer" do
       assert_respond_to klass, :for_session
-      assert_kind_of klass, klass.for_session(nil)
+      assert_respond_to klass, :session_scoped_store?
+      if klass.session_scoped_store?
+        assert_nil klass.for_session(nil)
+      else
+        assert_kind_of klass, klass.for_session(nil)
+      end
       assert_kind_of klass, klass.for_session(sessions(:active_session))
     end
 
     test "#{klass} instances respond to the full writer contract" do
-      writer = klass.new
+      writer = build_writer(klass)
       assert_respond_to writer, :write!
       assert_respond_to writer, :credential_key_for
       assert_respond_to writer, :read_runtime_credentials
@@ -48,13 +56,13 @@ class RuntimeMcpCredentialWriterContractTest < ActiveSupport::TestCase
     # reader took no argument would ArgumentError inside the one code path that
     # exists to keep a rotating credential alive.
     test "#{klass}#read_runtime_credentials accepts the requested keys" do
-      result = klass.new.read_runtime_credentials([ "example|0000000000000000", "example" ])
+      result = build_writer(klass).read_runtime_credentials([ "example|0000000000000000", "example" ])
       assert_kind_of Hash, result
       result.each_value { |v| assert_kind_of RuntimeMcpTokenSnapshot, v }
     end
 
     test "#{klass}#runtime_key_for returns a String key for a persisted credential" do
-      key = klass.new.runtime_key_for(mcp_oauth_credentials(:notion))
+      key = build_writer(klass).runtime_key_for(mcp_oauth_credentials(:notion))
       assert_kind_of String, key
       assert_predicate key, :present?
     end
@@ -69,7 +77,7 @@ class RuntimeMcpCredentialWriterContractTest < ActiveSupport::TestCase
     # header, and the two agree only by coincidence for today's catalog.
     test "#{klass}#runtime_key_for agrees with #credential_key_for for the same server" do
       credential = mcp_oauth_credentials(:notion)
-      writer = klass.new
+      writer = build_writer(klass)
       server_config = {
         type: "sse",
         url: credential.server_url,
@@ -85,21 +93,21 @@ class RuntimeMcpCredentialWriterContractTest < ActiveSupport::TestCase
     test "#{klass}#delete_credentials returns an Array when nothing is stored" do
       # With no credential store present the delete must return an Array (the keys
       # removed), not raise — a missing store means "nothing to delete".
-      result = klass.new.delete_credentials([ "example|0000000000000000" ])
+      result = build_writer(klass).delete_credentials([ "example|0000000000000000" ])
       assert_kind_of Array, result
     end
 
     test "#{klass}#clear_needs_auth_cache returns an Array when nothing is cached" do
       # With no cache present the method must return an Array (the names cleared),
       # not raise — a missing store means "nothing suppressing it".
-      result = klass.new.clear_needs_auth_cache([ "example" ])
+      result = build_writer(klass).clear_needs_auth_cache([ "example" ])
       assert_kind_of Array, result
     end
 
     test "#{klass}#read_runtime_credentials returns a Hash of RuntimeMcpTokenSnapshot" do
       # With no credential store present the reader must return an empty Hash, not
       # raise — a missing store means "nothing to adopt".
-      result = klass.new.read_runtime_credentials
+      result = build_writer(klass).read_runtime_credentials
       assert_kind_of Hash, result
       result.each_value { |v| assert_kind_of RuntimeMcpTokenSnapshot, v }
     end
@@ -113,7 +121,19 @@ class RuntimeMcpCredentialWriterContractTest < ActiveSupport::TestCase
 
     test "#{klass}#credential_key_for returns a String" do
       server_config = { type: "streamable-http", url: "https://example.com/mcp", headers: {} }
-      assert_kind_of String, klass.new.credential_key_for("example", server_config)
+      assert_kind_of String, build_writer(klass).credential_key_for("example", server_config)
     end
+  end
+
+  private
+
+  # The contract's own way to build a writer with no session in hand. A
+  # session-scoped store (Claude Code) needs a path; the fixture session's own
+  # store is the honest one to point it at, and the suite-wide
+  # CLAUDE_SESSION_CONFIG_DIR keeps it out of the real ~/.zimmer.
+  def build_writer(klass)
+    return klass.new unless klass.session_scoped_store?
+
+    klass.for_session(sessions(:active_session))
   end
 end

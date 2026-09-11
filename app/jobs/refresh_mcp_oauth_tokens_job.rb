@@ -225,8 +225,8 @@ class RefreshMcpOauthTokensJob < ApplicationJob
   # instead at every spawn and follow-up, where McpOauthCredentialInjector builds
   # a reconciler over THAT session's writer.
   # Reading is lazy inside the reconciler, so a
-  # listable store (Claude Code, Codex) is read once for the whole run however
-  # many credentials ask. Pi's is probed per key, and its keys are server names,
+  # listable store (Codex) is read once for the whole run however many
+  # credentials ask. Pi's is probed per key, and its keys are server names,
   # so it costs one `node` spawn per distinct server — bounded by the throttle on
   # #credentials_needing_refresh rather than by the size of the table.
   def runtime_reconcilers

@@ -458,6 +458,14 @@ class ClaudeCliAdapter
     end
 
     { pid: pid, stderr_log_path: stderr_log_path }
+  rescue ClaudeSpawnEnv::MissingCredentialsError
+    # Not a spawn fault — the pool has nothing to hand the child. Let it through
+    # unwrapped so ProcessLifecycleManager can report it as the configuration
+    # problem it is rather than page on it as a runtime failure.
+    stdin_reader&.close unless stdin_reader&.closed?
+    stdin_writer&.close unless stdin_writer&.closed?
+    stderr_file&.close
+    raise
   rescue => e
     stdin_reader&.close unless stdin_reader&.closed?
     stdin_writer&.close unless stdin_writer&.closed?
@@ -534,6 +542,10 @@ class ClaudeCliAdapter
     stderr_file.close
 
     { pid: pid, stderr_log_path: stderr_log_path }
+  rescue ClaudeSpawnEnv::MissingCredentialsError
+    # See #spawn_process_with_stdin: a configuration problem, not a spawn fault.
+    stderr_file&.close
+    raise
   rescue => e
     stderr_file&.close
     raise ClaudeCliError, "Failed to spawn Claude CLI: #{e.message}"

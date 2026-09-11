@@ -187,10 +187,12 @@ module ClaudeSpawnEnv
   # a live rollback. It is not one now: nothing writes it, so falling back would
   # point the child at a fossil and every turn would come back "Not logged in ·
   # Please run /login" with nothing in the log to say why. Raising instead makes
-  # ProcessLifecycleManager report a spawn failure, which fails the session with
-  # `failure_reason: spawn_failed` and an .error line naming the cause — the same
-  # visible ending a drained pool already produces, rather than a session that
-  # runs and cannot think.
+  # ProcessLifecycleManager refuse the spawn: the session fails with
+  # `failure_reason: spawn_failed` and a session-log line naming the account that
+  # came up empty, rather than running and being unable to think. The adapters
+  # let this error through unwrapped and the lifecycle manager logs it at .warn,
+  # because an empty pool is a configuration state already surfaced on /health
+  # and by the needs_reauth alert, not a runtime fault to page on per attempt.
   #
   # Relies on the including adapter exposing `@zimmer_session_id`.
   #
@@ -211,7 +213,8 @@ module ClaudeSpawnEnv
     token = account&.claude_access_token
 
     if token.blank?
-      record_spawn_credentials(account: account)
+      # Nothing is recorded: no process is about to start, so there is no spawn
+      # identity to stamp on the session.
       raise MissingCredentialsError,
         "No Claude account in the pool holds a usable access token#{account ? " (current: #{account.email})" : ""} — " \
         "authenticate one from /inference"

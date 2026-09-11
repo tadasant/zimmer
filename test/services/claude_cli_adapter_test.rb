@@ -2895,10 +2895,13 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_equal claude_accounts(:primary).claude_access_token, env_vars["CLAUDE_CODE_OAUTH_TOKEN"]
   end
 
-  test "spawn_process raises ClaudeCliError when the pool has no usable current account" do
+  # Raised unwrapped — not as ClaudeCliError — so ProcessLifecycleManager can
+  # tell a pool with nothing to hand over from a spawn that actually failed, and
+  # report it at .warn instead of paging on it once per attempt.
+  test "spawn_process raises MissingCredentialsError when the pool has no usable current account" do
     ClaudeAccount.update_all(is_current: false)
 
-    error = assert_raises(ClaudeCliAdapter::ClaudeCliError) do
+    error = assert_raises(ClaudeSpawnEnv::MissingCredentialsError) do
       @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
     end
 

@@ -601,8 +601,9 @@ class ClaudeAccount < ApplicationRecord
   end
 
   # Refreshes the access token using the runtime's OAuth refresh_token grant.
-  # Updates oauth_config in the DB and writes to the runtime's credential file
-  # if this is the current account.
+  # Updates oauth_config in the DB; a Codex row that is current also rewrites
+  # ~/.codex/auth.json, a Claude row writes nothing else (the row is what a
+  # session is handed its token out of).
   #
   # @return [true] if refresh succeeded (or there is nothing to refresh)
   # @return [false] if refresh failed
@@ -682,12 +683,12 @@ class ClaudeAccount < ApplicationRecord
       # pair is on the row we just re-read, so refreshing again would consume a
       # token nobody has used yet. Their refresh is our refresh.
       #
-      # The token moving is necessary evidence but not sufficient: a plain
+      # The token moving is necessary evidence but not sufficient: a Codex
       # filesystem sync also rewrites it, and a caller whose HTTP refresh then
       # failed leaves a moved token behind without having refreshed anything. So
       # also require the access token to be good — otherwise we would report
       # success to callers (rotation, the Inference page) that asked precisely so
-      # they could avoid writing stale credentials to disk.
+      # they could avoid handing out stale credentials.
       if token_before_lock.present? && current_refresh_token.present? &&
           current_refresh_token != token_before_lock && !token_expiring_soon?
         Rails.logger.info "[ClaudeAccount] Refresh for #{email} already performed by a concurrent caller, skipping"
@@ -1147,10 +1148,11 @@ class ClaudeAccount < ApplicationRecord
     end
 
     if lost_refresh_race?(presented)
-      # The row lock above rules out another Zimmer caller, but not the agent CLI,
-      # which rotates the shared credentials file on its own during a session. So:
-      # re-sync from disk and see whether the token we presented is still the token
-      # of record. If it moved, we lost a race and the account is fine.
+      # The row lock above rules out another Zimmer caller. For a Codex row the
+      # Codex CLI is a further racer that rotates auth.json on its own, so
+      # #lost_refresh_race? re-syncs from disk first; for a Claude row no process
+      # holds the chain but Zimmer. Either way: if the token of record has moved
+      # since we presented ours, we lost a race and the account is fine.
       Rails.logger.warn "[ClaudeAccount] #{label} for #{email} lost a race with a concurrent token rotation; " \
         "the stored token has moved on, so the account is healthy and is NOT being marked needs_reauth"
       clear_stale_refresh_failures!

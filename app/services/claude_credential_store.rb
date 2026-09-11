@@ -58,8 +58,9 @@ module ClaudeCredentialStore
     end
 
     # Writes JSON through a temp file + rename so a concurrent reader never
-    # observes a half-written store. The temp path is process-unique because the
-    # same host-global path is written by every session on the worker.
+    # observes a half-written store. The temp path is process-unique because a
+    # session's spawn and its follow-ups can write the same file from different
+    # processes.
     def write_atomically(path, data)
       FileUtils.mkdir_p(File.dirname(path))
       temp_path = "#{path}.#{Process.pid}.tmp"

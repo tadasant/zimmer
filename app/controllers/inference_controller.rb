@@ -165,8 +165,8 @@ class InferenceController < ApplicationController
 
   # DELETE: Remove an account from its runtime's pool. When the deleted account
   # is the current one, activate the next available account in that runtime (or
-  # leave the runtime with no current account if none remain). The worker's
-  # before-spawn reconciliation backfills the filesystem from the DB.
+  # leave the runtime with no current account if none remain). The next spawn
+  # reads the new current account out of the DB (Codex also rewrites auth.json).
   #
   # The account row goes; its history does not. Quota snapshots, login attempts,
   # and rotation events are nullified rather than destroyed, and each carries the
@@ -482,7 +482,7 @@ class InferenceController < ApplicationController
   # Validate that an account can be made current. Returns [ok, error_message].
   # Codex API-key accounts authenticate statically — nothing to refresh. OAuth
   # accounts (both runtimes) must hold a refresh token that validates against the
-  # vendor before we write potentially-revoked credentials to the filesystem.
+  # vendor before we hand potentially-revoked credentials to a session.
   def validate_switchable(account)
     unless account.has_valid_config?
       return [ false, "Cannot switch to #{account.email} — no credentials stored. Authenticate the account first." ]

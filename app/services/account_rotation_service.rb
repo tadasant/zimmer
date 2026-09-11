@@ -282,7 +282,7 @@ class AccountRotationService
   private
 
   # Find and activate the next available account, validating tokens by
-  # probing Anthropic's OAuth endpoint before writing them to the filesystem.
+  # probing Anthropic's OAuth endpoint before marking it current.
   # Skips accounts whose tokens fail validation and tries the next one.
   # Does NOT mark failed accounts as needs_reauth — that decision belongs to
   # refresh_token! (for permanent OAuth errors) and the background refresh job
@@ -307,13 +307,13 @@ class AccountRotationService
       return activate_next_account(exclude_ids: exclude_ids + [ next_account.id ])
     end
 
-    # Validate the account's tokens by calling refresh_token! before writing
-    # them to the filesystem. The previous date-only check (token_expired?
-    # / token_expiring_soon?) lets through bogus credentials with sentinel
+    # Validate the account's tokens by calling refresh_token! before marking it
+    # current. The previous date-only check (token_expired? /
+    # token_expiring_soon?) lets through bogus credentials with sentinel
     # expiresAt values (e.g., 9999999999999 from accidentally-loaded test
-    # fixture data) or unexpired-but-revoked tokens. Either case writes
-    # garbage to ~/.claude/.credentials.json and 401s every subsequent
-    # session. Probing the OAuth endpoint catches both.
+    # fixture data) or unexpired-but-revoked tokens. Either case hands every
+    # subsequent session a token that 401s. Probing the OAuth endpoint catches
+    # both.
     unless next_account.can_refresh_token?
       @logger.warn("Account has no refresh token, skipping during rotation", email: next_account.email)
       return activate_next_account(exclude_ids: exclude_ids + [ next_account.id ])
@@ -345,8 +345,8 @@ class AccountRotationService
   # when the pool has none.
   #
   # Bootstrap is the path that picks an identity when nothing is current, and it
-  # validates like the other three (rotation, manual switch, filesystem adoption)
-  # rather than taking `available.first` on faith. #ensure_fresh_tokens! swallows
+  # validates like the other two (rotation, manual switch) rather than taking
+  # `available.first` on faith. #ensure_fresh_tokens! swallows
   # its own failure by design, so an unvalidated pick let an account with a dead
   # refresh token become current and every session on the instance fail to
   # authenticate until a human intervened (#239).
