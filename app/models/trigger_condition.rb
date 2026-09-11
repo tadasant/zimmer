@@ -45,7 +45,15 @@ class TriggerCondition < ApplicationRecord
   # across one DM conversation per allowed user, each with its own entry in
   # `dm_timestamps`. There is no single "newest message" for the health check to
   # measure staleness against, and a thread_ts would have nothing to scope.
+  #
+  # A bot_mention condition WITH a thread_ts is the one member that stops fanning
+  # out: it watches a single thread and nothing else. See #fans_out?.
   ALL_CHANNEL_EVENT_TYPES = (%w[bot_mention dm_message] + PASSIVE_EVENT_TYPES).freeze
+
+  # Slack event types that accept a thread_ts. A thread-scoped new_message fires on
+  # every new reply in the thread; a thread-scoped bot_mention fires only on replies
+  # that @mention the bot, and drops its DM and channel halves.
+  THREAD_SCOPABLE_EVENT_TYPES = %w[new_message bot_mention].freeze
   SCHEDULE_UNITS = %w[minutes hours days weeks].freeze
   DAYS_OF_WEEK = %w[monday tuesday wednesday thursday friday saturday sunday].freeze
 
@@ -155,12 +163,13 @@ class TriggerCondition < ApplicationRecord
     configuration["event_type"] || "new_message"
   end
 
-  # Optional thread timestamp for new_message conditions. When present, the
-  # condition monitors new REPLIES in this specific thread instead of new
-  # top-level messages in the channel. This is required for channels whose
-  # meaningful posts arrive as thread replies (e.g. a daily digest thread) —
-  # plain conversations.history polling never surfaces thread replies, so a
-  # top-level new_message condition can never fire on them.
+  # Optional thread timestamp for new_message and bot_mention conditions. When
+  # present, the condition monitors new REPLIES in this specific thread instead of
+  # new top-level messages in the channel. For new_message this is required for
+  # channels whose meaningful posts arrive as thread replies (e.g. a daily digest
+  # thread) — plain conversations.history polling never surfaces thread replies,
+  # so a top-level new_message condition can never fire on them. For bot_mention
+  # it keeps a conversation with Zimmer inside the thread it started in.
   def thread_ts
     configuration["thread_ts"].presence
   end
@@ -168,6 +177,14 @@ class TriggerCondition < ApplicationRecord
   # True when this is a Slack condition scoped to a specific thread's replies.
   def thread_scoped?
     condition_type == "slack" && thread_ts.present?
+  end
+
+  # True when this Slack condition watches many sources — DMs and/or every member
+  # channel, each with its own cursor — rather than one channel or thread polled
+  # into last_message_ts. Such a condition has no single "newest message", which
+  # is why SlackTriggerHealthCheckJob cannot measure it for staleness.
+  def fans_out?
+    ALL_CHANNEL_EVENT_TYPES.include?(event_type) && !thread_scoped?
   end
 
   # True when this is a Slack condition that listens passively — firing with no
@@ -611,7 +628,11 @@ class TriggerCondition < ApplicationRecord
     when "slack"
       case event_type
       when "bot_mention"
-        channel_name.present? ? "Slack: @mention in ##{channel_name} + DMs" : "Slack: @mention in all channels + DMs"
+        if thread_scoped?
+          "Slack: @mention in thread #{thread_ts} of ##{channel_name.presence || channel_id}"
+        else
+          channel_name.present? ? "Slack: @mention in ##{channel_name} + DMs" : "Slack: @mention in all channels + DMs"
+        end
       when "dm_message"
         allow_all_users? ? "Slack: DMs to Zimmer" : "Slack: DMs to Zimmer from #{allowed_user_ids.size} allowed user(s)"
       when "passive_listen_thread"
@@ -1131,15 +1152,15 @@ class TriggerCondition < ApplicationRecord
       errors.add(:configuration, "event_type must be one of: #{EVENT_TYPES.join(', ')}")
     end
 
-    # thread_ts scopes a new_message condition to a single thread's replies. It
-    # requires a channel_id (which thread to read), and is meaningless for the
-    # all-channel event types — those walk threads themselves, filtering by
-    # @mention (bot_mention) or by prior participation (the passive types).
+    # thread_ts scopes a condition to a single thread's replies. It requires a
+    # channel_id (which thread to read), and only THREAD_SCOPABLE_EVENT_TYPES take
+    # it. dm_message has no thread to scope, and the passive types walk threads
+    # themselves, filtering by prior participation.
     if configuration["thread_ts"].present?
       if configuration["channel_id"].blank?
         errors.add(:configuration, "thread_ts requires a channel_id")
       end
-      if ALL_CHANNEL_EVENT_TYPES.include?(event_type)
+      unless THREAD_SCOPABLE_EVENT_TYPES.include?(event_type)
         errors.add(:configuration, "thread_ts is not supported for #{event_type} conditions")
       end
     end
