@@ -34,6 +34,82 @@ class Mcp::Tools::ManageCategoriesTest < ActiveSupport::TestCase
     assert_includes output, "- **Sessions:** 0"
   end
 
+  # --- The tuning loop (tadasant/zimmer#16) ------------------------------------
+
+  def record_correction(bugs, research, session: sessions(:waiting))
+    CategoryFeedbackEvent.record_inference_outcome!(
+      session: session, category: bugs, raw_answer: "CATEGORY: Bugs", context: "snapshot",
+      context_source: "transcript", title_requested: false, model: "haiku",
+      prompt_version: CategorizationService::PROMPT_VERSION, candidates: [ bugs, research ]
+    )
+    CategoryFeedbackEvent.record_correction!(session: session, corrected_category: research)
+  end
+
+  test "tuning shows the knobs, the descriptions the inference sees, and the corrections" do
+    AppSetting.delete_all
+    bugs = Category.create!(name: "Bugs", description: "Defects")
+    research = Category.create!(name: "Research")
+    record_correction(bugs, research)
+
+    output = @tool.call("action" => "tuning")
+
+    assert_includes output, "- **Model:** haiku (default)"
+    assert_includes output, "- **Guidance:** (none)"
+    assert_includes output, "- **Bugs:** Defects"
+    assert_includes output, "- **Research:** (no description"
+    assert_includes output, "Bugs -> Research (not replayed)"
+  end
+
+  test "set_tuning writes guidance and model" do
+    AppSetting.delete_all
+
+    output = @tool.call("action" => "set_tuning", "guidance" => "Docs PRs are Docs.", "inference_model" => "sonnet")
+
+    assert_includes output, "- **Model:** sonnet"
+    assert_equal "Docs PRs are Docs.", AppSetting.current.category_guidance
+  end
+
+  test "set_tuning refuses a model the inference runtime cannot run" do
+    AppSetting.delete_all
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "set_tuning", "inference_model" => "gpt-5.5") }
+    assert_includes error.message, "not available"
+  end
+
+  test "set_tuning with nothing to set raises" do
+    assert_raises(Mcp::ToolError) { @tool.call("action" => "set_tuning") }
+  end
+
+  test "replay enqueues the replay job" do
+    bugs = Category.create!(name: "Bugs")
+    research = Category.create!(name: "Research")
+    record_correction(bugs, research)
+
+    output = @tool.call("action" => "replay", "limit" => 5)
+
+    assert_includes output, "- **Corrections queued:** 1"
+  end
+
+  test "replay with no corrections raises" do
+    CategoryFeedbackEvent.delete_all
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("action" => "replay") }
+    assert_includes error.message, "nothing to replay"
+  end
+
+  test "set_session_category records the move as an MCP correction" do
+    bugs = Category.create!(name: "Bugs")
+    research = Category.create!(name: "Research")
+    session = sessions(:waiting)
+    session.update!(category_id: bugs.id)
+    record_correction(bugs, research, session: session)
+    CategoryFeedbackEvent.corrections.delete_all
+
+    @tool.call("action" => "set_session_category", "session_id" => session.id, "category_id" => research.id)
+
+    assert_equal CategoryFeedbackEvent::MCP, CategoryFeedbackEvent.corrections.last.source
+  end
+
   test "create without a name raises" do
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "create") }
     assert_includes error.message, '"name" is required'

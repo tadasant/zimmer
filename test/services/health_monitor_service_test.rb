@@ -1728,7 +1728,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     ceilings = HealthMonitorService::LANE_EXECUTION_CEILINGS
 
     assert_operator ceilings["inference"], :>, SessionStatusSummaryGenerator::HEADLESS_TIMEOUT.seconds
-    assert_operator ceilings["inference"], :>, SessionTitleJob::INFERENCE_TIMEOUT.seconds
+    assert_operator ceilings["inference"], :>, CategorizationService::INFERENCE_TIMEOUT.seconds
     assert_operator ceilings["default"], :>, PostDeployTaskJob::SLICE_BUDGET
     assert_operator ceilings["auth"], :>, RuntimeLoginJob::MAX_DURATION
     # Every scheduled sweep on `maintenance` bounds itself with SweepBudget, and

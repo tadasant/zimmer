@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_11_160000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_11_180100) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -68,6 +68,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_160000) do
   end
 
   create_table "app_settings", force: :cascade do |t|
+    t.text "category_guidance"
+    t.string "category_inference_model"
     t.datetime "created_at", null: false
     t.string "default_model"
     t.string "default_runtime"
@@ -116,6 +118,34 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_160000) do
     t.integer "position", null: false
     t.datetime "updated_at", null: false
     t.index ["position"], name: "index_categories_on_position"
+  end
+
+  create_table "category_feedback_events", force: :cascade do |t|
+    t.bigint "auto_category_id"
+    t.string "auto_category_name"
+    t.string "candidate_names", default: [], null: false, array: true
+    t.text "context_snapshot"
+    t.string "context_source"
+    t.bigint "corrected_category_id"
+    t.string "corrected_category_name"
+    t.datetime "created_at", null: false
+    t.string "kind", null: false
+    t.string "model"
+    t.string "prompt_version"
+    t.text "raw_answer"
+    t.bigint "replay_category_id"
+    t.string "replay_category_name"
+    t.string "replay_model"
+    t.string "replay_prompt_version"
+    t.text "replay_raw_answer"
+    t.datetime "replayed_at"
+    t.bigint "session_id"
+    t.string "source"
+    t.boolean "title_requested", default: false, null: false
+    t.datetime "updated_at", null: false
+    t.index ["kind", "id"], name: "index_category_feedback_events_on_kind_and_id"
+    t.index ["session_id", "kind", "id"], name: "index_category_feedback_events_on_session_and_kind"
+    t.index ["session_id"], name: "index_category_feedback_events_on_session_id"
   end
 
   create_table "claude_account_quota_snapshots", force: :cascade do |t|
@@ -951,6 +981,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_160000) do
   add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_from_id", on_delete: :nullify
   add_foreign_key "account_rotation_events", "claude_accounts", column: "rotated_to_id", on_delete: :nullify
   add_foreign_key "agent_posted_github_comments", "sessions", on_delete: :nullify
+  add_foreign_key "category_feedback_events", "categories", column: "auto_category_id", on_delete: :nullify
+  add_foreign_key "category_feedback_events", "categories", column: "corrected_category_id", on_delete: :nullify
+  add_foreign_key "category_feedback_events", "categories", column: "replay_category_id", on_delete: :nullify
+  add_foreign_key "category_feedback_events", "sessions", on_delete: :nullify
   add_foreign_key "claude_account_quota_snapshots", "claude_accounts", on_delete: :nullify
   add_foreign_key "elicitations", "sessions", on_delete: :cascade
   add_foreign_key "enqueued_messages", "sessions", on_delete: :cascade
