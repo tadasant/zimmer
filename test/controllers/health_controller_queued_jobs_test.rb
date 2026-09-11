@@ -24,7 +24,6 @@ class HealthControllerQueuedJobsTest < ActionDispatch::IntegrationTest
   setup do
     Log.any_instance.stubs(:broadcast_append_to_timeline)
     Session.any_instance.stubs(:broadcast_status_change)
-    AlertService.stubs(:raise_alert).returns(true)
 
     GoodJob::Job.delete_all
     AppSetting.delete_all
