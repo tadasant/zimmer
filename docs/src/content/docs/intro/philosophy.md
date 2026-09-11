@@ -89,6 +89,13 @@ The stop condition is enforced only by the model choosing to obey English.
 See [Goals and stop conditions](/sessions/goals/).
 :::
 
+What the loop produces is held to a stricter bar: it has to have run. Zimmer would rather have
+fewer features that are proven to work at runtime than more features that may or may not work. A code path nobody can
+run and watch work doesn't get added, and nothing merges to `main` before it has been shown to
+work. A path already on `main` that has never been runtime-verified belongs on
+[Known limitations](/limitations/) until a PR removes it. The rule, with what counts as proof, is in
+[`references/ENGINEERING_PRACTICES.md`](https://github.com/tadasant/zimmer/blob/main/references/ENGINEERING_PRACTICES.md).
+
 ## 4. MCP servers are the session's permission boundary
 
 The tools an agent has are the things it can do to the world. An agent with a Slack MCP

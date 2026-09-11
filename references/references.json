@@ -2,7 +2,7 @@
   "$schema": "https://pulsemcp.github.io/air/schemas/references.schema.json",
   "engineering-practices": {
     "title": "Engineering Practices",
-    "description": "Shared engineering conventions for Zimmer contributors (testing, git workflow, code style).",
+    "description": "Shared engineering conventions for Zimmer contributors: the runtime-verification rule (prefer fewer features proven to work at runtime; never merge to `main` anything that hasn't been), what counts as proof, testing, git workflow, and code style.",
     "file": "ENGINEERING_PRACTICES.md"
   },
   "brand": {
