@@ -923,6 +923,33 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     AppSetting.delete_all
   end
 
+  # The MCP Apps section is the longest checkbox list on the settings page and
+  # every row carries an MCP server URL — an unbreakable token in a column that
+  # also has to hold a label. That is the shape a phone loses first, and the
+  # section is where an operator decides whose HTML runs in their browser, so a
+  # checkbox off the right edge is a control they cannot reach.
+  test "the MCP Apps allowlist is on screen and reachable on a phone" do
+    AppSetting.delete_all
+    AppSetting.create!(mcp_apps_enabled: true, mcp_apps_allowed_servers: [ "notion" ])
+
+    visit settings_path
+    assert_text "MCP Apps"
+    assert_text "Servers allowed to render views"
+
+    assert find("#app_setting_mcp_apps_enabled", visible: :all).checked?
+
+    scroll_into_center(find("#mcp-apps-settings"))
+    page.save_screenshot("tmp/screenshots/proof-settings-mcp-apps-375.png")
+
+    assert_no_horizontal_overflow("settings with the MCP Apps section")
+
+    past_edge = elements_past_right_edge("#mcp-apps-settings")
+    assert_empty past_edge,
+      "the MCP Apps section ends past the #{MOBILE_WIDTH}px viewport, out of reach:\n  #{past_edge.join("\n  ")}"
+  ensure
+    AppSetting.delete_all
+  end
+
   test "triggers index and detail do not overflow horizontally on a phone" do
     trigger = create_trigger
 
