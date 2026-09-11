@@ -56,6 +56,12 @@ class CronFreshnessTest < ActiveSupport::TestCase
     result[:keys].find { |r| r[:key] == key.to_s }
   end
 
+  # How the readings stamp an instant, so an expectation does not depend on the zone
+  # the suite happens to run in.
+  def utc(time)
+    time.utc.strftime("%Y-%m-%d %H:%M UTC")
+  end
+
   test "a key that enqueued on its last tick is fresh" do
     cron_row("sweep", enqueued: NOW - 3.minutes, finished: NOW - 3.minutes + 2)
 
@@ -338,6 +344,152 @@ class CronFreshnessTest < ActiveSupport::TestCase
     result = CronFreshness.new(entries: [ entry(:sweep, "*/5 * * * *") ], now: now, exemptions: {}).report
 
     assert_in_delta new_worker, result[:cron_running_since], 1
+  end
+
+  # --- History: has it been running, not just is it running -----------------------
+
+  test "a key that never missed a tick reports a full window and no stop" do
+    ticking("sweep", every: 5.minutes, window: (NOW - 30.hours)..NOW)
+
+    sweep = reading(report([ entry(:sweep, "*/5 * * * *") ]), :sweep)
+
+    assert_equal :fresh, sweep[:state]
+    assert_equal 289, sweep[:ticks_in_window], "24h of a 5-minute key, both edges included"
+    assert_equal 5.minutes.to_i, sweep[:longest_gap_seconds]
+    assert_not sweep[:stopped_in_window]
+  end
+
+  # The whole point of reading more than the newest row: this key is enqueuing
+  # perfectly right now, and the live rule cannot see the hole behind it.
+  test "a key that stopped for hours and recovered reads fresh, and says so anyway" do
+    ticking("sweep", every: 5.minutes, window: (NOW - 30.hours)..(NOW - 10.hours))
+    ticking("sweep", every: 5.minutes, window: (NOW - 4.hours)..NOW)
+
+    result = report([ entry(:sweep, "*/5 * * * *") ])
+    sweep = reading(result, :sweep)
+
+    assert_equal :fresh, sweep[:state], "its newest tick is three minutes old; nothing is late"
+    assert sweep[:stopped_in_window]
+    assert_equal 6.hours.to_i, sweep[:longest_gap_seconds]
+    assert_equal NOW - 10.hours, sweep[:gap_started_at]
+    assert_equal NOW - 4.hours, sweep[:gap_ended_at]
+    assert_equal 1, result[:stopped_in_window]
+    assert result[:status].healthy?, "a stop that is over is reported, never paged"
+    assert_equal "All 1 judged cron key(s) are enqueuing on schedule. 1 key(s) stopped and recovered " \
+                 "in the last 24 hours (sweep silent 6h 0m to #{utc(NOW - 4.hours)})", result[:status].message
+  end
+
+  # A hole at the leading edge leaves ordinary gaps between every pair of rows INSIDE
+  # the window. It is only visible against the newest tick before the window.
+  test "a stop that straddles the start of the window is measured against the tick before it" do
+    ticking("sweep", every: 5.minutes, window: (NOW - 30.hours)..(NOW - 27.hours))
+    ticking("sweep", every: 5.minutes, window: (NOW - 20.hours)..NOW)
+
+    sweep = reading(report([ entry(:sweep, "*/5 * * * *") ]), :sweep)
+
+    assert sweep[:stopped_in_window]
+    assert_equal 7.hours.to_i, sweep[:longest_gap_seconds]
+    assert_equal NOW - 27.hours, sweep[:gap_started_at]
+  end
+
+  test "a key with no tick before the window has its leading edge left unmeasured" do
+    ticking("sweep", every: 5.minutes, window: (NOW - 20.hours)..NOW)
+
+    sweep = reading(report([ entry(:sweep, "*/5 * * * *") ]), :sweep)
+
+    assert_not sweep[:stopped_in_window], "understating a silence loses a finding; it never invents one"
+    assert_equal 5.minutes.to_i, sweep[:longest_gap_seconds]
+  end
+
+  # The allowance is one interval plus the key's own grace, which is what lets one rule
+  # serve every cadence.
+  test "a daily key's ordinary 24-hour silence is not a stop, and a 27-hour one is" do
+    daily = [ entry(:daily, "0 6 * * *") ]
+    now = Time.new(2026, 9, 11, 6, 30, 0)
+    [ 2, 1, 0 ].each { |days| cron_row("daily", enqueued: now.change(hour: 6) - days.days, finished: now) }
+
+    assert_not reading(report(daily, now: now), :daily)[:stopped_in_window],
+               "24h against an allowance of 24h + the 2h cap"
+
+    GoodJob::Job.where(cron_key: "daily", cron_at: now.change(hour: 6) - 1.day).delete_all
+    stopped = reading(report(daily, now: now), :daily)
+    assert stopped[:stopped_in_window], "48h against the same allowance"
+    assert_equal 48.hours.to_i, stopped[:longest_gap_seconds]
+  end
+
+  # A 5-minute singleton whose copy legitimately runs past a tick or two is silent for
+  # 15 minutes against an allowance of 35. The same floor that keeps the live rule quiet
+  # keeps this one quiet.
+  test "a singleton refusing a tick or two while its copy runs is not a stop" do
+    ticking("sweep", every: 5.minutes, window: (NOW - 30.hours)..(NOW - 20.minutes))
+    ticking("sweep", every: 5.minutes, window: NOW..NOW)
+
+    sweep = reading(report([ entry(:sweep, "*/5 * * * *") ]), :sweep)
+
+    assert_equal 20.minutes.to_i, sweep[:longest_gap_seconds]
+    assert_not sweep[:stopped_in_window]
+  end
+
+  # GoodJob keeps every key's dashboard switch in one settings row, so its timestamp
+  # cannot say WHICH key was flipped. The live rule excuses on it because it pages;
+  # this never pages, so it does not, and a stop stays visible whoever toggled what.
+  test "a dashboard toggle on any key does not hide a stop, its own included" do
+    ticking("sweep", every: 5.minutes, window: (NOW - 30.hours)..(NOW - 10.hours))
+    ticking("sweep", every: 5.minutes, window: (NOW - 4.hours)..NOW)
+    ticking("other", every: 5.minutes, window: (NOW - 30.hours)..NOW)
+    GoodJob::Setting.cron_key_disable(:other)
+    GoodJob::Setting.cron_key_enable(:other)
+    GoodJob::Setting.update_all(updated_at: NOW - 5.hours)
+    entries = [ entry(:sweep, "*/5 * * * *"), entry(:other, "*/5 * * * *") ]
+
+    result = report(entries)
+    assert reading(result, :sweep)[:stopped_in_window], "another key's toggle says nothing about this one"
+    assert_not reading(result, :other)[:stopped_in_window]
+    assert_equal :fresh, reading(result, :sweep)[:state], "the live rule still takes the toggle as a lower bound"
+
+    GoodJob::Setting.cron_key_disable(:sweep)
+    GoodJob::Setting.cron_key_enable(:sweep)
+    GoodJob::Setting.update_all(updated_at: NOW - 5.hours)
+    assert reading(report(entries), :sweep)[:stopped_in_window],
+           "switched off for six hours is still six hours of no ticks, and the sentence says stopped, not failed"
+  end
+
+  test "a key whose interval is longer than the window gets no history verdict" do
+    weekly = Time.new(2026, 9, 7, 6, 0, 0)
+    cron_row("weekly", enqueued: weekly, finished: weekly + 30)
+
+    result = reading(report([ entry(:weekly, "0 6 * * 1") ]), :weekly)
+
+    assert_equal 0, result[:ticks_in_window]
+    assert_nil result[:longest_gap_seconds]
+    assert_not result[:stopped_in_window]
+  end
+
+  # An outage stops every key at once. That is true and worth seeing, and it is also
+  # not a fifty-name sentence.
+  test "the summary names the worst few keys that stopped and counts the rest" do
+    keys = (1..5).map { |n| :"sweep#{n}" }
+    keys.each_with_index do |key, index|
+      ticking(key.to_s, every: 5.minutes, window: (NOW - 30.hours)..(NOW - 10.hours - index.hours))
+      ticking(key.to_s, every: 5.minutes, window: (NOW - 4.hours)..NOW)
+    end
+
+    result = report(keys.map { |key| entry(key, "*/5 * * * *") })
+
+    assert_equal 5, result[:stopped_in_window]
+    assert_match(/sweep5 silent 10h 0m to .*; sweep4 silent 9h 0m to .*; sweep3 silent 8h 0m to .*; and 2 more/,
+                 result[:status].message)
+  end
+
+  test "keys that are not judged carry no history verdict" do
+    ticking("sweep", every: 5.minutes, window: (NOW - 30.hours)..(NOW - 10.hours))
+    ticking("sweep", every: 5.minutes, window: (NOW - 4.hours)..NOW)
+
+    exempt = reading(report([ entry(:sweep, "*/5 * * * *") ], exemptions: { "sweep" => "It sleeps" }), :sweep)
+
+    assert_equal :exempt, exempt[:state]
+    assert_not exempt[:stopped_in_window]
+    assert_equal 218, exempt[:ticks_in_window], "the facts are still reported; only the verdict is withheld"
   end
 
   # The demonstration: every entry production actually schedules, and the grace each

@@ -145,6 +145,33 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert_select "summary", text: /Every key \(2\)/
   end
 
+  # The reading the card exists for that nothing else on the page shows: a key whose
+  # newest tick is current, so every live signal says `fresh`, and which was silent for
+  # six hours earlier in the window. Its own summary line is INFO, and the OTel appender
+  # ships WARN and above, so the log store cannot answer it either (tadasant/zimmer#584).
+  test "dashboard shows a cron key that stopped earlier in the window and recovered" do
+    GoodJob::CronEntry.stubs(:all).returns([
+      GoodJob::CronEntry.new(key: :zombie_reaper, cron: "*/5 * * * *", class: "ZombieReaperJob")
+    ])
+    GoodJob::Process.insert_all([
+      { id: SecureRandom.uuid, state: { cron_enabled: true }, created_at: 2.days.ago, updated_at: Time.current }
+    ])
+    last_tick = Time.current.beginning_of_minute - (Time.current.min % 5).minutes
+    ticks = (0..359).reject { |i| (48..119).cover?(i) } # a 6h 5m silence, from 10h ago to 4h ago
+    GoodJob::Job.insert_all(ticks.map do |i|
+      at = last_tick - (i * 5).minutes
+      { queue_name: "default", job_class: "ZombieReaperJob", cron_key: "zombie_reaper", cron_at: at,
+        created_at: at, updated_at: at, scheduled_at: at, finished_at: at + 1 }
+    end)
+
+    get health_dashboard_url
+    assert_response :success
+
+    assert_match(/1 key\(s\) stopped and recovered in the last 24 hours/, response.body)
+    assert_match(%r{zombie_reaper</span> is enqueuing now, but was silent\s+6h 5m\s+until}, response.body)
+    assert_match(/title="silent 6h 5m"/, response.body)
+  end
+
   test "dashboard displays overall status" do
     get health_dashboard_url
     assert_response :success

@@ -8,6 +8,12 @@
 %>
 <% cron = health_report[:cron_health] %>
 <% behind = cron[:keys].reject { |r| r[:state] == :fresh } %>
+<%# Keys that read `fresh` because their newest tick is current, but that were silent
+    for longer than a whole interval plus their grace earlier in the window. Nothing
+    else on this page would show them: a periodic job's summary line is INFO, and the
+    OTel appender ships WARN and above (tadasant/zimmer#584). %>
+<% recovered = cron[:keys].select { |r| r[:state] == :fresh && r[:stopped_in_window] } %>
+<% window = CronFreshness::HISTORY_WINDOW.inspect %>
 <div class="mt-6 bg-white rounded-lg shadow">
   <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -15,7 +21,8 @@
         <h3 class="text-lg font-medium text-gray-900">Cron Freshness</h3>
         <p class="mt-1 text-sm text-gray-500">
           Whether each job in <code class="font-mono text-xs">config/cron_schedule.rb</code> is still being
-          enqueued, judged against its own cadence.
+          enqueued, judged against its own cadence — and whether it stopped at any point in the last
+          <%= window %>.
         </p>
       </div>
       <div class="sm:flex-shrink-0">
@@ -49,6 +56,17 @@
     </dl>
 
     <p class="text-sm text-gray-700 break-words"><%= cron[:status].message %></p>
+    <% if recovered.any? %>
+      <ul class="mt-2 space-y-1">
+        <% recovered.each do |reading| %>
+          <li class="text-xs text-gray-600 break-words">
+            <span class="font-mono"><%= reading[:key] %></span> is enqueuing now, but was silent
+            <%= HealthMonitorService.format_wait(reading[:longest_gap_seconds]) %>
+            until <%= reading[:gap_ended_at]&.utc&.strftime("%Y-%m-%d %H:%M UTC") %>.
+          </li>
+        <% end %>
+      </ul>
+    <% end %>
     <% if cron[:cron_running_since] %>
       <p class="mt-1 text-xs text-gray-500">
         Newest cron-running worker started <%= time_ago_in_words(cron[:cron_running_since]) %> ago.
@@ -89,6 +107,7 @@
                 <th class="px-4 py-2">Key</th>
                 <th class="px-4 py-2">Schedule</th>
                 <th class="px-4 py-2">Last enqueued</th>
+                <th class="px-4 py-2">Last <%= window %></th>
                 <th class="px-4 py-2">State</th>
               </tr>
             </thead>
@@ -99,6 +118,17 @@
                   <td class="px-4 py-2 font-mono text-xs text-gray-600 whitespace-nowrap"><%= reading[:cron] %></td>
                   <td class="px-4 py-2 text-gray-600 whitespace-nowrap">
                     <%= reading[:last_enqueued_at] ? "#{time_ago_in_words(reading[:last_enqueued_at])} ago" : "never" %>
+                  </td>
+                  <td class="px-4 py-2 text-gray-600 whitespace-nowrap">
+                    <%= reading[:ticks_in_window] %> tick<%= "s" unless reading[:ticks_in_window] == 1 %>
+                    <% if reading[:stopped_in_window] %>
+                      <%# The silence itself is spelled out per key above the table, so the badge only
+                          has to mark the row — it is inside a horizontally scrolling table on a phone. %>
+                      <span class="ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-800"
+                            title="silent <%= HealthMonitorService.format_wait(reading[:longest_gap_seconds]) %>">
+                        stopped
+                      </span>
+                    <% end %>
                   </td>
                   <td class="px-4 py-2">
                     <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium <%= cron_freshness_state_class(reading[:state]) %>">
