@@ -4,6 +4,8 @@ require "test_helper"
 require "mocha/minitest"
 
 class McpApps::ProxyTest < ActiveSupport::TestCase
+  include McpAppsSettingsHelpers
+
   TOOLS = [
     { "name" => "open_panel", "_meta" => { "ui" => { "resourceUri" => "ui://demo/panel.html" } } },
     { "name" => "roll_dice", "_meta" => { "ui" => { "visibility" => [ "app" ] } } },
@@ -15,7 +17,7 @@ class McpApps::ProxyTest < ActiveSupport::TestCase
       agent_runtime: "claude_code", prompt: "x", mcp_servers: [ "notion" ],
       git_root: "https://github.com/test/repo.git", branch: "main"
     )
-    AppSetting.create!(mcp_apps_enabled: true, mcp_apps_allowed_servers: [ "notion" ])
+    enable_mcp_apps
 
     @client = mock("client")
     @client.stubs(:tools_list).returns(TOOLS)
