@@ -235,7 +235,6 @@ class Mcp::Tools::ActionHealthTest < ActiveSupport::TestCase
   # thing that tells it the third lever exists at all. Before #335 it named the
   # GoodJob dashboard, which is the app the session cannot drive.
   test "enter_queue_recovery_mode points at the job maintenance actions, not at /jobs" do
-    AlertService.stubs(:raise_alert).returns(true)
     GoodJob::Setting.delete_all
     AppSetting.delete_all
 
@@ -278,7 +277,6 @@ class Mcp::Tools::ActionHealthTest < ActiveSupport::TestCase
   end
 
   test "discard_queued_jobs reports what it discarded, by class" do
-    AlertService.stubs(:raise_alert).returns(true)
     GoodJob::Job.delete_all
     2.times { enqueue_good_job }
     enqueue_good_job(job_class: "HeartbeatSweepJob")
@@ -320,7 +318,6 @@ class Mcp::Tools::ActionHealthTest < ActiveSupport::TestCase
   end
 
   test "reschedule_queued_jobs moves the work instead of ending it" do
-    AlertService.stubs(:raise_alert).returns(true)
     GoodJob::Job.delete_all
     job = enqueue_good_job
 
@@ -342,7 +339,6 @@ class Mcp::Tools::ActionHealthTest < ActiveSupport::TestCase
   # repeat is refused by the count confirmation, not by a timer that fails closed
   # when the cache is down.
   test "the queued job actions are not rate limited" do
-    AlertService.stubs(:raise_alert).returns(true)
     GoodJob::Job.delete_all
     HealthActionCooldown.new(HealthActionCooldown.fingerprint("key_one")).record("cleanup_processes")
 

@@ -320,7 +320,6 @@ class Api::V1::HealthControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "POST discard_queued_jobs reports the per-class breakdown" do
-    AlertService.stubs(:raise_alert).returns(true)
     GoodJob::Job.delete_all
     2.times { enqueue_good_job }
     enqueue_good_job(job_class: "HeartbeatSweepJob")
@@ -361,7 +360,6 @@ class Api::V1::HealthControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "POST reschedule_queued_jobs moves the work and says it is recoverable" do
-    AlertService.stubs(:raise_alert).returns(true)
     GoodJob::Job.delete_all
     job = enqueue_good_job
 
