@@ -58,10 +58,9 @@ class NoWholeColumnMetadataWritersTest < ActiveSupport::TestCase
     "controllers/sessions_controller.rb" => [
       "@session.metadata = (@session.metadata || {}).merge(\"agent_root_key\" => root_key)"
     ],
-    "controllers/api/v1/sessions_controller.rb" => [
-      "@session.metadata = (@session.metadata || {}).merge(\"agent_root_key\" => agent_root.name)"
-    ],
-    "services/mcp/tools/start_session.rb" => [
+    # The create-time chain both spawn surfaces share (POST /api/v1/sessions and
+    # MCP start_session), which is where this assignment moved to.
+    "services/sessions/resolve_spawn_defaults.rb" => [
       "session.metadata = (session.metadata || {}).merge(\"agent_root_key\" => root.name)"
     ],
     # Not a session column at all: a TokenUsage row's own `metadata`, rendered.

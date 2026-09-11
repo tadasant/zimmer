@@ -653,13 +653,16 @@ A session's target repository comes from one of two arguments, and **one of them
   `default_plugins`. Prefer it whenever a root covers the repository.
 - **`git_root`** — a clone URL or local path, for a repository no root covers: a fork, a scratch repo,
   a one-off project. Optional `branch` and `subdirectory` go with it. This is the same rootless create
-  `POST /api/v1/sessions` and the new-session form accept.
+  `POST /api/v1/sessions` accepts. The new-session form is narrower than either: it offers the
+  catalog's agent roots and nothing else, so a rootless spawn is an API-and-MCP capability rather
+  than something a human can do by clicking.
 
 A `git_root` spawn inherits **no catalog defaults**: no MCP servers, no skills, no hooks, no plugins
 beyond what the call names, and an omitted `mcp_servers` means none rather than "fill these in later"
 — it is recorded as a [deliberate empty](/air/agent-roots/#a-list-you-pass-replaces-the-roots-defaults),
 so the heal that restores an accidentally-empty column never quietly attaches the servers of a catalog
-root whose URL happens to match. Its runtime and model resolve through the chain the whole app shares,
+root whose URL happens to match. `POST /api/v1/sessions` records it the same way on a rootless create,
+because both go through the same resolver. Its runtime and model resolve through the chain the whole app shares,
 minus the tier that isn't there: argument → *(no root)* → the global defaults the Settings page
 presents → the hardcoded default. That chain is one implementation
 (`Sessions::ResolveSpawnDefaults`) shared with [the REST

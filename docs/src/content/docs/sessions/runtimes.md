@@ -33,14 +33,13 @@ Three places set it, most specific first:
 
 Below all three is the database column default, `claude_code`.
 
-:::caution[`start_session` skips the global default when you name no agent root]
-The REST API honors the chain in full: `Api::V1::SessionsController#resolve_agent_root_defaults!`
-runs whether or not `agent_root` was given, so a rootless `POST /api/v1/sessions` still picks up
-Settings → Default runtime. The MCP `start_session` tool does not — it reaches
-`apply_agent_root_defaults!` only `if agent_root_name`, so a rootless MCP spawn falls through to the
-column default. Set the global default to `pi`, start a session over MCP with no `agent_root`, and
-you get Claude Code.
-:::
+Both spawn surfaces honor the chain in full, and they honor it through one implementation:
+`Sessions::ResolveSpawnDefaults` runs on every `POST /api/v1/sessions` and every MCP `start_session`,
+whether or not an `agent_root` was named. With no root there is simply no root tier and the chain
+falls through to Settings → Default runtime. Until
+[#265](https://github.com/tadasant/zimmer/issues/265) that was true of REST only — the MCP tool could
+not spawn without an `agent_root` at all — which is why the two now share the code rather than each
+carrying a copy.
 
 ## Models
 

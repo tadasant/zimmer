@@ -52,7 +52,7 @@ module Sessions
       app_setting = AppSetting.current
 
       resolve_runtime!(root, app_setting)
-      apply_root_defaults!(root) if root
+      root ? apply_root_defaults!(root) : record_rootless_mcp_servers!
       resolve_model!(root, app_setting)
 
       session
@@ -89,6 +89,18 @@ module Sessions
       session.catalog_plugins = root.default_plugins || [] unless explicit_lists[:plugins]
       # `root.name`, not the caller's spelling — see Session.create_from_agent_root!.
       session.metadata = (session.metadata || {}).merge("agent_root_key" => root.name)
+    end
+
+    # A rootless spawn has no root defaults for an omitted mcp_servers to fall back
+    # to, so omitted IS none — and that has to be recorded as deliberate.
+    # Otherwise McpServerBackfill reads the empty column as a failed catalog
+    # resolve and, when the git_root happens to equal a catalog root's URL (which
+    # is all Session#resolved_agent_root's fallback arm matches on), hands the
+    # session that root's MCP servers at job start: servers the caller never asked
+    # for, on a path whose premise is that no catalog entry applies. A caller that
+    # DID name a non-empty list clears the marker here for the same reason.
+    def record_rootless_mcp_servers!
+      session.record_explicit_mcp_servers(session.mcp_servers)
     end
 
     # A root's default_model is typically a claude_code model, so applying it

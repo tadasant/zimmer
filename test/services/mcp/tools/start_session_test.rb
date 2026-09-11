@@ -741,7 +741,9 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
       "mcp_servers" => [ "context7" ]
     )
 
-    assert_equal [ "context7" ], Session.order(:id).last.mcp_servers
+    session = Session.order(:id).last
+    assert_equal [ "context7" ], session.mcp_servers
+    refute session.mcp_servers_explicitly_empty?, "a named list is not a deliberate empty"
   end
 
   test "git_root beside an agent_root retargets the repository and keeps the root's other defaults" do
