@@ -1172,6 +1172,163 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal "1704067400.000000", condition.last_message_ts
   end
 
+  # --- Thread-scoped bot_mention condition tests ---
+  #
+  # bot_mention + thread_ts watches ONE thread for @mentions and nothing else
+  # (issue #78). A trigger that fires on the wrong messages either over-spawns or
+  # silently never fires, so both directions are pinned: a mention in the thread
+  # fires; a plain reply in it, a disallowed author, and anything outside the
+  # thread do not.
+
+  THREAD_MENTION_TS = "1704000000.000000"
+
+  # A bot_mention condition scoped to THREAD_MENTION_TS. Scoping drops the channel
+  # and DM halves entirely, so the calls those halves make must never happen.
+  def stub_thread_mention_condition(allowed_user_ids: nil)
+    condition = stub_bot_mention_condition(allowed_user_ids: allowed_user_ids)
+    condition.update!(configuration: condition.configuration.merge("thread_ts" => THREAD_MENTION_TS))
+
+    SlackService.expects(:get_messages_since).never
+    SlackService.expects(:get_channel_history).never
+    SlackService.expects(:list_member_channels).never
+    SlackService.expects(:list_dm_channels).never
+    condition
+  end
+
+  def thread_reply(ts, text, user: "U222")
+    OpenStruct.new(ts: ts, text: text, user: user, bot_id: nil, thread_ts: THREAD_MENTION_TS)
+  end
+
+  # Stubbed for this one thread only: a fetch of any other thread is an unexpected
+  # invocation, and fails the test.
+  def stub_thread_replies(condition, replies)
+    SlackService.stubs(:get_thread_replies)
+      .with(condition.channel_id, THREAD_MENTION_TS, oldest: condition.last_message_ts)
+      .returns(replies)
+  end
+
+  test "a thread-scoped bot_mention fires on an @mention reply in its thread" do
+    condition = stub_thread_mention_condition
+    stub_thread_replies(condition, [
+      thread_reply("1704067300.000000", "<@U_BOT_123> can you take this one?")
+    ])
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+
+    condition.reload
+    assert_equal "1704067300.000000", condition.last_message_ts
+    assert_not_nil condition.last_polled_at
+  end
+
+  test "a thread-scoped bot_mention fires only on the mention among several replies, and moves past them all" do
+    condition = stub_thread_mention_condition
+    stub_thread_replies(condition, [
+      thread_reply("1704067300.000000", "I think it's the cache", user: "U333"),
+      thread_reply("1704067400.000000", "<@U_BOT_123> can you confirm?"),
+      thread_reply("1704067500.000000", "thanks all", user: "U333")
+    ])
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+
+    assert_equal "1704067500.000000", condition.reload.last_message_ts
+  end
+
+  test "a thread-scoped bot_mention does not fire on a reply that doesn't mention the bot, or on Zimmer's own" do
+    condition = stub_thread_mention_condition
+    stub_thread_replies(condition, [
+      thread_reply("1704067300.000000", "I think it's the cache"),
+      thread_reply("1704067400.000000", "On it — ping <@U_BOT_123> again if it recurs", user: "U_BOT_123")
+    ])
+
+    assert_no_difference("Session.count") do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+
+    # The cursor still advances, so the next poll does not re-read these replies.
+    assert_equal "1704067400.000000", condition.reload.last_message_ts
+  end
+
+  test "a thread-scoped bot_mention ignores a mention from a user outside its allow-list" do
+    condition = stub_thread_mention_condition(allowed_user_ids: %w[U222])
+    stub_thread_replies(condition, [
+      thread_reply("1704067300.000000", "<@U_BOT_123> do the thing", user: "U_RANDOM_STRANGER")
+    ])
+
+    assert_no_difference("Session.count") do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+
+    assert_equal "1704067300.000000", condition.reload.last_message_ts
+  end
+
+  test "a thread-scoped bot_mention reads only its own thread: not the channel, other threads, or DMs" do
+    condition = stub_thread_mention_condition
+    SlackService.expects(:get_thread_replies)
+      .with(condition.channel_id, THREAD_MENTION_TS, oldest: condition.last_message_ts)
+      .once
+      .returns([])
+
+    assert_no_difference("Session.count") do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+
+    assert_not_nil condition.reload.last_polled_at
+  end
+
+  test "a thread-scoped bot_mention's first poll records a baseline and fires nothing" do
+    condition = stub_thread_mention_condition
+    condition.update!(last_message_ts: nil)
+    SlackService.stubs(:get_thread_replies).with(condition.channel_id, THREAD_MENTION_TS).returns([
+      thread_reply("1704067100.000000", "<@U_BOT_123> an old ask"),
+      thread_reply("1704067200.000000", "<@U_BOT_123> a newer old ask")
+    ])
+
+    assert_no_difference("Session.count") do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+
+    assert_equal "1704067200.000000", condition.reload.last_message_ts
+  end
+
+  # The workflow this scoping exists for: a thread is started, the trigger is pointed
+  # at it before anyone replies, and the first reply is the @mention. A first poll
+  # that left the cursor blank would take that reply as the baseline and drop it.
+  test "a thread-scoped bot_mention on a thread with no replies yet fires on its first @mention" do
+    condition = stub_thread_mention_condition
+    condition.update!(last_message_ts: nil)
+    SlackService.stubs(:get_thread_replies).with(condition.channel_id, THREAD_MENTION_TS).returns([])
+
+    assert_no_difference("Session.count") do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+    # The parent is the baseline: every reply is newer than it.
+    assert_equal THREAD_MENTION_TS, condition.reload.last_message_ts
+
+    stub_thread_replies(condition, [ thread_reply("1704067300.000000", "<@U_BOT_123> kicking this off") ])
+
+    assert_difference("Session.count", 1) do
+      SlackTriggerPollerJob.new.send(:process_condition, condition)
+    end
+    assert_equal "1704067300.000000", condition.reload.last_message_ts
+  end
+
+  test "a thread-scoped new_message condition on a thread with no replies baselines on the parent" do
+    SlackService.stubs(:configured?).returns(true)
+
+    condition = trigger_conditions(:new_slack_condition) # last_message_ts is nil
+    condition.configuration["thread_ts"] = "1704000000.000000"
+    condition.save!
+    SlackService.stubs(:get_thread_replies).with(condition.channel_id, "1704000000.000000").returns([])
+
+    SlackTriggerPollerJob.new.send(:process_condition, condition)
+
+    assert_equal "1704000000.000000", condition.reload.last_message_ts
+  end
+
   test "get_author_name returns bot username for bot messages" do
     message = OpenStruct.new(bot_id: "B123", username: "ClawBot", user: nil)
 
