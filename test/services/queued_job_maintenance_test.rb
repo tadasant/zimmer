@@ -10,8 +10,6 @@ require "mocha/minitest"
 # returns a happy count either way. So every clause of the predicate is asserted
 # from the outside, with real rows, rather than trusted from a reading of the SQL.
 class QueuedJobMaintenanceTest < ActiveSupport::TestCase
-  include ErrorReporterHelpers
-
   setup do
     GoodJob::Job.delete_all
   end
@@ -445,14 +443,25 @@ class QueuedJobMaintenanceTest < ActiveSupport::TestCase
   # === Auditability ===
 
   test "a discard pages, naming the count and the classes" do
-    reports = capture_error_reports do
-      2.times { build_job }
-      QueuedJobMaintenance.discard!(job_class: "CanaryJob", expected_count: 2, actor: "test")
+    # Both halves, because they fail independently: the ERROR log record is what
+    # trips the Grafana rule into #alerts, and the GlitchTip event is what carries
+    # the detail. A test that asserted only the second would stay green if this
+    # were softened to .warn and the page stopped arriving.
+    reports = nil
+    entries = capture_log_entries do
+      reports = capture_error_reports do
+        2.times { build_job }
+        QueuedJobMaintenance.discard!(job_class: "CanaryJob", expected_count: 2, actor: "test")
+      end
     end
+
+    pages = entries.select { |severity, message| severity == "ERROR" && message.include?("Queued jobs discarded") }
+    assert_equal 1, pages.size, "the ERROR record is the page, and it is emitted"
+    assert_includes pages.first.last, "CanaryJob=2"
 
     report = reports.find { |r| r.message.include?("discarded") }
     assert report, "a bulk discard has to reach somebody who was not reading the transcript"
-    assert_equal :error, report.level, "the ERROR record is the half that reaches #alerts"
+    assert_equal :error, report.level, "the GlitchTip event is at :error"
     assert_includes report.context[:details], "CanaryJob=2"
     assert_includes report.context[:details], "not recoverable"
   end
