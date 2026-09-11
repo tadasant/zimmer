@@ -1380,6 +1380,18 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_includes session.prompt, "#eng-alerts"
   end
 
+  test "invoke passes the Slack identifiers through from the Run Now form" do
+    AgentRootsConfig.stubs(:find!).returns(
+      OpenStruct.new(url: "https://github.com/test/repo", default_branch: "main", subdirectory: nil)
+    )
+    AgentSessionJob.stubs(:enqueue_new_session)
+    @trigger.update!(prompt_template: "Reply in {{channel_id}} under {{thread_ts}}")
+
+    post invoke_trigger_path(@trigger), params: { channel_id: "C0A6BF8T45R", thread_ts: "1704067000.000100" }
+
+    assert_equal "Reply in C0A6BF8T45R under 1704067000.000100", Session.last.prompt
+  end
+
   test "invoke works without any variable params" do
     # Use the schedule trigger which has {{date}} and {{time}} (auto-populated)
     trigger = triggers(:enabled_schedule_trigger)

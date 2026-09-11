@@ -1286,11 +1286,21 @@ class SlackTriggerPollerJob < ApplicationJob
 
     channel_name = dm ? "DM" : (condition.channel_name.presence || resolve_channel_name(channel_id))
 
+    # {{text}}, {{author}} and {{channel}} are what a person typed or named. The
+    # identifiers after them are what this poll read off Slack's own fields — the
+    # conversation it asked for, and the message's ts, thread and user — so a
+    # template can give the agent the place to act without it trusting the text
+    # (Trigger::TRUSTED_IDENTIFIER_FORMATS). {{thread_ts}} is the thread to reply
+    # into: the parent's ts for a reply, the message's own ts for a top-level one.
     prompt = trigger.interpolate_prompt(
       link: permalink,
       text: message_text,
       author: author_name,
-      channel: channel_name
+      channel: channel_name,
+      channel_id: channel_id,
+      message_ts: message.ts,
+      thread_ts: message.thread_ts.presence || message.ts,
+      author_id: message.user
     )
 
     # The messages this one is standing in for. Appended AFTER interpolation, not

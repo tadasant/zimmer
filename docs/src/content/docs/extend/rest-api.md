@@ -764,10 +764,12 @@ can still be invoked, which is how you test one before enabling it — `status` 
 trigger's own *conditions* fire it, not whether a caller may.
 
 Send `variables` — an object keyed by the prompt template's placeholders (`link`, `text`, `author`,
-`channel`, `event`, `repo`, `number`, `title`, `labels`) — to fill them in. Any other key is ignored,
-a placeholder the template names but the request omits interpolates as an empty string, and
-`{{time}}`/`{{date}}` fill themselves in. All of them take a string; `labels` also takes an array,
-which is joined with commas.
+`channel`, `event`, `repo`, `number`, `title`, `labels`, `channel_id`, `message_ts`, `thread_ts`,
+`author_id`) — to fill them in. Any other key is ignored, a placeholder the template names but the
+request omits interpolates as an empty string, and `{{time}}`/`{{date}}` fill themselves in. All of
+them take a string; `labels` also takes an array, which is joined with commas. The four Slack IDs
+interpolate as an empty string unless they are in Slack's ID format — see
+[Prompt template variables](/sessions/triggers/#prompt-template-variables).
 
 ```bash
 curl -X POST https://zimmer.example.com/api/v1/triggers/12/invoke \
