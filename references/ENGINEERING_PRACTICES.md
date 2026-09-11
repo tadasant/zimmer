@@ -14,9 +14,9 @@ Prefer fewer features that are proven to work at runtime over more features that
 work. If a feature or code path can't be runtime-verified, don't add it, and remove existing ones
 that can't be verified. Never merge to `main` anything that hasn't been proven to work at runtime.
 
-Code that has never run is a liability. Someone has to maintain it, it is exactly the "finished
-confidently, and it doesn't run" failure the session goals exist to catch, and every unproven path
-on `main` makes the proven ones harder to trust.
+Code that has never run is a liability. Someone has to maintain it, it is how an agent ends up
+finishing confidently on something that doesn't run (the failure the session goals exist to
+catch), and every unproven path on `main` makes the proven ones harder to trust.
 
 ### What counts as proven
 
@@ -25,20 +25,24 @@ A code path is proven when it has run and been seen to do what it claims, before
 - A test in CI that executes the path and asserts on the result. A test that stubs out the path it
   claims to cover proves the code around the stub, not the path.
 - A run in development or on staging, with the evidence in the PR's `## Verification` section.
-  Staging takes an unmerged branch (the `zimmer-deploy-staging` skill), which is the way to prove
-  a change CI can't reach.
+  Staging takes an unmerged branch (the `zimmer-deploy-staging` skill), which is a way to prove a
+  change CI can't reach.
 
-A careful read, a clean review, and a green lint job are not proof. The evidence a PR has to carry
-is spelled out under "Verification" in `references/GIT_WORKFLOW.md`.
+A careful read, a clean review, and a green lint job are worth having, but none of them is runtime
+proof. The evidence a PR has to carry is spelled out under "PR Description Format" in
+`references/GIT_WORKFLOW.md`.
+
+Like a session's goal, this rule has no mechanical enforcement. What holds it is the evidence in
+the PR's `## Verification` section and whoever reviews that PR.
 
 ### When a path can't be verified
 
 - **New code**: leave it out. A path for a platform no worker runs on, or for an integration
   nothing can exercise, waits until something can.
-- **Code already on `main`**: the end state is removing it, in a PR scoped to that one path, not as
-  a side effect of unrelated work. Until then it belongs on the
-  [Known limitations](https://docs.zimmer.tadasant.com/limitations/) page marked as never
-  runtime-verified, so nobody mistakes it for a working feature.
+- **Code already on `main`**: the end state is removing it, in its own PR scoped to that one path.
+  Until then it belongs on the [Known limitations](https://docs.zimmer.tadasant.com/limitations/)
+  page, with an entry saying it has never been runtime-verified, so nobody mistakes it for a
+  working feature.
 
 ### Where this rule already shows up
 
@@ -47,6 +51,6 @@ is spelled out under "Verification" in `references/GIT_WORKFLOW.md`.
 - [Philosophy §9](https://docs.zimmer.tadasant.com/intro/philosophy/#9-the-pull-request-is-the-review-gate):
   the agent's job ends at "open a PR and prove it's green."
 - [Philosophy §10](https://docs.zimmer.tadasant.com/intro/philosophy/#10-be-honest-about-whats-broken)
-  and the Known limitations page: an unverified path is written down, not hidden.
+  and the Known limitations page: an unverified path is written down where a reader will find it.
 - [Testing](https://docs.zimmer.tadasant.com/operate/testing/): the suite has no end-to-end coverage
   of spawning a real agent, so a change to that path is proven by running it.
