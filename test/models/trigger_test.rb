@@ -884,6 +884,134 @@ class TriggerTest < ActiveSupport::TestCase
     assert_not_nil @trigger.reload.last_triggered_at
   end
 
+  # Goal re-stamping on the reuse path (tadasant-internal#2527).
+  #
+  # The trigger's goal used to reach the session it created and never the
+  # session it reused, so editing a reuse trigger's goal changed nothing the
+  # running session was told — and the stale copy is injected into every
+  # resumption as the human's own words, so it wins.
+  test "reuse fire re-stamps the session goal when the trigger declares a different one" do
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    @trigger.update!(goal: "File at most 5 tech-debt issues")
+    session = @trigger.create_session!(prompt: "Initial prompt")
+    assert_equal "File at most 5 tech-debt issues", session.goal
+
+    # The operator edits the trigger's goal after the session already exists.
+    @trigger.update!(reuse_session: true, last_session_id: session.id, goal: "File at most 3 tech-debt issues")
+    session.update_column(:status, Session.statuses[:needs_input])
+
+    @trigger.create_session!(prompt: "Follow-up prompt")
+
+    assert_equal "File at most 3 tech-debt issues", session.reload.goal
+    assert session.logs.exists?(content: "[Trigger##{@trigger.id}] Goal updated from the trigger fire"),
+      "Expected the re-stamp to be narrated in the session's log"
+  end
+
+  test "reuse fire with a blank trigger goal leaves the session goal alone" do
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    session = @trigger.create_session!(prompt: "Initial prompt")
+    session.update!(goal: "Keep the backlog groomed")
+    @trigger.update!(reuse_session: true, last_session_id: session.id, goal: "   ")
+    session.update_column(:status, Session.statuses[:needs_input])
+
+    @trigger.create_session!(prompt: "Follow-up prompt")
+
+    assert_equal "Keep the backlog groomed", session.reload.goal
+  end
+
+  test "reuse fire does not re-stamp when the trigger goal already matches" do
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    @trigger.update!(goal: "Keep the backlog groomed")
+    session = @trigger.create_session!(prompt: "Initial prompt")
+    @trigger.update!(reuse_session: true, last_session_id: session.id)
+    session.update_column(:status, Session.statuses[:needs_input])
+
+    assert_no_difference -> { session.logs.where("content LIKE ?", "%Goal updated%").count } do
+      @trigger.create_session!(prompt: "Follow-up prompt")
+    end
+    assert_equal "Keep the backlog groomed", session.reload.goal
+  end
+
+  # The reason "blank preserves" is load-bearing rather than a nicety: every
+  # per-session wake is a reuse trigger with no goal of its own, so "blank
+  # overwrites" would erase the goal of every sleeping session on its own wake.
+  test "a per-session wake firing into a sleeping session does not alter its goal" do
+    AgentSessionJob.stubs(:enqueue_new_session)
+    AgentSessionJob.stubs(:enqueue_with_prompt)
+
+    session = sessions(:needs_input)
+    session.update!(goal: "Hold the PR until the merge gate rates it")
+
+    wake = Sessions::ScheduleWakeUp.call(
+      session: session,
+      wake_at: 2.hours.from_now.utc.strftime("%Y-%m-%dT%H:%M:%S"),
+      prompt: "Time to check on the PR",
+      timezone: "UTC"
+    )
+
+    assert wake.reuse_session, "ScheduleWakeUp should create a reuse trigger"
+    assert_nil wake.goal, "A per-session wake carries no goal of its own"
+    assert session.reload.waiting?, "Creating the wake should have put the session to sleep"
+
+    wake.create_session!(prompt: "Time to check on the PR")
+
+    assert_equal "Hold the PR until the merge gate rates it", session.reload.goal
+  end
+
+  test "spawn path still stamps the trigger goal onto the new session" do
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    @trigger.update!(reuse_session: false, goal: "File at most 3 tech-debt issues")
+
+    session = @trigger.create_session!(prompt: "Nightly prompt")
+
+    assert_equal "File at most 3 tech-debt issues", session.goal
+  end
+
+  test "spawn path leaves the goal blank when the trigger declares none" do
+    mock_agent_root = OpenStruct.new(
+      url: "https://github.com/test/repo",
+      default_branch: "main",
+      subdirectory: nil
+    )
+    AgentRootsConfig.stubs(:find!).with(@trigger.agent_root_name).returns(mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+
+    @trigger.update!(reuse_session: false, goal: nil)
+
+    assert_nil @trigger.create_session!(prompt: "Nightly prompt").goal
+  end
+
   test "create_session! creates new session when reuse_session is true but no previous session" do
     mock_agent_root = OpenStruct.new(
       url: "https://github.com/test/repo",
