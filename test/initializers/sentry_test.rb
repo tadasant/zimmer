@@ -296,4 +296,182 @@ class SentryInitializerTest < ActiveSupport::TestCase
       assert_equal 1, captured_events.size
     end
   end
+
+  # --- issue #23: what this initializer takes back out of the inherited list ----------
+  #
+  # `excluded_exceptions` arrives pre-populated: sentry-ruby seeds it, then
+  # sentry-rails' after(:initialize) hook concatenates Sentry::Rails::IGNORE_DEFAULT
+  # plus ActionController::TooManyRequests on Rails >= 8.1.1 — all before the
+  # initializer's own block runs. ActionController::InvalidAuthenticityToken sat in it
+  # unaudited, and a storm of CSRF 422s in which every write in the UI failed (#19)
+  # reached GlitchTip zero times.
+  #
+  # These cases run against the REAL resolved configuration, not against the literal in
+  # the file, which is what makes them survive the SDK changing its own defaults.
+
+  REMOVED_FROM_INHERITED = %w[
+    ActionController::InvalidAuthenticityToken
+    ActionController::UnknownFormat
+  ].freeze
+
+  # The whole resolved list, deduplicated. Pinned in full so that a bump to ANY of the
+  # SDK's default lists — sentry-ruby's IGNORE_DEFAULT or PUMA_IGNORE_DEFAULT,
+  # sentry-rails' IGNORE_DEFAULT or RAILS_8_1_1_IGNORE_DEFAULT — fails here rather than
+  # silently changing what production reports. Every entry is accounted for, by name,
+  # in the audit comment in config/initializers/sentry.rb; a new one needs a line there.
+  RESOLVED_EXCLUSIONS = %w[
+    AbstractController::ActionNotFound
+    ActionController::BadRequest
+    ActionController::InvalidCrossOriginRequest
+    ActionController::MethodNotAllowed
+    ActionController::NotImplemented
+    ActionController::ParameterMissing
+    ActionController::RoutingError
+    ActionController::TooManyRequests
+    ActionController::UnknownAction
+    ActionController::UnknownHttpMethod
+    ActionDispatch::Http::MimeNegotiation::InvalidType
+    ActionDispatch::Http::Parameters::ParseError
+    ActiveRecord::RecordNotFound
+    Errno::EIO
+    Mongoid::Errors::DocumentNotFound
+    Puma::HttpParserError
+    Puma::HttpParserError501
+    Puma::MiniSSL::SSLError
+    Rack::QueryParser::InvalidParameterError
+    Rack::QueryParser::ParameterTypeError
+    Rack::Timeout::RequestTimeoutError
+    Sinatra::NotFound
+  ].freeze
+
+  def csrf_exception
+    ActionController::InvalidAuthenticityToken.new("Can't verify CSRF token authenticity.")
+  end
+
+  def missing_exact_template
+    ActionController::MissingExactTemplate.new(
+      "SessionsController#show is missing a template for request formats: text/html", nil, "show"
+    )
+  end
+
+  # If the gem stopped shipping these, the `-=` in the initializer would be a silent
+  # no-op and its audit comment would be describing a list that no longer exists.
+  test "sentry-rails ships the two defaults the initializer subtracts" do
+    REMOVED_FROM_INHERITED.each do |name|
+      assert_includes Sentry::Rails::IGNORE_DEFAULT, name
+    end
+  end
+
+  test "the resolved exclusion list is exactly the audited one" do
+    boot_sentry("production") do
+      assert_equal RESOLVED_EXCLUSIONS, Sentry.configuration.excluded_exceptions.uniq.sort
+    end
+  end
+
+  test "neither subtracted class is in the resolved exclusion list" do
+    boot_sentry("production") do
+      REMOVED_FROM_INHERITED.each do |name|
+        refute_includes Sentry.configuration.excluded_exceptions, name
+      end
+    end
+  end
+
+  # The behavioural assertion, and the one that holds. A future SDK could exclude the
+  # class under another name or via a new ancestor, and a list check would still pass
+  # while nothing reported.
+  test "a CSRF rejection builds and ships a real event in production" do
+    boot_sentry("production") do
+      assert Sentry.configuration.exception_class_allowed?(csrf_exception)
+
+      Sentry.capture_exception(csrf_exception)
+
+      assert_equal 1, captured_events.size,
+        "issue #19 was hours of universal write failure that GlitchTip never saw"
+      assert_equal "ActionController::InvalidAuthenticityToken",
+        captured_events.first.to_h[:exception][:values].first[:type]
+    end
+  end
+
+  # Exclusion matches with `===`, so excluding UnknownFormat also excluded its subclass
+  # MissingExactTemplate — a forgotten view, which ApplicationController deliberately
+  # re-raises so it stays loud. It reached the capture middleware and was dropped there.
+  test "a missing template, a server defect, builds and ships a real event" do
+    boot_sentry("production") do
+      assert Sentry.configuration.exception_class_allowed?(missing_exact_template)
+
+      Sentry.capture_exception(missing_exact_template)
+
+      assert_equal 1, captured_events.size
+      assert_equal "ActionController::MissingExactTemplate",
+        captured_events.first.to_h[:exception][:values].first[:type]
+    end
+  end
+
+  # CsrfRejectionMonitor reports through ErrorReporter with a fixed fingerprint, so the
+  # seam the app uses is pinned end to end, extras and grouping included.
+  test "the rate monitor's reporting seam reaches GlitchTip with its context and fingerprint" do
+    boot_sentry("production") do
+      ErrorReporter.report_exception(
+        csrf_exception,
+        context: { csrf_rejections_in_window: 42, window_seconds: 300 },
+        fingerprint: CsrfRejectionMonitor::FINGERPRINT
+      )
+
+      assert_equal 1, captured_events.size
+      event = captured_events.first.to_h
+      assert_equal 42, event[:extra][:csrf_rejections_in_window]
+      assert_equal 300, event[:extra][:window_seconds]
+      assert_equal [ "csrf-rejection-rate" ], event[:fingerprint]
+    end
+  end
+
+  test "an ErrorReporter call without a fingerprint leaves the SDK's default grouping alone" do
+    boot_sentry("production") do
+      ErrorReporter.report_exception(StandardError.new("ordinary failure"))
+
+      assert_equal [], captured_events.first.to_h[:fingerprint]
+    end
+  end
+
+  # The subtraction is exactly two classes wide. Everything this initializer
+  # deliberately adds must still be dropped — otherwise the removal was written as a
+  # rewrite of the list rather than a subtraction from it.
+  test "the deliberate exclusions this initializer adds are untouched" do
+    boot_sentry("production") do
+      [
+        Errno::EIO.new("bot"),
+        Rack::QueryParser::InvalidParameterError.new("malformed query"),
+        ActionController::BadRequest.new("malformed request"),
+        ActionDispatch::Http::Parameters::ParseError.new("malformed body")
+      ].each do |exception|
+        Sentry.capture_exception(exception)
+      end
+
+      assert_empty captured_events,
+        "removing inherited defaults must not disturb the exclusions added above them"
+    end
+  end
+
+  # The audited-and-kept half of #23. Each of these is handled elsewhere in the app or
+  # is malformed client input; the initializer records why each stays. A change that
+  # widens the `-=` into "un-exclude the 4xx family" fails here.
+  test "the inherited defaults the audit deliberately kept are still excluded" do
+    boot_sentry("production") do
+      [
+        ActionController::RoutingError.new("No route matches"),
+        ActiveRecord::RecordNotFound.new("Couldn't find Session"),
+        ActionController::ParameterMissing.new(:session),
+        ActionController::ExpectedParameterMissing.new(:session),
+        ActionController::MethodNotAllowed.new("only POST"),
+        ActionController::InvalidCrossOriginRequest.new("cross-origin"),
+        ActionController::UnknownHttpMethod.new("PROPFIND"),
+        AbstractController::ActionNotFound.new("no action")
+      ].each do |exception|
+        Sentry.capture_exception(exception)
+      end
+
+      assert_empty captured_events,
+        "these stay excluded on purpose — see the audit in config/initializers/sentry.rb"
+    end
+  end
 end
