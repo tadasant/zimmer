@@ -75,12 +75,16 @@ it. Until it runs, this is a departure from the rule that
 DigitalOcean's own remedy is `curl -sSL https://repos.insights.digitalocean.com/install.sh | sudo
 bash` in a root shell, which a deploy nobody approves by hand must not run. The converge step must:
 
-- **Guard on the unit.** When `do-agent` is installed and active, do nothing and touch no network.
-  Install only when the unit is absent, and fail the deploy if the agent is not `active` afterwards,
-  because a silent miss looks converged and reports nothing.
-- **Pin its trust.** Install from DigitalOcean's package repository under a signing key pinned in
-  the repository that runs the deploy, or from a vendored installer checked against a checksum.
-  Never pipe an unpinned script into root.
+- **Guard on the unit.** When `do-agent` is installed, enabled and active, do nothing and touch no
+  network. Install only when it is absent.
+- **Fail loudly, but after the cutover.** A converge that does not end with the unit `active` turns
+  the deploy run red, because a silent miss looks converged and reports nothing. It does not block
+  the release: a metrics agent that will not stay up must never stop a deploy or a rollback.
+- **Pin the content, not only the publisher.** Install one package checked against a pinned
+  SHA-256 before apt sees it. A signing key pinned by fingerprint is not enough. It pins who may
+  publish, not what gets installed, and the package's own `/etc/cron.daily/do-agent` job upgrades
+  it as root from DigitalOcean's repository wherever that repository is configured. Never pipe an
+  unpinned installer into root.
 - **Use access the deploy already holds.** cloud-init authorizes the deploy key for `root`, and both
   deploys already run their other converge steps as `root` over SSH.
 
