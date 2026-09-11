@@ -41,6 +41,8 @@ class QuotaCheckServiceTest < ActiveSupport::TestCase
     quota_resp = stub_http_response(200, headers: {})
     sent_model = nil
 
+    # The messages matcher records the model off the request body it matches;
+    # the profile GET never reaches the JSON.parse because its path fails first.
     Net::HTTP.any_instance.stubs(:request)
       .with { |req| req.path.include?("oauth/profile") }.returns(profile_resp)
     Net::HTTP.any_instance.stubs(:request)

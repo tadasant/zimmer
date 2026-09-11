@@ -4109,8 +4109,8 @@ agent-login primitive the gate ledger's feedback boundary is waiting on ([#371](
 
 ### Adding a model is a code change and a deploy
 
-`ModelCatalog::MODELS` is a Ruby literal, so a new model is a PR and a deploy. That is a trade-off,
-not an oversight. Most additions need a CLI bump in the image anyway: Pi's list has to match the Pi
+`ModelCatalog::MODELS` is a Ruby literal, so a new model is a PR and a deploy. Most additions need a
+CLI bump in the image anyway: Pi's list has to match the Pi
 version pinned in `Dockerfile.base`, and Codex's has to match the pinned Codex CLI. A list you could
 edit at runtime could name a model the installed CLI cannot resolve, and that would only show up
 as a failed spawn. Claude Code's ids are floating aliases, so a new Opus or Sonnet release reaches
@@ -4118,7 +4118,7 @@ sessions without touching the catalog.
 
 The quota-probe half of the issue is fixed. `QuotaCheckService::PROBE_MODEL` is looked up from the
 catalog's `haiku` entry (its `messages_api_id`, `claude-haiku-4-5`), and `ModelCatalogTest` fails
-on a dated snapshot in the catalog and on a Claude model-version string literal anywhere else in
+on a dated snapshot in the catalog and on a Claude model version in any Ruby literal elsewhere under
 `app/`, `config/` or `lib/`. See [Models](/sessions/runtimes/#models).
 
 Tracked in [#85](https://github.com/tadasant/zimmer/issues/85), which stays open for the

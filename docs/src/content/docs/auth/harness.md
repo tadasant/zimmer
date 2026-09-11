@@ -797,14 +797,14 @@ human intervened ([#239](https://github.com/tadasant/zimmer/issues/239)).
 
 It now walks the pool in priority order and takes the first candidate that is not capped and whose
 token Anthropic actually honours. The probe is `QuotaCheckService#check_with_token`, **not**
-`refresh_token!`: it reads the rate-limit headers off a one-token request (on the catalog's Haiku —
-see [Models](/sessions/runtimes/#models)), so it can be run over
+`refresh_token!`: it reads the rate-limit headers off a one-token request, so it can be run over
 candidates that may be skipped without spending a single-use refresh token. A candidate Anthropic
 *refuses* is refreshed once and probed again — a stale access token is the one refusal a refresh can
 fix — so the single-use token is spent only where it might help, never on a candidate whose
 credentials already work. `ClaudeLoginDriver#capture!` applies the same probe through
 `QuotaCheckService.token_rejected?`, because a login that produces a complete-looking token pair is
-another way an unusable account enters the pool.
+another way an unusable account enters the pool. The probe's model is the catalog's Haiku, sent as its
+Messages API id; see [Models](/sessions/runtimes/#models).
 
 The probe answers three ways, and only one of them condemns an account: Anthropic honoured the token,
 Anthropic answered and refused it, or **the probe never got an answer** (timeout, DNS failure, 5xx).

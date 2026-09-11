@@ -79,10 +79,13 @@ model sets it true.
 400, so the CLI id cannot double as the API id. The field holds the endpoint's floating alias, never a
 dated snapshot.
 
-The catalog is the only place a versioned Claude model id is written. `ModelCatalogTest` fails on a
-dated snapshot anywhere in the catalog, on a `claude_code` id that `ClaudeModelConfigurationAudit`
-would call a version pin, and on a Claude model-version string literal anywhere in `app/`, `config/`
-or `lib/` outside `model_catalog.rb`. So a model id added somewhere else fails CI until it moves here.
+In the app's Ruby, the catalog is the only place a versioned Claude model id is written.
+`ModelCatalogTest` fails on a dated snapshot anywhere in the catalog, on a `claude_code` id that
+`ClaudeModelConfigurationAudit` would call a version pin, and on a Claude model version inside any
+string, symbol or backtick literal under `app/`, `config/` or `lib/` outside `model_catalog.rb`,
+including one embedded in a tool description or a command line. So a model id added somewhere else
+fails CI until it moves here or is looked up from here. Comments, ERB, YAML and JavaScript are not
+scanned.
 
 ## Credentials
 
