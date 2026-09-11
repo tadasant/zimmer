@@ -155,10 +155,13 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
   # production droplet. The margin is under 2x, on the runtime where running out
   # of it means the server is dropped rather than merely slow.
   #
-  # Codex is one of the two runtimes that can act on a per-server value at all —
-  # its key is already per-server, so an entry's declared budget is written to
-  # that entry and nowhere else. A fast server declaring 15 fails fast here even
-  # when a slow one beside it declares 300; on Claude neither can
+  # Codex is the one runtime where a SHORTER declared budget does what a catalog
+  # author means by it. `startup_timeout_sec` is scoped to the startup and the
+  # tool budget is a separate `tool_timeout_sec` (both are fields of
+  # `RawMcpServerConfig` in the pinned 0.146.0 binary), so a fast server
+  # declaring 15 fails fast here without capping its own tool calls — which is
+  # exactly what the same 15 would do on Pi, and why Pi only lengthens. Claude
+  # cannot shorten one server's at all
   # ([#113](https://github.com/tadasant/zimmer/issues/113)).
   #
   # The DEFAULT is written to stdio entries only. An HTTP entry is a request to a
@@ -174,13 +177,19 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
   # value a repo wrote into its own checked-in `.codex/config.toml`, which AIR
   # merges around rather than replaces. That is a different source from the
   # catalog field, and the local file wins, matching every other local-wins
-  # precedence in this pipeline.
+  # precedence in this pipeline. It is also why a clone prepared before a catalog
+  # declared a budget keeps the one it was prepared with: Zimmer's own earlier
+  # write is indistinguishable from a repo's.
   def apply_startup_timeouts!(servers)
+    # One catalog read for the whole config: this runs on the prepare path, and a
+    # lookup per entry would rebuild every catalog Server object per entry.
+    declared_seconds = McpStartupTimeout.declared_seconds_map(servers.keys)
+
     timed = servers.filter_map do |name, entry|
       next unless entry.is_a?(Hash)
       next if entry[STARTUP_TIMEOUT_KEY].present? || entry[DEPRECATED_STARTUP_TIMEOUT_KEY].present?
 
-      declared = McpStartupTimeout.declared_seconds(name)
+      declared = declared_seconds[name]
       # No cold start to absorb, and nothing declared: leave it to Codex.
       next if declared.nil? && entry["command"].blank?
 

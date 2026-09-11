@@ -178,28 +178,39 @@ class PiMcpConfigPostProcessor < RuntimeConfigPostProcessor
   # argument is about what Zimmer should assume, and an entry naming a number has
   # stopped leaving it to Zimmer.
   #
-  # The per-server value is the catalog's `startup_timeout_sec`
-  # ([#113](https://github.com/tadasant/zimmer/issues/113)), converted to this
-  # key's milliseconds. Pi is one of the two runtimes that can act on one at all —
-  # like Codex's, this key is already per-entry, so a fast server declaring 15s
-  # fails fast beside a slow one declaring 300s. On Claude neither can.
+  # **A declared budget only ever lengthens Pi's**, and that asymmetry with Codex
+  # is forced by the key rather than chosen. `requestTimeoutMs` covers every
+  # request on the connection, so writing a fast server's `startup_timeout_sec:
+  # 15` here would not make its startup fail fast — it would cap every tool call
+  # on that server at 15 seconds, which is a different promise from the one the
+  # field makes and one no catalog author would read into it. A shorter declared
+  # value is therefore left on the floor of the shared default here and honored
+  # on Codex, whose `startup_timeout_sec` is startup-scoped and whose tool budget
+  # is a separate `tool_timeout_sec`
+  # ([#113](https://github.com/tadasant/zimmer/issues/113)).
   #
   # An entry that already names one keeps it, including a `0`, which the adapter
   # reads as "use the SDK default" — an explicit opt-out is still the operator's
   # call. That is a value a repo wrote into its own checked-in `.mcp.json`, which
   # seeding merges around rather than replaces; the catalog field is a different
-  # source, and the local file wins.
+  # source, and the local file wins. It is also why a clone prepared before a
+  # catalog declared a budget keeps the budget it was prepared with: Zimmer's own
+  # earlier write is indistinguishable from a repo's.
   def apply_startup_timeouts!(servers)
+    declared = McpStartupTimeout.declared_seconds_map(servers.keys)
+
     timed = servers.filter_map do |name, entry|
       next unless entry.is_a?(Hash)
       next if entry[REQUEST_TIMEOUT_KEY].present?
 
-      declared = McpStartupTimeout.declared_seconds(name)
-      # No cold start to absorb, and nothing declared: leave it to the SDK default.
-      next if declared.nil? && entry["command"].blank?
+      # Only a longer budget survives the floor — see above.
+      longer = declared[name] if declared[name] && declared[name] > McpStartupTimeout::SECONDS
+      # No cold start to absorb, and nothing that lengthens the default: leave it
+      # to the SDK default.
+      next if longer.nil? && entry["command"].blank?
 
-      entry[REQUEST_TIMEOUT_KEY] = (declared || McpStartupTimeout::SECONDS) * 1000
-      "#{name}=#{entry[REQUEST_TIMEOUT_KEY]}ms#{' (catalog)' if declared}"
+      entry[REQUEST_TIMEOUT_KEY] = (longer || McpStartupTimeout::SECONDS) * 1000
+      "#{name}=#{entry[REQUEST_TIMEOUT_KEY]}ms#{' (catalog)' if longer}"
     end
 
     return if timed.empty?

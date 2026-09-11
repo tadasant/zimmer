@@ -25,37 +25,42 @@ class McpStartupTimeoutTest < ActiveSupport::TestCase
     assert_equal McpStartupTimeout::SECONDS * 1000, McpStartupTimeout::MILLISECONDS
   end
 
-  test "a server the catalog says nothing about gets the flat default" do
+  test "a server the catalog says nothing about declares nothing" do
     catalog!("quiet", :undeclared)
 
-    assert_nil McpStartupTimeout.declared_seconds("quiet")
-    assert_equal McpStartupTimeout::SECONDS, McpStartupTimeout.seconds_for("quiet")
-    assert_equal McpStartupTimeout::MILLISECONDS, McpStartupTimeout.milliseconds_for("quiet")
+    assert_empty McpStartupTimeout.declared_seconds_map([ "quiet" ])
   end
 
-  test "a server the catalog does not know at all gets the flat default" do
-    assert_nil McpStartupTimeout.declared_seconds("no-such-server")
-    assert_nil McpStartupTimeout.declared_seconds(nil)
-    assert_nil McpStartupTimeout.declared_seconds("")
-    assert_equal McpStartupTimeout::SECONDS, McpStartupTimeout.seconds_for("no-such-server")
+  test "a server the catalog does not know at all declares nothing" do
+    assert_empty McpStartupTimeout.declared_seconds_map([ "no-such-server" ])
+    assert_empty McpStartupTimeout.declared_seconds_map([ nil, "" ])
+    assert_empty McpStartupTimeout.declared_seconds_map(nil)
+    assert_empty McpStartupTimeout.declared_seconds_map([])
   end
 
   # ---------------------------------------------------------------------------
   # A declared value
   # ---------------------------------------------------------------------------
 
-  test "a declared value is the budget, in both units" do
+  test "a declared value is read back, and only for the names asked about" do
     catalog!("fast", 15)
 
-    assert_equal 15, McpStartupTimeout.declared_seconds("fast")
-    assert_equal 15, McpStartupTimeout.seconds_for("fast")
-    assert_equal 15_000, McpStartupTimeout.milliseconds_for("fast")
+    assert_equal({ "fast" => 15 }, McpStartupTimeout.declared_seconds_map([ "fast" ]))
+    assert_empty McpStartupTimeout.declared_seconds_map([ "someone-else" ])
   end
 
   test "a declared value may be longer than the default" do
     catalog!("slow", 420)
 
-    assert_equal 420, McpStartupTimeout.seconds_for("slow")
+    assert_equal({ "slow" => 420 }, McpStartupTimeout.declared_seconds_map([ "slow" ]))
+  end
+
+  test "the catalog is read once however many names are asked about" do
+    fast = ServersConfig::Server.new("fast", { "type" => "stdio", "command" => "npx", McpStartupTimeout::CATALOG_KEY => 15 })
+    ServersConfig.expects(:all).once.returns([ fast ])
+
+    assert_equal({ "fast" => 15 },
+      McpStartupTimeout.declared_seconds_map([ "fast", "b", "c", "d", "e" ]))
   end
 
   test "the bounds are inclusive" do
@@ -73,8 +78,8 @@ class McpStartupTimeoutTest < ActiveSupport::TestCase
     [ McpStartupTimeout::MIN_SECONDS - 1, McpStartupTimeout::MAX_SECONDS + 1, 0, -30 ].each do |value|
       catalog!("out-of-range", value)
 
-      assert_nil McpStartupTimeout.declared_seconds("out-of-range"), "#{value} should be ignored"
-      assert_equal McpStartupTimeout::SECONDS, McpStartupTimeout.seconds_for("out-of-range")
+      assert_empty McpStartupTimeout.declared_seconds_map([ "out-of-range" ]), "#{value} should be ignored"
+      assert_equal McpStartupTimeout::SECONDS, McpStartupTimeout.ceiling_seconds([ "out-of-range" ])
     end
   end
 
@@ -82,8 +87,7 @@ class McpStartupTimeoutTest < ActiveSupport::TestCase
     [ "60", 60.0, 1.5, true, [ 60 ], { "seconds" => 60 } ].each do |value|
       catalog!("wrong-type", value)
 
-      assert_nil McpStartupTimeout.declared_seconds("wrong-type"), "#{value.inspect} should be ignored"
-      assert_equal McpStartupTimeout::SECONDS, McpStartupTimeout.seconds_for("wrong-type")
+      assert_empty McpStartupTimeout.declared_seconds_map([ "wrong-type" ]), "#{value.inspect} should be ignored"
     end
   end
 
@@ -130,6 +134,6 @@ class McpStartupTimeoutTest < ActiveSupport::TestCase
     ServersConfig.stubs(:all).returns([])
 
     assert_equal McpStartupTimeout::SECONDS, McpStartupTimeout.ceiling_seconds([ "anything" ])
-    assert_equal McpStartupTimeout::SECONDS, McpStartupTimeout.seconds_for("anything")
+    assert_empty McpStartupTimeout.declared_seconds_map([ "anything" ])
   end
 end

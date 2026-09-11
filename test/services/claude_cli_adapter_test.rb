@@ -1932,6 +1932,41 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
       "a malformed config costs the per-server budgets, not the session"
   end
 
+  test "resume raises MCP_TIMEOUT to the longest declared budget too" do
+    write_mcp_json("fast" => {}, "slow" => {})
+    stub_catalog_budgets("fast" => 15, "slow" => 300)
+
+    @adapter.resume(
+      session_id: "session-1",
+      working_dir: @test_dir,
+      mcp_config_path: File.join(@test_dir, ".mcp.json")
+    )
+
+    assert_equal "300000", @mock_process_manager.spawned_processes.first[:env]["MCP_TIMEOUT"],
+      "a resume reads the same config the first spawn did"
+  end
+
+  test "spawn_process uses the flat default when the session has no .mcp.json at all" do
+    stub_catalog_budgets("slow" => 300)
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir, has_mcp: true)
+
+    assert_equal "180000", @mock_process_manager.spawned_processes.first[:env]["MCP_TIMEOUT"],
+      "a resume that precedes a prepare names no servers, so nothing declares anything"
+  end
+
+  test "spawn_process uses the flat default when mcpServers is not a table" do
+    [ JSON.generate("mcpServers" => [ "fast" ]), JSON.generate("mcpServers" => nil), JSON.generate({}) ].each do |raw|
+      @mock_process_manager.spawned_processes.clear
+      File.write(File.join(@test_dir, ".mcp.json"), raw)
+      stub_catalog_budgets("fast" => 300)
+
+      @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir, has_mcp: true)
+
+      assert_equal "180000", @mock_process_manager.spawned_processes.first[:env]["MCP_TIMEOUT"], raw
+    end
+  end
+
   test "execute passes has_mcp true when mcp_config_path is provided" do
     @adapter.execute(
       prompt: "test",

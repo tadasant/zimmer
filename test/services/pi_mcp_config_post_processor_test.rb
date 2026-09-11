@@ -206,13 +206,50 @@ class PiMcpConfigPostProcessorTest < ActiveSupport::TestCase
   # A per-server budget the catalog declares (#113)
   # ---------------------------------------------------------------------------
 
-  test "a seeded server gets the budget its catalog entry declares, in this key's milliseconds" do
+  test "a seeded server gets the longer budget its catalog entry declares, in this key's milliseconds" do
+    declare_in_catalog("playwright-custom" => 420)
+
+    process!
+
+    assert_equal 420_000, config.dig("mcpServers", "playwright-custom", "requestTimeoutMs")
+  end
+
+  # The asymmetry with Codex, and the whole reason it exists: `requestTimeoutMs`
+  # is the budget for every request on the connection, so honoring a declared 15
+  # here would not make the startup fail fast — it would cap every tool call on
+  # that server at 15 seconds.
+  test "a declared budget shorter than the default is not honored, because this key covers tool calls too" do
     declare_in_catalog("playwright-custom" => 15)
 
     process!
 
-    assert_equal 15_000, config.dig("mcpServers", "playwright-custom", "requestTimeoutMs"),
-      "Pi's key is already per-entry, so a fast server can fail fast here even when a slow one sits beside it"
+    assert_equal McpStartupTimeout::MILLISECONDS,
+      config.dig("mcpServers", "playwright-custom", "requestTimeoutMs"),
+      "a short budget would cap this server's tool calls at the same number"
+  end
+
+  test "a declared budget shorter than the default leaves an http entry with none" do
+    declare_in_catalog("acme-http" => 15)
+    @mock_fs.write(config_path, JSON.generate(
+      "mcpServers" => { "acme-http" => { "type" => "http", "url" => "https://acme.example.com/mcp" } }
+    ))
+
+    process!
+
+    assert_nil config.dig("mcpServers", "acme-http", "requestTimeoutMs"),
+      "nothing lengthens the default here, so the entry is left exactly as it was"
+  end
+
+  test "ensure_baseline! honors a declared budget on a stdio server left on the clone" do
+    @session.update!(mcp_servers: [])
+    declare_in_catalog("leftover" => 300)
+    @mock_fs.write(config_path, JSON.generate(
+      "mcpServers" => { "leftover" => { "type" => "stdio", "command" => "node" } }
+    ))
+
+    processor.ensure_baseline!
+
+    assert_equal 300_000, config.dig("mcpServers", "leftover", "requestTimeoutMs")
   end
 
   test "a declared budget reaches an http entry, which gets none by default" do

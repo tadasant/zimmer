@@ -384,8 +384,9 @@ plugins; both are configured by the files `PiAirBridge` generates, described nex
 The adapter is also where Pi's MCP startup budget lives — it has no env-var
 equivalent of Claude's `MCP_TIMEOUT`, so `PiMcpConfigPostProcessor` writes
 `requestTimeoutMs` onto each stdio entry instead. Being per-entry, it can carry a
-per-server budget a catalog entry declares, which Claude's one process-wide
-variable cannot. See [Timeouts and
+longer per-server budget a catalog entry declares, which Claude's one
+process-wide variable cannot — but not a shorter one, since that key bounds every
+request on the connection rather than the startup alone. See [Timeouts and
 caching](/air/mcp-servers/#timeouts-and-caching).
 
 **Pi supplies no identity either, and the key is OpenRouter's.** Claude Code and
