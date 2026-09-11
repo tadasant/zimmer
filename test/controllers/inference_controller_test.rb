@@ -19,18 +19,10 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     }.to_json)
     Net::HTTP.any_instance.stubs(:request).returns(successful_refresh)
 
-    # switch_account now routes through AccountRotationService#activate!,
-    # which writes ~/.claude.json + ~/.claude/.credentials.json and takes a
-    # quota snapshot. Redirect filesystem writes to a tmp dir and stub the
-    # snapshot probe so tests don't touch real credentials or call the API.
-    @switch_tmpdir = Dir.mktmpdir
-    @original_claude_json = ClaudeAuthProvider::CLAUDE_JSON_PATH
-    @original_credentials_json = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
-    ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, File.join(@switch_tmpdir, "claude.json"))
-    ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
-    ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, File.join(@switch_tmpdir, ".credentials.json"))
-
+    # switch_account routes through AccountRotationService#activate!, which for
+    # Claude marks the account current and takes a quota snapshot — no filesystem
+    # write at all (issue #618). Stub the snapshot probe so tests don't call the
+    # API.
     QuotaCheckService.stubs(:check_with_token).returns(
       QuotaCheckService::Result.new(
         success: true,
@@ -54,16 +46,7 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
   end
 
   teardown do
-    FileUtils.rm_rf(@switch_tmpdir) if @switch_tmpdir
     FileUtils.rm_rf(@codex_tmpdir) if @codex_tmpdir
-    if @original_claude_json
-      ClaudeAuthProvider.send(:remove_const, :CLAUDE_JSON_PATH)
-      ClaudeAuthProvider.const_set(:CLAUDE_JSON_PATH, @original_claude_json)
-    end
-    if @original_credentials_json
-      ClaudeAuthProvider.send(:remove_const, :CREDENTIALS_JSON_PATH)
-      ClaudeAuthProvider.const_set(:CREDENTIALS_JSON_PATH, @original_credentials_json)
-    end
     if @original_codex_auth_json
       CodexAuthProvider.send(:remove_const, :AUTH_JSON_PATH)
       CodexAuthProvider.const_set(:AUTH_JSON_PATH, @original_codex_auth_json)
@@ -695,23 +678,16 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
-  test "show does NOT adopt a filesystem identity — a GET must not change which account runs" do
+  test "show does NOT change which account runs — a GET must have no write side-effect" do
     # The inverse of what this test used to assert. Reconciliation on every page
     # load meant an operator refreshing /inference to WATCH an incident could
     # silently switch the pool, driven by a container-local file a container
-    # replacement leaves stale. The five-minute sweep still reconciles; opening a
-    # diagnostic page no longer does. See issue #618, hole 12.
+    # replacement leaves stale. There is no filesystem identity left to adopt at
+    # all now (issue #618), so the whole class of hazard is gone — but the
+    # invariant is worth pinning: opening a diagnostic page moves nothing.
     primary = claude_accounts(:primary)
     secondary = claude_accounts(:secondary)
-
     primary.update!(last_rotated_to_at: 1.hour.ago)
-    ClaudeAccount.write_credentials_owner_marker!(primary.email)
-    past = 2.hours.ago.to_time
-    File.utime(past, past, ClaudeAuthProvider.credentials_owner_path)
-    File.write(ClaudeAuthProvider::CLAUDE_JSON_PATH,
-      JSON.pretty_generate(secondary.oauth_config["claude_json"]))
-    File.write(ClaudeAuthProvider::CREDENTIALS_JSON_PATH,
-      JSON.pretty_generate(secondary.oauth_config["credentials_json"]))
 
     get inference_url
 
@@ -861,27 +837,6 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert_equal "manual", event.source
   end
 
-  test "switch_account writes the new account's config to the filesystem" do
-    # The bug: previously, manual switch only updated the DB and skipped the
-    # filesystem write that auto-rotation performs. Subsequent session spawns
-    # would still use the previous account's credentials until reconciliation
-    # eventually caught up. The fix routes both paths through
-    # AccountRotationService#activate!.
-    secondary = claude_accounts(:secondary)
-
-    post switch_account_path(secondary)
-
-    assert_redirected_to inference_path(runtime: "claude_code")
-    assert File.exist?(ClaudeAuthProvider::CLAUDE_JSON_PATH),
-      "switch_account must write ~/.claude.json"
-    assert File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH),
-      "switch_account must write ~/.claude/.credentials.json"
-
-    claude_json = JSON.parse(File.read(ClaudeAuthProvider::CLAUDE_JSON_PATH))
-    assert_equal secondary.email, claude_json["oauthAccount"],
-      "~/.claude.json must reflect the newly-current account's identity"
-  end
-
   test "switch_account takes a quota snapshot for the newly-current account" do
     secondary = claude_accounts(:secondary)
 
@@ -907,28 +862,6 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
 
   # ── issue #618: holes 3, 4 and 12 ──────────────────────────────────
 
-  test "the current account offers Re-activate, so the one live credential set can be rewritten from the UI" do
-    get inference_path
-    assert_response :success
-    assert_select "form[action=?]", switch_account_path(claude_accounts(:primary)) do
-      assert_select "button", text: "Re-activate"
-    end
-  end
-
-  test "re-activating the current account rewrites its credentials without recording a rotation" do
-    primary = claude_accounts(:primary)
-
-    assert_no_difference "AccountRotationEvent.count" do
-      post switch_account_path(primary)
-    end
-
-    assert_redirected_to inference_path(runtime: "claude_code")
-    assert_match "Re-activated", flash[:notice]
-    assert primary.reload.is_current?
-    assert File.exist?(ClaudeAuthProvider::CREDENTIALS_JSON_PATH),
-      "re-activation must reach the filesystem — that is the whole point of the control"
-  end
-
   test "switch_account admits an account on a working access token without spending its refresh token" do
     secondary = claude_accounts(:secondary)
 
@@ -946,26 +879,12 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
   # owner there is no second store to disagree with, so nothing on this page may
   # ask an operator to reconcile, adopt, sync, or choose between stores.
   test "the page offers no affordance to reconcile between credential stores" do
-    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
-
     get inference_path
 
     assert_response :success
     assert_no_match(/Sync from filesystem/i, response.body)
     assert_no_match(/Filesystem identity mismatch/i, response.body)
     assert_no_match(/adopt the filesystem identity/i, response.body)
-  end
-
-  # The same, with the setting off — the reconciliation surface is gone in both
-  # worlds, because the rollback restores the credential mechanism, not the UI.
-  test "the reconciliation surface is gone with session-scoped credentials off too" do
-    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(false)
-
-    get inference_path
-
-    assert_response :success
-    assert_no_match(/Sync from filesystem/i, response.body)
-    assert_no_match(/Filesystem identity mismatch/i, response.body)
   end
 
   # No copy on this page may tell an operator to open a shell on the worker.
@@ -977,10 +896,9 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert_no_match(%r{bin/rails}, response.body)
   end
 
-  test "an account card offers exactly Authenticate and Switch under session-scoped credentials" do
+  test "a Claude account card offers exactly Authenticate and Switch" do
     primary = claude_accounts(:primary)
     primary.update!(is_current: true)
-    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(true)
 
     get inference_path
 
@@ -991,12 +909,13 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert_match(/Authenticate/, response.body)
   end
 
-  test "Re-activate survives with the setting off, because the file it repairs still exists" do
-    primary = claude_accounts(:primary)
-    primary.update!(is_current: true)
-    AppSetting.stubs(:session_scoped_credentials_enabled?).returns(false)
+  # Codex keeps it: activate! writes ~/.codex/auth.json, so re-activating the
+  # current Codex account really does repair a live file.
+  test "the current Codex account keeps Re-activate, because its credential file is real" do
+    codex = claude_accounts(:codex_primary)
+    assert codex.is_current?
 
-    get inference_path
+    get inference_path(runtime: "codex")
 
     assert_response :success
     assert_match(/Re-activate/, response.body)

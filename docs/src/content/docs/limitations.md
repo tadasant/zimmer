@@ -2343,10 +2343,14 @@ is a fact about someone else's private code that can change without notice. Last
    live. Zimmer's `token_expired?` still keys purely off `expiresAt`; the defense is the completeness
    invariant, not expiry logic.
 6. A credential set without a refresh token is unrecoverable.
-7. The CLI refreshes tokens on its own, mid-session, writing to the shared file without telling
-   Zimmer. Zimmer must scrape them back or its DB copy goes stale and the next refresh `invalid_grant`s.
-8. The CLI sometimes rewrites `.credentials.json` with no `claudeAiOauth` block at all. Adopting it
-   blindly would brick the pool.
+7. The CLI refreshes tokens on its own, mid-session, when it holds a refresh token. Zimmer's
+   answer is to never hand it one: a session gets an access token through `CLAUDE_CODE_OAUTH_TOKEN`
+   and its own `CLAUDE_CONFIG_DIR`, so the DB row is the only copy of the chain and there is nothing
+   to scrape back. That rests on the CLI honouring the variable at all, which is measured behaviour
+   on 2.1.240/2.1.241, not documented behaviour.
+8. Under that variable the CLI writes a `.credentials.json` holding `mcpOAuth` and nothing else.
+   Zimmer relies on that — it is what makes the remaining file unable to destroy a subscription
+   chain — and nothing detects a CLI version that starts writing `claudeAiOauth` into it again.
 9. Token lifetime ~8h — inferred, not specified.
 10. `invalid_grant`'s two meanings are separated only by an `error_description` string. Zimmer keys on
     `/expired|revoked/i` to tell a dead credential from a spent value; if Anthropic reworded that
@@ -6336,31 +6340,55 @@ in the window, and it excludes sessions whose start and end values disagree. Tho
 the most obvious wrong readings. They do not turn an observational comparison into a causal
 one, and a thin report saying "not enough data to compare" is the correct output, not a bug.
 
-## Session-scoped credentials leave the shared file behind, on purpose
+## Session-scoped Claude credentials have no rollback
 
-The [session-scoped credentials setting](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain)
-removes `~/.claude/.credentials.json` as a source of truth for subscription tokens, but it does not
-delete the machinery that manages it: the owner marker, `sync_tokens_from_filesystem!`, the symmetric
-write guard, `credentials_blob_for_disk`, the completeness guards. All of it is dormant with the
-setting on and load-bearing with it off, because the off path is the rollback.
+Every Claude Code session gets its credentials from the DB row — an access token through
+`CLAUDE_CODE_OAUTH_TOKEN`, its own `CLAUDE_CONFIG_DIR` — and there is no other mode
+([the DB owns the chain](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain)). The
+shared-file machinery that used to be the fallback — the owner marker, `sync_tokens_from_filesystem!`,
+`write_credentials_to_filesystem!`, the symmetric write guard, `credentials_blob_for_disk`, the
+completeness guards on read and write, the corruption self-heal, `RefreshRuntimeAuthTokensJob`'s
+"wait for a filesystem sync" recovery plan — is gone, along with the Settings → Experimental toggle
+that guarded it.
 
-So while the setting is being rolled out there are two credential mechanisms in the codebase and
-exactly one of them runs. That is the intended state, not an oversight — but it means a reader of
-`ClaudeAccount` or `AccountRotationService` sees guards defending a file that, in production with the
-setting on, nothing reads. The machinery comes out when the setting is on everywhere and the rollback
-is no longer wanted.
+Three consequences to know:
 
-Two narrower gaps while both exist:
+- **There is nothing to switch back to.** If the mechanism misbehaves, the fix is a code change and
+  a deploy, not a setting. Recovery from a broken credential is the same one gesture in every case:
+  **Authenticate** the account from `/inference`, which writes the row, and the next spawn reads
+  the new token out of it. `~/.claude/.credentials.json` may still exist on a worker as a fossil;
+  nothing reads it, and its contents mean nothing.
+- **A spawn with no usable current account fails.** It used to fall back to the shared file.
+  `ClaudeSpawnEnv` now raises `MissingCredentialsError`, `ProcessLifecycleManager` reports a spawn
+  failure, and the session fails with `failure_reason: spawn_failed` and a log line naming the
+  account. Loud and correct — a session that cannot authenticate cannot work — but it is a failed
+  session rather than a parked one, because the park machinery needs a running session and this
+  happens before there is one. `AuthWarmupService` settles the pool at worker boot so the ordinary
+  deploy never reaches it.
+- **A revoked MCP credential is not removed from other sessions' stores.** Revoking through
+  `McpOauthCredentialInjector#delete_runtime_credentials` reaches the revoking session's own store,
+  but a *different* session already running keeps its copy until it ends. New sessions get a fresh
+  directory, so the window is one session's lifetime, not indefinite.
 
-- **A revoked MCP credential is not removed from other sessions' stores.** `RefreshMcpOauthTokensJob`
-  has no session to scope to, so it targets the host-global file. Revoking through
-  `McpOauthCredentialInjector#delete_runtime_credentials` does reach the revoking session's own
-  store, but a *different* session already running keeps its copy until it ends. New sessions get a
-  fresh directory, so the window is one session's lifetime, not indefinite.
-- **A corrupt shared file stays corrupt while the setting is on.** `ClaudeCredentialHealth.self_heal!`
-  declines to repair it, because rewriting a file nothing reads on a five-minute cron is noise rather
-  than a repair. If the setting is later turned off, the next `ensure_active_account!` rewrites the
-  file from the DB — but until then the stale bytes sit there.
+The `session_scoped_credentials_enabled` column is still on `app_settings`, ignored by the model:
+phase 1 of the [two-phase drop](/operate/deploying/#dropping-a-column-takes-two-deploys). A later
+PR removes it.
+
+## An MCP token rotated on a Claude session's last turn is not captured
+
+Claude Code refreshes MCP OAuth tokens mid-session and writes the rotated pair into its session's
+own `.credentials.json`. Zimmer adopts it back into `McpOauthCredential` at the session's next
+injection — every spawn and follow-up runs `McpOauthRuntimeReconciler` over that session's store
+([write-back](/auth/mcp-oauth/#capturing-the-token-the-runtime-rotates-write-back)). A rotation
+that happens on a session's **last** turn has no next injection, so it is never read: the DB keeps
+the pair the provider has since rotated away, and the next session to use that server presents a
+dead refresh token, gets `invalid_grant`, and a human re-authorizes.
+
+`RefreshMcpOauthTokensJob` used to look like it covered this, and it did not. The cron read the
+host-global `~/.claude/.credentials.json`, which under per-session directories no session writes;
+it could only ever adopt a fossil, and `adoptable?`'s strictly-newer rule meant it never did. It now
+skips Claude Code outright rather than reading a file nothing writes. Closing the gap for real
+means reconciling a session's store when the session is reaped, and that is not built.
 
 ## An agent that never calls `get_session_provenance` never learns it has a hierarchy
 
@@ -6428,35 +6456,34 @@ has already ingested them, so they cost disk rather than money or correctness.
 The obvious replacement for the probe above was `claude auth status` — a real subcommand, and
 the direct analog of the `gh auth status` and `codex login status` in the same hash. It is the
 wrong check here. Verified against CLI 2.1.258, it reports only credentials it finds in the
-*environment*: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`. Pointed at a
-`~/.claude/.credentials.json` holding a complete `claudeAiOauth` pair — the store the `web` and
-`worker` containers authenticate from — it prints `Not logged in` and exits 1. It also exits 0
-for an `ANTHROPIC_API_KEY` that is pure nonsense, because presence is all it checks.
+*environment*: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`. Run from the `web` or `worker`
+container's own environment, which carries neither — Zimmer's credential is a DB row that only
+reaches a `claude` process as a spawn-time variable — it prints `Not logged in` and exits 1. It
+also exits 0 for an `ANTHROPIC_API_KEY` that is pure nonsense, because presence is all it checks.
 
 So the CLI has no invocation that answers "is Zimmer's stored Claude credential usable", and
 the check reads `ClaudeCredentialHealth` in-process instead. That is the better answer anyway —
-it follows the credential into the DB under
-[session-scoped credentials](#session-scoped-credentials-leave-the-shared-file-behind-on-purpose),
-where no file exists to inspect — but it does mean the Claude Code tile is reporting on
+it reads the row a session is handed its token out of
+([the DB owns the chain](#session-scoped-claude-credentials-have-no-rollback)) — but it does mean
+the Claude Code tile is reporting on
 Zimmer's own credential store rather than on what the binary would do if you ran it. Two
 consequences worth stating plainly, because the tile does not state them:
 
 **The tile reports presence, not liveness.** `ClaudeCredentialHealth` bottoms out in
 `ClaudeAccount.complete_claude_oauth?`, which asks whether an access token and a refresh token
-are both there and non-empty. It does not ask Anthropic. A revoked or spent pair sitting on disk
+are both there and non-empty. It does not ask Anthropic. A revoked or spent pair sitting in the row
 reads as *Authenticated*. `claude whoami` did make a real call, so it was — incidentally, and at
 about \$615/mo — the only liveness signal this tile ever had. What catches a dead credential now
 is the account pool's own refresh sweep and the auth-outage park, both of which run against the
 vendor; the tile is a configuration check, like the three beside it.
 
-**Under session-scoped credentials it reports on one account, not on the pool.**
-`ClaudeCredentialHealth#database_status` keys off `ClaudeAccount.current_account`, because that
-is the row a spawning session is actually handed a token out of. So a deployment with the setting
-on can show *Not Authenticated* while a perfectly healthy pool sits behind it — no row is current
-yet on a fresh worker, or the current row's stored pair is incomplete and
-`AccountRotationService` would rotate past it on the next spawn. The setting is off by default, and
-the same narrowing is already what the `/health` Agent Authentication card reports, so the two
-surfaces agree; `/inference` is the page that shows the whole pool.
+**It reports on one account, not on the pool.** `ClaudeCredentialHealth.status` keys off
+`ClaudeAccount.current_account`, because that is the row a spawning session is actually handed a
+token out of. So the tile can show *Not Authenticated* while a perfectly healthy pool sits behind
+it — no row is current yet on a fresh deployment, or the current row's stored pair is incomplete and
+`AccountRotationService` would rotate past it on the next spawn. The same narrowing is what the
+`/health` Agent Authentication card reports, so the two surfaces agree; `/inference` is the page
+that shows the whole pool.
 
 ## An empty-turn restart is bounded per incident, not per lifetime
 

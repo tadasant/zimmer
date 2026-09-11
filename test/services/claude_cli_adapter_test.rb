@@ -6,6 +6,13 @@ require "minitest/mock"
 require "timeout"
 
 class ClaudeCliAdapterTest < ActiveSupport::TestCase
+  # Every spawn here carries a session id (see setup), which is what makes the
+  # memory-cgroup wrapper eligible. On a sysbox worker the default cgroup root is
+  # a real delegated subtree, so without this pin the command assertions would see
+  # the `/bin/sh` wrapper and the run would create `session-886` beside live
+  # sessions. The two tests OF the wrapper override this with their own parent.
+  pin_delegated_cgroup_parent_absent
+
   setup do
     @adapter = ClaudeCliAdapter.new
     @test_dir = Dir.mktmpdir
@@ -16,10 +23,27 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     # so a developer with ZIMMER_OPERATOR_SSH_KEY exported would otherwise have the
     # suite write a key into their real ~/.ssh. Tests that need a path re-stub this.
     OperatorSshKeyProvisioner.stubs(:ensure!).returns(nil)
+
+    # Every spawn needs a session id and a current account holding an access token
+    # — its credentials are a per-session CLAUDE_CONFIG_DIR and a token out of that
+    # row, and a spawn that cannot be given both fails (issue #618). ProcessLifecycleManager
+    # sets the id in production; the fixture's primary account is current. Keep the
+    # config dirs and the transcript symlink target out of the real ~/.claude.
+    @adapter.zimmer_session_id = 886
+    @config_base = Dir.mktmpdir("claude-config-base")
+    @original_config_dir = ENV["CLAUDE_SESSION_CONFIG_DIR"]
+    ENV["CLAUDE_SESSION_CONFIG_DIR"] = @config_base
+    ClaudeTranscriptSource.stubs(:projects_root).returns(File.join(@config_base, "shared-projects"))
   end
 
   teardown do
     FileUtils.rm_rf(@test_dir) if @test_dir && File.exist?(@test_dir)
+    FileUtils.rm_rf(@config_base) if @config_base
+    if @original_config_dir
+      ENV["CLAUDE_SESSION_CONFIG_DIR"] = @original_config_dir
+    else
+      ENV.delete("CLAUDE_SESSION_CONFIG_DIR")
+    end
   end
 
   # ===== COMMAND BUILDING TESTS =====
@@ -1216,6 +1240,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     mock_manager = MockProcessManager.new
     adapter = ClaudeCliAdapter.new(logger: logger)
     adapter.process_manager = mock_manager
+    adapter.zimmer_session_id = 886
 
     adapter.send(:spawn_process, command, working_dir: @test_dir)
 
@@ -1544,22 +1569,26 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_nil env_vars["DATABASE_URL"]
     assert_nil env_vars["RAILS_ENV"]
 
-    # Only the Claude runtime flags, the parallel-test cap and the elicitation settings
-    # should be set (plus nil values for database vars). ELICITATION_SESSION_ID is absent because this
-    # adapter was built without a Zimmer session id; the rest are set regardless, so
-    # an MCP server always knows where to send an approval request and that it should
-    # send it there rather than to the headless agent.
+    # Only the Claude runtime flags, the session's credentials and scratch dir, the
+    # parallel-test cap and the elicitation settings should be set (plus nil values
+    # for database vars) — so an MCP server always knows where to send an approval
+    # request and that it should send it there rather than to the headless agent.
     non_nil_vars = env_vars.reject { |_k, v| v.nil? }
+    session_elicitation_url = ElicitationEndpoint.session_url(886)
     assert_equal({
       "ENABLE_TOOL_SEARCH" => "true",
       "CLAUDE_CODE_DISABLE_CRON" => "1",
       "CLAUDE_CODE_DISABLE_AUTO_MEMORY" => "1",
       "CLAUDE_CODE_AUTO_COMPACT_WINDOW" => "1000000",
+      "CLAUDE_CONFIG_DIR" => File.join(@config_base, "886"),
+      "CLAUDE_CODE_OAUTH_TOKEN" => claude_accounts(:primary).claude_access_token,
+      "AO_SESSION_SCRATCH_DIR" => SessionScratchDirectory.path_for(886),
       "PARALLEL_WORKERS" => CliSpawnEnv::DEFAULT_TEST_PARALLELISM.to_s,
-      "ELICITATION_REQUEST_URL" => "#{AppUrl.base_url}/api/v1/elicitations",
-      "ELICITATION_POLL_URL" => "#{AppUrl.base_url}/api/v1/elicitations",
+      "ELICITATION_REQUEST_URL" => session_elicitation_url,
+      "ELICITATION_POLL_URL" => session_elicitation_url,
       "ELICITATION_PREFER_HTTP_FALLBACK" => "true",
-      "ELICITATION_TTL_MS" => (Elicitation::DEFAULT_EXPIRATION.to_i * 1000).to_s
+      "ELICITATION_TTL_MS" => (Elicitation::DEFAULT_EXPIRATION.to_i * 1000).to_s,
+      "ELICITATION_SESSION_ID" => "886"
     }, non_nil_vars)
   end
 
@@ -2542,6 +2571,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     # child here must receive the entire envelope, including a large base64-style
     # payload that exceeds the OS pipe buffer.
     adapter = ClaudeCliAdapter.new  # real process_manager + real file_system
+    adapter.zimmer_session_id = 886
 
     # The command runs with chdir: working_dir, so `cat` drains stdin into a file
     # we can read back. This stands in for Claude CLI reading its stream-json stdin.
@@ -2841,46 +2871,57 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     refute @adapter.send(:large_prompt?, smaller_multibyte)
   end
 
-  # ===== INJECT_API_KEY_FROM_CREDENTIALS TESTS =====
-  # When ANTHROPIC_BASE_URL is set (e.g. for testing with a mock API server),
-  # inject the current OAuth token from credentials as ANTHROPIC_API_KEY so the
-  # Claude binary talks to the mock server using the right account token.
+  # ===== SESSION CREDENTIALS + INJECT_API_KEY_FOR_CUSTOM_BASE_URL TESTS =====
+  # Every spawn carries the session's own CLAUDE_CONFIG_DIR and the current
+  # account's access token (issue #618). When ANTHROPIC_BASE_URL is set (a mock
+  # API server), that same token is also passed as ANTHROPIC_API_KEY so the mock
+  # sees the identity the pool selected.
 
-  test "inject_api_key_from_credentials sets ANTHROPIC_API_KEY when ANTHROPIC_BASE_URL is in env_vars" do
-    credentials_dir = File.join(@test_dir, ".claude")
-    FileUtils.mkdir_p(credentials_dir)
-    credentials_path = File.join(credentials_dir, ".credentials.json")
-    File.write(credentials_path, { "claudeAiOauth" => { "accessToken" => "test-oauth-token-123" } }.to_json)
+  test "spawn_process hands the child its own config dir and the current account's access token" do
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
 
-    original_home = ENV["HOME"]
-    ENV["HOME"] = @test_dir
-
-    env_vars = { "ANTHROPIC_BASE_URL" => "http://127.0.0.1:9999" }
-    @adapter.send(:inject_api_key_from_credentials, env_vars)
-
-    assert_equal "test-oauth-token-123", env_vars["ANTHROPIC_API_KEY"]
-  ensure
-    ENV["HOME"] = original_home
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert_equal File.join(@config_base, "886"), env_vars["CLAUDE_CONFIG_DIR"]
+    assert_equal claude_accounts(:primary).claude_access_token, env_vars["CLAUDE_CODE_OAUTH_TOKEN"]
+    refute_includes env_vars.values.compact, claude_accounts(:primary).claude_refresh_token,
+      "the child must never hold the refresh token"
   end
 
-  test "inject_api_key_from_credentials sets ANTHROPIC_API_KEY when ANTHROPIC_BASE_URL is in ENV" do
-    credentials_dir = File.join(@test_dir, ".claude")
-    FileUtils.mkdir_p(credentials_dir)
-    credentials_path = File.join(credentials_dir, ".credentials.json")
-    File.write(credentials_path, { "claudeAiOauth" => { "accessToken" => "env-oauth-token" } }.to_json)
+  test "spawn_process_with_stdin hands the child the same credentials" do
+    @adapter.send(:spawn_process_with_stdin, [ "claude", "test" ], working_dir: @test_dir, stdin_content: "{}")
 
-    original_home = ENV["HOME"]
-    ENV["HOME"] = @test_dir
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert_equal File.join(@config_base, "886"), env_vars["CLAUDE_CONFIG_DIR"]
+    assert_equal claude_accounts(:primary).claude_access_token, env_vars["CLAUDE_CODE_OAUTH_TOKEN"]
+  end
 
-    env_vars = {}
+  test "spawn_process raises ClaudeCliError when the pool has no usable current account" do
+    ClaudeAccount.update_all(is_current: false)
+
+    error = assert_raises(ClaudeCliAdapter::ClaudeCliError) do
+      @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+    end
+
+    assert_match(/authenticate one from \/inference/, error.message)
+    assert_empty @mock_process_manager.spawned_processes, "nothing may be spawned without a credential"
+  end
+
+  test "inject_api_key_for_custom_base_url copies the session token when ANTHROPIC_BASE_URL is in env_vars" do
+    env_vars = { "ANTHROPIC_BASE_URL" => "http://127.0.0.1:9999", "CLAUDE_CODE_OAUTH_TOKEN" => "test-oauth-token-123" }
+    @adapter.send(:inject_api_key_for_custom_base_url, env_vars)
+
+    assert_equal "test-oauth-token-123", env_vars["ANTHROPIC_API_KEY"]
+  end
+
+  test "inject_api_key_for_custom_base_url copies the session token when ANTHROPIC_BASE_URL is in ENV" do
+    env_vars = { "CLAUDE_CODE_OAUTH_TOKEN" => "env-oauth-token" }
     original_base_url = ENV["ANTHROPIC_BASE_URL"]
     ENV["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:8888"
 
-    @adapter.send(:inject_api_key_from_credentials, env_vars)
+    @adapter.send(:inject_api_key_for_custom_base_url, env_vars)
 
     assert_equal "env-oauth-token", env_vars["ANTHROPIC_API_KEY"]
   ensure
-    ENV["HOME"] = original_home
     if original_base_url
       ENV["ANTHROPIC_BASE_URL"] = original_base_url
     else
@@ -2888,88 +2929,34 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     end
   end
 
-  test "inject_api_key_from_credentials is a no-op when no ANTHROPIC_BASE_URL" do
+  test "inject_api_key_for_custom_base_url is a no-op when no ANTHROPIC_BASE_URL" do
     original_base_url = ENV["ANTHROPIC_BASE_URL"]
     ENV.delete("ANTHROPIC_BASE_URL")
 
-    env_vars = { "OTHER_VAR" => "value" }
-
-    @adapter.send(:inject_api_key_from_credentials, env_vars)
+    env_vars = { "CLAUDE_CODE_OAUTH_TOKEN" => "token", "OTHER_VAR" => "value" }
+    @adapter.send(:inject_api_key_for_custom_base_url, env_vars)
 
     refute env_vars.key?("ANTHROPIC_API_KEY"), "Should not inject API key without ANTHROPIC_BASE_URL"
   ensure
     ENV["ANTHROPIC_BASE_URL"] = original_base_url if original_base_url
   end
 
-  test "inject_api_key_from_credentials is a no-op when credentials file does not exist" do
-    original_home = ENV["HOME"]
-    ENV["HOME"] = @test_dir
-
+  test "inject_api_key_for_custom_base_url is a no-op when there is no session token to copy" do
     env_vars = { "ANTHROPIC_BASE_URL" => "http://127.0.0.1:9999" }
-    @adapter.send(:inject_api_key_from_credentials, env_vars)
+    @adapter.send(:inject_api_key_for_custom_base_url, env_vars)
 
-    refute env_vars.key?("ANTHROPIC_API_KEY"), "Should not inject API key when credentials file missing"
-  ensure
-    ENV["HOME"] = original_home
-  end
-
-  test "inject_api_key_from_credentials is a no-op when token is blank" do
-    credentials_dir = File.join(@test_dir, ".claude")
-    FileUtils.mkdir_p(credentials_dir)
-    credentials_path = File.join(credentials_dir, ".credentials.json")
-    File.write(credentials_path, { "claudeAiOauth" => { "accessToken" => "" } }.to_json)
-
-    original_home = ENV["HOME"]
-    ENV["HOME"] = @test_dir
-
-    env_vars = { "ANTHROPIC_BASE_URL" => "http://127.0.0.1:9999" }
-    @adapter.send(:inject_api_key_from_credentials, env_vars)
-
-    refute env_vars.key?("ANTHROPIC_API_KEY"), "Should not inject blank API key"
-  ensure
-    ENV["HOME"] = original_home
-  end
-
-  test "inject_api_key_from_credentials handles malformed JSON gracefully" do
-    credentials_dir = File.join(@test_dir, ".claude")
-    FileUtils.mkdir_p(credentials_dir)
-    credentials_path = File.join(credentials_dir, ".credentials.json")
-    File.write(credentials_path, "not valid json")
-
-    original_home = ENV["HOME"]
-    ENV["HOME"] = @test_dir
-
-    env_vars = { "ANTHROPIC_BASE_URL" => "http://127.0.0.1:9999" }
-
-    assert_nothing_raised do
-      @adapter.send(:inject_api_key_from_credentials, env_vars)
-    end
     refute env_vars.key?("ANTHROPIC_API_KEY")
-  ensure
-    ENV["HOME"] = original_home
   end
 
-  test "spawn_process calls inject_api_key_from_credentials when ANTHROPIC_BASE_URL is set" do
-    credentials_dir = File.join(@test_dir, ".claude")
-    FileUtils.mkdir_p(credentials_dir)
-    credentials_path = File.join(credentials_dir, ".credentials.json")
-    File.write(credentials_path, { "claudeAiOauth" => { "accessToken" => "rotated-token" } }.to_json)
+  test "spawn_process passes the current account's token as ANTHROPIC_API_KEY when ANTHROPIC_BASE_URL is set" do
+    File.write(File.join(@test_dir, ".env"), "ANTHROPIC_BASE_URL=http://127.0.0.1:9999")
 
-    original_home = ENV["HOME"]
-    ENV["HOME"] = @test_dir
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
 
-    env_content = "ANTHROPIC_BASE_URL=http://127.0.0.1:9999"
-    File.write(File.join(@test_dir, ".env"), env_content)
-
-    command = [ "claude", "test" ]
-    @adapter.send(:spawn_process, command, working_dir: @test_dir)
-
-    spawned = @mock_process_manager.spawned_processes.first
-    env_vars = spawned[:env]
-
-    assert_equal "rotated-token", env_vars["ANTHROPIC_API_KEY"]
-  ensure
-    ENV["HOME"] = original_home
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert_equal claude_accounts(:primary).claude_access_token, env_vars["ANTHROPIC_API_KEY"]
+    assert_equal env_vars["CLAUDE_CODE_OAUTH_TOKEN"], env_vars["ANTHROPIC_API_KEY"],
+      "the mock must see the same identity the pool selected"
   end
 
   test "execute with both large prompt and images uses stdin" do

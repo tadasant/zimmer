@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 class QuotaCheckService
-  CREDENTIALS_PATH = File.join(Dir.home, ".claude", ".credentials.json")
   DEFAULT_BASE_URL = "https://api.anthropic.com"
   MESSAGES_PATH = "/v1/messages"
   PROFILE_PATH = "/api/oauth/profile"
@@ -68,26 +67,18 @@ class QuotaCheckService
     def credential_refused? = !success? && AUTH_REFUSAL_STATUSES.include?(status_code)
   end
 
-  def self.check
-    new.check
-  end
-
   def self.check_with_token(token)
     new.check_with_token(token)
   end
 
-  def check
-    credentials = read_credentials
-    return credentials if credentials.is_a?(Result)
-
-    token = credentials.dig("claudeAiOauth", "accessToken")
-    return error_result("No access token found in credentials") unless token.present?
-
-    check_with_token(token)
-  end
-
-  # Check quota using a provided OAuth access token directly,
-  # bypassing the filesystem credential file.
+  # Check quota by presenting an OAuth access token.
+  #
+  # The token is always passed in, and always comes from a ClaudeAccount row —
+  # there is no filesystem-reading variant any more. That matters beyond tidiness:
+  # a probe is how the pool decides an account is serviceable, so it has to be a
+  # probe OF the exact string a session would be handed
+  # (ClaudeAccount#claude_access_token). Reading a credentials file would answer
+  # a question about a file no session reads. See issue #618.
   def check_with_token(token)
     return error_result("Token is blank") unless token.present?
 
@@ -96,20 +87,6 @@ class QuotaCheckService
   end
 
   private
-
-  def read_credentials
-    unless File.exist?(CREDENTIALS_PATH)
-      return error_result("No credentials file found at #{CREDENTIALS_PATH}")
-    end
-
-    data = JSON.parse(File.read(CREDENTIALS_PATH))
-    unless data.key?("claudeAiOauth")
-      return error_result("No Claude AI OAuth credentials in #{CREDENTIALS_PATH}")
-    end
-    data
-  rescue JSON::ParserError => e
-    error_result("Failed to parse credentials: #{e.message}")
-  end
 
   def base_url
     (ENV["ANTHROPIC_BASE_URL"] || DEFAULT_BASE_URL).chomp("/")

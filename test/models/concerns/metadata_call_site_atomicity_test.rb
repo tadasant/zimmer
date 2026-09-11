@@ -287,12 +287,11 @@ class MetadataCallSiteAtomicityTest < ActiveSupport::TestCase
     concurrent_write!(session)
     Session.stubs(:find_by).with(id: session.id).returns(stale)
 
-    AuthRecoveryCoordinator.record_spawn_credentials!(
-      session_id: session.id, account: nil, session_scoped: false
-    )
+    AuthRecoveryCoordinator.record_spawn_credentials!(session_id: session.id, account: claude_accounts(:primary))
 
     assert_concurrent_key_survived(session)
-    assert_equal false, session.reload.metadata[AuthRecoveryCoordinator::CREDENTIAL_MODE_KEY]
+    assert_equal AuthRecoveryCoordinator.credential_fingerprint(claude_accounts(:primary)),
+      session.reload.metadata[AuthRecoveryCoordinator::CREDENTIAL_FINGERPRINT_KEY]
   end
 
   # The model helper the catalog surfaces call, on its own: the persisted twin of

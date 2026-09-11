@@ -112,35 +112,4 @@ namespace :claude_accounts do
       puts "  #{account.priority}. #{account.email} — #{account.status}, #{config_status}#{current_marker}"
     end
   end
-
-  desc "Capture OAuth tokens from ~/.claude.json and ~/.claude/.credentials.json for a given account email"
-  task :capture_tokens, [ :email ] => :environment do |_t, args|
-    email = args[:email]
-    abort "Usage: bin/rails 'claude_accounts:capture_tokens[email@example.com]'" unless email.present?
-
-    account = ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).find_by(email: email)
-    abort "No ClaudeAccount found with email: #{email}" unless account
-
-    claude_json_path = ClaudeAuthProvider::CLAUDE_JSON_PATH
-    credentials_json_path = ClaudeAuthProvider::CREDENTIALS_JSON_PATH
-
-    oauth_config = {}
-
-    if File.exist?(claude_json_path)
-      oauth_config["claude_json"] = JSON.parse(File.read(claude_json_path))
-      puts "Read #{claude_json_path}"
-    else
-      puts "Warning: #{claude_json_path} not found"
-    end
-
-    if File.exist?(credentials_json_path)
-      oauth_config["credentials_json"] = JSON.parse(File.read(credentials_json_path))
-      puts "Read #{credentials_json_path}"
-    else
-      abort "Error: #{credentials_json_path} not found — run `claude /login` first"
-    end
-
-    account.update!(oauth_config: oauth_config)
-    puts "Stored tokens for #{email} (keys: #{oauth_config.keys.join(", ")})"
-  end
 end

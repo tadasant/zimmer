@@ -69,7 +69,7 @@ nothing and costs the transcript.
 There is a second dead-end the classifier avoids: a server Zimmer **already holds a valid
 credential for** that still returns `401`. That is not a missing authorization — it is the
 runtime failing to honor the token Zimmer injected, most often because Claude Code's
-host-global negative-auth cache (`~/.claude/mcp-needs-auth-cache.json`) short-circuited the
+negative-auth cache (`mcp-needs-auth-cache.json`, beside the session's credentials file) short-circuited the
 connection (`Skipping connection (cached needs-auth)`) before it ever reached the network.
 Routing it to `oauth_required` is pointless: `McpOauthController#initiate` short-circuits on
 the existing credential, so the Authorize button can only redirect straight back — which reads
@@ -481,8 +481,8 @@ permanent split matches `XOauthCredential`.
 
 Zimmer is not the only party that refreshes these tokens, and it cannot become the only one.
 **Claude Code and Pi both ship their own MCP OAuth client**: when an access token lapses
-mid-session they refresh it and write the new pair back — Claude Code to
-`~/.claude/.credentials.json`, Pi (`pi-mcp-adapter`) through an MCP-SDK OAuth provider whose
+mid-session they refresh it and write the new pair back — Claude Code to the `.credentials.json`
+inside its session's `CLAUDE_CONFIG_DIR`, Pi (`pi-mcp-adapter`) through an MCP-SDK OAuth provider whose
 `saveTokens` writes into the OS credential store. Notion (and other OAuth 2.1 servers) **rotate**
 refresh tokens — every refresh mints a new refresh token and revokes the prior one — so once
 either runtime refreshes, the refresh token in Zimmer's DB is already dead.
@@ -508,8 +508,9 @@ runtime holds a strictly newer token pair — a later access-token expiry means 
 after Zimmer last wrote the row — adopts that pair into the DB. Crucially it adopts even when the
 on-disk access token has already expired: a rotated refresh token is the live head of the chain
 regardless of its paired access token's TTL, which is the exact case `merge_preserving_fresher!`
-drops. `ClaudeAccount#sync_tokens_from_filesystem!` does the same thing for the runtime's own account
-tokens; MCP OAuth credentials had no equivalent, which is why they went stale.
+drops. The runtime's own subscription tokens need no equivalent: a Claude session is handed an access
+token and no refresh token, so it cannot rotate that chain at all
+([the DB owns the chain](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain)).
 
 The reconciler runs in two places:
 
@@ -517,7 +518,10 @@ The reconciler runs in two places:
   session — so a session never injects (or re-auth-prompts against) a rotated-away token. It reads
   the store of *that session's* runtime.
 - **`RefreshMcpOauthTokensJob`**, before the cron refreshes each credential — so the cron adopts a
-  session's rotation instead of burning the stale DB token against the provider's reuse detection.
+  rotation instead of burning the stale DB token against the provider's reuse detection. Pi and
+  Codex only: their stores are host-global. Claude Code's is per session, and a session-less sweep
+  has no single file to read (`ClaudeMcpCredentialWriter.session_scoped_store?` is how it knows), so
+  the injector's per-spawn pass is what captures a Claude session's rotation.
   The cron has no session and therefore no runtime, so it reads **every** registered runtime's store
   (`RuntimeRegistry.mcp_credential_writer_classes`). Reading only one is how a rotation performed on
   another runtime got burned. Order does not matter: each store is compared against the row as it
@@ -554,14 +558,14 @@ unique across `McpOauthCredential` rows, so on Pi's name-keyed store a server wh
 leaves an old row probing the same account. `pi-mcp-adapter` draws the same line from its own side
 (`getAuthForUrl` returns nothing once the URL has moved).
 
-**Which store it reads** depends on the
-[session-scoped credentials setting](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain).
-With it off, one host-global `~/.claude/.credentials.json` that every session on the worker
-read-modify-writes under a flock. With it on, `ClaudeMcpCredentialWriter.for_session` points the
-writer at that session's own `CLAUDE_CONFIG_DIR` — same keys, same adoption rule, one writer per
-file, so the read-modify-write stops racing. The cron and the revocation path still target the
-host-global file: they have no session to scope to, so a revoked credential is not removed from a
-session that is already running (it gets a fresh directory next time).
+**Which store it reads**, for Claude Code, is the session's own. `ClaudeMcpCredentialWriter.for_session`
+points the writer at that session's `CLAUDE_CONFIG_DIR` — same keys, same adoption rule, one writer
+per file — and there is no host-global mode to fall back to: `~/.claude/.credentials.json` was the
+store while every session on the worker shared one, and nothing reads or writes it now
+([the DB owns the chain](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain)). The
+revocation path reaches the revoking session's own store; a *different* session already running
+keeps its copy until it ends, and gets a fresh directory next time. One gap remains and is named
+under [Limitations](/limitations/#an-mcp-token-rotated-on-a-claude-sessions-last-turn-is-not-captured).
 
 Codex is the one runtime with nothing to adopt: it is written-not-trusted (Zimmer rewrites its store
 every spawn and Codex does not refresh MCP tokens itself), so reconciling against it is a harmless
@@ -981,18 +985,17 @@ every server has an entry, the resume when every entry is already `pending` — 
 `plugin_mcp_servers` return `[]`) cannot empty the reset and delete the key.
 :::
 
-:::note[The runtime credential stores are host-global and shared across sessions]
-Claude Code reads `~/.claude/.credentials.json` and its negative-auth cache
-`~/.claude/mcp-needs-auth-cache.json`, both keyed by `HOME`, not by session — so every session on
-a worker shares them. Two consequences the credential writer handles: (1) a plain read-modify-write
-of `.credentials.json` races when two spawns overlap (last writer wins, silently dropping the
-other's freshly-authorized token), so `ClaudeMcpCredentialWriter` serializes the read and the write
-under a `flock` on a sibling lock file — the same `ClaudeCredentialStore` lock the account writer
-takes for the `claudeAiOauth` block of that file, since an account rotation is a third racer
-([one credential file, three writers](/auth/harness/#one-credential-file-three-writers));
-(2) one session's auth failure poisons the needs-auth cache
-for *every* later session — the entry makes Claude Code skip the connection outright, so a
-freshly-injected token stays invisible until the entry is removed. Injecting credentials and
-completing an authorize both clear the relevant cache entries. Codex re-reads its store on every
-connection and keeps no such cache, so its writer's `clear_needs_auth_cache` is a no-op.
+:::note[Claude Code's credential store is per session; Codex's and Pi's are host-global]
+Claude Code reads `.credentials.json` and its negative-auth cache `mcp-needs-auth-cache.json` out
+of `CLAUDE_CONFIG_DIR`, and every Zimmer session has its own. Two things the credential writer still
+handles: (1) a session's spawn and its follow-ups both read-modify-write that file while the CLI
+refreshes MCP tokens into it mid-session, so `ClaudeMcpCredentialWriter` serializes the read and
+the write under a `flock` on a sibling lock file (`ClaudeCredentialStore`) — last writer wins
+otherwise, silently dropping a freshly-authorized token; (2) an auth failure poisons the
+needs-auth cache for that session's later spawns — the entry makes Claude Code skip the connection
+outright, so a freshly-injected token stays invisible until the entry is removed. Injecting
+credentials and completing an authorize both clear the relevant cache entries. Per-session
+directories are also what stopped one session's failure from poisoning every other session on the
+worker. Codex re-reads its store on every connection and keeps no such cache, so its writer's
+`clear_needs_auth_cache` is a no-op.
 :::

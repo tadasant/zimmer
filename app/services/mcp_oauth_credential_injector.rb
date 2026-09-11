@@ -171,11 +171,14 @@ class McpOauthCredentialInjector
     return [] if server_configs.empty?
 
     RuntimeRegistry.mcp_credential_writer_classes.flat_map do |writer_class|
-      # `.for_session`, not `.new`: this instance HAS a session, and under
-      # session-scoped credentials the copy that matters is the one in that
-      # session's own store. Every other runtime's `.for_session` is `.new`, so
-      # the loop is unchanged for them.
+      # `.for_session`, not `.new`: this instance HAS a session, and for Claude
+      # Code the copy that matters is the one in that session's own store. Every
+      # other runtime's `.for_session` is `.new`, so the loop is unchanged for
+      # them. It can answer nil for a session with no id to key a store on, and
+      # a runtime with no store for this session has nothing to delete from it.
       writer = writer_class.for_session(session)
+      next [] unless writer
+
       keys = server_configs.map { |name, config| writer.credential_key_for(name, config) }
       writer.delete_credentials(keys)
     end
@@ -349,10 +352,11 @@ class McpOauthCredentialInjector
   # ClaudeMcpCredentialWriter; Codex sessions get CodexMcpCredentialWriter.
   #
   # Built through `.for_session` rather than `.new` because "which credential
-  # store" is a per-session question on Claude Code under session-scoped
-  # credentials: the session's own CLAUDE_CONFIG_DIR is what the CLI reads its
-  # mcpOAuth map from, and where it writes a token it rotated mid-session back
-  # to. Every other runtime's `.for_session` is `.new`.
+  # store" is a per-session question on Claude Code: the session's own
+  # CLAUDE_CONFIG_DIR is what the CLI reads its mcpOAuth map from, and where it
+  # writes a token it rotated mid-session back to (issue #618). Every other
+  # runtime's `.for_session` is `.new`. It may answer nil, which #credential_store?
+  # reads the same way it reads a runtime with no writer class at all.
   # The runtime's credential writer, or nil for a runtime that has no store
   # Zimmer writes. Memoized through `defined?` rather than `||=` so a legitimate
   # nil is cached once instead of re-resolved on every call.

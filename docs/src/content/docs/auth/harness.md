@@ -1,6 +1,6 @@
 ---
 title: Agent harness credentials
-description: The account pool, OAuth refresh, quota rotation, the credentials-owner marker — and the undocumented vendor internals the whole thing is built on.
+description: The account pool, OAuth refresh, quota rotation, per-session credentials — and the undocumented vendor internals the whole thing is built on.
 sidebar:
   order: 2
 ---
@@ -32,14 +32,14 @@ Everything goes through `RuntimeAuthProvider.for(runtime)` → `ClaudeAuthProvid
 | --- | --- | --- |
 | Token endpoint | `platform.claude.com/v1/oauth/token` | `auth.openai.com/oauth/token` |
 | Client ID | `9d1c250a-e61b-44d9-88ed-5944d1962f5e` (the CLI's public ID) | `app_EMoamEEZ73f0CkXaXp7hrann` |
-| Files | `~/.claude.json` (identity), `~/.claude/.credentials.json` (tokens) | `~/.codex/auth.json` |
+| Where a session gets its credential | `CLAUDE_CODE_OAUTH_TOKEN` in its environment, from the DB row; its own `CLAUDE_CONFIG_DIR` holds only `mcpOAuth` | `~/.codex/auth.json`, written before each spawn |
 | Token TTL | from `expiresAt` (~8h, inferred) | 24h, inferred — `auth.json` has no expiry field |
 | Rotation | `AccountRotationService`, 5-minute interval | inline in the provider, 24h |
 | Identity check on capture | email must match | none |
 
 ### Pi is not in the pool, and nothing here applies to it
 
-Everything on this page — the pool, the refresh loop, the credentials-owner marker, quota
+Everything on this page — the pool, the refresh loop, per-session credentials, quota
 rotation, the drained-pool park, the login screen — is about a **pooled subscription identity**.
 Pi does not have one. It resolves a provider credential per request out of its own process
 environment, so there is no Pi row in `claude_accounts`, nothing to mark current, and nothing to
@@ -69,13 +69,15 @@ rather than by forking the session.
 
 ## Session-scoped credentials: the DB owns the chain
 
-**Setting:** Settings → Experimental → *Session-scoped Claude credentials*. Ships **off**.
+Every Claude Code session spawns with its own `CLAUDE_CONFIG_DIR` and is handed a subscription
+**access** token through `CLAUDE_CODE_OAUTH_TOKEN`. It receives no refresh token, so it cannot
+rotate the chain — which is what makes "log in once, ever; Zimmer refreshes centrally" true rather
+than aspirational. There is no shared `~/.claude/.credentials.json` in play: nothing in Zimmer
+reads it, nothing writes it, and the `claude_accounts` row is the only copy of the chain.
 
-With it on, every Claude Code session spawns with its own `CLAUDE_CONFIG_DIR` and is handed a
-subscription **access** token through `CLAUDE_CODE_OAUTH_TOKEN`. It receives no refresh token, so it
-cannot rotate the chain — which is what makes "log in once, ever; Zimmer refreshes centrally" true
-rather than aspirational. The shared `~/.claude/.credentials.json` stops being a source of truth
-for subscription tokens entirely.
+This is the only mode. It shipped behind an experimental setting in
+[#626](https://github.com/tadasant/zimmer/pull/626), ran that way in production, and the setting and
+the shared-file machinery it guarded were then removed. There is no toggle to turn it off.
 
 ```mermaid
 flowchart LR
@@ -95,11 +97,18 @@ flowchart LR
 ```
 
 Only Zimmer refreshes, under the pool lock it already had. Nothing else holds a refresh token, so
-there is no second writer to lose a race to.
+there is no second writer to lose a race to — and that ownership applies to every part of a
+refresh. Zimmer imports nothing before a request, re-reads nothing after a rejection, and writes the
+rotated pair to nothing but the row.
 
-That ownership applies to every part of a refresh: while the setting is on, Zimmer does not import
-the shared file before a request, re-read it after a rejection, or write the rotated pair back to
-it. The file remains in place only so disabling the setting can restore the shared-file behavior.
+The same rule reaches every `claude` process Zimmer starts, not only sessions. Print-mode inference
+— session titles, status summaries, push-notification copy, category inference — runs `claude -p`
+without a Zimmer session, so `ClaudeHeadlessCredentials` gives it the same two variables from the
+same row, keyed on one shared `headless` config directory (those invocations are stateless, so
+there is no conversation state to keep apart). Before that seam existed those calls inherited the
+worker's environment, read the fossil shared file, and every one of them answered
+*Not logged in · Please run /login* and exited 1 — silently, because each caller falls back to a
+default. The only other `claude` invocation, the login flow, already ran in a scratch config dir.
 
 ### Why this rather than more guards
 
@@ -109,9 +118,10 @@ Anthropic answered `invalid_grant`, and the CLI blanked its own tokens. The cred
 in **neither** store — data loss, not drift, which is why re-auth-and-wait never healed it. See
 [#618](https://github.com/tadasant/zimmer/issues/618).
 
-Every mechanism on this page below the fold — the owner marker, the completeness guards, the
-symmetric write guard, `sync_tokens_from_filesystem!` — exists to make that one file safe to share.
-This removes the sharing instead.
+Every mechanism that used to live on this page — the owner marker, the completeness guards on
+read and write, the symmetric write guard, `sync_tokens_from_filesystem!`, the corruption self-heal
+— existed to make that one file safe to share. Removing the sharing removed all of them, and none
+survives as a rollback: a file nothing writes is not a fallback, it is a fossil.
 
 ### What the CLI actually does under it
 
@@ -126,7 +136,7 @@ Measured on CLI 2.1.240/2.1.241, against a scratch config dir on the production 
 | Does `--resume` still work? | Yes, as long as the config dir is stable per session |
 | Does `~/.claude/.credentials.json` change? | No — byte-identical before and after |
 
-The file that remains cannot destroy a subscription chain, because it never contains one.
+The file a session does write cannot destroy a subscription chain, because it never contains one.
 
 Two behavioural differences worth knowing. The CLI writes no `oauthAccount` into the scratch
 `.claude.json`, so there is no filesystem identity to reconcile against — which is why the
@@ -154,45 +164,57 @@ than following it.
 
 ### MCP OAuth under it
 
-`ClaudeMcpCredentialWriter.for_session` points the writer at the session's own file. Rotated tokens
-are captured back by `McpOauthRuntimeReconciler`, unchanged — same `server_name|sha256(…)[0,16]`
-keys, same adoption rule, just a different path. This is strictly better than the shared file: one
-writer per file means the read-modify-write no longer races every other session on the worker.
+`ClaudeMcpCredentialWriter.for_session` points the writer at the session's own file — there is no
+host-global mode to point it at anything else, and `.new` requires the path. Rotated tokens are
+captured back by `McpOauthRuntimeReconciler` at every spawn and follow-up, unchanged — same
+`server_name|sha256(…)[0,16]` keys, same adoption rule, just a different path. One writer per file
+means the read-modify-write no longer races every other session on the worker;
+`ClaudeCredentialStore`'s lock still guards it, because a session's spawn and its follow-ups can
+overlap the CLI's own mid-session refresh of the same file.
 
-One gap: `RefreshMcpOauthTokensJob` has no session to scope to, so the cron reads and writes the
-host-global file. Revoking a credential through `delete_runtime_credentials` reaches the revoking
-session's own store, but a *different* session already running keeps its copy until it ends. New
-sessions get fresh directories, so the window is one session's lifetime.
+`RefreshMcpOauthTokensJob` skips Claude Code. The cron has no session to scope to, and there is no
+single Claude file for a session-less sweep to read; `ClaudeMcpCredentialWriter.session_scoped_store?`
+is how it knows. The per-session reconciliation at injection time is what captures a rotated token
+instead — which leaves one narrow gap, named under
+[Limitations](/limitations/#an-mcp-token-rotated-on-a-claude-sessions-last-turn-is-not-captured).
+Revoking a credential through `delete_runtime_credentials` reaches the revoking session's own store;
+a *different* session already running keeps its copy until it ends, and new sessions get fresh
+directories, so that window is one session's lifetime.
 
-Which store a session uses is decided by one predicate, `ClaudeSessionConfigDirectory.active_for?`.
-MCP injection happens before the spawn env is built, and the spawn env fails open when the pool has
-no current account holding a token — so two independent reads of the setting would put a session's
-MCP tokens in a directory the CLI was never pointed at, and every OAuth server in it would come up
-unauthenticated with nothing in the log to say why.
+### When the pool cannot serve a token
 
-### Turning it on, and rolling it back
+The spawn fails **closed**. `ClaudeSpawnEnv#apply_session_scoped_credentials` raises
+`MissingCredentialsError` when no account is current or the current one holds no access token, and
+`ProcessLifecycleManager` reports that as a spawn failure: the session fails with
+`failure_reason: spawn_failed` and an `.error` log line naming the account that came up empty.
 
-On: Settings → Experimental → *Session-scoped Claude credentials* → Save. It takes effect on the
-next session spawn; nothing needs restarting and nothing needs a shell on the box. A `claude`
-process already running keeps the environment it was spawned with — but a Zimmer session is not one
-process, so the next turn of a `waiting` or `needs_input` session re-spawns under the new setting,
-with a fresh `CLAUDE_CONFIG_DIR` and none of the CLI's own `.claude.json` history. The conversation
-carries (Zimmer resumes from the transcript); the CLI's local state does not.
+It used to fall back to the shared file, and that was right while the file was a live rollback.
+Falling back now would point the child at a fossil and every turn would come back
+*Not logged in · Please run /login* with nothing in the log to say why. A session that cannot
+authenticate is a session that cannot work; failing its spawn is the honest outcome, and it is the
+same visible ending a drained pool already produces. `AuthWarmupService` settles a usable current
+account at worker boot so the ordinary case never reaches this.
 
-Back off: untick the same box. The shared-file machinery is untouched and still converges — the next
-`ensure_active_account!` writes the DB-current account's credentials to
-`~/.claude/.credentials.json` and stamps the owner marker. That is what makes this a rollback rather
-than a migration, and it is why the machinery documented below still exists.
+### There is no rollback, and what recovery looks like instead
 
-The one thing the rollback does **not** restore is the operator-facing reconciliation surface. The
-"Filesystem identity mismatch" banner, the "Sync from filesystem" button and its route,
-`ClaudeAccount.sync_from_filesystem!`, `ClaudeAccount.filesystem_oauth_email`, and Claude's
-`reconcile_filesystem_identity!` are gone in both worlds — as is the filesystem auto-capture that
-`bin/rails claude_accounts:add` used to perform, which now points at the Authenticate button instead. Asking an operator to adjudicate between
-two stores was never the right answer to a disagreement, and the banner's own copy told them to run
-a `bin/rails` command on the worker — which
-[production invariant 11](/operate/deploying/) forbids. `/inference` now has two verbs for an account,
-**Authenticate** and **Switch**, and nothing that asks anyone to reconcile, adopt or sync.
+Unticking a box no longer restores the shared-file behaviour, because there is no box and no
+machinery behind it. Recovery is the same one gesture in every case: **Authenticate** the account
+from `/inference`. That drives an interactive login in a scratch directory, validates the pair
+Anthropic hands back, and writes the row — and the next session to spawn reads the new token out of
+it. There is no second store for the write to fail to reach and no separate Switch step to make it
+take. If the *current* account is the broken one, Authenticate it; if another account is healthy,
+**Switch** to it and every spawn from then on runs as that account.
+
+The operator-facing reconciliation surface went with the second store. The "Filesystem identity
+mismatch" banner, the "Sync from filesystem" button and its route, `ClaudeAccount.sync_from_filesystem!`,
+`ClaudeAccount.filesystem_oauth_email`, Claude's `reconcile_filesystem_identity!`, the filesystem
+auto-capture that `bin/rails claude_accounts:add` used to perform, and the `claude_accounts:capture_tokens`
+rake task are all gone. Asking an operator to adjudicate between two stores was never the right
+answer to a disagreement, and the banner's own copy told them to run a `bin/rails` command on the
+worker — which [production invariant 11](/operate/deploying/) forbids. A Claude account's card on
+`/inference` has two verbs, **Authenticate** and **Switch**, and nothing that asks anyone to
+reconcile, adopt or sync. (A Codex card keeps **Re-activate** for the current account, because
+`~/.codex/auth.json` is a real file that can need rewriting.)
 
 ## Deleting an account keeps its history
 
@@ -233,10 +255,7 @@ Two consequences worth knowing:
 
 - Re-adding the same email creates a **new** account row that inherits none of the old
   one's history. The history is still there, attached to the email rather than to the new
-  id — readable in the rotation log and in `/supervisor`, not on the new card. The
-  `.ao-credentials-owner.json` marker is keyed by email and so *is* inherited, which is
-  the same identity mismatch [#241](https://github.com/tadasant/zimmer/issues/241) closes
-  with: filesystem ownership and history disagree about what "the same account" means.
+  id — readable in the rotation log and in `/supervisor`, not on the new card.
 - `claude_accounts:clear_all` / `codex_accounts:clear_all` still destroy everything, detached
   rows included — they find those by the denormalized runtime, since there is no foreign key
   left to find them by. They are the deliberate start-over affordance, and they say so.
@@ -258,11 +277,8 @@ sequenceDiagram
 
     C->>P: for each registered provider
     P->>FS: reconcile_filesystem_identity!
-    Note over P,FS: Codex only — Claude does not implement this hook.<br/>Adopting an identity off a container-local file on a<br/>5-minute timer is how a stale one got adopted (#618)
-    P->>FS: ClaudeCredentialHealth.self_heal!
-    Note over P,FS: rewrite a corrupt credentials file from the DB.<br/>Skipped under session-scoped credentials —<br/>no session reads that file
     P->>FS: sync_current_account_tokens!
-    Note over P,FS: the CLI refreshes tokens on its own, mid-session —<br/>scrape them back or our DB copy goes stale.<br/>Skipped under session-scoped credentials
+    Note over P,FS: Codex only — the Codex CLI owns and rotates auth.json.<br/>Claude implements neither hook: no session holds a<br/>refresh token or writes a credentials file (#618)
     P->>DB: needs_reauth_recovery_candidates
     P->>V: recover_needs_reauth (probe refresh)
     P->>DB: accounts_needing_refresh<br/>(expiring within 15 min)
@@ -270,13 +286,12 @@ sequenceDiagram
         P->>V: POST /oauth/token (grant_type=refresh_token)
         alt 2xx
             V-->>P: new access + NEW refresh token
-            P->>DB: persist BOTH atomically
-            P->>FS: write to disk IF this account is current
+            P->>DB: persist BOTH atomically — the row is the only store
+            Note over P,DB: Codex additionally rewrites auth.json when current
         else the credential is dead<br/>(401, 404, expired, revoked)
             P->>DB: status = needs_reauth
         else the VALUE is stale<br/>(invalid_grant "not found or invalid",<br/>refresh_token_reused)
             P->>DB: count a strike; condemn only on the<br/>third, spread over 30+ min. No retry —<br/>the same value would be rejected again
-            Note over P,DB: unless the sync was skipped for corruption —<br/>then nothing can move the row on, and it<br/>escalates to an operator alert instead
         else transient
             P->>C: re-enqueue with backoff (2/4/8 min, max 3)
         end
@@ -297,181 +312,50 @@ sibling access token. Two consequences the code has to defend against:
    still-unexpired access token is already dead. The code does *not* enforce this — `token_expired?`
    still keys purely off `expiresAt`. The defense is the completeness invariant.
 
-A credential set with no refresh token is a dead end. `ClaudeAccount.complete_claude_oauth?`
-refuses to persist or adopt one, because the CLI sometimes rewrites `.credentials.json` *without* the
-`claudeAiOauth` block at all, and adopting that blindly would brick the whole pool.
+A credential set with no refresh token is a dead end. `ClaudeAccount.complete_claude_oauth?` gates
+the two paths that put a Claude credential into the row — an interactive login's capture, and the
+health read that decides whether the pool can serve a session at all — so an incomplete set never
+enters the pool. It used to gate a filesystem read and a filesystem write as well; those paths are
+gone.
 
-### Whose tokens are on disk
+### Whose tokens are in play
 
-Only the **owner marker** answers this, via `ClaudeAccount.credentials_owner_email` — never
-`~/.claude.json`. The two files have different durability: the marker lives in the shared volume
-beside the credentials it describes, while `~/.claude.json` lives in the container's writable layer
-and is destroyed every time the container is replaced. A container replacement therefore keeps the
-tokens and loses the identity — and a reader that trusted the identity file would give a confident,
-wrong answer about a credentials file that never changed.
+The `is_current` row's. That is the whole answer now, and it is why the question stopped being
+interesting: there is no on-disk identity file to disagree with the DB, no shared credentials file
+whose owner has to be recorded in a sidecar marker, and no container-local `~/.claude.json` whose
+different durability could make a reader confidently wrong. `/health`'s *Agent Authentication* card
+names the current account under **Session credentials (database)**.
 
-Nothing derives an identity from `~/.claude.json` any more. The two readers that touch it use it only
-to **contradict** a claim the marker makes (`filesystem_identity_agrees?`) or under an exact email
-match (`backfill_identity_from_filesystem!`). The path that used to adopt it — the `/inference` banner
-and the 5-minute `reconcile_filesystem_identity!` sweep — is gone; see
-[Session-scoped credentials](#session-scoped-credentials-the-db-owns-the-chain).
+## Credential health
 
-## The credentials-owner marker
+`ClaudeCredentialHealth` classifies the credential a Claude session would be spawned with as `:ok`,
+`:absent` or `:corrupt`. `:absent` — no account is current yet — is what a fresh deployment looks
+like before its first login, and the next spawn selects one. `:corrupt` — an account is current but
+its stored pair is unusable — means every session spawned from it is logged out, which is why it is
+the same state a blanked shared file used to be rather than a new one.
 
-Here is the structural problem the marker solves.
-
-In the deployment shape this code was written for, `~/.claude.json` (identity) is container-local
-while `~/.claude/.credentials.json` (tokens) is a shared bind-mount. So any code that reads the
-local identity file to decide *who owns the shared tokens* gets a confidently wrong answer on the
-wrong container. That is the root cause of the 2026-06-11 cross-account token-contamination outage.
-
-The fix: a marker file, `~/.claude/.ao-credentials-owner.json`, written next to the shared tokens,
-recording which account they belong to. `filesystem_credentials_owned_by_self?` gates the sync.
-
-There is no fallback when the marker is absent. `filesystem_credentials_owned_by_self?` returns
-`false` and the sync is skipped — deliberately, because the only other identity available is the
-container-local `~/.claude.json`, the file whose cross-container divergence caused the outage in the
-first place. A skipped sync loses at most one round of runtime-rotated tokens; a wrong answer grafts
-one account's tokens onto another's row. Zimmer stamps the marker on its next credential write
-(`ensure_active_account!`, every `write_config!`), and the sync resumes from there.
-
-## One credential file, three writers
-
-`~/.claude/.credentials.json` is not owned by any one component. Zimmer writes the `claudeAiOauth`
-block (the subscription tokens, from `ClaudeAccount#write_credentials_to_filesystem!`) and the
-`mcpOAuth` map (per-server MCP tokens, from `ClaudeMcpCredentialWriter`), and the Claude Code CLI
-rewrites both at runtime. So no writer may write the whole file from its own snapshot — a plain
-`File.write` of one block's blob discards whatever is in the other.
-
-`ClaudeCredentialStore` is the discipline that makes that safe, and both Zimmer writers go through
-it:
-
-- **one lock file** — `~/.claude/.zimmer-credential-store.lock`, `flock`-held across the whole
-  read-modify-write, derived from the credentials path's directory. It serializes overlapping
-  sessions' MCP injections *and* an account rotation landing in the middle of one.
-- **one atomic write** — temp file + `rename`, mode `0600`, so a concurrent reader never sees a
-  half-written store.
-- **read-merge, never overwrite** — the account writer layers its stored blob over what is on disk
-  and leaves `mcpOAuth` exactly as found. It also stamps the owner marker *inside* the lock, so the
-  marker can never end up naming an account whose tokens two interleaved writes replaced.
-
-`mcpOAuth` is the only block carved out, and it runs in both directions — on disk it wins even when
-it is absent:
-`sync_tokens_from_filesystem!` captures the *whole* file into `oauth_config`, so an account's DB copy
-carries a snapshot of whatever MCP entries existed at capture time. Writing that copy back would
-clobber entries authorized since and resurrect entries `McpOauthCredential` deliberately deleted —
-which is exactly the resurrection `ClaudeMcpCredentialWriter#delete_credentials` exists to prevent.
-MCP state belongs to the MCP writer, which re-injects it on every spawn.
-
-For any *other* key present in both, the account's copy wins. That direction is deliberate: the write
-exists to make the file describe the incoming account, and deferring to disk for some future
-account-scoped block would leave the outgoing account's data there — the contamination the marker
-exists to prevent. A host-scoped block Zimmer doesn't know about is the milder mistake, and the fix
-is to name it in `credentials_blob_for_disk` alongside `mcpOAuth`.
-
-Until [#60](https://github.com/tadasant/zimmer/issues/60), the account writer did a whole-file
-overwrite instead, so rotating accounts dropped every MCP OAuth credential on the box — and the user
-met it as *"the agent says it needs to authorize this server again."*
-
-### The guard runs in both directions
-
-There have always been two ways for one store to poison the other, and until
-[#618](https://github.com/tadasant/zimmer/issues/618) only one of them was guarded.
-
-**Filesystem → DB** has always been guarded. `sync_tokens_from_filesystem!` refuses to adopt a
-credential set missing an `accessToken` or a `refreshToken`, because the CLI is known to rewrite the
-file without them and adopting that would brick the account the moment its access token expired.
-
-**DB → filesystem** was not, and on 2026-08-22 that cost a credential outright. The CLI had rotated
-the refresh token on disk; Zimmer's DB copy was the previous, now-spent value; Zimmer converged the
-filesystem and wrote the spent value over the live one. The CLI presented it, Anthropic answered
-`invalid_grant`, and the CLI blanked its own `accessToken` and `refreshToken` in place. The live
-credential existed in neither store any more, which is why re-authenticating and waiting never healed
-it — for three hours, at roughly 95 rejected refreshes an hour.
-
-So `write_credentials_to_filesystem!` now checks, inside the store lock and immediately before the
-overwrite, whether the file it is about to replace holds a **complete pair that belongs to this
-account and is strictly newer than the one being written**. When it does, the disk is right and the
-DB is stale: Zimmer captures the on-disk pair into `oauth_config` and writes *that* back instead. The
-write still happens — the `mcpOAuth` block and the owner marker both need it — it just no longer
-moves the credential backwards.
-
-"Newer" is `claudeAiOauth.expiresAt`, the only ordering the two blobs share, and both sides are first
-bounded by `ClaudeAccount::CREDIBLE_EXPIRY_HORIZON` (30 days). Anthropic issues 8-hour access tokens,
-so a timestamp beyond that horizon is corrupt bookkeeping rather than a very fresh credential, and
-treating it as no information at all keeps it from winning a comparison in either direction.
-
-The guard is deliberately narrow. It declines when the marker names a different account (overwriting
-*is* the intent of a switch — `capture_outgoing_filesystem_tokens` is what saves that account's copy),
-when the on-disk pair is incomplete (that is the corruption case, and rewriting it is the repair), and
-when the two pairs are the same. A caller holding a credential that is newer by construction — a
-human's interactive login — passes `force: true`.
-
-### Corruption is loud, and repairs itself
-
-`ClaudeCredentialHealth` classifies the shared file as `:ok`, `:absent`, `:mcp_only` or `:corrupt`.
-Only `:corrupt` — a `claudeAiOauth` block whose tokens are missing or blanked — is a fault; the other
-two "no subscription tokens here" states are what a fresh worker legitimately looks like.
-
-That state now has all three of the things the 2026-08-22 corruption had none of:
-
-- **a surface** — the *Agent Authentication* card on `/health`, critical while the file is corrupt,
-  and folded into the dashboard's overall status. `CliStatusService` reads the same classification
-  for the Claude Code tile on the CLI status page, because no `claude` invocation can answer
-  "is the stored credential usable" — see [Limitations](/limitations/).
-- **a repair** — `ClaudeCredentialHealth.self_heal!` runs on every
-  `RefreshRuntimeAuthTokensJob` sweep and rewrites a corrupt file from the owning account's stored
-  credentials. A corrupt file has no tokens to lose, so the write cannot destroy anything. It
-  declines when the stored copy is *itself* incomplete, and — less obviously — when the stored copy
-  has been **rejected as spent within the strike window**. Restoring a spent pair would put the file
-  back into `:ok`, silence the alarm, and hand the CLI a token Anthropic refuses, which is how the
-  CLI blanked its own tokens in the first place; on a five-minute cron that is Zimmer fighting the
-  CLI rather than healing it. The health card reports the decline reason rather than promising a
-  repair, because those two cases need different things from the operator.
-- **an escalation** — when the repair *cannot* work (the stored copy is broken too) and the same
-  account's refresh is then rejected as stale, both halves of the deadlock are true at once: the
-  value Zimmer holds is spent and the sync that would replace it is being skipped every sweep. The
-  `:stale` handler's stated plan — "wait for the next sweep, by then a filesystem sync may have moved
-  the row on" — is then false forever. Zimmer logs it at `.error` and raises an operator alert instead
-  of waiting again.
-
-### Does the filesystem agree with the DB?
-
-*(Shared-file path only. Under session-scoped credentials there is no config file to agree with, and
-`ensure_active_account!` reduces to "is a usable account current, and is its token fresh".)*
-
-Before each session spawn, `AccountRotationService#ensure_active_account!` compares the identity in
-`~/.claude.json` against the identity stored on the DB-current account. Agreement means the worker is
-already set up for that account; disagreement means the DB is what gets written to disk. **The DB
-always wins** — there is no branch that adopts an identity off the filesystem, because a file that
-Zimmer and the CLI both write is not evidence of who the pool should be running as.
-
-`config_file_matches?` **fails closed**: an account with no stored identity to compare answers "no
-match", not "can't verify, assume ok" ([#61](https://github.com/tadasant/zimmer/issues/61)). A guard
-that returns *ok* when it cannot verify is not a guard, and the unverifiable case — an account holding
-credentials but no identity — is exactly the one where the tokens on disk could belong to anyone.
-
-Failing closed alone would leave such an account rewriting the filesystem on every spawn and arriving
-at the same unanswerable question next time, so the check converges instead:
-`ClaudeAccount#backfill_identity_from_filesystem!` adopts the on-disk `~/.claude.json` **when that
-file already names this account**. Identity only, never credentials; it fills a gap and never
-overwrites a stored identity. From then on the comparison has something to compare. When the file
-names somebody else there is nothing to adopt, and the caller writes the DB-current account to disk.
+It has a surface and no repair, and both are deliberate. The surface is the *Agent Authentication*
+card on `/health`, critical while the row is corrupt and folded into the dashboard's overall
+status; `CliStatusService` reads the same classification for the Claude Code tile on the CLI status
+page, because no `claude` invocation can answer "is the stored credential usable". There is no
+`self_heal!` because a corrupt **file** could be rewritten from the DB, but a corrupt **row** is the
+bottom of the stack: only a human re-authenticating from `/inference` fixes it, and the card says
+so rather than promising a repair that cannot work.
 
 ## Rotation on quota
 
 When an account hits its rate limit, Zimmer rotates to the next one by priority:
 
-1. Sync the outgoing account's tokens off disk.
-2. Snapshot its quota state.
-3. Label the outgoing account **on evidence** — see [A rotation is not evidence about quota](#a-rotation-is-not-evidence-about-quota).
-4. `activate_next_account` — which skips a candidate whose latest snapshot says its weekly window is
+1. Snapshot the outgoing account's quota state.
+2. Label the outgoing account **on evidence** — see [A rotation is not evidence about quota](#a-rotation-is-not-evidence-about-quota).
+3. `activate_next_account` — which skips a candidate whose latest snapshot says its weekly window is
    spent, then validates the survivor by calling `refresh_token!` before activating it. A broken or
    capped account is skipped before it can be handed to a session.
-5. Write the new account's config and credentials to disk, stamp the owner marker.
-6. Record an `AccountRotationEvent`.
+4. Mark the new account current. Nothing is written to disk — the next spawn reads its token out of
+   the row.
+5. Record an `AccountRotationEvent`.
 
-Steps 1–6 run under the per-runtime pool lock (`ClaudeAccount.with_pool_lock`), and the caller
+Steps 1–5 run under the per-runtime pool lock (`ClaudeAccount.with_pool_lock`), and the caller
 passes the identity its session was running as. A stampede — N sessions hitting the same account's
 quota within seconds — therefore produces **one** rotation: the first racer moves the pool, and
 every racer behind it finds the pool already off the account it was complaining about and returns
@@ -605,7 +489,7 @@ An `invalid_grant` means one of two unrelated things, and the HTTP status cannot
 
 | Vendor says | Means | Zimmer does |
 | --- | --- | --- |
-| `invalid_grant` + `Refresh token expired` (or *revoked*), `401`, `404`, `invalid_client`, `unauthorized_client` | the credential is finished | mark `needs_reauth` at once — unless the lost-race check can prove the token moved on disk, which still spares it |
+| `invalid_grant` + `Refresh token expired` (or *revoked*), `401`, `404`, `invalid_client`, `unauthorized_client` | the credential is finished | mark `needs_reauth` at once — unless the lost-race check can prove the row's token moved while the request was in flight, which still spares it |
 | `invalid_grant` + `Refresh token not found or invalid`, or OpenAI's `refresh_token_reused` | the **value** we sent is not the current one; the chain behind it is usually alive | count a strike, leave the account `active` |
 | anything else (5xx, an unparseable body) | the refresh path may be broken | log at `.error`, change nothing |
 
@@ -613,7 +497,7 @@ Three strikes condemn the account, and only if they are spread out: `refresh_tok
 sites and several of them can present the same spent value within minutes of each other, so a second
 rejection within 15 minutes of the last is the same episode and counts once. Three strikes therefore
 take at least half an hour. A streak expires six hours after its *most recent* strike, and any new
-refresh token — from a successful refresh, a filesystem sync, or a human re-authenticating on
+refresh token — from a successful refresh or a human re-authenticating on
 `/inference` — resets the count, because a new token is a new chain. The count lives on
 `claude_accounts.stale_refresh_failures` / `last_stale_refresh_failure_at` and is shown on the
 account's Administrate record page.
@@ -622,8 +506,11 @@ A `:stale` rejection is also **not** retried. The 5-minute sweep's retry ladder 
 exists for network blips; replaying a value the vendor has already rejected just spends three more
 requests to be told the same thing, and the ladder ends in an `.error` nobody can act on. The
 provider reports `:stale` as its own `Result` error kind and `RefreshRuntimeAuthTokensJob` logs it at
-`.warn` and waits for the next sweep, by which time a filesystem sync or another caller's refresh may
-have moved the row on.
+`.warn` and waits for the next sweep, by which time another caller's refresh may have moved the row
+on. That wait used to carry a liveness assumption it could not meet — it waited on a filesystem sync
+that a corrupt shared file made permanently impossible, the metronome that ran for three hours on
+2026-08-22. There is no such sync now; what bounds the wait is the strike counter, which condemns a
+row nothing moves on and alerts when it does.
 
 A genuinely dead credential still reaches a human, roughly half an hour later than it used to. A
 healthy account that lost a race no longer reaches one at all — which is the whole point, because
@@ -634,21 +521,13 @@ that was 14 of the 15 accounts condemned over an eleven-day window in production
 
 The vendor spends the presented token the moment it answers, so between the 200 and the commit, the
 row holds the **only** copy of the credential chain. Persisting it is therefore the step that must not
-fail — and the filesystem write that follows is the step that can (a credential-store lock timeout, a
-full disk). It used to run inside the same transaction, where a raise would roll the new pair back and
-orphan the chain: an account whose stored token is spent forever, which every later refresh reads as
-`invalid_grant` and which no recovery probe can revive. It is now rescued and logged.
+fail, and for a Claude row it is the only step: `perform_claude_refresh!` writes the pair in one
+`update!` and nothing follows it. There is no filesystem write that could raise after the vendor
+has already spent the old value, and no on-disk copy of the spent pair for anything to adopt back.
 
-Rescuing alone would not be enough, because the file left on disk is the pair Zimmer just spent and
-the owner marker still vouches for it — so the next `sync_tokens_from_filesystem!` would adopt it and
-overwrite the live token with the dead one, arriving at the same orphaned chain by a slower route. So
-the rescue also **disowns the marker**, stamping it with `ClaudeAccount::UNOWNED_CREDENTIALS_MARKER`,
-an address no account can match. Every marker-gated read of the credentials file then declines until a
-successful write re-stamps a real owner, which `ensure_active_account!` does on the next session
-spawn. Codex has no marker, so its sync answers the same question from `auth.json`'s `last_refresh`
-and refuses tokens older than the ones it already holds.
-
-Disk gets reconciled on the next spawn; a lost refresh token never does.
+Codex still writes `auth.json` when the account is current, rescued and after the commit, and its
+sync answers the "do not move backwards" question from `auth.json`'s `last_refresh`, refusing tokens
+older than the ones it already holds.
 
 The lock is re-entrant with the outer `account.with_lock` in
 `RuntimeAuthProvider#recover_needs_reauth` and in the sweep, so nesting is safe.
@@ -880,7 +759,7 @@ Two rules keep the verdict honest:
 - **An unreachable Anthropic records nothing.** Same asymmetry as the promotion probe above: a
   timeout, a DNS failure or a 5xx is evidence about the network, not the credential.
 - **The verdict is about the token, not the account.** Writing a different access token — a refresh,
-  a human re-auth, a filesystem sync — clears both timestamps and the row falls back to
+  a human re-auth — clears both timestamps and the row falls back to
   `:unverified`. So a refusal cannot outlive the credential it was about: the account whose refresh
   repairs it is back in the pool on the next save, with nobody probing anything.
 
@@ -1085,11 +964,10 @@ this session onto a new account. It is a per-session record, so it can lag: noth
 consequence is bounded and named under
 [a stale spawn identity](/limitations/#a-stale-spawn-identity-can-cost-one-extra-respawn).
 
-The spawn environment also records `auth_session_scoped_credentials` and a SHA-256 fingerprint of
-the access-token generation actually handed to a scoped child. Those are process facts, not current
-settings: a toggle can change while the child is alive, and recovery still has to interpret its
-failure in the mode it ran under. The fingerprint contains no token value; it only answers whether
-the DB generation moved since this process started.
+The spawn environment also records a SHA-256 fingerprint of the access-token generation actually
+handed to the child. It contains no token value; it only answers whether the DB generation moved
+since this process started — which is what tells "the token I am holding is one refresh behind" from
+"the token I am holding is the one that failed".
 
 ```mermaid
 flowchart TD
@@ -1097,7 +975,7 @@ flowchart TD
     L -- "no, held past POOL_LOCK_WAIT" --> F["rotation_in_flight:<br/>resume, charge one attempt"]
     L -- yes --> B{"current account ==<br/>the one we spawned with?"}
     B -- "no — pool already moved" --> C["adopted:<br/>re-inject, charge nothing"]
-    B -- "yes, failed or next spawn<br/>is session-scoped" --> P{"Does the DB access token<br/>serve a Messages API probe?"}
+    B -- "yes — Claude Code" --> P{"Does the DB access token<br/>serve a Messages API probe?"}
     P -- "yes, windows clear" --> V{"Token generation changed<br/>since failed spawn?"}
     V -- "yes (or legacy unknown)" --> R["reseeded:<br/>keep account, charge one attempt"]
     V -- "no — same token failed again" --> D
@@ -1105,7 +983,7 @@ flowchart TD
     T -- "repaired, windows clear" --> R
     P -- "quota spent" --> D
     T -- "still refused or quota spent" --> D["rotate_for_quota!"]
-    B -- "yes, shared-file" --> S["Refresh-classify outgoing token"]
+    B -- "yes — Codex / Pi" --> S["Refresh-classify outgoing token"]
     S --> D
     D -- succeeded --> E["rotated:<br/>re-inject, charge one attempt"]
     D -- "no_available_accounts" --> G{"Any account<br/>serviceable on its<br/>own reading?"}
@@ -1120,10 +998,10 @@ long-running session for the fleet's activity. Adoptions are separately capped a
 `MAX_FREE_ADOPTIONS` (3) per window, after which they start costing budget — a free retry that
 never converges is the same unbounded loop the attempt cap exists to stop.
 
-### Why the session-scoped access token is probed before rotating
+### Why a Claude session's access token is probed before rotating
 
 "Not logged in" is the runtime's word for both *your token is dead* and *you are out of quota*, and
-those two want opposite instructions in the outage banner. Session-scoped credentials add a third
+those two want opposite instructions in the outage banner. Per-session credentials add a third
 case: the process can hold the access token from before some other process refreshed the same DB
 account. The account is healthy, but that already-running process cannot see its replacement env
 value.
@@ -1145,9 +1023,11 @@ reporting "Not logged in", and each sibling refreshed it again before parking be
 accounts were quota-capped. `/inference` correctly showed the current account with room throughout;
 recovery made that room unreachable to the processes it had just invalidated.
 
-Shared-file mode retains refresh-before-rotation classification: the CLI can own a newer refresh
-chain on disk there, and a permanent OAuth failure marks the outgoing account `needs_reauth` rather
-than letting rotation relabel it. In either mode, whether an account is labelled `quota_exceeded` is
+Codex and Pi retain refresh-before-rotation classification: the Codex CLI can own a newer refresh
+chain on disk, and a permanent OAuth failure marks the outgoing account `needs_reauth` rather than
+letting rotation relabel it. For a Claude row nothing else can hold the chain, so recovery does not
+spend a refresh to classify the outgoing account; the five-minute sweep condemns a dead refresh token
+and alerts when it does. For every runtime, whether an account is labelled `quota_exceeded` is
 decided by [its own reading and the rotation's reason](#a-rotation-is-not-evidence-about-quota), not
 by the fact a rotation happened. The pool's resulting shape is what
 `AuthRecoveryCoordinator#park_reason_for_pool` reads — through
@@ -1162,7 +1042,7 @@ the `/not logged in|please run\s*\/login/i` match above.
 The bound is **time-based, not success-based**, and that distinction is the whole reason the service
 terminates. A re-spawned Claude Code process spends its first 10–15 seconds connecting MCP servers
 before it makes the API call that reports "Not logged in", so it clears any short liveness check
-even when the credentials on disk are dead. Treating that liveness as recovery success — and
+even when the credential it was handed is dead. Treating that liveness as recovery success — and
 resetting the attempt counter on it — made the counter oscillate `0 → 1 → 0`, so
 `MAX_RECOVERY_ATTEMPTS` could never be reached. Production session 684 logged
 `retrying 1/3` **115 times over 35 minutes**, re-spawning the CLI into the same auth wall roughly
@@ -1512,9 +1392,8 @@ counter, or a sync that adopts an identical config does not, which is why it is 
 rather than an `updated_at` comparison.
 
 It is a coarse signal, not a repair detector, and the code says so. The same digest also moves when
-`RefreshRuntimeAuthTokensJob`'s five-minute `sync_current_account_tokens!` adopts a token the CLI
-rotated on disk for the current account — which says nothing about a parked session's identity
-problem. So the fingerprint decides *whether there is anything new to try*, and a budget decides
+`RefreshRuntimeAuthTokensJob`'s five-minute sweep rotates the current account's access token on
+schedule — which says nothing about a parked session's identity problem. So the fingerprint decides *whether there is anything new to try*, and a budget decides
 *how often one session may act on it*: `MAX_EARLY_WAKES` (3) per `EARLY_WAKE_WINDOW` (6 h). The
 window is what keeps the bound meaningful: without one, a pool whose credentials churn — a token
 sync, an account added and removed — would re-wake the same broken identity indefinitely.
@@ -1568,27 +1447,22 @@ message bus's job. Tracked in [#111](https://github.com/tadasant/zimmer/issues/1
 
 ### Re-authenticating the account that is live
 
-*(Under session-scoped credentials this whole subsection falls away: `capture!` writes the DB row and
-stops, and the next session to spawn reads the new token out of that row. Re-auth becomes scratch
-login → validate → write the DB → done. There is no second store for the update to fail to reach and
-no separate Switch step to make it take — which is the class of bug the rest of this subsection
-describes.)*
+`capture!` writes the DB row and stops, and the next session to spawn reads the new token out of
+that row. Re-auth is scratch login → validate → write the DB → done, for the current account exactly
+as for any other.
 
-On the shared-file path, `capture!` writes the DB row **and**, when the account is the current one,
-the shared credential files. It did not always, and the omission was worse than it sounds: the account whose credentials
-are live is precisely the one most likely to need repairing, and repairing it changed nothing a
-session could observe. The UI reported "authenticated" while every transcript kept saying
+That used to be a trap, and it is worth remembering why. With a shared credentials file, writing
+only the DB made a successful re-auth of the *current* account a no-op: the live file every session
+read kept the broken tokens, the UI reported "authenticated", and every transcript kept saying
 *Not logged in · Please run /login*. Both re-authentications during the 2026-08-22 incident only
-worked because the pool had already been switched away from the broken account first, so `capture!`'s
-DB-only write happened to be enough.
+worked because the pool had already been switched away from the broken account first. There is no
+second store now, so there is nothing for the update to fail to reach.
 
-The same reasoning gives the current account a **Re-activate** button. `Switch` used to be hidden for
-it — `<% unless is_current %>` — which left the one account whose file is live with no way to
-re-assert it from the UI at all, so repairing a broken live credentials file meant a shell on the
-worker. Re-activate takes the ordinary activation path and rewrites the files; it records no rotation
-event, because a rotation from an account to itself is not one. Under session-scoped credentials the
-button is hidden again, and this time correctly: there is no file to rewrite, so it would be a
-control that does nothing.
+The same history explains why a Claude account's card has no **Re-activate** button. It existed to
+rewrite a live credentials file from the DB copy, and with no file to rewrite it would be a control
+that does nothing. A Codex account's card keeps it: `~/.codex/auth.json` is real, and re-activating
+the current Codex account rewrites it without recording a rotation event, because a rotation from an
+account to itself is not one.
 
 Admission to the pool no longer requires a refresh **round trip**, either. `validate_switchable` still
 insists a refresh token exists — a pair without one is a dead end in eight hours however well its

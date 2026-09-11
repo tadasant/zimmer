@@ -41,16 +41,20 @@
           <% end %>
         <% end %>
         <%# "Re-activate" exists only to re-write a live credentials file from the
-            DB: hiding the control left the one account whose credentials were
-            actually live with no way to re-assert them, so repairing a broken
-            file meant a shell on the worker (issue #618, hole 3).
+            DB copy, so it survives exactly where such a file still exists.
 
-            Under session-scoped credentials there is no file to re-write — the
-            row IS the credential — so the control has nothing to do and the card
-            is back to two verbs, Authenticate and Switch, which is the issue's
-            acceptance criterion. %>
-        <% show_switch = !is_current || !AppSetting.session_scoped_credentials_enabled? %>
-        <% if show_switch %>
+            Codex has one: activate! writes ~/.codex/auth.json, and hiding the
+            control left the one account whose credentials were actually live
+            with no way to re-assert them, which made repairing a broken file a
+            shell job on the worker (issue #618, hole 3).
+
+            Claude has none. The row IS the credential, and every session spawned
+            after a switch reads the new account's token out of it — so the
+            account that is already current has nothing to re-assert, and its
+            card carries exactly two verbs, Authenticate and Switch. That is the
+            issue's acceptance criterion: no affordance anywhere asks the
+            operator to reconcile, adopt or choose between stores. %>
+        <% if !is_current || account.codex? %>
           <% switch_label = is_current ? "Re-activate" : "Switch" %>
           <% switch_confirm = is_current ? "Re-write #{account.email}'s credentials to the worker?" : "Switch to #{account.email}?" %>
           <%= button_to switch_label, switch_account_path(account), method: :post,

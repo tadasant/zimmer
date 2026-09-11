@@ -23,45 +23,48 @@
 class ClaudeMcpCredentialWriter
   include RuntimeMcpCredentialWriter
 
-  CLAUDE_CREDENTIALS_PATH = File.expand_path("~/.claude/.credentials.json").freeze
   KEYCHAIN_SERVICE_NAME = "Claude Code-credentials".freeze
 
   # Claude Code's negative auth cache filename. When a server's connection fails
   # authorization, the CLI records the server here and every later attempt logs
-  # "Skipping connection (cached needs-auth)" and never reaches the network. The
-  # file is HOST-GLOBAL, so one session's auth failure suppresses that server for
-  # every subsequent session on the worker — including sessions that were handed
-  # a perfectly good token. A freshly-injected credential is invisible until the
-  # entry is removed, which is why #clear_needs_auth_cache is part of injecting.
+  # "Skipping connection (cached needs-auth)" and never reaches the network. A
+  # freshly-injected credential is invisible until the entry is removed, which is
+  # why #clear_needs_auth_cache is part of injecting.
   #
   # It lives alongside .credentials.json, and ClaudeCredentialStore's lock guards
-  # the read-modify-write of both — all three derive from #credentials_path, so
-  # relocating that one path relocates the whole set.
+  # the read-modify-write of both — both derive from #credentials_path, so
+  # relocating that one path relocates the pair. Per-session now, which is also
+  # what stopped one session's auth failure from suppressing a server for every
+  # later session on the worker.
   NEEDS_AUTH_CACHE_FILENAME = "mcp-needs-auth-cache.json"
 
-  # Which `.credentials.json` this writer reads and writes.
+  # Which `.credentials.json` this writer reads and writes: the session's own,
+  # inside its CLAUDE_CONFIG_DIR.
   #
-  # Defaults to the host-global file. Under session-scoped credentials (issue
-  # #618) each session gets its own CLAUDE_CONFIG_DIR, so the CLI reads its
-  # `mcpOAuth` map out of that directory instead — and the rotated token it
-  # writes back lands there too. Making the path an instance attribute rather
-  # than a constant is what lets one writer serve both, so the shared-file path
-  # stays byte-for-byte the rollback.
+  # There is no host-global mode. `~/.claude/.credentials.json` was the store
+  # while Claude sessions shared one credentials file; every session now has its
+  # own, the CLI reads its `mcpOAuth` map out of that directory, and the rotated
+  # token it writes back lands there too. See issue #618.
   #
   # @return [String]
   attr_reader :credentials_path
 
   # @param credentials_path [String] the credentials file to operate on
-  def initialize(credentials_path: CLAUDE_CREDENTIALS_PATH)
+  def initialize(credentials_path:)
     @credentials_path = credentials_path
   end
 
-  # The writer a given session's credentials should be routed through: the
-  # session's own CLAUDE_CONFIG_DIR when session-scoped credentials are on, the
-  # host-global file otherwise.
+  # Whether this writer's store is a per-session one. Read by callers that have
+  # no session to build a writer FOR — RefreshMcpOauthTokensJob's cron sweep —
+  # so they can skip a runtime whose store they cannot address instead of
+  # reading a file nothing writes.
+  def self.session_scoped_store? = true
+
+  # The writer for a given session's credentials, or nil when the caller holds
+  # something session-shaped with no id to key a config dir on.
   #
   # @param session [Session]
-  # @return [ClaudeMcpCredentialWriter]
+  # @return [ClaudeMcpCredentialWriter, nil]
   def self.for_session(session)
     # `try(:id)`, not `&.id`: this is the contract's factory and it must answer
     # for anything session-shaped, including the session doubles the MCP tests
@@ -69,16 +72,16 @@ class ClaudeMcpCredentialWriter
     # rescues it into "skip reconciliation" — so the failure would be a session
     # silently not adopting a token it already had.
     session_id = session.try(:id)
-    return new unless ClaudeSessionConfigDirectory.active_for?(session_id)
+    return nil unless ClaudeSessionConfigDirectory.active_for?(session_id)
 
     new(credentials_path: ClaudeSessionConfigDirectory.credentials_path_for(session_id))
   end
 
   # Persists the resolved credentials to Claude Code's credential stores.
   # On macOS, writes to both the Keychain (primary) and the file (fallback).
-  # On Linux, writes to the file only. Credentials go to ~/.claude regardless of
-  # the working directory, so working_directory is accepted for the interface but
-  # unused here.
+  # On Linux, writes to the file only. Credentials go to the session's
+  # CLAUDE_CONFIG_DIR regardless of the working directory, so working_directory
+  # is accepted for the interface but unused here.
   #
   # @param working_directory [String] the session clone (unused by Claude)
   # @param credentials [Array<ResolvedMcpCredential>]
@@ -132,7 +135,7 @@ class ClaudeMcpCredentialWriter
     []
   end
 
-  # Removes the named servers from Claude Code's host-global needs-auth cache so
+  # Removes the named servers from Claude Code's needs-auth cache so
   # the CLI retries them with the token Zimmer just wrote instead of skipping the
   # connection outright. Best-effort: a missing or unparseable cache means there
   # is nothing suppressing the server, never an error.
@@ -207,7 +210,7 @@ class ClaudeMcpCredentialWriter
     map.is_a?(Hash) ? map : {}
   end
 
-  # Reads and parses ~/.claude/.credentials.json, or {} if absent/corrupt.
+  # Reads and parses the session's .credentials.json, or {} if absent/corrupt.
   def read_credentials_from_file
     read_json_file(credentials_path)
   end
@@ -235,10 +238,14 @@ class ClaudeMcpCredentialWriter
     File.join(claude_dir, NEEDS_AUTH_CACHE_FILENAME)
   end
 
-  # Serializes read-modify-write access to the host-global credential stores
-  # (~/.claude/.credentials.json and the needs-auth cache) across every session on
-  # the worker — and against ClaudeAccount#write_credentials_to_filesystem!, which
-  # writes the subscription-token block of the same file under the same lock.
+  # Serializes read-modify-write access to this session's credential store (its
+  # .credentials.json and the needs-auth cache beside it).
+  #
+  # Per-session, so it no longer referees three writers on one host-global file
+  # — that arrangement is gone (issue #618). It still has a job: a session's
+  # spawn and its follow-ups can overlap, and the CLI writes the same file, so
+  # the read and the write have to be one critical section or one writer's merge
+  # silently drops the other's entry.
   def with_credential_store_lock(&block)
     ClaudeCredentialStore.with_lock(credentials_path, &block)
   end
@@ -312,15 +319,16 @@ class ClaudeMcpCredentialWriter
     entry
   end
 
-  # Writes credentials to ~/.claude/.credentials.json, merging with existing credentials
+  # Writes credentials to the session's .credentials.json, merging with existing
+  # credentials
   def write_credentials_to_file(credentials)
-    # The ~/.claude directory is created by with_credential_store_lock below.
+    # The config directory is created by with_credential_store_lock below.
     #
-    # The file is host-global and every concurrent session read-modify-writes it,
-    # so the read and the write must be one critical section. Without the lock two
-    # overlapping injections each merge their own subset into the snapshot they
-    # read and the last writer wins — silently dropping the other's entry and
-    # stranding that session with no token for a server it just authorized.
+    # Both the spawn and its follow-ups read-modify-write this file, so the read
+    # and the write must be one critical section. Without the lock two overlapping
+    # injections each merge their own subset into the snapshot they read and the
+    # last writer wins — silently dropping the other's entry and stranding the
+    # session with no token for a server it just authorized.
     with_credential_store_lock do
       # Read existing credentials file if it exists
       existing_data = read_credentials_from_file

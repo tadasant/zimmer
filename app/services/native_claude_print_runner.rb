@@ -9,6 +9,11 @@ require "fileutils"
 # proven headless-inference path; it is selected unless the
 # `pty_transport` extension is enabled.
 #
+# The child is given its credentials explicitly (ClaudeHeadlessCredentials) — a
+# CLAUDE_CONFIG_DIR of its own and the pool's current access token — for the
+# same reason a session is: there is no host-global credentials file to inherit
+# any more. See issue #618.
+#
 # Implements the ClaudePrintRunner contract:
 #   #run(prompt:, timeout:) -> ClaudePrintRunner::Result
 #
@@ -61,7 +66,12 @@ class NativeClaudePrintRunner
     temp_dir = Dir.mktmpdir("headless_inference_")
     output_file = File.join(temp_dir, "output.txt")
 
+    # The env overlay goes first, as Process.spawn's optional leading hash. It
+    # carries this process's credentials: without it the CLI reads whatever the
+    # worker's environment points at, which since issue #618 is a credentials
+    # file nothing writes — every call answers "Not logged in" and exits 1.
     pid = @process_manager.spawn(
+      ClaudeHeadlessCredentials.env,
       *build_command(prompt),
       chdir: temp_dir,
       out: [ output_file, "w" ],

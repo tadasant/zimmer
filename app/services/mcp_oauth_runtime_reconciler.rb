@@ -35,9 +35,13 @@
 #
 # This reconciler closes the loop: before Zimmer refreshes or injects a
 # credential, it reads the runtime store and, if the runtime holds a strictly
-# newer token pair, adopts it into the DB. ClaudeAccount#sync_tokens_from_filesystem!
-# does exactly this for the runtime's OWN account tokens; MCP OAuth credentials had
-# no equivalent.
+# newer token pair, adopts it into the DB.
+#
+# For Claude Code that store is the session's own CLAUDE_CONFIG_DIR, so a
+# reconciler is built per session by McpOauthCredentialInjector rather than once
+# by the cron sweep. Subscription tokens need none of this: a Claude session is
+# handed an access token and no refresh token, so it cannot rotate that chain at
+# all (issue #618).
 #
 # == Matching ==
 #

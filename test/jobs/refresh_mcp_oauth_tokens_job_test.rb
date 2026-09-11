@@ -279,38 +279,11 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
     assert_includes log_output, "Error refreshing"
   end
 
-  test "adopts a token the runtime already rotated on disk and skips the network refresh" do
-    credential = mcp_oauth_credentials(:expiring_soon)
-    disable_other_refreshable_credentials!(credential)
-
-    # The DB refresh token was rotated away by a prior session, so the DB copy is
-    # stale — refreshing it over the network would return invalid_grant. The
-    # runtime left a NEWER pair on disk (a fresh access token valid for 3h).
-    rotated_expiry_ms = ((Time.current + 3.hours).to_f * 1000).to_i
-    entries = {
-      credential.credential_key => {
-        "serverName" => credential.server_name,
-        "accessToken" => "runtime-fresh-access",
-        "refreshToken" => "runtime-rotated-refresh",
-        "expiresAt" => rotated_expiry_ms
-      }
-    }
-
-    # The reconciled token is no longer expiring within the window, so the job must
-    # NOT contact the token endpoint with the stale DB refresh token.
-    McpOauthService.any_instance.expects(:post_form).never
-
-    with_claude_runtime_store(entries) do
-      RefreshMcpOauthTokensJob.perform_now
-    end
-
-    credential.reload
-    assert_equal "runtime-rotated-refresh", credential.refresh_token,
-      "the runtime-rotated refresh token must be captured back into the DB"
-    assert_equal "runtime-fresh-access", credential.access_token
-    assert credential.active?
-  end
-
+  # The cron reads the HOST-GLOBAL stores only — Pi's and Codex's. Claude Code
+  # has none: its mcpOAuth map lives in each session's own CLAUDE_CONFIG_DIR
+  # (issue #618), and McpOauthCredentialInjector reconciles from THAT store at
+  # every spawn and follow-up. A session-less sweep has no Claude file to read,
+  # and the one it used to read is a file nothing writes.
   test "adopts a token Pi rotated, even though the cron has no session and no runtime" do
     # The gap this closes: Pi refreshes MCP tokens mid-session exactly as Claude
     # Code does, but the cron used to read only Claude Code's store. So a Pi
@@ -341,10 +314,7 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
 
     McpOauthService.any_instance.expects(:post_form).never
 
-    # Claude Code's store is empty, so only Pi's copy can supply this.
-    with_claude_runtime_store({}) do
-      RefreshMcpOauthTokensJob.perform_now
-    end
+    RefreshMcpOauthTokensJob.perform_now
 
     credential.reload
     assert_equal "pi-rotated-refresh", credential.refresh_token
@@ -356,25 +326,6 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
 
   def disable_other_refreshable_credentials!(credential)
     McpOauthCredential.where.not(id: credential.id).update_all(refresh_token: nil)
-  end
-
-  # Points ClaudeMcpCredentialWriter's credential-store constant at a temp file
-  # holding the given mcpOAuth entries, so the job's runtime reconciler reads them.
-  def with_claude_runtime_store(entries)
-    ClaudeMcpCredentialWriter.any_instance.stubs(:macos?).returns(false)
-    dir = Dir.mktmpdir("claude-runtime-store")
-    path = File.join(dir, ".credentials.json")
-    File.write(path, JSON.generate("mcpOAuth" => entries))
-
-    klass = ClaudeMcpCredentialWriter
-    original = klass::CLAUDE_CREDENTIALS_PATH
-    klass.send(:remove_const, :CLAUDE_CREDENTIALS_PATH)
-    klass.const_set(:CLAUDE_CREDENTIALS_PATH, path)
-    yield
-  ensure
-    klass.send(:remove_const, :CLAUDE_CREDENTIALS_PATH)
-    klass.const_set(:CLAUDE_CREDENTIALS_PATH, original)
-    FileUtils.rm_rf(dir) if dir
   end
 
   def capture_rails_logs

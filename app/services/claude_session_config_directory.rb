@@ -5,15 +5,15 @@
 #
 # Why this exists
 # ---------------
-# `~/.claude/.credentials.json` is host-global with three writers and no owner:
-# Zimmer's account pool owns `claudeAiOauth`, ClaudeMcpCredentialWriter owns
-# `mcpOAuth`, and the CLI rewrites both. On 2026-08-22 Zimmer's convergence write
-# put a spent refresh token over the live one the CLI had rotated to; the CLI
-# presented it, Anthropic answered `invalid_grant`, and the CLI blanked its own
-# tokens. The credential then existed in neither store. See
+# `~/.claude/.credentials.json` used to be host-global with three writers and no
+# owner: Zimmer's account pool owned `claudeAiOauth`, ClaudeMcpCredentialWriter
+# owned `mcpOAuth`, and the CLI rewrote both. On 2026-08-22 Zimmer's convergence
+# write put a spent refresh token over the live one the CLI had rotated to; the
+# CLI presented it, Anthropic answered `invalid_grant`, and the CLI blanked its
+# own tokens. The credential then existed in neither store. See
 # https://github.com/tadasant/zimmer/issues/618.
 #
-# Pointing each session at its own CLAUDE_CONFIG_DIR removes the shared file as a
+# Pointing each session at its own CLAUDE_CONFIG_DIR removed the shared file as a
 # source of truth rather than guarding it. Combined with CLAUDE_CODE_OAUTH_TOKEN
 # (which carries an access token and no refresh token), a session cannot rotate
 # the subscription chain at all: measured on CLI 2.1.241, a session run this way
@@ -31,8 +31,9 @@
 #     invocation of a session sees the same directory. A Zimmer session is a
 #     long-lived record resumed by many short CLI processes; "fresh per session"
 #     means fresh per Zimmer session, not per process.
-#   * `projects/` is a SYMLINK to the shared ~/.claude/projects. CLAUDE_CONFIG_DIR
-#     relocates the transcript tree as well as the credentials, and Zimmer reads
+#   * `projects/` is a SYMLINK to the shared ~/.claude/projects
+#     (ClaudeTranscriptSource.projects_root). CLAUDE_CONFIG_DIR relocates the
+#     transcript tree as well as the credentials, and Zimmer reads
 #     transcripts from the shared path in a dozen places (TranscriptPollerService,
 #     AuthRecoveryService, ContextLengthRetryService, the MCP tools). Credentials
 #     are what needs isolating; transcripts are not. The symlink keeps every
@@ -63,31 +64,25 @@ module ClaudeSessionConfigDirectory
     File.join(File.dirname(ClonesDirectory.base), CONFIG_SUBDIR)
   end
 
-  # Whether THIS session should be run under its own CLAUDE_CONFIG_DIR.
+  # Whether a config dir can be resolved for this caller at all.
   #
-  # One predicate, consulted by both call sites, because they have to agree.
-  # ClaudeSpawnEnv fails OPEN — with no current account or no stored token it
-  # sets neither variable and the session reads the shared file — and MCP
-  # credential injection runs BEFORE the spawn env is built. If the two answered
-  # differently, injection would write the session's mcpOAuth map into a config
-  # dir the CLI was never pointed at, and every OAuth MCP server in that session
-  # would come up unauthenticated with nothing in the log to say why.
+  # Every Claude Code SESSION gets one — the mode is unconditional (issue #618),
+  # so the only thing left to check is that there is a session id to key it on.
+  # That is not vestigial: ClaudeMcpCredentialWriter.for_session is reached from
+  # contract tests and MCP paths holding session doubles with no id, and a
+  # session-less caller has no per-session store to write into.
   #
-  # Reads the setting and the pool rather than taking them as arguments, so a
-  # caller cannot half-apply it by forgetting to thread one through.
+  # It deliberately says nothing about whether the POOL can serve a token. The
+  # two questions used to be one, because the spawn env fell back to the shared
+  # file when the pool was empty and MCP injection had to reach the same answer
+  # before the spawn env was built. There is no fallback now: an empty pool makes
+  # ClaudeSpawnEnv raise, which fails the spawn loudly, so a config dir that
+  # briefly held an mcpOAuth map for a spawn that never happened costs nothing.
   #
   # @param session_id [Integer, String, nil]
   # @return [Boolean]
   def active_for?(session_id)
-    return false if session_id.blank?
-    return false unless AppSetting.session_scoped_credentials_enabled?
-
-    ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME)&.claude_access_token.present?
-  rescue StandardError => e
-    # Read on the session-spawn hot path. An unreadable settings row or DB blip
-    # must degrade to the shared-file behaviour, not fail the spawn.
-    Rails.logger.warn("[ClaudeSessionConfigDirectory] Could not resolve session-scoped credentials: #{e.message}")
-    false
+    session_id.present?
   end
 
   # Absolute path to a session's config dir (does not create it).
@@ -165,7 +160,7 @@ module ClaudeSessionConfigDirectory
     link = File.join(path, PROJECTS_DIRNAME)
     return if File.symlink?(link) || File.exist?(link)
 
-    shared = File.join(File.dirname(ClaudeAuthProvider::CREDENTIALS_JSON_PATH), PROJECTS_DIRNAME)
+    shared = ClaudeTranscriptSource.projects_root
     FileUtils.mkdir_p(shared)
     File.symlink(shared, link)
   rescue Errno::EEXIST
