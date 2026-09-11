@@ -350,6 +350,18 @@ frozen. An agent session only gets these if its connection was given the `health
 curated `self_session` set does not include it. See
 [Queue recovery mode](/operate/background-jobs/#queue-recovery-mode).
 
+And the cleanup lever that goes with it: `preview_queued_jobs` counts the queued jobs a maintenance
+call would act on, and `discard_queued_jobs` / `reschedule_queued_jobs` act on them, scoped by
+`job_class` and/or `queue_name`. Before #335 this was the one queue-incident lever an agent could not
+drive — discarding the enqueued rows themselves meant GoodJob's HTML dashboard at `/jobs`, which an
+agent session has no browser for. A **discard is not recoverable**; reschedule is its reversible
+sibling. Both require an `expected_count` taken from the preview, and a mismatch refuses with the
+real count and the per-class breakdown rather than acting. The `agents` queue and the two job classes
+that live on it are refused outright: an unfinished `AgentSessionJob` row is a live session, not a
+backlog entry. Neither is throttled, and the receipt reports what it did by class so the action is
+auditable in the transcript. See
+[Queued job maintenance](/operate/background-jobs/#queued-job-maintenance).
+
 `get_system_health` also names the backlogged queues and job classes whenever ready work is waiting,
 plus each queue's own head-of-line age and the single longest-waiting job's lane and class, carrying
 the same split as the `Queue backlog critical` Slack page. This is the parity that matters for

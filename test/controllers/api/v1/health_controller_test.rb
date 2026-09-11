@@ -269,4 +269,112 @@ class Api::V1::HealthControllerTest < ActionDispatch::IntegrationTest
     GoodJob::Setting.delete_all
     AppSetting.delete_all
   end
+
+  # === Queued job maintenance (#335) ===
+
+  def enqueue_good_job(job_class: "CanaryJob", queue_name: "pollers", **attrs)
+    id = SecureRandom.uuid
+
+    GoodJob::Job.create!(
+      id: id, active_job_id: id, job_class: job_class, queue_name: queue_name,
+      priority: 0, scheduled_at: Time.current,
+      serialized_params: {
+        "job_class" => job_class, "job_id" => id, "queue_name" => queue_name,
+        "priority" => 0, "arguments" => [], "executions" => 0, "locale" => "en"
+      },
+      **attrs
+    )
+  end
+
+  test "the queued job endpoints require an API key" do
+    get queued_jobs_api_v1_health_path
+    assert_response :unauthorized
+
+    post discard_queued_jobs_api_v1_health_path
+    assert_response :unauthorized
+
+    post reschedule_queued_jobs_api_v1_health_path
+    assert_response :unauthorized
+  end
+
+  test "GET queued_jobs previews a scope without touching it" do
+    GoodJob::Job.delete_all
+    2.times { enqueue_good_job }
+
+    get queued_jobs_api_v1_health_path, params: { queue_name: "pollers" }, headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal 2, json["matched"]
+    assert_equal({ "CanaryJob" => 2 }, json["by_job_class"])
+    assert_equal 0, GoodJob::Job.where.not(finished_at: nil).count
+  ensure
+    GoodJob::Job.delete_all
+  end
+
+  test "GET queued_jobs refuses an unscoped read" do
+    get queued_jobs_api_v1_health_path, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_match(/unscoped/, JSON.parse(response.body)["message"])
+  end
+
+  test "POST discard_queued_jobs reports the per-class breakdown" do
+    AlertService.stubs(:raise_alert).returns(true)
+    GoodJob::Job.delete_all
+    2.times { enqueue_good_job }
+    enqueue_good_job(job_class: "HeartbeatSweepJob")
+
+    post discard_queued_jobs_api_v1_health_path,
+      params: { queue_name: "pollers", expected_count: 3 }, headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal 3, json["affected"]
+    assert_equal({ "CanaryJob" => 2, "HeartbeatSweepJob" => 1 }, json["by_job_class"])
+    refute json["recoverable"]
+    assert_equal 3, GoodJob::Job.where.not(finished_at: nil).count
+  ensure
+    GoodJob::Job.delete_all
+  end
+
+  test "POST discard_queued_jobs refuses a count mismatch and discards nothing" do
+    GoodJob::Job.delete_all
+    3.times { enqueue_good_job }
+
+    post discard_queued_jobs_api_v1_health_path,
+      params: { queue_name: "pollers", expected_count: 2 }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_match(/Count confirmation failed/, JSON.parse(response.body)["message"])
+    assert_equal 0, GoodJob::Job.where.not(finished_at: nil).count
+  ensure
+    GoodJob::Job.delete_all
+  end
+
+  test "POST discard_queued_jobs refuses the agents queue" do
+    post discard_queued_jobs_api_v1_health_path,
+      params: { queue_name: "agents", expected_count: 0 }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_match(/protected/, JSON.parse(response.body)["message"])
+  end
+
+  test "POST reschedule_queued_jobs moves the work and says it is recoverable" do
+    AlertService.stubs(:raise_alert).returns(true)
+    GoodJob::Job.delete_all
+    job = enqueue_good_job
+
+    post reschedule_queued_jobs_api_v1_health_path,
+      params: { queue_name: "pollers", expected_count: 1, delay_minutes: 45 }, headers: @headers
+
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal 1, json["affected"]
+    assert json["recoverable"]
+    assert_nil job.reload.finished_at
+    assert_in_delta 45.minutes.from_now.to_i, job.scheduled_at.to_i, 5
+  ensure
+    GoodJob::Job.delete_all
+  end
 end

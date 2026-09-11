@@ -22,7 +22,13 @@ class HealthControllerOperatorAuthTest < ActionDispatch::IntegrationTest
     retry_sessions: [ :retry_sessions_health_path, {} ],
     archive_old: [ :archive_old_health_path, { days: 7 } ],
     enter_queue_recovery_mode: [ :enter_queue_recovery_mode_health_path, { reason: "test", ttl_minutes: 30 } ],
-    run_post_deploy_tasks: [ :run_post_deploy_tasks_health_path, {} ]
+    run_post_deploy_tasks: [ :run_post_deploy_tasks_health_path, {} ],
+    # Scoped and count-confirmed so the action reaches the service rather than
+    # being refused before the gate is the thing under test. There is nothing
+    # queued in this suite, so expected_count is 0 and the call is a no-op that
+    # still has to get past the credential.
+    discard_queued_jobs: [ :discard_queued_jobs_health_path, { queue_name: "pollers", expected_count: 0 } ],
+    reschedule_queued_jobs: [ :reschedule_queued_jobs_health_path, { queue_name: "pollers", expected_count: 0 } ]
   }.freeze
 
   setup do
