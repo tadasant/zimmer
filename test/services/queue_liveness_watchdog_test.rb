@@ -11,8 +11,10 @@ class QueueLivenessWatchdogTest < ActiveSupport::TestCase
 
   # A stand-in for HealthMonitorService that returns whatever health hash a test hands
   # it, without touching the database. The watchdog only reads `system_health`.
-  FakeHealthMonitor = Struct.new(:health) do
+  FakeHealthMonitor = Struct.new(:health, :raising) do
     def system_health
+      raise ActiveRecord::ConnectionNotEstablished, "no connection" if raising
+
       health
     end
   end
@@ -39,6 +41,14 @@ class QueueLivenessWatchdogTest < ActiveSupport::TestCase
 
   def watchdog_for(health)
     QueueLivenessWatchdog.new(health_monitor: FakeHealthMonitor.new(health))
+  end
+
+  def exploding_monitor
+    monitor = Object.new
+    def monitor.system_health
+      raise ActiveRecord::ConnectionNotEstablished, "no connection"
+    end
+    monitor
   end
 
   test "one stall observation builds the streak but does not page" do
@@ -131,19 +141,66 @@ class QueueLivenessWatchdogTest < ActiveSupport::TestCase
     5.times { assert_equal :healthy, watchdog.check! }
   end
 
-  test "a failed liveness read pages rather than crashing the thread" do
+  test "a failed liveness read pages rather than crashing the thread, after confirmation" do
     # If the web process itself cannot reach the database, that is a different failure
     # domain, but it is still an outage this process can see and nothing else here can.
-    exploding = Object.new
-    def exploding.system_health
-      raise ActiveRecord::ConnectionNotEstablished, "no connection"
-    end
-
-    watchdog = QueueLivenessWatchdog.new(health_monitor: exploding)
-    Rails.logger.expects(:error).with { |msg| msg.include?("Liveness read failed") }
-    ErrorReporter.expects(:report_exception)
+    # It gets the same confirmation the stall path gets, so a one-tick blip is silent:
+    # exactly ONE report across two failing ticks, on the second.
+    watchdog = QueueLivenessWatchdog.new(health_monitor: exploding_monitor)
+    Rails.logger.expects(:error).with { |msg| msg.include?("Liveness read failed") }.once
+    ErrorReporter.expects(:report_exception).once
 
     assert_equal :error, watchdog.check!
+    assert_equal 1, watchdog.consecutive_errors
+
+    assert_equal :error, watchdog.check!
+    assert_equal 2, watchdog.consecutive_errors
+  end
+
+  test "a successful read clears the error streak" do
+    monitor = FakeHealthMonitor.new(healthy_health, true)
+    watchdog = QueueLivenessWatchdog.new(health_monitor: monitor)
+    ErrorReporter.expects(:report_exception).never
+
+    assert_equal :error, watchdog.check!
+    assert_equal 1, watchdog.consecutive_errors
+
+    monitor.raising = false
+    assert_equal :healthy, watchdog.check!
+    assert_equal 0, watchdog.consecutive_errors
+  end
+
+  test "a failed read does not reset the stall streak -- unknown is not healthy" do
+    # A stall either side of one transient read failure is still two consecutive
+    # observations of a stall, so the page lands on the tick after the error rather than
+    # starting over. Only a successful read that comes back not-stalled clears it.
+    monitor = FakeHealthMonitor.new(stall_health, false)
+    watchdog = QueueLivenessWatchdog.new(health_monitor: monitor)
+    Rails.logger.stubs(:error)
+    ErrorReporter.stubs(:report_exception)
+
+    assert_equal :stalled, watchdog.check!
+    assert_equal 1, watchdog.consecutive_stalls
+
+    monitor.raising = true
+    assert_equal :error, watchdog.check!
+    assert_equal 1, watchdog.consecutive_stalls, "an unreadable tick must not clear the streak"
+
+    monitor.raising = false
+    ErrorReporter.expects(:report_message).once
+    assert_equal :stalled, watchdog.check!
+    assert_equal 2, watchdog.consecutive_stalls
+  end
+
+  test "system_health reports whether the out-of-band watchdog is running here" do
+    # The whole value of this change is a boolean nobody could otherwise see, so it is
+    # on the surfaces the web process serves. `expected` is the initializer's own gate,
+    # which is what separates "not running, correctly" from "not running, and it should".
+    reading = HealthMonitorService.new.system_health[:queue_liveness_watchdog]
+
+    assert_equal QueueLivenessSupervisor.should_start?, reading[:expected]
+    assert_equal QueueLivenessSupervisor.running?, reading[:running]
+    assert_equal false, reading[:expected], "test is not an alerting environment"
   end
 
   # ------------------------------------------------------------------------------
