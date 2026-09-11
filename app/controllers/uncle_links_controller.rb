@@ -29,14 +29,17 @@ class UncleLinksController < ApplicationController
   def destroy
     @session = Session.locate!(params[:session_id])
 
-    Sessions::RemoveUncleEdge.call(
+    # The ids come off the OUTCOME, not off the params: `:uncle_id` may be a slug,
+    # and a notice reading "Removed #the-senior-2026… as an additional senior of
+    # #486" is half one identifier and half the other.
+    outcome = Sessions::RemoveUncleEdge.call(
       junior: @session,
       uncle_session_id: params[:uncle_id],
       actor: "a human in the web UI",
       source: "web_ui:session_hierarchy.detach"
     )
 
-    respond_with_panel(notice: "Removed ##{params[:uncle_id]} as an additional senior of ##{@session.id}.")
+    respond_with_panel(notice: "Removed ##{outcome.uncle_id} as an additional senior of ##{outcome.junior_id}.")
   rescue Sessions::RemoveUncleEdge::Error => e
     # Both failure kinds land here: on this surface the operator gets the same
     # sentence either way, and the sentence is the service's, which is the one

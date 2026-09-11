@@ -84,9 +84,12 @@ Rails.application.routes.draw do
     resources :session_status_summaries, except: [ :new, :create ]
     # No create or edit: an edge is a record that one session actually queued or
     # interrupted another, written only by Sessions::RecordUncleEdge, which is
-    # where the acyclicity invariant lives. Destroy is offered because the edge
-    # is self-declared and unverified, so a mistaken one needs a way out until
-    # there is a first-class detach (issue #299).
+    # where the acyclicity invariant lives. Destroy stays as the raw operator view
+    # of the table — the product surfaces for detaching one are the hierarchy
+    # panel's ×, `action_session` → `remove_uncle`, and
+    # DELETE /api/v1/sessions/:id/uncle_links/:uncle_id, all of which go through
+    # Sessions::RemoveUncleEdge and record the removal on both timelines. This one
+    # does not, which is why it is the escape hatch rather than the way.
     resources :session_uncle_links, only: [ :index, :show, :destroy ]
     resources :subagent_transcripts
     # Read-only: a chunk is one slice of an append-only transcript, and editing one
