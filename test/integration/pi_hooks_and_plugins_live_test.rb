@@ -187,6 +187,40 @@ class PiHooksAndPluginsLiveTest < ActiveSupport::TestCase
       "Exit handling logged:\n#{@session.reload.logs.last(10).map(&:content).join("\n")}"
   end
 
+  # The other half of #856, end to end through the real binary: a 5xx is a
+  # transient failure Pi could not outlast, and Zimmer resumes the session with
+  # backoff instead of ending it. Nothing here is a fixture — the real `pi`
+  # writes the error, PiTurnError classifies it, ApiErrorRetryService decides,
+  # and the respawn is a real process.
+  test "a 5xx resumes the session with backoff instead of failing it" do
+    stop_simulated_llm
+    start_simulated_llm(mode: :server_error)
+
+    # With the log buffer AgentSessionJob passes: the retry services log through it,
+    # unlike the terminal-error path the 401 test above takes.
+    log_buffer = LogBuffer.new(@session)
+    manager = ProcessLifecycleManager.new(session: @session, log_buffer: log_buffer)
+    result = manager.spawn(prompt: "say hi", working_dir: @clone, model: "sim/sim-model")
+    assert result.success, "spawn failed: #{result.error}"
+
+    _pid, status = Process.waitpid2(result.pid)
+    assert_equal 0, status.exitstatus, "Pi is expected to exit 0 on a provider error"
+
+    decision = manager.handle_exit(status, working_dir: @clone)
+    log_buffer.flush
+
+    assert_equal :continue, decision.action,
+      "a 500 must be retried, not ended. Exit handling logged:\n" \
+      "#{@session.reload.logs.last(10).map(&:content).join("\n")}"
+    assert_equal 1, ApiErrorRetryService::BUDGET.count_for(@session.reload)
+    assert_match(/API server error detected - attempting auto-retry 1\/6/,
+      @session.logs.map(&:content).join("\n"))
+  ensure
+    # The retry spawned a real `pi`; do not leave it running past the test.
+    pid = @session&.reload&.metadata&.dig("process_pid")
+    (Process.kill("TERM", -Process.getpgid(pid)) rescue nil) if pid
+  end
+
   private
 
   # Spawn Pi exactly as a session would: PiAirBridge generates the config,
@@ -349,6 +383,12 @@ class PiHooksAndPluginsLiveTest < ActiveSupport::TestCase
             res.writeHead(401, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: { message: "Incorrect API key provided.",
               type: "invalid_request_error", code: "invalid_api_key" } }));
+            return;
+          }
+          if (MODE === "server_error") {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: { message: "The server had an error while " +
+              "processing your request. Sorry about that!", type: "server_error", code: null } }));
             return;
           }
           turn += 1;

@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"11111111-2222-3333-4444-555555555555","timestamp":"2026-09-11T20:36:31.416Z","cwd":"/workspace/clone"}
+{"type":"model_change","id":"5559e974","parentId":null,"timestamp":"2026-09-11T20:36:31.564Z","provider":"sim","modelId":"sim-model"}
+{"type":"thinking_level_change","id":"3413a2bc","parentId":"5559e974","timestamp":"2026-09-11T20:36:31.564Z","thinkingLevel":"off"}
+{"type":"message","id":"67c2d7c8","parentId":"3413a2bc","timestamp":"2026-09-11T20:36:31.587Z","message":{"role":"user","content":[{"type":"text","text":"say hi"}],"timestamp":1789158991584}}
+{"type":"message","id":"315839cf","parentId":"67c2d7c8","timestamp":"2026-09-11T20:36:31.712Z","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"sim","model":"sim-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1789158991625,"errorMessage":"400: {\"message\":\"Invalid value for 'temperature': must be <= 2.\",\"type\":\"invalid_request_error\",\"code\":\"invalid_value\",\"param\":\"temperature\"}"}}

@@ -551,6 +551,11 @@ Claude-shaped, and a new runtime can answer them too:
   it with the recovery nudge and owes no second "Continue with the previous task" turn — where
   Claude gets `/compact` and the continuation after it.
 
+Pi answers the first seam and deliberately declines the second, which is what the next section is
+about: answering `records_turn_errors?` is how a runtime gets retry, but a runtime that cannot
+compact must not claim `compacts_on_resume?` to reach the compaction path — the resume would simply
+make the prompt longer.
+
 Quota and auth need no new plumbing: `CodexAuthProvider#rotate_for_quota!` and the runtime-agnostic
 `AuthRecoveryCoordinator` do the work once a classifier routes to them. The coordinator gains one
 Codex-specific branch, behind `RuntimeAuthProvider#refresh_proves_serviceable?`: Codex's
@@ -565,33 +570,50 @@ Extension env contributions reach every runtime: `CliSpawnEnv#apply_extension_en
 by all three adapters, with the runtime's own id in the context. `SubagentTranscript` resolves its
 normalizer through `TranscriptRuntime` like every other transcript read.
 
-### Pi declines the recovery questions
+### Pi retries what it can and names what it cannot
 
-`PiRetryStrategy` classifies one thing and declines the rest.
+`PiRetryStrategy` answers from the error Pi recorded, through the same
+`RecordedTurnError` seam Codex uses — and for two of its failure classes the
+truthful answer is that no recovery path owns them.
 
-**A failed model call does not fail the Pi process.** Driven against a simulated
-localhost LLM returning 401, 429, 500 and a 400 `context_length_exceeded`, a
-pinned `pi 0.84.4` exited 0 every time and wrote the failure into its transcript
+**A failed model call does not fail the Pi process.** Driven against a local
+provider stub returning 401, 403, 429, 500, 502, 503, a 400
+`context_length_exceeded`, a dropped stream and a refused connection, a pinned
+`pi 0.84.4` exited 0 every time and wrote the failure into its transcript
 instead, as an assistant message with `stopReason: "error"` and an `errorMessage`
-led by the HTTP status. Nothing reached stderr. So `pi -p` exits non-zero for
-*Pi's* failures, and 0 for the provider's — and a Pi turn whose model never
-answered used to take `ProcessLifecycleManager`'s success branch and park the
-session in `needs_input` reporting "Process exited successfully".
+carrying the provider's own words. Nothing reached stderr. So `pi -p` exits
+non-zero for *Pi's* failures, and 0 for the provider's — which means Pi's whole
+recovery ladder is walked on the door marked "the turn completed"
+(`ProcessLifecycleManager#diagnose_completed_turn`).
 
-`PiRetryStrategy#terminal_api_error` closes that: when the last conversational
-entry in the transcript is such an error, the turn is failed with the provider's
-own wording rather than parked as finished. An error followed by more
-conversation is a turn that recovered on its own and is left alone.
+`PiTurnError` parses that record and classifies it; `PiTranscriptSource` answers
+`records_turn_errors? => true`, so `ApiErrorRetryService` asks for it instead of
+scanning for Claude's `isApiErrorMessage` envelope. A 5xx, a 429 (rate limit or
+`insufficient_quota`), a `terminated` stream and a `Connection error.` are
+`:retryable` and get the six-attempt backoff, bounded by the same `RetryBudget`
+the Claude path uses. The handled-turn marker means a respawn that dies before
+writing anything cannot spend a second retry on the same dead turn.
 
-`context_length_error?`, `api_error_for_retry?` and `auth_recovery_needed?` still
-return `false`. The *signature* is known, and the two seams Codex uses above are
-there for it — but `PiTranscriptSource` does not answer `records_turn_errors?`,
-`PiRuntimeAdapter` does not answer `compacts_on_resume?`, and `AuthRecoveryService`
-recovers by re-writing the active account's credentials while `PiAuthProvider`
-pools no accounts to re-write. Tracked in
-[#856](https://github.com/tadasant/zimmer/issues/856). Until then a Pi provider
-failure is failed and named rather than retried. `classifies_exits?` stays `false`,
-so that failure is loud in the session log without becoming a standing page.
+**Two kinds route nowhere, and say so.** `PiTurnError` gives a 401/403 the kind
+`:auth_terminal` and a 400 `context_length_exceeded` the kind
+`:context_length_terminal` — names no recovery service looks for, so neither can
+be reached however the ladder is rearranged later:
+
+- `PiAuthProvider` pools no accounts, so `AuthRecoveryService` has no credential
+  to rewrite and nothing to rotate to. Answering `auth_recovery_needed?` would
+  park a human in front of a pool that does not exist.
+- Pi has no `/compact`, and unlike Codex it does not compact on a plain resume:
+  `PiRuntimeAdapter.compacts_on_resume?` is `false` because resuming a session
+  that died on a context-length 400 wrote no compaction record and re-sent the
+  same conversation one message longer. Answering `context_length_error?` would
+  spend the budget making the prompt bigger.
+
+Both kinds are `recognized?`, so they fail the session with the provider's own
+wording and **no page** — they are known failures with a deliberate disposition,
+not unknown ones. Only a wording nothing recognizes reaches
+`UnclassifiedFailureReporter`, and `classifies_exits?` is now `true` so it gets
+there. What is still open is in [Known
+limitations](/limitations/#pi-retries-a-transient-provider-failure-auth-and-context-length-are-terminal).
 
 There is also no failed-resume pattern to match, and unlike the above that one is
 correct rather than deferred: Pi's `--session-id` *creates* a missing session

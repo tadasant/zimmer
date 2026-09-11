@@ -174,6 +174,27 @@ class PiTranscriptSource < TranscriptSource
     false
   end
 
+  # @see TranscriptSource#records_turn_errors?
+  #
+  # Pi records a failed model call as an assistant message with `stopReason:
+  # "error"` and the provider's own wording on `errorMessage`, and the process
+  # exits 0 either way — so this record is the only evidence the turn died. See
+  # PiTurnError.
+  def records_turn_errors?
+    true
+  end
+
+  # @see TranscriptSource#terminal_turn_error
+  #
+  # Read raw rather than through #read: nothing here is stored or displayed, and
+  # the redaction cache is keyed for the poller's reads, not these.
+  def terminal_turn_error(session:, working_directory:)
+    path = locate(session: session, working_directory: working_directory)
+    return nil unless path && file_system.exists?(path)
+
+    PiTurnError.terminal(read_raw(path))
+  end
+
   private
 
   # The restored-transcript file, but only when its header carries this session's
