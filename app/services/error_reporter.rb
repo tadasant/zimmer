@@ -16,14 +16,12 @@
 # inherits the production DSN from its container — the environment allowlist in
 # config/initializers/sentry.rb drops the event at the client, so nothing these
 # methods hand to Sentry leaves the process.
+#
+# The list of environments that report is `AlertingEnvironments::ALL`
+# (config/alerting_environments.rb). It deliberately does NOT live here: an
+# initializer cannot reach an autoloaded app/ constant, and sentry.rb needs it while
+# it runs — see that file's header.
 module ErrorReporter
-  # The environments that report, mirroring `enabled_environments` in
-  # config/initializers/sentry.rb. Named here so the boot-time check in
-  # config/initializers/obs_reporting_health_check.rb can say which environments
-  # page without re-deriving the list, and so the two cannot drift apart silently
-  # — test/initializers/sentry_test.rb pins the SDK's own resolved value.
-  ALERTING_ENVIRONMENTS = %w[production staging].freeze
-
   module_function
 
   # Report a rescued exception (preferred — carries a backtrace).

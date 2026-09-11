@@ -28,10 +28,15 @@ if ENV["SENTRY_DSN_BACKEND"].present?
 
     # Only these environments may send. Any other Rails.env (test, development,
     # or an ad-hoc one) drops events at the client, DSN present or not.
-    # `ErrorReporter::ALERTING_ENVIRONMENTS` names the same list for the boot-time
-    # check in obs_reporting_health_check.rb; test/initializers/sentry_test.rb pins
-    # that the two agree.
-    config.enabled_environments = ErrorReporter::ALERTING_ENVIRONMENTS
+    # `AlertingEnvironments::ALL` names the same list for the boot-time check in
+    # obs_reporting_health_check.rb; test/initializers/sentry_test.rb pins that the
+    # two agree.
+    #
+    # It is defined in config/alerting_environments.rb, which config/application.rb
+    # require_relatives, and NOT in app/ — initializers run before Rails sets up the
+    # main Zeitwerk autoloader, so an autoloaded constant here raises NameError and
+    # takes the whole boot with it. See that file's header.
+    config.enabled_environments = AlertingEnvironments::ALL
 
     config.breadcrumbs_logger = [ :active_support_logger, :http_logger ]
 
