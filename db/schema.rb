@@ -883,7 +883,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_11_024903) do
     t.datetime "removed_at"
     t.string "removed_by"
     t.string "repo", null: false
-    t.integer "requeue_count", default: 0, null: false
     t.string "scope_direction", null: false
     t.datetime "started_at"
     t.bigint "started_by_session_id"

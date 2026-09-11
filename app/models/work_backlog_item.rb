@@ -72,54 +72,60 @@ class WorkBacklogItem < ApplicationRecord
 
   MECHANICAL_REMOVAL_REASONS = [ ISSUE_CLOSED_REASON, "issue_has_open_pr", "session_already_working", "trust_failed" ].freeze
 
-  # WHAT THE LIVENESS RE-CHECK FOUND, and why `started` needed one at all.
+  # The removal reasons that are FACTS WITH A SHELF LIFE. Both describe something
+  # happening elsewhere that the removal expected would finish the work: a pull
+  # request already open on the issue, or a session already working it. Nothing
+  # re-checks either, so when the PR goes quiet or the session ends, the item is
+  # off the queue for a reason that has since expired — `tadasant/zimmer#522` was
+  # removed as `issue_has_open_pr` on a PR last touched 2026-08-21.
   #
-  # `started` used to be terminal in practice. A pull marked the row, spawned a
-  # session, and nothing ever looked at the row again — so an implementing
-  # session that archived without closing its issue left the item neither queued
-  # nor being worked. Measured 2026-09-11 across the fleet's gated repos: 41 of
-  # 159 open convergent issues sat in that state and 13 of them had been there
-  # four days or more. It is invisible from the outside, which is the part that
-  # matters: the Issues page shows such an issue as neither held nor queued, so
-  # it reads as "not gated" rather than "stuck".
+  # `trust_failed` is deliberately not here: it is a judgement about the thread
+  # rather than a fact with an expiry. Nor is `issue_closed`, which is terminal.
+  PROVISIONAL_REMOVAL_REASONS = [ "issue_has_open_pr", "session_already_working" ].freeze
+
+  # WHAT THE LIVENESS RE-CHECK FOUND, and why a row that left `queued` needs one.
   #
-  # WorkBacklog::StaleStartSweep re-examines those rows and writes one of these.
-  # They are the same vocabulary as MECHANICAL_REMOVAL_REASONS one step later in
-  # the lifecycle — facts the sweep observed about the issue and the session, not
-  # judgements about the work — and deliberately NOT that list: a removal reason
-  # says why a QUEUED item never ran, and these say what became of one that did.
+  # A row leaves `queued` by two routes — a pull starts it, or a pull removes it
+  # mechanically — and neither has a way back. Nothing reads the row again, so an
+  # expired premise leaves the item neither queued nor worked. Measured
+  # 2026-09-11: of 159 open convergent issues across the gated repos, 41 were
+  # `started` and 13 had been for four days or more.
   #
-  #   issue_closed       the issue is closed. The work is done or moot, and this
-  #                      row is finished. The one TERMINAL state: the sweep never
-  #                      examines the row again.
-  #   pr_merged          the session merged a PR but the issue is still open —
-  #                      a bookkeeping gap (no closing keyword, or a human closes
-  #                      it by hand), never a reason to redo the work.
-  #   session_pr_open    the session recorded a PR that has not resolved. Work to
-  #                      show, so the item is left alone.
-  #   issue_has_open_pr  GitHub links a PR to the issue by a closing reference.
-  #                      Usually somebody else picked the issue up after this
-  #                      item's session died.
-  #   requeued           the session left nothing behind and the issue is open,
-  #                      so the item went back on the queue at its old rank.
-  #   already_queued     a live queued row already carries this key — the gate
-  #                      re-appended the issue — so there is nothing to put back.
-  #   requeue_exhausted  put back MAX_REQUEUES times already. Something other
-  #                      than a lost session is wrong; left for a human, loudly.
-  #   unknown            GitHub could not be read for this issue, so no
-  #                      conclusion was drawn. Re-examined next sweep.
+  # These states are EVIDENCE, NOT VERDICTS. WorkBacklog::LivenessSweep writes
+  # them and does nothing else, because the two cases that matter most cannot be
+  # told apart by any mechanical signal — see that class for the 12 rows examined
+  # by hand that establish it.
+  #
+  #   issue_closed          the issue is closed. Resolved; nothing to triage.
+  #   pr_open               an open PR referencing it has moved recently. Someone
+  #                         is on it, so it is not stranded.
+  #   pr_stalled            the only open PRs referencing it have gone quiet for
+  #                         LivenessSweep::STALE_PR_AFTER. The removal's premise,
+  #                         or the session's, has expired.
+  #   pr_merged_issue_open  a merged PR references it and the issue is still
+  #                         open. THE AMBIGUOUS ONE: either the PR finished the
+  #                         work and forgot the closing keyword, or it fixed part
+  #                         on purpose and a real remainder is left. Only reading
+  #                         the PR and the current code separates them.
+  #   no_pr                 no pull request has ever referenced it. Whatever the
+  #                         row was started or removed for produced nothing.
+  #   unknown               GitHub could not be read for this issue. Not a
+  #                         conclusion; re-examined next pass.
   LIVENESS_ISSUE_CLOSED = "issue_closed"
-  LIVENESS_PR_MERGED = "pr_merged"
-  LIVENESS_SESSION_PR_OPEN = "session_pr_open"
-  LIVENESS_ISSUE_HAS_OPEN_PR = "issue_has_open_pr"
-  LIVENESS_REQUEUED = "requeued"
-  LIVENESS_ALREADY_QUEUED = "already_queued"
-  LIVENESS_REQUEUE_EXHAUSTED = "requeue_exhausted"
+  LIVENESS_PR_OPEN = "pr_open"
+  LIVENESS_PR_STALLED = "pr_stalled"
+  LIVENESS_PR_MERGED_ISSUE_OPEN = "pr_merged_issue_open"
+  LIVENESS_NO_PR = "no_pr"
   LIVENESS_UNKNOWN = "unknown"
 
-  LIVENESS_STATES = [ LIVENESS_ISSUE_CLOSED, LIVENESS_PR_MERGED, LIVENESS_SESSION_PR_OPEN,
-                      LIVENESS_ISSUE_HAS_OPEN_PR, LIVENESS_REQUEUED, LIVENESS_ALREADY_QUEUED,
-                      LIVENESS_REQUEUE_EXHAUSTED, LIVENESS_UNKNOWN ].freeze
+  LIVENESS_STATES = [ LIVENESS_ISSUE_CLOSED, LIVENESS_PR_OPEN, LIVENESS_PR_STALLED,
+                      LIVENESS_PR_MERGED_ISSUE_OPEN, LIVENESS_NO_PR, LIVENESS_UNKNOWN ].freeze
+
+  # The two verdicts that mean "nothing for a person to do here". Everything else
+  # — including a row nothing has checked yet — is stranded until shown otherwise,
+  # which is the honest default for a population whose whole problem was that
+  # nobody was looking.
+  RESOLVED_LIVENESS_STATES = [ LIVENESS_ISSUE_CLOSED, LIVENESS_PR_OPEN ].freeze
 
   # The keys in the file's item schema that have a column here. Everything else
   # in an item — ratings, prompt, notes, gate_session, and whatever the gate adds
@@ -156,7 +162,6 @@ class WorkBacklogItem < ApplicationRecord
   validates :issue_url, length: { maximum: MAX_URL_LENGTH }, allow_nil: true
   validates :precedence, numericality: { only_integer: true, in: PRECEDENCE_RANGE }
   validates :liveness_state, inclusion: { in: LIVENESS_STATES }, allow_nil: true
-  validates :requeue_count, numericality: { only_integer: true, greater_than_or_equal_to: 0 }
   validates :removal_reason, presence: true, if: :removed?
   validate :issueless_items_need_a_prompt_and_a_human
   validate :payload_must_be_an_object
@@ -312,29 +317,31 @@ class WorkBacklogItem < ApplicationRecord
                                              .select(:id))
   }
 
-  # THE POPULATION THE LIVENESS RE-CHECK EXISTS FOR: a started item whose session
-  # ended a while ago, and which the sweep has not found a closed issue behind.
+  # Rows removed for a reason that may since have expired. See
+  # PROVISIONAL_REMOVAL_REASONS.
+  scope :removed_provisionally, -> { removed.where(removal_reason: PROVISIONAL_REMOVAL_REASONS) }
+
+  # EVERY ROW WORTH RE-CHECKING, by both routes out of `queued`: a `started` row
+  # whose session ended before the grace, and a `removed` row whose removal was
+  # provisional. An issueless item is excluded — there is no issue to probe, so
+  # nothing here could say anything about it.
   #
-  # It is the honest reading of "this item is going nowhere". The session is over,
-  # so nothing is advancing it; the item is `started`, so no pull will ever reach
-  # it again; and the issue has not been observed closed, so the work it names is
-  # not done. Before WorkBacklog::StaleStartSweep there was no name for this and
-  # no count of it — the row simply sat there.
-  #
-  # NOT every started row whose session ended. Two are excluded on purpose:
-  #
-  #   * one whose session ended inside GRACE. A merge closes its issue seconds
-  #     later, and a row examined in between looks exactly like a stranded one.
-  #   * one already found to have a closed issue. That is a finished item, and
-  #     leaving it here would bury the live problem under the fleet's whole
-  #     history. If a human reopens such an issue it comes back as a loose row on
-  #     the Issues page rather than here, which is the surface a reopen belongs on.
-  #
-  # `IS DISTINCT FROM` rather than `where.not`, which compiles to `<> 'x'` and
-  # drops every NULL — i.e. every row the sweep has never reached, which is the
-  # half that matters most.
-  scope :stranded, ->(grace: WorkBacklog::StaleStartSweep::GRACE, now: Time.current) {
-    ended_before(now - grace).where("liveness_state IS DISTINCT FROM ?", LIVENESS_ISSUE_CLOSED)
+  # A third way to strand is NOT here and cannot be: an issue with no row at all.
+  # Before 2026-08-29 the gate started sessions itself and the migration into this
+  # table imported only `queued` items, so that work left nothing to re-check.
+  # `tadasant/zimmer#368` sat 37 days that way. Those show up on the Issues page
+  # under "In GitHub, not on the queue".
+  scope :liveness_candidates, ->(grace: WorkBacklog::LivenessSweep::GRACE, now: Time.current) {
+    where.not(issue_url: nil).where(id: ended_before(now - grace))
+      .or(where.not(issue_url: nil).where(id: removed_provisionally))
+  }
+
+  # The candidates the re-check has NOT resolved — the honest reading of "this
+  # item is going nowhere and someone has to look at it". A row whose issue has
+  # closed, or whose PR is moving, is not here; a row nothing has examined yet is.
+  scope :stranded, ->(grace: WorkBacklog::LivenessSweep::GRACE, now: Time.current) {
+    liveness_candidates(grace: grace, now: now)
+      .where("liveness_state IS NULL OR liveness_state NOT IN (?)", RESOLVED_LIVENESS_STATES)
   }
 
   def queued? = status == QUEUED
@@ -405,41 +412,6 @@ class WorkBacklogItem < ApplicationRecord
     update!(liveness_state: state, liveness_checked_at: now)
   end
 
-  # Put a started item back on the queue, AT THE RANK IT LEFT WITH.
-  #
-  # `precedence` is deliberately untouched. An item is pulled because it is at
-  # the top of its band, so its old precedence is where it belongs; recomputing
-  # one would place it GAP below the band's lowest peer — the bottom — and an
-  # item recovered to the bottom of its cost band is never reached again. That
-  # would reproduce the bug this exists to fix, with extra steps.
-  #
-  # The session that died is not forgotten: it moves into `payload["requeues"]`
-  # with the start it belongs to, so "this item has been attempted three times,
-  # here are the sessions" survives. The columns are cleared because a queued row
-  # whose `started_session_id` still points at a dead session would be counted by
-  # every `started`-shaped scope that follows.
-  #
-  # The caller holds WorkBacklog::Ranking's lock — this is a queue mutation, and
-  # a re-queue racing an append must serialise with it like any other.
-  def requeue!(now: Time.current)
-    attempts = payload_hash["requeues"]
-    attempts = [] unless attempts.is_a?(Array)
-    attempts += [ { "session_id" => started_session_id, "started_at" => started_at&.iso8601,
-                    "requeued_at" => now.iso8601 } ]
-
-    update!(status: QUEUED, liveness_state: LIVENESS_REQUEUED, liveness_checked_at: now,
-            requeue_count: requeue_count + 1, payload: payload_hash.merge("requeues" => attempts),
-            started_session_id: nil, started_by_session_id: nil, started_at: nil)
-  end
-
-  # Every session this item has been given, oldest first — the ones a re-queue
-  # moved into the payload, plus the one it is running under now.
-  def attempted_session_ids
-    past = payload_hash["requeues"]
-    past = [] unless past.is_a?(Array)
-    (past.filter_map { |attempt| attempt["session_id"] } + [ started_session_id ]).compact
-  end
-
   # A human's hand-placement: the item goes exactly where they put it and stays
   # there. A pinned item is never re-banded, renumbered or un-pinned by an agent.
   def pin!(precedence:)
@@ -491,7 +463,6 @@ class WorkBacklogItem < ApplicationRecord
       removal_reason: removal_reason,
       liveness_state: liveness_state,
       liveness_checked_at: liveness_checked_at&.iso8601,
-      requeue_count: requeue_count,
       payload: payload
     }
   end

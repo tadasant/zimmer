@@ -99,7 +99,7 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
     sessions(:archived).update_columns(archived_at: 2.days.ago)
     dropped = backlog_item(key: "zimmer#5")
     dropped.mark_started!(session: sessions(:archived), by: nil)
-    dropped.record_liveness!(WorkBacklogItem::LIVENESS_ISSUE_HAS_OPEN_PR)
+    dropped.record_liveness!(WorkBacklogItem::LIVENESS_PR_STALLED)
     running = backlog_item(key: "zimmer#6")
     running.mark_started!(session: sessions(:running), by: nil)
 
@@ -107,8 +107,8 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
 
     assert_equal 1, output.dig(:counts, :stranded)
     assert_equal [ "zimmer#5" ], output[:items].map { |i| i[:key] }
-    assert_equal WorkBacklogItem::LIVENESS_ISSUE_HAS_OPEN_PR, output[:items].first[:liveness_state]
-    assert_equal 0, output[:items].first[:requeue_count]
+    assert_equal WorkBacklogItem::LIVENESS_PR_STALLED, output[:items].first[:liveness_state]
+    assert output[:items].first[:liveness_checked_at].present?
   end
 
   # The whole point of the count: a groomer reading `in_flight` alone cannot tell
