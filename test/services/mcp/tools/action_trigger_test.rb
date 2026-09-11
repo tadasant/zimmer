@@ -1194,6 +1194,48 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert_not condition.reload.thread_scoped?
   end
 
+  # The flat trigger_type/configuration pair is the natural way to edit a
+  # single-condition trigger, so it gets the same guard as the conditions array.
+  test "the flat trigger_type/configuration update also refuses to drop thread_ts" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    condition.update!(configuration: condition.configuration.merge("thread_ts" => "1704000000.000000"))
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call(
+        "action" => "update",
+        "id" => condition.trigger_id,
+        "trigger_type" => "slack",
+        "configuration" => { "channel_id" => condition.channel_id, "event_type" => "bot_mention" }
+      )
+    end
+
+    assert_match(/\A"configuration" omits "thread_ts"/, error.message)
+    assert_equal "1704000000.000000", condition.reload.thread_ts
+  end
+
+  test "refuses to drop thread_ts from a thread-scoped new_message condition as well" do
+    condition = trigger_conditions(:enabled_slack_condition)
+    condition.update!(configuration: condition.configuration.merge("thread_ts" => "1704000000.000000"))
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call(
+        "action" => "update",
+        "id" => condition.trigger_id,
+        "conditions" => [
+          {
+            "id" => condition.id,
+            "trigger_type" => "slack",
+            "configuration" => { "channel_id" => condition.channel_id, "event_type" => "new_message" }
+          }
+        ]
+      )
+    end
+
+    assert_match(/omits "thread_ts"/, error.message)
+    assert_match(/widen the condition beyond that thread/, error.message)
+    assert_equal "1704000000.000000", condition.reload.thread_ts
+  end
+
   # Dropping the exclusion re-arms the gate for every issue that was opting out of it,
   # and nothing downstream would catch it: exclude_labels is not poller state, so
   # preserve_github_poll_state does not merge it back.
