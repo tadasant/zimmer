@@ -48,4 +48,69 @@ class SchemaVerifyTaskTest < ActiveSupport::TestCase
 
     assert_not SchemaVerifyTask.send(:migrations?, config)
   end
+
+  # The catalog is the half of the check that sees what the Ruby dump cannot
+  # (https://github.com/tadasant/zimmer/issues/780). It fails in the same
+  # direction as the replay set: a query that sees nothing makes both passes agree
+  # and reports OK. So every kind it claims to cover is built here, inside this
+  # test's transaction, and has to show up.
+  def catalog
+    SchemaVerifyTask.catalog(ActiveRecord::Base.connection)
+  end
+
+  test "the catalog sees the gate_decisions trigger and function db/schema.rb built" do
+    assert catalog.any? { |line| line.start_with?("CREATE TRIGGER gate_decisions_append_only ") }
+    assert catalog.any? { |line| line.start_with?("CREATE OR REPLACE FUNCTION public.gate_decisions_append_only()") }
+  end
+
+  test "the catalog sees every kind of object it claims to cover" do
+    before = catalog
+    connection = ActiveRecord::Base.connection
+    [
+      "CREATE VIEW zz_probe_view AS SELECT 1 AS one",
+      "CREATE MATERIALIZED VIEW zz_probe_matview AS SELECT 1 AS one",
+      "CREATE TABLE zz_probe_rules (id int)",
+      "CREATE RULE zz_probe_rule AS ON DELETE TO zz_probe_rules DO INSTEAD NOTHING",
+      "ALTER TABLE zz_probe_rules ENABLE ROW LEVEL SECURITY",
+      "CREATE POLICY zz_probe_policy ON zz_probe_rules USING (id > 0)",
+      "CREATE TYPE zz_probe_enum AS ENUM ('a', 'b')",
+      "CREATE DOMAIN zz_probe_domain AS text CHECK (VALUE <> '')",
+      "CREATE TYPE zz_probe_composite AS (a int, b text)",
+      "CREATE TYPE zz_probe_range AS RANGE (SUBTYPE = int4)",
+      "CREATE SEQUENCE zz_probe_sequence",
+      "CREATE AGGREGATE zz_probe_aggregate (int) (SFUNC = int4pl, STYPE = int)",
+      "CREATE UNLOGGED TABLE zz_probe_unlogged (id int)",
+      "CREATE TABLE zz_probe_partitioned (id int) PARTITION BY RANGE (id)",
+      "CREATE TABLE zz_probe_exclusion (r int4range, EXCLUDE USING gist (r WITH &&))"
+    ].each { |sql| connection.execute(sql) }
+
+    added = catalog - before
+
+    {
+      "VIEW zz_probe_view AS" => "view",
+      "MATERIALIZED VIEW zz_probe_matview AS" => "materialized view",
+      "CREATE RULE zz_probe_rule AS" => "rule",
+      "ROW LEVEL SECURITY ON zz_probe_rules" => "row-level security",
+      "POLICY zz_probe_policy ON public.zz_probe_rules" => "policy",
+      "TYPE zz_probe_enum AS ENUM ('a', 'b')" => "enum",
+      "TYPE zz_probe_domain AS DOMAIN text CHECK" => "domain",
+      "TYPE zz_probe_composite AS (a integer, b text)" => "composite type",
+      "TYPE zz_probe_range AS RANGE (SUBTYPE = integer)" => "range type",
+      "SEQUENCE zz_probe_sequence" => "standalone sequence",
+      "AGGREGATE zz_probe_aggregate(integer)" => "aggregate",
+      "TABLE zz_probe_unlogged UNLOGGED" => "unlogged table",
+      "TABLE zz_probe_partitioned PARTITION BY RANGE (id)" => "partitioned table",
+      "CONSTRAINT zz_probe_exclusion_r_excl ON zz_probe_exclusion EXCLUDE USING gist" => "exclusion constraint"
+    }.each do |prefix, kind|
+      assert added.any? { |line| line.start_with?(prefix) }, "the catalog does not see a #{kind}:\n#{added.join("\n")}"
+    end
+  end
+
+  test "the catalog leaves out what the dump already carries as a table" do
+    before = catalog
+
+    ActiveRecord::Base.connection.execute("CREATE TABLE zz_probe_plain (id bigserial PRIMARY KEY, name text)")
+
+    assert_equal before, catalog, "a plain table, its row type or its id sequence is being listed"
+  end
 end
