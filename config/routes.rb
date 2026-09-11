@@ -13,6 +13,11 @@ Rails.application.routes.draw do
     # (ApiKeysController), the one place a key is ever shown.
     resources :api_keys, only: [ :index, :show ]
     resources :app_settings
+    # Read-only: a row is minted and revoked on POST /console_login_tokens behind the
+    # operator credential and consumed by POST /console_login (ConsoleLoginToken). A
+    # generic form here could only write a row with no secret behind it, or flip a
+    # consumed row back to active without the log line that says so.
+    resources :console_login_tokens, only: [ :index, :show ]
     resources :catalog_pins
     resources :categories
     # Read-only: the categorization eval corpus is append-only by design — every
@@ -332,6 +337,18 @@ Rails.application.routes.draw do
       end
     end
   end
+
+  # Console login tokens (#220): the agent-login primitive. Mint and revoke sit behind
+  # the operator credential, like /settings/api_keys and for the same reason — an API
+  # key is what every agent session holds, and a surface where it could mint console
+  # sessions would make the credential self-issuing. Exchange takes the token in the
+  # request body and sets the console session cookie; the GET reads it back. All four
+  # are 403 unless CONSOLE_LOGIN_ENABLED is "true" (ConsoleLoginGate). Deliberately
+  # outside /api/v1 (no API key) and with no MCP tool.
+  post "console_login_tokens", to: "console_login_tokens#create", as: :console_login_tokens
+  post "console_login_tokens/:id/revoke", to: "console_login_tokens#revoke", as: :revoke_console_login_token
+  post "console_login", to: "console_login#create", as: :console_login
+  get "console_login", to: "console_login#show"
 
   # Health dashboard routes
   get "health", to: "health#dashboard", as: :health_dashboard

@@ -248,6 +248,14 @@ module CronSchedule
       description: "Reap orphaned UI login attempts and prune old terminal rows",
       environments: %i[production staging]
     },
+    # Hourly is plenty: nothing in the exchange path waits on this. Rows refuse on
+    # their own once expired, consumed or revoked; the reaper only bounds the table.
+    console_login_token_reaper: {
+      cron: "41 * * * *", # Hourly, off the top of the hour
+      class: "ConsoleLoginTokenReaperJob",
+      description: "Delete console login tokens more than 30 days past their expiry",
+      environments: %i[production staging development]
+    },
     # Everywhere, including development: this is the only thing that bounds the
     # `logs` table, and a developer database grows the same way a deployed one
     # does. It spends no money and no quota, and it reaps rows rather than the

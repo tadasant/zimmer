@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_12_090000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_12_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -207,6 +207,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_12_090000) do
     t.index ["is_current"], name: "index_claude_accounts_on_is_current"
     t.index ["runtime"], name: "index_claude_accounts_on_runtime"
     t.index ["status", "priority"], name: "index_claude_accounts_on_status_and_priority"
+  end
+
+  create_table "console_login_tokens", force: :cascade do |t|
+    t.datetime "consumed_at"
+    t.string "consumed_from_ip"
+    t.datetime "created_at", null: false
+    t.datetime "expires_at", null: false
+    t.string "minted_from_ip"
+    t.string "principal", null: false
+    t.datetime "revoked_at"
+    t.string "role", null: false
+    t.string "secret_digest", null: false
+    t.integer "session_ttl_seconds", null: false
+    t.string "status", default: "active", null: false
+    t.datetime "updated_at", null: false
+    t.index ["expires_at"], name: "index_console_login_tokens_on_expires_at"
   end
 
   create_table "elicitations", force: :cascade do |t|
