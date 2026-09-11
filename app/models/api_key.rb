@@ -4,10 +4,19 @@ require "digest"
 
 # A credential for the REST API and the native MCP endpoint (tadasant/zimmer#46).
 #
-# Zimmer is a single circle of trust, so a key still grants the whole API — there
-# are no scopes. What a row adds is identity: a **name** the request log can print,
-# a **`last_used_at`** that says whether anything still holds it, and a
-# **`revoked_at`** that turns it off on the very next request, no restart.
+# Zimmer is a single circle of trust, so an `api` key grants the whole API — there
+# are no per-resource scopes. What a row adds is identity: a **name** the request
+# log can print, a **`last_used_at`** that says whether anything still holds it,
+# and a **`revoked_at`** that turns it off on the very next request, no restart.
+#
+# The one exception to "the whole API" is `grant` (tadasant/zimmer#175). An `api`
+# key opens everything; a `quick_router` key opens exactly one endpoint,
+# `POST /api/v1/quick_router`, which creates a Quick Router session and returns
+# its id and URL. That is the credential the browser extension holds, and it is
+# narrow because of where it lives: a browser profile on a machine that browses
+# the open web. The narrowing is enforced here, in `authenticate`, by requiring
+# the caller to name the grant it will honour — so a `quick_router` key presented
+# to `/api/v1/sessions` or `/mcp` is refused the same way a revoked key is.
 #
 # Keys come from two places, recorded in `source`:
 #
@@ -44,6 +53,13 @@ class ApiKey < ApplicationRecord
   # Minted keys are recognisably Zimmer's in a secret scanner or a pasted log.
   MINTED_PREFIX = "zmr_"
 
+  # What a key opens. `api` is the whole REST API and the MCP endpoint — every
+  # `API_KEYS` entry is this, and so is a minted key unless the operator chose
+  # otherwise. `quick_router` is `POST /api/v1/quick_router` and nothing else.
+  API_GRANT = "api"
+  QUICK_ROUTER_GRANT = "quick_router"
+  GRANTS = [ API_GRANT, QUICK_ROUTER_GRANT ].freeze
+
   FINGERPRINT_LENGTH = 8
 
   # `last_used_at` is written at most once per key per this interval. A busy
@@ -53,10 +69,11 @@ class ApiKey < ApplicationRecord
 
   # Why a request was refused, for the log line — never shown to the caller, who
   # gets the same 401 for all of them.
-  #   missing  no key on the request
-  #   unknown  a key no row and no API_KEYS entry matches
-  #   revoked  a row that has been revoked
-  #   retired  an `env` row whose key is no longer in API_KEYS
+  #   missing      no key on the request
+  #   unknown      a key no row and no API_KEYS entry matches
+  #   revoked      a row that has been revoked
+  #   retired      an `env` row whose key is no longer in API_KEYS
+  #   wrong_grant  a valid key presented to a surface its grant does not open
   Authentication = Data.define(:api_key, :refusal) do
     def authenticated? = refusal.nil?
   end
@@ -68,6 +85,10 @@ class ApiKey < ApplicationRecord
     format: { without: /[\p{Cc}\p{Cf}]/, message: "can't contain control or formatting characters" }
   validates :token_digest, presence: true, uniqueness: true
   validates :source, inclusion: { in: SOURCES }
+  validates :grant, inclusion: { in: GRANTS }
+  # An `API_KEYS` entry is in every agent session's environment, so it can never
+  # be the browser extension's credential; only a minted key can be narrowed.
+  validates :grant, inclusion: { in: [ API_GRANT ], message: "must be #{API_GRANT} for an #{ENV_VAR} entry" }, if: :env?
   validate :name_not_reserved, if: :minted?
 
   scope :listed, -> { order(Arel.sql("revoked_at IS NOT NULL"), created_at: :desc) }
@@ -75,9 +96,15 @@ class ApiKey < ApplicationRecord
   class << self
     # The whole authentication decision for one presented key.
     #
+    # `grant` is the surface doing the asking, and it is an exact match: an `api`
+    # key does not open the Quick Router endpoint and a `quick_router` key does
+    # not open the API. The default is the whole API, so the REST and MCP
+    # controllers name nothing and refuse the narrow key without knowing it exists.
+    #
     # @param presented [String, nil] the key off the request
+    # @param grant [String] the grant this surface honours
     # @return [Authentication]
-    def authenticate(presented)
+    def authenticate(presented, grant: API_GRANT)
       return refuse(:missing) if presented.blank?
 
       in_env = env_keys.any? { |key| ActiveSupport::SecurityUtils.secure_compare(key, presented) }
@@ -89,6 +116,7 @@ class ApiKey < ApplicationRecord
       return refuse(:unknown) if api_key.nil?
       return refuse(:revoked, api_key) if api_key.revoked?
       return refuse(:retired, api_key) if api_key.env? && !in_env
+      return refuse(:wrong_grant, api_key) unless api_key.grant == grant
 
       api_key.record_use!
       Authentication.new(api_key: api_key, refusal: nil)
@@ -97,9 +125,9 @@ class ApiKey < ApplicationRecord
     # Create a key and return it with the only copy of its secret there will ever be.
     #
     # @return [Array(ApiKey, String)]
-    def mint!(name:)
+    def mint!(name:, grant: API_GRANT)
       token = "#{MINTED_PREFIX}#{SecureRandom.hex(32)}"
-      api_key = create!(name: name.to_s.strip, source: MINTED_SOURCE, token_digest: digest(token))
+      api_key = create!(name: name.to_s.strip, source: MINTED_SOURCE, grant: grant, token_digest: digest(token))
       [ api_key, token ]
     end
 
@@ -160,6 +188,7 @@ class ApiKey < ApplicationRecord
   def env? = source == ENV_SOURCE
   def minted? = source == MINTED_SOURCE
   def revoked? = revoked_at.present?
+  def quick_router? = grant == QUICK_ROUTER_GRANT
 
   # The first characters of the key's SHA-256 — what the settings page shows.
   def fingerprint

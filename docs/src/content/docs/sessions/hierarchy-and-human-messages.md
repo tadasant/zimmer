@@ -424,6 +424,7 @@ be able to close the block, or open a bullet, and forge a `here` message.
 | A message enqueued in the browser | ✅ `web_ui.enqueued_message` | recorded when typed, not when delivered |
 | A Slack message from a mapped human | ✅ `slack.channel_message` / `slack.dm` | resolved from the Slack user ID |
 | A Slack message from a human whose ID is **not** mapped | ❌ | nobody to attribute it to — and when *no* row maps any Slack ID the record says so rather than reading as an absence (see [Absence is only an answer when capture could have fired](#absence-is-only-an-answer-when-capture-could-have-fired)) |
+| A message from the [browser extension](/extend/browser-extension/) | ✅ `browser_extension.quick_router` | the `quick_router` key it presents is minted, so no agent session's environment carries it, and it opens nothing but that one endpoint — its only holder is the admin's browser |
 | `follow_up` / `send_now` / enqueue issued by **another agent** over MCP or REST | ❌ | the API key is shared by the whole fleet — it establishes a caller, not a person |
 | A router-written spawn prompt | ❌ | a router holding a human's words is still a machine when it composes the prompt |
 | A scheduled or **self-scheduled** wake-up | ❌ | machine-authored by construction |
@@ -436,7 +437,7 @@ session is *called*. `SessionTitleJob` names a session from its transcript when 
 failed session is the exception: it is named from its recorded failure reason, because a crash
 transcript misleads the model), and otherwise falls back deterministically to
 `Session#human_prompt`. That reads `metadata["original_prompt"]` when a surface stored the ask
-untouched beside the composed prompt — the chat bubble is the only one that does — and the
+untouched beside the composed prompt — the chat bubble and the browser extension are the only ones that do — and the
 `prompt` column everywhere else. Plenty of other entry points compose a prompt too: a trigger
 renders a template, the GitHub poller appends an event block, the backlog prepends an issue URL.
 None of them keeps an unwrapped copy, so `prompt` is the narrowest text there is and stays the

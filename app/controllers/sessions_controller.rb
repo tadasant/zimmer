@@ -13,7 +13,7 @@ class SessionsController < ApplicationController
   TEMP_SESSION_ID_PATTERN = /\Atemp_[a-f0-9\-]+\z/
 
   # Server-side cap on page context to prevent unbounded prompt inflation
-  PAGE_CONTEXT_MAX_LENGTH = 50_000
+  PAGE_CONTEXT_MAX_LENGTH = QuickRouterPrompt::PAGE_CONTEXT_MAX_LENGTH
 
   # Dashboard: number of session cards shown per category section page.
   SESSIONS_PER_PAGE = 50
@@ -614,15 +614,7 @@ class SessionsController < ApplicationController
       return
     end
 
-    # Build augmented prompt with page context
-    augmented_prompt = prompt
-    if page_context.present?
-      context_block = "<context-about-user's-current-view>\n"
-      context_block += "URL: #{current_url}\n\n" if current_url.present?
-      context_block += "#{page_context}\n"
-      context_block += "</context-about-user's-current-view>"
-      augmented_prompt = "#{context_block}\n\n#{prompt}"
-    end
+    augmented_prompt = QuickRouterPrompt.augment(prompt: prompt, page_context: page_context, current_url: current_url)
 
     if augmented_prompt.length > Session::PROMPT_MAX_LENGTH
       render json: { error: "Combined prompt and page context is too long. Try a shorter prompt." }, status: :unprocessable_entity

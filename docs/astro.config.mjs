@@ -120,6 +120,7 @@ export default defineConfig({
             { label: "Adding an agent harness", slug: "extend/agent-harness" },
             { label: "Extensions", slug: "extend/extensions" },
             { label: "Transcript hooks", slug: "extend/transcript-hooks" },
+            { label: "The browser extension", slug: "extend/browser-extension" },
           ],
         },
         {

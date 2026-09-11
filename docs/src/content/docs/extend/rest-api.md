@@ -16,9 +16,11 @@ tools. If the caller is an agent rather than a script, that is the surface to po
 :::
 
 :::caution[API keys have names, not scopes]
-Any valid key can do anything to any session, trigger, or category. Each key has a name, and the
-request log prints it, never the key. A revoke on `/settings/api_keys` refuses the key from the next
-request on. Every request that presents no key, an unknown key or a revoked one gets the same 401.
+Any valid full-API key can do anything to any session, trigger, or category. Each key has a name, and
+the request log prints it, never the key. A revoke on `/settings/api_keys` refuses the key from the
+next request on. Every request that presents no key, an unknown key or a revoked one gets the same
+401. The one narrower kind of key is the [Quick Router key](#the-quick-router-ingest): it opens
+`POST /api/v1/quick_router` and every other endpoint on this page refuses it with the same 401.
 :::
 
 ## Quick start
@@ -735,6 +737,68 @@ Five of those fields are easy to misread:
 
 `heartbeat_enabled` defaults to false.
 
+## The Quick Router ingest
+
+`POST /api/v1/quick_router` is the [browser extension](/extend/browser-extension/)'s way in: the
+Quick Router bubble from any page on the web. It is the narrowest endpoint in the API, on purpose.
+
+**It takes a different key.** The `X-API-Key` header must hold a key minted on `/settings/api_keys`
+with **Quick Router only** chosen — an `ApiKey` whose `grant` is `quick_router`. A full-API key, an
+`API_KEYS` entry, no key and a revoked key all get the same 401 here; and the Quick Router key gets
+that 401 from every other endpoint on this page and from `POST /mcp`. Both directions are one
+comparison in `ApiKey.authenticate`, so the key that sits in a browser's extension storage can
+start Quick Router sessions and read nothing back. There is no CSRF token to present — the request
+comes from the extension's service worker — and no CORS, because an extension's own fetch to a host
+it holds a permission for is exempt from it.
+
+```bash
+curl -X POST https://zimmer.example.com/api/v1/quick_router \
+  -H "X-API-Key: zmr_…" -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "This retry comment is wrong — 502 from GitHub is not transient here.",
+    "page_url": "https://github.com/tadasant/zimmer/pull/1150",
+    "page_title": "refactor(catalog): … · Pull Request #1150",
+    "page_context": "# refactor(catalog): serve the snapshot everywhere\n\n…",
+    "pin": {
+      "x": 840, "y": 2310, "viewport_width": 1440, "viewport_height": 900,
+      "selector": "#discussion_bucket > div.comment:nth-of-type(3) > p",
+      "tag": "p",
+      "text": "We should retry on 502 here.",
+      "excerpt": "**tadasant** commented\n\nWe should retry on 502 here.\n\nOtherwise the poller gives up."
+    }
+  }'
+```
+
+| Field | Required | What it is, and its cap |
+| --- | --- | --- |
+| `prompt` | yes | The human's words. ≤ 500,000 characters, like every prompt |
+| `page_url` | no | Cut to 2,048 characters |
+| `page_title` | no | Cut to 300 |
+| `page_context` | no | The page, as markdown. Cut to 50,000 — the same cap as the in-app bubble's; the extension sends at most 20,000 |
+| `pin` | no | An object. `x`, `y` (page coordinates), `viewport_width`, `viewport_height` are integers; `selector` (≤ 500), `tag` (≤ 32), `text` (≤ 1,000) and `excerpt` (≤ 4,000) are strings. Anything else in it is dropped; a `pin` that is not an object is ignored |
+
+The pin's caps are separate from the page's, so a long page never truncates away the thing that
+was pinned. Everything is composed into one prompt — the same
+`<context-about-user's-current-view>` block the chat bubble writes, with a `<pinned-element>`
+section inside it when there is a pin, and the human's words last and unchanged — and a session is
+created on the router root with `genesis` `web_ui`, `metadata.source` `browser_extension`,
+`metadata.original_prompt` holding the words as typed, and `metadata.pin` holding the pin as
+normalized. The words are also recorded as a [human message](/sessions/hierarchy-and-human-messages/#what-is-captured-and-what-is-not)
+with entry point `browser_extension.quick_router`: this is the one API route that does, because
+its key is a browser's and not the fleet's.
+
+```jsonc
+// 201
+{ "session_id": 4123, "session_url": "https://zimmer.example.com/sessions/4123" }
+```
+
+That is the whole response, and there is no `GET`. Errors: **401** for the key, **422** for a blank
+prompt, a prompt over the cap, prompt and page together over the cap, or a router root the catalog
+cannot resolve, and **429** (with `retry_after`, in seconds) past 10 sessions a minute from one
+client address — the ceiling on what a leaked key can spend from one place, not something a person
+dropping pins meets. The `session_url` is built on the instance's configured base URL
+(`ZIMMER_PROD_BASE_URL`), not on the host the request came in on.
+
 ## Triggers
 
 `GET /triggers` (filters `condition_type`, `status`) · `GET /triggers/:id` (+ `recent_sessions`,
@@ -1241,8 +1305,9 @@ One shape, everywhere:
 of responses carry an extra top-level key alongside these — `retry_after` on the health 429.
 
 **Status codes in use:** 200 · 201 · 202 (follow-up queued) · 204 · 400 (search only) · 401 · 404 ·
-409 (follow-up position collision, interrupt races) · 422 · 429 (health cooldown) · 500 · 503 (Slack
-unconfigured; health maintenance refused because no usable cache store is configured).
+409 (follow-up position collision, interrupt races) · 422 · 429 (health cooldown; the Quick Router
+ingest's per-address limit) · 500 · 503 (Slack unconfigured; health maintenance refused because no
+usable cache store is configured).
 
 :::note[Missing required params return 422]
 `follow_up` without a prompt, `fork` without `message_index`, `bulk_archive` without `session_ids`,

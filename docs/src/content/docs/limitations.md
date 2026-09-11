@@ -1136,8 +1136,12 @@ Since [#46](https://github.com/tadasant/zimmer/issues/46) every key is a row wit
 [the API keys page](/auth/overview/#managing-keys) refuses the key from the next request on, with no
 restart. What is still true:
 
-- **No scopes.** Any valid key can do anything to anything. That is the single circle of trust, not
-  an oversight, but it means a leaked key is a full-API credential until someone revokes it.
+- **No scopes within the API.** Any valid `api` key can do anything to anything. That is the single
+  circle of trust, not an oversight, but it means a leaked key is a full-API credential until
+  someone revokes it. The one exception is a key minted with the `quick_router` grant, which opens
+  [`POST /api/v1/quick_router`](/extend/rest-api/#the-quick-router-ingest) and nothing else — a
+  second closed door for the [browser extension](/extend/browser-extension/), not a permission
+  system. A leaked one can start Quick Router sessions (ten a minute per address) and read nothing.
 - **The agents share one key, and can reach all of `API_KEYS`.** Every session's Zimmer MCP servers
   carry the deployment's self-session key, the first `API_KEYS` entry, so the log can say "the
   fleet's key did this" and not which session did it. Revoking that key disconnects every session
@@ -2816,13 +2820,27 @@ Fixed in [#67](https://github.com/tadasant/zimmer/issues/67): `agent-orchestrato
 that actually holds the catalog they maintain. The catalog now ships ten roots and every one of them
 clones. What the fix did *not* remove is the reverse-lookup ambiguity below — it widened it.
 
+### Page content from the browser extension is untrusted text in a priority prompt
+
+The [browser extension](/extend/browser-extension/) puts whatever page you pinned — any site, not
+just Zimmer's own — into a router session's prompt, and that session is `web_ui` genesis and runs as
+priority. A page can carry text written for the agent that reads it. What stands in the way is
+narrow: the extension captures only text a reader could see (so a `display:none`, off-screen or
+pixel-clipped payload never leaves the browser; text in the page's colour on the page's background
+still does), Zimmer neutralizes the block's own tags in page-supplied text so the page cannot close the
+block and forge the human's message, and the block says its contents are data, never instructions.
+Visible text that argues with the agent is still visible text, and nothing sandboxes a router
+session that decides to act on it. Pin pages you would be comfortable having an agent read.
+
 ### The baseline orchestrator root can't spawn downstream sessions out of the box
 
 🔴 `zimmer-orchestrator` — the root behind every quick-router / chat-bubble submission — ships with **no**
 default artifacts: no routing skill, and no session-orchestration MCP server. It resolves and starts,
 but it cannot *route*. A quick-router submission therefore lands as an ordinary agent session cloning
 `tadasant/zimmer` at its root, which is rarely what the prompt asked for. Treat the quick router as
-"start a session from a prompt", not "dispatch to the right root", until this is finished.
+"start a session from a prompt", not "dispatch to the right root", until this is finished. The
+[browser extension](/extend/browser-extension/) lands on the same root, so it makes this gap more
+visible, not less: from any page it is "start a session with this page attached".
 
 The obvious wiring — `default_in_roots: ["zimmer-orchestrator"]` on the `zimmer-sessions` catalog entry —
 is deliberately **not** done, because it is unsafe for a stock deployment. `zimmer-sessions`' URL in
