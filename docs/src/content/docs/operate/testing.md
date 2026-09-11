@@ -16,7 +16,7 @@ sidebar:
 | `verify_lockfile` | `bundle lock` then `git diff --exit-code Gemfile.lock` |
 | `test-unit` | `bin/rails test` — unit + integration; Postgres 16 + Redis 7 service containers |
 | `test-system` | `bin/rails test:system` — the Chrome-driven browser suite; `PARALLEL_WORKERS=1` |
-| `schema_verify` | `bin/rails db:schema:verify` — round-trips `db/schema.rb` against `db/migrate/` on a scratch Postgres 16 container |
+| `schema_verify` | `bin/rails db:schema:verify` — round-trips `db/schema.rb` against `db/migrate/`, the dump and a catalog of what the dump cannot describe, on a scratch Postgres 16 container |
 | `retention_logic` | `ruby scripts/ghcr_retention_test.rb` (pure Ruby, no Rails boot) |
 | `docs_site` | Builds this documentation site |
 | `image_excludes_docs` | Asserts `docs/` is absent from the image build context — see [Deploying](/operate/deploying/#the-docs-never-ship-in-the-image) |
@@ -107,6 +107,15 @@ the only place most readers will ever see the failure. It drops and recreates da
 times, which is why it gets its own Postgres service container instead of a step inside `test-unit`,
 and why it refuses to run outside `RAILS_ENV=test`. The same command is what you run locally.
 
+Comparing two dumps only sees what the dumper writes down, and Rails' Ruby dumper writes down
+tables, indexes, constraints, enums and extensions. So each pass also reads a **catalog** straight
+from Postgres: functions, aggregates, triggers, event triggers, views, materialized views, rules,
+row-level security and its policies, custom types, standalone sequences, exclusion constraints, and
+how each table is stored (partitioning, inheritance, `UNLOGGED`, storage parameters). The job fails
+if the two catalogs differ, and prints the difference.
+Without that, a migration could install something with `execute` that existed in production and
+silently did not exist in CI or test ([#780](https://github.com/tadasant/zimmer/issues/780)).
+
 The job deliberately does **not** set `CI=true`, unlike the two test jobs. That variable's only
 effect in the test environment is to turn on eager loading, and eager-loading the app while
 migrating from zero means model code meeting a half-built schema.
@@ -134,6 +143,26 @@ one. solid_cable's `cable` database is installed by loading `db/cable_schema.rb`
 that file and no migration, and the `migrations_paths` its config names (`db/cable_migrate`) is not
 a directory in this repo — so a from-zero migrate dumps it empty by design. It is still covered by
 the load-and-dump half, which is the only comparison that means anything for a schema-only database.
+
+### Functions and triggers are dumped; other DDL is refused
+
+`db/schema.rb` carries functions and triggers.
+`config/initializers/schema_dump_functions_and_triggers.rb` appends each one to the end of the dump
+as an `execute` block holding the SQL Postgres reports for it (`pg_get_functiondef`,
+`pg_get_triggerdef`). A migration can install one with `execute`, re-dump, and every database built
+from the dump has it. `gate_decisions_append_only` is the one in use: it refuses the `UPDATE` and
+`DELETE` statements on `gate_decisions` that skip `GateDecision`'s callbacks.
+
+Anything else in the catalog is not dumped, so `schema_verify` fails the PR that adds one: a view, a
+rule, a policy, a domain. Build it from something the dump carries, or extend the initializer to
+dump that kind too, and let the check tell you whether a schema load reproduces it.
+
+The alternative is `config.active_record.schema_format = :sql`, which dumps `db/structure.sql` with
+`pg_dump` and carries everything. Zimmer does not use it. `pg_dump` would be needed everywhere a
+migration is written, and the agent worker image, where most migrations here are written, has no
+Postgres binaries. `pg_dump` also refuses to dump a server newer than itself, so every machine that
+runs `db:migrate` would need a matching version. The extra dump code needs only a database
+connection.
 
 ## Tests that skip themselves
 

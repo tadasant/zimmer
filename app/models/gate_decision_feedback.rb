@@ -55,9 +55,9 @@ class GateDecisionFeedback < ApplicationRecord
 
   scope :chronological, -> { order(:received_at, :id) }
 
-  # Model-level, with the same caveat as GateDecision: `update_all` and raw SQL
-  # bypass a callback, and a Postgres trigger cannot survive this app's Ruby schema
-  # dump. Nothing in the app writes to this table except the two paths above.
+  # Model-level only: `update_all` and raw SQL bypass a callback, and unlike
+  # GateDecision this table has no Postgres trigger behind it. Nothing in the app
+  # writes to this table except the two paths above.
   before_update { raise ActiveRecord::ReadOnlyRecord, "GateDecisionFeedback is append-only: add another note instead of editing one" }
   before_destroy { raise ActiveRecord::ReadOnlyRecord, "GateDecisionFeedback is append-only and cannot be deleted" }
 
