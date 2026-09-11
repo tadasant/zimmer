@@ -80,13 +80,33 @@ class SlackTriggerHealthCheckJobTest < ActiveJob::TestCase
     SlackTriggerHealthCheckJob.new.send(:check_condition, @condition)
   end
 
-  test "skips bot_mention conditions (no single monitored source)" do
+  test "skips unscoped bot_mention conditions (no single monitored source)" do
     SlackService.stubs(:configured?).returns(true)
     condition = trigger_conditions(:bot_mention_slack_condition)
 
     SlackService.expects(:get_channel_history).never
     SlackService.expects(:get_thread_replies).never
     AlertService.expects(:raise_alert).never
+
+    SlackTriggerHealthCheckJob.new.send(:check_condition, condition)
+  end
+
+  # Scoping a bot_mention to a thread gives it a single source and cursor, so
+  # it can stall the same way a thread-scoped new_message can, and is checked.
+  test "checks a thread-scoped bot_mention condition against its thread's newest reply" do
+    SlackService.stubs(:configured?).returns(true)
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    condition.update!(configuration: condition.configuration.merge("thread_ts" => "1704000000.000000"))
+
+    SlackService.stubs(:get_thread_replies)
+      .with(condition.channel_id, "1704000000.000000", oldest: condition.last_message_ts)
+      .returns([ OpenStruct.new(ts: STALLED_TS, thread_ts: "1704000000.000000") ])
+    SlackService.expects(:get_channel_history).never
+
+    AlertService.expects(:raise_alert).once.with do |title, opts|
+      title == "Slack trigger feed stalled" &&
+        opts[:details].include?("thread 1704000000.000000")
+    end
 
     SlackTriggerHealthCheckJob.new.send(:check_condition, condition)
   end

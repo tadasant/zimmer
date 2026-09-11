@@ -80,10 +80,11 @@ run, keyed on the allow-list, so two conditions sharing one do not walk those pa
 
 Leave the channel blank; `dm_message` ignores `channel_id` entirely, and `thread_ts` is rejected
 (there is nothing for it to scope). `SlackTriggerHealthCheckJob` skips these conditions for the same
-reason it skips `bot_mention` — there is no single monitored source to measure staleness against.
+reason it skips an unscoped `bot_mention` — there is no single monitored source to measure staleness
+against.
 
 :::caution[A `dm_message` condition and a `bot_mention` condition both fire on the same DM]
-`bot_mention` covers DMs unconditionally, and `dm_message` deliberately applies no mention filter.
+An unscoped `bot_mention` covers DMs unconditionally, and `dm_message` deliberately applies no mention filter.
 Two conditions covering the same DM therefore each fire on it, spawning two sessions — and that
 holds whether they sit on two triggers or on the *same* one, which is the likelier mistake:
 `SlackTriggerPollerJob` iterates conditions, not triggers, and each one calls `create_session!`.
@@ -125,11 +126,44 @@ channels it is invited to, but it is a real grant. Set the allowlist on any depl
 workspace is larger than the circle of trust.
 :::
 
-:::caution[`thread_ts` doesn't work for bot mentions]
-`TriggerCondition` explicitly rejects it: *"thread_ts is not supported for bot_mention
-conditions."* You can watch a thread for new messages, but not for bot mentions. The same
-applies to the passive-listening types — they walk threads themselves.
-Tracked in [#78](https://github.com/tadasant/zimmer/issues/78).
+#### One thread's @mentions: `bot_mention` + `thread_ts`
+
+Give a `bot_mention` condition a `thread_ts` — the thread's parent timestamp, alongside the
+`channel_id` it lives in — and it fires only on replies in that thread that @mention the bot, from
+users the allow-list admits. It is for the thread you started about a task: @mention Zimmer in it,
+and the conversation stays there.
+
+Scoping drops everything else a `bot_mention` condition watches. An @mention at the top level of the
+channel, in another thread, or in a DM does not fire it, and neither does a reply in the thread that
+doesn't mention the bot.
+
+Mechanically it is a thread-scoped `new_message` with a mention filter:
+`conversations.replies` on the one thread, a single cursor in `last_message_ts` that advances past
+every reply fetched whether or not it mentioned the bot, and a first poll that only records a
+baseline. That baseline is the newest existing reply, or the thread's parent when there are no
+replies yet, so the first @mention in a brand-new thread still fires. The mention test is the one
+every `bot_mention` path shares (`mention_for?`), so the allow-list and the rule that Zimmer's own
+messages never fire apply unchanged. With a single source, `SlackTriggerHealthCheckJob` checks it
+for staleness the same way it checks a thread-scoped `new_message`.
+
+Changing `thread_ts` on a live condition — adding it, clearing it, or pointing it at another thread
+— restarts the condition's cursors at the moment of the edit: nothing said before the edit fires,
+and everything after it does. The cursor from one scope means something else in the other, so
+carrying it across would make the first poll replay a backlog — every reply in the thread newer
+than the channel's last top-level message, or every channel @mention and DM since the thread last
+spoke. Threads the condition was tracking are forgotten; the channel sweep picks the live ones up
+again from recent history. The `action_trigger` MCP tool refuses an update that drops `thread_ts`
+by omission; send `"thread_ts": ""` to clear it on purpose.
+
+`channel_id` is required with `thread_ts`. `dm_message` and both passive types still reject it: a DM
+has no thread to scope, and the passive types walk threads themselves.
+
+:::caution[An unscoped `bot_mention` on the same channel fires too]
+An unscoped `bot_mention` condition checks thread replies for @mentions as well, so if one watches
+the same channel (or every channel), a mention in the thread fires both conditions and spawns two
+sessions. Nothing dedupes them, for the same reason nothing dedupes
+[`dm_message` and `bot_mention`](#dms-dm_message). A trigger meant to keep a conversation in one
+thread should be the only mention trigger that can see that thread.
 :::
 
 #### Passive listening (`passive_listen_thread`, `passive_listen_channel`)
@@ -274,8 +308,8 @@ exists precisely so that saving the form does not *destroy* them.
 :::
 
 :::note[No stall detection]
-`SlackTriggerHealthCheckJob` skips every passive-listening event type for the same reason it skips
-`bot_mention`: the condition fans out across many channels, each with its own cursor, so there is no
+`SlackTriggerHealthCheckJob` skips every passive-listening event type for the same reason it skips an
+unscoped `bot_mention`: the condition fans out across many channels, each with its own cursor, so there is no
 single "newest message" to compare against.
 :::
 

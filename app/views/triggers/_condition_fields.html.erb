@@ -100,7 +100,7 @@
              value="<%= condition.thread_ts %>"
              placeholder="e.g., 1767504875.131659"
              class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
-      <p class="mt-1 text-xs text-gray-500">For "New message" only. Set this to a thread's parent timestamp to monitor new <em>replies</em> in that specific thread instead of top-level channel messages — required for feeds that post as thread replies (e.g. a daily digest thread). Leave blank to monitor top-level messages. Not supported for "Bot mention" or the passive-listening types.</p>
+      <p class="mt-1 text-xs text-gray-500">For "New message" and "Bot mention", with a channel. Set this to a thread's parent timestamp to watch only that thread's <em>replies</em>: every new reply for "New message" — required for feeds that post as thread replies (e.g. a daily digest thread) — or only replies that @mention Zimmer for "Bot mention", which then ignores DMs and the rest of the channel. Leave blank to monitor the channel. Not supported for "Direct message" or the passive-listening types.</p>
     </div>
   </div>
 

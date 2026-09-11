@@ -3787,13 +3787,6 @@ but nothing tells that session a sibling group was coalesced in the pass before 
 already asks a session to check the channel for an investigation already under way, which is what
 covers it.
 
-### `thread_ts` is not supported for bot mentions
-
-You can watch a thread for new messages, but not for bot mentions, and not for passive listening
-either — the passive types walk threads themselves.
-
-Tracked in [#78](https://github.com/tadasant/zimmer/issues/78).
-
 ### Passive listening decides restraint in the prompt, not in the poller
 
 `passive_listen_thread` fires on every new reply in a thread Zimmer has spoken in, and
