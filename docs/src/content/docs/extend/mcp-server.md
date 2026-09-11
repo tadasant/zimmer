@@ -29,7 +29,7 @@ Any MCP client that speaks streamable HTTP works. The whole configuration is a U
     "zimmer": {
       "type": "http",
       "url": "https://your-zimmer.example.com/mcp",
-      "headers": { "X-API-Key": "one-of-your-API_KEYS" }
+      "headers": { "X-API-Key": "one-of-your-API-keys" }
     }
   }
 }
@@ -41,7 +41,7 @@ convention. Codex's `config.toml` wants the same two things under different keys
 ```toml
 [mcp_servers.zimmer]
 url = "https://your-zimmer.example.com/mcp"
-http_headers = { "X-API-Key" = "one-of-your-API_KEYS" }
+http_headers = { "X-API-Key" = "one-of-your-API-keys" }
 ```
 
 Or drive it by hand:
@@ -54,16 +54,16 @@ curl -s https://your-zimmer.example.com/mcp \
 
 ## Auth is the API's auth
 
-The `X-API-Key` header, compared against `ENV["API_KEYS"]` (comma-separated) with a constant-time
-comparison — literally `Api::BaseController`, which `McpController` inherits. A key that works
-against `/api/v1/sessions` works against `/mcp`.
+The `X-API-Key` header, holding an `API_KEYS` entry or a key minted on `/settings/api_keys` —
+literally `Api::BaseController`, which `McpController` inherits. A key that works against
+`/api/v1/sessions` works against `/mcp`, a revoke refuses it on both from the next request on, and
+the log names the key behind each call. See [the REST API's auth](/auth/overview/#2-client--rest-api-x-api-key).
 
 MCP clients that only know how to send a bearer token can send the same key as
 `Authorization: Bearer <key>` instead. There is one credential either way.
 
 :::caution[Scoping is an affordance, not a trust boundary]
-A key is an opaque string with no scope, no identity, and no audit trail — the same caveat as
-[the REST API](/extend/rest-api/). The scoping below (`tool_groups`, `allowed_agent_roots`) lives in
+A key has a name but no scope — the same caveat as [the REST API](/extend/rest-api/). The scoping below (`tool_groups`, `allowed_agent_roots`) lives in
 the URL, so a caller that holds a key can always widen it by asking for a different URL — or skip MCP
 and call `/api/v1` directly. It exists to give an agent the *right* surface, not to contain a
 determined one. Anyone you hand a key to can do anything a key can do.
