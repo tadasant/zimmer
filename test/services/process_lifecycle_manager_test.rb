@@ -488,6 +488,25 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     assert_equal :terminated, manager.current_state
   end
 
+  test "terminate reports why, and signals nothing, for a pid recorded in another PID namespace" do
+    # The web-side pause reaches here with a pid from the worker's namespace (#365).
+    @mock_cli_adapter.execute_hook = ->(opts) do
+      { pid: 12345, stderr_log_path: "/tmp/stderr.log" }
+    end
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    @session.merge_metadata!(AgentProcessLiveness::IDENTITY_KEY => {
+      "pid" => 12345, "boot_id" => SecureRandom.uuid,
+      "pid_namespace" => "pid:[999999999]", "started_at_ticks" => "260018677"
+    })
+
+    result = manager.terminate(reason: :user_pause)
+
+    assert_not result.success?
+    assert_includes result.error, "cannot be seen or signalled from here"
+    assert_empty @mock_process_manager.killed_processes
+  end
+
   test "terminate logs the reason" do
     @mock_cli_adapter.execute_hook = ->(opts) do
       { pid: 12345, stderr_log_path: "/tmp/stderr.log" }

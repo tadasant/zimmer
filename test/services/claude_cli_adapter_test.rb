@@ -831,8 +831,8 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
 
     result = @adapter.send(:spawn_process, command, working_dir: @test_dir)
 
-    # MockProcessManager returns PIDs starting from 10000
-    assert result[:pid] >= 10000, "Should return a PID from MockProcessManager"
+    # MockProcessManager returns PIDs starting from MockProcessManager::FIRST_PID
+    assert result[:pid] >= MockProcessManager::FIRST_PID, "Should return a PID from MockProcessManager"
     assert_equal File.join(@test_dir, "claude_stderr.log"), result[:stderr_log_path]
 
     # Verify process was spawned via MockProcessManager
@@ -925,7 +925,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     result = @adapter.send(:spawn_process, command, working_dir: @test_dir)
 
     assert_kind_of Hash, result
-    assert result[:pid] >= 10000, "Should return PID from MockProcessManager"
+    assert result[:pid] >= MockProcessManager::FIRST_PID, "Should return PID from MockProcessManager"
     assert_equal File.join(@test_dir, "claude_stderr.log"), result[:stderr_log_path]
   end
 
@@ -1053,7 +1053,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
       debug: false
     )
 
-    assert result[:pid] >= 10000, "Should return PID from MockProcessManager"
+    assert result[:pid] >= MockProcessManager::FIRST_PID, "Should return PID from MockProcessManager"
 
     spawned = @mock_process_manager.spawned_processes.first
     spawned_command = spawned[:command]
@@ -1114,7 +1114,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     spawned_command = spawned[:command]
     spawned_options = spawned[:options]
 
-    assert_equal 10000, result[:pid]
+    assert_equal MockProcessManager::FIRST_PID, result[:pid]
     assert_includes spawned_command, "claude"
     assert_includes spawned_command, "--dangerously-skip-permissions"
     assert_includes spawned_command, "--resume"
@@ -1305,7 +1305,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     ]
 
     assert_equal expected, spawned_command
-    assert result[:pid] >= 10000
+    assert result[:pid] >= MockProcessManager::FIRST_PID
     assert_equal File.join(@test_dir, "claude_stderr.log"), result[:stderr_log_path]
   end
 
@@ -1536,7 +1536,7 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
 
     result = @adapter.send(:spawn_process, command, working_dir: @test_dir)
 
-    assert result[:pid] >= 10000
+    assert result[:pid] >= MockProcessManager::FIRST_PID
     spawned = @mock_process_manager.spawned_processes.first
     env_vars = spawned[:env]
 
