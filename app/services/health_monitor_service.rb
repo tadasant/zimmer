@@ -521,6 +521,7 @@ class HealthMonitorService
     {
       status: HealthStatus.new(status: :warning, message: "Cron freshness could not be read: #{e.message}"),
       cron_running_since: nil, checked_at: Time.current,
+      history_window_seconds: CronFreshness::HISTORY_WINDOW.to_i, stopped_in_window: 0,
       counts: CronFreshness::STATE_ORDER.index_with(0), keys: []
     }
   end

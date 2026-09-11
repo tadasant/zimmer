@@ -1555,10 +1555,50 @@ What fires it, and why each is real:
 - **A copy stuck in retry backoff** for longer than its key's grace. It is failing, and the
   singleton slot it holds refuses every tick until it stops.
 
+**And has it been running, not just is it running.** Everything above reads one row per key, the
+newest, so it answers the present tense. A key that stopped for six hours overnight and recovered
+reads `fresh`, identically to one that never missed a tick — and nothing else answers it either,
+because a periodic job's summary line is `Rails.logger.info` and the OTel appender ships WARN and
+above, so its ordinary life is not in VictoriaLogs and its absence there is not evidence of
+anything ([#584](https://github.com/tadasant/zimmer/issues/584)). That gap is what made "has this
+sweep been running since it deployed?" unanswerable during an RCA.
+
+So each reading also carries the key's last `HISTORY_WINDOW` (24 hours): `ticks_in_window`, and the
+longest silence inside it. The silence is seeded with the newest tick *before* the window, because a
+key dead for the first six hours of the day has ordinary five-minute gaps between every pair of rows
+inside it and the hole is only visible against the tick in front of it. A key with no tick at all
+before the window has no seed, and its leading edge is left unmeasured rather than guessed at:
+understating a silence can only lose a finding, never invent one.
+
+**A silence is a stop once it exceeds one whole interval plus that key's own grace** — the same two
+numbers the live rule uses, applied to a gap instead of to a due time. One rule then serves every
+cadence without a second threshold to tune:
+
+| Key | Allowance | A normal silence | The verdict |
+| --- | --- | --- | --- |
+| `*/5 * * * *` | 5m + 30m | 15m, a singleton whose copy ran past two ticks | not a stop |
+| `*/5 * * * *` | 5m + 30m | 6h | `stopped_in_window` |
+| `0 6 * * *` | 24h + 2h | 24h, every day it has ever run | not a stop |
+| `0 6 * * *` | 24h + 2h | 48h, one tick missed | `stopped_in_window` |
+
+Unlike the live rule, a silence is **not** excused by a dashboard toggle. GoodJob keeps every key's
+switch in one settings row, so its timestamp says only that *some* key was flipped, and excusing on it
+would hide key A's real eight-hour stop because someone toggled key B in the meantime. A key an
+operator switched off for six hours and back on did stop producing ticks, and "stopped and recovered"
+is the true sentence about it; the live rule needs the excuse because it pages, and this never does.
+
+**It is reported, never paged.** The gap is over and the key recovered, so a page would be an alert
+about the past; the live rule above is what pages. The cost is one index range scan per key over one
+day of rows: 4 ms on a `good_jobs` table holding 322,892 retained rows, 23,111 of them inside the
+window. And a silence that lands on every key at the same instant is a worker outage rather than
+fifty faults — true, and exactly what a post-mortem wants, which is why the summary sentence names
+the worst `HISTORY_NAMES_IN_MESSAGE` (3) and counts the rest.
+
 **Reading it without a page.** `HealthMonitorService#cron_health` carries every key's reading into the
-report behind `/health` (the **Cron Freshness** card), `GET /api/v1/health`, `get_system_health`
-(one `Cron freshness` line, plus each key that is behind with its reason) and
-`/health/export_diagnostics`. It moves `overall_status` too: `stale` is critical and `overdue` is
+report behind `/health` (the **Cron Freshness** card, whose per-key table has a **Last 24 hours** column
+and a line for each key that stopped and recovered), `GET /api/v1/health`, `get_system_health`
+(one `Cron freshness` line, plus each key that is behind with its reason and each key that stopped
+earlier in the window) and `/health/export_diagnostics`. It moves `overall_status` too: `stale` is critical and `overdue` is
 a warning. These are served by the web process, so they still answer when the worker's cron
 manager is what stopped. That is the one shape a monitor enqueued by the same cron manager cannot
 report on itself; see [Limitations](/limitations/#a-cron-manager-that-stops-inside-a-live-worker-is-not-paged-on).

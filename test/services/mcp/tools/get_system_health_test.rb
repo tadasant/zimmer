@@ -218,6 +218,30 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     refute_includes result, "`zombie_reaper`"
   end
 
+  # A key that stopped overnight and recovered reads `fresh`, so the line above would
+  # not carry it — and its own summary line is INFO, which the OTel appender does not
+  # ship. This bullet is the only place an agent can read it (tadasant/zimmer#584).
+  test "a key that stopped earlier in the window and recovered gets its own line" do
+    healthy = HealthMonitorService::HealthStatus.new(
+      status: :healthy,
+      message: "All 2 judged cron key(s) are enqueuing on schedule. 1 key(s) stopped and recovered " \
+               "in the last 24 hours (status_summary_backstop silent 6h 0m to 2026-09-11 02:00 UTC)"
+    )
+    HealthMonitorService.any_instance.stubs(:full_health_report).returns(
+      { overall_status: "healthy", cron_health: { status: healthy, history_window_seconds: 86_400, keys: [
+        { key: "status_summary_backstop", state: :fresh, stopped_in_window: true, ticks_in_window: 216,
+          longest_gap_seconds: 21_600, gap_ended_at: Time.utc(2026, 9, 11, 2, 0, 0) },
+        { key: "zombie_reaper", state: :fresh, stopped_in_window: false, ticks_in_window: 288 }
+      ] } }
+    )
+
+    result = @tool.call({})
+
+    assert_includes result, "  - `status_summary_backstop` (enqueuing now, but stopped earlier): " \
+                            "216 tick(s) in the last 24 hours, longest silence 6h 0m, resumed 2026-09-11 02:00 UTC"
+    refute_includes result, "`zombie_reaper`"
+  end
+
   # The other degraded shape: `queue_stats` is present but a single breakdown key
   # is missing from it. `format_breakdown` answers `unavailable` rather than
   # guessing — a key that never arrived and a queue that read as empty are
